@@ -1,0 +1,557 @@
+{
+  "kb_id": "energy_metering_protocol_layer",
+  "name": "Energy Metering Protocol and Object Layer",
+  "version": "0.1.0",
+  "layer": "protocol_object_model",
+  "description": "Second-layer knowledge base for DLMS/COSEM protocol structure, client roles, xDLMS services, security suites, communication profiles, access rights, and core COSEM object groups.",
+  "entries": [
+    {
+      "id": "KB-L2-DLMS-COSEM-PROFILE",
+      "type": "protocol_profile",
+      "layer": "protocol_architecture",
+      "name": "DLMS/COSEM Smart Meter Profile",
+      "aliases": ["DLMS/COSEM profile", "DLMS profile", "Smart meter profile"],
+      "keywords": ["dlms/cosem profile", "dlms profile", "smart meter profile", "profile dlms/cosem"],
+      "domain_tags": ["dlms_cosem", "protocol_profile", "smart_meter"],
+      "definition": "Application and object profile for smart electricity meters using DLMS/COSEM services and COSEM objects.",
+      "components": [
+        "DLMS/COSEM application layer",
+        "xDLMS services",
+        "COSEM interface classes",
+        "OBIS logical names",
+        "client/server associations",
+        "security suites",
+        "communication profiles"
+      ],
+      "relations": [
+        {"relation": "uses", "target": "KB-L2-XDLMS-SERVICES"},
+        {"relation": "uses", "target": "KB-L2-COSEM-OBJECT-MODEL"},
+        {"relation": "uses", "target": "KB-L2-OBIS-LOGICAL-NAME"},
+        {"relation": "secured_by", "target": "KB-L2-SECURITY-SUITES"},
+        {"relation": "transported_by", "target": "KB-L2-COMMUNICATION-PROFILES"}
+      ]
+    },
+    {
+      "id": "KB-L2-CLIENT-PUBLIC",
+      "type": "client_role",
+      "layer": "access_model",
+      "name": "Public Client",
+      "aliases": ["client public", "public customer"],
+      "keywords": ["public client", "client public", "public customer", "sap = 0x10"],
+      "domain_tags": ["client_role", "association", "access_control"],
+      "definition": "Client role used to reveal the structure of an unknown metering device, typically through the management logical device without security.",
+      "sap": "0x10",
+      "typical_security": "without_security",
+      "allowed_service_groups": ["GET", "selective_access"],
+      "limitations": [
+        "No access to measurement data requiring authentication",
+        "No read or write access to password values"
+      ],
+      "relations": [
+        {"relation": "associated_with", "target": "KB-L2-MANAGEMENT-LOGICAL-DEVICE"},
+        {"relation": "uses", "target": "KB-L2-XDLMS-SERVICES"}
+      ]
+    },
+    {
+      "id": "KB-L2-CLIENT-REMOTE-MANAGEMENT",
+      "type": "client_role",
+      "layer": "access_model",
+      "name": "Remote Management and Measurement Client",
+      "aliases": ["remote management client", "remote measurement client", "RC"],
+      "keywords": ["remote management and measurement", "remote clients management and measurement", "remote client", "sap = 0x01"],
+      "domain_tags": ["client_role", "association", "access_control", "remote_access"],
+      "definition": "Client role used by data concentrators, collectors, or central systems for remote point-to-point access to management and measurement functions.",
+      "sap": "0x01",
+      "typical_security": "HLS",
+      "allowed_service_groups": ["GET", "SET", "ACTION", "EventNotification", "DataNotification", "selective_access"],
+      "relations": [
+        {"relation": "secured_by", "target": "KB-L2-SECURITY-LEVEL-HLS"},
+        {"relation": "associated_with", "target": "KB-L2-MANAGEMENT-LOGICAL-DEVICE"},
+        {"relation": "associated_with", "target": "KB-L2-METERING-LOGICAL-DEVICE"}
+      ]
+    },
+    {
+      "id": "KB-L2-CLIENT-LOCAL-MANAGEMENT",
+      "type": "client_role",
+      "layer": "access_model",
+      "name": "Local Management and Measurement Client",
+      "aliases": ["local management client", "local measurement client", "LC"],
+      "keywords": ["local management and measurement", "local client", "sap = 0x02"],
+      "domain_tags": ["client_role", "association", "access_control", "local_access"],
+      "definition": "Client role used for local access by a concentrator, collector, or central system. It generally has similar rights to the remote management client, with restrictions on remote association attributes.",
+      "sap": "0x02",
+      "typical_security": "HLS",
+      "allowed_service_groups": ["GET", "SET", "ACTION", "EventNotification", "DataNotification", "selective_access"],
+      "relations": [
+        {"relation": "secured_by", "target": "KB-L2-SECURITY-LEVEL-HLS"},
+        {"relation": "associated_with", "target": "KB-L2-MANAGEMENT-LOGICAL-DEVICE"},
+        {"relation": "associated_with", "target": "KB-L2-METERING-LOGICAL-DEVICE"}
+      ]
+    },
+    {
+      "id": "KB-L2-CLIENT-READ",
+      "type": "client_role",
+      "layer": "access_model",
+      "name": "Read Client",
+      "aliases": ["Reading Client", "PC"],
+      "keywords": ["read client", "reading client", "sap = 0x03"],
+      "domain_tags": ["client_role", "association", "access_control", "read_access"],
+      "definition": "Client role used for reading parameters and energy data. Password access through LLS is typically required.",
+      "sap": "0x03",
+      "typical_security": "LLS",
+      "allowed_service_groups": ["GET", "selective_access"],
+      "limitations": [
+        "No read or write access to password values"
+      ],
+      "relations": [
+        {"relation": "secured_by", "target": "KB-L2-SECURITY-LEVEL-LLS"},
+        {"relation": "associated_with", "target": "KB-L2-MANAGEMENT-LOGICAL-DEVICE"},
+        {"relation": "associated_with", "target": "KB-L2-METERING-LOGICAL-DEVICE"}
+      ]
+    },
+    {
+      "id": "KB-L2-MANAGEMENT-LOGICAL-DEVICE",
+      "type": "logical_device",
+      "layer": "object_model",
+      "name": "Management Logical Device",
+      "aliases": ["management device", "SAP 0x01 logical device"],
+      "keywords": ["management logical device", "device logical in management", "sap = 0x01"],
+      "domain_tags": ["logical_device", "data_model", "device_management"],
+      "definition": "Mandatory logical device in a physical meter that exposes device management information, structure discovery, configuration, events, alarms, firmware update, and security-related objects.",
+      "sap": "0x01",
+      "typical_object_groups": [
+        "SAP assignment",
+        "Association LN",
+        "Security setup",
+        "Clock",
+        "Activity calendar",
+        "Event log",
+        "Alarm handling",
+        "Firmware image transfer"
+      ],
+      "relations": [
+        {"relation": "contains", "target": "KB-L2-OBJECT-SAP-ASSIGNMENT"},
+        {"relation": "contains", "target": "KB-L2-OBJECT-ASSOCIATION-LN"},
+        {"relation": "contains", "target": "KB-L2-OBJECT-IMAGE-TRANSFER"}
+      ]
+    },
+    {
+      "id": "KB-L2-METERING-LOGICAL-DEVICE",
+      "type": "logical_device",
+      "layer": "object_model",
+      "name": "Metering Logical Device",
+      "aliases": ["measurement logical device", "measuring logic device"],
+      "keywords": ["metering logical device", "measurement logical device", "measuring logic device", "devices in measurement"],
+      "domain_tags": ["logical_device", "measurement_data", "meter_function"],
+      "definition": "Logical device that exposes the meter's measurement and billing functionality through COSEM objects.",
+      "typical_object_groups": [
+        "Energy registers",
+        "Demand registers",
+        "Billing profile",
+        "Load profile",
+        "Power quality objects",
+        "Snapshot values"
+      ],
+      "relations": [
+        {"relation": "contains", "target": "KB-L2-PROFILE-BILLING"},
+        {"relation": "contains", "target": "KB-L2-PROFILE-LOAD"},
+        {"relation": "contains", "target": "KB-L2-PROFILE-POWER-QUALITY"}
+      ]
+    },
+    {
+      "id": "KB-L2-XDLMS-SERVICES",
+      "type": "service_set",
+      "layer": "application_layer",
+      "name": "xDLMS Services",
+      "aliases": ["DLMS services", "xDLMS service set"],
+      "keywords": ["xdlms service", "services xdlms", "block transfer with get", "block transfer with set", "eventnotification", "datanotification", "selective access"],
+      "domain_tags": ["dlms_cosem", "application_layer", "service_model"],
+      "definition": "Service set used by DLMS/COSEM clients to read, write, invoke methods, receive events, and receive pushed data.",
+      "services": [
+        {"name": "GET", "purpose": "Read COSEM object attributes"},
+        {"name": "SET", "purpose": "Write COSEM object attributes"},
+        {"name": "ACTION", "purpose": "Invoke COSEM object methods"},
+        {"name": "ACCESS selective", "purpose": "Access selected data ranges or entries"},
+        {"name": "EventNotification", "purpose": "Notify event occurrences"},
+        {"name": "DataNotification", "purpose": "Push data notification"}
+      ],
+      "relations": [
+        {"relation": "used_by", "target": "KB-L2-CLIENT-PUBLIC"},
+        {"relation": "used_by", "target": "KB-L2-CLIENT-REMOTE-MANAGEMENT"},
+        {"relation": "used_by", "target": "KB-L2-CLIENT-LOCAL-MANAGEMENT"},
+        {"relation": "used_by", "target": "KB-L2-CLIENT-READ"}
+      ]
+    },
+    {
+      "id": "KB-L2-ASSOCIATION-MATRIX",
+      "type": "association_rule",
+      "layer": "access_model",
+      "name": "Local and Remote Association Matrix",
+      "aliases": ["Table 2 association matrix", "local and remote associations"],
+      "keywords": ["local associations and remote", "local and remote associations", "association matrix", "without security", "high level of security", "low level security"],
+      "domain_tags": ["association", "security_policy", "access_control"],
+      "definition": "Association matrix that maps client roles to management and metering logical devices and their required security level.",
+      "rules": [
+        {"client": "Public Client", "management_logical_device": "without_security", "metering_logical_device": "not_applicable"},
+        {"client": "Remote Management and Measurement Client", "management_logical_device": "HLS", "metering_logical_device": "HLS"},
+        {"client": "Local Management and Measurement Client", "management_logical_device": "HLS", "metering_logical_device": "HLS"},
+        {"client": "Read Client", "management_logical_device": "LLS", "metering_logical_device": "LLS"}
+      ],
+      "relations": [
+        {"relation": "uses", "target": "KB-L2-SECURITY-LEVEL-HLS"},
+        {"relation": "uses", "target": "KB-L2-SECURITY-LEVEL-LLS"}
+      ]
+    },
+    {
+      "id": "KB-L2-ACCESS-RIGHTS-MODEL",
+      "type": "access_rights_model",
+      "layer": "access_model",
+      "name": "COSEM Access Rights Model",
+      "aliases": ["Get Set Action rights", "RC/PC/SC/LC access rights"],
+      "keywords": ["access rights", "access rights rc/pc/sc/lc", "rc/pc/sc/lc", "r-/--", "rw/rw", "not allowed", "scope of access"],
+      "domain_tags": ["access_control", "cosem_object", "configuration_check"],
+      "definition": "Model for defining whether each client role can read attributes, write attributes, or invoke methods on COSEM objects.",
+      "rights": [
+        {"code": "R-", "meaning": "read allowed"},
+        {"code": "RW", "meaning": "read and write allowed"},
+        {"code": "--", "meaning": "access not allowed"}
+      ],
+      "client_columns": [
+        {"code": "RC", "meaning": "remote management and measurement client"},
+        {"code": "PC", "meaning": "read client"},
+        {"code": "SC", "meaning": "service/local or specialized client depending on table context"},
+        {"code": "LC", "meaning": "local management and measurement client"}
+      ]
+    },
+    {
+      "id": "KB-L2-SECURITY-LEVEL-HLS",
+      "type": "security_level",
+      "layer": "security_model",
+      "name": "High Level Security Association",
+      "aliases": ["HLS association", "High Level of Security"],
+      "keywords": ["high level security", "high level of security", "hls"],
+      "domain_tags": ["security_policy", "authentication", "access_control"],
+      "definition": "Association security level using high-level authentication for management and measurement access."
+    },
+    {
+      "id": "KB-L2-SECURITY-LEVEL-LLS",
+      "type": "security_level",
+      "layer": "security_model",
+      "name": "Low Level Security Association",
+      "aliases": ["LLS association", "Low Level Security"],
+      "keywords": ["low level security", "lls", "password access"],
+      "domain_tags": ["security_policy", "authentication", "access_control"],
+      "definition": "Association security level typically using password-based authentication for read access."
+    },
+    {
+      "id": "KB-L2-SECURITY-SUITES",
+      "type": "security_suite_set",
+      "layer": "security_model",
+      "name": "DLMS/COSEM Security Suites",
+      "aliases": ["security suite", "set of security"],
+      "keywords": ["set of security", "security suite", "aes-gcm-128", "aes-gcm-256", "ecdh-ecdsa", "sha-256", "sha-384"],
+      "domain_tags": ["security_policy", "encryption", "digital_signature", "key_management"],
+      "definition": "Available DLMS/COSEM cryptographic suites and related algorithms.",
+      "suites": [
+        {
+          "id": "0",
+          "name": "AES-GCM-128",
+          "authenticated_encryption": "AES-GCM-128",
+          "digital_signature": null,
+          "key_agreement": null,
+          "hash": null,
+          "transport_key": "AES-128 key wrap",
+          "compression": null
+        },
+        {
+          "id": "1",
+          "name": "ECDH-ECDSA-AES-GCM-128-SHA-256",
+          "authenticated_encryption": "AES-GCM-128",
+          "digital_signature": "ECDSA with P-256",
+          "key_agreement": "ECDH with P-256",
+          "hash": "SHA-256",
+          "transport_key": "AES-128 key wrap",
+          "compression": "V.44"
+        },
+        {
+          "id": "2",
+          "name": "ECDH-ECDSA-AES-GCM-256-SHA-384",
+          "authenticated_encryption": "AES-GCM-256",
+          "digital_signature": "ECDSA with P-384",
+          "key_agreement": "ECDH with P-384",
+          "hash": "SHA-384",
+          "transport_key": "AES-256 key wrap",
+          "compression": "V.44"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-SECURITY-POLICY-BITS",
+      "type": "security_policy_map",
+      "layer": "security_model",
+      "name": "Security Policy Bit Map",
+      "aliases": ["security states", "security policy states"],
+      "keywords": ["security policy", "security states", "request authenticated", "encrypted request", "digitally signed request", "response authenticated", "encrypted response", "digitally signed response"],
+      "domain_tags": ["security_policy", "configuration_check"],
+      "definition": "Bit-level meaning of DLMS/COSEM security policy states.",
+      "bits": [
+        {"bit": 0, "meaning": "not used, must be set to 0"},
+        {"bit": 1, "meaning": "not used, must be set to 0"},
+        {"bit": 2, "meaning": "request authenticated"},
+        {"bit": 3, "meaning": "encrypted request"},
+        {"bit": 4, "meaning": "digitally signed request"},
+        {"bit": 5, "meaning": "response authenticated"},
+        {"bit": 6, "meaning": "encrypted response"},
+        {"bit": 7, "meaning": "digitally signed response"}
+      ]
+    },
+    {
+      "id": "KB-L2-SECURITY-POLICY-STATES",
+      "type": "security_policy_map",
+      "layer": "security_model",
+      "name": "Security Policy State Map",
+      "aliases": ["policy security", "security policy states"],
+      "keywords": ["policy security", "all messages are authenticated", "all messages are encrypted", "all messages are authenticated and encrypted"],
+      "domain_tags": ["security_policy", "configuration_check"],
+      "definition": "State-level map for DLMS/COSEM message authentication and encryption policy.",
+      "states": [
+        {"state": "0", "meaning": "anything"},
+        {"state": "1", "meaning": "all messages are authenticated"},
+        {"state": "2", "meaning": "all messages are encrypted"},
+        {"state": "3", "meaning": "all messages are authenticated and encrypted"},
+        {"state": "other", "meaning": "reserved"}
+      ]
+    },
+    {
+      "id": "KB-L2-COMMUNICATION-PROFILES",
+      "type": "communication_profile_set",
+      "layer": "communication_model",
+      "name": "DLMS/COSEM Communication Profiles",
+      "aliases": ["communication profiles", "communication profile set"],
+      "keywords": ["communication profiles", "hdlc", "plc-prime", "rf-wi-sun", "rf-lorawan", "pull", "push"],
+      "domain_tags": ["communication_profile", "dlms_cosem"],
+      "definition": "Communication profiles considered for the DLMS/COSEM smart meter profile.",
+      "profiles": [
+        {"name": "HDLC", "medium": "data link / serial or IP-related DLMS profile context"},
+        {"name": "PLC-PRIME", "medium": "power line communication"},
+        {"name": "RF-Wi-SUN", "medium": "radio frequency mesh"},
+        {"name": "RF-LoRaWAN", "medium": "low-power wide-area radio"}
+      ],
+      "required_mechanisms": ["pull", "push"]
+    },
+    {
+      "id": "KB-L2-OBIS-LOGICAL-NAME",
+      "type": "code_structure",
+      "layer": "object_model",
+      "name": "OBIS Logical Name",
+      "aliases": ["logical_name", "OBIS value"],
+      "keywords": ["logical_name", "logical name", "obis", "0-0:", "255"],
+      "domain_tags": ["obis_code", "cosem_object", "data_model"],
+      "definition": "Logical name used to identify COSEM object instances, commonly represented as six OBIS value groups.",
+      "format": "A-B:C.D.E.F",
+      "examples": [
+        {"value": "0-0:41.0.0.255", "object": "SAP Assignment"},
+        {"value": "0-0:40.0.0.255", "object": "Association LN"},
+        {"value": "0-0:42.0.0.255", "object": "COSEM logical device name"},
+        {"value": "0-0:44.0.0.255", "object": "Image Transfer"}
+      ]
+    },
+    {
+      "id": "KB-L2-COSEM-OBJECT-MODEL",
+      "type": "object_model",
+      "layer": "object_model",
+      "name": "COSEM Object Model",
+      "aliases": ["COSEM interface class model", "COSEM objects"],
+      "keywords": ["cosem object", "interface class", "class_id", "attribute", "method", "object/attribute name", "cl"],
+      "domain_tags": ["cosem_object", "data_model"],
+      "definition": "COSEM objects are instances of interface classes identified by logical names and defined by attributes, methods, access rights, and data types.",
+      "core_fields": [
+        "Object/attribute name",
+        "CL",
+        "logical_name",
+        "Type",
+        "Value",
+        "Meaning",
+        "Access rights RC/PC/SC/LC"
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-SAP-ASSIGNMENT",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "SAP Assignment",
+      "aliases": ["SAP assignment object"],
+      "keywords": ["sap assignment", "sap_assignment_list", "0-0:41.0.0.255", "0000290000ff"],
+      "domain_tags": ["cosem_object", "association", "logical_device"],
+      "definition": "COSEM object listing logical devices and their SAP assignments.",
+      "class_id": "17",
+      "obis": "0-0:41.0.0.255",
+      "logical_name_hex": "0000290000FF",
+      "key_attributes": [
+        {"name": "logical_name", "type": "octet-string[6]"},
+        {"name": "SAP_assignment_list", "type": "asslist_type", "meaning": "List of logical devices"}
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-ASSOCIATION-LN",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "Association LN",
+      "aliases": ["LN association object"],
+      "keywords": ["association ln", "object_list", "associated_partners_id", "application_context_name", "0-0:40.0.0.255", "0000280000ff"],
+      "domain_tags": ["cosem_object", "association", "access_control"],
+      "definition": "COSEM object representing the current logical-name association, including object list, partners, context, authentication, and security setup references.",
+      "class_id": "15",
+      "obis": "0-0:40.0.0.255",
+      "logical_name_hex": "0000280000FF",
+      "key_attributes": [
+        {"name": "logical_name", "type": "octet-string[6]"},
+        {"name": "object_list", "type": "object_list_type", "meaning": "List of all objects"},
+        {"name": "associated_partners_id", "type": "associated_partners_type"},
+        {"name": "application_context_name", "type": "application_context_name"}
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-COSEM-LOGICAL-DEVICE-NAME",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "COSEM Logical Device Name",
+      "aliases": ["logical device name object"],
+      "keywords": ["cosem logical device name", "0-0:42.0.0.255", "00002a0000ff", "unique logical device identification"],
+      "domain_tags": ["cosem_object", "logical_device", "device_identifier"],
+      "definition": "COSEM data object containing the unique logical device identification.",
+      "class_id": "1",
+      "obis": "0-0:42.0.0.255",
+      "logical_name_hex": "00002A0000FF",
+      "key_attributes": [
+        {"name": "logical_name", "type": "octet-string[6]"},
+        {"name": "value", "type": "octet-string[16]", "meaning": "Unique logical device identification"}
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-DEVICE-ID-1",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "Device ID 1",
+      "aliases": ["meter serial number object"],
+      "keywords": ["device id 1", "0-0:96.1.0.255", "0000600100ff", "electronic meter serial number"],
+      "domain_tags": ["cosem_object", "device_identifier", "meter_function"],
+      "definition": "COSEM data object containing the electronic meter serial number.",
+      "class_id": "1",
+      "obis": "0-0:96.1.0.255",
+      "logical_name_hex": "0000600100FF",
+      "key_attributes": [
+        {"name": "logical_name", "type": "octet-string[6]"},
+        {"name": "value", "type": "octet-string[10]", "meaning": "Electronic meter serial number"}
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-IMAGE-TRANSFER",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "Image Transfer",
+      "aliases": ["firmware image transfer object"],
+      "keywords": ["image transfer", "image_block_size", "image_transfer_enabled", "image_transfer_status", "image_to_activate_info", "0-0:44.0.0.255", "00002c0000ff"],
+      "domain_tags": ["cosem_object", "firmware_update", "meter_function"],
+      "definition": "COSEM object allowing firmware image transfer to COSEM servers.",
+      "class_id": "18",
+      "obis": "0-0:44.0.0.255",
+      "logical_name_hex": "00002C0000FF",
+      "key_attributes": [
+        {"name": "logical_name", "type": "octet-string[6]"},
+        {"name": "image_block_size", "type": "double-long-unsigned"},
+        {"name": "image_transferred_blocks_status", "type": "bit-string"},
+        {"name": "image_first_not_transferred_block_number", "type": "double-long-unsigned"},
+        {"name": "image_transfer_enabled", "type": "boolean"},
+        {"name": "image_transfer_status", "type": "enumerated"},
+        {"name": "image_to_activate_info", "type": "array"}
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-DISCONNECT-CONTROL-SCHEDULER",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "Disconnect Control Scheduler",
+      "aliases": ["disconnection scheduler"],
+      "keywords": ["disconnect control scheduler", "executed_script", "execution_time", "0-0:15.0.1.255", "disconnect", "reconnect"],
+      "domain_tags": ["cosem_object", "disconnect_control", "meter_function"],
+      "definition": "COSEM schedule object used to trigger disconnect and reconnect scripts.",
+      "class_id": "22",
+      "obis": "0-0:15.0.1.255",
+      "key_attributes": [
+        {"name": "logical_name", "type": "octet-string[6]"},
+        {"name": "executed_script", "type": "Script", "meaning": "script identifier for disconnect or reconnect"},
+        {"name": "execution_time", "type": "array", "meaning": "Date and time"}
+      ]
+    },
+    {
+      "id": "KB-L2-PROFILE-BILLING",
+      "type": "data_profile",
+      "layer": "measurement_model",
+      "name": "Billing Profile",
+      "aliases": ["periods of billing", "billing objects"],
+      "keywords": ["billing profile", "periods of billing", "profile billing", "energy for billing", "tariff period"],
+      "domain_tags": ["billing_profile", "measurement_data", "tariff_calendar"],
+      "definition": "Profile and object group for storing energy and demand quantities used for billing periods.",
+      "typical_quantities": [
+        "incremental active energy",
+        "absolute active energy",
+        "absolute reactive energy",
+        "maximum demand",
+        "UFER",
+        "DMCR"
+      ]
+    },
+    {
+      "id": "KB-L2-PROFILE-LOAD",
+      "type": "data_profile",
+      "layer": "measurement_model",
+      "name": "Load Profile",
+      "aliases": ["load curve", "load profile quality"],
+      "keywords": ["load profile", "load curve", "load profile quality", "incremental load curve", "absolute load curve"],
+      "domain_tags": ["load_profile", "measurement_data"],
+      "definition": "Time-series profile for load curve records and related measurement quantities.",
+      "typical_quantities": [
+        "incremental active energy",
+        "absolute active energy",
+        "incremental reactive energy",
+        "absolute reactive energy"
+      ]
+    },
+    {
+      "id": "KB-L2-PROFILE-POWER-QUALITY",
+      "type": "data_profile",
+      "layer": "measurement_model",
+      "name": "Power Quality Profile",
+      "aliases": ["QEE indicators", "quality of energy profile"],
+      "keywords": ["power quality", "quality of energy", "qee indicators", "prodist-8", "drp", "drc"],
+      "domain_tags": ["power_quality", "measurement_data"],
+      "definition": "Object and quantity group for power quality measurements and indicators.",
+      "typical_quantities": [
+        "voltage",
+        "current",
+        "DRP",
+        "DRC",
+        "QEE indicators"
+      ]
+    },
+    {
+      "id": "KB-L2-EVENT-GROUP-MODEL",
+      "type": "event_model",
+      "layer": "event_alarm_model",
+      "name": "Event Group and Subgroup Model",
+      "aliases": ["event group/subgroup", "event numbering"],
+      "keywords": ["group/subgroup of events", "event subgroup", "number of event", "description of the event", "minimum records"],
+      "domain_tags": ["event", "log", "data_model"],
+      "definition": "Event model that classifies logs by group number, subgroup number, event number, and event description.",
+      "fields": [
+        "Group number",
+        "Subgroup number",
+        "Event subgroup description",
+        "Number of event",
+        "Description of the event",
+        "Minimum records"
+      ]
+    }
+  ]
+}

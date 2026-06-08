@@ -1,0 +1,482 @@
+{
+  "kb_id": "energy_metering_cosem_classes",
+  "name": "COSEM Interface Classes Seed Knowledge Base",
+  "version": "0.1.0",
+  "layer": "cosem_class_attribute_method",
+  "description": "Third-layer seed knowledge base for COSEM interface classes, attributes, methods, and common object instances used in energy metering documents.",
+  "entries": [
+    {
+      "id": "KB-L3-IC-1-DATA",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Data",
+      "aliases": ["COSEM Data", "class 1", "CL 1"],
+      "keywords": ["class 1", "cl 1", "data object", "cosem logical device name", "device id", "security-invocation counter"],
+      "domain_tags": ["cosem_class", "cosem_object", "data_model"],
+      "definition": "Generic COSEM interface class for a single data value.",
+      "class_id": 1,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true, "meaning": "OBIS logical name of the object"},
+        {"attribute_id": 2, "name": "value", "type": "any", "mandatory": true, "meaning": "Stored data value"}
+      ],
+      "methods": [],
+      "common_instances": [
+        {"name": "COSEM logical device name", "obis": "0-0:42.0.0.255"},
+        {"name": "Device ID 1", "obis": "0-0:96.1.0.255"},
+        {"name": "Device ID 5", "obis": "0-0:96.1.4.255"},
+        {"name": "Security-Invocation counter", "obis_pattern": "0-0:43.1.x.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-3-REGISTER",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Register",
+      "aliases": ["COSEM Register", "class 3", "CL 3"],
+      "keywords": ["class 3", "cl 3", "register", "scaler_unit", "threshold", "duration of"],
+      "domain_tags": ["cosem_class", "register", "measurement_data"],
+      "definition": "COSEM interface class for a measured value with scaler and unit.",
+      "class_id": 3,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "value", "type": "choice", "mandatory": true},
+        {"attribute_id": 3, "name": "scaler_unit", "type": "scal_unit_type", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "reset", "parameter_type": "integer(0)", "meaning": "Reset register value when supported"}
+      ],
+      "common_instances": [
+        {"name": "Time threshold for long power failure", "obis": "0-0:96.7.20.255"},
+        {"name": "Threshold for long power failure", "obis": "0-0:94.55.60.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-4-EXTENDED-REGISTER",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Extended Register",
+      "aliases": ["COSEM Extended Register", "class 4", "CL 4"],
+      "keywords": ["class 4", "cl 4", "extended register", "capture_time", "status"],
+      "domain_tags": ["cosem_class", "register", "measurement_data"],
+      "definition": "COSEM register with status and capture time in addition to value and scaler/unit.",
+      "class_id": 4,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "value", "type": "choice", "mandatory": true},
+        {"attribute_id": 3, "name": "scaler_unit", "type": "scal_unit_type", "mandatory": true},
+        {"attribute_id": 4, "name": "status", "type": "choice", "mandatory": true},
+        {"attribute_id": 5, "name": "capture_time", "type": "date_time", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "reset", "parameter_type": "integer(0)"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-5-DEMAND-REGISTER",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Demand Register",
+      "aliases": ["COSEM Demand Register", "class 5", "CL 5"],
+      "keywords": ["class 5", "cl 5", "demand register", "current_average_value", "last_average_value", "capture_time"],
+      "domain_tags": ["cosem_class", "demand_register", "measurement_data"],
+      "definition": "COSEM interface class for demand values based on averaging periods.",
+      "class_id": 5,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "current_average_value", "type": "choice", "mandatory": true},
+        {"attribute_id": 3, "name": "last_average_value", "type": "choice", "mandatory": true},
+        {"attribute_id": 4, "name": "scaler_unit", "type": "scal_unit_type", "mandatory": true},
+        {"attribute_id": 5, "name": "status", "type": "choice", "mandatory": true},
+        {"attribute_id": 6, "name": "capture_time", "type": "date_time", "mandatory": true},
+        {"attribute_id": 7, "name": "start_time_current", "type": "date_time", "mandatory": true},
+        {"attribute_id": 8, "name": "period", "type": "double-long-unsigned", "mandatory": true},
+        {"attribute_id": 9, "name": "number_of_periods", "type": "long-unsigned", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "reset", "parameter_type": "integer(0)"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-6-REGISTER-ACTIVATION",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Register Activation",
+      "aliases": ["class 6", "CL 6"],
+      "keywords": ["class 6", "cl 6", "register activation", "active_mask", "register_assignment"],
+      "domain_tags": ["cosem_class", "billing_profile", "tariff_calendar"],
+      "definition": "COSEM class used to define active register masks and register assignments.",
+      "class_id": 6,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "register_assignment", "type": "array", "mandatory": true},
+        {"attribute_id": 3, "name": "mask_list", "type": "array", "mandatory": true},
+        {"attribute_id": 4, "name": "active_mask", "type": "octet-string", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "add_register"},
+        {"method_id": 2, "name": "add_mask"},
+        {"method_id": 3, "name": "delete_mask"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-7-PROFILE-GENERIC",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Profile Generic",
+      "aliases": ["COSEM Profile Generic", "class 7", "CL 7"],
+      "keywords": ["class 7", "cl 7", "profile generic", "capture_objects", "buffer", "capture_period", "profile_entries", "sort_method"],
+      "domain_tags": ["cosem_class", "profile_generic", "measurement_data", "log"],
+      "definition": "COSEM interface class for storing captured entries such as load profiles, billing profiles, event logs, and alarm/error logs.",
+      "class_id": 7,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "buffer", "type": "array", "mandatory": true},
+        {"attribute_id": 3, "name": "capture_objects", "type": "array", "mandatory": true},
+        {"attribute_id": 4, "name": "capture_period", "type": "double-long-unsigned", "mandatory": true},
+        {"attribute_id": 5, "name": "sort_method", "type": "enum", "mandatory": true},
+        {"attribute_id": 6, "name": "sort_object", "type": "capture_object_definition", "mandatory": true},
+        {"attribute_id": 7, "name": "entries_in_use", "type": "double-long-unsigned", "mandatory": true},
+        {"attribute_id": 8, "name": "profile_entries", "type": "double-long-unsigned", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "reset", "parameter_type": "integer(0)"},
+        {"method_id": 2, "name": "capture", "parameter_type": "integer(0)"}
+      ],
+      "common_instances": [
+        {"name": "Correct security operations event log", "obis": "0-0:99.98.11.255"},
+        {"name": "Failed security operations event log", "obis": "0-0:99.98.12.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-8-CLOCK",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Clock",
+      "aliases": ["COSEM Clock", "class 8", "CL 8"],
+      "keywords": ["class 8", "cl 8", "clock", "time_zone", "daylight_savings", "clock_base"],
+      "domain_tags": ["cosem_class", "clock", "meter_function"],
+      "definition": "COSEM interface class for date, time, timezone, daylight saving, and clock status.",
+      "class_id": 8,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "time", "type": "date_time", "mandatory": true},
+        {"attribute_id": 3, "name": "time_zone", "type": "long", "mandatory": true},
+        {"attribute_id": 4, "name": "status", "type": "unsigned", "mandatory": true},
+        {"attribute_id": 5, "name": "daylight_savings_begin", "type": "date_time", "mandatory": true},
+        {"attribute_id": 6, "name": "daylight_savings_end", "type": "date_time", "mandatory": true},
+        {"attribute_id": 7, "name": "daylight_savings_deviation", "type": "integer", "mandatory": true},
+        {"attribute_id": 8, "name": "daylight_savings_enabled", "type": "boolean", "mandatory": true},
+        {"attribute_id": 9, "name": "clock_base", "type": "enum", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "adjust_to_quarter"},
+        {"method_id": 2, "name": "adjust_to_measuring_period"},
+        {"method_id": 3, "name": "adjust_to_minute"},
+        {"method_id": 4, "name": "adjust_to_preset_time"},
+        {"method_id": 5, "name": "preset_adjusting_time"},
+        {"method_id": 6, "name": "shift_time"}
+      ],
+      "common_instances": [
+        {"name": "Clock", "obis": "0-0:1.0.0.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-9-SCRIPT-TABLE",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Script Table",
+      "aliases": ["class 9", "CL 9"],
+      "keywords": ["class 9", "cl 9", "script table", "script_identifier", "script_actions", "tariffication script table"],
+      "domain_tags": ["cosem_class", "script", "meter_function"],
+      "definition": "COSEM class containing executable scripts, each composed of action specifications.",
+      "class_id": 9,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "scripts", "type": "array", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "execute", "parameter_type": "long-unsigned"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-11-SPECIAL-DAYS-TABLE",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Special Days Table",
+      "aliases": ["class 11", "CL 11"],
+      "keywords": ["class 11", "cl 11", "special days table", "entries"],
+      "domain_tags": ["cosem_class", "tariff_calendar", "billing_profile"],
+      "definition": "COSEM class containing special day definitions for tariff/calendar behavior.",
+      "class_id": 11,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "entries", "type": "array", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "insert"},
+        {"method_id": 2, "name": "delete"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-15-ASSOCIATION-LN",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Association LN",
+      "aliases": ["Logical Name Association", "class 15", "CL 15"],
+      "keywords": ["class 15", "cl 15", "association ln", "object_list", "associated_partners_id", "application_context_name", "xdlms_context_info", "authentication_mechanism_name", "secret"],
+      "domain_tags": ["cosem_class", "association", "access_control"],
+      "definition": "COSEM interface class representing a logical-name association between client and server.",
+      "class_id": 15,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "object_list", "type": "object_list_type", "mandatory": true},
+        {"attribute_id": 3, "name": "associated_partners_id", "type": "associated_partners_type", "mandatory": true},
+        {"attribute_id": 4, "name": "application_context_name", "type": "application_context_name", "mandatory": true},
+        {"attribute_id": 5, "name": "xDLMS_context_info", "type": "xDLMS_context_type", "mandatory": true},
+        {"attribute_id": 6, "name": "authentication_mechanism_name", "type": "mechanism_name", "mandatory": true},
+        {"attribute_id": 7, "name": "secret", "type": "octet-string", "mandatory": true},
+        {"attribute_id": 8, "name": "association_status", "type": "enum", "mandatory": true},
+        {"attribute_id": 9, "name": "security_setup_reference", "type": "octet-string[6]", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "reply_to_HLS_authentication"},
+        {"method_id": 2, "name": "change_HLS_secret"},
+        {"method_id": 3, "name": "add_object"},
+        {"method_id": 4, "name": "remove_object"}
+      ],
+      "common_instances": [
+        {"name": "Current membership", "obis": "0-0:40.0.0.255"},
+        {"name": "Public client association", "obis": "0-0:40.0.1.255"},
+        {"name": "Reading client association", "obis": "0-0:40.0.2.255"},
+        {"name": "Local client association", "obis": "0-0:40.0.3.255"},
+        {"name": "Remote client association", "obis": "0-0:40.0.5.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-17-SAP-ASSIGNMENT",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "SAP Assignment",
+      "aliases": ["class 17", "CL 17"],
+      "keywords": ["class 17", "cl 17", "sap assignment", "sap_assignment_list"],
+      "domain_tags": ["cosem_class", "association", "logical_device"],
+      "definition": "COSEM interface class listing SAP assignments for logical devices.",
+      "class_id": 17,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "SAP_assignment_list", "type": "array", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "connect_logical_device"},
+        {"method_id": 2, "name": "disconnect_logical_device"}
+      ],
+      "common_instances": [
+        {"name": "SAP Assignment", "obis": "0-0:41.0.0.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-18-IMAGE-TRANSFER",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Image Transfer",
+      "aliases": ["Firmware Image Transfer", "class 18", "CL 18"],
+      "keywords": ["class 18", "cl 18", "image transfer", "image_block_size", "image_transferred_blocks_status", "image_transfer_enabled", "image_transfer_status", "image_to_activate_info"],
+      "domain_tags": ["cosem_class", "firmware_update", "meter_function"],
+      "definition": "COSEM interface class for transferring and activating firmware images.",
+      "class_id": 18,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "image_block_size", "type": "double-long-unsigned", "mandatory": true},
+        {"attribute_id": 3, "name": "image_transferred_blocks_status", "type": "bit-string", "mandatory": true},
+        {"attribute_id": 4, "name": "image_first_not_transferred_block_number", "type": "double-long-unsigned", "mandatory": true},
+        {"attribute_id": 5, "name": "image_transfer_enabled", "type": "boolean", "mandatory": true},
+        {"attribute_id": 6, "name": "image_transfer_status", "type": "enumerated", "mandatory": true},
+        {"attribute_id": 7, "name": "image_to_activate_info", "type": "array", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "image_transfer_initiate"},
+        {"method_id": 2, "name": "image_block_transfer"},
+        {"method_id": 3, "name": "image_verify"},
+        {"method_id": 4, "name": "image_activate"}
+      ],
+      "common_instances": [
+        {"name": "Image Transfer", "obis": "0-0:44.0.0.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-20-ACTIVITY-CALENDAR",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Activity Calendar",
+      "aliases": ["class 20", "CL 20"],
+      "keywords": ["class 20", "cl 20", "activity calendar", "calendar_name_active", "season_profile_active", "week_profile_table_active", "day_profile_table_active", "activate_passive_calendar_time"],
+      "domain_tags": ["cosem_class", "billing_profile", "tariff_calendar"],
+      "definition": "COSEM class for active and passive tariff calendars, seasons, weeks, and day profiles.",
+      "class_id": 20,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "calendar_name_active", "type": "octet-string", "mandatory": true},
+        {"attribute_id": 3, "name": "season_profile_active", "type": "array", "mandatory": true},
+        {"attribute_id": 4, "name": "week_profile_table_active", "type": "array", "mandatory": true},
+        {"attribute_id": 5, "name": "day_profile_table_active", "type": "array", "mandatory": true},
+        {"attribute_id": 6, "name": "calendar_name_passive", "type": "octet-string", "mandatory": true},
+        {"attribute_id": 7, "name": "season_profile_passive", "type": "array", "mandatory": true},
+        {"attribute_id": 8, "name": "week_profile_table_passive", "type": "array", "mandatory": true},
+        {"attribute_id": 9, "name": "day_profile_table_passive", "type": "array", "mandatory": true},
+        {"attribute_id": 10, "name": "activate_passive_calendar_time", "type": "date_time", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "activate_passive_calendar"}
+      ],
+      "common_instances": [
+        {"name": "Activity Calendar", "obis": "0-0:13.0.0.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-22-SCHEDULE",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Schedule",
+      "aliases": ["COSEM Schedule", "class 22", "CL 22"],
+      "keywords": ["class 22", "cl 22", "schedule", "executed_script", "execution_time", "disconnect control scheduler"],
+      "domain_tags": ["cosem_class", "schedule", "meter_function"],
+      "definition": "COSEM class for scheduling script execution at defined times.",
+      "class_id": 22,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "executed_script", "type": "script_definition", "mandatory": true},
+        {"attribute_id": 3, "name": "type", "type": "enum", "mandatory": true},
+        {"attribute_id": 4, "name": "execution_time", "type": "array", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "enable_disable"}
+      ],
+      "common_instances": [
+        {"name": "Disconnect control Scheduler", "obis": "0-0:15.0.1.255"},
+        {"name": "Active end of billing period 1", "obis": "0-0:15.0.0.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-23-IEC-HDLC-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "IEC HDLC Setup",
+      "aliases": ["class 23", "CL 23"],
+      "keywords": ["class 23", "cl 23", "iec hdlc setup", "communication_speed", "window_size_transmit", "window_size_receive"],
+      "domain_tags": ["cosem_class", "communication_profile", "hdlc"],
+      "definition": "COSEM class for IEC HDLC communication setup parameters.",
+      "class_id": 23,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "communication_speed", "type": "enum", "mandatory": true},
+        {"attribute_id": 3, "name": "window_size_transmit", "type": "long-unsigned", "mandatory": true},
+        {"attribute_id": 4, "name": "window_size_receive", "type": "long-unsigned", "mandatory": true},
+        {"attribute_id": 5, "name": "maximum_info_field_length_transmit", "type": "long-unsigned", "mandatory": true},
+        {"attribute_id": 6, "name": "maximum_info_field_length_receive", "type": "long-unsigned", "mandatory": true},
+        {"attribute_id": 7, "name": "inter_octet_time_out", "type": "long-unsigned", "mandatory": true},
+        {"attribute_id": 8, "name": "inactivity_time_out", "type": "long-unsigned", "mandatory": true},
+        {"attribute_id": 9, "name": "device_address", "type": "long-unsigned", "mandatory": true}
+      ],
+      "methods": []
+    },
+    {
+      "id": "KB-L3-IC-64-SECURITY-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Security Setup",
+      "aliases": ["class 64", "CL 64"],
+      "keywords": ["class 64", "cl 64", "security setup", "security_policy", "security_suite", "client_system_title", "server_system_title", "certificate"],
+      "domain_tags": ["cosem_class", "security_policy", "key_management"],
+      "definition": "COSEM interface class for security policy, security suite, system titles, certificates, and key management methods.",
+      "class_id": 64,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "security_policy", "type": "security_policy_type", "mandatory": true},
+        {"attribute_id": 3, "name": "security_suite", "type": "enum", "mandatory": true},
+        {"attribute_id": 4, "name": "client_system_title", "type": "octet-string", "mandatory": true},
+        {"attribute_id": 5, "name": "server_system_title", "type": "octet-string", "mandatory": true},
+        {"attribute_id": 6, "name": "certificates", "type": "array", "mandatory": false}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "security_activate"},
+        {"method_id": 2, "name": "global_key_transfer"},
+        {"method_id": 3, "name": "key_agreement"},
+        {"method_id": 4, "name": "generate_key_pair"},
+        {"method_id": 5, "name": "generate_certificate_request"},
+        {"method_id": 6, "name": "import_certificate"},
+        {"method_id": 7, "name": "export_certificate"},
+        {"method_id": 8, "name": "remove_certificate"}
+      ],
+      "common_instances": [
+        {"name": "Security Setup for remote client association", "obis": "0-0:43.0.5.255"},
+        {"name": "Security Setup for local client association", "obis": "0-0:43.0.3.255"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-70-DISCONNECT-CONTROL",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Disconnect Control",
+      "aliases": ["class 70", "CL 70"],
+      "keywords": ["class 70", "cl 70", "disconnect control", "output_state", "control_state", "control_mode", "remote_disconnect", "remote_reconnect"],
+      "domain_tags": ["cosem_class", "disconnect_control", "meter_function"],
+      "definition": "COSEM interface class for disconnect/reconnect control.",
+      "class_id": 70,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "output_state", "type": "boolean", "mandatory": true},
+        {"attribute_id": 3, "name": "control_state", "type": "enum", "mandatory": true},
+        {"attribute_id": 4, "name": "control_mode", "type": "enum", "mandatory": true}
+      ],
+      "methods": [
+        {"method_id": 1, "name": "remote_disconnect"},
+        {"method_id": 2, "name": "remote_reconnect"}
+      ]
+    },
+    {
+      "id": "KB-L3-IC-122-TCP-UDP-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "TCP-UDP Setup",
+      "aliases": ["TCP UDP Setup", "class 122", "CL 122"],
+      "keywords": ["class 122", "cl 122", "tcp-udp setup", "tcp udp setup", "port", "ip_reference", "mss", "nb_of_sim_conn"],
+      "domain_tags": ["cosem_class", "communication_profile", "ip_network"],
+      "definition": "COSEM class for TCP/UDP transport setup parameters.",
+      "class_id": 122,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "TCP_UDP_port", "type": "long-unsigned", "mandatory": true},
+        {"attribute_id": 3, "name": "IP_reference", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 4, "name": "MSS", "type": "long-unsigned", "mandatory": true},
+        {"attribute_id": 5, "name": "nb_of_sim_conn", "type": "unsigned", "mandatory": true},
+        {"attribute_id": 6, "name": "inactivity_time_out", "type": "long-unsigned", "mandatory": true}
+      ],
+      "methods": []
+    },
+    {
+      "id": "KB-L3-IC-128-IPV4-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "IPv4 Setup",
+      "aliases": ["class 128", "CL 128"],
+      "keywords": ["class 128", "cl 128", "ipv4 setup", "ip_address", "multicast_ip_address", "gateway_ip_address", "subnet_mask"],
+      "domain_tags": ["cosem_class", "communication_profile", "ip_network"],
+      "definition": "COSEM class for IPv4 network setup parameters.",
+      "class_id": 128,
+      "attributes": [
+        {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 2, "name": "DL_reference", "type": "octet-string[6]", "mandatory": true},
+        {"attribute_id": 3, "name": "IP_address", "type": "double-long-unsigned", "mandatory": true},
+        {"attribute_id": 4, "name": "multicast_IP_address", "type": "array", "mandatory": true},
+        {"attribute_id": 5, "name": "IP_options", "type": "array", "mandatory": true},
+        {"attribute_id": 6, "name": "subnet_mask", "type": "double-long-unsigned", "mandatory": true},
+        {"attribute_id": 7, "name": "gateway_IP_address", "type": "double-long-unsigned", "mandatory": true},
+        {"attribute_id": 8, "name": "use_DHCP_flag", "type": "boolean", "mandatory": true},
+        {"attribute_id": 9, "name": "primary_DNS_address", "type": "double-long-unsigned", "mandatory": true},
+        {"attribute_id": 10, "name": "secondary_DNS_address", "type": "double-long-unsigned", "mandatory": true}
+      ],
+      "methods": []
+    }
+  ]
+}
+

@@ -1,0 +1,360 @@
+{
+  "kb_id": "energy_metering",
+  "name": "Energy Metering Domain Knowledge Base",
+  "version": "0.1.0",
+  "description": "Seed knowledge base for electricity metering standards, smart meters, DLMS/COSEM, communication protocols, metrology, and power quality requirements.",
+  "entries": [
+    {
+      "id": "KB-PROTO-DLMS",
+      "type": "protocol",
+      "name": "DLMS",
+      "aliases": ["Device Language Message Specification", "xDLMS"],
+      "keywords": ["dlms", "xdlms", "device language message specification"],
+      "domain_tags": ["dlms_cosem", "communication_protocol", "data_exchange"],
+      "definition": "Protocol suite used for utility meter data exchange and device management."
+    },
+    {
+      "id": "KB-PROTO-COSEM",
+      "type": "protocol",
+      "name": "COSEM",
+      "aliases": ["Companion Specification for Energy Metering"],
+      "keywords": ["cosem", "companion specification for energy metering", "cosem object", "interface class"],
+      "domain_tags": ["dlms_cosem", "data_model", "cosem_object"],
+      "definition": "Object model used with DLMS for representing metering data, configuration, and control functions."
+    },
+    {
+      "id": "KB-PROTO-OBIS",
+      "type": "code_system",
+      "name": "OBIS",
+      "aliases": ["Object Identification System", "OBIS Code"],
+      "keywords": ["obis", "obis code", "object identification system", "logical name"],
+      "domain_tags": ["obis_code", "data_model"],
+      "definition": "Code system used to identify measured quantities and meter data objects."
+    },
+    {
+      "id": "KB-PROTO-ABNT14522",
+      "type": "standard",
+      "name": "ABNT NBR 14522",
+      "aliases": ["NBR 14522", "ABNT 14522"],
+      "keywords": ["abnt nbr 14522", "nbr 14522", "abnt 14522"],
+      "domain_tags": ["standard", "meter_communication"],
+      "definition": "Brazilian standard commonly referenced for electronic energy meter communication and data handling."
+    },
+    {
+      "id": "KB-PROTO-ABNT14519",
+      "type": "standard",
+      "name": "ABNT NBR 14519",
+      "aliases": ["NBR 14519", "ABNT 14519"],
+      "keywords": ["abnt nbr 14519", "nbr 14519", "abnt 14519", "optical port"],
+      "domain_tags": ["standard", "meter_interface"],
+      "definition": "Brazilian standard referenced for electronic meter interface characteristics such as optical communication."
+    },
+    {
+      "id": "KB-PROTO-IEC62056",
+      "type": "standard",
+      "name": "IEC 62056",
+      "aliases": ["DLMS/COSEM suite"],
+      "keywords": ["iec 62056", "iec 62056-5-3", "iec 62056-6-1", "iec 62056-6-2", "iec 62056-8-4"],
+      "domain_tags": ["standard", "dlms_cosem"],
+      "definition": "International standard family for electricity metering data exchange, including DLMS/COSEM application layer, OBIS, and interface classes."
+    },
+    {
+      "id": "KB-PROTO-RTM587",
+      "type": "regulation",
+      "name": "RTM 587/2012",
+      "aliases": ["RTM587", "RTM587/2012"],
+      "keywords": ["rtm 587", "rtm587", "rtm587/2012", "inmetro"],
+      "domain_tags": ["metrology", "regulation", "inmetro"],
+      "definition": "Brazilian metrological regulation often referenced for electricity meters."
+    },
+    {
+      "id": "KB-COMM-HDLC",
+      "type": "communication_profile",
+      "name": "HDLC",
+      "aliases": ["High-Level Data Link Control"],
+      "keywords": ["hdlc", "high-level data link control", "iec 62056-4-7"],
+      "domain_tags": ["communication_profile", "data_link"],
+      "definition": "Data link protocol used by some DLMS/COSEM communication profiles."
+    },
+    {
+      "id": "KB-COMM-PLC-PRIME",
+      "type": "communication_profile",
+      "name": "PLC-PRIME",
+      "aliases": ["PRIME", "Power Line Communication PRIME"],
+      "keywords": ["plc-prime", "plc prime", "prime", "power line communications", "power line communication"],
+      "domain_tags": ["communication_profile", "plc"],
+      "definition": "Power-line communication profile for smart metering networks."
+    },
+    {
+      "id": "KB-COMM-WISUN",
+      "type": "communication_profile",
+      "name": "Wi-SUN",
+      "aliases": ["RF Wi-SUN", "Wireless Smart Utility Network"],
+      "keywords": ["wi-sun", "wisun", "rf-wi-sun", "wireless smart utility network"],
+      "domain_tags": ["communication_profile", "rf_mesh"],
+      "definition": "Wireless communication profile used in smart utility networks."
+    },
+    {
+      "id": "KB-COMM-LORAWAN",
+      "type": "communication_profile",
+      "name": "LoRaWAN",
+      "aliases": ["RF LoRaWAN", "LoRa"],
+      "keywords": ["lorawan", "lora", "rf-lorawan"],
+      "domain_tags": ["communication_profile", "lpwan"],
+      "definition": "Low-power wide-area network profile sometimes used for remote metering."
+    },
+    {
+      "id": "KB-COMM-LTE-CATM",
+      "type": "communication_profile",
+      "name": "LTE CAT-M",
+      "aliases": ["LTE Cat M1", "CAT-M1", "NB-IoT", "NB"],
+      "keywords": ["lte", "cat-m", "cat-m1", "nb-iot", "nb iot", "nic-cat-m1", "nic"],
+      "domain_tags": ["communication_profile", "cellular", "nic"],
+      "definition": "Cellular communication technologies and network interface cards used for remote metering."
+    },
+    {
+      "id": "KB-OBJ-SAP",
+      "type": "identifier",
+      "name": "SAP",
+      "aliases": ["Service Access Point"],
+      "keywords": ["sap", "sap = 0x01", "sap = 0x02", "sap = 0x03", "service access point"],
+      "domain_tags": ["association", "logical_device"],
+      "definition": "Service access point identifier for DLMS/COSEM clients and logical devices."
+    },
+    {
+      "id": "KB-OBJ-LOGICAL-DEVICE",
+      "type": "object",
+      "name": "Logical Device",
+      "aliases": ["Management Logical Device", "Metering Logical Device"],
+      "keywords": ["logical device", "management logical device", "measuring logic device", "metering logical device"],
+      "domain_tags": ["logical_device", "data_model"],
+      "definition": "Abstract entity inside a physical meter that exposes functionality through COSEM objects."
+    },
+    {
+      "id": "KB-OBJ-ASSOCIATION",
+      "type": "object",
+      "name": "Association",
+      "aliases": ["Application Association", "LN Association"],
+      "keywords": ["association", "application association", "ln association", "local association", "remote association"],
+      "domain_tags": ["association", "access_control"],
+      "definition": "Logical connection between a DLMS/COSEM client and server with defined access rights and security level."
+    },
+    {
+      "id": "KB-SEC-HLS",
+      "type": "security",
+      "name": "High Level Security",
+      "aliases": ["HLS"],
+      "keywords": ["hls", "high level security", "high level of security"],
+      "domain_tags": ["security_policy", "authentication"],
+      "definition": "DLMS/COSEM high-level authentication mechanism."
+    },
+    {
+      "id": "KB-SEC-LLS",
+      "type": "security",
+      "name": "Low Level Security",
+      "aliases": ["LLS"],
+      "keywords": ["lls", "low level security", "password access"],
+      "domain_tags": ["security_policy", "authentication"],
+      "definition": "DLMS/COSEM low-level authentication mechanism, commonly password-based."
+    },
+    {
+      "id": "KB-SEC-AESGCM",
+      "type": "security",
+      "name": "AES-GCM",
+      "aliases": ["AES-GCM-128", "AES-GCM-256"],
+      "keywords": ["aes-gcm", "aes-gcm-128", "aes-gcm-256", "authenticated encryption"],
+      "domain_tags": ["security_policy", "encryption"],
+      "definition": "Authenticated encryption algorithm referenced in DLMS/COSEM security suites."
+    },
+    {
+      "id": "KB-SEC-ECDSA",
+      "type": "security",
+      "name": "ECDSA",
+      "aliases": ["Elliptic Curve Digital Signature Algorithm"],
+      "keywords": ["ecdsa", "digital signature", "p-256", "p-384"],
+      "domain_tags": ["security_policy", "digital_signature"],
+      "definition": "Digital signature algorithm used in DLMS/COSEM security suites."
+    },
+    {
+      "id": "KB-SEC-ECDH",
+      "type": "security",
+      "name": "ECDH",
+      "aliases": ["Elliptic Curve Diffie-Hellman"],
+      "keywords": ["ecdh", "key agreement", "diffie-hellman"],
+      "domain_tags": ["security_policy", "key_management"],
+      "definition": "Key agreement method used in DLMS/COSEM security suites."
+    },
+    {
+      "id": "KB-METER-SMART",
+      "type": "meter_type",
+      "name": "Smart Meter",
+      "aliases": ["Smart Electricity Meter", "Medidor SMART"],
+      "keywords": ["smart meter", "smart electricity meter", "meter intelligent", "medidor smart"],
+      "domain_tags": ["meter_function", "smart_meter"],
+      "definition": "Electricity meter with advanced measurement, communication, event logging, and remote management functions."
+    },
+    {
+      "id": "KB-METER-SMF",
+      "type": "application",
+      "name": "SMF",
+      "aliases": ["Sistema de Medição de Faturamento", "Billing Measurement System"],
+      "keywords": ["smf", "sistema de medição de faturamento", "billing measurement"],
+      "domain_tags": ["billing_profile", "metering_system"],
+      "definition": "Billing measurement system used in regulated electricity metering contexts."
+    },
+    {
+      "id": "KB-DATA-REGISTER",
+      "type": "data_object",
+      "name": "Register",
+      "aliases": ["Energy Register", "Demand Register"],
+      "keywords": ["register", "energy register", "demand register", "maximum demand"],
+      "domain_tags": ["register", "measurement_data"],
+      "definition": "Meter data object used to store measured energy, demand, or related values."
+    },
+    {
+      "id": "KB-DATA-BILLING-PROFILE",
+      "type": "data_object",
+      "name": "Billing Profile",
+      "aliases": ["Billing Period", "Period of Billing"],
+      "keywords": ["billing profile", "periods of billing", "billing period", "faturamento"],
+      "domain_tags": ["billing_profile", "measurement_data"],
+      "definition": "Profile storing metering quantities related to billing periods."
+    },
+    {
+      "id": "KB-DATA-LOAD-PROFILE",
+      "type": "data_object",
+      "name": "Load Profile",
+      "aliases": ["Load Curve", "Mass Memory"],
+      "keywords": ["load profile", "load curve", "mass memory", "memória de massa"],
+      "domain_tags": ["load_profile", "measurement_data"],
+      "definition": "Time-series profile for measured or calculated quantities over configured intervals."
+    },
+    {
+      "id": "KB-DATA-SNAPSHOT",
+      "type": "data_object",
+      "name": "Snapshot",
+      "aliases": ["Values Snapshot"],
+      "keywords": ["snapshot", "values snapshots", "value snapshots"],
+      "domain_tags": ["snapshot", "measurement_data"],
+      "definition": "Recorded instantaneous or captured values from meter objects."
+    },
+    {
+      "id": "KB-DATA-EVENT",
+      "type": "data_object",
+      "name": "Event",
+      "aliases": ["Event Log", "Event Register"],
+      "keywords": ["event", "events", "event log", "processing event", "eventnotification"],
+      "domain_tags": ["event", "log"],
+      "definition": "Meter log entry representing occurrence of a defined operational, security, quality, or irregularity event."
+    },
+    {
+      "id": "KB-DATA-ALARM",
+      "type": "data_object",
+      "name": "Alarm",
+      "aliases": ["Alarm Log"],
+      "keywords": ["alarm", "alarms", "alarm handling", "alarm log"],
+      "domain_tags": ["alarm", "log"],
+      "definition": "Meter indication for abnormal conditions that may need attention."
+    },
+    {
+      "id": "KB-DATA-ERROR",
+      "type": "data_object",
+      "name": "Error",
+      "aliases": ["Error Log"],
+      "keywords": ["error", "errors", "error handling", "error log"],
+      "domain_tags": ["error", "log"],
+      "definition": "Meter record for exceptional or failed operations."
+    },
+    {
+      "id": "KB-PQ-QEE",
+      "type": "power_quality",
+      "name": "QEE",
+      "aliases": ["Quality of Energy", "Power Quality"],
+      "keywords": ["qee", "quality of energy", "power quality", "prodist-8", "voltage quality"],
+      "domain_tags": ["power_quality"],
+      "definition": "Energy or power quality indicators and measurements."
+    },
+    {
+      "id": "KB-PQ-VOLTAGE",
+      "type": "measurement_quantity",
+      "name": "Voltage",
+      "aliases": ["Phase Voltage", "Line Voltage"],
+      "keywords": ["voltage", "phase voltage", "line voltage", "v"],
+      "domain_tags": ["power_quality", "measurement_quantity"],
+      "definition": "Electrical potential measurement, often phase or line related."
+    },
+    {
+      "id": "KB-PQ-CURRENT",
+      "type": "measurement_quantity",
+      "name": "Current",
+      "aliases": ["Phase Current"],
+      "keywords": ["current", "phase current", "a"],
+      "domain_tags": ["measurement_quantity"],
+      "definition": "Electrical current measurement."
+    },
+    {
+      "id": "KB-PQ-ACTIVE-ENERGY",
+      "type": "measurement_quantity",
+      "name": "Active Energy",
+      "aliases": ["Wh", "kWh"],
+      "keywords": ["active energy", "wh", "kwh", "direct active", "reverse active"],
+      "domain_tags": ["measurement_quantity", "active_energy"],
+      "definition": "Measured active energy, usually expressed in Wh or kWh."
+    },
+    {
+      "id": "KB-PQ-REACTIVE-ENERGY",
+      "type": "measurement_quantity",
+      "name": "Reactive Energy",
+      "aliases": ["varh", "kvarh"],
+      "keywords": ["reactive energy", "varh", "kvarh", "reactive power", "ufer", "dmcr"],
+      "domain_tags": ["measurement_quantity", "reactive_energy"],
+      "definition": "Measured reactive energy or related reactive quantities."
+    },
+    {
+      "id": "KB-FUNC-FIRMWARE",
+      "type": "function",
+      "name": "Firmware Update",
+      "aliases": ["Firmware Upgrade"],
+      "keywords": ["firmware", "update of firmware", "firmware changed", "firmware version"],
+      "domain_tags": ["firmware_update", "meter_function"],
+      "definition": "Process or object set related to updating meter firmware and recording firmware changes."
+    },
+    {
+      "id": "KB-FUNC-DISCONNECT",
+      "type": "function",
+      "name": "Disconnect Control",
+      "aliases": ["Remote Disconnect", "Reconnect"],
+      "keywords": ["disconnect control", "disconnection", "reconnection", "cut", "relay"],
+      "domain_tags": ["disconnect_control", "meter_function"],
+      "definition": "Meter function for remote or local disconnection and reconnection control."
+    },
+    {
+      "id": "KB-FUNC-CLOCK",
+      "type": "function",
+      "name": "Clock",
+      "aliases": ["Calendar Clock", "Time Clock"],
+      "keywords": ["clock", "calendar", "time", "daylight saving", "leap year"],
+      "domain_tags": ["clock", "meter_function"],
+      "definition": "Meter clock and calendar function used for time-based records and tariff periods."
+    },
+    {
+      "id": "KB-FUNC-ACTIVITY-CALENDAR",
+      "type": "function",
+      "name": "Activity Calendar",
+      "aliases": ["Special Day Table", "Tariff Calendar"],
+      "keywords": ["activity calendar", "special day", "day table", "tariff", "tariff period"],
+      "domain_tags": ["billing_profile", "tariff_calendar"],
+      "definition": "Calendar and special day configuration used for tariff periods and billing behavior."
+    },
+    {
+      "id": "KB-IRREGULARITY-BYPASS",
+      "type": "irregularity",
+      "name": "Bypass",
+      "aliases": ["Energy Bypass", "Power Bypass"],
+      "keywords": ["bypass", "irregularity", "neutral loss", "loss of neutral", "magnetic field", "tamper"],
+      "domain_tags": ["irregularity", "tamper_detection"],
+      "definition": "Irregularity or tamper-related condition detected by the meter."
+    }
+  ]
+}
+

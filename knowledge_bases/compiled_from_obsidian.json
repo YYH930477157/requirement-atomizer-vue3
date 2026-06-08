@@ -1,0 +1,3604 @@
+{
+  "kb_id": "obsidian_energy_metering",
+  "name": "Compiled Obsidian Energy Metering Knowledge Base",
+  "version": "0.1.0",
+  "description": "Compiled from Obsidian Markdown notes.",
+  "entries": [
+    {
+      "id": "KB-PROTO-ABNT14519",
+      "type": "standard",
+      "layer": "term",
+      "name": "ABNT NBR 14519",
+      "aliases": [
+        "NBR 14519",
+        "ABNT 14519"
+      ],
+      "keywords": [
+        "abnt nbr 14519",
+        "nbr 14519",
+        "abnt 14519",
+        "optical port"
+      ],
+      "domain_tags": [
+        "standard",
+        "meter_interface"
+      ],
+      "definition": "Brazilian standard referenced for electronic meter interface characteristics such as optical communication.",
+      "relations": []
+    },
+    {
+      "id": "KB-PROTO-ABNT14522",
+      "type": "standard",
+      "layer": "term",
+      "name": "ABNT NBR 14522",
+      "aliases": [
+        "NBR 14522",
+        "ABNT 14522"
+      ],
+      "keywords": [
+        "abnt nbr 14522",
+        "nbr 14522",
+        "abnt 14522"
+      ],
+      "domain_tags": [
+        "standard",
+        "meter_communication"
+      ],
+      "definition": "Brazilian standard commonly referenced for electronic energy meter communication and data handling.",
+      "relations": []
+    },
+    {
+      "id": "KB-PQ-ACTIVE-ENERGY",
+      "type": "measurement_quantity",
+      "layer": "term",
+      "name": "Active Energy",
+      "aliases": [
+        "Wh",
+        "kWh"
+      ],
+      "keywords": [
+        "active energy",
+        "wh",
+        "kwh",
+        "direct active",
+        "reverse active"
+      ],
+      "domain_tags": [
+        "measurement_quantity",
+        "active_energy"
+      ],
+      "definition": "Measured active energy, usually expressed in Wh or kWh.",
+      "relations": []
+    },
+    {
+      "id": "KB-FUNC-ACTIVITY-CALENDAR",
+      "type": "function",
+      "layer": "term",
+      "name": "Activity Calendar",
+      "aliases": [
+        "Special Day Table",
+        "Tariff Calendar"
+      ],
+      "keywords": [
+        "activity calendar",
+        "special day",
+        "day table",
+        "tariff",
+        "tariff period"
+      ],
+      "domain_tags": [
+        "billing_profile",
+        "tariff_calendar"
+      ],
+      "definition": "Calendar and special day configuration used for tariff periods and billing behavior.",
+      "relations": []
+    },
+    {
+      "id": "KB-SEC-AESGCM",
+      "type": "security",
+      "layer": "term",
+      "name": "AES-GCM",
+      "aliases": [
+        "AES-GCM-128",
+        "AES-GCM-256"
+      ],
+      "keywords": [
+        "aes-gcm",
+        "aes-gcm-128",
+        "aes-gcm-256",
+        "authenticated encryption"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "encryption"
+      ],
+      "definition": "Authenticated encryption algorithm referenced in DLMS/COSEM security suites.",
+      "relations": []
+    },
+    {
+      "id": "KB-DATA-ALARM",
+      "type": "data_object",
+      "layer": "term",
+      "name": "Alarm",
+      "aliases": [
+        "Alarm Log"
+      ],
+      "keywords": [
+        "alarm",
+        "alarms",
+        "alarm handling",
+        "alarm log"
+      ],
+      "domain_tags": [
+        "alarm",
+        "log"
+      ],
+      "definition": "Meter indication for abnormal conditions that may need attention.",
+      "relations": []
+    },
+    {
+      "id": "KB-OBJ-ASSOCIATION",
+      "type": "object",
+      "layer": "term",
+      "name": "Association",
+      "aliases": [
+        "Application Association",
+        "LN Association"
+      ],
+      "keywords": [
+        "association",
+        "application association",
+        "ln association",
+        "local association",
+        "remote association"
+      ],
+      "domain_tags": [
+        "association",
+        "access_control"
+      ],
+      "definition": "Logical connection between a DLMS/COSEM client and server with defined access rights and security level.",
+      "relations": []
+    },
+    {
+      "id": "KB-DATA-BILLING-PROFILE",
+      "type": "data_object",
+      "layer": "term",
+      "name": "Billing Profile",
+      "aliases": [
+        "Billing Period",
+        "Period of Billing"
+      ],
+      "keywords": [
+        "billing profile",
+        "periods of billing",
+        "billing period",
+        "faturamento"
+      ],
+      "domain_tags": [
+        "billing_profile",
+        "measurement_data"
+      ],
+      "definition": "Profile storing metering quantities related to billing periods.",
+      "relations": []
+    },
+    {
+      "id": "KB-IRREGULARITY-BYPASS",
+      "type": "irregularity",
+      "layer": "term",
+      "name": "Bypass",
+      "aliases": [
+        "Energy Bypass",
+        "Power Bypass"
+      ],
+      "keywords": [
+        "bypass",
+        "irregularity",
+        "neutral loss",
+        "loss of neutral",
+        "magnetic field",
+        "tamper"
+      ],
+      "domain_tags": [
+        "irregularity",
+        "tamper_detection"
+      ],
+      "definition": "Irregularity or tamper-related condition detected by the meter.",
+      "relations": []
+    },
+    {
+      "id": "KB-FUNC-CLOCK",
+      "type": "function",
+      "layer": "term",
+      "name": "Clock",
+      "aliases": [
+        "Calendar Clock",
+        "Time Clock"
+      ],
+      "keywords": [
+        "clock",
+        "calendar",
+        "time",
+        "daylight saving",
+        "leap year"
+      ],
+      "domain_tags": [
+        "clock",
+        "meter_function"
+      ],
+      "definition": "Meter clock and calendar function used for time-based records and tariff periods.",
+      "relations": []
+    },
+    {
+      "id": "KB-PROTO-COSEM",
+      "type": "protocol",
+      "layer": "term",
+      "name": "COSEM",
+      "aliases": [
+        "Companion Specification for Energy Metering"
+      ],
+      "keywords": [
+        "cosem",
+        "companion specification for energy metering",
+        "cosem object",
+        "interface class"
+      ],
+      "domain_tags": [
+        "dlms_cosem",
+        "data_model",
+        "cosem_object"
+      ],
+      "definition": "Object model used with DLMS for representing metering data, configuration, and control functions.",
+      "relations": []
+    },
+    {
+      "id": "KB-PQ-CURRENT",
+      "type": "measurement_quantity",
+      "layer": "term",
+      "name": "Current",
+      "aliases": [
+        "Phase Current"
+      ],
+      "keywords": [
+        "current",
+        "phase current",
+        "a"
+      ],
+      "domain_tags": [
+        "measurement_quantity"
+      ],
+      "definition": "Electrical current measurement.",
+      "relations": []
+    },
+    {
+      "id": "KB-FUNC-DISCONNECT",
+      "type": "function",
+      "layer": "term",
+      "name": "Disconnect Control",
+      "aliases": [
+        "Remote Disconnect",
+        "Reconnect"
+      ],
+      "keywords": [
+        "disconnect control",
+        "disconnection",
+        "reconnection",
+        "cut",
+        "relay"
+      ],
+      "domain_tags": [
+        "disconnect_control",
+        "meter_function"
+      ],
+      "definition": "Meter function for remote or local disconnection and reconnection control.",
+      "relations": []
+    },
+    {
+      "id": "KB-PROTO-DLMS",
+      "type": "protocol",
+      "layer": "term",
+      "name": "DLMS",
+      "aliases": [
+        "Device Language Message Specification",
+        "xDLMS"
+      ],
+      "keywords": [
+        "dlms",
+        "xdlms",
+        "device language message specification"
+      ],
+      "domain_tags": [
+        "dlms_cosem",
+        "communication_protocol",
+        "data_exchange"
+      ],
+      "definition": "Protocol suite used for utility meter data exchange and device management.",
+      "relations": []
+    },
+    {
+      "id": "KB-SEC-ECDH",
+      "type": "security",
+      "layer": "term",
+      "name": "ECDH",
+      "aliases": [
+        "Elliptic Curve Diffie-Hellman"
+      ],
+      "keywords": [
+        "ecdh",
+        "key agreement",
+        "diffie-hellman"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "key_management"
+      ],
+      "definition": "Key agreement method used in DLMS/COSEM security suites.",
+      "relations": []
+    },
+    {
+      "id": "KB-SEC-ECDSA",
+      "type": "security",
+      "layer": "term",
+      "name": "ECDSA",
+      "aliases": [
+        "Elliptic Curve Digital Signature Algorithm"
+      ],
+      "keywords": [
+        "ecdsa",
+        "digital signature",
+        "p-256",
+        "p-384"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "digital_signature"
+      ],
+      "definition": "Digital signature algorithm used in DLMS/COSEM security suites.",
+      "relations": []
+    },
+    {
+      "id": "KB-DATA-ERROR",
+      "type": "data_object",
+      "layer": "term",
+      "name": "Error",
+      "aliases": [
+        "Error Log"
+      ],
+      "keywords": [
+        "error",
+        "errors",
+        "error handling",
+        "error log"
+      ],
+      "domain_tags": [
+        "error",
+        "log"
+      ],
+      "definition": "Meter record for exceptional or failed operations.",
+      "relations": []
+    },
+    {
+      "id": "KB-DATA-EVENT",
+      "type": "data_object",
+      "layer": "term",
+      "name": "Event",
+      "aliases": [
+        "Event Log",
+        "Event Register"
+      ],
+      "keywords": [
+        "event",
+        "events",
+        "event log",
+        "processing event",
+        "eventnotification"
+      ],
+      "domain_tags": [
+        "event",
+        "log"
+      ],
+      "definition": "Meter log entry representing occurrence of a defined operational, security, quality, or irregularity event.",
+      "relations": []
+    },
+    {
+      "id": "KB-FUNC-FIRMWARE",
+      "type": "function",
+      "layer": "term",
+      "name": "Firmware Update",
+      "aliases": [
+        "Firmware Upgrade"
+      ],
+      "keywords": [
+        "firmware",
+        "update of firmware",
+        "firmware changed",
+        "firmware version"
+      ],
+      "domain_tags": [
+        "firmware_update",
+        "meter_function"
+      ],
+      "definition": "Process or object set related to updating meter firmware and recording firmware changes.",
+      "relations": []
+    },
+    {
+      "id": "KB-COMM-HDLC",
+      "type": "communication_profile",
+      "layer": "term",
+      "name": "HDLC",
+      "aliases": [
+        "High-Level Data Link Control"
+      ],
+      "keywords": [
+        "hdlc",
+        "high-level data link control",
+        "iec 62056-4-7"
+      ],
+      "domain_tags": [
+        "communication_profile",
+        "data_link"
+      ],
+      "definition": "Data link protocol used by some DLMS/COSEM communication profiles.",
+      "relations": []
+    },
+    {
+      "id": "KB-SEC-HLS",
+      "type": "security",
+      "layer": "term",
+      "name": "High Level Security",
+      "aliases": [
+        "HLS"
+      ],
+      "keywords": [
+        "hls",
+        "high level security",
+        "high level of security"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "authentication"
+      ],
+      "definition": "DLMS/COSEM high-level authentication mechanism.",
+      "relations": []
+    },
+    {
+      "id": "KB-PROTO-IEC62056",
+      "type": "standard",
+      "layer": "term",
+      "name": "IEC 62056",
+      "aliases": [
+        "DLMS/COSEM suite"
+      ],
+      "keywords": [
+        "iec 62056",
+        "iec 62056-5-3",
+        "iec 62056-6-1",
+        "iec 62056-6-2",
+        "iec 62056-8-4"
+      ],
+      "domain_tags": [
+        "standard",
+        "dlms_cosem"
+      ],
+      "definition": "International standard family for electricity metering data exchange, including DLMS/COSEM application layer, OBIS, and interface classes.",
+      "relations": []
+    },
+    {
+      "id": "KB-DATA-LOAD-PROFILE",
+      "type": "data_object",
+      "layer": "term",
+      "name": "Load Profile",
+      "aliases": [
+        "Load Curve",
+        "Mass Memory"
+      ],
+      "keywords": [
+        "load profile",
+        "load curve",
+        "mass memory",
+        "memória de massa"
+      ],
+      "domain_tags": [
+        "load_profile",
+        "measurement_data"
+      ],
+      "definition": "Time-series profile for measured or calculated quantities over configured intervals.",
+      "relations": []
+    },
+    {
+      "id": "KB-OBJ-LOGICAL-DEVICE",
+      "type": "object",
+      "layer": "term",
+      "name": "Logical Device",
+      "aliases": [
+        "Management Logical Device",
+        "Metering Logical Device"
+      ],
+      "keywords": [
+        "logical device",
+        "management logical device",
+        "measuring logic device",
+        "metering logical device"
+      ],
+      "domain_tags": [
+        "logical_device",
+        "data_model"
+      ],
+      "definition": "Abstract entity inside a physical meter that exposes functionality through COSEM objects.",
+      "relations": []
+    },
+    {
+      "id": "KB-COMM-LORAWAN",
+      "type": "communication_profile",
+      "layer": "term",
+      "name": "LoRaWAN",
+      "aliases": [
+        "RF LoRaWAN",
+        "LoRa"
+      ],
+      "keywords": [
+        "lorawan",
+        "lora",
+        "rf-lorawan"
+      ],
+      "domain_tags": [
+        "communication_profile",
+        "lpwan"
+      ],
+      "definition": "Low-power wide-area network profile sometimes used for remote metering.",
+      "relations": []
+    },
+    {
+      "id": "KB-SEC-LLS",
+      "type": "security",
+      "layer": "term",
+      "name": "Low Level Security",
+      "aliases": [
+        "LLS"
+      ],
+      "keywords": [
+        "lls",
+        "low level security",
+        "password access"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "authentication"
+      ],
+      "definition": "DLMS/COSEM low-level authentication mechanism, commonly password-based.",
+      "relations": []
+    },
+    {
+      "id": "KB-COMM-LTE-CATM",
+      "type": "communication_profile",
+      "layer": "term",
+      "name": "LTE CAT-M",
+      "aliases": [
+        "LTE Cat M1",
+        "CAT-M1",
+        "NB-IoT",
+        "NB"
+      ],
+      "keywords": [
+        "lte",
+        "cat-m",
+        "cat-m1",
+        "nb-iot",
+        "nb iot",
+        "nic-cat-m1",
+        "nic"
+      ],
+      "domain_tags": [
+        "communication_profile",
+        "cellular",
+        "nic"
+      ],
+      "definition": "Cellular communication technologies and network interface cards used for remote metering.",
+      "relations": []
+    },
+    {
+      "id": "KB-PROTO-OBIS",
+      "type": "code_system",
+      "layer": "term",
+      "name": "OBIS",
+      "aliases": [
+        "Object Identification System",
+        "OBIS Code"
+      ],
+      "keywords": [
+        "obis",
+        "obis code",
+        "object identification system",
+        "logical name"
+      ],
+      "domain_tags": [
+        "obis_code",
+        "data_model"
+      ],
+      "definition": "Code system used to identify measured quantities and meter data objects.",
+      "relations": []
+    },
+    {
+      "id": "KB-COMM-PLC-PRIME",
+      "type": "communication_profile",
+      "layer": "term",
+      "name": "PLC-PRIME",
+      "aliases": [
+        "PRIME",
+        "Power Line Communication PRIME"
+      ],
+      "keywords": [
+        "plc-prime",
+        "plc prime",
+        "prime",
+        "power line communications",
+        "power line communication"
+      ],
+      "domain_tags": [
+        "communication_profile",
+        "plc"
+      ],
+      "definition": "Power-line communication profile for smart metering networks.",
+      "relations": []
+    },
+    {
+      "id": "KB-PQ-QEE",
+      "type": "power_quality",
+      "layer": "term",
+      "name": "QEE",
+      "aliases": [
+        "Quality of Energy",
+        "Power Quality"
+      ],
+      "keywords": [
+        "qee",
+        "quality of energy",
+        "power quality",
+        "prodist-8",
+        "voltage quality"
+      ],
+      "domain_tags": [
+        "power_quality"
+      ],
+      "definition": "Energy or power quality indicators and measurements.",
+      "relations": []
+    },
+    {
+      "id": "KB-PQ-REACTIVE-ENERGY",
+      "type": "measurement_quantity",
+      "layer": "term",
+      "name": "Reactive Energy",
+      "aliases": [
+        "varh",
+        "kvarh"
+      ],
+      "keywords": [
+        "reactive energy",
+        "varh",
+        "kvarh",
+        "reactive power",
+        "ufer",
+        "dmcr"
+      ],
+      "domain_tags": [
+        "measurement_quantity",
+        "reactive_energy"
+      ],
+      "definition": "Measured reactive energy or related reactive quantities.",
+      "relations": []
+    },
+    {
+      "id": "KB-DATA-REGISTER",
+      "type": "data_object",
+      "layer": "term",
+      "name": "Register",
+      "aliases": [
+        "Energy Register",
+        "Demand Register"
+      ],
+      "keywords": [
+        "register",
+        "energy register",
+        "demand register",
+        "maximum demand"
+      ],
+      "domain_tags": [
+        "register",
+        "measurement_data"
+      ],
+      "definition": "Meter data object used to store measured energy, demand, or related values.",
+      "relations": []
+    },
+    {
+      "id": "KB-PROTO-RTM587",
+      "type": "regulation",
+      "layer": "term",
+      "name": "RTM 587/2012",
+      "aliases": [
+        "RTM587",
+        "RTM587/2012"
+      ],
+      "keywords": [
+        "rtm 587",
+        "rtm587",
+        "rtm587/2012",
+        "inmetro"
+      ],
+      "domain_tags": [
+        "metrology",
+        "regulation",
+        "inmetro"
+      ],
+      "definition": "Brazilian metrological regulation often referenced for electricity meters.",
+      "relations": []
+    },
+    {
+      "id": "KB-OBJ-SAP",
+      "type": "identifier",
+      "layer": "term",
+      "name": "SAP",
+      "aliases": [
+        "Service Access Point"
+      ],
+      "keywords": [
+        "sap",
+        "sap = 0x01",
+        "sap = 0x02",
+        "sap = 0x03",
+        "service access point"
+      ],
+      "domain_tags": [
+        "association",
+        "logical_device"
+      ],
+      "definition": "Service access point identifier for DLMS/COSEM clients and logical devices.",
+      "relations": []
+    },
+    {
+      "id": "KB-METER-SMART",
+      "type": "meter_type",
+      "layer": "term",
+      "name": "Smart Meter",
+      "aliases": [
+        "Smart Electricity Meter",
+        "Medidor SMART"
+      ],
+      "keywords": [
+        "smart meter",
+        "smart electricity meter",
+        "meter intelligent",
+        "medidor smart"
+      ],
+      "domain_tags": [
+        "meter_function",
+        "smart_meter"
+      ],
+      "definition": "Electricity meter with advanced measurement, communication, event logging, and remote management functions.",
+      "relations": []
+    },
+    {
+      "id": "KB-METER-SMF",
+      "type": "application",
+      "layer": "term",
+      "name": "SMF",
+      "aliases": [
+        "Sistema de Medição de Faturamento",
+        "Billing Measurement System"
+      ],
+      "keywords": [
+        "smf",
+        "sistema de medição de faturamento",
+        "billing measurement"
+      ],
+      "domain_tags": [
+        "billing_profile",
+        "metering_system"
+      ],
+      "definition": "Billing measurement system used in regulated electricity metering contexts.",
+      "relations": []
+    },
+    {
+      "id": "KB-DATA-SNAPSHOT",
+      "type": "data_object",
+      "layer": "term",
+      "name": "Snapshot",
+      "aliases": [
+        "Values Snapshot"
+      ],
+      "keywords": [
+        "snapshot",
+        "values snapshots",
+        "value snapshots"
+      ],
+      "domain_tags": [
+        "snapshot",
+        "measurement_data"
+      ],
+      "definition": "Recorded instantaneous or captured values from meter objects.",
+      "relations": []
+    },
+    {
+      "id": "KB-PQ-VOLTAGE",
+      "type": "measurement_quantity",
+      "layer": "term",
+      "name": "Voltage",
+      "aliases": [
+        "Phase Voltage",
+        "Line Voltage"
+      ],
+      "keywords": [
+        "voltage",
+        "phase voltage",
+        "line voltage",
+        "v"
+      ],
+      "domain_tags": [
+        "power_quality",
+        "measurement_quantity"
+      ],
+      "definition": "Electrical potential measurement, often phase or line related.",
+      "relations": []
+    },
+    {
+      "id": "KB-COMM-WISUN",
+      "type": "communication_profile",
+      "layer": "term",
+      "name": "Wi-SUN",
+      "aliases": [
+        "RF Wi-SUN",
+        "Wireless Smart Utility Network"
+      ],
+      "keywords": [
+        "wi-sun",
+        "wisun",
+        "rf-wi-sun",
+        "wireless smart utility network"
+      ],
+      "domain_tags": [
+        "communication_profile",
+        "rf_mesh"
+      ],
+      "definition": "Wireless communication profile used in smart utility networks.",
+      "relations": []
+    },
+    {
+      "id": "KB-L2-OBJECT-ASSOCIATION-LN",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "Association LN",
+      "aliases": [
+        "LN association object"
+      ],
+      "keywords": [
+        "association ln",
+        "object_list",
+        "associated_partners_id",
+        "application_context_name",
+        "0-0:40.0.0.255",
+        "0000280000ff"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "association",
+        "access_control"
+      ],
+      "definition": "COSEM object representing the current logical-name association, including object list, partners, context, authentication, and security setup references.",
+      "relations": [],
+      "class_id": "15",
+      "obis": "0-0:40.0.0.255",
+      "logical_name_hex": "0000280000FF",
+      "key_attributes": [
+        {
+          "name": "logical_name",
+          "type": "octet-string[6]"
+        },
+        {
+          "name": "object_list",
+          "type": "object_list_type",
+          "meaning": "List of all objects"
+        },
+        {
+          "name": "associated_partners_id",
+          "type": "associated_partners_type"
+        },
+        {
+          "name": "application_context_name",
+          "type": "application_context_name"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-PROFILE-BILLING",
+      "type": "data_profile",
+      "layer": "measurement_model",
+      "name": "Billing Profile",
+      "aliases": [
+        "periods of billing",
+        "billing objects"
+      ],
+      "keywords": [
+        "billing profile",
+        "periods of billing",
+        "profile billing",
+        "energy for billing",
+        "tariff period"
+      ],
+      "domain_tags": [
+        "billing_profile",
+        "measurement_data",
+        "tariff_calendar"
+      ],
+      "definition": "Profile and object group for storing energy and demand quantities used for billing periods.",
+      "relations": [],
+      "typical_quantities": [
+        "incremental active energy",
+        "absolute active energy",
+        "absolute reactive energy",
+        "maximum demand",
+        "UFER",
+        "DMCR"
+      ]
+    },
+    {
+      "id": "KB-L2-ACCESS-RIGHTS-MODEL",
+      "type": "access_rights_model",
+      "layer": "access_model",
+      "name": "COSEM Access Rights Model",
+      "aliases": [
+        "Get Set Action rights",
+        "RC/PC/SC/LC access rights"
+      ],
+      "keywords": [
+        "access rights",
+        "access rights rc/pc/sc/lc",
+        "rc/pc/sc/lc",
+        "r-/--",
+        "rw/rw",
+        "not allowed",
+        "scope of access"
+      ],
+      "domain_tags": [
+        "access_control",
+        "cosem_object",
+        "configuration_check"
+      ],
+      "definition": "Model for defining whether each client role can read attributes, write attributes, or invoke methods on COSEM objects.",
+      "relations": [],
+      "rights": [
+        {
+          "code": "R-",
+          "meaning": "read allowed"
+        },
+        {
+          "code": "RW",
+          "meaning": "read and write allowed"
+        },
+        {
+          "code": "--",
+          "meaning": "access not allowed"
+        }
+      ],
+      "client_columns": [
+        {
+          "code": "RC",
+          "meaning": "remote management and measurement client"
+        },
+        {
+          "code": "PC",
+          "meaning": "read client"
+        },
+        {
+          "code": "SC",
+          "meaning": "service/local or specialized client depending on table context"
+        },
+        {
+          "code": "LC",
+          "meaning": "local management and measurement client"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-COSEM-LOGICAL-DEVICE-NAME",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "COSEM Logical Device Name",
+      "aliases": [
+        "logical device name object"
+      ],
+      "keywords": [
+        "cosem logical device name",
+        "0-0:42.0.0.255",
+        "00002a0000ff",
+        "unique logical device identification"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "logical_device",
+        "device_identifier"
+      ],
+      "definition": "COSEM data object containing the unique logical device identification.",
+      "relations": [],
+      "class_id": "1",
+      "obis": "0-0:42.0.0.255",
+      "logical_name_hex": "00002A0000FF",
+      "key_attributes": [
+        {
+          "name": "logical_name",
+          "type": "octet-string[6]"
+        },
+        {
+          "name": "value",
+          "type": "octet-string[16]",
+          "meaning": "Unique logical device identification"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-COSEM-OBJECT-MODEL",
+      "type": "object_model",
+      "layer": "object_model",
+      "name": "COSEM Object Model",
+      "aliases": [
+        "COSEM interface class model",
+        "COSEM objects"
+      ],
+      "keywords": [
+        "cosem object",
+        "interface class",
+        "class_id",
+        "attribute",
+        "method",
+        "object/attribute name",
+        "cl"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "data_model"
+      ],
+      "definition": "COSEM objects are instances of interface classes identified by logical names and defined by attributes, methods, access rights, and data types.",
+      "relations": [],
+      "core_fields": [
+        "Object/attribute name",
+        "CL",
+        "logical_name",
+        "Type",
+        "Value",
+        "Meaning",
+        "Access rights RC/PC/SC/LC"
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-DEVICE-ID-1",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "Device ID 1",
+      "aliases": [
+        "meter serial number object"
+      ],
+      "keywords": [
+        "device id 1",
+        "0-0:96.1.0.255",
+        "0000600100ff",
+        "electronic meter serial number"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "device_identifier",
+        "meter_function"
+      ],
+      "definition": "COSEM data object containing the electronic meter serial number.",
+      "relations": [],
+      "class_id": "1",
+      "obis": "0-0:96.1.0.255",
+      "logical_name_hex": "0000600100FF",
+      "key_attributes": [
+        {
+          "name": "logical_name",
+          "type": "octet-string[6]"
+        },
+        {
+          "name": "value",
+          "type": "octet-string[10]",
+          "meaning": "Electronic meter serial number"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-DISCONNECT-CONTROL-SCHEDULER",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "Disconnect Control Scheduler",
+      "aliases": [
+        "disconnection scheduler"
+      ],
+      "keywords": [
+        "disconnect control scheduler",
+        "executed_script",
+        "execution_time",
+        "0-0:15.0.1.255",
+        "disconnect",
+        "reconnect"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "disconnect_control",
+        "meter_function"
+      ],
+      "definition": "COSEM schedule object used to trigger disconnect and reconnect scripts.",
+      "relations": [],
+      "class_id": "22",
+      "obis": "0-0:15.0.1.255",
+      "key_attributes": [
+        {
+          "name": "logical_name",
+          "type": "octet-string[6]"
+        },
+        {
+          "name": "executed_script",
+          "type": "Script",
+          "meaning": "script identifier for disconnect or reconnect"
+        },
+        {
+          "name": "execution_time",
+          "type": "array",
+          "meaning": "Date and time"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-COMMUNICATION-PROFILES",
+      "type": "communication_profile_set",
+      "layer": "communication_model",
+      "name": "DLMS/COSEM Communication Profiles",
+      "aliases": [
+        "communication profiles",
+        "communication profile set"
+      ],
+      "keywords": [
+        "communication profiles",
+        "hdlc",
+        "plc-prime",
+        "rf-wi-sun",
+        "rf-lorawan",
+        "pull",
+        "push"
+      ],
+      "domain_tags": [
+        "communication_profile",
+        "dlms_cosem"
+      ],
+      "definition": "Communication profiles considered for the DLMS/COSEM smart meter profile.",
+      "relations": [],
+      "profiles": [
+        {
+          "name": "HDLC",
+          "medium": "data link / serial or IP-related DLMS profile context"
+        },
+        {
+          "name": "PLC-PRIME",
+          "medium": "power line communication"
+        },
+        {
+          "name": "RF-Wi-SUN",
+          "medium": "radio frequency mesh"
+        },
+        {
+          "name": "RF-LoRaWAN",
+          "medium": "low-power wide-area radio"
+        }
+      ],
+      "required_mechanisms": [
+        "pull",
+        "push"
+      ]
+    },
+    {
+      "id": "KB-L2-SECURITY-SUITES",
+      "type": "security_suite_set",
+      "layer": "security_model",
+      "name": "DLMS/COSEM Security Suites",
+      "aliases": [
+        "security suite",
+        "set of security"
+      ],
+      "keywords": [
+        "set of security",
+        "security suite",
+        "aes-gcm-128",
+        "aes-gcm-256",
+        "ecdh-ecdsa",
+        "sha-256",
+        "sha-384"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "encryption",
+        "digital_signature",
+        "key_management"
+      ],
+      "definition": "Available DLMS/COSEM cryptographic suites and related algorithms.",
+      "relations": [],
+      "suites": [
+        {
+          "id": "0",
+          "name": "AES-GCM-128",
+          "authenticated_encryption": "AES-GCM-128",
+          "digital_signature": null,
+          "key_agreement": null,
+          "hash": null,
+          "transport_key": "AES-128 key wrap",
+          "compression": null
+        },
+        {
+          "id": "1",
+          "name": "ECDH-ECDSA-AES-GCM-128-SHA-256",
+          "authenticated_encryption": "AES-GCM-128",
+          "digital_signature": "ECDSA with P-256",
+          "key_agreement": "ECDH with P-256",
+          "hash": "SHA-256",
+          "transport_key": "AES-128 key wrap",
+          "compression": "V.44"
+        },
+        {
+          "id": "2",
+          "name": "ECDH-ECDSA-AES-GCM-256-SHA-384",
+          "authenticated_encryption": "AES-GCM-256",
+          "digital_signature": "ECDSA with P-384",
+          "key_agreement": "ECDH with P-384",
+          "hash": "SHA-384",
+          "transport_key": "AES-256 key wrap",
+          "compression": "V.44"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-DLMS-COSEM-PROFILE",
+      "type": "protocol_profile",
+      "layer": "protocol_architecture",
+      "name": "DLMS/COSEM Smart Meter Profile",
+      "aliases": [
+        "DLMS/COSEM profile",
+        "DLMS profile",
+        "Smart meter profile"
+      ],
+      "keywords": [
+        "dlms/cosem profile",
+        "dlms profile",
+        "smart meter profile",
+        "profile dlms/cosem"
+      ],
+      "domain_tags": [
+        "dlms_cosem",
+        "protocol_profile",
+        "smart_meter"
+      ],
+      "definition": "Application and object profile for smart electricity meters using DLMS/COSEM services and COSEM objects.",
+      "relations": [
+        {
+          "relation": "uses",
+          "target": "KB-L2-XDLMS-SERVICES"
+        },
+        {
+          "relation": "uses",
+          "target": "KB-L2-COSEM-OBJECT-MODEL"
+        },
+        {
+          "relation": "uses",
+          "target": "KB-L2-OBIS-LOGICAL-NAME"
+        },
+        {
+          "relation": "secured_by",
+          "target": "KB-L2-SECURITY-SUITES"
+        },
+        {
+          "relation": "transported_by",
+          "target": "KB-L2-COMMUNICATION-PROFILES"
+        }
+      ],
+      "components": [
+        "DLMS/COSEM application layer",
+        "xDLMS services",
+        "COSEM interface classes",
+        "OBIS logical names",
+        "client/server associations",
+        "security suites",
+        "communication profiles"
+      ]
+    },
+    {
+      "id": "KB-L2-EVENT-GROUP-MODEL",
+      "type": "event_model",
+      "layer": "event_alarm_model",
+      "name": "Event Group and Subgroup Model",
+      "aliases": [
+        "event group/subgroup",
+        "event numbering"
+      ],
+      "keywords": [
+        "group/subgroup of events",
+        "event subgroup",
+        "number of event",
+        "description of the event",
+        "minimum records"
+      ],
+      "domain_tags": [
+        "event",
+        "log",
+        "data_model"
+      ],
+      "definition": "Event model that classifies logs by group number, subgroup number, event number, and event description.",
+      "relations": [],
+      "fields": [
+        "Group number",
+        "Subgroup number",
+        "Event subgroup description",
+        "Number of event",
+        "Description of the event",
+        "Minimum records"
+      ]
+    },
+    {
+      "id": "KB-L2-SECURITY-LEVEL-HLS",
+      "type": "security_level",
+      "layer": "security_model",
+      "name": "High Level Security Association",
+      "aliases": [
+        "HLS association",
+        "High Level of Security"
+      ],
+      "keywords": [
+        "high level security",
+        "high level of security",
+        "hls"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "authentication",
+        "access_control"
+      ],
+      "definition": "Association security level using high-level authentication for management and measurement access.",
+      "relations": []
+    },
+    {
+      "id": "KB-L2-OBJECT-IMAGE-TRANSFER",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "Image Transfer",
+      "aliases": [
+        "firmware image transfer object"
+      ],
+      "keywords": [
+        "image transfer",
+        "image_block_size",
+        "image_transfer_enabled",
+        "image_transfer_status",
+        "image_to_activate_info",
+        "0-0:44.0.0.255",
+        "00002c0000ff"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "firmware_update",
+        "meter_function"
+      ],
+      "definition": "COSEM object allowing firmware image transfer to COSEM servers.",
+      "relations": [],
+      "class_id": "18",
+      "obis": "0-0:44.0.0.255",
+      "logical_name_hex": "00002C0000FF",
+      "key_attributes": [
+        {
+          "name": "logical_name",
+          "type": "octet-string[6]"
+        },
+        {
+          "name": "image_block_size",
+          "type": "double-long-unsigned"
+        },
+        {
+          "name": "image_transferred_blocks_status",
+          "type": "bit-string"
+        },
+        {
+          "name": "image_first_not_transferred_block_number",
+          "type": "double-long-unsigned"
+        },
+        {
+          "name": "image_transfer_enabled",
+          "type": "boolean"
+        },
+        {
+          "name": "image_transfer_status",
+          "type": "enumerated"
+        },
+        {
+          "name": "image_to_activate_info",
+          "type": "array"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-PROFILE-LOAD",
+      "type": "data_profile",
+      "layer": "measurement_model",
+      "name": "Load Profile",
+      "aliases": [
+        "load curve",
+        "load profile quality"
+      ],
+      "keywords": [
+        "load profile",
+        "load curve",
+        "load profile quality",
+        "incremental load curve",
+        "absolute load curve"
+      ],
+      "domain_tags": [
+        "load_profile",
+        "measurement_data"
+      ],
+      "definition": "Time-series profile for load curve records and related measurement quantities.",
+      "relations": [],
+      "typical_quantities": [
+        "incremental active energy",
+        "absolute active energy",
+        "incremental reactive energy",
+        "absolute reactive energy"
+      ]
+    },
+    {
+      "id": "KB-L2-ASSOCIATION-MATRIX",
+      "type": "association_rule",
+      "layer": "access_model",
+      "name": "Local and Remote Association Matrix",
+      "aliases": [
+        "Table 2 association matrix",
+        "local and remote associations"
+      ],
+      "keywords": [
+        "local associations and remote",
+        "local and remote associations",
+        "association matrix",
+        "without security",
+        "high level of security",
+        "low level security"
+      ],
+      "domain_tags": [
+        "association",
+        "security_policy",
+        "access_control"
+      ],
+      "definition": "Association matrix that maps client roles to management and metering logical devices and their required security level.",
+      "relations": [
+        {
+          "relation": "uses",
+          "target": "KB-L2-SECURITY-LEVEL-HLS"
+        },
+        {
+          "relation": "uses",
+          "target": "KB-L2-SECURITY-LEVEL-LLS"
+        }
+      ],
+      "rules": [
+        {
+          "client": "Public Client",
+          "management_logical_device": "without_security",
+          "metering_logical_device": "not_applicable"
+        },
+        {
+          "client": "Remote Management and Measurement Client",
+          "management_logical_device": "HLS",
+          "metering_logical_device": "HLS"
+        },
+        {
+          "client": "Local Management and Measurement Client",
+          "management_logical_device": "HLS",
+          "metering_logical_device": "HLS"
+        },
+        {
+          "client": "Read Client",
+          "management_logical_device": "LLS",
+          "metering_logical_device": "LLS"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-CLIENT-LOCAL-MANAGEMENT",
+      "type": "client_role",
+      "layer": "access_model",
+      "name": "Local Management and Measurement Client",
+      "aliases": [
+        "local management client",
+        "local measurement client",
+        "LC"
+      ],
+      "keywords": [
+        "local management and measurement",
+        "local client",
+        "sap = 0x02"
+      ],
+      "domain_tags": [
+        "client_role",
+        "association",
+        "access_control",
+        "local_access"
+      ],
+      "definition": "Client role used for local access by a concentrator, collector, or central system. It generally has similar rights to the remote management client, with restrictions on remote association attributes.",
+      "relations": [
+        {
+          "relation": "secured_by",
+          "target": "KB-L2-SECURITY-LEVEL-HLS"
+        },
+        {
+          "relation": "associated_with",
+          "target": "KB-L2-MANAGEMENT-LOGICAL-DEVICE"
+        },
+        {
+          "relation": "associated_with",
+          "target": "KB-L2-METERING-LOGICAL-DEVICE"
+        }
+      ],
+      "sap": "0x02",
+      "typical_security": "HLS",
+      "allowed_service_groups": [
+        "GET",
+        "SET",
+        "ACTION",
+        "EventNotification",
+        "DataNotification",
+        "selective_access"
+      ]
+    },
+    {
+      "id": "KB-L2-SECURITY-LEVEL-LLS",
+      "type": "security_level",
+      "layer": "security_model",
+      "name": "Low Level Security Association",
+      "aliases": [
+        "LLS association",
+        "Low Level Security"
+      ],
+      "keywords": [
+        "low level security",
+        "lls",
+        "password access"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "authentication",
+        "access_control"
+      ],
+      "definition": "Association security level typically using password-based authentication for read access.",
+      "relations": []
+    },
+    {
+      "id": "KB-L2-MANAGEMENT-LOGICAL-DEVICE",
+      "type": "logical_device",
+      "layer": "object_model",
+      "name": "Management Logical Device",
+      "aliases": [
+        "management device",
+        "SAP 0x01 logical device"
+      ],
+      "keywords": [
+        "management logical device",
+        "device logical in management",
+        "sap = 0x01"
+      ],
+      "domain_tags": [
+        "logical_device",
+        "data_model",
+        "device_management"
+      ],
+      "definition": "Mandatory logical device in a physical meter that exposes device management information, structure discovery, configuration, events, alarms, firmware update, and security-related objects.",
+      "relations": [
+        {
+          "relation": "contains",
+          "target": "KB-L2-OBJECT-SAP-ASSIGNMENT"
+        },
+        {
+          "relation": "contains",
+          "target": "KB-L2-OBJECT-ASSOCIATION-LN"
+        },
+        {
+          "relation": "contains",
+          "target": "KB-L2-OBJECT-IMAGE-TRANSFER"
+        }
+      ],
+      "sap": "0x01",
+      "typical_object_groups": [
+        "SAP assignment",
+        "Association LN",
+        "Security setup",
+        "Clock",
+        "Activity calendar",
+        "Event log",
+        "Alarm handling",
+        "Firmware image transfer"
+      ]
+    },
+    {
+      "id": "KB-L2-METERING-LOGICAL-DEVICE",
+      "type": "logical_device",
+      "layer": "object_model",
+      "name": "Metering Logical Device",
+      "aliases": [
+        "measurement logical device",
+        "measuring logic device"
+      ],
+      "keywords": [
+        "metering logical device",
+        "measurement logical device",
+        "measuring logic device",
+        "devices in measurement"
+      ],
+      "domain_tags": [
+        "logical_device",
+        "measurement_data",
+        "meter_function"
+      ],
+      "definition": "Logical device that exposes the meter's measurement and billing functionality through COSEM objects.",
+      "relations": [
+        {
+          "relation": "contains",
+          "target": "KB-L2-PROFILE-BILLING"
+        },
+        {
+          "relation": "contains",
+          "target": "KB-L2-PROFILE-LOAD"
+        },
+        {
+          "relation": "contains",
+          "target": "KB-L2-PROFILE-POWER-QUALITY"
+        }
+      ],
+      "typical_object_groups": [
+        "Energy registers",
+        "Demand registers",
+        "Billing profile",
+        "Load profile",
+        "Power quality objects",
+        "Snapshot values"
+      ]
+    },
+    {
+      "id": "KB-L2-OBIS-LOGICAL-NAME",
+      "type": "code_structure",
+      "layer": "object_model",
+      "name": "OBIS Logical Name",
+      "aliases": [
+        "logical_name",
+        "OBIS value"
+      ],
+      "keywords": [
+        "logical_name",
+        "logical name",
+        "obis",
+        "0-0:",
+        "255"
+      ],
+      "domain_tags": [
+        "obis_code",
+        "cosem_object",
+        "data_model"
+      ],
+      "definition": "Logical name used to identify COSEM object instances, commonly represented as six OBIS value groups.",
+      "relations": [],
+      "format": "A-B:C.D.E.F",
+      "examples": [
+        {
+          "value": "0-0:41.0.0.255",
+          "object": "SAP Assignment"
+        },
+        {
+          "value": "0-0:40.0.0.255",
+          "object": "Association LN"
+        },
+        {
+          "value": "0-0:42.0.0.255",
+          "object": "COSEM logical device name"
+        },
+        {
+          "value": "0-0:44.0.0.255",
+          "object": "Image Transfer"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-PROFILE-POWER-QUALITY",
+      "type": "data_profile",
+      "layer": "measurement_model",
+      "name": "Power Quality Profile",
+      "aliases": [
+        "QEE indicators",
+        "quality of energy profile"
+      ],
+      "keywords": [
+        "power quality",
+        "quality of energy",
+        "qee indicators",
+        "prodist-8",
+        "drp",
+        "drc"
+      ],
+      "domain_tags": [
+        "power_quality",
+        "measurement_data"
+      ],
+      "definition": "Object and quantity group for power quality measurements and indicators.",
+      "relations": [],
+      "typical_quantities": [
+        "voltage",
+        "current",
+        "DRP",
+        "DRC",
+        "QEE indicators"
+      ]
+    },
+    {
+      "id": "KB-L2-CLIENT-PUBLIC",
+      "type": "client_role",
+      "layer": "access_model",
+      "name": "Public Client",
+      "aliases": [
+        "client public",
+        "public customer"
+      ],
+      "keywords": [
+        "public client",
+        "client public",
+        "public customer",
+        "sap = 0x10"
+      ],
+      "domain_tags": [
+        "client_role",
+        "association",
+        "access_control"
+      ],
+      "definition": "Client role used to reveal the structure of an unknown metering device, typically through the management logical device without security.",
+      "relations": [
+        {
+          "relation": "associated_with",
+          "target": "KB-L2-MANAGEMENT-LOGICAL-DEVICE"
+        },
+        {
+          "relation": "uses",
+          "target": "KB-L2-XDLMS-SERVICES"
+        }
+      ],
+      "sap": "0x10",
+      "typical_security": "without_security",
+      "allowed_service_groups": [
+        "GET",
+        "selective_access"
+      ],
+      "limitations": [
+        "No access to measurement data requiring authentication",
+        "No read or write access to password values"
+      ]
+    },
+    {
+      "id": "KB-L2-CLIENT-READ",
+      "type": "client_role",
+      "layer": "access_model",
+      "name": "Read Client",
+      "aliases": [
+        "Reading Client",
+        "PC"
+      ],
+      "keywords": [
+        "read client",
+        "reading client",
+        "sap = 0x03"
+      ],
+      "domain_tags": [
+        "client_role",
+        "association",
+        "access_control",
+        "read_access"
+      ],
+      "definition": "Client role used for reading parameters and energy data. Password access through LLS is typically required.",
+      "relations": [
+        {
+          "relation": "secured_by",
+          "target": "KB-L2-SECURITY-LEVEL-LLS"
+        },
+        {
+          "relation": "associated_with",
+          "target": "KB-L2-MANAGEMENT-LOGICAL-DEVICE"
+        },
+        {
+          "relation": "associated_with",
+          "target": "KB-L2-METERING-LOGICAL-DEVICE"
+        }
+      ],
+      "sap": "0x03",
+      "typical_security": "LLS",
+      "allowed_service_groups": [
+        "GET",
+        "selective_access"
+      ],
+      "limitations": [
+        "No read or write access to password values"
+      ]
+    },
+    {
+      "id": "KB-L2-CLIENT-REMOTE-MANAGEMENT",
+      "type": "client_role",
+      "layer": "access_model",
+      "name": "Remote Management and Measurement Client",
+      "aliases": [
+        "remote management client",
+        "remote measurement client",
+        "RC"
+      ],
+      "keywords": [
+        "remote management and measurement",
+        "remote clients management and measurement",
+        "remote client",
+        "sap = 0x01"
+      ],
+      "domain_tags": [
+        "client_role",
+        "association",
+        "access_control",
+        "remote_access"
+      ],
+      "definition": "Client role used by data concentrators, collectors, or central systems for remote point-to-point access to management and measurement functions.",
+      "relations": [
+        {
+          "relation": "secured_by",
+          "target": "KB-L2-SECURITY-LEVEL-HLS"
+        },
+        {
+          "relation": "associated_with",
+          "target": "KB-L2-MANAGEMENT-LOGICAL-DEVICE"
+        },
+        {
+          "relation": "associated_with",
+          "target": "KB-L2-METERING-LOGICAL-DEVICE"
+        }
+      ],
+      "sap": "0x01",
+      "typical_security": "HLS",
+      "allowed_service_groups": [
+        "GET",
+        "SET",
+        "ACTION",
+        "EventNotification",
+        "DataNotification",
+        "selective_access"
+      ]
+    },
+    {
+      "id": "KB-L2-OBJECT-SAP-ASSIGNMENT",
+      "type": "cosem_object",
+      "layer": "object_model",
+      "name": "SAP Assignment",
+      "aliases": [
+        "SAP assignment object"
+      ],
+      "keywords": [
+        "sap assignment",
+        "sap_assignment_list",
+        "0-0:41.0.0.255",
+        "0000290000ff"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "association",
+        "logical_device"
+      ],
+      "definition": "COSEM object listing logical devices and their SAP assignments.",
+      "relations": [],
+      "class_id": "17",
+      "obis": "0-0:41.0.0.255",
+      "logical_name_hex": "0000290000FF",
+      "key_attributes": [
+        {
+          "name": "logical_name",
+          "type": "octet-string[6]"
+        },
+        {
+          "name": "SAP_assignment_list",
+          "type": "asslist_type",
+          "meaning": "List of logical devices"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-SECURITY-POLICY-BITS",
+      "type": "security_policy_map",
+      "layer": "security_model",
+      "name": "Security Policy Bit Map",
+      "aliases": [
+        "security states",
+        "security policy states"
+      ],
+      "keywords": [
+        "security policy",
+        "security states",
+        "request authenticated",
+        "encrypted request",
+        "digitally signed request",
+        "response authenticated",
+        "encrypted response",
+        "digitally signed response"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "configuration_check"
+      ],
+      "definition": "Bit-level meaning of DLMS/COSEM security policy states.",
+      "relations": [],
+      "bits": [
+        {
+          "bit": 0,
+          "meaning": "not used, must be set to 0"
+        },
+        {
+          "bit": 1,
+          "meaning": "not used, must be set to 0"
+        },
+        {
+          "bit": 2,
+          "meaning": "request authenticated"
+        },
+        {
+          "bit": 3,
+          "meaning": "encrypted request"
+        },
+        {
+          "bit": 4,
+          "meaning": "digitally signed request"
+        },
+        {
+          "bit": 5,
+          "meaning": "response authenticated"
+        },
+        {
+          "bit": 6,
+          "meaning": "encrypted response"
+        },
+        {
+          "bit": 7,
+          "meaning": "digitally signed response"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-SECURITY-POLICY-STATES",
+      "type": "security_policy_map",
+      "layer": "security_model",
+      "name": "Security Policy State Map",
+      "aliases": [
+        "policy security",
+        "security policy states"
+      ],
+      "keywords": [
+        "policy security",
+        "all messages are authenticated",
+        "all messages are encrypted",
+        "all messages are authenticated and encrypted"
+      ],
+      "domain_tags": [
+        "security_policy",
+        "configuration_check"
+      ],
+      "definition": "State-level map for DLMS/COSEM message authentication and encryption policy.",
+      "relations": [],
+      "states": [
+        {
+          "state": "0",
+          "meaning": "anything"
+        },
+        {
+          "state": "1",
+          "meaning": "all messages are authenticated"
+        },
+        {
+          "state": "2",
+          "meaning": "all messages are encrypted"
+        },
+        {
+          "state": "3",
+          "meaning": "all messages are authenticated and encrypted"
+        },
+        {
+          "state": "other",
+          "meaning": "reserved"
+        }
+      ]
+    },
+    {
+      "id": "KB-L2-XDLMS-SERVICES",
+      "type": "service_set",
+      "layer": "application_layer",
+      "name": "xDLMS Services",
+      "aliases": [
+        "DLMS services",
+        "xDLMS service set"
+      ],
+      "keywords": [
+        "xdlms service",
+        "services xdlms",
+        "block transfer with get",
+        "block transfer with set",
+        "eventnotification",
+        "datanotification",
+        "selective access"
+      ],
+      "domain_tags": [
+        "dlms_cosem",
+        "application_layer",
+        "service_model"
+      ],
+      "definition": "Service set used by DLMS/COSEM clients to read, write, invoke methods, receive events, and receive pushed data.",
+      "relations": [
+        {
+          "relation": "used_by",
+          "target": "KB-L2-CLIENT-PUBLIC"
+        },
+        {
+          "relation": "used_by",
+          "target": "KB-L2-CLIENT-REMOTE-MANAGEMENT"
+        },
+        {
+          "relation": "used_by",
+          "target": "KB-L2-CLIENT-LOCAL-MANAGEMENT"
+        },
+        {
+          "relation": "used_by",
+          "target": "KB-L2-CLIENT-READ"
+        }
+      ],
+      "services": [
+        {
+          "name": "GET",
+          "purpose": "Read COSEM object attributes"
+        },
+        {
+          "name": "SET",
+          "purpose": "Write COSEM object attributes"
+        },
+        {
+          "name": "ACTION",
+          "purpose": "Invoke COSEM object methods"
+        },
+        {
+          "name": "ACCESS selective",
+          "purpose": "Access selected data ranges or entries"
+        },
+        {
+          "name": "EventNotification",
+          "purpose": "Notify event occurrences"
+        },
+        {
+          "name": "DataNotification",
+          "purpose": "Push data notification"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-20-ACTIVITY-CALENDAR",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Activity Calendar",
+      "aliases": [
+        "class 20",
+        "CL 20"
+      ],
+      "keywords": [
+        "class 20",
+        "cl 20",
+        "activity calendar",
+        "calendar_name_active",
+        "season_profile_active",
+        "week_profile_table_active",
+        "day_profile_table_active",
+        "activate_passive_calendar_time"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "billing_profile",
+        "tariff_calendar"
+      ],
+      "definition": "COSEM class for active and passive tariff calendars, seasons, weeks, and day profiles.",
+      "relations": [],
+      "class_id": 20,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "calendar_name_active",
+          "type": "octet-string",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "season_profile_active",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "week_profile_table_active",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "day_profile_table_active",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "calendar_name_passive",
+          "type": "octet-string",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 7,
+          "name": "season_profile_passive",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 8,
+          "name": "week_profile_table_passive",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 9,
+          "name": "day_profile_table_passive",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 10,
+          "name": "activate_passive_calendar_time",
+          "type": "date_time",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "activate_passive_calendar"
+        }
+      ],
+      "common_instances": [
+        {
+          "name": "Activity Calendar",
+          "obis": "0-0:13.0.0.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-15-ASSOCIATION-LN",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Association LN",
+      "aliases": [
+        "Logical Name Association",
+        "class 15",
+        "CL 15"
+      ],
+      "keywords": [
+        "class 15",
+        "cl 15",
+        "association ln",
+        "object_list",
+        "associated_partners_id",
+        "application_context_name",
+        "xdlms_context_info",
+        "authentication_mechanism_name",
+        "secret"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "association",
+        "access_control"
+      ],
+      "definition": "COSEM interface class representing a logical-name association between client and server.",
+      "relations": [],
+      "class_id": 15,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "object_list",
+          "type": "object_list_type",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "associated_partners_id",
+          "type": "associated_partners_type",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "application_context_name",
+          "type": "application_context_name",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "xDLMS_context_info",
+          "type": "xDLMS_context_type",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "authentication_mechanism_name",
+          "type": "mechanism_name",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 7,
+          "name": "secret",
+          "type": "octet-string",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 8,
+          "name": "association_status",
+          "type": "enum",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 9,
+          "name": "security_setup_reference",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reply_to_HLS_authentication"
+        },
+        {
+          "method_id": 2,
+          "name": "change_HLS_secret"
+        },
+        {
+          "method_id": 3,
+          "name": "add_object"
+        },
+        {
+          "method_id": 4,
+          "name": "remove_object"
+        }
+      ],
+      "common_instances": [
+        {
+          "name": "Current membership",
+          "obis": "0-0:40.0.0.255"
+        },
+        {
+          "name": "Public client association",
+          "obis": "0-0:40.0.1.255"
+        },
+        {
+          "name": "Reading client association",
+          "obis": "0-0:40.0.2.255"
+        },
+        {
+          "name": "Local client association",
+          "obis": "0-0:40.0.3.255"
+        },
+        {
+          "name": "Remote client association",
+          "obis": "0-0:40.0.5.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-8-CLOCK",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Clock",
+      "aliases": [
+        "COSEM Clock",
+        "class 8",
+        "CL 8"
+      ],
+      "keywords": [
+        "class 8",
+        "cl 8",
+        "clock",
+        "time_zone",
+        "daylight_savings",
+        "clock_base"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "clock",
+        "meter_function"
+      ],
+      "definition": "COSEM interface class for date, time, timezone, daylight saving, and clock status.",
+      "relations": [],
+      "class_id": 8,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "time",
+          "type": "date_time",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "time_zone",
+          "type": "long",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "status",
+          "type": "unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "daylight_savings_begin",
+          "type": "date_time",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "daylight_savings_end",
+          "type": "date_time",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 7,
+          "name": "daylight_savings_deviation",
+          "type": "integer",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 8,
+          "name": "daylight_savings_enabled",
+          "type": "boolean",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 9,
+          "name": "clock_base",
+          "type": "enum",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "adjust_to_quarter"
+        },
+        {
+          "method_id": 2,
+          "name": "adjust_to_measuring_period"
+        },
+        {
+          "method_id": 3,
+          "name": "adjust_to_minute"
+        },
+        {
+          "method_id": 4,
+          "name": "adjust_to_preset_time"
+        },
+        {
+          "method_id": 5,
+          "name": "preset_adjusting_time"
+        },
+        {
+          "method_id": 6,
+          "name": "shift_time"
+        }
+      ],
+      "common_instances": [
+        {
+          "name": "Clock",
+          "obis": "0-0:1.0.0.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-1-DATA",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Data",
+      "aliases": [
+        "COSEM Data",
+        "class 1",
+        "CL 1"
+      ],
+      "keywords": [
+        "class 1",
+        "cl 1",
+        "data object",
+        "cosem logical device name",
+        "device id",
+        "security-invocation counter"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "cosem_object",
+        "data_model"
+      ],
+      "definition": "Generic COSEM interface class for a single data value.",
+      "relations": [],
+      "class_id": 1,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true,
+          "meaning": "OBIS logical name of the object"
+        },
+        {
+          "attribute_id": 2,
+          "name": "value",
+          "type": "any",
+          "mandatory": true,
+          "meaning": "Stored data value"
+        }
+      ],
+      "methods": [],
+      "common_instances": [
+        {
+          "name": "COSEM logical device name",
+          "obis": "0-0:42.0.0.255"
+        },
+        {
+          "name": "Device ID 1",
+          "obis": "0-0:96.1.0.255"
+        },
+        {
+          "name": "Device ID 5",
+          "obis": "0-0:96.1.4.255"
+        },
+        {
+          "name": "Security-Invocation counter",
+          "obis_pattern": "0-0:43.1.x.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-5-DEMAND-REGISTER",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Demand Register",
+      "aliases": [
+        "COSEM Demand Register",
+        "class 5",
+        "CL 5"
+      ],
+      "keywords": [
+        "class 5",
+        "cl 5",
+        "demand register",
+        "current_average_value",
+        "last_average_value",
+        "capture_time"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "demand_register",
+        "measurement_data"
+      ],
+      "definition": "COSEM interface class for demand values based on averaging periods.",
+      "relations": [],
+      "class_id": 5,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "current_average_value",
+          "type": "choice",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "last_average_value",
+          "type": "choice",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "scaler_unit",
+          "type": "scal_unit_type",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "status",
+          "type": "choice",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "capture_time",
+          "type": "date_time",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 7,
+          "name": "start_time_current",
+          "type": "date_time",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 8,
+          "name": "period",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 9,
+          "name": "number_of_periods",
+          "type": "long-unsigned",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "parameter_type": "integer(0)"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-70-DISCONNECT-CONTROL",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Disconnect Control",
+      "aliases": [
+        "class 70",
+        "CL 70"
+      ],
+      "keywords": [
+        "class 70",
+        "cl 70",
+        "disconnect control",
+        "output_state",
+        "control_state",
+        "control_mode",
+        "remote_disconnect",
+        "remote_reconnect"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "disconnect_control",
+        "meter_function"
+      ],
+      "definition": "COSEM interface class for disconnect/reconnect control.",
+      "relations": [],
+      "class_id": 70,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "output_state",
+          "type": "boolean",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "control_state",
+          "type": "enum",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "control_mode",
+          "type": "enum",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "remote_disconnect"
+        },
+        {
+          "method_id": 2,
+          "name": "remote_reconnect"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-4-EXTENDED-REGISTER",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Extended Register",
+      "aliases": [
+        "COSEM Extended Register",
+        "class 4",
+        "CL 4"
+      ],
+      "keywords": [
+        "class 4",
+        "cl 4",
+        "extended register",
+        "capture_time",
+        "status"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "register",
+        "measurement_data"
+      ],
+      "definition": "COSEM register with status and capture time in addition to value and scaler/unit.",
+      "relations": [],
+      "class_id": 4,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "value",
+          "type": "choice",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "scaler_unit",
+          "type": "scal_unit_type",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "status",
+          "type": "choice",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "capture_time",
+          "type": "date_time",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "parameter_type": "integer(0)"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-23-IEC-HDLC-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "IEC HDLC Setup",
+      "aliases": [
+        "class 23",
+        "CL 23"
+      ],
+      "keywords": [
+        "class 23",
+        "cl 23",
+        "iec hdlc setup",
+        "communication_speed",
+        "window_size_transmit",
+        "window_size_receive"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile",
+        "hdlc"
+      ],
+      "definition": "COSEM class for IEC HDLC communication setup parameters.",
+      "relations": [],
+      "class_id": 23,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "communication_speed",
+          "type": "enum",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "window_size_transmit",
+          "type": "long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "window_size_receive",
+          "type": "long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "maximum_info_field_length_transmit",
+          "type": "long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "maximum_info_field_length_receive",
+          "type": "long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 7,
+          "name": "inter_octet_time_out",
+          "type": "long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 8,
+          "name": "inactivity_time_out",
+          "type": "long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 9,
+          "name": "device_address",
+          "type": "long-unsigned",
+          "mandatory": true
+        }
+      ],
+      "methods": []
+    },
+    {
+      "id": "KB-L3-IC-18-IMAGE-TRANSFER",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Image Transfer",
+      "aliases": [
+        "Firmware Image Transfer",
+        "class 18",
+        "CL 18"
+      ],
+      "keywords": [
+        "class 18",
+        "cl 18",
+        "image transfer",
+        "image_block_size",
+        "image_transferred_blocks_status",
+        "image_transfer_enabled",
+        "image_transfer_status",
+        "image_to_activate_info"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "firmware_update",
+        "meter_function"
+      ],
+      "definition": "COSEM interface class for transferring and activating firmware images.",
+      "relations": [],
+      "class_id": 18,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "image_block_size",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "image_transferred_blocks_status",
+          "type": "bit-string",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "image_first_not_transferred_block_number",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "image_transfer_enabled",
+          "type": "boolean",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "image_transfer_status",
+          "type": "enumerated",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 7,
+          "name": "image_to_activate_info",
+          "type": "array",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "image_transfer_initiate"
+        },
+        {
+          "method_id": 2,
+          "name": "image_block_transfer"
+        },
+        {
+          "method_id": 3,
+          "name": "image_verify"
+        },
+        {
+          "method_id": 4,
+          "name": "image_activate"
+        }
+      ],
+      "common_instances": [
+        {
+          "name": "Image Transfer",
+          "obis": "0-0:44.0.0.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-128-IPV4-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "IPv4 Setup",
+      "aliases": [
+        "class 128",
+        "CL 128"
+      ],
+      "keywords": [
+        "class 128",
+        "cl 128",
+        "ipv4 setup",
+        "ip_address",
+        "multicast_ip_address",
+        "gateway_ip_address",
+        "subnet_mask"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile",
+        "ip_network"
+      ],
+      "definition": "COSEM class for IPv4 network setup parameters.",
+      "relations": [],
+      "class_id": 128,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "DL_reference",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "IP_address",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "multicast_IP_address",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "IP_options",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "subnet_mask",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 7,
+          "name": "gateway_IP_address",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 8,
+          "name": "use_DHCP_flag",
+          "type": "boolean",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 9,
+          "name": "primary_DNS_address",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 10,
+          "name": "secondary_DNS_address",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        }
+      ],
+      "methods": []
+    },
+    {
+      "id": "KB-L3-IC-7-PROFILE-GENERIC",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Profile Generic",
+      "aliases": [
+        "COSEM Profile Generic",
+        "class 7",
+        "CL 7"
+      ],
+      "keywords": [
+        "class 7",
+        "cl 7",
+        "profile generic",
+        "capture_objects",
+        "buffer",
+        "capture_period",
+        "profile_entries",
+        "sort_method"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "profile_generic",
+        "measurement_data",
+        "log"
+      ],
+      "definition": "COSEM interface class for storing captured entries such as load profiles, billing profiles, event logs, and alarm/error logs.",
+      "relations": [],
+      "class_id": 7,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "buffer",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "capture_objects",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "capture_period",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "sort_method",
+          "type": "enum",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "sort_object",
+          "type": "capture_object_definition",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 7,
+          "name": "entries_in_use",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 8,
+          "name": "profile_entries",
+          "type": "double-long-unsigned",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "parameter_type": "integer(0)"
+        },
+        {
+          "method_id": 2,
+          "name": "capture",
+          "parameter_type": "integer(0)"
+        }
+      ],
+      "common_instances": [
+        {
+          "name": "Correct security operations event log",
+          "obis": "0-0:99.98.11.255"
+        },
+        {
+          "name": "Failed security operations event log",
+          "obis": "0-0:99.98.12.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-6-REGISTER-ACTIVATION",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Register Activation",
+      "aliases": [
+        "class 6",
+        "CL 6"
+      ],
+      "keywords": [
+        "class 6",
+        "cl 6",
+        "register activation",
+        "active_mask",
+        "register_assignment"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "billing_profile",
+        "tariff_calendar"
+      ],
+      "definition": "COSEM class used to define active register masks and register assignments.",
+      "relations": [],
+      "class_id": 6,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "register_assignment",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "mask_list",
+          "type": "array",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "active_mask",
+          "type": "octet-string",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "add_register"
+        },
+        {
+          "method_id": 2,
+          "name": "add_mask"
+        },
+        {
+          "method_id": 3,
+          "name": "delete_mask"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-3-REGISTER",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Register",
+      "aliases": [
+        "COSEM Register",
+        "class 3",
+        "CL 3"
+      ],
+      "keywords": [
+        "class 3",
+        "cl 3",
+        "register",
+        "scaler_unit",
+        "threshold",
+        "duration of"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "register",
+        "measurement_data"
+      ],
+      "definition": "COSEM interface class for a measured value with scaler and unit.",
+      "relations": [],
+      "class_id": 3,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "value",
+          "type": "choice",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "scaler_unit",
+          "type": "scal_unit_type",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "parameter_type": "integer(0)",
+          "meaning": "Reset register value when supported"
+        }
+      ],
+      "common_instances": [
+        {
+          "name": "Time threshold for long power failure",
+          "obis": "0-0:96.7.20.255"
+        },
+        {
+          "name": "Threshold for long power failure",
+          "obis": "0-0:94.55.60.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-17-SAP-ASSIGNMENT",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "SAP Assignment",
+      "aliases": [
+        "class 17",
+        "CL 17"
+      ],
+      "keywords": [
+        "class 17",
+        "cl 17",
+        "sap assignment",
+        "sap_assignment_list"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "association",
+        "logical_device"
+      ],
+      "definition": "COSEM interface class listing SAP assignments for logical devices.",
+      "relations": [],
+      "class_id": 17,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "SAP_assignment_list",
+          "type": "array",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "connect_logical_device"
+        },
+        {
+          "method_id": 2,
+          "name": "disconnect_logical_device"
+        }
+      ],
+      "common_instances": [
+        {
+          "name": "SAP Assignment",
+          "obis": "0-0:41.0.0.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-22-SCHEDULE",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Schedule",
+      "aliases": [
+        "COSEM Schedule",
+        "class 22",
+        "CL 22"
+      ],
+      "keywords": [
+        "class 22",
+        "cl 22",
+        "schedule",
+        "executed_script",
+        "execution_time",
+        "disconnect control scheduler"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "schedule",
+        "meter_function"
+      ],
+      "definition": "COSEM class for scheduling script execution at defined times.",
+      "relations": [],
+      "class_id": 22,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "executed_script",
+          "type": "script_definition",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "type",
+          "type": "enum",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "execution_time",
+          "type": "array",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "enable_disable"
+        }
+      ],
+      "common_instances": [
+        {
+          "name": "Disconnect control Scheduler",
+          "obis": "0-0:15.0.1.255"
+        },
+        {
+          "name": "Active end of billing period 1",
+          "obis": "0-0:15.0.0.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-9-SCRIPT-TABLE",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Script Table",
+      "aliases": [
+        "class 9",
+        "CL 9"
+      ],
+      "keywords": [
+        "class 9",
+        "cl 9",
+        "script table",
+        "script_identifier",
+        "script_actions",
+        "tariffication script table"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "script",
+        "meter_function"
+      ],
+      "definition": "COSEM class containing executable scripts, each composed of action specifications.",
+      "relations": [],
+      "class_id": 9,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "scripts",
+          "type": "array",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "execute",
+          "parameter_type": "long-unsigned"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-64-SECURITY-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Security Setup",
+      "aliases": [
+        "class 64",
+        "CL 64"
+      ],
+      "keywords": [
+        "class 64",
+        "cl 64",
+        "security setup",
+        "security_policy",
+        "security_suite",
+        "client_system_title",
+        "server_system_title",
+        "certificate"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "security_policy",
+        "key_management"
+      ],
+      "definition": "COSEM interface class for security policy, security suite, system titles, certificates, and key management methods.",
+      "relations": [],
+      "class_id": 64,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "security_policy",
+          "type": "security_policy_type",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "security_suite",
+          "type": "enum",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "client_system_title",
+          "type": "octet-string",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "server_system_title",
+          "type": "octet-string",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "certificates",
+          "type": "array",
+          "mandatory": false
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "security_activate"
+        },
+        {
+          "method_id": 2,
+          "name": "global_key_transfer"
+        },
+        {
+          "method_id": 3,
+          "name": "key_agreement"
+        },
+        {
+          "method_id": 4,
+          "name": "generate_key_pair"
+        },
+        {
+          "method_id": 5,
+          "name": "generate_certificate_request"
+        },
+        {
+          "method_id": 6,
+          "name": "import_certificate"
+        },
+        {
+          "method_id": 7,
+          "name": "export_certificate"
+        },
+        {
+          "method_id": 8,
+          "name": "remove_certificate"
+        }
+      ],
+      "common_instances": [
+        {
+          "name": "Security Setup for remote client association",
+          "obis": "0-0:43.0.5.255"
+        },
+        {
+          "name": "Security Setup for local client association",
+          "obis": "0-0:43.0.3.255"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-11-SPECIAL-DAYS-TABLE",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Special Days Table",
+      "aliases": [
+        "class 11",
+        "CL 11"
+      ],
+      "keywords": [
+        "class 11",
+        "cl 11",
+        "special days table",
+        "entries"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "tariff_calendar",
+        "billing_profile"
+      ],
+      "definition": "COSEM class containing special day definitions for tariff/calendar behavior.",
+      "relations": [],
+      "class_id": 11,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "entries",
+          "type": "array",
+          "mandatory": true
+        }
+      ],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "insert"
+        },
+        {
+          "method_id": 2,
+          "name": "delete"
+        }
+      ]
+    },
+    {
+      "id": "KB-L3-IC-122-TCP-UDP-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "TCP-UDP Setup",
+      "aliases": [
+        "TCP UDP Setup",
+        "class 122",
+        "CL 122"
+      ],
+      "keywords": [
+        "class 122",
+        "cl 122",
+        "tcp-udp setup",
+        "tcp udp setup",
+        "port",
+        "ip_reference",
+        "mss",
+        "nb_of_sim_conn"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile",
+        "ip_network"
+      ],
+      "definition": "COSEM class for TCP/UDP transport setup parameters.",
+      "relations": [],
+      "class_id": 122,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "TCP_UDP_port",
+          "type": "long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 3,
+          "name": "IP_reference",
+          "type": "octet-string[6]",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 4,
+          "name": "MSS",
+          "type": "long-unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 5,
+          "name": "nb_of_sim_conn",
+          "type": "unsigned",
+          "mandatory": true
+        },
+        {
+          "attribute_id": 6,
+          "name": "inactivity_time_out",
+          "type": "long-unsigned",
+          "mandatory": true
+        }
+      ],
+      "methods": []
+    }
+  ]
+}

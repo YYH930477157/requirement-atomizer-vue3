@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+
+KNOWN_ENTRY_KEYS = {
+    "id",
+    "type",
+    "layer",
+    "name",
+    "aliases",
+    "keywords",
+    "domain_tags",
+    "definition",
+    "relations",
+}
+
+
+@dataclass(frozen=True)
+class KBEntry:
+    kb_id: str
+    entry_id: str
+    entry_type: str
+    layer: str
+    name: str
+    aliases: tuple[str, ...]
+    keywords: tuple[str, ...]
+    domain_tags: tuple[str, ...]
+    definition: str
+    relations: tuple[dict[str, Any], ...]
+    metadata: dict[str, Any]
+
+    def to_dict(self, include_metadata: bool = True) -> dict[str, Any]:
+        row = {
+            "kb_id": self.kb_id,
+            "entry_id": self.entry_id,
+            "type": self.entry_type,
+            "layer": self.layer,
+            "name": self.name,
+            "aliases": list(self.aliases),
+            "keywords": list(self.keywords),
+            "domain_tags": list(self.domain_tags),
+            "definition": self.definition,
+            "relations": list(self.relations),
+        }
+        if include_metadata:
+            row["metadata"] = self.metadata
+        return row
+
+
+@dataclass(frozen=True)
+class KBInfo:
+    kb_id: str
+    name: str
+    version: str
+    path: str
+    entries: int
+
+
+class KnowledgeRepository:
+    """File-backed knowledge repository with a stable query interface."""
+
+    def __init__(self, entries: list[KBEntry], infos: list[KBInfo]):
+        self.entries = entries
+        self.infos = infos
+        self._by_entry_id = {(entry.kb_id, entry.entry_id): entry for entry in entries}
+        self._by_id = {entry.entry_id: entry for entry in entries}
+
+    @classmethod
+    def from_paths(cls, paths: Iterable[Path]) -> "KnowledgeRepository":
+        entries: list[KBEntry] = []
+        infos: list[KBInfo] = []
+        for path in paths:
+            resolved = path.expanduser().resolve()
+            payload = json.loads(resolved.read_text(encoding="utf-8"))
+            kb_id = str(payload.get("kb_id") or resolved.stem)
+            raw_entries = payload.get("entries", [])
+            for raw in raw_entries:
+                name = clean_text(raw.get("name"))
+                keywords = sorted(
+                    {
+                        normalize_match_term(term)
+                        for term in [name, *raw.get("aliases", []), *raw.get("keywords", [])]
+                        if len(normalize_match_term(term)) > 1
+                    },
+                    key=len,
+                    reverse=True,
+                )
+                metadata = {key: value for key, value in raw.items() if key not in KNOWN_ENTRY_KEYS}
+                entries.append(
+                    KBEntry(
+                        kb_id=kb_id,
+                        entry_id=str(raw.get("id") or name),
+                        entry_type=str(raw.get("type") or "term"),
+                        layer=str(raw.get("layer") or payload.get("layer") or "term"),
+                        name=name,
+                        aliases=tuple(clean_text(v) for v in raw.get("aliases", [])),
+                        keywords=tuple(keywords),
+                        domain_tags=tuple(str(v) for v in raw.get("domain_tags", [])),
+                        definition=clean_text(raw.get("definition")),
+                        relations=tuple(raw.get("relations", [])),
+                        metadata=metadata,
+                    )
+                )
+            infos.append(
+                KBInfo(
+                    kb_id=kb_id,
+                    name=clean_text(payload.get("name")) or kb_id,
+                    version=str(payload.get("version") or ""),
+                    path=str(resolved),
+                    entries=len(raw_entries),
+                )
+            )
+        return cls(entries, infos)
+
+    def info(self) -> list[dict[str, Any]]:
+        return [info.__dict__ for info in self.infos]
+
+    def get(self, entry_id: str, kb_id: str | None = None) -> dict[str, Any] | None:
+        entry = self._by_entry_id.get((kb_id, entry_id)) if kb_id else self._by_id.get(entry_id)
+        return entry.to_dict() if entry else None
+
+    def search(
+        self,
+        query: str,
+        *,
+        layer: str | None = None,
+        entry_type: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        normalized = normalize_match_term(query)
+        scored: list[tuple[int, KBEntry, list[str]]] = []
+        for entry in self.entries:
+            if layer and entry.layer != layer:
+                continue
+            if entry_type and entry.entry_type != entry_type:
+                continue
+            score, matched_terms = score_entry(entry, normalized)
+            if score > 0:
+                scored.append((score, entry, matched_terms))
+        scored.sort(key=lambda row: (-row[0], row[1].name))
+        return [format_match(entry, matched_terms, score) for score, entry, matched_terms in scored[:limit]]
+
+    def match_text(
+        self,
+        text: str,
+        *,
+        layer: str | None = None,
+        entry_type: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        haystack = normalize_match_term(text)
+        matches: list[tuple[int, KBEntry, list[str]]] = []
+        for entry in self.entries:
+            if layer and entry.layer != layer:
+                continue
+            if entry_type and entry.entry_type != entry_type:
+                continue
+            matched_terms = [term for term in entry.keywords if term and contains_term(haystack, term)]
+            if matched_terms:
+                score = sum(max(1, len(term)) for term in matched_terms)
+                matches.append((score, entry, matched_terms[:8]))
+        matches.sort(key=lambda row: (-row[0], row[1].name))
+        return [format_match(entry, matched_terms, score) for score, entry, matched_terms in matches[:limit]]
+
+    def export_context(self, text: str, *, limit: int = 20) -> dict[str, Any]:
+        matches = self.match_text(text, limit=limit)
+        return {
+            "kb_context_version": "1.0",
+            "matches": matches,
+            "compact_context": [
+                {
+                    "name": match["name"],
+                    "type": match["type"],
+                    "layer": match["layer"],
+                    "definition": match["definition"],
+                    "metadata": compact_metadata(match.get("metadata", {})),
+                }
+                for match in matches
+            ],
+        }
+
+
+def score_entry(entry: KBEntry, query: str) -> tuple[int, list[str]]:
+    if not query:
+        return 0, []
+    matched_terms: list[str] = []
+    score = 0
+    searchable = normalize_match_term(
+        " ".join([entry.name, entry.definition, entry.entry_type, entry.layer, *entry.aliases, *entry.keywords, *entry.domain_tags])
+    )
+    if query == normalize_match_term(entry.name):
+        score += 100
+        matched_terms.append(entry.name)
+    elif contains_term(searchable, query):
+        score += 40
+        matched_terms.append(query)
+    for term in entry.keywords:
+        if query and (query in term or term in query):
+            score += min(30, len(term))
+            matched_terms.append(term)
+    return score, list(dict.fromkeys(matched_terms))[:8]
+
+
+def format_match(entry: KBEntry, matched_terms: list[str], score: int) -> dict[str, Any]:
+    row = entry.to_dict()
+    row["matched_terms"] = matched_terms
+    row["score"] = score
+    return row
+
+
+def compact_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key in ["class_id", "attributes", "methods", "common_instances", "obis", "rules", "services", "suites", "states", "bits"]:
+        if key in metadata:
+            value = metadata[key]
+            compact[key] = value[:12] if isinstance(value, list) else value
+    return compact
+
+
+def clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    value = str(value)
+    value = value.replace("\u00a0", " ")
+    value = value.replace("\uf020", " ")
+    value = value.replace("\uf03d", "=")
+    value = value.replace("\uf03e", ">")
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
+
+
+def normalize_match_term(value: Any) -> str:
+    value = clean_text(value).lower()
+    value = value.replace("–", "-").replace("—", "-")
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
+
+
+def contains_term(haystack: str, term: str) -> bool:
+    if not haystack or not term:
+        return False
+    if len(term) <= 3 and term.isalpha():
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", haystack))
+    return term in haystack
+
