@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Requirement Test Point",
+  "type": "object",
+  "required": ["test_point_id", "requirement_id", "method", "expected"],
+  "properties": {
+    "test_point_id": {"type": "string"},
+    "requirement_id": {"type": "string"},
+    "method": {"type": "string"},
+    "stimulus": {"type": "string"},
+    "expected": {"type": "string"},
+    "source_refs": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

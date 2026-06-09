@@ -1,0 +1,72 @@
+pack_id: "dlms_cosem"
+name: "DLMS/COSEM Energy Metering Domain Pack"
+version: "0.1.0"
+description: "Domain pack for energy metering standards using DLMS/COSEM, OBIS, xDLMS, SAP, and COSEM object tables."
+
+capabilities:
+  document_domains:
+    - "energy_metering"
+    - "smart_meter"
+    - "dlms_cosem"
+  table_patterns:
+    - "marker_matrix"
+    - "value_matrix"
+    - "cosem_object_table"
+    - "access_rights_compact_code"
+    - "event_definition_table"
+    - "measurement_quantity_table"
+    - "security_policy_table"
+  requirement_patterns:
+    - "cosem_attribute_access"
+    - "cosem_object_instance"
+    - "event_definition"
+    - "event_group_retention"
+    - "measurement_quantity_unit"
+    - "security_suite_definition"
+    - "security_policy_bit"
+    - "security_policy_state"
+    - "association_security_matrix"
+    - "flag_definition"
+
+files:
+  requirement_patterns: "requirement_patterns.yaml"
+  table_patterns: "table_patterns.yaml"
+  kb_sources: "kb_sources.yaml"
+  golden_set: "../../golden_sets/abnt_nbr_16968_v5/golden_summary.json"
+
+knowledge_bases:
+  - "../../knowledge_bases/energy_metering.json"
+  - "../../knowledge_bases/energy_metering_protocol_layer.json"
+  - "../../knowledge_bases/energy_metering_cosem_classes.json"
+  - "../../knowledge_bases/compiled_from_obsidian.json"
+
+runtime_contract:
+  atomic_requirement_fields:
+    - "req_id"
+    - "source_id"
+    - "source_refs"
+    - "domain"
+    - "object"
+    - "requirement_type"
+    - "requirement"
+    - "parameters"
+    - "verification_method"
+    - "ambiguity"
+    - "confidence"
+  future_fields:
+    - "domain_pack_id"
+    - "pattern_id"
+    - "generic_type"
+
+review_policy:
+  default_status: "candidate"
+  mandatory_review_types:
+    - "cosem_attribute_access"
+    - "security_suite_definition"
+    - "security_policy_state"
+  high_risk_types:
+    - "security_suite_definition"
+    - "security_policy_bit"
+    - "security_policy_state"
+    - "association_security_matrix"
+  low_confidence_threshold: 0.75

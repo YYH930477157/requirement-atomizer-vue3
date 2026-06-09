@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://requirement-atomizer.local/schemas/kb_schema.json",
+  "title": "Requirement Atomizer Knowledge Base",
+  "type": "object",
+  "required": ["kb_id", "name", "version", "entries"],
+  "properties": {
+    "kb_id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "version": {"type": "string"},
+    "layer": {"type": "string"},
+    "description": {"type": "string"},
+    "entries": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/entry"}
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["id", "type", "name", "definition"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "minLength": 1},
+        "layer": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "prefLabel": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "aliases": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "altLabel": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "domain_tags": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "definition": {"type": "string"},
+        "relations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/relation"}
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "constraints": {
+          "type": "array",
+          "items": {"type": "object"}
+        }
+      },
+      "additionalProperties": true
+    },
+    "relation": {
+      "type": "object",
+      "required": ["relation", "target"],
+      "properties": {
+        "relation": {"type": "string"},
+        "target": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

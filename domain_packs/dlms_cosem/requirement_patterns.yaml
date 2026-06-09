@@ -1,0 +1,79 @@
+schema_version: "0.1"
+domain_pack_id: "dlms_cosem"
+description: "Seed requirement patterns for the DLMS/COSEM energy metering domain pack."
+
+patterns:
+  - pattern_id: "cosem_attribute_access"
+    name: "COSEM attribute access rights"
+    generic_type: "access_constraint"
+    domain_type: "cosem_attribute_access"
+    trigger:
+      source_type: "table_item"
+      required_fields:
+        - "fields.Object/attribute name"
+        - "fields.Access rights RC/PC/SC/LC"
+        - "cosem_object_context.object_name"
+    object: "{cosem_object_context.object_name}.{fields.Object/attribute name}"
+    template: "COSEM attribute {cosem_object_context.object_name}.{fields.Object/attribute name} for {cosem_object_context.object_name} / CL {cosem_object_context.class_id} / OBIS {cosem_object_context.obis} shall use access rights {fields.Access rights RC/PC/SC/LC}."
+    verification_method: "configuration_check"
+    default_confidence: 0.90
+
+  - pattern_id: "cosem_object_instance"
+    name: "COSEM object instance"
+    generic_type: "definition"
+    domain_type: "cosem_object_instance"
+    trigger:
+      source_type: "table_item"
+      required_fields:
+        - "fields.Object/attribute name"
+        - "fields.CL"
+        - "fields.Value"
+    object: "{fields.Object/attribute name}"
+    template: "COSEM object {fields.Object/attribute name} / CL {fields.CL} / OBIS {fields.Value} shall be defined by the profile."
+    verification_method: "configuration_check"
+    default_confidence: 0.88
+
+  - pattern_id: "event_definition"
+    name: "Event definition"
+    generic_type: "enumeration_item"
+    domain_type: "event_definition"
+    trigger:
+      source_type: "table_item"
+      required_fields:
+        - "fields.Group number"
+        - "fields.Subgroup number"
+        - "fields.Event number"
+        - "fields.Description of the event"
+    object: "Event G{fields.Group number}-SG{fields.Subgroup number}-E{fields.Event number}"
+    template: "Event G{fields.Group number}-SG{fields.Subgroup number}-E{fields.Event number} shall be defined as: {fields.Description of the event}."
+    verification_method: "document_review"
+    default_confidence: 0.84
+
+  - pattern_id: "measurement_quantity_unit"
+    name: "Measurement quantity unit"
+    generic_type: "data_constraint"
+    domain_type: "measurement_quantity_unit"
+    trigger:
+      source_type: "table_item"
+      required_fields:
+        - "fields.Greatness"
+        - "fields.Greatness_2"
+        - "fields.Unit"
+    object: "{fields.Greatness_2}"
+    template: "Measurement quantity {fields.Greatness_2} shall use unit {fields.Unit}."
+    verification_method: "document_review"
+    default_confidence: 0.82
+
+  - pattern_id: "security_policy_bit"
+    name: "Security policy bit"
+    generic_type: "enumeration_item"
+    domain_type: "security_policy_bit"
+    trigger:
+      source_type: "table_item"
+      required_fields:
+        - "fields.bit"
+        - "fields.Security Policy - Security States"
+    object: "Security policy bit {fields.bit}"
+    template: "Security policy bit {fields.bit} shall be defined as: {fields.Security Policy - Security States}."
+    verification_method: "configuration_check"
+    default_confidence: 0.86

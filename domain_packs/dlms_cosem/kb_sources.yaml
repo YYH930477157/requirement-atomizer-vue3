@@ -1,0 +1,29 @@
+schema_version: "0.1"
+domain_pack_id: "dlms_cosem"
+
+sources:
+  - source_id: "energy_metering_terms"
+    type: "json_kb"
+    path: "../../knowledge_bases/energy_metering.json"
+    layer: "term"
+  - source_id: "energy_metering_protocol_layer"
+    type: "json_kb"
+    path: "../../knowledge_bases/energy_metering_protocol_layer.json"
+    layer: "protocol_object_model"
+  - source_id: "energy_metering_cosem_classes"
+    type: "json_kb"
+    path: "../../knowledge_bases/energy_metering_cosem_classes.json"
+    layer: "cosem_class_attribute_method"
+  - source_id: "obsidian_compiled"
+    type: "json_kb"
+    path: "../../knowledge_bases/compiled_from_obsidian.json"
+    layer: "compiled_runtime"
+
+match_strategy:
+  - type: "exact_or_alias"
+  - type: "keyword_contains"
+
+future_match_strategy:
+  - type: "regex"
+  - type: "vector_similarity"
+    threshold: 0.85

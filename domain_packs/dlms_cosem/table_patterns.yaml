@@ -1,0 +1,151 @@
+schema_version: "0.1"
+domain_pack_id: "dlms_cosem"
+description: "Seed table pattern registry for DLMS/COSEM documents. These entries document the current hard-coded behavior and provide the migration target for the table pattern engine."
+
+patterns:
+  - pattern_id: "xdlms_service_marker_matrix"
+    generic_type: "marker_matrix"
+    header_indicators:
+      - "xDLMS Service"
+      - "Customer application process"
+    marker_mapping:
+      "X": "allowed"
+    row_subject_column: 0
+    output_relation: "supports"
+
+  - pattern_id: "association_security_value_matrix"
+    generic_type: "value_matrix"
+    header_indicators:
+      - "Customer application process"
+      - "Server application process"
+    value_indicators:
+      - "High Level of Security"
+      - "Low Level Security"
+      - "Without security"
+    row_subject_column: 0
+    output_relation: "has_security_level"
+
+  - pattern_id: "cosem_object_table"
+    generic_type: "inherited_context_table"
+    required_headers:
+      - "Object/attribute name"
+      - "CL"
+      - "Value"
+    context_trigger:
+      required_fields:
+        - "Object/attribute name"
+        - "CL"
+    inherited_context:
+      object_name: "Object/attribute name"
+      class_id: "CL"
+      obis: "Value"
+      meaning: "Meaning"
+      comment: "Comment"
+    child_trigger:
+      required_fields:
+        - "#"
+        - "Object/attribute name"
+
+  - pattern_id: "access_rights_compact_code"
+    generic_type: "compact_permission_code"
+    field: "Access rights RC/PC/SC/LC"
+    delimiter: "/"
+    roles:
+      - code: "RC"
+        name: "remote management and measurement client"
+      - code: "PC"
+        name: "read client"
+      - code: "SC"
+        name: "service/local or specialized client"
+      - code: "LC"
+        name: "local management and measurement client"
+    encoding:
+      "R-":
+        read: true
+        write: false
+        allowed: true
+      "RW":
+        read: true
+        write: true
+        allowed: true
+      "--":
+        read: false
+        write: false
+        allowed: false
+
+  - pattern_id: "event_definition_table"
+    generic_type: "enumeration_with_code"
+    required_headers:
+      - "Group number"
+      - "Subgroup number"
+      - "Event number"
+      - "Description of the event"
+    code_fields:
+      - "Group number"
+      - "Subgroup number"
+      - "Event number"
+    description_field: "Description of the event"
+
+  - pattern_id: "measurement_quantity_table"
+    generic_type: "definition_list"
+    required_headers:
+      - "Greatness"
+      - "Greatness_2"
+      - "Unit"
+    subject_field: "Greatness_2"
+    value_field: "Unit"
+
+  - pattern_id: "security_suite_table"
+    generic_type: "definition_list"
+    required_headers:
+      - "ID"
+      - "Name"
+      - "Authenticated encryption"
+      - "Digital signature"
+      - "Key Agreement"
+    value_indicators:
+      - "security suite"
+      - "set of security"
+    code_field: "ID"
+    subject_field: "Name"
+    output_relation: "defines_security_suite"
+
+  - pattern_id: "security_policy_bit_table"
+    generic_type: "bit_definition"
+    required_headers:
+      - "bit"
+      - "Security Policy - Security States"
+    code_field: "bit"
+    description_field: "Security Policy - Security States"
+    output_relation: "defines_security_policy_bit"
+
+  - pattern_id: "security_policy_state_table"
+    generic_type: "state_definition"
+    required_headers:
+      - "State"
+      - "Security policy"
+    code_field: "State"
+    description_field: "Security policy"
+    output_relation: "defines_security_policy_state"
+
+  - pattern_id: "event_retention_table"
+    generic_type: "retention_rule"
+    required_headers:
+      - "Group number"
+      - "Subgroup number"
+      - "Minimum number of records"
+    code_fields:
+      - "Group number"
+      - "Subgroup number"
+    value_field: "Minimum number of records"
+    output_relation: "requires_minimum_records"
+
+  - pattern_id: "flag_definition_table"
+    generic_type: "code_definition"
+    header_indicators:
+      - "Description"
+    value_indicators:
+      - "flag"
+      - "status"
+      - "code"
+    output_relation: "defines_flag_or_status"

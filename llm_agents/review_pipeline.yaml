@@ -1,0 +1,40 @@
+schema_version: "0.1"
+pipeline_id: "default_requirement_review"
+
+operations:
+  - operation_id: "classify_risk"
+    description: "Classify candidate requirements by review risk."
+    input_type: "atomic_requirement"
+    output_schema: "schemas/llm_review_result.schema.json"
+  - operation_id: "correct_errors"
+    description: "Correct terminology, identifiers, and scope while preserving source references."
+    input_type: "atomic_requirement"
+    output_schema: "schemas/llm_review_result.schema.json"
+  - operation_id: "merge_duplicates"
+    description: "Identify duplicate or overlapping requirements."
+    input_type: "atomic_requirement_batch"
+    output_schema: "schemas/llm_review_result.schema.json"
+  - operation_id: "gap_find"
+    description: "Find likely missing requirements from source context."
+    input_type: "llm_task"
+    output_schema: "schemas/llm_review_result.schema.json"
+  - operation_id: "test_point_generate"
+    description: "Generate candidate verification test points."
+    input_type: "atomic_requirement"
+    output_schema: "schemas/test_point.schema.json"
+
+model_routing:
+  low_risk:
+    provider: "stub"
+    model: "local-rule-reviewer"
+  high_risk:
+    provider: "stub"
+    model: "local-strict-reviewer"
+
+risk_policy:
+  high_risk_types:
+    - "security_suite_definition"
+    - "security_policy_bit"
+    - "security_policy_state"
+    - "association_security_matrix"
+  low_confidence_threshold: 0.75

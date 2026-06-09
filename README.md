@@ -24,8 +24,10 @@ Running the tool creates:
 
 - `blocks.jsonl`: ordered document blocks, including headings, paragraphs, and tables
 - `chunks.jsonl`: retrieval chunks for RAG or LLM review
-- `table_items.jsonl`: row-level atomic table records
+- `table_items.jsonl`: row-level table records, including merged multi-row headers and matrix facts
+- `atomic_requirements.jsonl`: rule-based atomic requirement candidates for review
 - `llm_tasks.jsonl`: model-ready extraction/classification tasks
+- `quality_report.json`: coverage, confidence, ambiguity, and type-distribution report
 - `manifest.json`: run metadata and counts
 - `summary.md`: human-readable run summary
 
@@ -50,12 +52,20 @@ The intended workflow is:
 DOCX
 -> structural blocks
 -> retrieval chunks
--> table row atoms
--> LLM tasks
+-> enhanced table row atoms
+-> rule-based atomic candidates
+-> LLM review and enrichment tasks
 -> domain-specific atomic requirements
 ```
 
-For this kind of standard/protocol document, avoid sending the whole file to an LLM at once. Use `chunks.jsonl` for contextual review and `table_items.jsonl` for row-level extraction.
+For this kind of standard/protocol document, avoid sending the whole file to an LLM at once. Use `atomic_requirements.jsonl` as the first reviewable requirement draft, `chunks.jsonl` for contextual review, and `table_items.jsonl` for row-level traceability.
+
+The atomizer now separates two layers:
+
+- deterministic parsing: DOCX blocks, enhanced tables, KB matches, and rule-based candidate requirements
+- model review: use `llm_tasks.jsonl` to correct, merge, split, and enrich those candidates
+
+This is useful for DLMS/COSEM documents because many requirements are hidden in tables. For example, an `X` in an xDLMS service matrix is converted into a `matrix_facts` entry and then into a `capability_matrix` candidate requirement.
 
 ## External Knowledge Bases
 
@@ -125,6 +135,222 @@ JSON KB files
 ```
 
 This keeps the storage simple and portable while still giving external tools a stable contract.
+
+## Domain Pack Direction
+
+The project now includes the first seed domain pack:
+
+```text
+domain_packs/dlms_cosem/
+```
+
+This is the migration target for turning hard-coded DLMS/COSEM behavior into declarative configuration. The current files are intentionally small and conservative:
+
+- `pack.yaml`: domain pack manifest, capability list, KB paths, review policy, and golden set reference
+- `requirement_patterns.yaml`: seed requirement pattern DSL entries
+- `table_patterns.yaml`: seed table pattern registry for the current table semantics
+- `kb_sources.yaml`: KB source declarations
+
+The current `atomize.py` behavior remains the source of truth for runtime output. The domain pack files provide the P0 bridge toward a generic quantization core without regressing the existing DLMS/COSEM output.
+
+## Golden Regression
+
+The current ABNT NBR 16968 output is frozen as a golden baseline:
+
+```text
+golden_sets/abnt_nbr_16968_v5/golden_summary.json
+```
+
+The golden regression tests verify that future refactors keep the current baseline stable:
+
+```powershell
+python -m unittest tests.test_golden_regression
+```
+
+The baseline checks:
+
+- manifest counts
+- requirement type distribution
+- source type distribution
+- quality coverage
+- representative high-value requirements
+
+## Platform Layer
+
+The project now has an additive platform layer around the current parser. The existing `atomize.py` output remains stable, while the new modules provide interfaces for a generic requirement-analysis agent.
+
+### P1-1 Document IR
+
+`doc_ir.py` defines a normalized intermediate representation:
+
+```text
+DocumentIR
+-> BlockIR
+-> TableIR
+-> Provenance
+```
+
+The first parser bridge is:
+
+```text
+parsers/docx_parser.py
+```
+
+Export a DOCX into DocumentIR JSON:
+
+```powershell
+python .\requirement-atomizer\doc_ir_export.py `
+  "E:\Canna-29(1)\Appendix 9-ABNT NBR 16968-2022 EN.docx" `
+  --out ".\requirement-atomizer\out\abnt_nbr_16968_atomizer_v5\document_ir.json"
+```
+
+This is the migration target for future PDF, Excel, Markdown, or HTML parsers. The agent should consume DocIR rather than binding directly to DOCX-specific parsing details.
+
+### P1-2 Table Pattern Engine
+
+Declarative table patterns live in:
+
+```text
+domain_packs/dlms_cosem/table_patterns.yaml
+```
+
+The runtime matcher is:
+
+```text
+table_pattern_engine.py
+```
+
+Current seed patterns cover:
+
+- xDLMS service marker matrices
+- association/security value matrices
+- inherited COSEM object/attribute tables
+- compact RC/PC/SC/LC access-right codes
+- event definition tables
+- measurement quantity/unit tables
+- security suite tables
+- security policy bit/state tables
+- event retention tables
+- flag/status/code definition tables
+
+This lets the project gradually move table interpretation from hard-coded Python into domain-pack configuration.
+
+### P1-3 KB Schema
+
+The portable KB contract is documented in:
+
+```text
+schemas/kb_schema.json
+kb_schema.py
+```
+
+Validate a knowledge base before attaching it:
+
+```powershell
+python .\requirement-atomizer\kb_schema.py `
+  ".\requirement-atomizer\knowledge_bases\energy_metering_cosem_classes.json"
+```
+
+Use strict mode when preparing a polished external KB:
+
+```powershell
+python .\requirement-atomizer\kb_schema.py `
+  ".\requirement-atomizer\knowledge_bases\compiled_from_obsidian.json" `
+  --strict
+```
+
+The validator treats `id`, `type`, `name`, and `definition` as required entry fields. `layer` is recommended and will be inferred from the KB-level layer or `term` by the runtime if omitted, preserving compatibility with the earlier seed KB.
+
+## Review Agent Layer
+
+The review layer is the bridge from deterministic extraction to AI/expert collaboration.
+
+### P2-1 LLM Agent Pipeline
+
+Pipeline configuration:
+
+```text
+llm_agents/review_pipeline.yaml
+llm_pipeline.py
+schemas/llm_review_result.schema.json
+schemas/test_point.schema.json
+```
+
+Run the current local rule/stub review pipeline over atomizer output:
+
+```powershell
+python .\requirement-atomizer\llm_pipeline.py `
+  --out ".\requirement-atomizer\out\abnt_nbr_16968_atomizer_v5"
+```
+
+It writes:
+
+```text
+llm_review_results.jsonl
+review_states.jsonl
+```
+
+The current pipeline has operations for risk classification, correction, duplicate merging, gap finding, and test-point generation. The model route is still `stub`, so this is ready for plugging in a real LLM worker without changing downstream files.
+
+### P2-2 Expert Review State Machine
+
+Expert review state logic is in:
+
+```text
+review_state.py
+```
+
+Current statuses:
+
+```text
+candidate
+llm_reviewed
+expert_pending
+needs_discussion
+needs_rework
+flagged
+accepted
+rejected
+frozen
+```
+
+High-risk or low-confidence requirements are routed to `expert_pending`; low-risk requirements are routed to `accepted`. The state history keeps actor, reason, and timestamp for audit.
+
+### P2-3 API, UI, And Windows App Shell
+
+Local API:
+
+```powershell
+python .\requirement-atomizer\api_server.py `
+  --out ".\requirement-atomizer\out\abnt_nbr_16968_atomizer_v5" `
+  --port 8770
+```
+
+Endpoints:
+
+```text
+GET /health
+GET /manifest
+GET /quality
+GET /requirements?limit=100&type=cosem_attribute_access
+GET /reviews?limit=100
+GET /review-states?status=expert_pending
+GET /review-summary
+```
+
+Static review UI:
+
+```text
+ui/index.html
+```
+
+Windows starter script:
+
+```powershell
+.\requirement-atomizer\desktop\start-review-app.ps1 -RunReview
+```
+
+This runs the local review pipeline, starts the API in the background, and opens the review UI. It is intentionally simple so it can later be wrapped by Electron, Tauri, PyInstaller, or another Windows packaging layer.
 
 ### Storage Model
 
@@ -386,7 +612,126 @@ Each instance has:
     "Number of event": "1",
     "Description of the event": "Reboot with data loss"
   },
+  "matrix_facts": [],
   "domain_tags": ["event"]
+}
+```
+
+For matrix tables, `matrix_facts` preserves the meaning of positive markers such as `X`:
+
+```json
+{
+  "subject": "Public customer",
+  "predicate_header": "xDLMS Service / GET",
+  "marker": "X",
+  "relation": "allowed"
+}
+```
+
+For COSEM object tables, attribute rows also keep their parent object context:
+
+```json
+{
+  "fields": {
+    "#": "1",
+    "Object/attribute name": "logical_name",
+    "Access rights RC/PC/SC/LC": "R-/R-/R-/R-"
+  },
+  "cosem_object_context": {
+    "object_name": "SAP Assignment",
+    "class_id": 17,
+    "obis": "0-0:41.0.0.255"
+  }
+}
+```
+
+### Atomic Requirement Candidate
+
+```json
+{
+  "req_id": "AREQ-000043",
+  "source_type": "table_matrix_fact",
+  "source_refs": ["BLK-000219", "TBL-000001-R000003"],
+  "domain": "association",
+  "object": "Public customer",
+  "requirement_type": "capability_matrix",
+  "requirement": "Public customer shall support xDLMS Service: GET.",
+  "verification_method": "configuration_check",
+  "confidence": 0.82,
+  "generated_by": "rule_based_atomizer_v1"
+}
+```
+
+These candidates are intentionally conservative. They are meant to give the agent a structured draft, not to replace expert/model review.
+
+COSEM attribute candidates include the parent object and parsed RC/PC/SC/LC rights:
+
+```json
+{
+  "object": "SAP Assignment.logical_name",
+  "requirement_type": "cosem_attribute_access",
+  "requirement": "COSEM attribute SAP Assignment.logical_name for SAP Assignment / CL 17 / OBIS 0-0:41.0.0.255 shall use access rights R-/R-/R-/R-.",
+  "parameters": {
+    "access_rights_by_client": {
+      "clients": [
+        {"client": "RC", "code": "R-", "read": true, "write": false, "allowed": true},
+        {"client": "PC", "code": "R-", "read": true, "write": false, "allowed": true},
+        {"client": "SC", "code": "R-", "read": true, "write": false, "allowed": true},
+        {"client": "LC", "code": "R-", "read": true, "write": false, "allowed": true}
+      ]
+    }
+  }
+}
+```
+
+COSEM object header rows are also converted into object-instance candidates:
+
+```json
+{
+  "object": "Association LN",
+  "requirement_type": "cosem_object_instance",
+  "requirement": "COSEM object Association LN / CL 15 / OBIS 0-0:40.0.0.255 shall be defined by the profile."
+}
+```
+
+Event tables are converted into event-definition candidates:
+
+```json
+{
+  "object": "Event G1-SG10-E1",
+  "requirement_type": "event_definition",
+  "requirement": "Event G1-SG10-E1 shall be defined as: Reboot with data loss.",
+  "parameters": {
+    "group_number": "1",
+    "subgroup_number": "10",
+    "event_number": 1
+  }
+}
+```
+
+Additional table patterns are converted into candidates where possible:
+
+- `association_security_matrix`: association/security matrix cells such as HLS, LLS, or without security
+- `security_suite_definition`: DLMS/COSEM security suite rows
+- `security_policy_bit`: security policy bit definitions
+- `security_policy_state`: security policy state definitions
+- `event_group_retention`: group/subgroup minimum record requirements
+- `measurement_quantity_unit`: measurement quantity and unit rows
+- `flag_definition`: profile status, flag, or code definition rows
+
+The quality report summarizes rule coverage and review queues:
+
+```json
+{
+  "counts": {
+    "atomic_requirements": 2337,
+    "ambiguous_atomic_requirements": 6,
+    "low_confidence_atomic_requirements": 83
+  },
+  "coverage": {
+    "body_table_candidate_ratio": 0.9928,
+    "domain_table_candidate_ratio": 0.9966
+  }
 }
 ```
 
