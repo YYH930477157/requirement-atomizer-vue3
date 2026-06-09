@@ -1,0 +1,277 @@
+{
+  "nodes": [
+    {
+      "id": "overview",
+      "type": "text",
+      "text": "# Requirement Atomizer KB\n\nVisual navigation layer for the Obsidian vault. This canvas links to existing notes only; it is not compiled into the runtime JSON knowledge base.",
+      "x": -620,
+      "y": -420,
+      "width": 420,
+      "height": 190,
+      "color": "1"
+    },
+    {
+      "id": "terms",
+      "type": "text",
+      "text": "## 01 Terms\n\nFoundational vocabulary, standards, security terms, communication profiles, and metering concepts.",
+      "x": -620,
+      "y": -120,
+      "width": 360,
+      "height": 150,
+      "color": "2"
+    },
+    {
+      "id": "protocol",
+      "type": "text",
+      "text": "## 02 Protocol Layer\n\nDLMS/COSEM architecture, access model, object model, security model, and communication profiles.",
+      "x": -80,
+      "y": -120,
+      "width": 380,
+      "height": 150,
+      "color": "3"
+    },
+    {
+      "id": "classes",
+      "type": "text",
+      "text": "## 03 COSEM Classes\n\nInterface classes, attributes, methods, and common instances used by meter documents.",
+      "x": 500,
+      "y": -120,
+      "width": 380,
+      "height": 150,
+      "color": "4"
+    },
+    {
+      "id": "dlms",
+      "type": "file",
+      "file": "01_terms/DLMS.md",
+      "x": -760,
+      "y": 120,
+      "width": 220,
+      "height": 90,
+      "color": "2"
+    },
+    {
+      "id": "cosem",
+      "type": "file",
+      "file": "01_terms/COSEM.md",
+      "x": -500,
+      "y": 120,
+      "width": 220,
+      "height": 90,
+      "color": "2"
+    },
+    {
+      "id": "obis",
+      "type": "file",
+      "file": "01_terms/OBIS.md",
+      "x": -240,
+      "y": 120,
+      "width": 220,
+      "height": 90,
+      "color": "2"
+    },
+    {
+      "id": "profile",
+      "type": "file",
+      "file": "02_protocol_layer/DLMS COSEM Smart Meter Profile.md",
+      "x": -140,
+      "y": -380,
+      "width": 300,
+      "height": 110,
+      "color": "3"
+    },
+    {
+      "id": "xdlms-services",
+      "type": "file",
+      "file": "02_protocol_layer/xDLMS Services.md",
+      "x": -320,
+      "y": 120,
+      "width": 260,
+      "height": 100,
+      "color": "3"
+    },
+    {
+      "id": "object-model",
+      "type": "file",
+      "file": "02_protocol_layer/COSEM Object Model.md",
+      "x": 0,
+      "y": 120,
+      "width": 260,
+      "height": 100,
+      "color": "3"
+    },
+    {
+      "id": "security-suites",
+      "type": "file",
+      "file": "02_protocol_layer/DLMS COSEM Security Suites.md",
+      "x": 320,
+      "y": 120,
+      "width": 280,
+      "height": 100,
+      "color": "3"
+    },
+    {
+      "id": "association-ln-l2",
+      "type": "file",
+      "file": "02_protocol_layer/Association LN.md",
+      "x": -320,
+      "y": 340,
+      "width": 260,
+      "height": 100,
+      "color": "3"
+    },
+    {
+      "id": "profile-generic",
+      "type": "file",
+      "file": "03_cosem_classes/Profile Generic.md",
+      "x": 360,
+      "y": 340,
+      "width": 260,
+      "height": 100,
+      "color": "4"
+    },
+    {
+      "id": "association-ln-l3",
+      "type": "file",
+      "file": "03_cosem_classes/Association LN.md",
+      "x": 680,
+      "y": 340,
+      "width": 260,
+      "height": 100,
+      "color": "4"
+    },
+    {
+      "id": "clock",
+      "type": "file",
+      "file": "03_cosem_classes/Clock.md",
+      "x": 1000,
+      "y": 340,
+      "width": 220,
+      "height": 100,
+      "color": "4"
+    },
+    {
+      "id": "next-layer",
+      "type": "text",
+      "text": "## Next source layer\n\nDocument-specific candidate terms and COSEM object instances can be reviewed separately before they become maintained knowledge.",
+      "x": -620,
+      "y": 620,
+      "width": 440,
+      "height": 150,
+      "color": "5"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-profile-terms",
+      "fromNode": "profile",
+      "fromSide": "left",
+      "toNode": "terms",
+      "toSide": "right",
+      "label": "uses vocabulary"
+    },
+    {
+      "id": "e-profile-protocol",
+      "fromNode": "profile",
+      "fromSide": "bottom",
+      "toNode": "protocol",
+      "toSide": "top",
+      "label": "describes"
+    },
+    {
+      "id": "e-profile-classes",
+      "fromNode": "profile",
+      "fromSide": "right",
+      "toNode": "classes",
+      "toSide": "top",
+      "label": "references"
+    },
+    {
+      "id": "e-terms-dlms",
+      "fromNode": "terms",
+      "fromSide": "bottom",
+      "toNode": "dlms",
+      "toSide": "top"
+    },
+    {
+      "id": "e-terms-cosem",
+      "fromNode": "terms",
+      "fromSide": "bottom",
+      "toNode": "cosem",
+      "toSide": "top"
+    },
+    {
+      "id": "e-terms-obis",
+      "fromNode": "terms",
+      "fromSide": "bottom",
+      "toNode": "obis",
+      "toSide": "top"
+    },
+    {
+      "id": "e-protocol-services",
+      "fromNode": "protocol",
+      "fromSide": "bottom",
+      "toNode": "xdlms-services",
+      "toSide": "top"
+    },
+    {
+      "id": "e-protocol-object",
+      "fromNode": "protocol",
+      "fromSide": "bottom",
+      "toNode": "object-model",
+      "toSide": "top"
+    },
+    {
+      "id": "e-protocol-security",
+      "fromNode": "protocol",
+      "fromSide": "bottom",
+      "toNode": "security-suites",
+      "toSide": "top"
+    },
+    {
+      "id": "e-object-association",
+      "fromNode": "object-model",
+      "fromSide": "bottom",
+      "toNode": "association-ln-l2",
+      "toSide": "top",
+      "label": "object"
+    },
+    {
+      "id": "e-classes-profile-generic",
+      "fromNode": "classes",
+      "fromSide": "bottom",
+      "toNode": "profile-generic",
+      "toSide": "top"
+    },
+    {
+      "id": "e-classes-association",
+      "fromNode": "classes",
+      "fromSide": "bottom",
+      "toNode": "association-ln-l3",
+      "toSide": "top"
+    },
+    {
+      "id": "e-classes-clock",
+      "fromNode": "classes",
+      "fromSide": "bottom",
+      "toNode": "clock",
+      "toSide": "top"
+    },
+    {
+      "id": "e-association-layer",
+      "fromNode": "association-ln-l2",
+      "fromSide": "right",
+      "toNode": "association-ln-l3",
+      "toSide": "left",
+      "label": "class 15"
+    },
+    {
+      "id": "e-next-layer",
+      "fromNode": "next-layer",
+      "fromSide": "top",
+      "toNode": "terms",
+      "toSide": "bottom",
+      "label": "review before merge"
+    }
+  ]
+}

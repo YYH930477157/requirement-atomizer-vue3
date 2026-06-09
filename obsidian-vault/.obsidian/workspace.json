@@ -1,0 +1,114 @@
+{
+  "main": {
+    "id": "main",
+    "type": "split",
+    "children": [
+      {
+        "id": "knowledge-map",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "knowledge-map-canvas",
+            "type": "leaf",
+            "state": {
+              "type": "canvas",
+              "state": {
+                "file": "Knowledge Map.canvas"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "left",
+    "type": "split",
+    "children": [
+      {
+        "id": "left-tabs",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "file-explorer",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {}
+            }
+          },
+          {
+            "id": "search",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "right",
+    "type": "split",
+    "children": [
+      {
+        "id": "right-tabs",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "backlinks",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              }
+            }
+          },
+          {
+            "id": "outline",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {}
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 320,
+    "collapsed": false
+  },
+  "active": "knowledge-map-canvas",
+  "lastOpenFiles": [
+    "Knowledge Map.canvas",
+    "02_protocol_layer/DLMS COSEM Smart Meter Profile.md",
+    "02_protocol_layer/xDLMS Services.md",
+    "02_protocol_layer/COSEM Object Model.md",
+    "02_protocol_layer/OBIS Logical Name.md",
+    "03_cosem_classes/Association LN.md",
+    "03_cosem_classes/Profile Generic.md",
+    "01_terms/DLMS.md",
+    "01_terms/COSEM.md",
+    "01_terms/OBIS.md"
+  ]
+}
