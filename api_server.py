@@ -4,16 +4,25 @@ import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
 
 DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
+DEFAULT_ALLOWED_ORIGINS = {"http://127.0.0.1:8770", "http://localhost:8770", "null"}
+TOKEN_HEADER = "X-Requirement-Atomizer-Token"
 
 
 class RequirementAPIHandler(BaseHTTPRequestHandler):
     output_dir: Path = DEFAULT_OUTPUT
+    allowed_origins: set[str] = set(DEFAULT_ALLOWED_ORIGINS)
+    local_token: str = ""
 
     def do_OPTIONS(self) -> None:
+        origin = self.headers.get("Origin", "")
+        if not is_allowed_origin(origin, self.allowed_origins):
+            self.send_error(403, "Origin not allowed")
+            return
         self.send_response(204)
         self.send_cors_headers()
         self.end_headers()
@@ -21,8 +30,15 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
+        origin = self.headers.get("Origin", "")
+        if not is_allowed_origin(origin, self.allowed_origins):
+            self.send_error(403, "Origin not allowed")
+            return
         if parsed.path == "/health":
             self.send_json({"ok": True, "service": "requirement-atomizer-api"})
+            return
+        if not token_is_valid(self.local_token, self.headers, params):
+            self.send_json({"error": "unauthorized"}, status=401)
             return
         if parsed.path == "/manifest":
             self.send_file_json("manifest.json")
@@ -72,9 +88,14 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def send_cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+        if origin and is_allowed_origin(origin, self.allowed_origins):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        elif "null" in self.allowed_origins:
+            self.send_header("Access-Control-Allow-Origin", "null")
         self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", f"Content-Type, {TOKEN_HEADER}")
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -99,23 +120,62 @@ def parse_int(value: str, *, default: int) -> int:
         return default
 
 
+def is_allowed_origin(origin: str, allowed_origins: set[str]) -> bool:
+    if not origin:
+        return True
+    return origin in allowed_origins
+
+
+def token_is_valid(expected_token: str, headers: Mapping[str, str], params: dict[str, list[str]]) -> bool:
+    if not expected_token:
+        return True
+    header_token = headers.get(TOKEN_HEADER, "")
+    query_token = one(params, "token")
+    return header_token == expected_token or query_token == expected_token
+
+
 def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict]:
-    reviews_by_requirement = {
-        str(row.get("requirement_id")): row for row in read_jsonl(output_dir / "llm_review_results.jsonl") if row.get("requirement_id")
-    }
-    states_by_requirement = {
-        str(row.get("requirement_id")): row for row in read_jsonl(output_dir / "review_states.jsonl") if row.get("requirement_id")
-    }
+    reviews_by_requirement = index_by_requirement_identity(read_jsonl(output_dir / "llm_review_results.jsonl"))
+    states_by_requirement = index_by_requirement_identity(read_jsonl(output_dir / "review_states.jsonl"))
     enriched: list[dict] = []
     for requirement in requirements:
         row = dict(requirement)
-        req_id = str(row.get("req_id") or "")
-        if req_id in reviews_by_requirement:
-            row["review"] = reviews_by_requirement[req_id]
-        if req_id in states_by_requirement:
-            row["review_state"] = states_by_requirement[req_id]
+        for key in requirement_identity_keys(row):
+            if key in reviews_by_requirement:
+                row["review"] = reviews_by_requirement[key]
+                break
+        for key in requirement_identity_keys(row):
+            if key in states_by_requirement:
+                row["review_state"] = states_by_requirement[key]
+                break
         enriched.append(row)
     return enriched
+
+
+def index_by_requirement_identity(rows: list[dict]) -> dict[str, dict]:
+    indexed: dict[str, dict] = {}
+    for row in rows:
+        for key in requirement_identity_keys(row):
+            indexed[key] = row
+    return indexed
+
+
+def requirement_identity_keys(row: dict) -> list[str]:
+    keys: list[str] = []
+    for name in ("stable_req_id", "requirement_id", "req_id"):
+        value = row.get(name)
+        if value:
+            text = str(value)
+            if text not in keys:
+                keys.append(text)
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    for name in ("stable_req_id", "req_id"):
+        value = metadata.get(name)
+        if value:
+            text = str(value)
+            if text not in keys:
+                keys.append(text)
+    return keys
 
 
 def build_review_summary(output_dir: Path) -> dict:
@@ -152,16 +212,42 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8770)
+    parser.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        help="Allowed browser Origin. Can be provided multiple times.",
+    )
+    parser.add_argument("--token", default="", help="Optional local API token required for data endpoints.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     RequirementAPIHandler.output_dir = args.out.expanduser().resolve()
+    RequirementAPIHandler.allowed_origins = build_allowed_origins(args.host, args.port, args.allow_origin)
+    RequirementAPIHandler.local_token = args.token
     server = ThreadingHTTPServer((args.host, args.port), RequirementAPIHandler)
-    print(json.dumps({"host": args.host, "port": args.port, "output_dir": str(RequirementAPIHandler.output_dir)}, indent=2))
+    print(
+        json.dumps(
+            {
+                "host": args.host,
+                "port": args.port,
+                "output_dir": str(RequirementAPIHandler.output_dir),
+                "allowed_origins": sorted(RequirementAPIHandler.allowed_origins),
+                "token_required": bool(RequirementAPIHandler.local_token),
+            },
+            indent=2,
+        )
+    )
     server.serve_forever()
     return 0
+
+
+def build_allowed_origins(host: str, port: int, extra_origins: list[str]) -> set[str]:
+    origins = {"null", f"http://{host}:{port}", f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+    origins.update(origin for origin in extra_origins if origin)
+    return origins
 
 
 if __name__ == "__main__":

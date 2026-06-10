@@ -62,6 +62,42 @@ class AtomizeTableTests(unittest.TestCase):
         self.assertEqual(candidates[0]["requirement_type"], "capability_matrix")
         self.assertEqual(candidates[0]["requirement"], 'Public customer shall support xDLMS Service: "GET".')
 
+    def test_stable_req_id_does_not_depend_on_candidate_order(self) -> None:
+        first_block = {
+            "block_id": "BLK-000010",
+            "type": "paragraph",
+            "text": "The meter shall support xDLMS GET service.",
+            "section_path": ["Scope"],
+            "domain_tags": ["dlms_cosem"],
+            "kb_matches": [],
+            "doc_region": "body",
+            "noise": False,
+        }
+        second_block = {
+            "block_id": "BLK-000011",
+            "type": "paragraph",
+            "text": "The meter shall support push notification service.",
+            "section_path": ["Scope"],
+            "domain_tags": ["communication_profile"],
+            "kb_matches": [],
+            "doc_region": "body",
+            "noise": False,
+        }
+
+        original_order = build_atomic_candidates([first_block, second_block], [], include_regions={"body"})
+        reversed_order = build_atomic_candidates([second_block, first_block], [], include_regions={"body"})
+
+        original_by_source = {row["source_id"]: row for row in original_order}
+        reversed_by_source = {row["source_id"]: row for row in reversed_order}
+
+        self.assertEqual(original_by_source["BLK-000010"]["req_id"], "AREQ-000001")
+        self.assertEqual(reversed_by_source["BLK-000010"]["req_id"], "AREQ-000002")
+        self.assertEqual(
+            original_by_source["BLK-000010"]["stable_req_id"],
+            reversed_by_source["BLK-000010"]["stable_req_id"],
+        )
+        self.assertRegex(original_by_source["BLK-000010"]["stable_req_id"], r"^SREQ-[0-9A-F]{16}$")
+
     def test_cosem_attribute_candidate_uses_object_context_and_access_rights(self) -> None:
         table_items = [
             {

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "requirement-atomizer"
+version = "0.2.0"
+description = "Local pipeline for atomizing technical standards into reviewable atomic requirements."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "python-docx>=1.1.0",
+  "PyYAML>=6.0.0",
+]
+
+[project.scripts]
+requirement-atomizer = "atomize:main"
+requirement-review = "llm_pipeline:main"
+requirement-api = "api_server:main"
+validate-kb = "kb_schema:main"
+validate-vault = "validate_vault:main"
+validate-atomic-requirements = "atomic_requirement_schema:main"
+validate-llm-reviews = "llm_review_schema:main"
+
+[tool.setuptools]
+py-modules = [
+  "api_server",
+  "atomic_requirement_schema",
+  "atomize",
+  "doc_ir",
+  "doc_ir_export",
+  "domain_pack",
+  "kb_api",
+  "kb_query",
+  "kb_schema",
+  "kb_server",
+  "llm_review_schema",
+  "llm_pipeline",
+  "obsidian_kb",
+  "output_writer",
+  "pattern_engine",
+  "review_state",
+  "table_pattern_engine",
+  "validate_vault",
+]
+
+[tool.setuptools.packages.find]
+include = ["parsers*"]
