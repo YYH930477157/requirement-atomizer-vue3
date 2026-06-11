@@ -13,6 +13,9 @@ dependencies = [
   "PyYAML>=6.0.0",
 ]
 
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+
 [project.scripts]
 ratomizer = "cli:main"
 requirement-atomizer = "atomize:main"
@@ -22,6 +25,9 @@ validate-kb = "kb_schema:main"
 validate-vault = "validate_vault:main"
 validate-atomic-requirements = "atomic_requirement_schema:main"
 validate-llm-reviews = "llm_review_schema:main"
+
+[project.gui-scripts]
+ratomizer-gui = "gui.app:main"
 
 [tool.setuptools]
 py-modules = [
@@ -52,5 +58,8 @@ py-modules = [
 [tool.setuptools.dynamic]
 version = {attr = "version.__version__"}
 
+[tool.setuptools.package-data]
+gui = ["theme.qss.template"]
+
 [tool.setuptools.packages.find]
-include = ["parsers*"]
+include = ["gui*", "parsers*"]

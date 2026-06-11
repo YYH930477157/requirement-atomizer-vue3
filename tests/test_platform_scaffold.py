@@ -25,7 +25,7 @@ from llm_pipeline import (
     write_jsonl,
 )
 from output_writer import build_quality_report
-from review_state import RequirementReviewState
+from review_state import RequirementReviewState, apply_expert_decision
 from table_pattern_engine import load_table_patterns, match_table_pattern
 
 
@@ -358,6 +358,162 @@ class PlatformScaffoldTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             state.transition("frozen", actor="expert", reason="invalid direct transition")
 
+    def test_apply_expert_decision_updates_state_and_appends_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(
+                out_dir / "review_states.jsonl",
+                [
+                    {
+                        "requirement_id": "SREQ-1",
+                        "status": "expert_pending",
+                        "history": [
+                            {
+                                "from_status": "llm_reviewed",
+                                "to_status": "expert_pending",
+                                "actor": "llm_pipeline",
+                                "reason": "risk=mandatory_review",
+                                "timestamp": "2026-06-10T00:00:00+00:00",
+                            }
+                        ],
+                        "metadata": {"req_id": "AREQ-1", "stable_req_id": "SREQ-1"},
+                    }
+                ],
+            )
+
+            updated = apply_expert_decision(
+                out_dir,
+                "SREQ-1",
+                "accepted",
+                actor="expert",
+                reason="confirmed by reviewer",
+            )
+
+            states = read_jsonl(out_dir / "review_states.jsonl")
+            events = read_jsonl(out_dir / "review_state_events.jsonl")
+
+        self.assertEqual(updated["status"], "accepted")
+        self.assertEqual(states[0]["status"], "accepted")
+        self.assertEqual(states[0]["history"][-1]["from_status"], "expert_pending")
+        self.assertEqual(states[0]["history"][-1]["to_status"], "accepted")
+        self.assertEqual(events[-1]["requirement_id"], "SREQ-1")
+        self.assertEqual(events[-1]["req_id"], "AREQ-1")
+        self.assertEqual(events[-1]["stable_req_id"], "SREQ-1")
+        self.assertEqual(events[-1]["status_after"], "accepted")
+        self.assertEqual(events[-1]["current_status"], "accepted")
+        self.assertEqual(events[-1]["actor"], "expert")
+        self.assertEqual(events[-1]["reason"], "confirmed by reviewer")
+
+    def test_apply_expert_decision_creates_missing_state_and_removes_temp_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+
+            updated = apply_expert_decision(out_dir, "SREQ-NEW", "rejected", actor="expert", reason="not applicable")
+
+            states = read_jsonl(out_dir / "review_states.jsonl")
+            events = read_jsonl(out_dir / "review_state_events.jsonl")
+            temp_files = list(out_dir.glob("*.tmp"))
+
+        self.assertEqual(updated["requirement_id"], "SREQ-NEW")
+        self.assertEqual(updated["status"], "rejected")
+        self.assertEqual(states[0]["requirement_id"], "SREQ-NEW")
+        self.assertEqual(states[0]["status"], "rejected")
+        self.assertEqual(events[-1]["from_status"], "candidate")
+        self.assertEqual(events[-1]["to_status"], "rejected")
+        self.assertEqual(temp_files, [])
+
+    def test_apply_expert_decision_rejects_invalid_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "Unknown review status"):
+                apply_expert_decision(Path(tmp), "SREQ-1", "approved", actor="expert")
+
+    def test_apply_expert_decision_same_status_does_not_duplicate_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(
+                out_dir / "review_states.jsonl",
+                [
+                    {
+                        "requirement_id": "SREQ-1",
+                        "status": "accepted",
+                        "history": [
+                            {
+                                "from_status": "expert_pending",
+                                "to_status": "accepted",
+                                "actor": "expert",
+                                "reason": "confirmed",
+                                "timestamp": "2026-06-10T00:00:00+00:00",
+                            }
+                        ],
+                        "metadata": {"req_id": "AREQ-1", "stable_req_id": "SREQ-1"},
+                    }
+                ],
+            )
+
+            updated = apply_expert_decision(out_dir, "SREQ-1", "accepted", actor="expert", reason="repeat")
+            events = read_jsonl(out_dir / "review_state_events.jsonl")
+
+        self.assertEqual(updated["status"], "accepted")
+        self.assertEqual(events, [])
+
+    def test_apply_expert_decision_overrides_candidate_to_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            updated = apply_expert_decision(Path(tmp), "SREQ-1", "accepted", actor="expert")
+
+        self.assertEqual(updated["status"], "accepted")
+        self.assertEqual(updated["history"][-1]["from_status"], "candidate")
+        self.assertEqual(updated["history"][-1]["to_status"], "accepted")
+
+    def test_apply_expert_decision_overrides_accepted_to_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(
+                out_dir / "review_states.jsonl",
+                [
+                    {
+                        "requirement_id": "SREQ-1",
+                        "status": "accepted",
+                        "history": [],
+                        "metadata": {"req_id": "AREQ-1"},
+                    }
+                ],
+            )
+
+            updated = apply_expert_decision(out_dir, "SREQ-1", "rejected", actor="expert")
+
+        self.assertEqual(updated["status"], "rejected")
+        self.assertEqual(updated["history"][-1]["from_status"], "accepted")
+        self.assertEqual(updated["history"][-1]["to_status"], "rejected")
+
+    def test_apply_expert_decision_can_reopen_rejected_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(
+                out_dir / "review_states.jsonl",
+                [
+                    {
+                        "requirement_id": "SREQ-1",
+                        "status": "rejected",
+                        "history": [],
+                        "metadata": {"req_id": "AREQ-1"},
+                    }
+                ],
+            )
+
+            updated = apply_expert_decision(out_dir, "SREQ-1", "expert_pending", actor="expert")
+
+        self.assertEqual(updated["status"], "expert_pending")
+        self.assertEqual(updated["history"][-1]["from_status"], "rejected")
+        self.assertEqual(updated["history"][-1]["to_status"], "expert_pending")
+
+    def test_apply_expert_decision_cannot_override_frozen_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "review_states.jsonl", [{"requirement_id": "SREQ-1", "status": "frozen"}])
+
+            with self.assertRaisesRegex(ValueError, "Cannot override frozen review state"):
+                apply_expert_decision(out_dir, "SREQ-1", "rejected", actor="expert")
+
     def test_api_output_fixture_exists(self) -> None:
         manifest_path = ROOT / "out" / "abnt_nbr_16968_atomizer_v5" / "manifest.json"
         if not manifest_path.exists():
@@ -380,6 +536,9 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertEqual(scripts["requirement-review"], "llm_pipeline:main")
         self.assertEqual(scripts["validate-atomic-requirements"], "atomic_requirement_schema:main")
         self.assertEqual(scripts["validate-llm-reviews"], "llm_review_schema:main")
+        self.assertEqual(payload["project"]["optional-dependencies"]["gui"], ["PySide6>=6.6"])
+        self.assertEqual(payload["project"]["gui-scripts"]["ratomizer-gui"], "gui.app:main")
+        self.assertEqual(payload["tool"]["setuptools"]["package-data"]["gui"], ["theme.qss.template"])
 
     def test_write_jsonl_writes_utf8_lines(self) -> None:
         path = ROOT / ".tmp_test_review_results.jsonl"

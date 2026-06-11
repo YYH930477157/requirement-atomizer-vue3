@@ -1,0 +1,85 @@
+QMainWindow {{
+  background: {window_bg};
+  color: {text_primary};
+  font-family: {font_family};
+  font-size: 10pt;
+}}
+
+QWidget {{
+  color: {text_primary};
+  font-family: {font_family};
+  font-size: 10pt;
+}}
+
+QFrame#toolbarCard,
+QFrame#filterCard,
+QFrame#detailPanel {{
+  background: {card_bg};
+  border: 1px solid {card_border};
+  border-radius: {card_radius};
+}}
+
+QPushButton,
+QToolButton,
+QComboBox,
+QLineEdit,
+QDoubleSpinBox {{
+  border: 1px solid {card_border};
+  border-radius: {control_radius};
+  padding: 5px 9px;
+  background: {card_bg};
+}}
+
+QPushButton:hover,
+QToolButton:hover {{
+  border-color: {accent_hover};
+}}
+
+QPushButton#primaryButton {{
+  background: {accent};
+  border-color: {accent};
+  color: white;
+}}
+
+QPushButton#primaryButton:hover {{
+  background: {accent_hover};
+}}
+
+QPushButton#primaryButton:pressed {{
+  background: {accent_pressed};
+}}
+
+QTableView {{
+  background: {card_bg};
+  alternate-background-color: {row_hover};
+  selection-background-color: {row_selected};
+  selection-color: {text_primary};
+  gridline-color: transparent;
+  border: 1px solid {card_border};
+  border-radius: {card_radius};
+}}
+
+QHeaderView::section {{
+  background: {card_bg};
+  border: 0;
+  border-bottom: 1px solid {card_border};
+  padding: 6px;
+  color: {text_secondary};
+}}
+
+QStatusBar {{
+  background: {window_bg};
+  color: {text_secondary};
+}}
+
+QProgressBar {{
+  border: 1px solid {card_border};
+  border-radius: {control_radius};
+  background: {card_bg};
+  text-align: center;
+}}
+
+QProgressBar::chunk {{
+  background: {accent};
+  border-radius: {control_radius};
+}}
