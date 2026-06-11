@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sys
 from collections import Counter, defaultdict
@@ -22,6 +23,10 @@ from atomic_requirement_schema import validate_atomic_requirements
 from kb_matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
 from output_writer import build_quality_report, write_json, write_jsonl, write_summary
 from table_pattern_engine import load_table_patterns, match_table_pattern
+from version import __version__
+
+
+LOGGER = logging.getLogger("requirement_atomizer")
 
 
 MAJOR_HEADINGS = {
@@ -82,6 +87,10 @@ DEFAULT_ACCESS_RIGHT_CLIENTS = {
 
 
 class AtomizerInputError(ValueError):
+    pass
+
+
+class AtomizerPipelineError(RuntimeError):
     pass
 
 
@@ -1801,20 +1810,29 @@ def run_atomizer_pipeline(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    LOGGER.info("loading knowledge bases (%s files)", len(kb_paths or []))
     knowledge_bases = load_knowledge_bases(kb_paths or [])
 
+    LOGGER.info("extracting docx")
     blocks, table_items = extract_docx(input_path, knowledge_bases=knowledge_bases)
+    LOGGER.info("extracted %s blocks, %s table rows", len(blocks), len(table_items))
     pattern_shadow = None
     if domain_pack_dir is not None:
         pattern_shadow = apply_table_pattern_shadow(blocks, table_items, domain_pack_dir)
     mark_doc_regions(blocks, table_items)
+    LOGGER.info("building chunks")
     chunks = build_chunks(blocks, target_chars=chunk_chars, include_regions={"body"})
     body_table_items = [item for item in table_items if item.get("doc_region") == "body"]
+    LOGGER.info("building candidates")
     atomic_candidates = build_atomic_candidates(blocks, body_table_items, include_regions={"body"})
-    assert_valid_atomic_requirements(atomic_candidates)
+    try:
+        assert_valid_atomic_requirements(atomic_candidates)
+    except ValueError as exc:
+        raise AtomizerPipelineError(str(exc)) from exc
     llm_tasks = build_llm_tasks(chunks, body_table_items)
     quality_report = build_quality_report(blocks, table_items, atomic_candidates, llm_tasks, pattern_shadow=pattern_shadow)
 
+    LOGGER.info("writing outputs")
     block_count = write_jsonl(out_dir / "blocks.jsonl", blocks)
     chunk_count = write_jsonl(out_dir / "chunks.jsonl", chunks)
     table_count = write_jsonl(out_dir / "table_items.jsonl", table_items)
@@ -1833,7 +1851,7 @@ def run_atomizer_pipeline(
 
     manifest = {
         "tool": "requirement-atomizer",
-        "version": "0.2.0",
+        "version": __version__,
         "input": str(input_path),
         "output_dir": str(out_dir),
         "generated_at": datetime.now(timezone.utc).isoformat(),

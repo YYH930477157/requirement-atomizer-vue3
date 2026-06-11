@@ -36,6 +36,14 @@ Running the tool creates:
 ```powershell
 pip install -r .\requirements.txt
 
+ratomizer run `
+  "E:\Canna-29(1)\Appendix 9-ABNT NBR 16968-2022 EN.docx" `
+  --out ".\out\abnt_nbr_16968" `
+  --kb ".\knowledge_bases\energy_metering.json" `
+  --kb ".\knowledge_bases\energy_metering_protocol_layer.json" `
+  --kb ".\knowledge_bases\energy_metering_cosem_classes.json" `
+  --export md,csv
+
 python .\atomize.py `
   "E:\Canna-29(1)\Appendix 9-ABNT NBR 16968-2022 EN.docx" `
   --out ".\out\abnt_nbr_16968" `
@@ -45,6 +53,8 @@ python .\atomize.py `
 
 python -m unittest discover -s tests
 ```
+
+`ratomizer` is the stable machine-readable CLI for external task managers. It writes one JSON envelope to stdout and sends logs to stderr. See `docs/cli-contract.md` for the command contract, exit codes, and export file rules.
 
 ## Recommended Pipeline
 

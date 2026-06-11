@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,12 @@ import yaml
 from domain_pack import load_domain_pack
 from llm_review_schema import validate_llm_review_results
 from review_state import RequirementReviewState
+
+
+LOGGER = logging.getLogger("requirement_atomizer")
+_PACKAGE_ROOT = Path(__file__).resolve().parent
+DEFAULT_PIPELINE_PATH = _PACKAGE_ROOT / "llm_agents" / "review_pipeline.yaml"
+DEFAULT_DOMAIN_PACK_PATH = _PACKAGE_ROOT / "domain_packs" / "dlms_cosem" / "pack.yaml"
 
 
 @dataclass(frozen=True)
@@ -172,53 +179,65 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pipeline",
         type=Path,
-        default=Path("llm_agents/review_pipeline.yaml"),
+        default=DEFAULT_PIPELINE_PATH,
         help="Review pipeline YAML",
     )
     parser.add_argument(
         "--domain-pack",
         type=Path,
-        default=Path("domain_packs/dlms_cosem/pack.yaml"),
+        default=DEFAULT_DOMAIN_PACK_PATH,
         help="Optional domain pack whose review_policy is merged into runtime risk policy",
     )
     parser.add_argument("--limit", type=int, default=0, help="Optional max requirement count for trial runs")
     return parser.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
-    out_dir = args.out.expanduser().resolve()
-    pipeline_path = args.pipeline.expanduser().resolve()
+def run_review_pipeline(
+    out_dir: Path,
+    *,
+    pipeline_path: Path = DEFAULT_PIPELINE_PATH,
+    domain_pack_path: Path | None = DEFAULT_DOMAIN_PACK_PATH,
+    limit: int = 0,
+) -> dict[str, Any]:
+    out_dir = out_dir.expanduser().resolve()
+    pipeline_path = pipeline_path.expanduser().resolve()
+    LOGGER.info("loading review pipeline")
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
-    if args.limit > 0:
-        requirements = requirements[: args.limit]
-    domain_pack_path = args.domain_pack.expanduser().resolve() if args.domain_pack else None
+    if limit > 0:
+        requirements = requirements[:limit]
+    domain_pack_path = domain_pack_path.expanduser().resolve() if domain_pack_path else None
     pipeline = merge_review_policy(load_review_pipeline(pipeline_path), domain_pack_path)
+    LOGGER.info("reviewing %s requirements", len(requirements))
     reviews, states = review_requirements(requirements, pipeline)
     assert_valid_review_results(reviews)
     write_jsonl(out_dir / "llm_review_results.jsonl", reviews)
     write_jsonl(out_dir / "review_states.jsonl", states)
     event_count = append_review_state_events(out_dir / "review_state_events.jsonl", states)
-    print(
-        json.dumps(
-            {
-                "pipeline_id": pipeline.pipeline_id,
-                "out": str(out_dir),
-                "requirements": len(requirements),
-                "reviews": len(reviews),
-                "review_state_events": event_count,
-                "expert_pending": sum(1 for state in states if state.get("status") == "expert_pending"),
-                "accepted": sum(1 for state in states if state.get("status") == "accepted"),
-                "files": {
-                    "llm_review_results": "llm_review_results.jsonl",
-                    "review_states": "review_states.jsonl",
-                    "review_state_events": "review_state_events.jsonl",
-                },
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+    return {
+        "pipeline_id": pipeline.pipeline_id,
+        "out": str(out_dir),
+        "requirements": len(requirements),
+        "reviews": len(reviews),
+        "review_state_events": event_count,
+        "expert_pending": sum(1 for state in states if state.get("status") == "expert_pending"),
+        "accepted": sum(1 for state in states if state.get("status") == "accepted"),
+        "files": {
+            "llm_review_results": "llm_review_results.jsonl",
+            "review_states": "review_states.jsonl",
+            "review_state_events": "review_state_events.jsonl",
+        },
+    }
+
+
+def main() -> int:
+    args = parse_args()
+    summary = run_review_pipeline(
+        args.out,
+        pipeline_path=args.pipeline,
+        domain_pack_path=args.domain_pack,
+        limit=args.limit,
     )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
 

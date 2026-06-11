@@ -371,8 +371,11 @@ class PlatformScaffoldTests(unittest.TestCase):
         dependencies = payload["project"]["dependencies"]
         scripts = payload["project"]["scripts"]
 
+        self.assertEqual(payload["project"]["dynamic"], ["version"])
+        self.assertEqual(payload["tool"]["setuptools"]["dynamic"]["version"]["attr"], "version.__version__")
         self.assertIn("python-docx>=1.1.0", dependencies)
         self.assertIn("PyYAML>=6.0.0", dependencies)
+        self.assertEqual(scripts["ratomizer"], "cli:main")
         self.assertEqual(scripts["requirement-atomizer"], "atomize:main")
         self.assertEqual(scripts["requirement-review"], "llm_pipeline:main")
         self.assertEqual(scripts["validate-atomic-requirements"], "atomic_requirement_schema:main")
