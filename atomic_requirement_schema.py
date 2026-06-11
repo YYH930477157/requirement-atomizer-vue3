@@ -116,6 +116,30 @@ def validate_atomic_requirement_payload(
         elif any(not isinstance(match, dict) for match in kb_matches):
             issues.append(AtomicRequirementIssue("error", f"{path}.kb_matches", "kb_matches must contain objects"))
 
+    source_context = row.get("source_context")
+    if source_context is not None:
+        if not isinstance(source_context, dict):
+            issues.append(AtomicRequirementIssue("error", f"{path}.source_context", "source_context must be an object"))
+        else:
+            paragraph_text = source_context.get("paragraph_text")
+            if paragraph_text is not None and not isinstance(paragraph_text, str):
+                issues.append(
+                    AtomicRequirementIssue(
+                        "error",
+                        f"{path}.source_context.paragraph_text",
+                        "source_context.paragraph_text must be a string",
+                    )
+                )
+            prev_sentence = source_context.get("prev_sentence")
+            if prev_sentence is not None and not isinstance(prev_sentence, str):
+                issues.append(
+                    AtomicRequirementIssue(
+                        "error",
+                        f"{path}.source_context.prev_sentence",
+                        "source_context.prev_sentence must be a string or null",
+                    )
+                )
+
     ambiguity = row.get("ambiguity")
     if ambiguity is not None and not isinstance(ambiguity, bool):
         issues.append(AtomicRequirementIssue("error", f"{path}.ambiguity", "ambiguity must be a boolean"))

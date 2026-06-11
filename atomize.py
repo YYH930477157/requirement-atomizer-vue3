@@ -4,7 +4,8 @@ import argparse
 import hashlib
 import json
 import re
-from collections import Counter
+import sys
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,23 +19,10 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from atomic_requirement_schema import validate_atomic_requirements
+from kb_matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
 from output_writer import build_quality_report, write_json, write_jsonl, write_summary
+from table_pattern_engine import load_table_patterns, match_table_pattern
 
-
-TEXT_REPLACEMENTS = {
-    "\u00a0": " ",
-    "\uf020": " ",
-    "\uf03d": "=",
-    "\uf03e": ">",
-    "\u2018": "'",
-    "\u2019": "'",
-    "\u201c": '"',
-    "\u201d": '"',
-    "\u2013": "-",
-    "\u2014": "-",
-    "\u2212": "-",
-    "\u2026": "...",
-}
 
 MAJOR_HEADINGS = {
     "scope",
@@ -66,6 +54,7 @@ DOMAIN_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("power_quality", ("power quality", "qee", "quality of energy", "voltage", "current")),
     ("data_model", ("data model", "objects", "abstract object", "object related")),
 ]
+DOMAIN_RULE_PATTERNS = [(tag, compile_term_pattern(keywords)) for tag, keywords in DOMAIN_RULES]
 
 OBJECT_NAME_STOPWORDS = {
     "A",
@@ -84,6 +73,17 @@ OBJECT_NAME_STOPWORDS = {
     "You",
 }
 
+DEFAULT_ACCESS_RIGHT_CLIENTS = {
+    "RC": "remote management and measurement client",
+    "PC": "read client",
+    "SC": "service/local or specialized client depending on table context",
+    "LC": "local management and measurement client",
+}
+
+
+class AtomizerInputError(ValueError):
+    pass
+
 
 @dataclass(frozen=True)
 class KnowledgeEntry:
@@ -98,6 +98,7 @@ class KnowledgeEntry:
     definition: str
     relations: tuple[dict[str, Any], ...]
     metadata: dict[str, Any]
+    match_pattern: re.Pattern[str] | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -158,7 +159,12 @@ def is_noise(text: str) -> bool:
     return False
 
 
-def detect_heading(text: str, style_name: str) -> tuple[int, str] | None:
+def has_numbering(paragraph: Paragraph) -> bool:
+    p_pr = paragraph._p.pPr
+    return p_pr is not None and p_pr.numPr is not None
+
+
+def detect_heading(text: str, style_name: str, is_list_item: bool = False) -> tuple[int, str] | None:
     if not text or is_noise(text):
         return None
 
@@ -178,7 +184,13 @@ def detect_heading(text: str, style_name: str) -> tuple[int, str] | None:
         if not looks_like_toc_entry(title) and not looks_like_caption(text):
             return min(number.count(".") + 1, 6), f"{number} {title}"
 
-    if style_low == "list paragraph" and len(text) <= 80 and not text.endswith(".") and not looks_like_caption(text):
+    if (
+        style_low == "list paragraph"
+        and not is_list_item
+        and len(text) <= 80
+        and not text.endswith(".")
+        and not looks_like_caption(text)
+    ):
         if re.search(r"[A-Za-z]", text):
             return 2, text
 
@@ -389,10 +401,10 @@ def parse_intish(value: Any) -> int | str | None:
 
 
 def tag_domains(*texts: str) -> list[str]:
-    haystack = " ".join(t for t in texts if t).lower()
+    haystack = normalize_match_term(" ".join(t for t in texts if t))
     tags: list[str] = []
-    for tag, keywords in DOMAIN_RULES:
-        if any(keyword in haystack for keyword in keywords):
+    for tag, pattern in DOMAIN_RULE_PATTERNS:
+        if find_matched_terms(pattern, haystack, normalized=True):
             tags.append(tag)
     return tags
 
@@ -429,6 +441,7 @@ def load_knowledge_bases(paths: list[Path]) -> list[KnowledgeBase]:
                     reverse=True,
                 )
             )
+            match_pattern = compile_term_pattern(keywords)
             entries.append(
                 KnowledgeEntry(
                     kb_id=kb_id,
@@ -442,6 +455,7 @@ def load_knowledge_bases(paths: list[Path]) -> list[KnowledgeBase]:
                     definition=clean_text(raw.get("definition")),
                     relations=tuple(raw.get("relations", [])),
                     metadata=metadata,
+                    match_pattern=match_pattern,
                 )
             )
         knowledge_bases.append(
@@ -453,15 +467,6 @@ def load_knowledge_bases(paths: list[Path]) -> list[KnowledgeBase]:
             )
         )
     return knowledge_bases
-
-
-def normalize_match_term(value: str | None) -> str:
-    value = clean_text(value).lower()
-    if not value:
-        return ""
-    value = value.replace("–", "-").replace("—", "-")
-    value = re.sub(r"\s+", " ", value)
-    return value.strip()
 
 
 def stable_requirement_id(row: dict[str, Any]) -> str:
@@ -486,7 +491,7 @@ def match_knowledge(knowledge_bases: list[KnowledgeBase], *texts: str) -> list[d
     seen: set[tuple[str, str]] = set()
     for kb in knowledge_bases:
         for entry in kb.entries:
-            matched_terms = [term for term in entry.keywords if term and contains_term(haystack, term)]
+            matched_terms = find_matched_terms(entry.match_pattern, haystack, normalized=True)
             if not matched_terms:
                 continue
             key = (entry.kb_id, entry.entry_id)
@@ -509,12 +514,6 @@ def match_knowledge(knowledge_bases: list[KnowledgeBase], *texts: str) -> list[d
             )
     matches.sort(key=lambda row: (row["type"], row["name"]))
     return matches
-
-
-def contains_term(haystack: str, term: str) -> bool:
-    if len(term) <= 3 and term.isalpha():
-        return bool(re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", haystack))
-    return term in haystack
 
 
 def kb_domain_tags(matches: list[dict[str, Any]]) -> list[str]:
@@ -582,7 +581,7 @@ def extract_docx(
                 continue
 
             style_name = item.style.name if item.style is not None else ""
-            heading = detect_heading(text, style_name)
+            heading = detect_heading(text, style_name, is_list_item=has_numbering(item))
             block_type = "paragraph"
             if heading:
                 level, title = heading
@@ -758,6 +757,42 @@ def normalize_title(text: str) -> str:
     return text
 
 
+def apply_table_pattern_shadow(
+    blocks: list[dict[str, Any]],
+    table_items: list[dict[str, Any]],
+    domain_pack_dir: Path,
+) -> dict[str, Any]:
+    patterns_path = domain_pack_dir.expanduser().resolve() / "table_patterns.yaml"
+    if not patterns_path.exists():
+        raise AtomizerInputError(f"Missing table_patterns.yaml: {patterns_path}")
+    patterns = load_table_patterns(patterns_path)
+    table_items_by_block: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in table_items:
+        table_items_by_block[str(item.get("table_block_id") or "")].append(item)
+
+    by_pattern_id: Counter[str] = Counter()
+    tables_total = 0
+    tables_with_pattern = 0
+    for block in blocks:
+        if block.get("type") != "table":
+            continue
+        tables_total += 1
+        matches = match_table_pattern(block, patterns)[:3]
+        if not matches:
+            continue
+        block["pattern_matches"] = matches
+        tables_with_pattern += 1
+        by_pattern_id.update(match["pattern_id"] for match in matches)
+        for item in table_items_by_block.get(str(block.get("block_id") or ""), []):
+            item["pattern_matches"] = matches
+
+    return {
+        "tables_total": tables_total,
+        "tables_with_pattern": tables_with_pattern,
+        "by_pattern_id": dict(by_pattern_id.most_common()),
+    }
+
+
 def render_table_text(headers: list[str], rows: list[list[str]], max_rows: int = 20) -> str:
     lines = [" | ".join(headers)]
     for row in rows[:max_rows]:
@@ -772,7 +807,6 @@ def build_chunks(
     blocks: list[dict[str, Any]],
     target_chars: int = 3500,
     include_regions: set[str] | None = None,
-    keep_noise: bool = False,
 ) -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     current: list[dict[str, Any]] = []
@@ -822,7 +856,7 @@ def build_chunks(
     for block in blocks:
         if include_regions is not None and block.get("doc_region") not in include_regions:
             continue
-        if not keep_noise and block.get("noise"):
+        if block.get("noise"):
             continue
 
         block_section = tuple(block.get("section_path") or [])
@@ -932,7 +966,9 @@ def build_atomic_candidates(
             continue
         if block.get("type") != "paragraph" or block.get("noise"):
             continue
-        for sentence in split_requirement_sentences(block.get("text", "")):
+        paragraph_text = clean_text(block.get("text", ""))
+        for context in paragraph_requirement_contexts(paragraph_text):
+            sentence = context["sentence"]
             if not is_atomic_requirement_like(sentence):
                 continue
             add(
@@ -950,6 +986,11 @@ def build_atomic_candidates(
                     verification_method=verification_method_for(block.get("domain_tags", []), sentence),
                     confidence=0.68,
                     ambiguity=is_ambiguous_text(sentence),
+                    condition=condition_from_previous_sentence(context.get("prev_sentence")),
+                    source_context={
+                        "paragraph_text": truncate_text(paragraph_text, 600),
+                        "prev_sentence": context.get("prev_sentence"),
+                    },
                 )
             )
 
@@ -1037,8 +1078,10 @@ def atomic_row(
     verification_method: str,
     confidence: float,
     ambiguity: bool,
+    condition: str | None = None,
+    source_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    row = {
         "source_id": source_id,
         "source_type": source_type,
         "source_refs": source_refs,
@@ -1048,7 +1091,7 @@ def atomic_row(
         "object": object_name,
         "requirement_type": requirement_type,
         "requirement": clean_text(requirement),
-        "condition": None,
+        "condition": condition,
         "parameters": parameters,
         "verification_method": verification_method,
         "ambiguity": ambiguity,
@@ -1057,34 +1100,44 @@ def atomic_row(
         "kb_matches": compact_kb_matches(kb_matches),
         "generated_by": "rule_based_atomizer_v1",
     }
+    if source_context is not None:
+        row["source_context"] = source_context
+    return row
 
 
-def split_requirement_sentences(text: str) -> list[str]:
+def paragraph_requirement_contexts(text: str) -> list[dict[str, str | None]]:
+    sentences = split_paragraph_sentences(text)
+    contexts: list[dict[str, str | None]] = []
+    for index, sentence in enumerate(sentences):
+        contexts.append(
+            {
+                "sentence": sentence,
+                "prev_sentence": sentences[index - 1] if index > 0 else None,
+            }
+        )
+    return contexts
+
+
+def split_paragraph_sentences(text: str) -> list[str]:
     text = clean_text(text)
     if not text:
         return []
-    parts = re.split(r"(?<=[.;!?])\s+", text)
-    if len(parts) <= 1:
-        return [text]
-    sentences: list[str] = []
-    current = ""
-    for part in parts:
-        part = clean_text(part)
-        if not part:
-            continue
-        if is_atomic_requirement_like(part):
-            if current:
-                sentences.append(current)
-                current = ""
-            sentences.append(part)
-        elif current and len(current) + len(part) > 420:
-            sentences.append(current)
-            current = part
-        else:
-            current = f"{current} {part}".strip() if current else part
-    if current:
-        sentences.append(current)
-    return sentences
+    return [clean_text(part) for part in re.split(r"(?<=[.;!?])\s+", text) if clean_text(part)]
+
+
+def condition_from_previous_sentence(prev_sentence: str | None) -> str | None:
+    if not prev_sentence:
+        return None
+    if is_atomic_requirement_like(prev_sentence):
+        return None
+    return prev_sentence if re.match(r"^(if|when|where|in case|unless)\b", prev_sentence, flags=re.I) else None
+
+
+def truncate_text(text: str, max_chars: int) -> str:
+    text = clean_text(text)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
 
 
 def classify_requirement_type(text: str, domain_tags: list[str]) -> str:
@@ -1195,6 +1248,8 @@ def clean_table_header(value: str | None) -> str:
 def extract_valued_matrix_facts(fields: dict[str, Any]) -> list[dict[str, Any]]:
     if len(fields) < 3:
         return []
+    if looks_like_non_matrix_row(fields):
+        return []
     first_key = next(iter(fields), "")
     subject = clean_text(fields.get(first_key))
     if not subject:
@@ -1204,8 +1259,6 @@ def extract_valued_matrix_facts(fields: dict[str, Any]) -> list[dict[str, Any]]:
     for key, value in list(fields.items())[1:]:
         cleaned_value = clean_text(str(value))
         if not cleaned_value or is_positive_marker(cleaned_value):
-            continue
-        if looks_like_non_matrix_row(fields):
             continue
         facts.append(
             {
@@ -1634,16 +1687,11 @@ def flag_definition_candidate(item: dict[str, Any], fields: dict[str, Any]) -> d
     )
 
 
-def parse_access_rights(value: str | None) -> dict[str, Any]:
+def parse_access_rights(value: str | None, client_map: dict[str, str] | None = None) -> dict[str, Any]:
     text = clean_text(value)
     if not text:
         return {}
-    clients = [
-        ("RC", "remote management and measurement client"),
-        ("PC", "read client"),
-        ("SC", "service/local or specialized client"),
-        ("LC", "local management and measurement client"),
-    ]
+    clients = list((client_map or DEFAULT_ACCESS_RIGHT_CLIENTS).items())
     parts = [part.strip().upper() for part in text.split("/")]
     parsed_clients: list[dict[str, Any]] = []
     for index, (client_code, client_name) in enumerate(clients):
@@ -1732,6 +1780,7 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="External knowledge base JSON file. Can be provided multiple times.",
     )
+    parser.add_argument("--domain-pack", type=Path, default=None, help="Optional domain pack directory for shadow table matching.")
     return parser.parse_args()
 
 
@@ -1741,26 +1790,30 @@ def run_atomizer_pipeline(
     *,
     chunk_chars: int = 3500,
     kb_paths: list[Path] | None = None,
+    domain_pack_dir: Path | None = None,
 ) -> dict[str, Any]:
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
     if not input_path.exists():
-        raise SystemExit(f"Input file does not exist: {input_path}")
+        raise AtomizerInputError(f"Input file does not exist: {input_path}")
     if input_path.suffix.lower() != ".docx":
-        raise SystemExit("Only .docx input is supported in this first version.")
+        raise AtomizerInputError("Only .docx input is supported in this first version.")
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
     knowledge_bases = load_knowledge_bases(kb_paths or [])
 
     blocks, table_items = extract_docx(input_path, knowledge_bases=knowledge_bases)
+    pattern_shadow = None
+    if domain_pack_dir is not None:
+        pattern_shadow = apply_table_pattern_shadow(blocks, table_items, domain_pack_dir)
     mark_doc_regions(blocks, table_items)
     chunks = build_chunks(blocks, target_chars=chunk_chars, include_regions={"body"})
     body_table_items = [item for item in table_items if item.get("doc_region") == "body"]
     atomic_candidates = build_atomic_candidates(blocks, body_table_items, include_regions={"body"})
     assert_valid_atomic_requirements(atomic_candidates)
     llm_tasks = build_llm_tasks(chunks, body_table_items)
-    quality_report = build_quality_report(blocks, table_items, atomic_candidates, llm_tasks)
+    quality_report = build_quality_report(blocks, table_items, atomic_candidates, llm_tasks, pattern_shadow=pattern_shadow)
 
     block_count = write_jsonl(out_dir / "blocks.jsonl", blocks)
     chunk_count = write_jsonl(out_dir / "chunks.jsonl", chunks)
@@ -1793,6 +1846,7 @@ def run_atomizer_pipeline(
             }
             for kb in knowledge_bases
         ],
+        "domain_pack": str(domain_pack_dir.expanduser().resolve()) if domain_pack_dir else None,
         "counts": {
             "blocks": block_count,
             "chunks": chunk_count,
@@ -1819,7 +1873,17 @@ def run_atomizer_pipeline(
 
 def main() -> int:
     args = parse_args()
-    manifest = run_atomizer_pipeline(args.input, args.out, chunk_chars=args.chunk_chars, kb_paths=args.kb)
+    try:
+        manifest = run_atomizer_pipeline(
+            args.input,
+            args.out,
+            chunk_chars=args.chunk_chars,
+            kb_paths=args.kb,
+            domain_pack_dir=args.domain_pack,
+        )
+    except AtomizerInputError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
     return 0
 

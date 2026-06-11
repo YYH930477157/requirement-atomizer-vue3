@@ -850,7 +850,7 @@ python .\api_server.py --out ".\out\<run>" --port 8770
 安全注意事项：
 
 - 当前 API 默认绑定 `127.0.0.1`，CORS 已限制为本地 origin allowlist：`http://127.0.0.1:<port>`、`http://localhost:<port>` 和用于静态本地 UI 的 `null` origin。
-- `--allow-origin` 可显式补充允许的 UI origin；`--token` 可要求 `/requirements`、`/reviews`、`/review-states` 等数据端点携带 `X-Requirement-Atomizer-Token` 或 `?token=`。
+- `--allow-origin` 可显式补充允许的 UI origin；`--token` 可要求 `/requirements`、`/reviews`、`/review-states` 等数据端点携带 `X-Requirement-Atomizer-Token` 请求头。
 - `/health` 保持公开，便于启动探活；敏感标准文档评审时建议始终启用 `--token`。
 - 在 §10.6 增加写入型审核端点之前，必须将 token 或等价本地鉴权设为默认要求，并补充 CSRF/CORS 约束。
 

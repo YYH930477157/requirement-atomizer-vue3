@@ -91,6 +91,7 @@ def blocks_to_doc_ir(
                 block_type=block_type if block_type in SUPPORTED_BLOCK_TYPES else "paragraph",
                 order=int(block.get("order", 0)),
                 text_original=str(block.get("text", "")),
+                # TODO: real normalization pending; keep original text until a stable policy exists.
                 text_normalized=str(block.get("text", "")),
                 section_path=list(block.get("section_path", [])),
                 provenance=Provenance(

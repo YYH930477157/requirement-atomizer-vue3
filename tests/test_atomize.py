@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from atomize import (
+    AtomizerInputError,
+    DEFAULT_ACCESS_RIGHT_CLIENTS,
     build_atomic_candidates,
     build_quality_report,
     extract_matrix_facts,
     interpret_table_matrix,
     parse_access_rights,
+    run_atomizer_pipeline,
 )
 
 
@@ -98,6 +106,69 @@ class AtomizeTableTests(unittest.TestCase):
         )
         self.assertRegex(original_by_source["BLK-000010"]["stable_req_id"], r"^SREQ-[0-9A-F]{16}$")
 
+    def test_paragraph_candidate_keeps_source_context_and_condition(self) -> None:
+        blocks = [
+            {
+                "block_id": "BLK-000010",
+                "type": "paragraph",
+                "text": "When the meter is in test mode. The display shall show all segments.",
+                "section_path": ["Display"],
+                "domain_tags": ["meter_function"],
+                "kb_matches": [],
+                "doc_region": "body",
+                "noise": False,
+            }
+        ]
+
+        candidates = build_atomic_candidates(blocks, [], include_regions={"body"})
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["condition"], "When the meter is in test mode.")
+        self.assertEqual(candidates[0]["source_context"]["prev_sentence"], "When the meter is in test mode.")
+        self.assertEqual(
+            candidates[0]["source_context"]["paragraph_text"],
+            "When the meter is in test mode. The display shall show all segments.",
+        )
+
+    def test_plain_paragraph_candidate_keeps_context_without_condition(self) -> None:
+        blocks = [
+            {
+                "block_id": "BLK-000010",
+                "type": "paragraph",
+                "text": "The meter shall support xDLMS GET service.",
+                "section_path": ["Scope"],
+                "domain_tags": ["dlms_cosem"],
+                "kb_matches": [],
+                "doc_region": "body",
+                "noise": False,
+            }
+        ]
+
+        candidates = build_atomic_candidates(blocks, [], include_regions={"body"})
+
+        self.assertEqual(candidates[0]["condition"], None)
+        self.assertEqual(candidates[0]["source_context"]["paragraph_text"], "The meter shall support xDLMS GET service.")
+        self.assertEqual(candidates[0]["source_context"]["prev_sentence"], None)
+
+    def test_requirement_like_previous_sentence_is_not_condition(self) -> None:
+        blocks = [
+            {
+                "block_id": "BLK-000010",
+                "type": "paragraph",
+                "text": "When the relay shall disconnect the load. The display shall show all segments.",
+                "section_path": ["Display"],
+                "domain_tags": ["meter_function"],
+                "kb_matches": [],
+                "doc_region": "body",
+                "noise": False,
+            }
+        ]
+
+        candidates = build_atomic_candidates(blocks, [], include_regions={"body"})
+        by_requirement = {row["requirement"]: row for row in candidates}
+
+        self.assertIsNone(by_requirement["The display shall show all segments."]["condition"])
+
     def test_cosem_attribute_candidate_uses_object_context_and_access_rights(self) -> None:
         table_items = [
             {
@@ -145,6 +216,16 @@ class AtomizeTableTests(unittest.TestCase):
         self.assertTrue(parsed["clients"][0]["read"])
         self.assertFalse(parsed["clients"][1]["allowed"])
         self.assertTrue(parsed["clients"][3]["write"])
+
+    def test_default_access_right_clients_match_knowledge_base(self) -> None:
+        kb_path = Path(__file__).resolve().parents[1] / "knowledge_bases" / "energy_metering_protocol_layer.json"
+        payload = json.loads(kb_path.read_text(encoding="utf-8"))
+        access_model = next(entry for entry in payload["entries"] if entry["id"] == "KB-L2-ACCESS-RIGHTS-MODEL")
+        kb_clients = {row["code"]: row["meaning"] for row in access_model["client_columns"]}
+
+        self.assertEqual(set(DEFAULT_ACCESS_RIGHT_CLIENTS), {"RC", "PC", "SC", "LC"})
+        for code, name in DEFAULT_ACCESS_RIGHT_CLIENTS.items():
+            self.assertEqual(name.lower(), kb_clients[code].lower())
 
     def test_build_atomic_candidates_creates_cosem_object_instance(self) -> None:
         table_items = [
@@ -323,6 +404,28 @@ class AtomizeTableTests(unittest.TestCase):
         self.assertEqual(report["requirement_type_counts"]["functional"], 1)
         self.assertEqual(report["counts"]["ambiguous_atomic_requirements"], 1)
         self.assertEqual(report["counts"]["low_confidence_atomic_requirements"], 1)
+
+    def test_run_atomizer_pipeline_raises_input_error_for_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(AtomizerInputError) as caught:
+                run_atomizer_pipeline(Path(tmp) / "missing.docx", Path(tmp) / "out")
+
+        self.assertIsInstance(caught.exception, ValueError)
+
+    def test_atomize_cli_returns_2_for_bad_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_input = Path(tmp) / "bad.txt"
+            bad_input.write_text("not a docx", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, "atomize.py", str(bad_input), "--out", str(Path(tmp) / "out")],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Only .docx input is supported", result.stderr)
 
 
 if __name__ == "__main__":

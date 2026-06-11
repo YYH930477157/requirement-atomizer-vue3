@@ -130,8 +130,7 @@ def token_is_valid(expected_token: str, headers: Mapping[str, str], params: dict
     if not expected_token:
         return True
     header_token = headers.get(TOKEN_HEADER, "")
-    query_token = one(params, "token")
-    return header_token == expected_token or query_token == expected_token
+    return header_token == expected_token
 
 
 def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict]:

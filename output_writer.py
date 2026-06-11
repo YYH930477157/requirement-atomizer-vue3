@@ -24,6 +24,8 @@ def build_quality_report(
     table_items: list[dict[str, Any]],
     atomic_candidates: list[dict[str, Any]],
     llm_tasks: list[dict[str, Any]],
+    *,
+    pattern_shadow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     type_counts = Counter(row.get("requirement_type", "unknown") for row in atomic_candidates)
     source_counts = Counter(row.get("source_type", "unknown") for row in atomic_candidates)
@@ -40,6 +42,8 @@ def build_quality_report(
     }
     body_table_items = [item for item in table_items if item.get("doc_region") == "body"]
     body_tables_with_domain = [item for item in body_table_items if item.get("domain_tags")]
+    domain_table_ids = {item.get("item_id") for item in body_tables_with_domain}
+    domain_table_item_ids_with_candidates = table_item_ids_with_candidates & domain_table_ids
 
     return {
         "quality_report_version": "1.0",
@@ -56,12 +60,13 @@ def build_quality_report(
         },
         "coverage": {
             "body_table_candidate_ratio": ratio(len(table_item_ids_with_candidates), len(body_table_items)),
-            "domain_table_candidate_ratio": ratio(len(table_item_ids_with_candidates), len(body_tables_with_domain)),
+            "domain_table_candidate_ratio": ratio(len(domain_table_item_ids_with_candidates), len(body_tables_with_domain)),
         },
         "requirement_type_counts": dict(type_counts.most_common()),
         "source_type_counts": dict(source_counts.most_common()),
         "verification_method_counts": dict(verification_counts.most_common()),
         "domain_counts": dict(domain_counts.most_common()),
+        "pattern_engine_shadow": pattern_shadow,
         "review_queues": {
             "ambiguous": [compact_requirement(row) for row in ambiguous[:50]],
             "low_confidence": [compact_requirement(row) for row in low_confidence[:50]],

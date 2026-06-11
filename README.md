@@ -34,14 +34,16 @@ Running the tool creates:
 ## Quick Start
 
 ```powershell
-pip install -r .\requirement-atomizer\requirements.txt
+pip install -r .\requirements.txt
 
-python .\requirement-atomizer\atomize.py `
+python .\atomize.py `
   "E:\Canna-29(1)\Appendix 9-ABNT NBR 16968-2022 EN.docx" `
-  --out ".\requirement-atomizer\out\abnt_nbr_16968" `
-  --kb ".\requirement-atomizer\knowledge_bases\energy_metering.json" `
-  --kb ".\requirement-atomizer\knowledge_bases\energy_metering_protocol_layer.json" `
-  --kb ".\requirement-atomizer\knowledge_bases\energy_metering_cosem_classes.json"
+  --out ".\out\abnt_nbr_16968" `
+  --kb ".\knowledge_bases\energy_metering.json" `
+  --kb ".\knowledge_bases\energy_metering_protocol_layer.json" `
+  --kb ".\knowledge_bases\energy_metering_cosem_classes.json"
+
+python -m unittest discover -s tests
 ```
 
 ## Recommended Pipeline
@@ -72,10 +74,10 @@ This is useful for DLMS/COSEM documents because many requirements are hidden in 
 The tool supports external knowledge bases through `--kb`. This is the interface a future Windows application can expose as "attach knowledge base".
 
 ```powershell
-python .\requirement-atomizer\atomize.py `
+python .\atomize.py `
   "E:\Canna-29(1)\Appendix 9-ABNT NBR 16968-2022 EN.docx" `
-  --out ".\requirement-atomizer\out\abnt_nbr_16968" `
-  --kb ".\requirement-atomizer\knowledge_bases\energy_metering.json"
+  --out ".\out\abnt_nbr_16968" `
+  --kb ".\knowledge_bases\energy_metering.json"
 ```
 
 You can pass `--kb` multiple times. Each knowledge base is a JSON file with this shape:
@@ -199,9 +201,9 @@ parsers/docx_parser.py
 Export a DOCX into DocumentIR JSON:
 
 ```powershell
-python .\requirement-atomizer\doc_ir_export.py `
+python .\doc_ir_export.py `
   "E:\Canna-29(1)\Appendix 9-ABNT NBR 16968-2022 EN.docx" `
-  --out ".\requirement-atomizer\out\abnt_nbr_16968_atomizer_v5\document_ir.json"
+  --out ".\out\abnt_nbr_16968_atomizer_v5\document_ir.json"
 ```
 
 This is the migration target for future PDF, Excel, Markdown, or HTML parsers. The agent should consume DocIR rather than binding directly to DOCX-specific parsing details.
@@ -247,15 +249,15 @@ kb_schema.py
 Validate a knowledge base before attaching it:
 
 ```powershell
-python .\requirement-atomizer\kb_schema.py `
-  ".\requirement-atomizer\knowledge_bases\energy_metering_cosem_classes.json"
+python .\kb_schema.py `
+  ".\knowledge_bases\energy_metering_cosem_classes.json"
 ```
 
 Use strict mode when preparing a polished external KB:
 
 ```powershell
-python .\requirement-atomizer\kb_schema.py `
-  ".\requirement-atomizer\knowledge_bases\compiled_from_obsidian.json" `
+python .\kb_schema.py `
+  ".\knowledge_bases\compiled_from_obsidian.json" `
   --strict
 ```
 
@@ -279,8 +281,8 @@ schemas/test_point.schema.json
 Run the current local rule/stub review pipeline over atomizer output:
 
 ```powershell
-python .\requirement-atomizer\llm_pipeline.py `
-  --out ".\requirement-atomizer\out\abnt_nbr_16968_atomizer_v5"
+python .\llm_pipeline.py `
+  --out ".\out\abnt_nbr_16968_atomizer_v5"
 ```
 
 It writes:
@@ -321,8 +323,8 @@ High-risk or low-confidence requirements are routed to `expert_pending`; low-ris
 Local API:
 
 ```powershell
-python .\requirement-atomizer\api_server.py `
-  --out ".\requirement-atomizer\out\abnt_nbr_16968_atomizer_v5" `
+python .\api_server.py `
+  --out ".\out\abnt_nbr_16968_atomizer_v5" `
   --port 8770
 ```
 
@@ -347,7 +349,7 @@ ui/index.html
 Windows starter script:
 
 ```powershell
-.\requirement-atomizer\desktop\start-review-app.ps1 -RunReview
+.\desktop\start-review-app.ps1 -RunReview
 ```
 
 This runs the local review pipeline, starts the API in the background, and opens the review UI. It is intentionally simple so it can later be wrapped by Electron, Tauri, PyInstaller, or another Windows packaging layer.
@@ -408,15 +410,15 @@ print(repo.export_context("Image Transfer shall support image_activate"))
 ### CLI API
 
 ```powershell
-python .\requirement-atomizer\kb_query.py info
+python .\kb_query.py info
 
-python .\requirement-atomizer\kb_query.py search "class 8"
+python .\kb_query.py search "class 8"
 
-python .\requirement-atomizer\kb_query.py get "KB-L3-IC-8-CLOCK"
+python .\kb_query.py get "KB-L3-IC-8-CLOCK"
 
-python .\requirement-atomizer\kb_query.py match "Image Transfer uses image_transfer_status"
+python .\kb_query.py match "Image Transfer uses image_transfer_status"
 
-python .\requirement-atomizer\kb_query.py context "Association LN object_list shall be readable"
+python .\kb_query.py context "Association LN object_list shall be readable"
 ```
 
 All commands print JSON.
@@ -426,7 +428,7 @@ All commands print JSON.
 Start the local KB service:
 
 ```powershell
-python .\requirement-atomizer\kb_server.py --host 127.0.0.1 --port 8765
+python .\kb_server.py --host 127.0.0.1 --port 8765
 ```
 
 Endpoints:
@@ -456,29 +458,29 @@ Obsidian Markdown vault
 Export the current JSON KBs to an Obsidian vault:
 
 ```powershell
-python .\requirement-atomizer\obsidian_kb.py export `
-  --vault ".\requirement-atomizer\obsidian-vault" `
-  --kb ".\requirement-atomizer\knowledge_bases\energy_metering.json" `
-  --kb ".\requirement-atomizer\knowledge_bases\energy_metering_protocol_layer.json" `
-  --kb ".\requirement-atomizer\knowledge_bases\energy_metering_cosem_classes.json"
+python .\obsidian_kb.py export `
+  --vault ".\obsidian-vault" `
+  --kb ".\knowledge_bases\energy_metering.json" `
+  --kb ".\knowledge_bases\energy_metering_protocol_layer.json" `
+  --kb ".\knowledge_bases\energy_metering_cosem_classes.json"
 ```
 
-Open `requirement-atomizer/obsidian-vault` in Obsidian and edit the Markdown notes.
+Open `obsidian-vault` in Obsidian and edit the Markdown notes.
 
 Compile the Obsidian vault back to a runtime JSON KB:
 
 ```powershell
-python .\requirement-atomizer\obsidian_kb.py compile `
-  --vault ".\requirement-atomizer\obsidian-vault" `
-  --out ".\requirement-atomizer\knowledge_bases\compiled_from_obsidian.json" `
+python .\obsidian_kb.py compile `
+  --vault ".\obsidian-vault" `
+  --out ".\knowledge_bases\compiled_from_obsidian.json" `
   --kb-id "obsidian_energy_metering"
 ```
 
 Then use the compiled KB with any existing interface:
 
 ```powershell
-python .\requirement-atomizer\kb_query.py `
-  --kb ".\requirement-atomizer\knowledge_bases\compiled_from_obsidian.json" `
+python .\kb_query.py `
+  --kb ".\knowledge_bases\compiled_from_obsidian.json" `
   search "class 8"
 ```
 
@@ -539,9 +541,9 @@ The third layer is still a seed library, not a complete replacement for the offi
 After running the atomizer, extract candidate industry terms for KB expansion:
 
 ```powershell
-python .\requirement-atomizer\extract_terms.py `
-  ".\requirement-atomizer\out\abnt_nbr_16968" `
-  --out ".\requirement-atomizer\out\abnt_nbr_16968\candidate_terms.json"
+python .\extract_terms.py `
+  ".\out\abnt_nbr_16968" `
+  --out ".\out\abnt_nbr_16968\candidate_terms.json"
 ```
 
 Review `candidate_terms.json`, then add useful terms to a knowledge base JSON file.
@@ -551,10 +553,10 @@ Review `candidate_terms.json`, then add useful terms to a knowledge base JSON fi
 After running the atomizer, extract object instances from the document's COSEM tables:
 
 ```powershell
-python .\requirement-atomizer\extract_cosem_instances.py `
-  ".\requirement-atomizer\out\abnt_nbr_16968" `
-  --out ".\requirement-atomizer\out\abnt_nbr_16968\cosem_object_instances.json" `
-  --kb-out ".\requirement-atomizer\out\abnt_nbr_16968\document_cosem_object_instances.kb.json"
+python .\extract_cosem_instances.py `
+  ".\out\abnt_nbr_16968" `
+  --out ".\out\abnt_nbr_16968\cosem_object_instances.json" `
+  --kb-out ".\out\abnt_nbr_16968\document_cosem_object_instances.kb.json"
 ```
 
 This produces:
@@ -762,6 +764,10 @@ Use the following schema when converting each task to atomic requirements:
   "requirement_type": "security_requirement",
   "requirement": "Remote management associations shall use High Level Security.",
   "condition": "When a remote management client accesses a metering logical device",
+  "source_context": {
+    "paragraph_text": "When a remote management client accesses a metering logical device. Remote management associations shall use High Level Security.",
+    "prev_sentence": "When a remote management client accesses a metering logical device."
+  },
   "parameters": {},
   "verification_method": "configuration_check",
   "ambiguity": false,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from parsers.docx_parser import DocxParser
@@ -19,7 +20,8 @@ def main() -> int:
     input_path = args.input.expanduser().resolve()
     out_path = args.out.expanduser().resolve()
     if input_path.suffix.lower() != ".docx":
-        raise SystemExit("Only .docx input is supported by the current parser.")
+        print("Only .docx input is supported by the current parser.", file=sys.stderr)
+        return 2
     doc_ir = DocxParser().parse(input_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(doc_ir.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

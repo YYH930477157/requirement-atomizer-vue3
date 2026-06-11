@@ -9,6 +9,7 @@ from pathlib import Path
 from atomic_requirement_schema import validate_atomic_requirement_payload, validate_atomic_requirements
 from api_server import enrich_requirements, is_allowed_origin, token_is_valid
 from atomize import assert_valid_atomic_requirements
+from atomize import AtomizerInputError, apply_table_pattern_shadow
 from doc_ir import blocks_to_doc_ir
 from kb_schema import validate_kb_file, validate_kb_payload
 from llm_review_schema import validate_llm_review_result_payload, validate_llm_review_results
@@ -23,6 +24,7 @@ from llm_pipeline import (
     review_requirements,
     write_jsonl,
 )
+from output_writer import build_quality_report
 from review_state import RequirementReviewState
 from table_pattern_engine import load_table_patterns, match_table_pattern
 
@@ -66,6 +68,32 @@ class PlatformScaffoldTests(unittest.TestCase):
         matches = match_table_pattern(table, patterns)
 
         self.assertEqual(matches[0]["pattern_id"], "security_policy_bit_table")
+
+    def test_table_pattern_shadow_writes_matches_to_blocks_and_rows(self) -> None:
+        blocks = [
+            {
+                "block_id": "BLK-1",
+                "type": "table",
+                "table_id": "TBL-1",
+                "table_title": "COSEM objects",
+                "headers": ["#", "Object/attribute name", "CL", "Value"],
+            }
+        ]
+        table_items = [{"item_id": "TBL-1-R1", "table_block_id": "BLK-1"}]
+
+        summary = apply_table_pattern_shadow(blocks, table_items, ROOT / "domain_packs" / "dlms_cosem")
+
+        self.assertEqual(summary["tables_total"], 1)
+        self.assertEqual(summary["tables_with_pattern"], 1)
+        self.assertEqual(blocks[0]["pattern_matches"][0]["pattern_id"], "cosem_object_table")
+        self.assertEqual(table_items[0]["pattern_matches"][0]["generic_type"], "inherited_context_table")
+        report = build_quality_report(blocks, table_items, [], [], pattern_shadow=summary)
+        self.assertEqual(report["pattern_engine_shadow"]["by_pattern_id"]["cosem_object_table"], 1)
+
+    def test_table_pattern_shadow_requires_table_patterns_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(AtomizerInputError, "table_patterns.yaml"):
+                apply_table_pattern_shadow([], [], Path(tmp))
 
     def test_kb_schema_accepts_existing_kb_and_rejects_missing_fields(self) -> None:
         issues = validate_kb_file(ROOT / "knowledge_bases" / "energy_metering.json")
@@ -312,11 +340,11 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertTrue(is_allowed_origin("", allowed))
         self.assertFalse(is_allowed_origin("https://example.com", allowed))
 
-    def test_api_token_accepts_header_or_query_value(self) -> None:
+    def test_api_token_accepts_header_and_rejects_query_value(self) -> None:
         params = {"token": ["secret"]}
 
         self.assertTrue(token_is_valid("secret", {"X-Requirement-Atomizer-Token": "secret"}, {}))
-        self.assertTrue(token_is_valid("secret", {}, params))
+        self.assertFalse(token_is_valid("secret", {}, params))
         self.assertFalse(token_is_valid("secret", {}, {}))
         self.assertTrue(token_is_valid("", {}, {}))
 

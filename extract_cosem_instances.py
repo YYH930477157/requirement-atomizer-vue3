@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -147,7 +148,8 @@ def main() -> int:
     input_path = args.input.expanduser().resolve()
     table_items_path = input_path / "table_items.jsonl" if input_path.is_dir() else input_path
     if not table_items_path.exists():
-        raise SystemExit(f"Missing table_items.jsonl: {table_items_path}")
+        print(f"Missing table_items.jsonl: {table_items_path}", file=sys.stderr)
+        return 2
 
     instances = extract_instances(table_items_path)
     out_path = args.out.expanduser().resolve() if args.out else table_items_path.parent / "cosem_object_instances.json"

@@ -5,16 +5,16 @@
   "tool_version": "0.2.0",
   "counts": {
     "blocks": 1013,
-    "chunks": 366,
+    "chunks": 358,
     "table_items": 2075,
     "body_table_items": 2075,
     "atomic_requirements": 2337,
-    "llm_tasks": 2394,
+    "llm_tasks": 2246,
     "cosem_object_instances": 363
   },
   "coverage": {
     "body_table_candidate_ratio": 0.9928,
-    "domain_table_candidate_ratio": 0.9966
+    "domain_table_candidate_ratio": 0.9926
   },
   "requirement_type_counts": {
     "cosem_attribute_access": 1425,
@@ -23,16 +23,16 @@
     "measurement_quantity_unit": 131,
     "event_definition": 93,
     "access_control": 41,
+    "functional": 18,
     "capability_matrix": 15,
     "event_group_retention": 13,
-    "cosem_object": 11,
-    "functional": 11,
-    "communication": 10,
     "security_policy_bit": 8,
     "flag_definition": 8,
+    "communication": 7,
     "security": 6,
+    "cosem_object": 6,
+    "event": 5,
     "security_policy_state": 5,
-    "event": 4,
     "association_security_matrix": 4,
     "security_suite_definition": 3
   },

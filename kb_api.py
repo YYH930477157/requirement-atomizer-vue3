@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+from kb_matching import clean_text, compile_term_pattern, find_matched_terms, normalize_match_term
 
 
 KNOWN_ENTRY_KEYS = {
@@ -33,6 +35,7 @@ class KBEntry:
     definition: str
     relations: tuple[dict[str, Any], ...]
     metadata: dict[str, Any]
+    match_pattern: re.Pattern[str] | None = field(default=None, compare=False, repr=False)
 
     def to_dict(self, include_metadata: bool = True) -> dict[str, Any]:
         row = {
@@ -90,6 +93,7 @@ class KnowledgeRepository:
                     key=len,
                     reverse=True,
                 )
+                match_pattern = compile_term_pattern(keywords)
                 metadata = {key: value for key, value in raw.items() if key not in KNOWN_ENTRY_KEYS}
                 entries.append(
                     KBEntry(
@@ -104,6 +108,7 @@ class KnowledgeRepository:
                         definition=clean_text(raw.get("definition")),
                         relations=tuple(raw.get("relations", [])),
                         metadata=metadata,
+                        match_pattern=match_pattern,
                     )
                 )
             infos.append(
@@ -133,13 +138,14 @@ class KnowledgeRepository:
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         normalized = normalize_match_term(query)
+        query_pattern = compile_term_pattern([normalized])
         scored: list[tuple[int, KBEntry, list[str]]] = []
         for entry in self.entries:
             if layer and entry.layer != layer:
                 continue
             if entry_type and entry.entry_type != entry_type:
                 continue
-            score, matched_terms = score_entry(entry, normalized)
+            score, matched_terms = score_entry(entry, normalized, query_pattern)
             if score > 0:
                 scored.append((score, entry, matched_terms))
         scored.sort(key=lambda row: (-row[0], row[1].name))
@@ -160,7 +166,7 @@ class KnowledgeRepository:
                 continue
             if entry_type and entry.entry_type != entry_type:
                 continue
-            matched_terms = [term for term in entry.keywords if term and contains_term(haystack, term)]
+            matched_terms = find_matched_terms(entry.match_pattern, haystack, normalized=True)
             if matched_terms:
                 score = sum(max(1, len(term)) for term in matched_terms)
                 matches.append((score, entry, matched_terms[:8]))
@@ -185,7 +191,7 @@ class KnowledgeRepository:
         }
 
 
-def score_entry(entry: KBEntry, query: str) -> tuple[int, list[str]]:
+def score_entry(entry: KBEntry, query: str, query_pattern: re.Pattern[str] | None = None) -> tuple[int, list[str]]:
     if not query:
         return 0, []
     matched_terms: list[str] = []
@@ -196,9 +202,13 @@ def score_entry(entry: KBEntry, query: str) -> tuple[int, list[str]]:
     if query == normalize_match_term(entry.name):
         score += 100
         matched_terms.append(entry.name)
-    elif contains_term(searchable, query):
+    elif find_matched_terms(query_pattern, searchable, normalized=True):
         score += 40
         matched_terms.append(query)
+    query_matched_terms = find_matched_terms(entry.match_pattern, query, normalized=True)
+    if query_matched_terms:
+        score += sum(min(30, len(term)) for term in query_matched_terms)
+        matched_terms.extend(query_matched_terms)
     for term in entry.keywords:
         if query and (query in term or term in query):
             score += min(30, len(term))
@@ -220,31 +230,3 @@ def compact_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
             value = metadata[key]
             compact[key] = value[:12] if isinstance(value, list) else value
     return compact
-
-
-def clean_text(value: Any) -> str:
-    if value is None:
-        return ""
-    value = str(value)
-    value = value.replace("\u00a0", " ")
-    value = value.replace("\uf020", " ")
-    value = value.replace("\uf03d", "=")
-    value = value.replace("\uf03e", ">")
-    value = re.sub(r"\s+", " ", value)
-    return value.strip()
-
-
-def normalize_match_term(value: Any) -> str:
-    value = clean_text(value).lower()
-    value = value.replace("–", "-").replace("—", "-")
-    value = re.sub(r"\s+", " ", value)
-    return value.strip()
-
-
-def contains_term(haystack: str, term: str) -> bool:
-    if not haystack or not term:
-        return False
-    if len(term) <= 3 and term.isalpha():
-        return bool(re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", haystack))
-    return term in haystack
-

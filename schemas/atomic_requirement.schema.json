@@ -30,6 +30,14 @@
     "requirement_type": {"type": "string", "minLength": 1},
     "requirement": {"type": "string", "minLength": 1},
     "condition": {"type": ["string", "null"]},
+    "source_context": {
+      "type": "object",
+      "properties": {
+        "paragraph_text": {"type": "string"},
+        "prev_sentence": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
     "parameters": {"type": "object"},
     "verification_method": {"type": "string", "minLength": 1},
     "ambiguity": {"type": "boolean"},
