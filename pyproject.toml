@@ -45,6 +45,7 @@ py-modules = [
   "kb_schema",
   "kb_server",
   "llm_review_schema",
+  "llm_client",
   "llm_pipeline",
   "obsidian_kb",
   "output_writer",

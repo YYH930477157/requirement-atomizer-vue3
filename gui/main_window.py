@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         self.table.setColumnWidth(4, 95)
         self.table.setColumnWidth(5, 145)
         self.table.setColumnWidth(6, 72)
+        self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
 
         self.detail_panel = DetailPanel()
         splitter = QSplitter()

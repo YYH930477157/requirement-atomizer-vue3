@@ -6,13 +6,114 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 from tests.docx_fixtures import write_minimal_docx
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class MockReviewService:
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+        self.requests: list[dict[str, Any]] = []
+        service = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                service.requests.append(body)
+                if service.fail:
+                    payload = {"error": "unavailable"}
+                    status = 500
+                else:
+                    status = 200
+                    payload = {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps(
+                                        {
+                                            "decision": "accept",
+                                            "risk": "low_risk",
+                                            "confidence": 0.91,
+                                            "review_notes": ["mock review"],
+                                            "expert_questions": [],
+                                        }
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                body_bytes = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body_bytes)))
+                self.end_headers()
+                self.wfile.write(body_bytes)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def base_url(self) -> str:
+        host, port = self.server.server_address
+        return f"http://{host}:{port}/v1"
+
+    def __enter__(self) -> "MockReviewService":
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.server.shutdown()
+        self.thread.join(timeout=5)
+        self.server.server_close()
+
+
+def write_review_pipeline(path: Path, base_url: str) -> None:
+    path.write_text(
+        f"""
+schema_version: "0.2"
+pipeline_id: "cli_review_pipeline"
+model_routes:
+  default: "stub"
+  openai_compatible:
+    base_url: "{base_url}"
+    model: "cli-mock-model"
+    api_key_env: ""
+    temperature: 0.0
+    timeout_s: 2
+    max_retries: 0
+    concurrency: 2
+review_scope:
+  mode: all
+  confidence_below: 0.75
+  always_review_ambiguous: true
+  always_review_source_types: ["paragraph", "table_row"]
+  always_review_types: []
+model_routing:
+  low_risk:
+    provider: "stub"
+    model: "local-rule-reviewer"
+  high_risk:
+    provider: "stub"
+    model: "local-strict-reviewer"
+risk_policy:
+  high_risk_types: []
+  low_confidence_threshold: 0.75
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 class CliContractTests(unittest.TestCase):
@@ -82,6 +183,142 @@ class CliContractTests(unittest.TestCase):
         self.assertTrue(envelope["ok"])
         self.assertEqual(envelope["command"], "run")
         self.assertEqual(envelope["review"]["reviews"], 2)
+
+    def test_review_openai_route_reports_llm_review_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            input_path = tmp_path / "minimal.docx"
+            out_dir = tmp_path / "out"
+            write_minimal_docx(input_path)
+            atomize = self.run_cli("run", str(input_path), "--out", str(out_dir), "--skip-review", "--quiet")
+            self.assertEqual(atomize.returncode, 0, atomize.stderr)
+
+            with MockReviewService() as service:
+                pipeline_path = tmp_path / "review_pipeline.yaml"
+                write_review_pipeline(pipeline_path, service.base_url)
+                result = self.run_cli(
+                    "review",
+                    "--out",
+                    str(out_dir),
+                    "--review-pipeline",
+                    str(pipeline_path),
+                    "--llm-route",
+                    "openai_compatible",
+                    "--review-scope",
+                    "all",
+                    "--quiet",
+                )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads(result.stdout)
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(envelope["review"]["llm_reviewed"], 2)
+        self.assertEqual(envelope["review"]["rule_stub"], 0)
+        self.assertEqual(envelope["review"]["llm_failed"], 0)
+
+    def test_review_openai_route_unavailable_returns_llm_error_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            rows = [
+                {
+                    "req_id": f"AREQ-{index:06d}",
+                    "stable_req_id": f"SREQ-00000000000002{index:02X}",
+                    "source_id": f"SRC-{index}",
+                    "source_type": "paragraph",
+                    "source_refs": [f"SRC-{index}"],
+                    "section_path": ["Scope"],
+                    "domain": "dlms_cosem",
+                    "object": "",
+                    "requirement_type": "event_definition",
+                    "requirement": f"Requirement {index} shall be reviewed.",
+                    "parameters": {},
+                    "verification_method": "test",
+                    "ambiguity": False,
+                    "review_questions": [],
+                    "confidence": 0.70,
+                    "kb_matches": [],
+                    "generated_by": "rule_based_atomizer_v1",
+                }
+                for index in range(6)
+            ]
+            with (out_dir / "atomic_requirements.jsonl").open("w", encoding="utf-8", newline="\n") as f:
+                for row in rows:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+            with MockReviewService(fail=True) as service:
+                pipeline_path = tmp_path / "review_pipeline.yaml"
+                write_review_pipeline(pipeline_path, service.base_url)
+                result = self.run_cli(
+                    "review",
+                    "--out",
+                    str(out_dir),
+                    "--review-pipeline",
+                    str(pipeline_path),
+                    "--llm-route",
+                    "openai_compatible",
+                    "--review-scope",
+                    "all",
+                    "--quiet",
+                )
+
+        self.assertEqual(result.returncode, 4)
+        envelope = json.loads(result.stdout)
+        self.assertFalse(envelope["ok"])
+        self.assertEqual(envelope["error"]["type"], "llm_error")
+
+    def test_review_openai_route_small_batch_unavailable_returns_llm_error_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            rows = [
+                {
+                    "req_id": f"AREQ-{index:06d}",
+                    "stable_req_id": f"SREQ-00000000000004{index:02X}",
+                    "source_id": f"SRC-{index}",
+                    "source_type": "paragraph",
+                    "source_refs": [f"SRC-{index}"],
+                    "section_path": ["Scope"],
+                    "domain": "dlms_cosem",
+                    "object": "",
+                    "requirement_type": "event_definition",
+                    "requirement": f"Requirement {index} shall be reviewed.",
+                    "parameters": {},
+                    "verification_method": "test",
+                    "ambiguity": False,
+                    "review_questions": [],
+                    "confidence": 0.70,
+                    "kb_matches": [],
+                    "generated_by": "rule_based_atomizer_v1",
+                }
+                for index in range(2)
+            ]
+            with (out_dir / "atomic_requirements.jsonl").open("w", encoding="utf-8", newline="\n") as f:
+                for row in rows:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+            with MockReviewService(fail=True) as service:
+                pipeline_path = tmp_path / "review_pipeline.yaml"
+                write_review_pipeline(pipeline_path, service.base_url)
+                result = self.run_cli(
+                    "review",
+                    "--out",
+                    str(out_dir),
+                    "--review-pipeline",
+                    str(pipeline_path),
+                    "--llm-route",
+                    "openai_compatible",
+                    "--review-scope",
+                    "all",
+                    "--quiet",
+                )
+
+        self.assertEqual(result.returncode, 4)
+        envelope = json.loads(result.stdout)
+        self.assertFalse(envelope["ok"])
+        self.assertEqual(envelope["error"]["type"], "llm_error")
 
     def test_run_rejects_invalid_export_format_before_pipeline_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

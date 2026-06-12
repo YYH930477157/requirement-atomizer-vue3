@@ -56,6 +56,17 @@ python -m unittest discover -s tests
 
 `ratomizer` is the stable machine-readable CLI for external task managers. It writes one JSON envelope to stdout and sends logs to stderr. See `docs/cli-contract.md` for the command contract, exit codes, and export file rules.
 
+## GUI Workbench
+
+Install the optional GUI dependencies and start the local review workbench:
+
+```powershell
+pip install -e ".[gui]"
+ratomizer-gui
+```
+
+The GUI reads and writes the same output directory files as the CLI, including `atomic_requirements.jsonl`, `llm_review_results.jsonl`, `review_states.jsonl`, and exported Markdown/CSV files.
+
 ## Recommended Pipeline
 
 The intended workflow is:
@@ -295,14 +306,56 @@ python .\llm_pipeline.py `
   --out ".\out\abnt_nbr_16968_atomizer_v5"
 ```
 
+By default, the review route is still `stub`, so the pipeline does not call any external service. To use an OpenAI-compatible local model such as Ollama:
+
+```yaml
+model_routes:
+  default: "openai_compatible"
+  openai_compatible:
+    base_url: "http://127.0.0.1:11434/v1"
+    model: "qwen2.5:14b"
+    api_key_env: "RATOMIZER_LLM_API_KEY"
+    temperature: 0.0
+    concurrency: 4
+```
+
+For Zhipu GLM cloud, keep the API key in the environment and change only the endpoint and model:
+
+```powershell
+$env:RATOMIZER_LLM_API_KEY = "<your-api-key>"
+```
+
+```yaml
+model_routes:
+  default: "openai_compatible"
+  openai_compatible:
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-4-flash"
+    api_key_env: "RATOMIZER_LLM_API_KEY"
+    temperature: 0.0
+    concurrency: 4
+```
+
+You can override the configured route for one run:
+
+```powershell
+ratomizer review `
+  --out ".\out\abnt_nbr_16968_atomizer_v5" `
+  --llm-route openai_compatible `
+  --review-scope targeted
+```
+
+`targeted` scope sends ambiguous, low-confidence, mandatory-review, and selected source candidates to the LLM. Non-targeted candidates keep the local stub result. LLM review results are cached in `llm_review_cache.jsonl` by stable requirement id, model, and prompt version.
+
 It writes:
 
 ```text
 llm_review_results.jsonl
 review_states.jsonl
+llm_review_cache.jsonl
 ```
 
-The current pipeline has operations for risk classification, correction, duplicate merging, gap finding, and test-point generation. The model route is still `stub`, so this is ready for plugging in a real LLM worker without changing downstream files.
+The current pipeline has operations for risk classification, correction, duplicate merging, gap finding, and test-point generation. The OpenAI-compatible route writes the same review and state files as the stub route, so downstream CLI export and GUI review flows do not change.
 
 ### P2-2 Expert Review State Machine
 

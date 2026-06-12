@@ -5,9 +5,9 @@ Requirement Atomizer exposes a stable command line interface for task managers a
 ## Commands
 
 ```powershell
-ratomizer run <input.docx> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--skip-review] [--export md,csv] [--quiet | --verbose]
+ratomizer run <input.docx> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--skip-review] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--export md,csv] [--quiet | --verbose]
 ratomizer atomize <input.docx> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--quiet | --verbose]
-ratomizer review --out DIR [--quiet | --verbose]
+ratomizer review --out DIR [--review-pipeline FILE] [--domain-pack FILE] [--limit N] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--quiet | --verbose]
 ratomizer export --out DIR --format md|csv [--status all|accepted|expert_pending|candidate]
 ratomizer --version
 ```
@@ -31,7 +31,12 @@ All non-version commands write exactly one JSON object to stdout.
   "ok": true,
   "output_dir": "D:/path/to/out",
   "manifest": {},
-  "review": {},
+  "review": {
+    "reviews": 2337,
+    "llm_reviewed": 340,
+    "rule_stub": 1997,
+    "llm_failed": 0
+  },
   "quality_summary": {
     "atomic_requirements": 2337,
     "ambiguous": 6,
@@ -66,6 +71,7 @@ Argument parser errors raised before command dispatch, such as an invalid `ratom
 | 0 | Success | Command completed and stdout contains `ok: true`. |
 | 2 | Input error | Missing input, non-DOCX input, missing domain pack file, or invalid arguments detected by the runtime. |
 | 3 | Pipeline or validation error | Atomic requirement schema validation failure or output write/validation errors. |
+| 4 | LLM service unavailable | OpenAI-compatible review route fails the first 5 LLM connection attempts. |
 | 1 | Unexpected exception | Any unclassified crash. Traceback is written to stderr. |
 
 ## Stderr Logging
@@ -96,6 +102,7 @@ Review output files:
 - `llm_review_results.jsonl`
 - `review_states.jsonl`
 - `review_state_events.jsonl`
+- `llm_review_cache.jsonl` when `openai_compatible` route is used
 
 Export output files:
 
@@ -116,6 +123,15 @@ ratomizer run `
   --kb ".\knowledge_bases\energy_metering_protocol_layer.json" `
   --kb ".\knowledge_bases\energy_metering_cosem_classes.json" `
   --export md,csv
+```
+
+Review with an OpenAI-compatible local or cloud endpoint configured in `llm_agents/review_pipeline.yaml`:
+
+```powershell
+ratomizer review `
+  --out ".\out\abnt_nbr_16968_atomizer_v5" `
+  --llm-route openai_compatible `
+  --review-scope targeted
 ```
 
 Export accepted requirements only:

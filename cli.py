@@ -11,6 +11,7 @@ from typing import Any
 
 from atomize import AtomizerInputError, AtomizerPipelineError, run_atomizer_pipeline
 from export_requirements import export_requirements
+from llm_client import LLMConnectionError
 from llm_pipeline import run_review_pipeline
 from version import __version__
 
@@ -61,6 +62,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_atomize_arguments(run)
     run.add_argument("--skip-review", action="store_true")
     run.add_argument("--export", default="", help="Comma-separated export formats: md,csv")
+    add_review_route_arguments(run)
     add_verbosity_arguments(run)
 
     atomize = subparsers.add_parser("atomize", help="Run only the atomizer stage.")
@@ -69,6 +71,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     review = subparsers.add_parser("review", help="Run only the review stage.")
     review.add_argument("--out", type=Path, required=True)
+    review.add_argument("--review-pipeline", type=Path, default=None, help="Review pipeline YAML")
+    review.add_argument("--domain-pack", type=Path, default=None, help="Optional domain pack pack.yaml")
+    review.add_argument("--limit", type=int, default=0, help="Optional max requirement count")
+    add_review_route_arguments(review)
     add_verbosity_arguments(review)
 
     export = subparsers.add_parser("export", help="Export atomic requirements.")
@@ -99,6 +105,11 @@ def add_verbosity_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--verbose", action="store_true")
 
 
+def add_review_route_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default=None)
+    parser.add_argument("--review-scope", choices=["targeted", "all"], default=None)
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_stdio()
     args = parse_args(argv)
@@ -122,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
             raise AtomizerInputError(f"Unknown command: {args.command}")
     except AtomizerInputError as exc:
         return write_error(args.command or "", "input_error", str(exc), 2)
+    except LLMConnectionError as exc:
+        return write_error(args.command or "", "llm_error", str(exc), 4)
     except (AtomizerPipelineError, OSError, ValueError) as exc:
         return write_error(args.command or "", "pipeline_error", str(exc), 3)
     except Exception as exc:
@@ -148,7 +161,7 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
     review_summary = None
     if not args.skip_review:
         review_started = time.perf_counter()
-        review_summary = run_review_pipeline(args.out)
+        review_summary = run_review_pipeline(args.out, route=args.llm_route, scope=args.review_scope)
         timing_ms["review"] = elapsed_ms(review_started)
 
     exports: list[str] = []
@@ -182,7 +195,16 @@ def command_atomize(args: argparse.Namespace, started: float, timing_ms: dict[st
 
 
 def command_review(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
-    review_summary = run_review_pipeline(args.out)
+    kwargs: dict[str, Any] = {
+        "limit": args.limit,
+        "route": args.llm_route,
+        "scope": args.review_scope,
+    }
+    if args.review_pipeline is not None:
+        kwargs["pipeline_path"] = args.review_pipeline
+    if args.domain_pack is not None:
+        kwargs["domain_pack_path"] = args.domain_pack
+    review_summary = run_review_pipeline(args.out, **kwargs)
     timing_ms["review"] = elapsed_ms(started)
     timing_ms["total"] = timing_ms["review"]
     return success_envelope("review", args.out, review=review_summary, timing_ms=timing_ms)

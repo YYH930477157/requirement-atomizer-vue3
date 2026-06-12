@@ -1,5 +1,26 @@
-schema_version: "0.1"
+schema_version: "0.2"
 pipeline_id: "default_requirement_review"
+
+model_routes:
+  default: "stub"
+  openai_compatible:
+    base_url: "http://127.0.0.1:11434/v1"
+    model: "qwen2.5:14b"
+    api_key_env: "RATOMIZER_LLM_API_KEY"
+    temperature: 0.0
+    max_tokens: 1024
+    timeout_s: 60.0
+    max_retries: 3
+    concurrency: 4
+
+review_scope:
+  mode: "targeted"
+  confidence_below: 0.75
+  always_review_ambiguous: true
+  always_review_source_types:
+    - "paragraph"
+    - "table_row"
+  always_review_types: []
 
 operations:
   - operation_id: "classify_risk"
