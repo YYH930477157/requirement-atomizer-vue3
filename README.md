@@ -67,6 +67,8 @@ ratomizer-gui
 
 The GUI reads and writes the same output directory files as the CLI, including `atomic_requirements.jsonl`, `llm_review_results.jsonl`, `review_states.jsonl`, and exported Markdown/CSV files.
 
+The GUI uses the configured review pipeline. To enable real LLM review from the GUI, edit `llm_agents/review_pipeline.yaml` and set `model_routes.default` to `openai_compatible`; keep the API key in the environment variable named by `api_key_env`.
+
 ## Recommended Pipeline
 
 The intended workflow is:
@@ -317,6 +319,7 @@ model_routes:
     api_key_env: "RATOMIZER_LLM_API_KEY"
     temperature: 0.0
     concurrency: 4
+    connection_failure_abort: 10
 ```
 
 For Zhipu GLM cloud, keep the API key in the environment and change only the endpoint and model:
@@ -334,6 +337,7 @@ model_routes:
     api_key_env: "RATOMIZER_LLM_API_KEY"
     temperature: 0.0
     concurrency: 4
+    connection_failure_abort: 10
 ```
 
 You can override the configured route for one run:

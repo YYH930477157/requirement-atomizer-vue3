@@ -22,6 +22,7 @@ python .\llm_pipeline.py --out DIR
 ## Stdout Envelope
 
 All non-version commands write exactly one JSON object to stdout.
+The stdout byte stream is UTF-8 encoded; consumers must decode it as UTF-8. Windows callers that decode pipes with the default GBK code page may fail on non-ASCII paths or messages.
 
 ```json
 {
@@ -71,7 +72,7 @@ Argument parser errors raised before command dispatch, such as an invalid `ratom
 | 0 | Success | Command completed and stdout contains `ok: true`. |
 | 2 | Input error | Missing input, non-DOCX input, missing domain pack file, or invalid arguments detected by the runtime. |
 | 3 | Pipeline or validation error | Atomic requirement schema validation failure or output write/validation errors. |
-| 4 | LLM service unavailable | OpenAI-compatible review route fails the first 5 LLM connection attempts. |
+| 4 | LLM service unavailable | OpenAI-compatible review route fails the initial LLM connection probe or reaches the configured consecutive connection failure abort threshold. |
 | 1 | Unexpected exception | Any unclassified crash. Traceback is written to stderr. |
 
 ## Stderr Logging

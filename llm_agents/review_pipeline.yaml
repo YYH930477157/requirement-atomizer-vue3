@@ -12,6 +12,7 @@ model_routes:
     timeout_s: 60.0
     max_retries: 3
     concurrency: 4
+    connection_failure_abort: 10
 
 review_scope:
   mode: "targeted"

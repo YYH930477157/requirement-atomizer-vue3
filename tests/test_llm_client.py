@@ -115,6 +115,23 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(len(service.requests), 2)
         self.assertIn("Only output valid JSON", service.requests[1]["messages"][-1]["content"])
 
+    def test_json_array_triggers_one_repair_request(self) -> None:
+        with MockOpenAIService(
+            [
+                {"body": openai_response([{"decision": "accept", "confidence": 0.9}])},
+                {"body": openai_response({"decision": "accept", "confidence": 0.9})},
+            ]
+        ) as service:
+            result = chat_json(
+                LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="", timeout_s=2, max_retries=0),
+                "system",
+                "user",
+            )
+
+        self.assertEqual(result["decision"], "accept")
+        self.assertEqual(len(service.requests), 2)
+        self.assertIn("Only output valid JSON", service.requests[1]["messages"][-1]["content"])
+
     def test_bad_json_after_repair_raises_response_error(self) -> None:
         with MockOpenAIService(
             [

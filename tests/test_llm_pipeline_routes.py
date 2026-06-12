@@ -72,7 +72,14 @@ def openai_review_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {"choices": [{"message": {"content": json.dumps(payload)}}]}
 
 
-def write_pipeline_config(path: Path, base_url: str, *, default_route: str = "openai_compatible") -> None:
+def write_pipeline_config(
+    path: Path,
+    base_url: str,
+    *,
+    default_route: str = "openai_compatible",
+    connection_failure_abort: int | None = None,
+) -> None:
+    abort_line = f"\n    connection_failure_abort: {connection_failure_abort}" if connection_failure_abort is not None else ""
     path.write_text(
         f"""
 schema_version: "0.2"
@@ -98,7 +105,7 @@ model_routes:
     max_tokens: 512
     timeout_s: 2
     max_retries: 0
-    concurrency: 2
+    concurrency: 2{abort_line}
 review_scope:
   mode: targeted
   confidence_below: 0.75
@@ -327,6 +334,27 @@ class LLMPipelineRouteTests(unittest.TestCase):
                 pipeline_path = tmp_path / "review_pipeline.yaml"
                 write_pipeline_config(pipeline_path, service.base_url)
                 with self.assertRaisesRegex(LLMConnectionError, "invalid api key"):
+                    run_review_pipeline(out_dir, pipeline_path=pipeline_path, route="openai_compatible")
+
+    def test_consecutive_connection_failures_abort_mid_batch(self) -> None:
+        def handler(body: dict[str, Any], count: int) -> dict[str, Any]:
+            if count <= 3:
+                return {"body": openai_review()}
+            return {"status": 500, "body": {"error": "connection lost"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [requirement(f"SREQ-00000000000004{index:02X}", confidence=0.70) for index in range(10)],
+            )
+
+            with ScriptedOpenAIService(handler) as service:
+                pipeline_path = tmp_path / "review_pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url, connection_failure_abort=3)
+                with self.assertRaisesRegex(LLMConnectionError, "consecutive connection failures"):
                     run_review_pipeline(out_dir, pipeline_path=pipeline_path, route="openai_compatible")
 
 

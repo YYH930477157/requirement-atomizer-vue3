@@ -44,7 +44,7 @@ def chat_json_messages(config: LLMClientConfig, messages: list[dict[str, str]]) 
     content = _chat_content(config, messages)
     try:
         return _loads_json_content(content)
-    except json.JSONDecodeError as first_error:
+    except (json.JSONDecodeError, LLMResponseError) as first_error:
         repair_messages = [
             *messages,
             {"role": "assistant", "content": content},
@@ -61,6 +61,8 @@ def chat_json_messages(config: LLMClientConfig, messages: list[dict[str, str]]) 
             return _loads_json_content(repaired_content)
         except json.JSONDecodeError as second_error:
             raise LLMResponseError(f"LLM response is not valid JSON after repair: {second_error}") from second_error
+        except LLMResponseError as second_error:
+            raise LLMResponseError(f"LLM response is not a JSON object after repair: {second_error}") from second_error
 
 
 def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> str:

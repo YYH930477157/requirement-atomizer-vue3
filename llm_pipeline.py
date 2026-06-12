@@ -193,6 +193,7 @@ def review_requirements_with_openai(
     client_config = llm_config_from_route(route_payload)
     scope_config = effective_review_scope(pipeline, scope)
     concurrency = max(1, int(route_payload.get("concurrency", 1) or 1))
+    connection_failure_abort = max(1, int(route_payload.get("connection_failure_abort", 10) or 10))
     cache_path = out_dir / "llm_review_cache.jsonl"
     cache = read_llm_review_cache(cache_path)
 
@@ -251,6 +252,7 @@ def review_requirements_with_openai(
         detail = sample_connection_errors[0] if sample_connection_errors else "initial review attempts failed"
         raise LLMConnectionError(f"LLM service unavailable: all initial review attempts failed: {detail}")
 
+    consecutive_connection_failures = 0
     remaining = pending[FAST_FAIL_SAMPLE_SIZE:]
     if remaining:
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
@@ -263,11 +265,23 @@ def review_requirements_with_openai(
                 requirement = requirements[index]
                 try:
                     review = future.result()
+                except LLMConnectionError as exc:
+                    consecutive_connection_failures += 1
+                    review = build_stub_review(requirement, pipeline, unavailable_reason=str(exc))
+                    rule_stub += 1
+                    llm_failed += 1
+                    if consecutive_connection_failures >= connection_failure_abort:
+                        raise LLMConnectionError(
+                            "LLM service unavailable: "
+                            f"{consecutive_connection_failures} consecutive connection failures: {exc}"
+                        ) from exc
                 except LLMError as exc:
+                    consecutive_connection_failures = 0
                     review = build_stub_review(requirement, pipeline, unavailable_reason=str(exc))
                     rule_stub += 1
                     llm_failed += 1
                 else:
+                    consecutive_connection_failures = 0
                     llm_reviewed += 1
                     completed_llm += 1
                     record_progress()
