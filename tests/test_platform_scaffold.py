@@ -532,6 +532,7 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertEqual(payload["tool"]["setuptools"]["dynamic"]["version"]["attr"], "version.__version__")
         self.assertIn("python-docx>=1.1.0", dependencies)
         self.assertIn("PyYAML>=6.0.0", dependencies)
+        self.assertIn("openpyxl>=3.1.0", dependencies)
         self.assertIn("llm_client", py_modules)
         self.assertEqual(scripts["ratomizer"], "cli:main")
         self.assertEqual(scripts["requirement-atomizer"], "atomize:main")

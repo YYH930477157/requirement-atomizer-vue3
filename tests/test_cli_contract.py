@@ -388,7 +388,7 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(envelope["error"]["type"], "input_error")
         self.assertIn("Input file does not exist", envelope["error"]["message"])
 
-    def test_non_docx_input_returns_input_error_envelope(self) -> None:
+    def test_unsupported_input_returns_input_error_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             input_path = tmp_path / "input.txt"
@@ -400,7 +400,7 @@ class CliContractTests(unittest.TestCase):
         envelope = json.loads(result.stdout)
         self.assertFalse(envelope["ok"])
         self.assertEqual(envelope["error"]["type"], "input_error")
-        self.assertIn("Only .docx input is supported", envelope["error"]["message"])
+        self.assertIn("Supported formats: .docx, .xlsx", envelope["error"]["message"])
 
     def test_version_matches_version_module(self) -> None:
         from version import __version__

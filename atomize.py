@@ -28,6 +28,7 @@ from version import __version__
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
+SUPPORTED_INPUT_FORMATS = (".docx", ".xlsx")
 
 
 DEFAULT_MAJOR_HEADINGS = (
@@ -1871,8 +1872,8 @@ def assert_valid_atomic_requirements(rows: list[dict[str, Any]]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Atomize a technical DOCX standard for LLM requirement analysis.")
-    parser.add_argument("input", type=Path, help="Input .docx file")
+    parser = argparse.ArgumentParser(description="Atomize a technical standard document for LLM requirement analysis.")
+    parser.add_argument("input", type=Path, help="Input .docx or .xlsx file")
     parser.add_argument("--out", type=Path, default=Path("out"), help="Output directory")
     parser.add_argument("--chunk-chars", type=int, default=3500, help="Target character size per retrieval chunk")
     parser.add_argument(
@@ -1898,8 +1899,11 @@ def run_atomizer_pipeline(
     out_dir = out_dir.expanduser().resolve()
     if not input_path.exists():
         raise AtomizerInputError(f"Input file does not exist: {input_path}")
-    if input_path.suffix.lower() != ".docx":
-        raise AtomizerInputError("Only .docx input is supported in this first version.")
+    input_format = input_path.suffix.lower()
+    if input_format == ".xls":
+        raise AtomizerInputError("Legacy .xls input is not supported; save it as .xlsx. Supported formats: .docx, .xlsx.")
+    if input_format not in SUPPORTED_INPUT_FORMATS:
+        raise AtomizerInputError(f"Unsupported input format: {input_format or '<none>'}. Supported formats: .docx, .xlsx.")
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1907,8 +1911,13 @@ def run_atomizer_pipeline(
     knowledge_bases = load_knowledge_bases(kb_paths or [])
     document_profile = load_document_profile_from_domain_pack(domain_pack_dir)
 
-    LOGGER.info("extracting docx")
-    blocks, table_items = extract_docx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+    LOGGER.info("extracting %s", input_format.lstrip("."))
+    if input_format == ".docx":
+        blocks, table_items = extract_docx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+    else:
+        from parsers.xlsx_parser import extract_xlsx
+
+        blocks, table_items = extract_xlsx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     LOGGER.info("extracted %s blocks, %s table rows", len(blocks), len(table_items))
     pattern_shadow = None
     if domain_pack_dir is not None:
@@ -1947,6 +1956,7 @@ def run_atomizer_pipeline(
         "tool": "requirement-atomizer",
         "version": __version__,
         "input": str(input_path),
+        "input_format": input_format.lstrip("."),
         "output_dir": str(out_dir),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "knowledge_bases": [
