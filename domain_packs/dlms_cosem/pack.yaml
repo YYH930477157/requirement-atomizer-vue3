@@ -40,6 +40,28 @@ knowledge_bases:
   - "../../knowledge_bases/energy_metering_cosem_classes.json"
   - "../../knowledge_bases/compiled_from_obsidian.json"
 
+document_profile:
+  noise_patterns:
+    - "abnt 2022"
+    - "all rights reserved"
+  noise_exact:
+    - "abnt"
+    - "abnt nbr"
+    - "abnt nbr 16968:2022"
+  major_headings:
+    - "scope"
+    - "normative references"
+    - "terms and definitions"
+    - "architecture"
+    - "communication profile"
+    - "communication profiles"
+    - "security"
+    - "bibliography"
+    - "figures"
+    - "tables"
+  caption_pattern: "^(table|figure)\\s+\\d+\\b"
+  body_start_heading: "scope"
+
 runtime_contract:
   atomic_requirement_fields:
     - "req_id"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from atomize import DEFAULT_DOCUMENT_PROFILE, load_document_profile_from_domain_pack
 from domain_pack import load_domain_pack
 
 
@@ -29,6 +30,11 @@ class DomainPackTests(unittest.TestCase):
         self.assertGreaterEqual(len(paths), 3)
         for path in paths:
             self.assertTrue(path.exists(), path)
+
+    def test_document_profile_matches_default_abnt_profile(self) -> None:
+        profile = load_document_profile_from_domain_pack(PACK.parent)
+
+        self.assertEqual(profile, DEFAULT_DOCUMENT_PROFILE)
 
 
 if __name__ == "__main__":

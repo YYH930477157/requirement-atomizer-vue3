@@ -20,6 +20,7 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from atomic_requirement_schema import validate_atomic_requirements
+from domain_pack import load_domain_pack
 from kb_matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
 from output_writer import build_quality_report, write_json, write_jsonl, write_summary
 from table_pattern_engine import load_table_patterns, match_table_pattern
@@ -41,6 +42,30 @@ MAJOR_HEADINGS = {
     "figures",
     "tables",
 }
+DEFAULT_MAJOR_HEADINGS = (
+    "scope",
+    "normative references",
+    "terms and definitions",
+    "architecture",
+    "communication profile",
+    "communication profiles",
+    "security",
+    "bibliography",
+    "figures",
+    "tables",
+)
+
+DEFAULT_NOISE_PATTERNS = (
+    r"abnt 2022",
+    r"all rights reserved",
+)
+DEFAULT_NOISE_EXACT = (
+    "abnt",
+    "abnt nbr",
+    "abnt nbr 16968:2022",
+)
+DEFAULT_CAPTION_PATTERN = r"^(table|figure)\s+\d+\b"
+DEFAULT_BODY_START_HEADING = "scope"
 
 DOMAIN_RULES: list[tuple[str, tuple[str, ...]]] = [
     ("communication_profile", ("communication profile", "plc", "prime", "wi-sun", "lorawan", "rf", "network", "media of communication")),
@@ -92,6 +117,35 @@ class AtomizerInputError(ValueError):
 
 class AtomizerPipelineError(RuntimeError):
     pass
+
+
+def normalize_profile_value(text: str) -> str:
+    return re.sub(r"\s+", " ", clean_text(text).lower().rstrip(":")).strip()
+
+
+@dataclass(frozen=True)
+class DocumentProfile:
+    noise_patterns: tuple[str, ...] = DEFAULT_NOISE_PATTERNS
+    noise_exact: tuple[str, ...] = DEFAULT_NOISE_EXACT
+    major_headings: tuple[str, ...] = DEFAULT_MAJOR_HEADINGS
+    caption_pattern: str = DEFAULT_CAPTION_PATTERN
+    body_start_heading: str = DEFAULT_BODY_START_HEADING
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any] | None) -> "DocumentProfile":
+        if not payload:
+            return cls()
+        defaults = cls()
+        return cls(
+            noise_patterns=tuple(str(value) for value in payload.get("noise_patterns", defaults.noise_patterns)),
+            noise_exact=tuple(normalize_profile_value(str(value)) for value in payload.get("noise_exact", defaults.noise_exact)),
+            major_headings=tuple(normalize_profile_value(str(value)) for value in payload.get("major_headings", defaults.major_headings)),
+            caption_pattern=str(payload.get("caption_pattern", defaults.caption_pattern)),
+            body_start_heading=normalize_profile_value(str(payload.get("body_start_heading", defaults.body_start_heading))),
+        )
+
+
+DEFAULT_DOCUMENT_PROFILE = DocumentProfile()
 
 
 @dataclass(frozen=True)
@@ -151,13 +205,14 @@ def iter_body_items(document: DocxDocument) -> Iterable[Paragraph | Table]:
             yield Table(child, document)
 
 
-def is_noise(text: str) -> bool:
+def is_noise(text: str, *, document_profile: DocumentProfile | None = None) -> bool:
+    profile = document_profile or DEFAULT_DOCUMENT_PROFILE
     low = text.lower()
     if not text:
         return True
-    if "abnt 2022" in low or "all rights reserved" in low:
+    if any(re.search(pattern, low, flags=re.I) for pattern in profile.noise_patterns):
         return True
-    if low in {"abnt", "abnt nbr", "abnt nbr 16968:2022"}:
+    if normalize_profile_value(low) in set(profile.noise_exact):
         return True
     if re.fullmatch(r"\d+\s+pages?", low):
         return True
@@ -173,8 +228,15 @@ def has_numbering(paragraph: Paragraph) -> bool:
     return p_pr is not None and p_pr.numPr is not None
 
 
-def detect_heading(text: str, style_name: str, is_list_item: bool = False) -> tuple[int, str] | None:
-    if not text or is_noise(text):
+def detect_heading(
+    text: str,
+    style_name: str,
+    is_list_item: bool = False,
+    *,
+    document_profile: DocumentProfile | None = None,
+) -> tuple[int, str] | None:
+    profile = document_profile or DEFAULT_DOCUMENT_PROFILE
+    if not text or is_noise(text, document_profile=profile):
         return None
 
     style_low = style_name.lower()
@@ -183,14 +245,14 @@ def detect_heading(text: str, style_name: str, is_list_item: bool = False) -> tu
         return min(int(match.group(1)), 6), text
 
     normalized = text.strip().lower().rstrip(":")
-    if normalized in MAJOR_HEADINGS:
+    if normalized in set(profile.major_headings):
         return 1, text
 
     numbered = re.match(r"^(\d+(?:\.\d+)*)(?:\s+|\.\s+)(.{3,})$", text)
     if numbered:
         number, title = numbered.groups()
         title = title.strip()
-        if not looks_like_toc_entry(title) and not looks_like_caption(text):
+        if not looks_like_toc_entry(title) and not looks_like_caption(text, document_profile=profile):
             return min(number.count(".") + 1, 6), f"{number} {title}"
 
     if (
@@ -198,7 +260,7 @@ def detect_heading(text: str, style_name: str, is_list_item: bool = False) -> tu
         and not is_list_item
         and len(text) <= 80
         and not text.endswith(".")
-        and not looks_like_caption(text)
+        and not looks_like_caption(text, document_profile=profile)
     ):
         if re.search(r"[A-Za-z]", text):
             return 2, text
@@ -214,8 +276,9 @@ def looks_like_toc_entry(text: str) -> bool:
     return False
 
 
-def looks_like_caption(text: str) -> bool:
-    return bool(re.match(r"^(table|figure)\s+\d+\b", text.strip(), flags=re.I))
+def looks_like_caption(text: str, *, document_profile: DocumentProfile | None = None) -> bool:
+    profile = document_profile or DEFAULT_DOCUMENT_PROFILE
+    return bool(re.match(profile.caption_pattern, text.strip(), flags=re.I))
 
 
 def infer_table_title(last_caption: str | None, table_index: int) -> str:
@@ -573,8 +636,10 @@ def is_atomic_requirement_like(text: str) -> bool:
 def extract_docx(
     input_path: Path,
     knowledge_bases: list[KnowledgeBase] | None = None,
+    document_profile: DocumentProfile | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     knowledge_bases = knowledge_bases or []
+    profile = document_profile or DEFAULT_DOCUMENT_PROFILE
     document = Document(input_path)
     sections = SectionState()
     blocks: list[dict[str, Any]] = []
@@ -590,7 +655,7 @@ def extract_docx(
                 continue
 
             style_name = item.style.name if item.style is not None else ""
-            heading = detect_heading(text, style_name, is_list_item=has_numbering(item))
+            heading = detect_heading(text, style_name, is_list_item=has_numbering(item), document_profile=profile)
             block_type = "paragraph"
             if heading:
                 level, title = heading
@@ -613,15 +678,15 @@ def extract_docx(
                 "domain_tags": domain_tags,
                 "kb_matches": kb_matches,
                 "requirement_like": is_requirement_like(text),
-                "noise": is_noise(text),
+                "noise": is_noise(text, document_profile=profile),
             }
             if heading:
                 block["heading_level"] = heading[0]
             blocks.append(block)
 
-            if looks_like_caption(text):
+            if looks_like_caption(text, document_profile=profile):
                 last_caption = text
-            elif block_type != "heading" and not is_noise(text):
+            elif block_type != "heading" and not is_noise(text, document_profile=profile):
                 # Keep captions available across short spacer paragraphs, but avoid
                 # accidentally attaching a distant caption to a later table.
                 if last_caption and len(text) > 120:
@@ -722,16 +787,22 @@ def merge_tags(*tag_lists: Iterable[str]) -> list[str]:
     return tags
 
 
-def mark_doc_regions(blocks: list[dict[str, Any]], table_items: list[dict[str, Any]]) -> None:
+def mark_doc_regions(
+    blocks: list[dict[str, Any]],
+    table_items: list[dict[str, Any]],
+    *,
+    document_profile: DocumentProfile | None = None,
+) -> None:
     """Mark blocks as body/front matter so model tasks ignore cover and TOC pages."""
-    scope_indexes: list[int] = []
+    profile = document_profile or DEFAULT_DOCUMENT_PROFILE
+    body_start_indexes: list[int] = []
     preface_index: int | None = None
     introduction_index: int | None = None
 
     for index, block in enumerate(blocks):
         text = normalize_title(block.get("text", ""))
-        if block.get("type") == "heading" and text == "scope":
-            scope_indexes.append(index)
+        if block.get("type") == "heading" and text == profile.body_start_heading:
+            body_start_indexes.append(index)
         if block.get("type") == "heading" and text == "preface" and preface_index is None:
             preface_index = index
         if block.get("type") == "heading" and text == "introduction" and introduction_index is None:
@@ -740,7 +811,7 @@ def mark_doc_regions(blocks: list[dict[str, Any]], table_items: list[dict[str, A
     # Standards often include "The Scope in English..." in the preface before the
     # real normative body. If multiple Scope headings exist, the last one is the
     # safer body start.
-    body_start = scope_indexes[-1] if scope_indexes else 0
+    body_start = body_start_indexes[-1] if body_start_indexes else 0
 
     for index, block in enumerate(blocks):
         if index >= body_start:
@@ -800,6 +871,16 @@ def apply_table_pattern_shadow(
         "tables_with_pattern": tables_with_pattern,
         "by_pattern_id": dict(by_pattern_id.most_common()),
     }
+
+
+def load_document_profile_from_domain_pack(domain_pack_dir: Path | None) -> DocumentProfile:
+    if domain_pack_dir is None:
+        return DEFAULT_DOCUMENT_PROFILE
+    pack_path = domain_pack_dir.expanduser().resolve() / "pack.yaml"
+    if not pack_path.exists():
+        return DEFAULT_DOCUMENT_PROFILE
+    pack = load_domain_pack(pack_path)
+    return DocumentProfile.from_payload(pack.payload.get("document_profile"))
 
 
 def render_table_text(headers: list[str], rows: list[list[str]], max_rows: int = 20) -> str:
@@ -1812,14 +1893,15 @@ def run_atomizer_pipeline(
 
     LOGGER.info("loading knowledge bases (%s files)", len(kb_paths or []))
     knowledge_bases = load_knowledge_bases(kb_paths or [])
+    document_profile = load_document_profile_from_domain_pack(domain_pack_dir)
 
     LOGGER.info("extracting docx")
-    blocks, table_items = extract_docx(input_path, knowledge_bases=knowledge_bases)
+    blocks, table_items = extract_docx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     LOGGER.info("extracted %s blocks, %s table rows", len(blocks), len(table_items))
     pattern_shadow = None
     if domain_pack_dir is not None:
         pattern_shadow = apply_table_pattern_shadow(blocks, table_items, domain_pack_dir)
-    mark_doc_regions(blocks, table_items)
+    mark_doc_regions(blocks, table_items, document_profile=document_profile)
     LOGGER.info("building chunks")
     chunks = build_chunks(blocks, target_chars=chunk_chars, include_regions={"body"})
     body_table_items = [item for item in table_items if item.get("doc_region") == "body"]
