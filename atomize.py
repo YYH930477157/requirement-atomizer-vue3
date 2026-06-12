@@ -294,6 +294,87 @@ def table_matrix(table: Table) -> list[list[str]]:
     return matrix
 
 
+def build_table_artifacts(
+    matrix: list[list[str]],
+    *,
+    table_id: str,
+    block_id: str,
+    order: int,
+    table_title: str,
+    section_path: list[str],
+    knowledge_bases: list[KnowledgeBase],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    table_model = interpret_table_matrix(matrix)
+    width = table_model["width"]
+    height = table_model["height"]
+    header_count = table_model["header_row_count"]
+    header_rows = table_model["header_rows"]
+    headers = table_model["headers"]
+    data_rows = table_model["data_rows"]
+    table_text = render_table_text(headers, data_rows)
+    kb_matches = match_knowledge(knowledge_bases, table_title, table_text, " > ".join(section_path))
+    domain_tags = merge_tags(tag_domains(table_title, table_text, " > ".join(section_path)), kb_domain_tags(kb_matches))
+    block = {
+        "block_id": block_id,
+        "order": order,
+        "type": "table",
+        "table_id": table_id,
+        "table_title": table_title,
+        "section_path": section_path,
+        "rows": height,
+        "columns": width,
+        "header_row_count": header_count,
+        "header_rows": header_rows,
+        "headers": headers,
+        "text": table_text[:5000],
+        "domain_tags": domain_tags,
+        "kb_matches": kb_matches,
+        "requirement_like": is_requirement_like(table_text),
+        "noise": False,
+    }
+
+    table_items: list[dict[str, Any]] = []
+    current_cosem_object: dict[str, Any] | None = None
+    for row_offset, row in enumerate(data_rows, start=1):
+        row_index = header_count + row_offset
+        if not any(row):
+            continue
+        fields = {
+            headers[col_index]: row[col_index] if col_index < len(row) else ""
+            for col_index in range(width)
+        }
+        compact_fields = {key: value for key, value in fields.items() if value}
+        item_id = f"{table_id}-R{row_index:06d}"
+        if is_cosem_object_header(compact_fields):
+            current_cosem_object = build_cosem_object_context(item_id, row_index, compact_fields)
+        matrix_facts = extract_matrix_facts(headers, row)
+        fact_text = " | ".join(f"{fact['subject']} -> {fact['predicate_header']}" for fact in matrix_facts)
+        context_text = " | ".join(str(value) for value in (current_cosem_object or {}).values() if value)
+        item_text = " | ".join([*compact_fields.values(), fact_text, context_text])
+        item_matches = match_knowledge(knowledge_bases, table_title, item_text, " > ".join(section_path))
+        item_tags = merge_tags(tag_domains(table_title, item_text, " > ".join(section_path)), kb_domain_tags(item_matches))
+        table_item = {
+            "item_id": item_id,
+            "type": "table_row",
+            "table_id": table_id,
+            "table_block_id": block_id,
+            "table_title": table_title,
+            "section_path": section_path,
+            "row_index": row_index,
+            "fields": compact_fields,
+            "matrix_facts": matrix_facts,
+            "domain_tags": item_tags,
+            "kb_matches": item_matches,
+            "requirement_like": is_requirement_like(item_text),
+            "noise": False,
+        }
+        if current_cosem_object and (is_cosem_object_header(compact_fields) or is_cosem_attribute_row(compact_fields)):
+            table_item["cosem_object_context"] = current_cosem_object
+        table_items.append(table_item)
+
+    return block, table_items
+
+
 def interpret_table_matrix(matrix: list[list[str]]) -> dict[str, Any]:
     width = max((len(row) for row in matrix), default=0)
     header_count = infer_header_row_count(matrix)
@@ -688,77 +769,20 @@ def extract_docx(
             table_id = f"TBL-{table_count:06d}"
             table_title = infer_table_title(last_caption, table_count)
             section_path = sections.path()
-            table_model = interpret_table_matrix(matrix)
-            width = table_model["width"]
-            height = table_model["height"]
-            header_count = table_model["header_row_count"]
-            header_rows = table_model["header_rows"]
-            headers = table_model["headers"]
-            data_rows = table_model["data_rows"]
 
             order += 1
             block_id = f"BLK-{order:06d}"
-            table_text = render_table_text(headers, data_rows)
-            kb_matches = match_knowledge(knowledge_bases, table_title, table_text, " > ".join(section_path))
-            domain_tags = merge_tags(tag_domains(table_title, table_text, " > ".join(section_path)), kb_domain_tags(kb_matches))
-            blocks.append(
-                {
-                    "block_id": block_id,
-                    "order": order,
-                    "type": "table",
-                    "table_id": table_id,
-                    "table_title": table_title,
-                    "section_path": section_path,
-                    "rows": height,
-                    "columns": width,
-                    "header_row_count": header_count,
-                    "header_rows": header_rows,
-                    "headers": headers,
-                    "text": table_text[:5000],
-                    "domain_tags": domain_tags,
-                    "kb_matches": kb_matches,
-                    "requirement_like": is_requirement_like(table_text),
-                    "noise": False,
-                }
+            table_block, new_table_items = build_table_artifacts(
+                matrix,
+                table_id=table_id,
+                block_id=block_id,
+                order=order,
+                table_title=table_title,
+                section_path=section_path,
+                knowledge_bases=knowledge_bases,
             )
-
-            current_cosem_object: dict[str, Any] | None = None
-            for row_offset, row in enumerate(data_rows, start=1):
-                row_index = header_count + row_offset
-                if not any(row):
-                    continue
-                fields = {
-                    headers[col_index]: row[col_index] if col_index < len(row) else ""
-                    for col_index in range(width)
-                }
-                compact_fields = {k: v for k, v in fields.items() if v}
-                item_id = f"{table_id}-R{row_index:06d}"
-                if is_cosem_object_header(compact_fields):
-                    current_cosem_object = build_cosem_object_context(item_id, row_index, compact_fields)
-                matrix_facts = extract_matrix_facts(headers, row)
-                fact_text = " | ".join(f"{fact['subject']} -> {fact['predicate_header']}" for fact in matrix_facts)
-                context_text = " | ".join(str(value) for value in (current_cosem_object or {}).values() if value)
-                item_text = " | ".join([*compact_fields.values(), fact_text, context_text])
-                item_matches = match_knowledge(knowledge_bases, table_title, item_text, " > ".join(section_path))
-                item_tags = merge_tags(tag_domains(table_title, item_text, " > ".join(section_path)), kb_domain_tags(item_matches))
-                table_item = {
-                    "item_id": item_id,
-                    "type": "table_row",
-                    "table_id": table_id,
-                    "table_block_id": block_id,
-                    "table_title": table_title,
-                    "section_path": section_path,
-                    "row_index": row_index,
-                    "fields": compact_fields,
-                    "matrix_facts": matrix_facts,
-                    "domain_tags": item_tags,
-                    "kb_matches": item_matches,
-                    "requirement_like": is_requirement_like(item_text),
-                    "noise": False,
-                }
-                if current_cosem_object and (is_cosem_object_header(compact_fields) or is_cosem_attribute_row(compact_fields)):
-                    table_item["cosem_object_context"] = current_cosem_object
-                table_items.append(table_item)
+            blocks.append(table_block)
+            table_items.extend(new_table_items)
             last_caption = None
 
     return blocks, table_items

@@ -11,6 +11,7 @@ from atomize import (
     AtomizerInputError,
     DEFAULT_ACCESS_RIGHT_CLIENTS,
     build_atomic_candidates,
+    build_table_artifacts,
     build_quality_report,
     extract_matrix_facts,
     interpret_table_matrix,
@@ -69,6 +70,33 @@ class AtomizeTableTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["requirement_type"], "capability_matrix")
         self.assertEqual(candidates[0]["requirement"], 'Public customer shall support xDLMS Service: "GET".')
+
+    def test_build_table_artifacts_creates_block_items_matrix_facts_and_cosem_context(self) -> None:
+        matrix = [
+            ["Object/attribute name", "CL", "Value", "Access rights RC/PC/SC/LC", "xDLMS Service", "xDLMS Service"],
+            ["Object/attribute name", "CL", "Value", "Access rights RC/PC/SC/LC", '"GET"', '"ACTION"'],
+            ["SAP Assignment", "17", "0-0:41.0.0.255", ""],
+            ["logical_name", "", "0000290000FF", "R-/--/R-/RW"],
+            ["Public customer", "", "", "", "X", ""],
+        ]
+
+        block, items = build_table_artifacts(
+            matrix,
+            table_id="TBL-000001",
+            block_id="BLK-000010",
+            order=10,
+            table_title="Table 22 - SAP assignment",
+            section_path=["COSEM objects"],
+            knowledge_bases=[],
+        )
+
+        self.assertEqual(block["type"], "table")
+        self.assertEqual(block["rows"], 5)
+        self.assertEqual(block["table_title"], "Table 22 - SAP assignment")
+        self.assertEqual(items[0]["item_id"], "TBL-000001-R000003")
+        self.assertEqual(items[0]["cosem_object_context"]["object_name"], "SAP Assignment")
+        self.assertEqual(items[0]["cosem_object_context"]["class_id"], 17)
+        self.assertTrue(any(item["matrix_facts"] for item in items))
 
     def test_stable_req_id_does_not_depend_on_candidate_order(self) -> None:
         first_block = {
