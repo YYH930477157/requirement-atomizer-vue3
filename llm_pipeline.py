@@ -13,11 +13,12 @@ import yaml
 from domain_pack import load_domain_pack
 from llm_client import LLMClientConfig, LLMConnectionError, LLMError, LLMResponseError, chat_json, chat_json_messages
 from llm_review_schema import validate_llm_review_result_payload, validate_llm_review_results
+from resources import package_root
 from review_state import RequirementReviewState
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
-_PACKAGE_ROOT = Path(__file__).resolve().parent
+_PACKAGE_ROOT = package_root()
 DEFAULT_PIPELINE_PATH = _PACKAGE_ROOT / "llm_agents" / "review_pipeline.yaml"
 DEFAULT_DOMAIN_PACK_PATH = _PACKAGE_ROOT / "domain_packs" / "dlms_cosem" / "pack.yaml"
 PROMPT_VERSION = "m2-review-v1"

@@ -84,6 +84,11 @@ class GuiModelTests(unittest.TestCase):
             self.assertEqual(window.table.horizontalHeader().sectionResizeMode(HEADERS.index("requirement")), QHeaderView.Stretch)
             self.assertGreaterEqual(window.detail_panel.metadata_widget.minimumHeight(), 170)
 
+    def test_gui_app_smoke_constructs_window_without_event_loop(self) -> None:
+        from gui.app import main
+
+        self.assertEqual(main(["ratomizer-gui", "--smoke"]), 0)
+
     def test_open_output_uses_async_loader(self) -> None:
         from gui.main_window import MainWindow
 

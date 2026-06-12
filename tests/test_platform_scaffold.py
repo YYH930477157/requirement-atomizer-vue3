@@ -539,6 +539,7 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertEqual(scripts["validate-atomic-requirements"], "atomic_requirement_schema:main")
         self.assertEqual(scripts["validate-llm-reviews"], "llm_review_schema:main")
         self.assertEqual(payload["project"]["optional-dependencies"]["gui"], ["PySide6>=6.6"])
+        self.assertEqual(payload["project"]["optional-dependencies"]["package"], ["pyinstaller>=6.0"])
         self.assertEqual(payload["project"]["gui-scripts"]["ratomizer-gui"], "gui.app:main")
         self.assertEqual(payload["tool"]["setuptools"]["package-data"]["gui"], ["theme.qss.template"])
 

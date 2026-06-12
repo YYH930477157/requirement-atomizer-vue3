@@ -8,11 +8,17 @@ from gui.fluent import render_stylesheet
 from gui.main_window import MainWindow
 
 
-def main() -> int:
-    app = QApplication(sys.argv)
+def main(argv: list[str] | None = None) -> int:
+    argv = list(argv or sys.argv)
+    smoke = "--smoke" in argv
+    qt_argv = [arg for arg in argv if arg != "--smoke"]
+    app = QApplication.instance() or QApplication(qt_argv)
     app.setStyleSheet(render_stylesheet())
     window = MainWindow()
     window.show()
+    if smoke:
+        window.close()
+        return 0
     return app.exec()
 
 

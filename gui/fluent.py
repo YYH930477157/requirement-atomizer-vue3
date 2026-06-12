@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from resources import package_root
 
 
 TOKENS = {
@@ -40,7 +40,7 @@ CONFIDENCE_TOKENS = {
 
 
 def render_stylesheet() -> str:
-    template_path = Path(__file__).with_name("theme.qss.template")
+    template_path = package_root() / "gui" / "theme.qss.template"
     template = template_path.read_text(encoding="utf-8")
     return template.format(**TOKENS)
 

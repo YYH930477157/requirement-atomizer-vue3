@@ -842,3 +842,26 @@ Use the following schema when converting each task to atomic requirements:
   "confidence": 0.85
 }
 ```
+
+## Windows Packaging
+
+Install packaging dependencies and build the onedir distribution:
+
+```powershell
+pip install -e ".[gui,package]"
+.\packaging\build.ps1
+```
+
+The build writes `dist\RequirementAtomizer\` with two entry points:
+
+```text
+ratomizer.exe              # console CLI for task systems
+RequirementAtomizer.exe    # GUI workbench for reviewers
+llm_agents\review_pipeline.yaml
+domain_packs\
+knowledge_bases\
+schemas\
+gui\theme.qss.template
+```
+
+This project intentionally uses PyInstaller onedir packaging, not onefile. The startup is faster, and `dist\RequirementAtomizer\llm_agents\review_pipeline.yaml` remains editable after distribution. To switch a packaged copy between Ollama, vLLM, or GLM, edit `base_url`, `model`, and `model_routes.default` in that file and set the environment variable named by `api_key_env`.
