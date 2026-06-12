@@ -400,7 +400,7 @@ class CliContractTests(unittest.TestCase):
         envelope = json.loads(result.stdout)
         self.assertFalse(envelope["ok"])
         self.assertEqual(envelope["error"]["type"], "input_error")
-        self.assertIn("Supported formats: .docx, .xlsx", envelope["error"]["message"])
+        self.assertIn("Supported formats: .docx, .xlsx, .pdf", envelope["error"]["message"])
 
     def test_version_matches_version_module(self) -> None:
         from version import __version__

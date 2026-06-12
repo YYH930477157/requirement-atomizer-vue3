@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
         self.load_output_dir_async(out_dir)
 
     def choose_input_document(self) -> None:
-        input_path, _ = QFileDialog.getOpenFileName(self, "Import Document", str(Path.cwd()), "Documents (*.docx *.xlsx)")
+        input_path, _ = QFileDialog.getOpenFileName(self, "Import Document", str(Path.cwd()), "Documents (*.docx *.xlsx *.pdf)")
         if not input_path:
             return
         out_path = QFileDialog.getExistingDirectory(self, "Choose output directory", str(Path(input_path).parent))

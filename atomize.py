@@ -28,7 +28,7 @@ from version import __version__
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
-SUPPORTED_INPUT_FORMATS = (".docx", ".xlsx")
+SUPPORTED_INPUT_FORMATS = (".docx", ".xlsx", ".pdf")
 
 
 DEFAULT_MAJOR_HEADINGS = (
@@ -1901,9 +1901,9 @@ def run_atomizer_pipeline(
         raise AtomizerInputError(f"Input file does not exist: {input_path}")
     input_format = input_path.suffix.lower()
     if input_format == ".xls":
-        raise AtomizerInputError("Legacy .xls input is not supported; save it as .xlsx. Supported formats: .docx, .xlsx.")
+        raise AtomizerInputError("Legacy .xls input is not supported; save it as .xlsx. Supported formats: .docx, .xlsx, .pdf.")
     if input_format not in SUPPORTED_INPUT_FORMATS:
-        raise AtomizerInputError(f"Unsupported input format: {input_format or '<none>'}. Supported formats: .docx, .xlsx.")
+        raise AtomizerInputError(f"Unsupported input format: {input_format or '<none>'}. Supported formats: .docx, .xlsx, .pdf.")
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1914,10 +1914,14 @@ def run_atomizer_pipeline(
     LOGGER.info("extracting %s", input_format.lstrip("."))
     if input_format == ".docx":
         blocks, table_items = extract_docx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
-    else:
+    elif input_format == ".xlsx":
         from parsers.xlsx_parser import extract_xlsx
 
         blocks, table_items = extract_xlsx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+    else:
+        from parsers.pdf_parser import extract_pdf
+
+        blocks, table_items = extract_pdf(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     LOGGER.info("extracted %s blocks, %s table rows", len(blocks), len(table_items))
     pattern_shadow = None
     if domain_pack_dir is not None:

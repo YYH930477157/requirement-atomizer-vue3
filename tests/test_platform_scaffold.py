@@ -44,6 +44,7 @@ class PlatformScaffoldTests(unittest.TestCase):
                 "headers": ["A", "B"],
                 "text": "A | B",
                 "section_path": ["Scope"],
+                "page_number": 3,
             }
         ]
         table_items = [{"item_id": "TBL-1-R1", "table_block_id": "BLK-1", "fields": {"A": "x"}}]
@@ -51,6 +52,7 @@ class PlatformScaffoldTests(unittest.TestCase):
         doc = blocks_to_doc_ir(blocks=blocks, table_items=table_items, source_path=Path("sample.docx"))
 
         self.assertEqual(doc.source_format, "docx")
+        self.assertEqual(doc.blocks[0].provenance.page_ref, "3")
         self.assertEqual(doc.blocks[0].table.rows[0]["item_id"], "TBL-1-R1")
 
     def test_table_pattern_engine_matches_cosem_object_table(self) -> None:
@@ -533,6 +535,7 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertIn("python-docx>=1.1.0", dependencies)
         self.assertIn("PyYAML>=6.0.0", dependencies)
         self.assertIn("openpyxl>=3.1.0", dependencies)
+        self.assertIn("pdfplumber>=0.11", dependencies)
         self.assertIn("llm_client", py_modules)
         self.assertEqual(scripts["ratomizer"], "cli:main")
         self.assertEqual(scripts["requirement-atomizer"], "atomize:main")

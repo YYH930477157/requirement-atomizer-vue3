@@ -453,7 +453,7 @@ class AtomizeTableTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("Supported formats: .docx, .xlsx", result.stderr)
+        self.assertIn("Supported formats: .docx, .xlsx, .pdf", result.stderr)
 
 
 if __name__ == "__main__":

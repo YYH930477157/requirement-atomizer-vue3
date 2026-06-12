@@ -36,8 +36,10 @@ New-Item -ItemType Directory -Path $SmokeRoot | Out-Null
 try {
     $docxPath = Join-Path $SmokeRoot "synthetic_standard.docx"
     $xlsxPath = Join-Path $SmokeRoot "synthetic_standard.xlsx"
+    $pdfPath = Join-Path $SmokeRoot "sample_text_tables.pdf"
     $outDir = Join-Path $SmokeRoot "out"
     $xlsxOutDir = Join-Path $SmokeRoot "xlsx-out"
+    $pdfOutDir = Join-Path $SmokeRoot "pdf-out"
     @'
 import sys
 from pathlib import Path
@@ -68,6 +70,7 @@ book.save(path)
     if ($LASTEXITCODE -ne 0) {
         throw "Synthetic XLSX generation failed"
     }
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "tests\fixtures\sample_text_tables.pdf") -Destination $pdfPath
 
     Push-Location $SmokeRoot
     try {
@@ -78,6 +81,10 @@ book.save(path)
         $xlsxStdout = & $CliExe run $xlsxPath --out $xlsxOutDir --skip-review --quiet 2>$null
         if ($LASTEXITCODE -ne 0) {
             throw "ratomizer.exe run XLSX failed with exit code $LASTEXITCODE"
+        }
+        $pdfStdout = & $CliExe run $pdfPath --out $pdfOutDir --skip-review --quiet 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "ratomizer.exe run PDF failed with exit code $LASTEXITCODE"
         }
     }
     finally {
@@ -95,6 +102,10 @@ book.save(path)
     $xlsxJson = $xlsxStdout | ConvertFrom-Json
     if (-not $xlsxJson.ok -or $xlsxJson.manifest.input_format -ne "xlsx") {
         throw "ratomizer.exe run XLSX smoke returned invalid envelope"
+    }
+    $pdfJson = $pdfStdout | ConvertFrom-Json
+    if (-not $pdfJson.ok -or $pdfJson.manifest.input_format -ne "pdf") {
+        throw "ratomizer.exe run PDF smoke returned invalid envelope"
     }
 
     $env:QT_QPA_PLATFORM = "offscreen"

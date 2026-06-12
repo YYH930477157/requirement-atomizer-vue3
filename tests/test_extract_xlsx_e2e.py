@@ -118,12 +118,12 @@ class ExtractXlsxE2ETests(unittest.TestCase):
         xls_envelope = json.loads(xls_result.stdout)
         self.assertEqual(xls_envelope["error"]["type"], "input_error")
         self.assertIn("save it as .xlsx", xls_envelope["error"]["message"])
-        self.assertIn(".docx, .xlsx", xls_envelope["error"]["message"])
+        self.assertIn(".docx, .xlsx, .pdf", xls_envelope["error"]["message"])
 
         self.assertEqual(txt_result.returncode, 2)
         txt_envelope = json.loads(txt_result.stdout)
         self.assertEqual(txt_envelope["error"]["type"], "input_error")
-        self.assertIn("Supported formats: .docx, .xlsx", txt_envelope["error"]["message"])
+        self.assertIn("Supported formats: .docx, .xlsx, .pdf", txt_envelope["error"]["message"])
 
 
 if __name__ == "__main__":

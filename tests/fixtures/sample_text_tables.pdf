@@ -1,0 +1,74 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Length 1106 >>
+stream
+BT /F1 9 Tf 54 760 Td (DLMS COSEM PDF SAMPLE) Tj ET
+BT /F1 9 Tf 500 744 Td (Page 1) Tj ET
+BT /F1 14 Tf 54 720 Td (1 Scope) Tj ET
+BT /F1 11 Tf 54 694 Td (The meter shall support xDLMS GET service.) Tj ET
+BT /F1 13 Tf 54 668 Td (5.1 Security requirements) Tj ET
+BT /F1 11 Tf 54 642 Td (The profile shall define supported customer application processes.) Tj ET
+BT /F1 10 Tf 54 610 Td (Table 1 - Services xDLMS) Tj ET
+0.8 w
+54 494 380 96 re S
+214 494 m 214 590 l S
+324 494 m 324 590 l S
+54 566 m 434 566 l S
+54 542 m 434 542 l S
+54 518 m 434 518 l S
+BT /F1 9 Tf 58 573 Td (Customer application process) Tj ET
+BT /F1 9 Tf 218 573 Td (xDLMS Service) Tj ET
+BT /F1 9 Tf 328 573 Td (xDLMS Service) Tj ET
+BT /F1 9 Tf 58 549 Td (Customer application process) Tj ET
+BT /F1 9 Tf 218 549 Td (GET) Tj ET
+BT /F1 9 Tf 328 549 Td (ACTION) Tj ET
+BT /F1 9 Tf 58 525 Td (Public customer) Tj ET
+BT /F1 9 Tf 218 525 Td (X) Tj ET
+BT /F1 9 Tf 328 525 Td () Tj ET
+BT /F1 9 Tf 58 501 Td (Management client) Tj ET
+BT /F1 9 Tf 218 501 Td () Tj ET
+BT /F1 9 Tf 328 501 Td (X) Tj ET
+BT /F1 9 Tf 54 40 Td (Copyright Sample Standard) Tj ET
+endstream
+endobj
+2 0 obj
+<< /Length 262 >>
+stream
+BT /F1 9 Tf 54 760 Td (DLMS COSEM PDF SAMPLE) Tj ET
+BT /F1 9 Tf 500 744 Td (Page 2) Tj ET
+BT /F1 14 Tf 54 720 Td (6 Events) Tj ET
+BT /F1 11 Tf 54 694 Td (The event log shall record power down events.) Tj ET
+BT /F1 9 Tf 54 40 Td (Copyright Sample Standard) Tj ET
+endstream
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 1 0 R >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 2 0 R >>
+endobj
+6 0 obj
+<< /Type /Pages /Kids [4 0 R 5 0 R] /Count 2 >>
+endobj
+7 0 obj
+<< /Type /Catalog /Pages 6 0 R >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000001172 00000 n 
+0000001484 00000 n 
+0000001554 00000 n 
+0000001680 00000 n 
+0000001806 00000 n 
+0000001869 00000 n 
+trailer
+<< /Size 8 /Root 7 0 R >>
+startxref
+1918
+%%EOF

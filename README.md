@@ -2,7 +2,7 @@
 
 Requirement Atomizer is the current main engineering module in this repository.
 
-It converts technical standard `.docx` and `.xlsx` documents into structured artifacts that are easier for an LLM-based requirement analysis agent to consume.
+It converts technical standard `.docx`, `.xlsx`, and text-layer `.pdf` documents into structured artifacts that are easier for an LLM-based requirement analysis agent to consume.
 
 It is designed for documents like `ABNT NBR 16968:2022`, where requirements are spread across chapters, protocol descriptions, object definitions, and many tables.
 
@@ -31,7 +31,7 @@ Running the tool creates:
 - `manifest.json`: run metadata and counts
 - `summary.md`: human-readable run summary
 
-Supported input formats are `.docx` and `.xlsx`. Legacy `.xls` files must be saved as `.xlsx` before running the pipeline.
+Supported input formats are `.docx`, `.xlsx`, and PDFs with an extractable text layer. Legacy `.xls` files must be saved as `.xlsx` before running the pipeline. Scanned PDFs without text are rejected; open the PDF in Word and save it as `.docx`, or wait for the OCR milestone.
 
 ## Quick Start
 
@@ -76,7 +76,7 @@ The GUI uses the configured review pipeline. To enable real LLM review from the 
 The intended workflow is:
 
 ```text
-DOCX or XLSX
+DOCX, XLSX, or text-layer PDF
 -> structural blocks
 -> retrieval chunks
 -> enhanced table row atoms

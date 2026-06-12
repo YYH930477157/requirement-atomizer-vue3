@@ -99,6 +99,7 @@ def blocks_to_doc_ir(
                     source_path=str(source_path),
                     block_id=block_id,
                     table_id=str(block.get("table_id", "")),
+                    page_ref=str(block.get("page_number", "")),
                 ),
                 metadata=metadata,
                 table=table_ir,
