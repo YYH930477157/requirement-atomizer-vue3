@@ -35,7 +35,9 @@ $SmokeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ratomizer-package-smo
 New-Item -ItemType Directory -Path $SmokeRoot | Out-Null
 try {
     $docxPath = Join-Path $SmokeRoot "synthetic_standard.docx"
+    $xlsxPath = Join-Path $SmokeRoot "synthetic_standard.xlsx"
     $outDir = Join-Path $SmokeRoot "out"
+    $xlsxOutDir = Join-Path $SmokeRoot "xlsx-out"
     @'
 import sys
 from pathlib import Path
@@ -50,12 +52,32 @@ doc.save(path)
     if ($LASTEXITCODE -ne 0) {
         throw "Synthetic DOCX generation failed"
     }
+    @'
+import sys
+from pathlib import Path
+from openpyxl import Workbook
+
+path = Path(sys.argv[1])
+book = Workbook()
+sheet = book.active
+sheet.title = "Requirements"
+sheet.append(["Req ID", "Requirement", "Priority"])
+sheet.append(["REQ-1", "The meter shall support xDLMS GET service.", "High"])
+book.save(path)
+'@ | & $Python - $xlsxPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Synthetic XLSX generation failed"
+    }
 
     Push-Location $SmokeRoot
     try {
         $stdout = & $CliExe run $docxPath --out $outDir --export csv --quiet 2>$null
         if ($LASTEXITCODE -ne 0) {
             throw "ratomizer.exe run failed with exit code $LASTEXITCODE"
+        }
+        $xlsxStdout = & $CliExe run $xlsxPath --out $xlsxOutDir --skip-review --quiet 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "ratomizer.exe run XLSX failed with exit code $LASTEXITCODE"
         }
     }
     finally {
@@ -69,6 +91,10 @@ doc.save(path)
     $csvPath = Join-Path $outDir "requirements_export.csv"
     if (-not (Test-Path -LiteralPath $csvPath)) {
         throw "CSV export was not created: $csvPath"
+    }
+    $xlsxJson = $xlsxStdout | ConvertFrom-Json
+    if (-not $xlsxJson.ok -or $xlsxJson.manifest.input_format -ne "xlsx") {
+        throw "ratomizer.exe run XLSX smoke returned invalid envelope"
     }
 
     $env:QT_QPA_PLATFORM = "offscreen"

@@ -17,7 +17,7 @@ datas = [
     (str(ROOT / "gui" / "theme.qss.template"), "gui"),
 ]
 
-hiddenimports = collect_submodules("docx") + collect_submodules("yaml")
+hiddenimports = collect_submodules("docx") + collect_submodules("yaml") + collect_submodules("openpyxl")
 excludes = [
     "tests",
     "tkinter",
