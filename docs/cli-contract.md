@@ -5,8 +5,8 @@ Requirement Atomizer exposes a stable command line interface for task managers a
 ## Commands
 
 ```powershell
-ratomizer run <input.docx> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--skip-review] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--export md,csv] [--quiet | --verbose]
-ratomizer atomize <input.docx> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--quiet | --verbose]
+ratomizer run <input.docx|input.xlsx> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--skip-review] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--export md,csv] [--quiet | --verbose]
+ratomizer atomize <input.docx|input.xlsx> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--quiet | --verbose]
 ratomizer review --out DIR [--review-pipeline FILE] [--domain-pack FILE] [--limit N] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--quiet | --verbose]
 ratomizer export --out DIR --format md|csv [--status all|accepted|expert_pending|candidate]
 ratomizer --version
@@ -15,9 +15,11 @@ ratomizer --version
 Existing entry points remain compatible:
 
 ```powershell
-python .\atomize.py <input.docx> --out DIR
+python .\atomize.py <input.docx|input.xlsx> --out DIR
 python .\llm_pipeline.py --out DIR
 ```
+
+Supported input formats are `.docx` and `.xlsx`. Legacy `.xls` workbooks are rejected with an input error and should be saved as `.xlsx`.
 
 ## Stdout Envelope
 
@@ -31,7 +33,9 @@ The stdout byte stream is UTF-8 encoded; consumers must decode it as UTF-8. Wind
   "command": "run",
   "ok": true,
   "output_dir": "D:/path/to/out",
-  "manifest": {},
+  "manifest": {
+    "input_format": "docx"
+  },
   "review": {
     "reviews": 2337,
     "llm_reviewed": 340,
@@ -70,7 +74,7 @@ Argument parser errors raised before command dispatch, such as an invalid `ratom
 | Code | Meaning | Trigger |
 | --- | --- | --- |
 | 0 | Success | Command completed and stdout contains `ok: true`. |
-| 2 | Input error | Missing input, non-DOCX input, missing domain pack file, or invalid arguments detected by the runtime. |
+| 2 | Input error | Missing input, unsupported input format, missing domain pack file, or invalid arguments detected by the runtime. |
 | 3 | Pipeline or validation error | Atomic requirement schema validation failure or output write/validation errors. |
 | 4 | LLM service unavailable | OpenAI-compatible review route fails the initial LLM connection probe or reaches the configured consecutive connection failure abort threshold. |
 | 1 | Unexpected exception | Any unclassified crash. Traceback is written to stderr. |

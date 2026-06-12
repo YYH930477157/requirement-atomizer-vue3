@@ -2,7 +2,7 @@
 
 Requirement Atomizer is the current main engineering module in this repository.
 
-It converts technical standard `.docx` documents into structured artifacts that are easier for an LLM-based requirement analysis agent to consume.
+It converts technical standard `.docx` and `.xlsx` documents into structured artifacts that are easier for an LLM-based requirement analysis agent to consume.
 
 It is designed for documents like `ABNT NBR 16968:2022`, where requirements are spread across chapters, protocol descriptions, object definitions, and many tables.
 
@@ -30,6 +30,8 @@ Running the tool creates:
 - `quality_report.json`: coverage, confidence, ambiguity, and type-distribution report
 - `manifest.json`: run metadata and counts
 - `summary.md`: human-readable run summary
+
+Supported input formats are `.docx` and `.xlsx`. Legacy `.xls` files must be saved as `.xlsx` before running the pipeline.
 
 ## Quick Start
 
@@ -74,7 +76,7 @@ The GUI uses the configured review pipeline. To enable real LLM review from the 
 The intended workflow is:
 
 ```text
-DOCX
+DOCX or XLSX
 -> structural blocks
 -> retrieval chunks
 -> enhanced table row atoms
@@ -87,7 +89,7 @@ For this kind of standard/protocol document, avoid sending the whole file to an 
 
 The atomizer now separates two layers:
 
-- deterministic parsing: DOCX blocks, enhanced tables, KB matches, and rule-based candidate requirements
+- deterministic parsing: document blocks, enhanced tables, KB matches, and rule-based candidate requirements
 - model review: use `llm_tasks.jsonl` to correct, merge, split, and enrich those candidates
 
 This is useful for DLMS/COSEM documents because many requirements are hidden in tables. For example, an `X` in an xDLMS service matrix is converted into a `matrix_facts` entry and then into a `capability_matrix` candidate requirement.

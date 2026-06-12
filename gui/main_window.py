@@ -157,7 +157,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.open_output_button.clicked.connect(self.choose_output_dir)
-        self.import_button.clicked.connect(self.choose_input_docx)
+        self.import_button.clicked.connect(self.choose_input_document)
         self.run_button.clicked.connect(self.run_current_document)
         self.detail_toggle.toggled.connect(self.detail_panel.setVisible)
         self.export_csv_button.clicked.connect(lambda: self.export_format("csv"))
@@ -189,8 +189,8 @@ class MainWindow(QMainWindow):
     def open_output_dir(self, out_dir: Path) -> None:
         self.load_output_dir_async(out_dir)
 
-    def choose_input_docx(self) -> None:
-        input_path, _ = QFileDialog.getOpenFileName(self, "Import DOCX", str(Path.cwd()), "Word documents (*.docx)")
+    def choose_input_document(self) -> None:
+        input_path, _ = QFileDialog.getOpenFileName(self, "Import Document", str(Path.cwd()), "Documents (*.docx *.xlsx)")
         if not input_path:
             return
         out_path = QFileDialog.getExistingDirectory(self, "Choose output directory", str(Path(input_path).parent))
@@ -203,7 +203,7 @@ class MainWindow(QMainWindow):
 
     def run_current_document(self) -> None:
         if self.current_input_path is None or self.current_out_dir is None:
-            self.choose_input_docx()
+            self.choose_input_document()
             return
         self.run_pipeline(self.current_input_path, self.current_out_dir)
 
