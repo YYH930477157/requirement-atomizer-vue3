@@ -256,7 +256,8 @@ def review_requirements_with_openai(
     consecutive_connection_failures = 0
     remaining = pending[FAST_FAIL_SAMPLE_SIZE:]
     if remaining:
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        executor = ThreadPoolExecutor(max_workers=concurrency)
+        try:
             futures = {
                 executor.submit(build_openai_review, requirements[index], pipeline, client_config): index
                 for index in remaining
@@ -272,6 +273,7 @@ def review_requirements_with_openai(
                     rule_stub += 1
                     llm_failed += 1
                     if consecutive_connection_failures >= connection_failure_abort:
+                        executor.shutdown(wait=False, cancel_futures=True)
                         raise LLMConnectionError(
                             "LLM service unavailable: "
                             f"{consecutive_connection_failures} consecutive connection failures: {exc}"
@@ -288,6 +290,8 @@ def review_requirements_with_openai(
                     record_progress()
                     new_cache_rows.append(llm_cache_row(requirement, client_config.model, review))
                 reviews[index] = review
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     final_reviews = [review for review in reviews if review is not None]
     if len(final_reviews) != len(requirements):

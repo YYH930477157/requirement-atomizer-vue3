@@ -30,18 +30,6 @@ from version import __version__
 LOGGER = logging.getLogger("requirement_atomizer")
 
 
-MAJOR_HEADINGS = {
-    "scope",
-    "normative references",
-    "terms and definitions",
-    "architecture",
-    "communication profile",
-    "communication profiles",
-    "security",
-    "bibliography",
-    "figures",
-    "tables",
-}
 DEFAULT_MAJOR_HEADINGS = (
     "scope",
     "normative references",

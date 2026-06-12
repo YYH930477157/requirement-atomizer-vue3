@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
-from llm_client import LLMConnectionError
+from llm_client import LLMClientConfig, LLMConnectionError
 from llm_pipeline import read_jsonl, run_review_pipeline, write_jsonl
 
 
@@ -356,6 +358,52 @@ class LLMPipelineRouteTests(unittest.TestCase):
                 write_pipeline_config(pipeline_path, service.base_url, connection_failure_abort=3)
                 with self.assertRaisesRegex(LLMConnectionError, "consecutive connection failures"):
                     run_review_pipeline(out_dir, pipeline_path=pipeline_path, route="openai_compatible")
+
+    def test_connection_abort_cancels_queued_reviews_without_waiting_for_full_queue(self) -> None:
+        call_count = 0
+        lock = threading.Lock()
+
+        def fake_review(requirement_row: dict[str, Any], pipeline: Any, client_config: LLMClientConfig) -> dict[str, Any]:
+            nonlocal call_count
+            with lock:
+                call_count += 1
+                current_call = call_count
+            if current_call <= 5:
+                return {
+                    "task_id": f"REVIEW-{requirement_row['stable_req_id']}",
+                    "requirement_id": requirement_row["stable_req_id"],
+                    "req_id": requirement_row["req_id"],
+                    "stable_req_id": requirement_row["stable_req_id"],
+                    "source_refs": requirement_row["source_refs"],
+                    "risk": "low_risk",
+                    "decision": "accept",
+                    "revised_requirement": requirement_row["requirement"],
+                    "review_notes": ["mock"],
+                    "expert_questions": [],
+                    "confidence": 0.9,
+                    "model_route": {"provider": "openai_compatible"},
+                    "generated_by": "llm:mock-review-model",
+                }
+            time.sleep(0.05)
+            raise LLMConnectionError("offline")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            rows = [requirement(f"SREQ-00000000000005{index:02X}", confidence=0.70) for index in range(65)]
+            write_jsonl(out_dir / "atomic_requirements.jsonl", rows)
+            pipeline_path = tmp_path / "review_pipeline.yaml"
+            write_pipeline_config(pipeline_path, "http://127.0.0.1:9/v1", connection_failure_abort=2)
+
+            started = time.perf_counter()
+            with patch("llm_pipeline.build_openai_review", side_effect=fake_review):
+                with self.assertRaisesRegex(LLMConnectionError, "consecutive connection failures"):
+                    run_review_pipeline(out_dir, pipeline_path=pipeline_path, route="openai_compatible")
+            elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.8)
+        self.assertLess(call_count, len(rows))
 
 
 if __name__ == "__main__":
