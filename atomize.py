@@ -1820,6 +1820,10 @@ def first_field_value(fields: dict[str, Any], expected_header: str) -> str:
     for key, value in fields.items():
         if normalize_header_part(key) == expected:
             return clean_text(str(value))
+    squashed = expected.replace(" ", "")
+    for key, value in fields.items():
+        if normalize_header_part(key).replace(" ", "") == squashed:
+            return clean_text(str(value))
     return ""
 
 

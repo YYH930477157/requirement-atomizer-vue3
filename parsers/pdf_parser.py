@@ -55,7 +55,7 @@ def extract_pdf(
         for page_number, page in enumerate(pdf.pages, start=1):
             tables = page.find_tables()
             table_bboxes = [table.bbox for table in tables]
-            page_paragraphs = _paragraphs_outside_tables(page, table_bboxes)
+            page_paragraphs = _paragraphs_outside_tables(page, table_bboxes, document_profile=profile)
             paragraph_index = 0
 
             for table in tables:
@@ -136,7 +136,12 @@ def _detect_repeated_margin_lines(pdf: Any) -> set[str]:
     return {text for text, count in counts.items() if count >= threshold}
 
 
-def _paragraphs_outside_tables(page: Any, table_bboxes: list[tuple[float, float, float, float]]) -> list[dict[str, Any]]:
+def _paragraphs_outside_tables(
+    page: Any,
+    table_bboxes: list[tuple[float, float, float, float]],
+    *,
+    document_profile: DocumentProfile,
+) -> list[dict[str, Any]]:
     words = [
         word
         for word in page.extract_words()
@@ -150,7 +155,12 @@ def _paragraphs_outside_tables(page: Any, table_bboxes: list[tuple[float, float,
     current: list[dict[str, Any]] = []
     previous: dict[str, Any] | None = None
     for line in lines:
-        if previous is not None and _starts_new_paragraph(previous, line, page_height=page.height):
+        if previous is not None and _starts_new_paragraph(
+            previous,
+            line,
+            page_height=page.height,
+            document_profile=document_profile,
+        ):
             paragraphs.append(_merge_lines(current))
             current = []
         current.append(line)
@@ -200,15 +210,21 @@ def _merge_lines(lines: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _starts_new_paragraph(previous: dict[str, Any], line: dict[str, Any], *, page_height: float) -> bool:
+def _starts_new_paragraph(
+    previous: dict[str, Any],
+    line: dict[str, Any],
+    *,
+    page_height: float,
+    document_profile: DocumentProfile,
+) -> bool:
     if _is_margin_line(previous, page_height) or _is_margin_line(line, page_height):
         return True
     gap = float(line["top"]) - float(previous["bottom"])
     if gap >= 12:
         return True
-    if detect_heading(line["text"], "", document_profile=DEFAULT_DOCUMENT_PROFILE):
+    if detect_heading(line["text"], "", document_profile=document_profile):
         return True
-    if looks_like_caption(line["text"]):
+    if looks_like_caption(line["text"], document_profile=document_profile):
         return True
     return False
 

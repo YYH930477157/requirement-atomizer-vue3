@@ -14,6 +14,7 @@ from atomize import (
     build_table_artifacts,
     build_quality_report,
     extract_matrix_facts,
+    first_field_value,
     interpret_table_matrix,
     parse_access_rights,
     run_atomizer_pipeline,
@@ -21,6 +22,19 @@ from atomize import (
 
 
 class AtomizeTableTests(unittest.TestCase):
+    def test_first_field_value_matches_pdf_header_with_internal_false_space(self) -> None:
+        fields = {"Object/attri bute name": "x", "CL": "3"}
+
+        self.assertEqual(first_field_value(fields, "Object/attribute name"), "x")
+
+    def test_first_field_value_prefers_exact_header_before_squashed_fallback(self) -> None:
+        fields = {
+            "Object/attri bute name": "fallback",
+            "Object/attribute name": "exact",
+        }
+
+        self.assertEqual(first_field_value(fields, "Object/attribute name"), "exact")
+
     def test_interpret_table_matrix_combines_repeated_header_rows(self) -> None:
         matrix = [
             ["Customer application process", "xDLMS Service", "xDLMS Service"],

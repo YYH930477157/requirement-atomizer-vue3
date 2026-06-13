@@ -8,8 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from atomize import AtomizerInputError, build_atomic_candidates, mark_doc_regions, run_atomizer_pipeline
-from parsers.pdf_parser import extract_pdf
+from atomize import AtomizerInputError, DocumentProfile, build_atomic_candidates, mark_doc_regions, run_atomizer_pipeline
+from parsers.pdf_parser import _starts_new_paragraph, extract_pdf
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +75,29 @@ class ExtractPdfE2ETests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("无文字层", message)
         self.assertIn(".docx", message)
+
+    def test_pdf_paragraph_split_uses_injected_document_profile(self) -> None:
+        previous = {"text": "Body text", "top": 100.0, "bottom": 110.0}
+        appendix_caption = {"text": "Appendix Table 7 - Object map", "top": 114.0, "bottom": 124.0}
+        custom_heading = {"text": "Conformance", "top": 114.0, "bottom": 124.0}
+        default_profile = DocumentProfile()
+        custom_profile = DocumentProfile(
+            major_headings=("conformance",),
+            caption_pattern=r"^appendix\s+table\s+\d+\b",
+        )
+
+        self.assertFalse(
+            _starts_new_paragraph(previous, appendix_caption, page_height=1000, document_profile=default_profile)
+        )
+        self.assertTrue(
+            _starts_new_paragraph(previous, appendix_caption, page_height=1000, document_profile=custom_profile)
+        )
+        self.assertFalse(
+            _starts_new_paragraph(previous, custom_heading, page_height=1000, document_profile=default_profile)
+        )
+        self.assertTrue(
+            _starts_new_paragraph(previous, custom_heading, page_height=1000, document_profile=custom_profile)
+        )
 
     def test_run_atomizer_pipeline_dispatches_pdf_and_writes_manifest_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
