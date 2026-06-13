@@ -4,11 +4,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QRect, QSortFilterProxyModel, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
+from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
-from gui import fluent
+from gui import fluent, i18n
 
 
 HEADERS = ["req_id", "type", "object", "requirement", "confidence", "status", "ambiguity"]
@@ -21,6 +21,12 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def load_output_bundle(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
@@ -30,6 +36,7 @@ def load_output_bundle(out_dir: Path) -> dict[str, Any]:
     table_items = read_jsonl(out_dir / "table_items.jsonl")
     return {
         "out_dir": out_dir,
+        "manifest": read_json(out_dir / "manifest.json"),
         "requirements": enrich_requirements(requirements, states, reviews),
         "source_index": build_source_index(blocks, table_items),
     }
@@ -120,7 +127,7 @@ class RequirementsTableModel(QAbstractTableModel):
         if role != Qt.DisplayRole:
             return None
         if orientation == Qt.Horizontal:
-            return HEADERS[section]
+            return i18n.column_label(HEADERS[section])
         return section + 1
 
     def row_at(self, row: int) -> dict[str, Any]:
@@ -139,11 +146,11 @@ class RequirementsTableModel(QAbstractTableModel):
 
 def display_value(row: dict[str, Any], column: str) -> str:
     if column == "type":
-        return str(row.get("requirement_type") or "")
+        return i18n.type_label(row.get("requirement_type"))
     if column == "status":
         return str(row.get("review_status") or "candidate")
     if column == "ambiguity":
-        return "!" if row.get("ambiguity") else ""
+        return "是" if row.get("ambiguity") else "否"
     value = row.get(column)
     if column == "confidence":
         try:
@@ -218,21 +225,55 @@ class RequirementsFilterProxyModel(QSortFilterProxyModel):
         return str(left.data() or "") < str(right.data() or "")
 
 
+def pill_rect(option: QStyleOptionViewItem, text: str) -> QRect:
+    height = min(26, max(20, option.rect.height() - 18))
+    width = min(option.rect.width() - 12, max(54, option.fontMetrics.horizontalAdvance(text) + 22))
+    rect = QRect(0, 0, width, height)
+    rect.moveCenter(option.rect.center())
+    return rect
+
+
+def paint_cell_background(painter: QPainter, option: QStyleOptionViewItem) -> None:
+    if option.state & QStyle.StateFlag.State_Selected:
+        painter.fillRect(option.rect, QColor(fluent.TOKENS["row_selected"]))
+
+
+class TypeDelegate(QStyledItemDelegate):
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        if HEADERS[index.column()] != "type":
+            super().paint(painter, option, index)
+            return
+        text = str(index.data() or "")
+        text_color, bg_color = fluent.type_colors(text)
+        painter.save()
+        paint_cell_background(painter, option)
+        rect = pill_rect(option, text)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(bg_color))
+        painter.drawRoundedRect(rect, 12, 12)
+        painter.setPen(QPen(QColor(text_color)))
+        painter.drawText(rect, Qt.AlignCenter, text)
+        painter.restore()
+
+
 class StatusDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         if HEADERS[index.column()] != "status":
             super().paint(painter, option, index)
             return
         status = str(index.data() or "candidate")
+        label = i18n.status_label(status)
         text_color, bg_color = fluent.status_colors(status)
         painter.save()
-        rect = option.rect.adjusted(6, 7, -6, -7)
+        paint_cell_background(painter, option)
+        rect = pill_rect(option, label)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(bg_color))
-        painter.drawRoundedRect(rect, 10, 10)
+        painter.drawRoundedRect(rect, 12, 12)
         painter.setPen(QPen(QColor(text_color)))
-        painter.drawText(rect, Qt.AlignCenter, status)
+        painter.drawText(rect, Qt.AlignCenter, label)
         painter.restore()
 
 
@@ -246,7 +287,8 @@ class ConfidenceDelegate(QStyledItemDelegate):
         except (TypeError, ValueError):
             confidence = 0.0
         painter.save()
-        dot_rect = option.rect.adjusted(10, 12, -option.rect.width() + 22, -12)
+        paint_cell_background(painter, option)
+        dot_rect = QRect(option.rect.left() + 12, option.rect.center().y() - 4, 9, 9)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(fluent.confidence_color(confidence)))

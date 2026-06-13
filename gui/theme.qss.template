@@ -11,12 +11,80 @@ QWidget {{
   font-size: 10pt;
 }}
 
-QFrame#toolbarCard,
-QFrame#filterCard,
-QFrame#detailPanel {{
+QFrame#sideNav {{
+  background: {sidenav_bg};
+  border-right: 1px solid {card_border};
+}}
+
+QLabel#navMark {{
+  min-width: 44px;
+  min-height: 44px;
+  max-width: 44px;
+  max-height: 44px;
+  border-radius: 12px;
+  background: {accent};
+  color: white;
+  font-size: 16pt;
+  font-weight: 800;
+}}
+
+QToolButton#navButton {{
+  min-height: 72px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 8px 6px;
+  background: transparent;
+  color: #4B5565;
+  font-weight: 700;
+}}
+
+QToolButton#navButton:hover {{
+  background: {row_hover};
+  color: {text_primary};
+}}
+
+QToolButton#navButton:checked {{
   background: {card_bg};
-  border: 1px solid {card_border};
-  border-radius: {card_radius};
+  border-color: {accent_border};
+  color: {accent};
+  font-weight: 800;
+}}
+
+QFrame#appBar {{
+  background: {appbar_bg};
+  border: 0;
+  border-bottom: 1px solid {card_border};
+}}
+
+QLabel#productTitle {{
+  color: {title_color};
+  font-size: 19pt;
+  font-weight: 800;
+}}
+
+QLabel#currentDocument {{
+  color: {text_secondary};
+  font-size: 10pt;
+}}
+
+QLabel#phasePill,
+QLabel#statHint,
+QLabel#statusBadge {{
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 9pt;
+  font-weight: 800;
+}}
+
+QLabel#phasePill {{
+  color: #526070;
+  background: #F8FAFC;
+  border: 1px solid #D3DBE6;
+}}
+
+QLabel#stageLabel {{
+  color: {text_secondary};
+  font-size: 9pt;
 }}
 
 QPushButton,
@@ -24,20 +92,29 @@ QToolButton,
 QComboBox,
 QLineEdit,
 QDoubleSpinBox {{
-  border: 1px solid {card_border};
+  min-height: 30px;
+  border: 1px solid {border_strong};
   border-radius: {control_radius};
-  padding: 5px 9px;
+  padding: 3px 10px;
   background: {card_bg};
+  color: #273344;
+  font-weight: 700;
 }}
 
 QPushButton:hover,
 QToolButton:hover {{
-  border-color: {accent_hover};
+  border-color: {accent_border};
+}}
+
+QPushButton:disabled {{
+  color: #97A1AF;
+  background: #F2F4F7;
+  border-color: #E0E5EB;
 }}
 
 QPushButton#primaryButton {{
   background: {accent};
-  border-color: {accent};
+  border-color: {accent_hover};
   color: white;
 }}
 
@@ -49,37 +126,218 @@ QPushButton#primaryButton:pressed {{
   background: {accent_pressed};
 }}
 
+QFrame#statStrip {{
+  background: {window_bg};
+  border: 0;
+  border-bottom: 1px solid {card_border};
+}}
+
+QFrame#statCard {{
+  background: {statcard_bg};
+  border: 1px solid {card_border};
+  border-radius: 10px;
+}}
+
+QFrame#statCard[active="true"] {{
+  border-color: {accent_border};
+  background: #F5F8FF;
+}}
+
+QFrame#statCard:hover {{
+  border-color: {accent_border};
+  background: {row_hover};
+}}
+
+QLabel#statTitle {{
+  color: {text_secondary};
+  font-size: 10pt;
+  font-weight: 800;
+}}
+
+QLabel#statValue {{
+  color: {title_color};
+  font-size: 25pt;
+  font-weight: 800;
+}}
+
+QLabel#statHint {{
+  color: #587099;
+  background: #EEF4FF;
+  border: 0;
+}}
+
+QFrame#filterBar {{
+  background: {card_bg};
+  border: 0;
+  border-bottom: 1px solid {card_border};
+}}
+
+QLabel#filterLabel {{
+  color: #273344;
+  font-weight: 800;
+}}
+
+QCheckBox {{
+  color: #445066;
+  font-weight: 700;
+}}
+
+QCheckBox::indicator {{
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid {border_strong};
+  background: white;
+}}
+
+QCheckBox::indicator:checked {{
+  background: {accent};
+  border-color: {accent};
+}}
+
+QFrame#workspace {{
+  background: {window_bg};
+  border: 0;
+}}
+
+QFrame#tablePanel,
+QFrame#detailPanel {{
+  background: {card_bg};
+  border: 0;
+}}
+
+QFrame#tablePanel {{
+  border-right: 1px solid {card_border};
+}}
+
+QFrame#panelHead {{
+  background: {card_bg};
+  border: 0;
+  border-bottom: 1px solid {card_border};
+}}
+
+QLabel#panelTitle,
+QLabel#detailTitle {{
+  color: {title_color};
+  font-size: 12pt;
+  font-weight: 800;
+}}
+
+QLabel#panelSubtitle,
+QLabel#detailSubtitle {{
+  color: {text_secondary};
+  font-size: 9pt;
+  font-weight: 700;
+}}
+
 QTableView {{
   background: {card_bg};
   alternate-background-color: {row_hover};
   selection-background-color: {row_selected};
   selection-color: {text_primary};
   gridline-color: transparent;
-  border: 1px solid {card_border};
-  border-radius: {card_radius};
+  border: 0;
+}}
+
+QTableView::item {{
+  border-bottom: 1px solid #EDF1F5;
+  padding: 7px 10px;
+}}
+
+QTableView::item:selected {{
+  background: {row_selected};
 }}
 
 QHeaderView::section {{
-  background: {card_bg};
+  background: #F8FAFC;
   border: 0;
   border-bottom: 1px solid {card_border};
-  padding: 6px;
+  padding: 8px 10px;
+  color: #536173;
+  font-size: 9pt;
+  font-weight: 800;
+}}
+
+QScrollArea {{
+  border: 0;
+  background: transparent;
+}}
+
+QFrame#detailContent {{
+  background: #FBFCFE;
+}}
+
+QFrame#readonlyCard,
+QFrame#miniCard,
+QFrame#metadataCard {{
+  background: {card_bg};
+  border: 1px solid {card_border};
+  border-radius: 10px;
+}}
+
+QFrame#readonlyHead,
+QFrame#miniHead {{
+  background: #F7F9FC;
+  border: 0;
+  border-bottom: 1px solid #E7ECF2;
+}}
+
+QLabel#sectionTitle {{
+  color: #293445;
+  font-size: 10pt;
+  font-weight: 800;
+}}
+
+QLabel#metadataKey {{
   color: {text_secondary};
+  font-size: 9pt;
+  font-weight: 700;
+}}
+
+QLabel#metadataValue {{
+  color: #273344;
+  font-size: 9pt;
+  font-weight: 800;
+}}
+
+QTextEdit#readOnlyBox {{
+  background: {card_bg};
+  border: 0;
+  padding: 6px 8px;
+  color: #293445;
+  line-height: 145%;
+}}
+
+QTextEdit#readOnlyBox:disabled {{
+  color: {text_muted};
+}}
+
+QLabel#chip {{
+  background: {row_hover};
+  border-radius: 10px;
+  padding: 3px 8px;
+  color: #4A5668;
+  font-size: 9pt;
 }}
 
 QStatusBar {{
-  background: {window_bg};
+  min-height: 30px;
+  background: {card_bg};
+  border-top: 1px solid {card_border};
   color: {text_secondary};
+  font-size: 9pt;
+  font-weight: 700;
 }}
 
 QProgressBar {{
+  max-height: 8px;
   border: 1px solid {card_border};
-  border-radius: {control_radius};
+  border-radius: 4px;
   background: {card_bg};
   text-align: center;
 }}
 
 QProgressBar::chunk {{
   background: {accent};
-  border-radius: {control_radius};
+  border-radius: 4px;
 }}

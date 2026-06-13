@@ -4,29 +4,34 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEvent, QModelIndex, QThread, QTimer, Qt
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QSplitter,
     QStatusBar,
+    QStyle,
     QTableView,
     QHeaderView,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from export_requirements import export_requirements
+from gui import i18n
 from gui.detail_panel import DetailPanel
 from gui.pipeline_worker import LoadOutputWorker, PipelineWorker
 from gui.requirements_model import (
@@ -35,16 +40,73 @@ from gui.requirements_model import (
     RequirementsFilterProxyModel,
     RequirementsTableModel,
     StatusDelegate,
+    TypeDelegate,
     load_output_bundle,
 )
 from gui.review_actions import apply_review_action
 
 
+STATUS_FILTERS = [
+    "candidate",
+    "llm_reviewed",
+    "expert_pending",
+    "accepted",
+    "rejected",
+    "needs_discussion",
+    "needs_rework",
+    "flagged",
+    "frozen",
+]
+
+
+def filter_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("filterLabel")
+    return label
+
+
+class StatCard(QFrame):
+    def __init__(self, title: str, hint: str, clicked: Any) -> None:
+        super().__init__()
+        self.clicked = clicked
+        self.setObjectName("statCard")
+        self.setProperty("active", False)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(18, 12, 18, 12)
+        layout.setSpacing(12)
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(5)
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("statTitle")
+        self.value_label = QLabel("0")
+        self.value_label.setObjectName("statValue")
+        self.hint_label = QLabel(hint)
+        self.hint_label.setObjectName("statHint")
+        text_layout.addWidget(self.title_label)
+        text_layout.addWidget(self.value_label)
+        layout.addLayout(text_layout, 1)
+        layout.addWidget(self.hint_label, 0, Qt.AlignmentFlag.AlignTop)
+
+    def set_value(self, value: int) -> None:
+        self.value_label.setText(f"{value:,}")
+
+    def set_active(self, active: bool) -> None:
+        self.setProperty("active", active)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, event: Any) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked()
+        super().mousePressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Requirement Atomizer Review Workbench")
-        self.resize(1280, 760)
+        self.setWindowTitle(i18n.APP_TITLE)
+        self.resize(1500, 900)
         self.model = RequirementsTableModel()
         self.proxy = RequirementsFilterProxyModel()
         self.proxy.setSourceModel(self.model)
@@ -63,59 +125,150 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         root = QWidget()
-        root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(12, 12, 12, 8)
-        root_layout.setSpacing(8)
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        toolbar = QFrame()
-        toolbar.setObjectName("toolbarCard")
-        toolbar_layout = QHBoxLayout(toolbar)
-        self.import_button = QPushButton("Import Document")
-        self.open_output_button = QPushButton("Open Output Directory")
-        self.run_button = QPushButton("Run")
+        side_nav = QFrame()
+        side_nav.setObjectName("sideNav")
+        side_nav.setFixedWidth(108)
+        side_layout = QVBoxLayout(side_nav)
+        side_layout.setContentsMargins(12, 18, 12, 12)
+        side_layout.setSpacing(10)
+        nav_mark = QLabel(i18n.UI["nav_mark"])
+        nav_mark.setObjectName("navMark")
+        nav_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        side_layout.addWidget(nav_mark, 0, Qt.AlignmentFlag.AlignHCenter)
+        side_layout.addSpacing(16)
+        self.nav_review_button = self._nav_button(i18n.UI["nav_review"], QStyle.StandardPixmap.SP_FileDialogContentsView)
+        self.nav_review_button.setChecked(True)
+        self.nav_document_button = self._nav_button(i18n.UI["nav_document"], QStyle.StandardPixmap.SP_DirOpenIcon)
+        self.nav_export_button = self._nav_button(i18n.UI["nav_export"], QStyle.StandardPixmap.SP_DialogSaveButton)
+        self.nav_settings_button = self._nav_button(i18n.UI["nav_settings"], QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        side_layout.addWidget(self.nav_review_button)
+        side_layout.addWidget(self.nav_document_button)
+        side_layout.addWidget(self.nav_export_button)
+        side_layout.addWidget(self.nav_settings_button)
+        side_layout.addStretch(1)
+        root_layout.addWidget(side_nav)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        root_layout.addWidget(content, 1)
+
+        app_bar = QFrame()
+        app_bar.setObjectName("appBar")
+        app_bar.setFixedHeight(78)
+        app_bar_layout = QHBoxLayout(app_bar)
+        app_bar_layout.setContentsMargins(26, 12, 18, 12)
+        app_bar_layout.setSpacing(18)
+        self.product_title = QLabel(i18n.APP_TITLE)
+        self.product_title.setObjectName("productTitle")
+        self.current_document_label = QLabel(f"{i18n.UI['current_document_prefix']}{i18n.UI['current_document_empty']}")
+        self.current_document_label.setObjectName("currentDocument")
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(2)
+        title_layout.addWidget(self.product_title)
+        title_layout.addWidget(self.current_document_label)
+        self.phase_label = QLabel(i18n.UI["phase"])
+        self.phase_label.setObjectName("phasePill")
+        self.phase_label.setFixedHeight(28)
+        brand_layout = QHBoxLayout()
+        brand_layout.setSpacing(16)
+        brand_layout.addLayout(title_layout)
+        brand_layout.addWidget(self.phase_label, 0, Qt.AlignmentFlag.AlignTop)
+        brand_layout.addStretch(1)
+        self.import_button = QPushButton(i18n.UI["import"])
+        self.open_output_button = QPushButton(i18n.UI["open_output"])
+        self.open_output_button.setVisible(False)
+        self.run_button = QPushButton(i18n.UI["run"])
         self.run_button.setObjectName("primaryButton")
-        self.detail_toggle = QPushButton("Details")
+        self.detail_toggle = QPushButton(i18n.UI["details"])
         self.detail_toggle.setCheckable(True)
         self.detail_toggle.setChecked(True)
-        self.stage_label = QLabel("Ready")
+        self.detail_toggle.setVisible(False)
+        self.stage_label = QLabel(i18n.UI["ready"])
+        self.stage_label.setObjectName("stageLabel")
+        self.stage_label.setVisible(False)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
-        self.export_csv_button = QPushButton("Export CSV")
-        self.export_md_button = QPushButton("Export MD")
-        toolbar_layout.addWidget(self.import_button)
-        toolbar_layout.addWidget(self.open_output_button)
-        toolbar_layout.addSpacing(12)
-        toolbar_layout.addWidget(self.run_button)
-        toolbar_layout.addWidget(self.progress)
-        toolbar_layout.addWidget(self.stage_label, 1)
-        toolbar_layout.addWidget(self.detail_toggle)
-        toolbar_layout.addWidget(self.export_csv_button)
-        toolbar_layout.addWidget(self.export_md_button)
-        root_layout.addWidget(toolbar)
+        self.export_csv_button = QPushButton(i18n.UI["export_csv"])
+        self.export_md_button = QPushButton(i18n.UI["export_md"])
+        self.export_menu_button = QToolButton()
+        self.export_menu_button.setText(i18n.UI["export_menu"])
+        self.export_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.export_menu_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.run_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.import_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
+        self.open_output_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        self.export_menu_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        self.detail_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        export_menu = QMenu(self.export_menu_button)
+        self.export_csv_action = export_menu.addAction(i18n.UI["export_csv"])
+        self.export_md_action = export_menu.addAction(i18n.UI["export_md"])
+        self.export_menu_button.setMenu(export_menu)
+        app_bar_layout.addLayout(brand_layout, 1)
+        app_bar_layout.addWidget(self.stage_label)
+        app_bar_layout.addWidget(self.progress)
+        app_bar_layout.addWidget(self.run_button)
+        app_bar_layout.addWidget(self.import_button)
+        app_bar_layout.addWidget(self.open_output_button)
+        app_bar_layout.addWidget(self.export_menu_button)
+        app_bar_layout.addWidget(self.detail_toggle)
+        content_layout.addWidget(app_bar)
+
+        stat_strip = QFrame()
+        stat_strip.setObjectName("statStrip")
+        stat_strip.setFixedHeight(118)
+        stat_layout = QHBoxLayout(stat_strip)
+        stat_layout.setContentsMargins(26, 18, 14, 18)
+        stat_layout.setSpacing(16)
+        self.total_card = StatCard(i18n.UI["stat_total"], i18n.UI["stat_hint_all"], self.clear_stat_filter)
+        self.accepted_card = StatCard(i18n.UI["stat_accepted"], i18n.UI["stat_hint_filter"], lambda: self.apply_status_card_filter("accepted"))
+        self.expert_card = StatCard(i18n.UI["stat_expert"], i18n.UI["stat_hint_filter"], lambda: self.apply_status_card_filter("expert_pending"))
+        self.ambiguous_card = StatCard(i18n.UI["stat_ambiguous"], i18n.UI["stat_hint_filter"], self.apply_ambiguous_card_filter)
+        self.stat_cards = (self.total_card, self.accepted_card, self.expert_card, self.ambiguous_card)
+        self.total_card.set_active(True)
+        for card in self.stat_cards:
+            stat_layout.addWidget(card, 1)
+        content_layout.addWidget(stat_strip)
 
         filters = QFrame()
-        filters.setObjectName("filterCard")
+        filters.setObjectName("filterBar")
+        filters.setFixedHeight(72)
         filter_layout = QHBoxLayout(filters)
+        filter_layout.setContentsMargins(26, 14, 24, 14)
+        filter_layout.setSpacing(12)
         self.type_filter = QComboBox()
-        self.type_filter.addItem("all")
+        self.type_filter.addItem(i18n.UI["filter_all"], "all")
+        self.type_filter.setFixedWidth(150)
         self.status_filter = QComboBox()
-        self.status_filter.addItems(["all", "candidate", "llm_reviewed", "expert_pending", "accepted", "rejected", "needs_discussion"])
+        self.status_filter.addItem(i18n.UI["filter_all"], "all")
+        self.status_filter.setFixedWidth(150)
+        for status in STATUS_FILTERS:
+            self.status_filter.addItem(i18n.status_label(status), status)
         self.confidence_filter = QDoubleSpinBox()
         self.confidence_filter.setRange(0.0, 1.0)
         self.confidence_filter.setSingleStep(0.05)
-        self.confidence_filter.setPrefix("confidence >= ")
-        self.ambiguity_filter = QCheckBox("ambiguous only")
+        self.confidence_filter.setDecimals(2)
+        self.confidence_filter.setPrefix(i18n.UI["confidence_prefix"])
+        self.confidence_filter.setValue(0.70)
+        self.proxy.set_min_confidence(0.70)
+        self.confidence_filter.setFixedWidth(138)
+        self.ambiguity_filter = QCheckBox(i18n.UI["ambiguous_only"])
         self.search_filter = QLineEdit()
-        self.search_filter.setPlaceholderText("Search")
-        filter_layout.addWidget(QLabel("Type"))
+        self.search_filter.setPlaceholderText(i18n.UI["search_placeholder"])
+        filter_layout.addWidget(filter_label(i18n.UI["filter_type"]))
         filter_layout.addWidget(self.type_filter)
-        filter_layout.addWidget(QLabel("Status"))
+        filter_layout.addWidget(filter_label(i18n.UI["filter_status"]))
         filter_layout.addWidget(self.status_filter)
         filter_layout.addWidget(self.confidence_filter)
         filter_layout.addWidget(self.ambiguity_filter)
         filter_layout.addWidget(self.search_filter, 1)
-        root_layout.addWidget(filters)
+        content_layout.addWidget(filters)
 
         self.table = QTableView()
         self.table.setModel(self.proxy)
@@ -127,32 +280,67 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        self.table.setWordWrap(True)
+        self.table.setObjectName("requirementsTable")
+        self.table.setItemDelegateForColumn(HEADERS.index("type"), TypeDelegate(self.table))
         self.table.setItemDelegateForColumn(HEADERS.index("status"), StatusDelegate(self.table))
         self.table.setItemDelegateForColumn(HEADERS.index("confidence"), ConfidenceDelegate(self.table))
+        self.table.verticalHeader().setDefaultSectionSize(62)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(HEADERS.index("requirement"), QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 105)
-        self.table.setColumnWidth(1, 180)
-        self.table.setColumnWidth(2, 150)
-        self.table.setColumnWidth(4, 95)
-        self.table.setColumnWidth(5, 145)
-        self.table.setColumnWidth(6, 72)
+        self.table.horizontalHeader().setDefaultSectionSize(120)
+        self.table.horizontalHeader().setMinimumSectionSize(70)
+        self.table.setColumnWidth(0, 92)
+        self.table.setColumnWidth(1, 150)
+        self.table.setColumnWidth(2, 142)
+        self.table.setColumnWidth(4, 100)
+        self.table.setColumnWidth(5, 98)
+        self.table.setColumnWidth(6, 70)
         self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
 
         self.detail_panel = DetailPanel()
+        table_panel = QFrame()
+        table_panel.setObjectName("tablePanel")
+        table_layout = QVBoxLayout(table_panel)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(0)
+        table_header = QFrame()
+        table_header.setObjectName("panelHead")
+        table_header.setFixedHeight(52)
+        table_header_layout = QHBoxLayout(table_header)
+        table_header_layout.setContentsMargins(20, 0, 20, 0)
+        table_header_layout.setSpacing(12)
+        table_title_layout = QVBoxLayout()
+        table_title_layout.setSpacing(1)
+        table_title = QLabel(i18n.UI["table_title"])
+        table_title.setObjectName("panelTitle")
+        table_subtitle = QLabel(i18n.UI["table_subtitle"])
+        table_subtitle.setObjectName("panelSubtitle")
+        table_title_layout.addWidget(table_title)
+        table_title_layout.addWidget(table_subtitle)
+        self.table_count_label = QLabel(i18n.UI["table_count"].format(start=0, end=0, total=0))
+        self.table_count_label.setObjectName("panelSubtitle")
+        table_header_layout.addLayout(table_title_layout, 1)
+        table_header_layout.addWidget(self.table_count_label)
+        table_layout.addWidget(table_header)
+        table_layout.addWidget(self.table, 1)
+
         splitter = QSplitter()
-        splitter.addWidget(self.table)
+        splitter.setHandleWidth(1)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(table_panel)
         splitter.addWidget(self.detail_panel)
-        splitter.setSizes([860, 400])
-        root_layout.addWidget(splitter, 1)
+        splitter.setSizes([960, 430])
+        content_layout.addWidget(splitter, 1)
         self.setCentralWidget(root)
 
         self.status_summary_label = QLabel("Total 0 | Accepted 0 | Expert 0 | Ambiguous 0")
         self.output_label = QLabel("")
+        self.shortcut_label = QLabel(i18n.UI["shortcuts"])
         status_bar = QStatusBar()
-        status_bar.addWidget(self.status_summary_label)
-        status_bar.addPermanentWidget(self.output_label, 1)
+        status_bar.addWidget(self.output_label, 1)
+        status_bar.addPermanentWidget(self.shortcut_label)
         self.setStatusBar(status_bar)
 
     def _connect_signals(self) -> None:
@@ -162,11 +350,17 @@ class MainWindow(QMainWindow):
         self.detail_toggle.toggled.connect(self.detail_panel.setVisible)
         self.export_csv_button.clicked.connect(lambda: self.export_format("csv"))
         self.export_md_button.clicked.connect(lambda: self.export_format("md"))
-        self.type_filter.currentTextChanged.connect(self.proxy.set_type_filter)
-        self.status_filter.currentTextChanged.connect(self.proxy.set_status_filter)
-        self.confidence_filter.valueChanged.connect(self.proxy.set_min_confidence)
-        self.ambiguity_filter.toggled.connect(self.proxy.set_ambiguous_only)
-        self.search_filter.textChanged.connect(self.proxy.set_text_filter)
+        self.export_csv_action.triggered.connect(lambda: self.export_format("csv"))
+        self.export_md_action.triggered.connect(lambda: self.export_format("md"))
+        self.nav_review_button.clicked.connect(lambda: self.select_nav(self.nav_review_button))
+        self.nav_document_button.clicked.connect(self.nav_import_document)
+        self.nav_export_button.clicked.connect(self.nav_export_menu)
+        self.nav_settings_button.clicked.connect(self.nav_settings_placeholder)
+        self.type_filter.currentIndexChanged.connect(self.on_type_filter_changed)
+        self.status_filter.currentIndexChanged.connect(self.on_status_filter_changed)
+        self.confidence_filter.valueChanged.connect(self.on_confidence_filter_changed)
+        self.ambiguity_filter.toggled.connect(self.on_ambiguity_filter_changed)
+        self.search_filter.textChanged.connect(self.on_search_filter_changed)
         self.table.selectionModel().currentRowChanged.connect(self.on_current_row_changed)
         self.table.clicked.connect(self.on_table_clicked)
         self.table.viewport().installEventFilter(self)
@@ -181,8 +375,68 @@ class MainWindow(QMainWindow):
         escape = QShortcut(QKeySequence(Qt.Key_Escape), self)
         escape.activated.connect(self.clear_pin)
 
+    def _nav_button(self, text: str, icon: QStyle.StandardPixmap) -> QToolButton:
+        button = QToolButton()
+        button.setText(text)
+        button.setIcon(self.style().standardIcon(icon))
+        button.setCheckable(True)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        button.setObjectName("navButton")
+        return button
+
+    def select_nav(self, selected: QToolButton) -> None:
+        for button in (
+            self.nav_review_button,
+            self.nav_document_button,
+            self.nav_export_button,
+            self.nav_settings_button,
+        ):
+            button.setChecked(button is selected)
+
+    def nav_import_document(self) -> None:
+        self.select_nav(self.nav_document_button)
+        self.choose_input_document()
+        self.select_nav(self.nav_review_button)
+
+    def nav_export_menu(self) -> None:
+        self.select_nav(self.nav_export_button)
+        position = self.nav_export_button.mapToGlobal(self.nav_export_button.rect().bottomRight())
+        self.export_menu_button.menu().popup(position)
+        self.select_nav(self.nav_review_button)
+
+    def nav_settings_placeholder(self) -> None:
+        self.select_nav(self.nav_settings_button)
+        QMessageBox.information(self, i18n.UI["nav_settings"], i18n.UI["settings_placeholder"])
+        self.select_nav(self.nav_review_button)
+
+    def on_type_filter_changed(self, _index: int = 0) -> None:
+        self.proxy.set_type_filter(str(self.type_filter.currentData() or "all"))
+        self.update_table_count()
+
+    def on_status_filter_changed(self, _index: int = 0) -> None:
+        self.proxy.set_status_filter(str(self.status_filter.currentData() or "all"))
+        self.update_table_count()
+
+    def on_confidence_filter_changed(self, value: float) -> None:
+        self.proxy.set_min_confidence(value)
+        self.update_table_count()
+
+    def on_ambiguity_filter_changed(self, checked: bool) -> None:
+        self.proxy.set_ambiguous_only(checked)
+        self.update_table_count()
+
+    def on_search_filter_changed(self, text: str) -> None:
+        self.proxy.set_text_filter(text)
+        self.update_table_count()
+
+    def set_combo_to_data(self, combo: QComboBox, value: str) -> None:
+        for index in range(combo.count()):
+            if combo.itemData(index) == value:
+                combo.setCurrentIndex(index)
+                return
+
     def choose_output_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Open output directory", str(Path.cwd()))
+        path = QFileDialog.getExistingDirectory(self, i18n.UI["dlg_open_output"], str(Path.cwd()))
         if path:
             self.open_output_dir(Path(path))
 
@@ -190,10 +444,15 @@ class MainWindow(QMainWindow):
         self.load_output_dir_async(out_dir)
 
     def choose_input_document(self) -> None:
-        input_path, _ = QFileDialog.getOpenFileName(self, "Import Document", str(Path.cwd()), "Documents (*.docx *.xlsx *.pdf)")
+        input_path, _ = QFileDialog.getOpenFileName(
+            self,
+            i18n.UI["dlg_import"],
+            str(Path.cwd()),
+            i18n.UI["doc_filter"],
+        )
         if not input_path:
             return
-        out_path = QFileDialog.getExistingDirectory(self, "Choose output directory", str(Path(input_path).parent))
+        out_path = QFileDialog.getExistingDirectory(self, i18n.UI["dlg_choose_output"], str(Path(input_path).parent))
         if out_path:
             self.run_pipeline(Path(input_path), Path(out_path))
 
@@ -210,6 +469,7 @@ class MainWindow(QMainWindow):
     def run_pipeline(self, input_path: Path, out_dir: Path) -> None:
         self.current_input_path = input_path
         self.current_out_dir = out_dir
+        self.update_current_document_label()
         worker = PipelineWorker(input_path=input_path, out_dir=out_dir)
         self.start_worker(worker)
 
@@ -218,7 +478,7 @@ class MainWindow(QMainWindow):
 
     def start_worker(self, worker: PipelineWorker | LoadOutputWorker) -> None:
         if self.current_thread is not None:
-            QMessageBox.warning(self, "Pipeline running", "A background task is already running.")
+            QMessageBox.warning(self, i18n.UI["task_running_title"], i18n.UI["task_running_body"])
             return
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -236,17 +496,20 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def on_stage(self, message: str) -> None:
-        self.stage_label.setText(message)
+        self.stage_label.setText(i18n.UI["running"])
+        self.stage_label.setToolTip(message)
 
     def on_worker_finished(self, payload: dict[str, Any]) -> None:
         bundle = payload.get("bundle")
         if bundle:
             self.apply_bundle(bundle)
-        self.stage_label.setText("Ready")
+        self.stage_label.setText(i18n.UI["ready"])
+        self.stage_label.setToolTip("")
 
     def on_worker_failed(self, message: str) -> None:
-        self.stage_label.setText("Failed")
-        QMessageBox.critical(self, "Background task failed", message)
+        self.stage_label.setText(i18n.UI["failed"])
+        self.stage_label.setToolTip(message)
+        QMessageBox.critical(self, i18n.UI["task_failed_title"], message)
 
     def on_thread_finished(self) -> None:
         self.current_thread = None
@@ -257,14 +520,21 @@ class MainWindow(QMainWindow):
         self.run_button.setEnabled(not running)
         self.import_button.setEnabled(not running)
         self.open_output_button.setEnabled(not running)
+        self.export_menu_button.setEnabled(not running)
         self.progress.setVisible(running)
 
     def apply_bundle(self, bundle: dict[str, Any]) -> None:
         self.model.set_bundle(bundle)
         self.current_out_dir = bundle.get("out_dir")
-        self.output_label.setText(str(self.current_out_dir or ""))
+        self.output_label.setText(f"{i18n.UI['output_dir']}{self.current_out_dir or ''}")
+        manifest = bundle.get("manifest") if isinstance(bundle.get("manifest"), dict) else {}
+        manifest_input = str(manifest.get("input") or "")
+        if manifest_input:
+            self.current_input_path = Path(manifest_input)
+        self.update_current_document_label()
         self.refresh_type_filter()
         self.refresh_status_summary()
+        self.update_table_count()
         if self.proxy.rowCount() > 0:
             first_index = self.proxy.index(0, 0)
             selection_model = self.table.selectionModel()
@@ -274,14 +544,17 @@ class MainWindow(QMainWindow):
             self.show_proxy_row(first_index, pin=False)
 
     def refresh_type_filter(self) -> None:
-        current = self.type_filter.currentText()
+        current = str(self.type_filter.currentData() or "all")
         types = sorted({str(row.get("requirement_type") or "") for row in self.model.rows if row.get("requirement_type")})
         self.type_filter.blockSignals(True)
         self.type_filter.clear()
-        self.type_filter.addItem("all")
-        self.type_filter.addItems(types)
-        self.type_filter.setCurrentText(current if current in {"all", *types} else "all")
+        self.type_filter.addItem(i18n.UI["filter_all"], "all")
+        for requirement_type in types:
+            self.type_filter.addItem(i18n.type_label(requirement_type), requirement_type)
+        self.set_combo_to_data(self.type_filter, current if current in {"all", *types} else "all")
         self.type_filter.blockSignals(False)
+        self.proxy.set_type_filter(str(self.type_filter.currentData() or "all"))
+        self.update_table_count()
 
     def refresh_status_summary(self) -> None:
         rows = self.model.rows
@@ -289,6 +562,62 @@ class MainWindow(QMainWindow):
         expert = sum(1 for row in rows if row.get("review_status") == "expert_pending")
         ambiguous = sum(1 for row in rows if row.get("ambiguity"))
         self.status_summary_label.setText(f"Total {len(rows)} | Accepted {accepted} | Expert {expert} | Ambiguous {ambiguous}")
+        self.total_card.set_value(len(rows))
+        self.accepted_card.set_value(accepted)
+        self.expert_card.set_value(expert)
+        self.ambiguous_card.set_value(ambiguous)
+
+    def current_document_text(self) -> str:
+        if self.current_input_path is not None:
+            doc = self.current_input_path.stem
+            if self.current_out_dir is not None:
+                out_display = f"out/{self.current_out_dir.name}"
+                return i18n.UI["current_document_loaded"].format(doc=doc, out_dir=out_display)
+            return f"{i18n.UI['current_document_prefix']}{doc}"
+        if self.current_out_dir is not None:
+            return i18n.UI["current_document_from_output"].format(out_dir=f"out/{self.current_out_dir.name}")
+        return f"{i18n.UI['current_document_prefix']}{i18n.UI['current_document_empty']}"
+
+    def update_current_document_label(self) -> None:
+        text = self.current_document_text()
+        self.current_document_label.setText(text)
+        self.current_document_label.setToolTip(text)
+
+    def update_table_count(self) -> None:
+        if not hasattr(self, "table_count_label"):
+            return
+        total = self.model.rowCount()
+        visible = self.proxy.rowCount()
+        start = 1 if visible else 0
+        end = min(12, visible)
+        self.table_count_label.setText(
+            i18n.UI["table_count"].format(start=f"{start:,}", end=f"{end:,}", total=f"{total:,}")
+        )
+
+    def set_active_stat_card(self, active_card: StatCard) -> None:
+        for card in self.stat_cards:
+            card.set_active(card is active_card)
+
+    def clear_stat_filter(self) -> None:
+        self.set_active_stat_card(self.total_card)
+        self.set_combo_to_data(self.type_filter, "all")
+        self.set_combo_to_data(self.status_filter, "all")
+        self.confidence_filter.setValue(0.0)
+        self.ambiguity_filter.setChecked(False)
+        self.search_filter.clear()
+        self.update_table_count()
+
+    def apply_status_card_filter(self, status: str) -> None:
+        self.set_active_stat_card(self.accepted_card if status == "accepted" else self.expert_card)
+        self.ambiguity_filter.setChecked(False)
+        self.set_combo_to_data(self.status_filter, status)
+        self.update_table_count()
+
+    def apply_ambiguous_card_filter(self) -> None:
+        self.set_active_stat_card(self.ambiguous_card)
+        self.set_combo_to_data(self.status_filter, "all")
+        self.ambiguity_filter.setChecked(True)
+        self.update_table_count()
 
     def on_current_row_changed(self, current: QModelIndex, previous: QModelIndex) -> None:
         if current.isValid():
@@ -349,6 +678,7 @@ class MainWindow(QMainWindow):
         row["review_status"] = state.get("status") or "candidate"
         self.detail_panel.set_requirement(row, self.model.source_index)
         self.refresh_status_summary()
+        self.update_table_count()
         self.move_to_next_row()
 
     def move_to_next_row(self) -> None:
@@ -361,11 +691,11 @@ class MainWindow(QMainWindow):
         if self.current_out_dir is None:
             return
         export_requirements(self.current_out_dir, formats=[fmt])
-        self.stage_label.setText(f"Exported {fmt}")
+        self.stage_label.setText(i18n.UI["exported"].format(fmt=fmt.upper()))
 
     def closeEvent(self, event: Any) -> None:
         if self.current_thread is not None:
-            response = QMessageBox.question(self, "Background task running", "Close while a background task is running?")
+            response = QMessageBox.question(self, i18n.UI["close_running_title"], i18n.UI["close_running_body"])
             if response != QMessageBox.Yes:
                 event.ignore()
                 return

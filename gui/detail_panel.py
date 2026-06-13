@@ -15,82 +15,129 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import fluent
+from gui import fluent, i18n
 
 
 class DetailPanel(QFrame):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("detailPanel")
-        self.setMinimumWidth(320)
+        self.setMinimumWidth(408)
         self.pinned_label = QLabel("")
-        self.status_label = QLabel("candidate")
-        self.requirement_text = QTextEdit()
-        self.requirement_text.setReadOnly(True)
-        self.requirement_text.setMinimumHeight(120)
+        self.detail_subtitle = QLabel(i18n.UI["review_workspace"].format(req_id="未选择"))
+        self.detail_subtitle.setObjectName("detailSubtitle")
+        self.status_label = QLabel(i18n.status_label("candidate"))
+        self.status_label.setObjectName("statusBadge")
+        self.status_label.setFixedHeight(26)
+        self.requirement_text = read_only_text(minimum_height=66)
+        self.translation_text = read_only_text(minimum_height=36)
+        self.ai_requirement_text = read_only_text(minimum_height=72)
+        self.translate_button = QPushButton(i18n.UI["translate"])
+        self.translate_button.setEnabled(False)
+        self.translate_button.setToolTip(i18n.UI["translate_tip"])
         self.metadata_grid = QGridLayout()
+        self.metadata_grid.setContentsMargins(12, 10, 12, 10)
         self.metadata_grid.setVerticalSpacing(8)
-        self.metadata_grid.setHorizontalSpacing(10)
-        self.source_text = QTextEdit()
-        self.source_text.setReadOnly(True)
+        self.metadata_grid.setHorizontalSpacing(12)
+        self.source_text = read_only_text(minimum_height=44)
         self.kb_widget = QWidget()
         self.kb_layout = QHBoxLayout(self.kb_widget)
-        self.kb_layout.setAlignment(Qt.AlignLeft)
-        self.review_text = QTextEdit()
-        self.review_text.setReadOnly(True)
-        self.accept_button = QPushButton("Accept")
-        self.reject_button = QPushButton("Reject")
-        self.discuss_button = QPushButton("Discuss")
+        self.kb_layout.setContentsMargins(0, 0, 0, 0)
+        self.kb_layout.setSpacing(6)
+        self.kb_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.review_text = read_only_text(minimum_height=72)
+        self.accept_button = QPushButton(i18n.UI["accept"])
+        self.reject_button = QPushButton(i18n.UI["reject"])
+        self.discuss_button = QPushButton(i18n.UI["discuss"])
 
         layout = QVBoxLayout(self)
-        header = QHBoxLayout()
-        header.addWidget(QLabel("Details"))
-        header.addStretch(1)
-        header.addWidget(self.pinned_label)
-        layout.addLayout(header)
-        layout.addWidget(section_title("Requirement"))
-        layout.addWidget(self.requirement_text)
-        layout.addWidget(section_title("Metadata"))
-        self.metadata_widget = QWidget()
-        self.metadata_widget.setMinimumHeight(170)
-        self.metadata_widget.setLayout(self.metadata_grid)
-        layout.addWidget(self.metadata_widget)
-        layout.addWidget(section_title("Source"))
-        layout.addWidget(self.source_text)
-        layout.addWidget(section_title("KB Matches"))
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QFrame()
+        header.setObjectName("panelHead")
+        header.setFixedHeight(52)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 0, 18, 0)
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(1)
+        title = QLabel(i18n.UI["details"])
+        title.setObjectName("detailTitle")
+        title_layout.addWidget(title)
+        title_layout.addWidget(self.detail_subtitle)
+        header_layout.addLayout(title_layout, 1)
+        header_layout.addWidget(self.pinned_label)
+        header_layout.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(header)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(76)
-        scroll.setWidget(self.kb_widget)
-        layout.addWidget(scroll)
-        layout.addWidget(section_title("Review"))
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.review_text)
+        content = QFrame()
+        content.setObjectName("detailContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(18, 12, 18, 8)
+        content_layout.setSpacing(8)
+        content_layout.addWidget(readonly_card(i18n.UI["sec_requirement_src"], self.requirement_text))
+        content_layout.addWidget(readonly_card(i18n.UI["sec_requirement_zh"], self.translation_text, self.translate_button))
+        content_layout.addWidget(readonly_card(i18n.UI["sec_requirement_ai"], self.ai_requirement_text))
+
+        self.metadata_widget = QFrame()
+        self.metadata_widget.setObjectName("metadataCard")
+        self.metadata_widget.setMinimumHeight(170)
+        self.metadata_widget.setLayout(self.metadata_grid)
+        content_layout.addWidget(self.metadata_widget)
+
+        content_layout.addWidget(readonly_card(i18n.UI["sec_source"], self.source_text, compact=True))
+        content_layout.addWidget(kb_card(i18n.UI["sec_kb"], self.kb_widget))
+        content_layout.addWidget(readonly_card(i18n.UI["sec_review"], self.review_text, compact=True))
+
         buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 2, 0, 0)
+        buttons.setSpacing(8)
+        buttons.addStretch(1)
         buttons.addWidget(self.accept_button)
         buttons.addWidget(self.reject_button)
         buttons.addWidget(self.discuss_button)
-        layout.addLayout(buttons)
-        layout.addStretch(1)
+        content_layout.addLayout(buttons)
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+        self._set_status_badge("candidate")
 
     def set_pinned(self, pinned: bool) -> None:
-        self.pinned_label.setText("Pinned" if pinned else "")
+        self.pinned_label.setText(i18n.UI["pinned"] if pinned else "")
 
     def set_requirement(self, row: dict[str, Any] | None, source_index: dict[str, dict[str, Any]] | None = None) -> None:
         if row is None:
+            self.detail_subtitle.setText(i18n.UI["review_workspace"].format(req_id="未选择"))
             self.requirement_text.clear()
-            self.status_label.setText("candidate")
+            self.translation_text.clear()
+            self.ai_requirement_text.clear()
             self.source_text.clear()
             self.review_text.clear()
             self._clear_metadata()
             self._clear_kb_matches()
+            self._set_status_badge("candidate")
             return
-        self.requirement_text.setPlainText(requirement_body(row))
-        self._set_metadata(row)
+        review = row.get("review") if isinstance(row.get("review"), dict) else {}
+        req_id = str(row.get("stable_req_id") or row.get("req_id") or "REQ")
+        self.detail_subtitle.setText(i18n.UI["review_workspace"].format(req_id=req_id))
+        self.requirement_text.setPlainText(str(row.get("requirement") or ""))
+        self.translation_text.setPlainText(str(row.get("requirement_zh") or i18n.UI["not_translated"]))
+        self.ai_requirement_text.setPlainText(str(review.get("revised_requirement") or i18n.UI["not_reviewed"]))
+        self._set_metadata(row, review)
         self._set_source(row, source_index or {})
         self._set_kb_matches(row.get("kb_matches", []))
-        self.status_label.setText(str(row.get("review_status") or "candidate"))
-        self.review_text.setPlainText(review_body(row.get("review") or {}))
+        self._set_status_badge(str(row.get("review_status") or "candidate"))
+        self.review_text.setPlainText(review_body(review))
+
+    def _set_status_badge(self, status: str) -> None:
+        text_color, bg_color = fluent.status_colors(status)
+        self.status_label.setText(i18n.status_label(status))
+        self.status_label.setStyleSheet(
+            f"color: {text_color}; background: {bg_color}; border: 0; "
+            "border-radius: 999px; padding: 4px 10px; font-weight: 800;"
+        )
 
     def _clear_metadata(self) -> None:
         while self.metadata_grid.count():
@@ -99,38 +146,46 @@ class DetailPanel(QFrame):
             if widget is not None:
                 widget.deleteLater()
 
-    def _set_metadata(self, row: dict[str, Any]) -> None:
+    def _set_metadata(self, row: dict[str, Any], review: dict[str, Any]) -> None:
         self._clear_metadata()
         metadata = [
-            ("req_id", row.get("req_id")),
-            ("stable_req_id", row.get("stable_req_id")),
-            ("type", row.get("requirement_type")),
-            ("object", row.get("object")),
-            ("confidence", row.get("confidence")),
-            ("ambiguity", row.get("ambiguity")),
+            (i18n.column_label("req_id"), row.get("stable_req_id") or row.get("req_id")),
+            (i18n.column_label("type"), i18n.type_label(row.get("requirement_type"))),
+            (i18n.column_label("object"), row.get("object")),
+            (i18n.column_label("confidence"), format_confidence(row.get("confidence"))),
+            (i18n.column_label("ambiguity"), "是" if row.get("ambiguity") else "否"),
+            ("风险", i18n.risk_label(review.get("risk")) if review.get("risk") else ""),
         ]
         for index, (key, value) in enumerate(metadata):
-            key_label = QLabel(f"{key}:")
-            key_label.setMinimumHeight(22)
+            row_index = index // 2
+            key_column = 0 if index % 2 == 0 else 2
+            value_column = key_column + 1
+            key_label = QLabel(str(key))
+            key_label.setObjectName("metadataKey")
             value_label = QLabel("" if value is None else str(value))
-            value_label.setMinimumHeight(22)
-            value_label.setWordWrap(True)
-            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            self.metadata_grid.addWidget(key_label, index, 0, Qt.AlignTop)
-            self.metadata_grid.addWidget(value_label, index, 1, Qt.AlignTop)
+            value_label.setObjectName("metadataValue")
+            value_label.setWordWrap(False)
+            value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.metadata_grid.addWidget(key_label, row_index, key_column, Qt.AlignmentFlag.AlignTop)
+            self.metadata_grid.addWidget(value_label, row_index, value_column, Qt.AlignmentFlag.AlignTop)
+        self.metadata_grid.setColumnStretch(1, 1)
+        self.metadata_grid.setColumnStretch(3, 1)
 
     def _set_source(self, row: dict[str, Any], source_index: dict[str, dict[str, Any]]) -> None:
         lines: list[str] = []
         for ref in row.get("source_refs", []):
             source = source_index.get(str(ref), {})
-            lines.append(f"[{ref}]")
             if "fields" in source and isinstance(source["fields"], dict):
-                for key, value in source["fields"].items():
-                    lines.append(f"{key}: {value}")
+                field_text = "；".join(f"{key}: {value}" for key, value in source["fields"].items())
+                lines.append(f"{ref} · {field_text}")
             else:
-                lines.append(str(source.get("text") or source.get("paragraph_text") or ""))
-            lines.append("")
-        self.source_text.setPlainText("\n".join(lines).strip())
+                text = str(source.get("text") or source.get("paragraph_text") or "")
+                lines.append(f"{ref} · {text}" if text else str(ref))
+        context = row.get("source_context") if isinstance(row.get("source_context"), dict) else {}
+        paragraph = context.get("paragraph_text")
+        if paragraph:
+            lines.append(str(paragraph))
+        self.source_text.setPlainText("\n".join(line for line in lines if line).strip())
 
     def _clear_kb_matches(self) -> None:
         while self.kb_layout.count():
@@ -141,38 +196,94 @@ class DetailPanel(QFrame):
 
     def _set_kb_matches(self, matches: list[dict[str, Any]]) -> None:
         self._clear_kb_matches()
-        for match in matches:
-            label = QLabel(str(match.get("name") or match.get("id") or "term"))
+        if not matches:
+            label = chip(i18n.UI["not_reviewed"])
+            self.kb_layout.addWidget(label)
+        for match in matches[:4]:
+            label = chip(str(match.get("name") or match.get("id") or "term"))
             label.setToolTip(str(match.get("definition") or ""))
-            label.setStyleSheet(
-                f"background: {fluent.TOKENS['row_hover']}; border-radius: 10px; padding: 3px 8px;"
-            )
             self.kb_layout.addWidget(label)
         self.kb_layout.addStretch(1)
 
 
-def requirement_body(row: dict[str, Any]) -> str:
-    text = str(row.get("requirement") or "")
-    context = row.get("source_context") if isinstance(row.get("source_context"), dict) else {}
-    paragraph = context.get("paragraph_text")
-    if paragraph and paragraph != text:
-        return f"{text}\n\nContext:\n{paragraph}"
-    return text
+def read_only_text(*, minimum_height: int) -> QTextEdit:
+    widget = QTextEdit()
+    widget.setReadOnly(True)
+    widget.setMinimumHeight(minimum_height)
+    widget.setObjectName("readOnlyBox")
+    widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    return widget
+
+
+def readonly_card(title: str, body: QTextEdit, action: QWidget | None = None, *, compact: bool = False) -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("readonlyCard" if not compact else "miniCard")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    head = QFrame()
+    head.setObjectName("readonlyHead" if not compact else "miniHead")
+    head_layout = QHBoxLayout(head)
+    head_layout.setContentsMargins(12, 6, 10, 5)
+    title_label = QLabel(title)
+    title_label.setObjectName("sectionTitle")
+    head_layout.addWidget(title_label)
+    head_layout.addStretch(1)
+    if action is not None:
+        head_layout.addWidget(action)
+    layout.addWidget(head)
+    layout.addWidget(body)
+    return frame
+
+
+def kb_card(title: str, body: QWidget) -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("miniCard")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    head = QFrame()
+    head.setObjectName("miniHead")
+    head_layout = QHBoxLayout(head)
+    head_layout.setContentsMargins(12, 6, 10, 5)
+    title_label = QLabel(title)
+    title_label.setObjectName("sectionTitle")
+    head_layout.addWidget(title_label)
+    layout.addWidget(head)
+    body_wrap = QWidget()
+    body_layout = QHBoxLayout(body_wrap)
+    body_layout.setContentsMargins(10, 8, 10, 8)
+    body_layout.addWidget(body)
+    layout.addWidget(body_wrap)
+    return frame
+
+
+def chip(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("chip")
+    return label
+
+
+def format_confidence(value: object) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return ""
 
 
 def review_body(review: dict[str, Any]) -> str:
     if not review:
-        return ""
+        return i18n.UI["not_reviewed"]
     lines = []
-    for key in ("decision", "risk", "confidence"):
-        if key in review:
-            lines.append(f"{key}: {review[key]}")
-    for note in review.get("review_notes", []):
-        lines.append(f"- {note}")
-    return "\n".join(lines)
-
-
-def section_title(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setStyleSheet(f"font-weight: 600; color: {fluent.TOKENS['text_secondary']};")
-    return label
+    if "decision" in review:
+        lines.append(f"裁决：{i18n.decision_label(review['decision'])}")
+    if "risk" in review:
+        lines.append(f"风险：{i18n.risk_label(review['risk'])}")
+    if "confidence" in review:
+        lines.append(f"置信度：{review['confidence']}")
+    if review.get("review_notes"):
+        lines.append("说明：" + "；".join(str(note) for note in review.get("review_notes", [])))
+    if review.get("expert_questions"):
+        lines.append("问题：" + "；".join(str(question) for question in review.get("expert_questions", [])))
+    return "\n".join(lines) if lines else i18n.UI["not_reviewed"]
