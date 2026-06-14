@@ -25,6 +25,7 @@ from cosem_object_model import (
     source_fields,
     status_of,
 )
+from text_normalize import normalize_numeric
 
 
 IDENTITY_KEY = "Customer application process"
@@ -110,7 +111,7 @@ def build_access_security(out_dir: Path) -> dict[str, Any]:
             continue
         f = source_fields(row, index)
         suites.append({
-            "id": _clean(f.get("ID")),
+            "id": normalize_numeric(f.get("ID")),
             "name": _clean(f.get("Name") or row.get("object")),
             "authenticated_encryption": _clean(f.get("Authenticated encryption")),
             "digital_signature": _clean(f.get("Digital signature")),
@@ -122,12 +123,12 @@ def build_access_security(out_dir: Path) -> dict[str, Any]:
         })
 
     policy_states = [
-        {"state": _clean(f.get("State")), "policy": _clean(f.get("Security policy"))}
+        {"state": normalize_numeric(f.get("State")), "policy": _clean(f.get("Security policy"))}
         for row in requirements if row.get("requirement_type") == "security_policy_state"
         for f in [source_fields(row, index)]
     ]
     policy_bits = [
-        {"bit": _clean(f.get("bit")), "meaning": _clean(f.get("Security Policy - Security States"))}
+        {"bit": normalize_numeric(f.get("bit")), "meaning": _clean(f.get("Security Policy - Security States"))}
         for row in requirements if row.get("requirement_type") == "security_policy_bit"
         for f in [source_fields(row, index)]
     ]

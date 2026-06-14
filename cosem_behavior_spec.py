@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from cosem_object_model import read_jsonl
+from text_normalize import normalize_event_id
 
 
 BEHAVIORAL_TYPES = ("functional", "communication", "event_definition", "event_group_retention")
@@ -58,8 +59,8 @@ def extract_ints(text: str) -> set[str]:
 
 def derive_item(row: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
     rid = next((str(row.get(k)) for k in ("stable_req_id", "req_id") if row.get(k)), "")
-    original = str(row.get("requirement") or "")
-    revised = str(review.get("revised_requirement") or "")
+    original = normalize_event_id(str(row.get("requirement") or ""))
+    revised = normalize_event_id(str(review.get("revised_requirement") or ""))
     derived = bool(review) and bool(revised) and revised.strip() != original.strip()
 
     flags: list[str] = []
@@ -86,7 +87,7 @@ def derive_item(row: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
     return {
         "stable_req_id": rid,
         "type": row.get("requirement_type"),
-        "object": row.get("object"),
+        "object": normalize_event_id(str(row.get("object") or "")),
         "original": original,
         "behavior": revised if derived else original,
         "derived": derived,

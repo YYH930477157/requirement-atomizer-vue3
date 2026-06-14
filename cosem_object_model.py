@@ -19,6 +19,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from text_normalize import normalize_numeric
+
 
 # 源表字段键（取自真实 ABNT 输出）
 F_NAME = "Object/attribute name"
@@ -141,7 +143,7 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
         attr_name = str(fields.get(F_NAME) or attr_inline or "").strip()
         access_raw = str(fields.get(F_ACCESS) or "").strip()
         attribute = {
-            "index": str(fields.get(F_INDEX) or "").strip(),
+            "index": normalize_numeric(fields.get(F_INDEX)),
             "name": attr_name,
             "type": str(fields.get(F_TYPE) or "").strip(),
             "access": parse_access(access_raw),
