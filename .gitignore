@@ -12,3 +12,6 @@ venv/
 .obsidian/workspace*.json
 .obsidian/cache/
 
+# Claude Code 本机配置（机器专属权限白名单，勿提交）
+.claude/settings.local.json
+
