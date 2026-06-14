@@ -94,6 +94,24 @@ class LlmSettingsTests(unittest.TestCase):
         self.assertIsInstance(collected.max_tokens, int)
         self.assertTrue(collected.api_key_env)
 
+    def test_test_chat_handles_unreachable_endpoint(self) -> None:
+        env = "RATOMIZER_TEST_NOKEY"
+        os.environ.pop(env, None)
+        ok, message = llm_settings.test_chat("http://127.0.0.1:1/v1", "demo", env, timeout_s=2.0)
+        self.assertFalse(ok)
+        self.assertIn("连接失败", message)
+
+    def test_dialog_has_functional_test(self) -> None:
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            self.skipTest("PySide6 not installed")
+        from gui.settings_dialog import SettingsDialog
+
+        QApplication.instance() or QApplication([])
+        dialog = SettingsDialog()
+        self.assertTrue(callable(getattr(dialog, "run_test", None)))
+
 
 if __name__ == "__main__":
     unittest.main()

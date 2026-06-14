@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import urllib.error
 import urllib.request
@@ -129,6 +130,43 @@ def test_connection(base_url: str, api_key_env: str, *, timeout_s: float = 5.0) 
         if exc.code in (401, 403):
             return False, f"可达但鉴权失败 (HTTP {exc.code})，检查 API Key"
         return True, f"服务可达 (HTTP {exc.code})"
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return False, f"连接失败：{exc}（检查 Base URL / 服务是否启动）"
+
+
+def test_chat(base_url: str, model: str, api_key_env: str, *, timeout_s: float = 15.0) -> tuple[bool, str]:
+    """真发一次最小 chat 调用，一次性验证 连通 + 鉴权(key) + 模型名 三件事。"""
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+        "temperature": 0.0,
+    }
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    key = os.environ.get(api_key_env or "") or ""
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        data["choices"][0]["message"]["content"]  # 校验是标准 OpenAI 响应结构
+        return True, f"调用成功：连通 + 鉴权 + 模型 '{model}' 均 OK"
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:160]
+        except Exception:
+            pass
+        if exc.code in (401, 403):
+            return False, f"鉴权失败 (HTTP {exc.code})：检查环境变量 {api_key_env} 里的 API Key"
+        if exc.code in (400, 404):
+            return False, f"模型/端点错误 (HTTP {exc.code})：检查模型名 '{model}' 与 Base URL。{body}"
+        return False, f"服务返回 HTTP {exc.code}：{body}"
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        return False, f"已连上但响应格式异常（非标准 OpenAI 返回）：{exc}"
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return False, f"连接失败：{exc}（检查 Base URL / 服务是否启动）"
 

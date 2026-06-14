@@ -34,19 +34,11 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(20, 18, 20, 16)
         layout.setSpacing(12)
 
-        # --- 接入 ---
+        # --- 接入与鉴权（合并为一组；密钥只进环境变量）---
         self.enable_check = QCheckBox(i18n.UI["settings_enable"])
         self.enable_check.setChecked(self.settings.enabled)
         self.base_url_edit = QLineEdit(self.settings.base_url)
         self.model_edit = QLineEdit(self.settings.model)
-        endpoint = QGroupBox(i18n.UI["settings_group_endpoint"])
-        endpoint_form = QFormLayout(endpoint)
-        endpoint_form.addRow(self.enable_check)
-        endpoint_form.addRow(i18n.UI["settings_base_url"], self.base_url_edit)
-        endpoint_form.addRow(i18n.UI["settings_model"], self.model_edit)
-        layout.addWidget(endpoint)
-
-        # --- 鉴权（密钥只进环境变量）---
         self.api_key_env_edit = QLineEdit(self.settings.api_key_env)
         self.key_status_label = QLabel()
         self.session_key_edit = QLineEdit()
@@ -63,13 +55,16 @@ class SettingsDialog(QDialog):
         note = QLabel(i18n.UI["settings_key_note"])
         note.setWordWrap(True)
         note.setObjectName("panelSubtitle")
-        auth = QGroupBox(i18n.UI["settings_group_auth"])
-        auth_form = QFormLayout(auth)
-        auth_form.addRow(i18n.UI["settings_api_key_env"], self.api_key_env_edit)
-        auth_form.addRow(i18n.UI["settings_key_set"], self.key_status_label)
-        auth_form.addRow(i18n.UI["settings_session_key"], key_row_widget)
-        auth_form.addRow(note)
-        layout.addWidget(auth)
+        access = QGroupBox(i18n.UI["settings_group_access_auth"])
+        access_form = QFormLayout(access)
+        access_form.addRow(self.enable_check)
+        access_form.addRow(i18n.UI["settings_base_url"], self.base_url_edit)
+        access_form.addRow(i18n.UI["settings_model"], self.model_edit)
+        access_form.addRow(i18n.UI["settings_api_key_env"], self.api_key_env_edit)
+        access_form.addRow(i18n.UI["settings_key_set"], self.key_status_label)
+        access_form.addRow(i18n.UI["settings_session_key"], key_row_widget)
+        access_form.addRow(note)
+        layout.addWidget(access)
 
         # --- 高级 ---
         self.temperature_spin = QDoubleSpinBox()
@@ -111,9 +106,9 @@ class SettingsDialog(QDialog):
         scope_form.addRow(i18n.UI["settings_confidence_below"], self.confidence_spin)
         layout.addWidget(scope)
 
-        # --- 测试连接 + 按钮 ---
+        # --- 测试调用（真发一次 chat，一次验 连通 + 鉴权 + 模型）---
         self.test_button = QPushButton(i18n.UI["settings_test"])
-        self.test_button.clicked.connect(self.run_test_connection)
+        self.test_button.clicked.connect(self.run_test)
         self.test_result_label = QLabel("")
         self.test_result_label.setWordWrap(True)
         test_row = QHBoxLayout()
@@ -146,12 +141,16 @@ class SettingsDialog(QDialog):
             self.session_key_edit.clear()
         self.refresh_key_status()
 
-    def run_test_connection(self) -> None:
+    def run_test(self) -> None:
+        # 测试前先把密钥框内容应用到本会话 env，这样输入 key 后可直接点测试
+        if self.session_key_edit.text().strip():
+            self.apply_session_key()
         self.test_button.setEnabled(False)
-        self.test_result_label.setText("…")
+        self.test_result_label.setText("测试中…")
         try:
-            ok, message = llm_settings.test_connection(
+            ok, message = llm_settings.test_chat(
                 self.base_url_edit.text().strip(),
+                self.model_edit.text().strip(),
                 self.api_key_env_edit.text().strip() or llm_settings.DEFAULT_API_KEY_ENV,
             )
         finally:
