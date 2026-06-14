@@ -134,15 +134,17 @@ def coverage_gaps(requirements: list[dict[str, Any]]) -> tuple[list[dict[str, st
     return gaps, passed
 
 
-def build_requirements_doc(
-    model: dict[str, Any],
+def make_doc(
+    requirements: list[dict[str, Any]],
     *,
     source: str,
     extracted_at: str,
     meter_type: str = "electric",
     target_standards: list[str] | None = None,
 ) -> dict[str, Any]:
-    requirements = [to_requirement(item, f"REQ-{i:03d}") for i, item in enumerate(model["items"], 1)]
+    """从一组（任意层产出的）公司格式 requirement 装配整份文档：全局重编号 REQ-NNN + 重算 analysis。"""
+    for i, req in enumerate(requirements, 1):
+        req["id"] = f"REQ-{i:03d}"
 
     by_type: dict[str, int] = {}
     by_priority: dict[str, int] = {}
@@ -154,8 +156,8 @@ def build_requirements_doc(
             by_domain[label] = by_domain.get(label, 0) + 1
 
     conflicts = [
-        {"requirement_ids": [req["id"]], "description": f"编码漂移已拦截，需专家核对：{req['notes']}"}
-        for req, item in zip(requirements, model["items"]) if item.get("drift_codes")
+        {"requirement_ids": [req["id"]], "description": req["notes"]}
+        for req in requirements if "编码漂移" in req.get("notes", "")
     ]
     gaps, passed = coverage_gaps(requirements)
     sections = sorted({req["source_section"] for req in requirements if req["source_section"]})
@@ -185,9 +187,22 @@ def build_requirements_doc(
                 "domain_checklist_total": len(COVERAGE_CHECKLIST),
             },
             "coverage_report": (
-                f"行为类需求 {len(requirements)} 条，覆盖 {passed}/{len(COVERAGE_CHECKLIST)} 个适配域；"
+                f"需求 {len(requirements)} 条，覆盖 {passed}/{len(COVERAGE_CHECKLIST)} 个适配域；"
                 f"缺口 {len(gaps)} 项；编码漂移拦截 {len(conflicts)} 处。"
-                "依赖/层级关系(parent/children/dependencies)与 threshold_table 待后续阶段补全。"
+                "依赖/层级关系(parent/children/dependencies)待后续完善。"
             ),
         },
     }
+
+
+def build_requirements_doc(
+    model: dict[str, Any],
+    *,
+    source: str,
+    extracted_at: str,
+    meter_type: str = "electric",
+    target_standards: list[str] | None = None,
+) -> dict[str, Any]:
+    requirements = [to_requirement(item, "REQ-TMP") for item in model["items"]]
+    return make_doc(requirements, source=source, extracted_at=extracted_at,
+                    meter_type=meter_type, target_standards=target_standards)
