@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -182,7 +181,6 @@ class MainWindow(QMainWindow):
         brand_layout.addStretch(1)
         self.import_button = QPushButton(i18n.UI["import"])
         self.open_output_button = QPushButton(i18n.UI["open_output"])
-        self.open_output_button.setVisible(False)
         self.run_button = QPushButton(i18n.UI["run"])
         self.run_button.setObjectName("primaryButton")
         self.detail_toggle = QPushButton(i18n.UI["details"])
@@ -195,8 +193,6 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
-        self.export_csv_button = QPushButton(i18n.UI["export_csv"])
-        self.export_md_button = QPushButton(i18n.UI["export_md"])
         self.export_menu_button = QToolButton()
         self.export_menu_button.setText(i18n.UI["export_menu"])
         self.export_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -276,7 +272,6 @@ class MainWindow(QMainWindow):
         self.table.setAlternatingRowColors(False)
         self.table.setShowGrid(False)
         self.table.setMouseTracking(True)
-        self.table.verticalHeader().setDefaultSectionSize(32)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
@@ -292,7 +287,7 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setDefaultSectionSize(120)
         self.table.horizontalHeader().setMinimumSectionSize(70)
         self.table.setColumnWidth(0, 92)
-        self.table.setColumnWidth(1, 150)
+        self.table.setColumnWidth(1, 170)
         self.table.setColumnWidth(2, 142)
         self.table.setColumnWidth(4, 100)
         self.table.setColumnWidth(5, 98)
@@ -319,7 +314,7 @@ class MainWindow(QMainWindow):
         table_subtitle.setObjectName("panelSubtitle")
         table_title_layout.addWidget(table_title)
         table_title_layout.addWidget(table_subtitle)
-        self.table_count_label = QLabel(i18n.UI["table_count"].format(start=0, end=0, total=0))
+        self.table_count_label = QLabel(i18n.UI["table_count"].format(visible=0, total=0))
         self.table_count_label.setObjectName("panelSubtitle")
         table_header_layout.addLayout(table_title_layout, 1)
         table_header_layout.addWidget(self.table_count_label)
@@ -335,7 +330,6 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(splitter, 1)
         self.setCentralWidget(root)
 
-        self.status_summary_label = QLabel("Total 0 | Accepted 0 | Expert 0 | Ambiguous 0")
         self.output_label = QLabel("")
         self.shortcut_label = QLabel(i18n.UI["shortcuts"])
         status_bar = QStatusBar()
@@ -348,8 +342,6 @@ class MainWindow(QMainWindow):
         self.import_button.clicked.connect(self.choose_input_document)
         self.run_button.clicked.connect(self.run_current_document)
         self.detail_toggle.toggled.connect(self.detail_panel.setVisible)
-        self.export_csv_button.clicked.connect(lambda: self.export_format("csv"))
-        self.export_md_button.clicked.connect(lambda: self.export_format("md"))
         self.export_csv_action.triggered.connect(lambda: self.export_format("csv"))
         self.export_md_action.triggered.connect(lambda: self.export_format("md"))
         self.nav_review_button.clicked.connect(lambda: self.select_nav(self.nav_review_button))
@@ -498,6 +490,7 @@ class MainWindow(QMainWindow):
     def on_stage(self, message: str) -> None:
         self.stage_label.setText(i18n.UI["running"])
         self.stage_label.setToolTip(message)
+        self.statusBar().showMessage(message, 3000)
 
     def on_worker_finished(self, payload: dict[str, Any]) -> None:
         bundle = payload.get("bundle")
@@ -561,7 +554,6 @@ class MainWindow(QMainWindow):
         accepted = sum(1 for row in rows if row.get("review_status") == "accepted")
         expert = sum(1 for row in rows if row.get("review_status") == "expert_pending")
         ambiguous = sum(1 for row in rows if row.get("ambiguity"))
-        self.status_summary_label.setText(f"Total {len(rows)} | Accepted {accepted} | Expert {expert} | Ambiguous {ambiguous}")
         self.total_card.set_value(len(rows))
         self.accepted_card.set_value(accepted)
         self.expert_card.set_value(expert)
@@ -588,10 +580,8 @@ class MainWindow(QMainWindow):
             return
         total = self.model.rowCount()
         visible = self.proxy.rowCount()
-        start = 1 if visible else 0
-        end = min(12, visible)
         self.table_count_label.setText(
-            i18n.UI["table_count"].format(start=f"{start:,}", end=f"{end:,}", total=f"{total:,}")
+            i18n.UI["table_count"].format(visible=f"{visible:,}", total=f"{total:,}")
         )
 
     def set_active_stat_card(self, active_card: StatCard) -> None:
@@ -600,23 +590,40 @@ class MainWindow(QMainWindow):
 
     def clear_stat_filter(self) -> None:
         self.set_active_stat_card(self.total_card)
-        self.set_combo_to_data(self.type_filter, "all")
-        self.set_combo_to_data(self.status_filter, "all")
-        self.confidence_filter.setValue(0.0)
-        self.ambiguity_filter.setChecked(False)
-        self.search_filter.clear()
-        self.update_table_count()
+        self.reset_filters()
 
     def apply_status_card_filter(self, status: str) -> None:
         self.set_active_stat_card(self.accepted_card if status == "accepted" else self.expert_card)
-        self.ambiguity_filter.setChecked(False)
-        self.set_combo_to_data(self.status_filter, status)
-        self.update_table_count()
+        self.reset_filters(status=status)
 
     def apply_ambiguous_card_filter(self) -> None:
         self.set_active_stat_card(self.ambiguous_card)
-        self.set_combo_to_data(self.status_filter, "all")
-        self.ambiguity_filter.setChecked(True)
+        self.reset_filters(ambiguous=True)
+
+    def reset_filters(self, *, status: str = "all", ambiguous: bool = False, confidence: float = 0.0) -> None:
+        widgets = (
+            self.type_filter,
+            self.status_filter,
+            self.confidence_filter,
+            self.ambiguity_filter,
+            self.search_filter,
+        )
+        for widget in widgets:
+            widget.blockSignals(True)
+        self.set_combo_to_data(self.type_filter, "all")
+        self.set_combo_to_data(self.status_filter, status)
+        self.confidence_filter.setValue(confidence)
+        self.ambiguity_filter.setChecked(ambiguous)
+        self.search_filter.clear()
+        for widget in widgets:
+            widget.blockSignals(False)
+        self.proxy.set_filters(
+            type_filter="all",
+            status_filter=status,
+            min_confidence=confidence,
+            ambiguous_only=ambiguous,
+            text_filter="",
+        )
         self.update_table_count()
 
     def on_current_row_changed(self, current: QModelIndex, previous: QModelIndex) -> None:
@@ -668,10 +675,12 @@ class MainWindow(QMainWindow):
         requirement_id = str(row.get("stable_req_id") or row.get("req_id") or "")
         if not requirement_id:
             return
+        target = current.row()
+        before = self.proxy.rowCount()
         try:
             state = apply_review_action(self.current_out_dir, requirement_id, status, reason=f"set {status} from GUI")
         except ValueError as exc:
-            self.stage_label.setText(str(exc))
+            QMessageBox.warning(self, i18n.UI["decision_failed_title"], str(exc))
             return
         self.model.replace_row_state(requirement_id, state)
         row["review_state"] = state
@@ -679,19 +688,17 @@ class MainWindow(QMainWindow):
         self.detail_panel.set_requirement(row, self.model.source_index)
         self.refresh_status_summary()
         self.update_table_count()
-        self.move_to_next_row()
-
-    def move_to_next_row(self) -> None:
-        current = self.table.currentIndex()
-        next_row = min(current.row() + 1, self.proxy.rowCount() - 1)
-        if next_row >= 0:
-            self.table.selectRow(next_row)
+        after = self.proxy.rowCount()
+        if after <= 0:
+            return
+        next_row = min(target, after - 1) if after < before else min(target + 1, after - 1)
+        self.table.selectRow(next_row)
 
     def export_format(self, fmt: str) -> None:
         if self.current_out_dir is None:
             return
         export_requirements(self.current_out_dir, formats=[fmt])
-        self.stage_label.setText(i18n.UI["exported"].format(fmt=fmt.upper()))
+        self.statusBar().showMessage(i18n.UI["exported"].format(fmt=fmt.upper()), 4000)
 
     def closeEvent(self, event: Any) -> None:
         if self.current_thread is not None:

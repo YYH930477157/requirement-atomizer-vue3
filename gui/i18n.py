@@ -12,6 +12,7 @@ UI = {
     "export_csv": "导出 CSV",
     "export_md": "导出 MD",
     "export_menu": "导出 v",
+    "decision_failed_title": "无法应用裁决",
     "ready": "就绪",
     "failed": "失败",
     "running": "运行中",
@@ -33,12 +34,23 @@ UI = {
     "current_document_from_output": "当前文档：{out_dir}",
     "table_title": "需求表格",
     "table_subtitle": "中文表头与显示映射，底层 row 值保持英文",
-    "table_count": "显示 {start}-{end} / {total}",
+    "table_count": "显示 {visible} / {total}",
     "stat_hint_all": "全部",
     "stat_hint_filter": "筛选",
     "output_dir": "输出目录：",
     "shortcuts": "快捷键 A 接受 · R 拒绝 · D 讨论 · P 钉住",
     "review_workspace": "{req_id} · 审查工作区",
+    "unselected": "未选择",
+    "yes": "是",
+    "no": "否",
+    "risk": "风险",
+    "decision": "裁决",
+    "confidence": "置信度",
+    "notes": "说明",
+    "questions": "问题",
+    "label_separator": "：",
+    "source_separator": " · ",
+    "list_separator": "；",
     "sec_requirement_src": "① 原始需求",
     "sec_requirement_zh": "② 中文翻译",
     "sec_requirement_ai": "③ AI 理解的需求",
@@ -117,24 +129,25 @@ STATUS_LABELS = {
 
 RISK_LABELS = {
     "low_risk": "低风险",
-    "medium_risk": "中风险",
     "high_risk": "高风险",
+    "mandatory_review": "强制复核",
 }
 
 DECISION_LABELS = {
     "accept": "接受",
-    "accepted": "接受",
     "reject": "拒绝",
-    "rejected": "拒绝",
     "needs_expert": "需要专家",
-    "needs_discussion": "需要讨论",
     "revise": "需要修订",
+    "split": "拆分",
+    "merge": "合并",
 }
 
 
 def type_label(value: object) -> str:
     text = str(value or "")
-    return TYPE_LABELS.get(text, text)
+    if text in TYPE_LABELS:
+        return TYPE_LABELS[text]
+    return text.replace("_", " ").title()
 
 
 def status_label(value: object) -> str:

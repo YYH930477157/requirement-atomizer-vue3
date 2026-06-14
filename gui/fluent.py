@@ -44,8 +44,8 @@ STATUS_TOKENS = {
 
 CONFIDENCE_TOKENS = {
     "high": "#148451",
-    "medium": "#148451",
-    "low": "#A46105",
+    "medium": "#A46105",
+    "low": "#B42318",
 }
 
 TYPE_TOKENS = {
@@ -53,6 +53,15 @@ TYPE_TOKENS = {
     "access": ("#6D4AFF", "#F1EDFF"),
     "default": ("#2156C7", "#E7EFFF"),
 }
+
+SECURITY_TYPES = {
+    "security",
+    "security_policy_bit",
+    "security_policy_state",
+    "security_suite_definition",
+    "association_security_matrix",
+}
+ACCESS_TYPES = {"access_control"}
 
 
 def render_stylesheet() -> str:
@@ -94,11 +103,17 @@ def status_colors(status: str) -> tuple[str, str]:
     return STATUS_TOKENS.get(status, STATUS_TOKENS["candidate"])
 
 
-def type_colors(label: str) -> tuple[str, str]:
-    lower = label.casefold()
-    if "安全" in label or "security" in lower:
+def format_confidence(value: object) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def type_colors(requirement_type: str) -> tuple[str, str]:
+    if requirement_type in SECURITY_TYPES:
         return TYPE_TOKENS["security"]
-    if "访问" in label or "access" in lower:
+    if requirement_type in ACCESS_TYPES:
         return TYPE_TOKENS["access"]
     return TYPE_TOKENS["default"]
 
@@ -106,6 +121,6 @@ def type_colors(label: str) -> tuple[str, str]:
 def confidence_color(confidence: float) -> str:
     if confidence >= 0.85:
         return CONFIDENCE_TOKENS["high"]
-    if confidence >= 0.75:
+    if confidence >= 0.70:
         return CONFIDENCE_TOKENS["medium"]
     return CONFIDENCE_TOKENS["low"]

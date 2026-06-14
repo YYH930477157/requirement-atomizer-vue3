@@ -150,13 +150,10 @@ def display_value(row: dict[str, Any], column: str) -> str:
     if column == "status":
         return str(row.get("review_status") or "candidate")
     if column == "ambiguity":
-        return "是" if row.get("ambiguity") else "否"
+        return i18n.UI["yes"] if row.get("ambiguity") else i18n.UI["no"]
     value = row.get(column)
     if column == "confidence":
-        try:
-            return f"{float(value):.2f}"
-        except (TypeError, ValueError):
-            return ""
+        return fluent.format_confidence(value)
     return "" if value is None else str(value)
 
 
@@ -188,6 +185,22 @@ class RequirementsFilterProxyModel(QSortFilterProxyModel):
 
     def set_text_filter(self, value: str) -> None:
         self.text_filter = value.casefold()
+        self.refresh_filter()
+
+    def set_filters(
+        self,
+        *,
+        type_filter: str,
+        status_filter: str,
+        min_confidence: float,
+        ambiguous_only: bool,
+        text_filter: str,
+    ) -> None:
+        self.type_filter = type_filter
+        self.status_filter = status_filter
+        self.min_confidence = min_confidence
+        self.ambiguous_only = ambiguous_only
+        self.text_filter = text_filter.casefold()
         self.refresh_filter()
 
     def refresh_filter(self) -> None:
@@ -244,16 +257,19 @@ class TypeDelegate(QStyledItemDelegate):
             super().paint(painter, option, index)
             return
         text = str(index.data() or "")
-        text_color, bg_color = fluent.type_colors(text)
+        row = index.data(Qt.ItemDataRole.UserRole)
+        raw_type = str(row.get("requirement_type") or "") if isinstance(row, dict) else ""
+        text_color, bg_color = fluent.type_colors(raw_type)
         painter.save()
         paint_cell_background(painter, option)
         rect = pill_rect(option, text)
+        shown = option.fontMetrics.elidedText(text, Qt.TextElideMode.ElideRight, max(1, rect.width() - 12))
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(bg_color))
         painter.drawRoundedRect(rect, 12, 12)
         painter.setPen(QPen(QColor(text_color)))
-        painter.drawText(rect, Qt.AlignCenter, text)
+        painter.drawText(rect, Qt.AlignCenter, shown)
         painter.restore()
 
 
@@ -268,12 +284,13 @@ class StatusDelegate(QStyledItemDelegate):
         painter.save()
         paint_cell_background(painter, option)
         rect = pill_rect(option, label)
+        shown = option.fontMetrics.elidedText(label, Qt.TextElideMode.ElideRight, max(1, rect.width() - 12))
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(bg_color))
         painter.drawRoundedRect(rect, 12, 12)
         painter.setPen(QPen(QColor(text_color)))
-        painter.drawText(rect, Qt.AlignCenter, label)
+        painter.drawText(rect, Qt.AlignCenter, shown)
         painter.restore()
 
 
@@ -294,5 +311,5 @@ class ConfidenceDelegate(QStyledItemDelegate):
         painter.setBrush(QColor(fluent.confidence_color(confidence)))
         painter.drawEllipse(dot_rect)
         painter.setPen(QPen(QColor(fluent.TOKENS["text_primary"])))
-        painter.drawText(option.rect.adjusted(24, 0, -4, 0), Qt.AlignVCenter | Qt.AlignLeft, f"{confidence:.2f}")
+        painter.drawText(option.rect.adjusted(24, 0, -4, 0), Qt.AlignVCenter | Qt.AlignLeft, fluent.format_confidence(confidence))
         painter.restore()

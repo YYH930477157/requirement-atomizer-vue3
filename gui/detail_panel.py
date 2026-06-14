@@ -24,7 +24,7 @@ class DetailPanel(QFrame):
         self.setObjectName("detailPanel")
         self.setMinimumWidth(408)
         self.pinned_label = QLabel("")
-        self.detail_subtitle = QLabel(i18n.UI["review_workspace"].format(req_id="未选择"))
+        self.detail_subtitle = QLabel(i18n.UI["review_workspace"].format(req_id=i18n.UI["unselected"]))
         self.detail_subtitle.setObjectName("detailSubtitle")
         self.status_label = QLabel(i18n.status_label("candidate"))
         self.status_label.setObjectName("statusBadge")
@@ -109,7 +109,7 @@ class DetailPanel(QFrame):
 
     def set_requirement(self, row: dict[str, Any] | None, source_index: dict[str, dict[str, Any]] | None = None) -> None:
         if row is None:
-            self.detail_subtitle.setText(i18n.UI["review_workspace"].format(req_id="未选择"))
+            self.detail_subtitle.setText(i18n.UI["review_workspace"].format(req_id=i18n.UI["unselected"]))
             self.requirement_text.clear()
             self.translation_text.clear()
             self.ai_requirement_text.clear()
@@ -152,9 +152,9 @@ class DetailPanel(QFrame):
             (i18n.column_label("req_id"), row.get("stable_req_id") or row.get("req_id")),
             (i18n.column_label("type"), i18n.type_label(row.get("requirement_type"))),
             (i18n.column_label("object"), row.get("object")),
-            (i18n.column_label("confidence"), format_confidence(row.get("confidence"))),
-            (i18n.column_label("ambiguity"), "是" if row.get("ambiguity") else "否"),
-            ("风险", i18n.risk_label(review.get("risk")) if review.get("risk") else ""),
+            (i18n.column_label("confidence"), fluent.format_confidence(row.get("confidence"))),
+            (i18n.column_label("ambiguity"), i18n.UI["yes"] if row.get("ambiguity") else i18n.UI["no"]),
+            (i18n.UI["risk"], i18n.risk_label(review.get("risk")) if review.get("risk") else ""),
         ]
         for index, (key, value) in enumerate(metadata):
             row_index = index // 2
@@ -176,11 +176,11 @@ class DetailPanel(QFrame):
         for ref in row.get("source_refs", []):
             source = source_index.get(str(ref), {})
             if "fields" in source and isinstance(source["fields"], dict):
-                field_text = "；".join(f"{key}: {value}" for key, value in source["fields"].items())
-                lines.append(f"{ref} · {field_text}")
+                field_text = i18n.UI["list_separator"].join(f"{key}: {value}" for key, value in source["fields"].items())
+                lines.append(f"{ref}{i18n.UI['source_separator']}{field_text}")
             else:
                 text = str(source.get("text") or source.get("paragraph_text") or "")
-                lines.append(f"{ref} · {text}" if text else str(ref))
+                lines.append(f"{ref}{i18n.UI['source_separator']}{text}" if text else str(ref))
         context = row.get("source_context") if isinstance(row.get("source_context"), dict) else {}
         paragraph = context.get("paragraph_text")
         if paragraph:
@@ -265,25 +265,17 @@ def chip(text: str) -> QLabel:
     return label
 
 
-def format_confidence(value: object) -> str:
-    try:
-        return f"{float(value):.2f}"
-    except (TypeError, ValueError):
-        return ""
-
-
 def review_body(review: dict[str, Any]) -> str:
     if not review:
         return i18n.UI["not_reviewed"]
     lines = []
+    separator = i18n.UI["label_separator"]
     if "decision" in review:
-        lines.append(f"裁决：{i18n.decision_label(review['decision'])}")
-    if "risk" in review:
-        lines.append(f"风险：{i18n.risk_label(review['risk'])}")
+        lines.append(f"{i18n.UI['decision']}{separator}{i18n.decision_label(review['decision'])}")
     if "confidence" in review:
-        lines.append(f"置信度：{review['confidence']}")
+        lines.append(f"{i18n.UI['confidence']}{separator}{review['confidence']}")
     if review.get("review_notes"):
-        lines.append("说明：" + "；".join(str(note) for note in review.get("review_notes", [])))
+        lines.append(f"{i18n.UI['notes']}{separator}" + i18n.UI["list_separator"].join(str(note) for note in review.get("review_notes", [])))
     if review.get("expert_questions"):
-        lines.append("问题：" + "；".join(str(question) for question in review.get("expert_questions", [])))
+        lines.append(f"{i18n.UI['questions']}{separator}" + i18n.UI["list_separator"].join(str(question) for question in review.get("expert_questions", [])))
     return "\n".join(lines) if lines else i18n.UI["not_reviewed"]

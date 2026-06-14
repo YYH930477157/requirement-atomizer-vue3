@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -77,12 +78,88 @@ class GuiModelTests(unittest.TestCase):
 
             self.assertEqual(window.model.rowCount(), 2)
             self.assertEqual(window.model.data(window.model.index(0, 0)), "AREQ-1")
-            self.assertIn("Total 2", window.status_summary_label.text())
-            self.assertIn("Accepted 1", window.status_summary_label.text())
+            self.assertEqual(window.total_card.value_label.text(), "2")
+            self.assertEqual(window.accepted_card.value_label.text(), "1")
             self.assertIsNone(window.pinned_source_row)
             self.assertTrue(window.table.currentIndex().isValid())
             self.assertEqual(window.table.horizontalHeader().sectionResizeMode(HEADERS.index("requirement")), QHeaderView.Stretch)
             self.assertGreaterEqual(window.detail_panel.metadata_widget.minimumHeight(), 170)
+
+    def test_count_label_uses_visible_and_total_rows(self) -> None:
+        from gui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            self.write_output_fixture(out_dir)
+            window = MainWindow()
+            window.load_output_dir(out_dir)
+
+            self.assertEqual(window.table_count_label.text(), f"显示 {window.proxy.rowCount()} / 2")
+            window.set_combo_to_data(window.status_filter, "accepted")
+
+            self.assertEqual(window.table_count_label.text(), "显示 1 / 2")
+
+    def test_status_card_resets_filters_once_and_counts_match_visible_rows(self) -> None:
+        from gui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            self.write_output_fixture(out_dir)
+            window = MainWindow()
+            window.load_output_dir(out_dir)
+            window.confidence_filter.setValue(0.95)
+            calls = 0
+            original_refresh = window.proxy.refresh_filter
+
+            def counted_refresh() -> None:
+                nonlocal calls
+                calls += 1
+                original_refresh()
+
+            window.proxy.refresh_filter = counted_refresh
+
+            window.apply_status_card_filter("accepted")
+
+            self.assertEqual(calls, 1)
+            self.assertEqual(window.confidence_filter.value(), 0.0)
+            self.assertEqual(window.proxy.rowCount(), 1)
+            self.assertEqual(window.table_count_label.text(), "显示 1 / 2")
+
+    def test_decision_failure_is_visible(self) -> None:
+        from gui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            self.write_output_fixture(out_dir)
+            window = MainWindow()
+            window.load_output_dir(out_dir)
+
+            with patch("gui.main_window.apply_review_action", side_effect=ValueError("frozen row")), patch(
+                "gui.main_window.QMessageBox.warning"
+            ) as warning:
+                window.apply_decision("accepted")
+
+        warning.assert_called_once()
+
+    def test_next_row_under_filter_does_not_skip_rows(self) -> None:
+        from gui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            self.write_output_fixture(out_dir, candidate_count=5)
+            window = MainWindow()
+            window.load_output_dir(out_dir)
+            window.set_combo_to_data(window.status_filter, "candidate")
+            self.assertEqual(window.proxy.rowCount(), 5)
+
+            visited: list[str] = []
+            for _ in range(5):
+                current = window.table.currentIndex()
+                row = window.model.row_at(window.proxy.mapToSource(current).row())
+                visited.append(str(row["stable_req_id"]))
+                window.apply_decision("accepted")
+
+        self.assertEqual(visited, [f"SREQ-C{i}" for i in range(5)])
 
     def test_gui_app_smoke_constructs_window_without_event_loop(self) -> None:
         from gui.app import main
@@ -132,10 +209,26 @@ class GuiModelTests(unittest.TestCase):
 
         self.assertEqual(events[-1]["actor"], getpass.getuser())
 
-    def write_output_fixture(self, out_dir: Path) -> None:
+    def write_output_fixture(self, out_dir: Path, *, candidate_count: int = 0) -> None:
+        extra_candidates = [
+            {
+                "req_id": f"AREQ-C{i}",
+                "stable_req_id": f"SREQ-C{i}",
+                "requirement_type": "communication",
+                "domain": "communication",
+                "object": f"Candidate {i}",
+                "requirement": f"The meter shall support candidate behavior {i}.",
+                "confidence": 0.9,
+                "ambiguity": False,
+                "source_refs": ["BLK-1"],
+                "kb_matches": [],
+            }
+            for i in range(candidate_count)
+        ]
         write_jsonl(
             out_dir / "atomic_requirements.jsonl",
-            [
+            extra_candidates
+            or [
                 {
                     "req_id": "AREQ-1",
                     "stable_req_id": "SREQ-1",
@@ -164,14 +257,18 @@ class GuiModelTests(unittest.TestCase):
         )
         write_jsonl(
             out_dir / "review_states.jsonl",
-            [
-                {"requirement_id": "SREQ-1", "status": "expert_pending", "metadata": {"req_id": "AREQ-1"}},
-                {"requirement_id": "SREQ-2", "status": "accepted", "metadata": {"req_id": "AREQ-2"}},
-            ],
+            []
+            if extra_candidates
+            else [
+                    {"requirement_id": "SREQ-1", "status": "expert_pending", "metadata": {"req_id": "AREQ-1"}},
+                    {"requirement_id": "SREQ-2", "status": "accepted", "metadata": {"req_id": "AREQ-2"}},
+                ],
         )
         write_jsonl(
             out_dir / "llm_review_results.jsonl",
-            [{"requirement_id": "SREQ-1", "decision": "needs_expert", "risk": "high_risk"}],
+            []
+            if extra_candidates
+            else [{"requirement_id": "SREQ-1", "decision": "needs_expert", "risk": "high_risk"}],
         )
         write_jsonl(out_dir / "blocks.jsonl", [{"block_id": "BLK-1", "text": "The meter shall support xDLMS GET service."}])
         write_jsonl(out_dir / "table_items.jsonl", [{"item_id": "TBL-1-R1", "fields": {"Requirement": "Associations shall use HLS."}}])
