@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 from export_requirements import export_requirements
 from gui import i18n
 from gui.detail_panel import DetailPanel
+from gui.settings_dialog import SettingsDialog
 from gui.pipeline_worker import LoadOutputWorker, PipelineWorker
 from gui.requirements_model import (
     ConfidenceDelegate,
@@ -398,7 +399,7 @@ class MainWindow(QMainWindow):
 
     def nav_settings_placeholder(self) -> None:
         self.select_nav(self.nav_settings_button)
-        QMessageBox.information(self, i18n.UI["nav_settings"], i18n.UI["settings_placeholder"])
+        SettingsDialog(self).exec()
         self.select_nav(self.nav_review_button)
 
     def on_type_filter_changed(self, _index: int = 0) -> None:
