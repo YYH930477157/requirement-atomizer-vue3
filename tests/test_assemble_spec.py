@@ -22,6 +22,9 @@ def write_fixture(out_dir: Path) -> Path:
          "object": "ClientA", "source_refs": ["TBL-3"]},
         {"stable_req_id": "F-1", "requirement_type": "functional", "object": "Counter",
          "requirement": "The meter must reset to 0.", "source_refs": ["BLK-1"]},
+        # 父类 Register 不在对象实例表 → 孤立 → 类级属性模板
+        {"stable_req_id": "A-REGV", "requirement_type": "cosem_attribute_access",
+         "object": "Register.value", "source_refs": ["TBL-4"]},
     ])
     write_jsonl(out_dir / "table_items.jsonl", [
         {"item_id": "TBL-1", "fields": {"Object/attribute name": "Clock", "CL": "8", "Value": "0-0:1.0.0.255"}},
@@ -29,6 +32,8 @@ def write_fixture(out_dir: Path) -> Path:
                                          "Value": "00", "Access rights RC/PC/SC/LC": "R-/RW/--/R-"}},
         {"item_id": "TBL-3", "fields": {"Customer application process": "ClientA",
                                          "Server application process / Management Logical Device": "HLS"}},
+        {"item_id": "TBL-4", "fields": {"#": "1", "Object/attribute name": "value",
+                                         "Type": "double-long-unsigned", "Access rights RC/PC/SC/LC": "R-/R-/R-/R-"}},
     ])
     reviews = out_dir / "reviews.jsonl"
     write_jsonl(reviews, [
@@ -48,6 +53,16 @@ class AssembleSpecTests(unittest.TestCase):
             self.assertGreaterEqual(breakdown["p3_behavior_requirements"], 1)
             self.assertEqual(breakdown["total"], len(doc["requirements"]))
             self.assertEqual(doc["analysis"]["total_count"], breakdown["total"])
+
+    def test_class_template_requirements(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            reviews = write_fixture(out)
+            doc, breakdown = assemble_spec.assemble(out, reviews, source="t", extracted_at="2026-06-14T10:00:00")
+            self.assertGreaterEqual(breakdown["p1_class_template_requirements"], 1)
+            tpl = next(r for r in doc["requirements"] if "类级属性模板：Register" in r["title"])
+            self.assertIsNotNone(tpl["threshold_table"])
+            self.assertTrue(any("value" in row for row in tpl["threshold_table"]["rows"]))
 
     def test_ids_sequential_and_fields_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

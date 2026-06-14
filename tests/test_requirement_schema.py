@@ -30,8 +30,10 @@ class MappersTests(unittest.TestCase):
         self.assertEqual(rs.classify_type("the value shall not exceed 5"), "constraint")
 
     def test_classify_priority(self) -> None:
-        self.assertEqual(rs.classify_priority(["安全"], "accept", 0.9), "P0")
+        # 保守优先级：安全标签不再自动 P0；待审/低置信 → P2
+        self.assertEqual(rs.classify_priority(["安全"], "accept", 0.9), "P1")
         self.assertEqual(rs.classify_priority(["通信协议"], "pending", 0.7), "P2")
+        self.assertEqual(rs.classify_priority(["通信协议"], "accept", 0.5), "P2")
         self.assertEqual(rs.classify_priority(["通信协议"], "accept", 0.9), "P1")
 
     def test_map_status(self) -> None:
@@ -56,7 +58,7 @@ class ToRequirementTests(unittest.TestCase):
         self.assertEqual(req["status"], "confirmed")
         self.assertEqual(req["source_section"], "4 Security")
         self.assertIn("安全", req["labels"])
-        self.assertEqual(req["priority"], "P0")               # 安全 → P0
+        self.assertEqual(req["priority"], "P1")               # 保守：安全标签不自动 P0
 
     def test_pending_item_still_complete(self) -> None:
         req = rs.to_requirement(make_item(), "REQ-009")

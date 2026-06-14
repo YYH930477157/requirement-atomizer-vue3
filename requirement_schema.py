@@ -62,12 +62,16 @@ def classify_type(text: str) -> str:
 
 
 def classify_priority(labels: list[str], decision: str, confidence: Any) -> str:
-    if "安全" in labels:
-        return "P0"
+    # 启发式且保守：行为类不因「安全」标签即判 P0（P0 留给 assemble_spec 的安全基础设施）；
+    # 待审/低置信 → P2，需专家/需修订 → P1，其余默认 P1。最终优先级由专家复核。
+    try:
+        low_conf = confidence is not None and float(confidence) < 0.6
+    except (TypeError, ValueError):
+        low_conf = False
+    if decision == "pending" or low_conf:
+        return "P2"
     if decision in ("needs_expert", "revise"):
         return "P1"
-    if decision == "pending":
-        return "P2"
     return "P1"
 
 
@@ -101,6 +105,10 @@ def to_requirement(item: dict[str, Any], req_id: str) -> dict[str, Any]:
         notes_parts.append(f"专家问题：{q}")
     if item.get("drift_codes"):
         notes_parts.append(f"编码漂移（已拦截）：{', '.join(item['drift_codes'])}")
+    lower = original.lower()
+    if any(kw in lower for kw in ("threshold", "limit", "at least", "records")) or \
+            any(kw in original for kw in ("门限", "阈值", "记录")):
+        notes_parts.append("相关门限/参数/容量表见对象模型(P1)与访问安全规格(P2)")
     notes_parts.append("type/priority/status 为启发式赋值，待专家确认")
 
     return {

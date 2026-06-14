@@ -62,12 +62,42 @@ def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
                          f"{obj['class_id']}），其属性的数据类型与各关联(RC/PC/SC/LC)访问权限按属性表实现。"),
             source_quote=f"COSEM object {obj['object']} / CL {obj['class_id']} / OBIS {obj['obis']} shall be defined by the profile.",
             labels=[label],
-            priority="P0" if label == "安全" else "P1",
+            priority="P1",  # 对象模型统一 P1；P0 留给安全基础设施(P2 套件/关联/策略)
             source_section=" / ".join(str(p) for p in (obj.get("section_path") or [])) or str(obj.get("domain") or ""),
             threshold_table=tt,
             acceptance=[f"读取 {obj['object']} 的 logical_name 返回 OBIS {obj['obis']}",
                         "各属性的访问权限与数据类型符合属性表"],
             notes=f"对象模型由确定性装配(P1)，OBIS/CL/访问位来自源表、未经 LLM。",
+        ))
+    return reqs
+
+
+def p1_class_template_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """把 P1 的孤立属性（父类未在对象实例表出现，多为 COSEM 类级属性模板如 Register/Profile Generic）
+    按父类归并成「类级属性模板」需求，属性进 threshold_table —— 回收这部分有价值的类定义。"""
+    from collections import defaultdict
+
+    by_parent: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for attr in model.get("orphan_attributes", []):
+        by_parent[str(attr.get("parent") or "（未命名类）")].append(attr)
+
+    reqs = []
+    for parent, attrs in sorted(by_parent.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        tt = {
+            "description": f"{parent} 类级属性模板",
+            "columns": ["#", "属性", "类型", "RC", "PC", "SC", "LC", "默认值"],
+            "rows": [[a["index"], a["name"], a["type"],
+                      a["access"].get("RC", a["access_raw"]), a["access"].get("PC", ""),
+                      a["access"].get("SC", ""), a["access"].get("LC", ""), a["default"]]
+                     for a in attrs],
+        }
+        reqs.append(_req(
+            title=f"COSEM 类级属性模板：{parent}",
+            description=(f"计量软件 SHALL 为 COSEM 接口类 {parent} 的实例实现下表定义的属性"
+                         f"（数据类型与各关联 RC/PC/SC/LC 访问权限）。"),
+            source_quote=f"Class {parent} attribute definitions (per-class template).",
+            labels=["通信协议"], priority="P1", threshold_table=tt,
+            notes=f"类级属性定义({len(attrs)} 条)，父类未在对象实例表出现；确定性装配，未经 LLM。",
         ))
     return reqs
 
@@ -126,11 +156,14 @@ def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted
     p1 = build_object_model(out_dir)
     p2 = build_access_security(out_dir)
     p3 = build_behavior_spec(out_dir, reviews_path)
-    p1_reqs = p1_requirements(p1)
+    p1_obj_reqs = p1_requirements(p1)
+    p1_cls_reqs = p1_class_template_requirements(p1)
     p2_reqs = p2_requirements(p2)
     p3_reqs = rs.build_requirements_doc(p3, source=source, extracted_at=extracted_at)["requirements"]
-    doc = rs.make_doc(p1_reqs + p2_reqs + p3_reqs, source=source, extracted_at=extracted_at)
-    breakdown = {"p1_object_requirements": len(p1_reqs), "p2_matrix_requirements": len(p2_reqs),
+    doc = rs.make_doc(p1_obj_reqs + p1_cls_reqs + p2_reqs + p3_reqs, source=source, extracted_at=extracted_at)
+    breakdown = {"p1_object_requirements": len(p1_obj_reqs),
+                 "p1_class_template_requirements": len(p1_cls_reqs),
+                 "p2_matrix_requirements": len(p2_reqs),
                  "p3_behavior_requirements": len(p3_reqs), "total": len(doc["requirements"])}
     return doc, breakdown
 
