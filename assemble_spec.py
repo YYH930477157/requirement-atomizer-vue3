@@ -19,6 +19,7 @@ from typing import Any
 import requirement_schema as rs
 from cosem_access_security import build_access_security
 from cosem_behavior_spec import build_behavior_spec
+from cosem_external_refs import build_external_refs
 from cosem_object_model import build_object_model
 
 
@@ -161,10 +162,17 @@ def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted
     p2_reqs = p2_requirements(p2)
     p3_reqs = rs.build_requirements_doc(p3, source=source, extracted_at=extracted_at)["requirements"]
     doc = rs.make_doc(p1_obj_reqs + p1_cls_reqs + p2_reqs + p3_reqs, source=source, extracted_at=extracted_at)
+    p4 = build_external_refs(out_dir)
+    doc["external_references"] = p4
+    if p4["counts"]["normative"]:
+        doc["analysis"]["coverage_report"] += (
+            f"　另有 {p4['counts']['normative']} 条外部规范引用（IEC/ISO/ABNT）待研发查阅，详见 external_references。"
+        )
     breakdown = {"p1_object_requirements": len(p1_obj_reqs),
                  "p1_class_template_requirements": len(p1_cls_reqs),
                  "p2_matrix_requirements": len(p2_reqs),
-                 "p3_behavior_requirements": len(p3_reqs), "total": len(doc["requirements"])}
+                 "p3_behavior_requirements": len(p3_reqs),
+                 "p4_external_references": p4["counts"]["specs"], "total": len(doc["requirements"])}
     return doc, breakdown
 
 

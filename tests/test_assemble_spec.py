@@ -98,6 +98,22 @@ class AssembleSpecTests(unittest.TestCase):
             self.assertIn("安全", assoc["labels"])
             self.assertIsNotNone(assoc["threshold_table"])
 
+    def test_p4_external_references_attached(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            reviews = write_fixture(out)
+            # fixture 没有 blocks.jsonl 与外部引用，补一条带 IEC 引用的正文块
+            (out / "blocks.jsonl").write_text(
+                json.dumps({"block_id": "BLK-1", "type": "paragraph", "section_path": ["Architecture"],
+                            "text": "Application layer per IEC 62056-5-3."}, ensure_ascii=False) + "\n",
+                encoding="utf-8")
+            doc, breakdown = assemble_spec.assemble(out, reviews, source="t", extracted_at="2026-06-14T10:00:00")
+            self.assertIn("external_references", doc)
+            self.assertGreaterEqual(breakdown["p4_external_references"], 1)
+            ids = {e["spec_id"] for e in doc["external_references"]["references"]}
+            self.assertIn("IEC 62056-5-3", ids)
+            self.assertIn("external_references", doc["analysis"]["coverage_report"])
+
 
 if __name__ == "__main__":
     unittest.main()
