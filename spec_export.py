@@ -280,7 +280,12 @@ def export_spec(out_dir: Path, *, formats: list[str], reviews_path: Path | None 
     if "docx" in wanted:
         write_docx(doc, out_dir / "dlms_cosem_spec.docx")
         written.append("dlms_cosem_spec.docx")
-    unknown = wanted - {"md", "docx"}
+    if "xlsx" in wanted:
+        from spec_excel import write_xlsx
+
+        write_xlsx(doc, out_dir / "dlms_cosem_spec.xlsx")
+        written.append("dlms_cosem_spec.xlsx")
+    unknown = wanted - {"md", "docx", "xlsx"}
     if unknown:
         raise ValueError(f"unsupported export format: {', '.join(sorted(unknown))}")
     return written

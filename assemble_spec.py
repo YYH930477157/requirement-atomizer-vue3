@@ -23,13 +23,6 @@ from cosem_external_refs import build_external_refs
 from cosem_object_model import build_object_model
 
 
-_DOMAIN_LABEL = {
-    "security": "安全", "access_control": "安全", "metering": "计量",
-    "communication": "通信协议", "time": "时钟", "alarm": "事件记录",
-    "event": "事件记录", "tariff": "费率",
-}
-
-
 def _req(*, title: str, description: str, source_quote: str, labels: list[str],
          priority: str = "P1", source_section: str = "", threshold_table: dict | None = None,
          acceptance: list[str] | None = None, notes: str = "") -> dict[str, Any]:
@@ -45,7 +38,9 @@ def _req(*, title: str, description: str, source_quote: str, labels: list[str],
 def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
     reqs = []
     for obj in model["objects"]:
-        label = _DOMAIN_LABEL.get(str(obj.get("domain") or ""), "通信协议")
+        # 用对象名 + 源域做领域分类（对象名是最强信号：Clock→时钟、Active energy→计量、
+        # Event→事件记录、Threshold→门限范围、Special Days→节假日…），取代旧的 7 域硬映射兜底。
+        labels = rs.map_labels(f"{obj['object']} {obj.get('domain') or ''}")
         attrs = obj["attributes"]
         tt = None
         if attrs:
@@ -62,7 +57,7 @@ def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
             description=(f"计量软件 SHALL 实现 COSEM 对象 {obj['object']}（OBIS {obj['obis']}，接口类 "
                          f"{obj['class_id']}），其属性的数据类型与各关联(RC/PC/SC/LC)访问权限按属性表实现。"),
             source_quote=f"COSEM object {obj['object']} / CL {obj['class_id']} / OBIS {obj['obis']} shall be defined by the profile.",
-            labels=[label],
+            labels=labels,
             priority="P1",  # 对象模型统一 P1；P0 留给安全基础设施(P2 套件/关联/策略)
             source_section=" / ".join(str(p) for p in (obj.get("section_path") or [])) or str(obj.get("domain") or ""),
             threshold_table=tt,
@@ -97,7 +92,7 @@ def p1_class_template_requirements(model: dict[str, Any]) -> list[dict[str, Any]
             description=(f"计量软件 SHALL 为 COSEM 接口类 {parent} 的实例实现下表定义的属性"
                          f"（数据类型与各关联 RC/PC/SC/LC 访问权限）。"),
             source_quote=f"Class {parent} attribute definitions (per-class template).",
-            labels=["通信协议"], priority="P1", threshold_table=tt,
+            labels=rs.map_labels(parent), priority="P1", threshold_table=tt,
             notes=f"类级属性定义({len(attrs)} 条)，父类未在对象实例表出现；确定性装配，未经 LLM。",
         ))
     return reqs

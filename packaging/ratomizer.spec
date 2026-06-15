@@ -17,7 +17,28 @@ datas = [
     (str(ROOT / "gui" / "theme.qss.template"), "gui"),
 ]
 
-hiddenimports = collect_submodules("docx") + collect_submodules("yaml") + collect_submodules("openpyxl") + collect_submodules("pdfplumber")
+# 装配实现规格生成器：被 GUI 的 AssembleSpecWorker 惰性 import（函数体内），
+# 且这些是仓库根的顶层模块（未注册进 pyproject py-modules）。显式列出，确保打包收集，
+# 否则点「装配实现规格」会在冻结环境里 ModuleNotFoundError。
+spec_generator_modules = [
+    "assemble_spec",
+    "spec_export",
+    "spec_excel",
+    "cosem_object_model",
+    "cosem_access_security",
+    "cosem_behavior_spec",
+    "cosem_external_refs",
+    "requirement_schema",
+    "text_normalize",
+]
+
+hiddenimports = (
+    collect_submodules("docx")
+    + collect_submodules("yaml")
+    + collect_submodules("openpyxl")
+    + collect_submodules("pdfplumber")
+    + spec_generator_modules
+)
 excludes = [
     "tests",
     "tkinter",

@@ -96,3 +96,71 @@ class LoadOutputWorker(QObject):
         except Exception as exc:
             traceback.print_exc()
             self.failed.emit(str(exc))
+
+
+class AssembleSpecWorker(QObject):
+    """后台装配《DLMS/COSEM 实现规格》：先 assemble() 写机器格式 JSON，
+    再 export_spec() 写人读 Word/Markdown。离线确定性（读 out_dir 下的 atomizer
+    产物 + 可选 llm_review_results.jsonl），不调实时 LLM。"""
+
+    stage = Signal(str)
+    finished = Signal(dict)
+    failed = Signal(str)
+
+    ASSEMBLED_JSON = "dlms_cosem_spec_requirements.json"
+
+    def __init__(self, *, out_dir: Path, formats: list[str] | None = None) -> None:
+        super().__init__()
+        self.out_dir = out_dir
+        self.formats = formats if formats is not None else ["xlsx", "docx", "md"]
+
+    @Slot()
+    def run(self) -> None:
+        import datetime
+        import json
+
+        from assemble_spec import assemble
+
+        logger = logging.getLogger("requirement_atomizer")
+        handler = StageSignalHandler(self)
+        old_level = logger.level
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        try:
+            out = self.out_dir.expanduser().resolve()
+            reviews = out / "llm_review_results.jsonl"
+            reviews_path = reviews if reviews.exists() else None
+
+            self.stage.emit("assembling implementation spec")
+            doc, breakdown = assemble(
+                out,
+                reviews_path,
+                source=out.name,
+                extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
+            )
+            target = out / self.ASSEMBLED_JSON
+            target.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+            written = [str(target)]
+
+            if self.formats:
+                self.stage.emit("exporting Word / Markdown")
+                from spec_export import export_spec
+
+                written += [str(out / name) for name in export_spec(out, formats=self.formats, reviews_path=reviews_path)]
+
+            self.finished.emit(
+                {
+                    "kind": "assemble",
+                    "out_dir": str(out),
+                    "count": len(doc.get("requirements", [])),
+                    "analysis": doc.get("analysis", {}),
+                    "breakdown": breakdown,
+                    "written": written,
+                }
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            self.failed.emit(str(exc))
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(old_level)

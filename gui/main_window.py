@@ -33,7 +33,9 @@ from export_requirements import export_requirements
 from gui import i18n
 from gui.detail_panel import DetailPanel
 from gui.settings_dialog import SettingsDialog
-from gui.pipeline_worker import LoadOutputWorker, PipelineWorker
+from gui.pipeline_worker import AssembleSpecWorker, LoadOutputWorker, PipelineWorker
+from gui.spec_result_dialog import SpecResultDialog
+from gui.spec_view import SpecBrowserDialog
 from gui.requirements_model import (
     ConfidenceDelegate,
     HEADERS,
@@ -113,7 +115,7 @@ class MainWindow(QMainWindow):
         self.current_out_dir: Path | None = None
         self.current_input_path: Path | None = None
         self.current_thread: QThread | None = None
-        self.current_worker: PipelineWorker | LoadOutputWorker | None = None
+        self.current_worker: PipelineWorker | LoadOutputWorker | AssembleSpecWorker | None = None
         self.pinned_source_row: int | None = None
         self.hover_timer = QTimer(self)
         self.hover_timer.setSingleShot(True)
@@ -143,10 +145,12 @@ class MainWindow(QMainWindow):
         self.nav_review_button = self._nav_button(i18n.UI["nav_review"], QStyle.StandardPixmap.SP_FileDialogContentsView)
         self.nav_review_button.setChecked(True)
         self.nav_document_button = self._nav_button(i18n.UI["nav_document"], QStyle.StandardPixmap.SP_DirOpenIcon)
+        self.nav_spec_button = self._nav_button(i18n.UI["nav_spec"], QStyle.StandardPixmap.SP_FileDialogDetailedView)
         self.nav_export_button = self._nav_button(i18n.UI["nav_export"], QStyle.StandardPixmap.SP_DialogSaveButton)
-        self.nav_settings_button = self._nav_button(i18n.UI["nav_settings"], QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        self.nav_settings_button = self._nav_button(i18n.UI["nav_settings"], QStyle.StandardPixmap.SP_FileDialogInfoView)
         side_layout.addWidget(self.nav_review_button)
         side_layout.addWidget(self.nav_document_button)
+        side_layout.addWidget(self.nav_spec_button)
         side_layout.addWidget(self.nav_export_button)
         side_layout.addWidget(self.nav_settings_button)
         side_layout.addStretch(1)
@@ -207,6 +211,11 @@ class MainWindow(QMainWindow):
         self.export_csv_action = export_menu.addAction(i18n.UI["export_csv"])
         self.export_md_action = export_menu.addAction(i18n.UI["export_md"])
         self.export_menu_button.setMenu(export_menu)
+        self.assemble_button = QPushButton(i18n.UI["assemble_spec"])
+        self.assemble_button.setObjectName("primaryButton")
+        self.assemble_button.setToolTip(i18n.UI["assemble_tip"])
+        self.assemble_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.assemble_button.setEnabled(False)
         app_bar_layout.addLayout(brand_layout, 1)
         app_bar_layout.addWidget(self.stage_label)
         app_bar_layout.addWidget(self.progress)
@@ -214,6 +223,7 @@ class MainWindow(QMainWindow):
         app_bar_layout.addWidget(self.import_button)
         app_bar_layout.addWidget(self.open_output_button)
         app_bar_layout.addWidget(self.export_menu_button)
+        app_bar_layout.addWidget(self.assemble_button)
         app_bar_layout.addWidget(self.detail_toggle)
         content_layout.addWidget(app_bar)
 
@@ -345,8 +355,10 @@ class MainWindow(QMainWindow):
         self.detail_toggle.toggled.connect(self.detail_panel.setVisible)
         self.export_csv_action.triggered.connect(lambda: self.export_format("csv"))
         self.export_md_action.triggered.connect(lambda: self.export_format("md"))
+        self.assemble_button.clicked.connect(self.on_assemble_clicked)
         self.nav_review_button.clicked.connect(lambda: self.select_nav(self.nav_review_button))
         self.nav_document_button.clicked.connect(self.nav_import_document)
+        self.nav_spec_button.clicked.connect(self.on_spec_view_clicked)
         self.nav_export_button.clicked.connect(self.nav_export_menu)
         self.nav_settings_button.clicked.connect(self.nav_settings_placeholder)
         self.type_filter.currentIndexChanged.connect(self.on_type_filter_changed)
@@ -381,6 +393,7 @@ class MainWindow(QMainWindow):
         for button in (
             self.nav_review_button,
             self.nav_document_button,
+            self.nav_spec_button,
             self.nav_export_button,
             self.nav_settings_button,
         ):
@@ -401,6 +414,45 @@ class MainWindow(QMainWindow):
         self.select_nav(self.nav_settings_button)
         SettingsDialog(self).exec()
         self.select_nav(self.nav_review_button)
+
+    def on_spec_view_clicked(self) -> None:
+        self.select_nav(self.nav_spec_button)
+        try:
+            if self.current_out_dir is None:
+                QMessageBox.information(
+                    self,
+                    i18n.UI["assemble_need_output_title"],
+                    i18n.UI["assemble_need_output_body"],
+                )
+                return
+            target = Path(self.current_out_dir) / AssembleSpecWorker.ASSEMBLED_JSON
+            if target.exists():
+                self.open_spec_browser(target)
+            else:
+                # 尚未装配过：先后台装配，完成后自动打开浏览器
+                self.start_worker(
+                    AssembleSpecWorker(out_dir=self.current_out_dir),
+                    on_finished=self.on_assemble_then_browse,
+                )
+        finally:
+            self.select_nav(self.nav_review_button)
+
+    def on_assemble_then_browse(self, payload: dict[str, Any]) -> None:
+        self.stage_label.setText(i18n.UI["ready"])
+        self.stage_label.setToolTip("")
+        target = Path(str(payload.get("out_dir") or "")) / AssembleSpecWorker.ASSEMBLED_JSON
+        if target.exists():
+            self.open_spec_browser(target)
+
+    def open_spec_browser(self, json_path: Path) -> None:
+        import json
+
+        try:
+            doc = json.loads(Path(json_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, i18n.UI["assemble_failed_title"], str(exc))
+            return
+        SpecBrowserDialog(doc, self).exec()
 
     def on_type_filter_changed(self, _index: int = 0) -> None:
         self.proxy.set_type_filter(str(self.type_filter.currentData() or "all"))
@@ -469,7 +521,7 @@ class MainWindow(QMainWindow):
     def load_output_dir_async(self, out_dir: Path) -> None:
         self.start_worker(LoadOutputWorker(out_dir))
 
-    def start_worker(self, worker: PipelineWorker | LoadOutputWorker) -> None:
+    def start_worker(self, worker: PipelineWorker | LoadOutputWorker | AssembleSpecWorker, *, on_finished: Any = None) -> None:
         if self.current_thread is not None:
             QMessageBox.warning(self, i18n.UI["task_running_title"], i18n.UI["task_running_body"])
             return
@@ -477,7 +529,7 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.stage.connect(self.on_stage)
-        worker.finished.connect(self.on_worker_finished)
+        worker.finished.connect(on_finished or self.on_worker_finished)
         worker.failed.connect(self.on_worker_failed)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
@@ -515,12 +567,14 @@ class MainWindow(QMainWindow):
         self.import_button.setEnabled(not running)
         self.open_output_button.setEnabled(not running)
         self.export_menu_button.setEnabled(not running)
+        self.assemble_button.setEnabled((not running) and self.current_out_dir is not None)
         self.progress.setVisible(running)
 
     def apply_bundle(self, bundle: dict[str, Any]) -> None:
         self.model.set_bundle(bundle)
         self.current_out_dir = bundle.get("out_dir")
         self.output_label.setText(f"{i18n.UI['output_dir']}{self.current_out_dir or ''}")
+        self.assemble_button.setEnabled(self.current_thread is None and self.current_out_dir is not None)
         manifest = bundle.get("manifest") if isinstance(bundle.get("manifest"), dict) else {}
         manifest_input = str(manifest.get("input") or "")
         if manifest_input:
@@ -700,6 +754,24 @@ class MainWindow(QMainWindow):
             return
         export_requirements(self.current_out_dir, formats=[fmt])
         self.statusBar().showMessage(i18n.UI["exported"].format(fmt=fmt.upper()), 4000)
+
+    def on_assemble_clicked(self) -> None:
+        if self.current_out_dir is None:
+            QMessageBox.information(
+                self,
+                i18n.UI["assemble_need_output_title"],
+                i18n.UI["assemble_need_output_body"],
+            )
+            return
+        self.start_worker(
+            AssembleSpecWorker(out_dir=self.current_out_dir),
+            on_finished=self.on_assemble_finished,
+        )
+
+    def on_assemble_finished(self, payload: dict[str, Any]) -> None:
+        self.stage_label.setText(i18n.UI["ready"])
+        self.stage_label.setToolTip("")
+        SpecResultDialog(payload, self).exec()
 
     def closeEvent(self, event: Any) -> None:
         if self.current_thread is not None:

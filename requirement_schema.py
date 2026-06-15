@@ -21,20 +21,36 @@ VALID_LABELS = (
     "节假日", "通信协议", "安全", "环境可靠性",
 )
 
-# 关键词 → 域（按 DLMS/COSEM 行为实际适配，只映射相关域）
+# 关键词 → 域（按 DLMS/COSEM 对象名/行为实际适配）。
+# 顺序即优先级：map_labels 按本表顺序收集所有命中标签，labels[0]（最特定的域）成为分段主标签，
+# 因此特定域必须排在宽泛的「通信协议」之前；「通信协议」放最后，仅在没有更具体匹配时兜底
+# （DLMS profile 里大量对象本就是对象模型/管理面，归「通信协议」是正确的，而非误分）。
 _LABEL_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("安全", ("key", "secur", "cipher", "encrypt", "auth", "hls", "lls",
-             "invocation counter", "integrity", "master key", "protected", "ciphered")),
-    ("事件记录", ("event", " log", "reboot", "record", "logbook")),
-    ("Push", ("push", "datanotification", "notification", "asynchron")),
-    ("通信协议", ("dlms", "cosem", "xdlms", "obis", "association", "service",
-               "pull", "get", "set ", "action", "block transfer")),
-    ("时钟", ("clock", " rtc", "time synchron")),
-    ("计量", ("energy", "metering", "register", "measurement", "demand register")),
-    ("费率", ("tariff", "rate ")),
-    ("需量", ("demand",)),
+    ("安全", ("secur", " key", "key ", "cipher", "encrypt", "auth", "hls", "lls",
+             "invocation counter", "integrity", "master key", "protected", "ciphered",
+             "certificate", "esam")),
+    ("升级", ("firmware", "image transfer", "image activation", "upgrade")),
+    ("负控", ("disconnect", "relay", "load control", "limiter")),
+    ("门限范围", ("threshold", "voltage sag", "voltage swell", "limit value")),
+    ("节假日", ("special day", "holiday")),
+    ("费率", ("tariff", "rate ", "activity calendar", "day profile", "week profile", "season")),
+    ("结算", ("billing", "settlement", "end of billing", "mdi reset", "billing reset")),
+    # 事件记录/状态字 必须排在「计量」之前：计量含 voltage/current/export 等宽词，
+    # 而对象名里 current 常指「当前」、export 常出现在事件名里（假朋友），靠顺序让语义更强的
+    # event/log/power failure/status 先赢，避免电压事件、失压时长被误判为计量。
     ("状态字", ("status word", "status flag", "status bit")),
-    ("升级", ("firmware", "upgrade", "image transfer")),
+    ("事件记录", ("event", "logbook", " log", "reboot", "power failure", "power down",
+               "power up", "diagnostic", "error")),
+    ("需量", ("demand",)),
+    ("计量", ("energy", "metering", "register", "measurement", "active power", "reactive",
+             "apparent", "instantaneous", "cumulative", " import", " export", " wh",
+             "varh", "vah", "power factor", "voltage", "current", "frequency")),
+    ("时钟", ("clock", " rtc", "time synchron", "time sync")),
+    ("Push", ("push", "datanotification", "notification", "asynchron")),
+    ("显示", ("display",)),
+    ("通信协议", ("dlms", "cosem", "xdlms", "obis", "association", "sap", "logical device",
+               "profile generic", "script", "schedule", "service", "pull", " get", "set ",
+               "action", "block transfer", "hdlc", "tcp", "gprs", "ppp", "management", "reset")),
 )
 
 # 适配后的 DLMS/COSEM 行为覆盖清单（公司 20 项的协议 profile 子集）
