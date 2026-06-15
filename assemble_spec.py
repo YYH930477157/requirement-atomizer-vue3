@@ -180,6 +180,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Assemble the full DLMS/COSEM implementation spec (company schema).")
     parser.add_argument("--out", type=Path, required=True, help="Atomizer output directory")
     parser.add_argument("--reviews", type=Path, default=None, help="Behaviour LLM reviews jsonl")
+    parser.add_argument("--export", default="", help="Optional human-readable export formats: md,docx")
     return parser.parse_args()
 
 
@@ -190,7 +191,12 @@ def main() -> int:
                               extracted_at=datetime.datetime.now().isoformat(timespec="seconds"))
     target = out_dir / "dlms_cosem_spec_requirements.json"
     target.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"out": str(out_dir), "written": [target.name], "breakdown": breakdown,
+    written = [target.name]
+    export_formats = [f for f in args.export.split(",") if f.strip()]
+    if export_formats:
+        from spec_export import export_spec
+        written += export_spec(out_dir, formats=export_formats, reviews_path=args.reviews)
+    print(json.dumps({"out": str(out_dir), "written": written, "breakdown": breakdown,
                       "validation_result": doc["analysis"]["validation_result"]},
                      ensure_ascii=False, indent=2))
     return 0
