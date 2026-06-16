@@ -109,6 +109,9 @@ UI = {
     # —— 装配实现规格（生成器接入）——
     "assemble_spec": "装配实现规格",
     "assemble_tip": "把已审查的需求装配成《DLMS/COSEM 实现规格》（JSON + Word/Markdown）",
+    "enrich_label": "LLM 富化描述",
+    "enrich_tip": "勾选后用 LLM 改写行为需求的描述为更丰富的中文（约 130 次调用，较慢；需在设置里配置 LLM 端点）。结构字段 OBIS/CL/访问位/数字全程冻结。",
+    "enrich_result": "描述富化：富化 {enriched} / 拒绝 {rejected} / 失败 {failed}",
     "assemble_running": "装配实现规格…",
     "assemble_exporting": "导出 Word / Markdown…",
     "assemble_done_title": "已生成实现规格",

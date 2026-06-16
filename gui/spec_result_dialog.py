@@ -51,6 +51,13 @@ class SpecResultDialog(QDialog):
 
         layout.addWidget(self._issues_label(analysis))
 
+        enrich = (payload.get("breakdown") or {}).get("enrich") or {}
+        if enrich.get("route") == "openai_compatible":
+            layout.addWidget(QLabel(i18n.UI["enrich_result"].format(
+                enriched=enrich.get("enriched", 0),
+                rejected=enrich.get("rejected", 0),
+                failed=enrich.get("failed", 0))))
+
         by_domain = analysis.get("by_domain")
         if isinstance(by_domain, dict) and by_domain:
             layout.addWidget(self._section_title(i18n.UI["assemble_by_domain"]))

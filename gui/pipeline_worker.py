@@ -109,10 +109,12 @@ class AssembleSpecWorker(QObject):
 
     ASSEMBLED_JSON = "dlms_cosem_spec_requirements.json"
 
-    def __init__(self, *, out_dir: Path, formats: list[str] | None = None) -> None:
+    def __init__(self, *, out_dir: Path, formats: list[str] | None = None,
+                 enrich_route: str | None = None) -> None:
         super().__init__()
         self.out_dir = out_dir
         self.formats = formats if formats is not None else ["xlsx", "docx", "md"]
+        self.enrich_route = enrich_route  # None/"stub"=不富化；"openai_compatible"=LLM 富化 P3 描述
 
     @Slot()
     def run(self) -> None:
@@ -137,6 +139,7 @@ class AssembleSpecWorker(QObject):
                 reviews_path,
                 source=out.name,
                 extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
+                enrich_route=self.enrich_route,
             )
             target = out / self.ASSEMBLED_JSON
             target.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")

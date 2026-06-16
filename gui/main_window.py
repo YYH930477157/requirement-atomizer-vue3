@@ -211,6 +211,8 @@ class MainWindow(QMainWindow):
         self.export_csv_action = export_menu.addAction(i18n.UI["export_csv"])
         self.export_md_action = export_menu.addAction(i18n.UI["export_md"])
         self.export_menu_button.setMenu(export_menu)
+        self.enrich_check = QCheckBox(i18n.UI["enrich_label"])
+        self.enrich_check.setToolTip(i18n.UI["enrich_tip"])
         self.assemble_button = QPushButton(i18n.UI["assemble_spec"])
         self.assemble_button.setObjectName("primaryButton")
         self.assemble_button.setToolTip(i18n.UI["assemble_tip"])
@@ -223,6 +225,7 @@ class MainWindow(QMainWindow):
         app_bar_layout.addWidget(self.import_button)
         app_bar_layout.addWidget(self.open_output_button)
         app_bar_layout.addWidget(self.export_menu_button)
+        app_bar_layout.addWidget(self.enrich_check)
         app_bar_layout.addWidget(self.assemble_button)
         app_bar_layout.addWidget(self.detail_toggle)
         content_layout.addWidget(app_bar)
@@ -568,6 +571,7 @@ class MainWindow(QMainWindow):
         self.open_output_button.setEnabled(not running)
         self.export_menu_button.setEnabled(not running)
         self.assemble_button.setEnabled((not running) and self.current_out_dir is not None)
+        self.enrich_check.setEnabled(not running)
         self.progress.setVisible(running)
 
     def apply_bundle(self, bundle: dict[str, Any]) -> None:
@@ -763,8 +767,10 @@ class MainWindow(QMainWindow):
                 i18n.UI["assemble_need_output_body"],
             )
             return
+        # 勾选框对本次装配权威：勾=LLM 富化 P3 描述，不勾=显式 stub（不受 model_routes.default 影响）
+        enrich_route = "openai_compatible" if self.enrich_check.isChecked() else "stub"
         self.start_worker(
-            AssembleSpecWorker(out_dir=self.current_out_dir),
+            AssembleSpecWorker(out_dir=self.current_out_dir, enrich_route=enrich_route),
             on_finished=self.on_assemble_finished,
         )
 
