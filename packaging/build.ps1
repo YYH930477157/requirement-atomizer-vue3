@@ -113,6 +113,12 @@ book.save(path)
     if ($LASTEXITCODE -ne 0) {
         throw "RequirementAtomizer.exe --smoke failed with exit code $LASTEXITCODE"
     }
+    # 装配冒烟：走 assemble→spec_enrich 等生成器导入链（默认 stub，不调 LLM），
+    # 防回归——任一生成器模块未被打包收全会在此 ImportError 崩。$outDir 已由上面 run 产出原子文件。
+    & $GuiExe --smoke-assemble $outDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "RequirementAtomizer.exe --smoke-assemble failed with exit code $LASTEXITCODE"
+    }
 }
 finally {
     Remove-Item -LiteralPath $SmokeRoot -Recurse -Force -ErrorAction SilentlyContinue

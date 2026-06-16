@@ -27,15 +27,37 @@ def place_on_primary_screen(app: QApplication, window: MainWindow) -> None:
     window.move(x, y)
 
 
+def _run_assemble_smoke(out_dir: str) -> int:
+    """冒烟：在冻结环境跑一遍装配（默认 stub、不调 LLM），验证 assemble→spec_enrich
+    等生成器导入链已被打包收全。打包时若漏收任一模块，这里会 ImportError 即崩。"""
+    import datetime
+    from pathlib import Path
+
+    from assemble_spec import assemble
+
+    assemble(Path(out_dir), None, source="smoke",
+             extracted_at=datetime.datetime.now().isoformat(timespec="seconds"))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv or sys.argv)
     smoke = "--smoke" in argv
+    smoke_assemble: str | None = None
+    if "--smoke-assemble" in argv:
+        index = argv.index("--smoke-assemble")
+        smoke_assemble = argv[index + 1] if index + 1 < len(argv) else None
+        del argv[index:index + 2]
     qt_argv = [arg for arg in argv if arg != "--smoke"]
     app = QApplication.instance() or QApplication(qt_argv)
     app.setStyleSheet(render_stylesheet())
     window = MainWindow()
     place_on_primary_screen(app, window)
     window.show()
+    if smoke_assemble:
+        result = _run_assemble_smoke(smoke_assemble)
+        window.close()
+        return result
     if smoke:
         window.close()
         return 0
