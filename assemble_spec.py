@@ -147,7 +147,8 @@ def p2_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
     return reqs
 
 
-def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted_at: str) -> tuple[dict, dict]:
+def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted_at: str,
+             enrich_route: str | None = None) -> tuple[dict, dict]:
     out_dir = out_dir.expanduser().resolve()
     p1 = build_object_model(out_dir)
     p2 = build_access_security(out_dir)
@@ -156,6 +157,11 @@ def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted
     p1_cls_reqs = p1_class_template_requirements(p1)
     p2_reqs = p2_requirements(p2)
     p3_reqs = rs.build_requirements_doc(p3, source=source, extracted_at=extracted_at)["requirements"]
+    # 描述 LLM 富化（仅 P3 行为；默认 stub 不动）。在 make_doc 重编号前原地改写。
+    # P1 对象散文是样板、真内容在 threshold_table，让 LLM 重述表码有"已有码错位"风险（护栏只挡新增码），
+    # 故不富化 P1；行为需求是纯散文、码最少、价值最高（真实 GLM 抽样验证：P3 干净、P1 有隐患）。
+    from spec_enrich import enrich_requirement_lists
+    enrich_summary = enrich_requirement_lists([p3_reqs], out_dir=out_dir, route=enrich_route)
     doc = rs.make_doc(p1_obj_reqs + p1_cls_reqs + p2_reqs + p3_reqs, source=source, extracted_at=extracted_at)
     p4 = build_external_refs(out_dir)
     doc["external_references"] = p4
@@ -167,7 +173,8 @@ def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted
                  "p1_class_template_requirements": len(p1_cls_reqs),
                  "p2_matrix_requirements": len(p2_reqs),
                  "p3_behavior_requirements": len(p3_reqs),
-                 "p4_external_references": p4["counts"]["specs"], "total": len(doc["requirements"])}
+                 "p4_external_references": p4["counts"]["specs"], "total": len(doc["requirements"]),
+                 "enrich": enrich_summary}
     return doc, breakdown
 
 
@@ -176,6 +183,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", type=Path, required=True, help="Atomizer output directory")
     parser.add_argument("--reviews", type=Path, default=None, help="Behaviour LLM reviews jsonl")
     parser.add_argument("--export", default="", help="Optional human-readable export formats: md,docx")
+    parser.add_argument("--enrich", default=None,
+                        help="描述 LLM 富化路由：stub(默认不富化) | openai_compatible")
     return parser.parse_args()
 
 
@@ -183,7 +192,8 @@ def main() -> int:
     args = parse_args()
     out_dir = args.out.expanduser().resolve()
     doc, breakdown = assemble(args.out, args.reviews, source=out_dir.name,
-                              extracted_at=datetime.datetime.now().isoformat(timespec="seconds"))
+                              extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
+                              enrich_route=args.enrich)
     target = out_dir / "dlms_cosem_spec_requirements.json"
     target.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
     written = [target.name]

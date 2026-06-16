@@ -1,6 +1,8 @@
 schema_version: "0.2"
 pipeline_id: "default_requirement_review"
 
+# model_routes 同时供 M2 审查（run_review_pipeline）与 P5 描述富化（spec_enrich，--enrich openai_compatible）复用；
+# 云端 GLM：把 openai_compatible.base_url/model 改为智谱端点+模型，密钥设环境变量 RATOMIZER_LLM_API_KEY。
 model_routes:
   default: "stub"
   openai_compatible:
