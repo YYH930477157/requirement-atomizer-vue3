@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
+from gui.review_actions import apply_review_action
+
 
 DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
 DEFAULT_ALLOWED_ORIGINS = {"http://127.0.0.1:8770", "http://localhost:8770", "null"}
@@ -71,6 +73,54 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         self.send_error(404, "Unknown endpoint")
 
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        origin = self.headers.get("Origin", "")
+        if not is_allowed_origin(origin, self.allowed_origins):
+            self.send_error(403, "Origin not allowed")
+            return
+        if not self.local_token or not token_is_valid(self.local_token, self.headers, params):
+            self.send_json({"error": "unauthorized"}, status=401)
+            return
+        if parsed.path != "/review-actions":
+            self.send_error(404, "Unknown endpoint")
+            return
+
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        requirement_id = str(payload.get("requirement_id") or "").strip()
+        status = str(payload.get("status") or "").strip()
+        actor = str(payload.get("actor") or "").strip() or None
+        reason = str(payload.get("reason") or "").strip()
+        if not requirement_id or not status:
+            self.send_json({"error": "requirement_id and status are required"}, status=400)
+            return
+        try:
+            state = apply_review_action(self.output_dir, requirement_id, status, actor=actor, reason=reason)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=409)
+            return
+        self.send_json(state)
+
+    def read_json_body(self) -> dict | None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_json({"error": "invalid content length"}, status=400)
+            return None
+        try:
+            raw = self.rfile.read(length)
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.send_json({"error": "invalid json body"}, status=400)
+            return None
+        if not isinstance(payload, dict):
+            self.send_json({"error": "json body must be an object"}, status=400)
+            return None
+        return payload
+
     def send_file_json(self, filename: str) -> None:
         path = self.output_dir / filename
         if not path.exists():
@@ -94,7 +144,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
         elif "null" in self.allowed_origins:
             self.send_header("Access-Control-Allow-Origin", "null")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", f"Content-Type, {TOKEN_HEADER}")
 
     def log_message(self, format: str, *args) -> None:
@@ -237,7 +287,8 @@ def main() -> int:
                 "token_required": bool(RequirementAPIHandler.local_token),
             },
             indent=2,
-        )
+        ),
+        flush=True,
     )
     server.serve_forever()
     return 0

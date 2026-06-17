@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import tomllib
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from atomic_requirement_schema import validate_atomic_requirement_payload, validate_atomic_requirements
-from api_server import enrich_requirements, is_allowed_origin, token_is_valid
+from api_server import RequirementAPIHandler, enrich_requirements, is_allowed_origin, token_is_valid
 from atomize import assert_valid_atomic_requirements
 from atomize import AtomizerInputError, apply_table_pattern_shadow
 from doc_ir import blocks_to_doc_ir
@@ -33,6 +37,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PlatformScaffoldTests(unittest.TestCase):
+    def start_api_server(self, out_dir: Path, *, token: str = "") -> ThreadingHTTPServer:
+        class TestHandler(RequirementAPIHandler):
+            pass
+
+        TestHandler.output_dir = out_dir.resolve()
+        TestHandler.allowed_origins = {"http://127.0.0.1:5173", "http://127.0.0.1:8770", "null"}
+        TestHandler.local_token = token
+        server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server
+
     def test_blocks_to_doc_ir_preserves_table_rows(self) -> None:
         blocks = [
             {
@@ -349,6 +365,73 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertFalse(token_is_valid("secret", {}, params))
         self.assertFalse(token_is_valid("secret", {}, {}))
         self.assertTrue(token_is_valid("", {}, {}))
+
+    def test_api_review_action_requires_token_and_writes_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "review_states.jsonl", [{"requirement_id": "SREQ-1", "status": "expert_pending"}])
+            server = self.start_api_server(out_dir, token="secret-token")
+            try:
+                forbidden = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/review-actions",
+                    data=json.dumps({"requirement_id": "SREQ-1", "status": "accepted"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(forbidden, timeout=5)
+                self.assertEqual(raised.exception.code, 401)
+                raised.exception.close()
+
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/review-actions",
+                    data=json.dumps(
+                        {
+                            "requirement_id": "SREQ-1",
+                            "status": "accepted",
+                            "actor": "vue3-test",
+                            "reason": "accepted in Vue3 UI",
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "X-Requirement-Atomizer-Token": "secret-token"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+
+            states = read_jsonl(out_dir / "review_states.jsonl")
+            events = read_jsonl(out_dir / "review_state_events.jsonl")
+
+        self.assertEqual(payload["status"], "accepted")
+        self.assertEqual(payload["history"][-1]["actor"], "vue3-test")
+        self.assertEqual(states[0]["status"], "accepted")
+        self.assertEqual(events[-1]["to_status"], "accepted")
+
+    def test_api_review_action_rejects_write_when_token_is_not_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            server = self.start_api_server(out_dir)
+            try:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/review-actions",
+                    data=json.dumps({"requirement_id": "SREQ-1", "status": "accepted"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(raised.exception.code, 401)
+                raised.exception.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+
+            states = read_jsonl(out_dir / "review_states.jsonl")
+
+        self.assertEqual(states, [])
 
     def test_review_state_validates_transitions(self) -> None:
         state = RequirementReviewState("AREQ-1")

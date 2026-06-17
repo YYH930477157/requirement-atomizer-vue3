@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import io
 import threading
+import urllib.error
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from unittest.mock import patch
 
-from llm_client import LLMClientConfig, LLMConnectionError, LLMResponseError, chat_json
+from llm_client import LLMClientConfig, LLMConnectionError, LLMResponseError, _read_error_body, chat_json
 
 
 def openai_response(payload: dict[str, Any] | str) -> dict[str, Any]:
@@ -64,6 +66,15 @@ class MockOpenAIService:
 
 
 class LLMClientTests(unittest.TestCase):
+    def test_read_error_body_closes_http_error_response(self) -> None:
+        body = io.BytesIO(b'{"error":"boom"}')
+        error = urllib.error.HTTPError("http://example.test", 500, "Internal Server Error", {}, body)
+
+        raw = _read_error_body(error)
+
+        self.assertEqual(raw, '{"error":"boom"}')
+        self.assertTrue(body.closed)
+
     def test_chat_json_posts_openai_request_and_reads_json_object(self) -> None:
         os.environ["RATOMIZER_TEST_KEY"] = "secret-token"
         try:

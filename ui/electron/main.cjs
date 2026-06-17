@@ -1,7 +1,12 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 let mainWindow = null;
+let apiProcess = null;
+let apiSession = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -28,6 +33,7 @@ function createWindow() {
 app.whenReady().then(createWindow);
 
 app.on("window-all-closed", () => {
+  stopApiServer();
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -51,12 +57,191 @@ ipcMain.handle("dialog:open-output", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory"],
   });
-  return result.canceled ? null : result.filePaths[0];
+  if (result.canceled) {
+    return null;
+  }
+  return startApiServer(result.filePaths[0]);
 });
 
 ipcMain.handle("shell:open-path", async (_event, targetPath) => {
-  if (!targetPath) {
+  if (!targetPath || !apiSession || !isInside(apiSession.outputDir, targetPath)) {
     return;
   }
   await shell.openPath(targetPath);
 });
+
+ipcMain.handle("api:get-session", async () => apiSession);
+ipcMain.handle("api:start-session", async (_event, outDir) => startApiServer(outDir));
+ipcMain.handle("task:run-pipeline", async (_event, input) => {
+  const payload = await runDesktopTaskProcess([
+    "run",
+    "--input",
+    input.inputPath,
+    "--out",
+    input.outDir,
+    ...(input.skipReview ? ["--skip-review"] : []),
+  ]);
+  await startApiServer(String(payload.out_dir || input.outDir));
+  return payload;
+});
+ipcMain.handle("task:export-requirements", async (_event, input) => runDesktopTaskProcess([
+  "export",
+  "--out",
+  input.outDir,
+  "--formats",
+  (input.formats || ["csv", "md"]).join(","),
+]));
+ipcMain.handle("task:assemble-spec", async (_event, input) => runDesktopTaskProcess([
+  "assemble",
+  "--out",
+  input.outDir,
+  "--formats",
+  (input.formats || ["xlsx", "docx", "md"]).join(","),
+  ...(input.enrichRoute ? ["--enrich-route", input.enrichRoute] : []),
+]));
+
+async function startApiServer(outputDir) {
+  stopApiServer();
+  const token = crypto.randomBytes(24).toString("hex");
+  const port = await findFreePort();
+  const apiServerPath = resolveApiServerPath();
+  apiProcess = spawn(resolvePythonCommand(), [
+    apiServerPath,
+    "--out",
+    outputDir,
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    "--allow-origin",
+    "http://127.0.0.1:5173",
+    "--token",
+    token,
+  ], {
+    cwd: path.dirname(apiServerPath),
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  apiSession = await waitForApiReady(apiProcess, port, token, outputDir);
+  return apiSession;
+}
+
+function stopApiServer() {
+  if (apiProcess) {
+    apiProcess.kill();
+    apiProcess = null;
+  }
+  apiSession = null;
+}
+
+function waitForApiReady(child, port, token, outputDir) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const timer = setTimeout(() => finish(reject, new Error(`API server startup timed out: ${stderr}`)), 10000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+      const jsonStart = stdout.indexOf("{");
+      const jsonEnd = stdout.lastIndexOf("}");
+      if (jsonStart >= 0 && jsonEnd > jsonStart) {
+        try {
+          JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
+          finish(resolve, { baseUrl: `http://127.0.0.1:${port}`, token, outputDir });
+        } catch {
+          // Keep waiting until the startup JSON is complete.
+        }
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.once("error", (error) => {
+      finish(reject, error);
+    });
+    child.once("exit", (code) => {
+      finish(reject, new Error(`API server exited with code ${code}: ${stderr}`));
+    });
+  });
+}
+
+function resolveApiServerPath() {
+  const candidates = [
+    path.resolve(__dirname, "../..", "api_server.py"),
+    path.resolve(__dirname, "../../..", "api_server.py"),
+    path.resolve(process.resourcesPath || "", "api_server.py"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+}
+
+function resolveDesktopTasksPath() {
+  const candidates = [
+    path.resolve(__dirname, "../..", "desktop_tasks.py"),
+    path.resolve(__dirname, "../../..", "desktop_tasks.py"),
+    path.resolve(process.resourcesPath || "", "desktop_tasks.py"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+}
+
+function resolvePythonCommand() {
+  return process.env.RATOMIZER_PYTHON || "python";
+}
+
+function findFreePort() {
+  const net = require("node:net");
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+    server.on("error", reject);
+  });
+}
+
+function runDesktopTaskProcess(args) {
+  const taskPath = resolveDesktopTasksPath();
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [taskPath, ...args], {
+      cwd: path.dirname(taskPath),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr || `desktop task exited with code ${code}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (error) {
+        reject(new Error(`desktop task returned invalid JSON: ${error.message}`));
+      }
+    });
+  });
+}
+
+function isInside(rootPath, targetPath) {
+  const root = path.resolve(rootPath);
+  const target = path.resolve(targetPath);
+  const relative = path.relative(root, target);
+  return relative === "" || Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}

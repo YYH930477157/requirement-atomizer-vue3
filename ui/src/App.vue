@@ -45,15 +45,15 @@
           </div>
 
           <div class="top-actions">
-            <button class="action primary" type="button">运行抽取</button>
-            <button class="action" type="button" @click="handleOpenDocument">导入文档</button>
+            <button class="action primary" type="button" data-testid="action-run-pipeline" @click="handleRunPipeline">运行抽取</button>
+            <button class="action" type="button" data-testid="action-open-document" @click="handleOpenDocument">导入文档</button>
             <button class="action" type="button" @click="handleOpenOutput">打开输出目录</button>
-            <button class="action" type="button">导出</button>
+            <button class="action" type="button" data-testid="action-export" @click="handleExport">导出</button>
             <label class="llm-toggle">
               <input v-model="llmMode" type="checkbox" />
               <span>LLM 富化模式</span>
             </label>
-            <button class="action primary" type="button">装配实现规格</button>
+            <button class="action primary" type="button" data-testid="action-assemble" @click="handleAssemble">装配实现规格</button>
           </div>
         </header>
 
@@ -74,7 +74,7 @@
           </div>
 
           <div class="summary-grid">
-            <article v-for="card in summaryCards" :key="card.label" class="summary-card" :class="`tone-${card.tone}`">
+            <article v-for="card in liveSummaryCards" :key="card.label" class="summary-card" :class="`tone-${card.tone}`">
               <div class="summary-label">{{ card.label }}</div>
               <div class="summary-value">{{ card.value }}</div>
               <div v-if="card.delta !== undefined" class="summary-delta">{{ card.delta }}</div>
@@ -83,7 +83,7 @@
             <article class="summary-card distribution-card">
               <div class="summary-label">置信度分布</div>
               <div class="distribution-list">
-                <div v-for="item in confidenceDistribution" :key="item.label" class="distribution-row">
+                <div v-for="item in liveConfidenceDistribution" :key="item.label" class="distribution-row">
                   <div class="distribution-track">
                     <div class="distribution-fill" :class="`tone-${item.tone}`" :style="{ width: `${item.percent}%` }" />
                   </div>
@@ -102,7 +102,7 @@
                   <option v-for="item in typeOptions" :key="item" :value="item">{{ item }}</option>
                 </select>
                 <select v-model="statusFilter" class="filter-select">
-                  <option v-for="item in statusOptions" :key="item" :value="item">{{ item }}</option>
+                  <option v-for="item in statusOptions" :key="item" :value="item">{{ statusOptionLabel(item) }}</option>
                 </select>
                 <select v-model.number="confidenceFilter" class="filter-select">
                   <option :value="0">全部置信度</option>
@@ -177,7 +177,7 @@
             </div>
 
             <footer class="table-footer">
-              <div>显示第 1-20 条，共 128 条</div>
+              <div>{{ tableFooterText }}</div>
               <div class="pagination">
                 <span>20 条/页</span>
                 <span class="page active">1</span>
@@ -238,7 +238,7 @@
                 <ul class="bullet-list">
                   <li v-for="point in selectedRequirement.keyPoints" :key="point">{{ point }}</li>
                 </ul>
-                <div class="note-box">{{ selectedRequirement.status === '拒绝' ? '当前条目被拒绝，建议补充重写。' : selectedRequirement.status === '待专家确认' ? '建议交给专家进一步确认。' : '系统理解已抽取，可继续审查。' }}</div>
+                <div class="note-box">{{ reviewNote }}</div>
               </section>
 
               <section class="detail-section">
@@ -252,12 +252,13 @@
               <section class="detail-section">
                 <div class="section-title">审查决策</div>
                 <div class="decision-grid">
-                  <button class="decision-button accept" type="button" data-testid="decision-accepted" @click="updateStatus('已接受')">接受</button>
-                  <button class="decision-button reject" type="button" data-testid="decision-rejected" @click="updateStatus('拒绝')">拒绝</button>
-                  <button class="decision-button discuss" type="button" @click="updateStatus('讨论中')">发起讨论</button>
-                  <button class="decision-button expert" type="button" @click="updateStatus('待专家确认')">交给专家</button>
+                  <button class="decision-button accept" type="button" data-testid="decision-accepted" @click="updateStatus('accepted')">接受</button>
+                  <button class="decision-button reject" type="button" data-testid="decision-rejected" @click="updateStatus('rejected')">拒绝</button>
+                  <button class="decision-button discuss" type="button" @click="updateStatus('needs_discussion')">发起讨论</button>
+                  <button class="decision-button expert" type="button" @click="updateStatus('expert_pending')">交给专家</button>
                 </div>
                 <textarea class="comment-box" placeholder="请输入审查意见，支持 @ 提及回事，/ 快捷操作" />
+                <div v-if="apiMessage" class="api-message">{{ apiMessage }}</div>
               </section>
             </div>
           </aside>
@@ -283,15 +284,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import { NConfigProvider } from "naive-ui"
+import { RequirementApiClient } from "./api-client"
 import { confidenceDistribution, navGroups, requirements as mockRequirements, summaryCards, workflowSteps } from "./mock-data"
-import type { Requirement, ReviewStatus } from "./types"
+import { applyReviewState, mapBackendRequirement, statusDisplay as displayStatus } from "./requirement-mapper"
+import type { DistributionItem, Requirement, ReviewStatus, SummaryCard } from "./types"
 
 const activeNav = ref("审查工作区")
 const currentModule = ref(activeNav.value)
 const llmMode = ref(false)
 const currentTab = ref("需求详情")
+const apiClient = ref<RequirementApiClient | null>(null)
+const apiMessage = ref("")
+const currentInputPath = ref("")
+const currentOutputDir = ref("")
+const latestTaskSummary = ref<Record<string, unknown> | null>(null)
 
 const moduleDescriptions: Record<string, string> = {
   工作台: "总览当前任务、流程和系统状态。",
@@ -340,8 +348,8 @@ const ambiguousOnly = ref(false)
 const searchText = ref("")
 
 const detailTabs = ["需求详情", "审查记录", "关联信息", "讨论 (2)"]
-const typeOptions = ["全部", ...Array.from(new Set(requirementRows.value.map((item) => item.type)))]
-const statusOptions = ["全部", "待审查", "已接受", "拒绝", "待专家确认", "讨论中"]
+const typeOptions = computed(() => ["全部", ...Array.from(new Set(requirementRows.value.map((item) => item.type)))])
+const statusOptions: Array<ReviewStatus | "全部"> = ["全部", "candidate", "llm_reviewed", "accepted", "rejected", "expert_pending", "needs_discussion", "needs_rework", "flagged", "frozen"]
 const isReviewWorkspace = computed(() => currentModule.value === "审查工作区")
 
 const filteredRequirements = computed(() => requirementRows.value.filter((item) => {
@@ -357,6 +365,48 @@ const filteredRequirements = computed(() => requirementRows.value.filter((item) 
 }))
 
 const selectedRequirement = computed(() => requirementRows.value.find((item) => item.id === selectedRequirementId.value) ?? requirementRows.value[0])
+const tableFooterText = computed(() => {
+  const total = filteredRequirements.value.length
+  if (total === 0) return "显示第 0 条，共 0 条"
+  return `显示第 1-${total} 条，共 ${total} 条`
+})
+const reviewNote = computed(() => {
+  if (selectedRequirement.value.status === "rejected") return "当前条目被拒绝，建议补充重写。"
+  if (selectedRequirement.value.status === "expert_pending") return "建议交给专家进一步确认。"
+  if (selectedRequirement.value.status === "needs_discussion") return "当前条目正在讨论中。"
+  return "系统理解已抽取，可继续审查。"
+})
+const liveSummaryCards = computed<SummaryCard[]>(() => {
+  const total = requirementRows.value.length
+  const accepted = countStatus("accepted")
+  const expert = countStatus("expert_pending")
+  const rejected = countStatus("rejected")
+  const ambiguous = requirementRows.value.filter((item) => item.ambiguity.level !== "低").length
+  if (!apiClient.value && !latestTaskSummary.value) return summaryCards
+  return [
+    { label: "总需求", value: total, tone: "blue" },
+    { label: "待审查", value: countStatus("candidate") + countStatus("llm_reviewed"), tone: "orange" },
+    { label: "已审查", value: accepted + expert + rejected, delta: total > 0 ? `${(((accepted + expert + rejected) / total) * 100).toFixed(1)}%` : "0.0%", tone: "green" },
+    { label: "待专家确认", value: expert, tone: "purple" },
+    { label: "岐义需求", value: ambiguous, tone: "red" },
+  ]
+})
+const liveConfidenceDistribution = computed<DistributionItem[]>(() => {
+  if (!apiClient.value && !latestTaskSummary.value) return confidenceDistribution
+  const total = Math.max(1, requirementRows.value.length)
+  const high = requirementRows.value.filter((item) => item.confidence >= 0.9).length
+  const medium = requirementRows.value.filter((item) => item.confidence >= 0.7 && item.confidence < 0.9).length
+  const low = requirementRows.value.filter((item) => item.confidence < 0.7).length
+  return [
+    { label: "≥ 0.90", value: high, percent: percentage(high, total), tone: "green" },
+    { label: "0.70 - 0.90", value: medium, percent: percentage(medium, total), tone: "blue" },
+    { label: "< 0.70", value: low, percent: percentage(low, total), tone: "red" },
+  ]
+})
+
+onMounted(() => {
+  loadInitialApiSession()
+})
 
 function setModule(item: string) {
   activeNav.value = item
@@ -367,23 +417,45 @@ function selectRequirement(id: string) {
   selectedRequirementId.value = id
 }
 
-function updateStatus(status: ReviewStatus) {
+async function updateStatus(status: ReviewStatus) {
   const row = requirementRows.value.find((item) => item.id === selectedRequirementId.value)
   if (!row) return
-  row.status = status
+  apiMessage.value = ""
+  if (!apiClient.value) {
+    row.status = status
+    return
+  }
+  try {
+    const state = await apiClient.value.applyReviewAction({
+      requirementId: row.backendId,
+      status,
+      actor: "vue3-ui",
+      reason: `set ${status} from Vue3 UI`,
+    })
+    const index = requirementRows.value.findIndex((item) => item.id === row.id)
+    if (index >= 0) {
+      requirementRows.value[index] = applyReviewState(row, state)
+    }
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : "审查状态写入失败"
+  }
 }
 
 function statusDisplay(status: ReviewStatus) {
-  return status === "拒绝" ? "已拒绝" : status
+  return displayStatus(status)
+}
+
+function statusOptionLabel(status: ReviewStatus | "全部") {
+  return status === "全部" ? status : statusDisplay(status)
 }
 
 function statusToneClass(status: ReviewStatus) {
   return {
-    accept: status === "已接受",
-    reject: status === "拒绝",
-    warning: status === "待专家确认",
-    review: status === "待审查",
-    discuss: status === "讨论中",
+    accept: status === "accepted" || status === "frozen",
+    reject: status === "rejected" || status === "needs_rework",
+    warning: status === "expert_pending" || status === "flagged",
+    review: status === "candidate" || status === "llm_reviewed",
+    discuss: status === "needs_discussion",
   }
 }
 
@@ -407,12 +479,102 @@ function typeToneClass(type: string) {
   }
 }
 
-function handleOpenDocument() {
-  window.ratomizerDesktop?.openDocument()
+async function handleOpenDocument() {
+  const path = await window.ratomizerDesktop?.openDocument()
+  if (path) {
+    currentInputPath.value = path
+    apiMessage.value = `已选择文档：${path}`
+  }
 }
 
-function handleOpenOutput() {
-  window.ratomizerDesktop?.openOutput()
+async function handleOpenOutput() {
+  const session = await window.ratomizerDesktop?.openOutput()
+  if (session && typeof session === "object" && "baseUrl" in session) {
+    await loadFromSession(session)
+  }
+}
+
+async function handleRunPipeline() {
+  if (!currentInputPath.value) {
+    await handleOpenDocument()
+  }
+  if (!currentInputPath.value || !window.ratomizerDesktop?.runPipeline) return
+  apiMessage.value = "正在运行抽取与审查..."
+  const outDir = currentOutputDir.value || defaultOutputDir(currentInputPath.value)
+  const payload = await window.ratomizerDesktop.runPipeline({
+    inputPath: currentInputPath.value,
+    outDir,
+    skipReview: false,
+  })
+  latestTaskSummary.value = objectValue(payload.summary)
+  currentOutputDir.value = String(payload.out_dir || payload.outDir || outDir)
+  apiMessage.value = "抽取与审查完成"
+  await refreshAfterDesktopTask(currentOutputDir.value)
+}
+
+async function handleExport() {
+  if (!currentOutputDir.value || !window.ratomizerDesktop?.exportRequirements) return
+  const payload = await window.ratomizerDesktop.exportRequirements({ outDir: currentOutputDir.value, formats: ["csv", "md"] })
+  latestTaskSummary.value = objectValue(payload.summary)
+  apiMessage.value = `已导出：${(payload.written || []).join(", ")}`
+}
+
+async function handleAssemble() {
+  if (!currentOutputDir.value || !window.ratomizerDesktop?.assembleSpec) return
+  const payload = await window.ratomizerDesktop.assembleSpec({
+    outDir: currentOutputDir.value,
+    formats: ["xlsx", "docx", "md"],
+    enrichRoute: undefined,
+  })
+  latestTaskSummary.value = objectValue(payload.summary)
+  apiMessage.value = `已装配实现规格：${payload.count ?? 0} 条`
+}
+
+async function loadInitialApiSession() {
+  const session = await window.ratomizerDesktop?.getApiSession?.()
+  if (session) {
+    await loadFromSession(session)
+  }
+}
+
+async function loadFromSession(session: { baseUrl: string; token: string; outputDir?: string }) {
+  apiMessage.value = session.outputDir ? `已连接输出目录：${session.outputDir}` : ""
+  currentOutputDir.value = session.outputDir || currentOutputDir.value
+  const client = new RequirementApiClient({ baseUrl: session.baseUrl, token: session.token })
+  apiClient.value = client
+  try {
+    const rows = (await client.loadRequirements()).map(mapBackendRequirement)
+    if (rows.length > 0) {
+      requirementRows.value = rows
+      selectedRequirementId.value = rows[0].id
+    }
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : "需求加载失败"
+  }
+}
+
+async function refreshAfterDesktopTask(outDir: string) {
+  const session = await window.ratomizerDesktop?.startApiSession?.(outDir)
+  if (session) {
+    await loadFromSession(session)
+  }
+}
+
+function defaultOutputDir(inputPath: string) {
+  const stem = inputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") || "run"
+  return `E:\\Codex\\requirement-atomizer-runs\\${stem}`
+}
+
+function countStatus(status: ReviewStatus) {
+  return requirementRows.value.filter((item) => item.status === status).length
+}
+
+function percentage(value: number, total: number) {
+  return Number(((value / total) * 100).toFixed(1))
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 </script>
 <style scoped>

@@ -80,6 +80,7 @@ class SpecEnrichTests(unittest.TestCase):
                 self.assertIn("富化", req["notes"])
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_cache_hit_second_run_zero_calls(self) -> None:
         server, port = start_server()
@@ -92,6 +93,7 @@ class SpecEnrichTests(unittest.TestCase):
                 self.assertEqual(_Handler.calls, first)                 # 二跑无新调用
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_code_drift_rejected(self) -> None:
         _Handler.reply_description = "Clock 对象，参见 OBIS 1-1:99.9.9.255 与第 42 项。"  # 注入新 OBIS + 新数字
@@ -107,6 +109,7 @@ class SpecEnrichTests(unittest.TestCase):
                 self.assertIn("漂移", req["notes"])
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_degradation_on_server_error(self) -> None:
         _Handler.status = 500
@@ -122,6 +125,7 @@ class SpecEnrichTests(unittest.TestCase):
                 self.assertEqual(req["description"], template)          # 不崩、保留模板
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_stub_route_no_network_no_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

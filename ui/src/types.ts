@@ -1,9 +1,13 @@
-﻿export type ReviewStatus =
-  | "待审查"
-  | "已接受"
-  | "拒绝"
-  | "待专家确认"
-  | "讨论中"
+export type ReviewStatus =
+  | "candidate"
+  | "llm_reviewed"
+  | "expert_pending"
+  | "accepted"
+  | "rejected"
+  | "needs_discussion"
+  | "needs_rework"
+  | "flagged"
+  | "frozen"
 
 export type RequirementType =
   | "功能"
@@ -18,6 +22,7 @@ export type WorkflowStepStatus = "done" | "active" | "pending"
 
 export type Requirement = {
   id: string
+  backendId: string
   type: RequirementType
   object: string
   chineseText: string
