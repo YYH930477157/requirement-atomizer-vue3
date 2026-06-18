@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -51,6 +53,47 @@ class DesktopTaskTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["status_counts"]["accepted"], 1)
         atomize.assert_called_once()
         review.assert_called_once_with(out_dir.resolve())
+
+    def test_main_run_command_passes_kb_and_domain_pack_to_pipeline(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "input.docx"
+            out_dir = root / "out"
+            kb_path = root / "kb.json"
+            domain_pack = root / "domain_packs" / "dlms_cosem"
+            input_path.write_text("placeholder", encoding="utf-8")
+            kb_path.write_text("{}", encoding="utf-8")
+            domain_pack.mkdir(parents=True)
+
+            with patch("desktop_tasks.run_pipeline_task") as run_pipeline:
+                run_pipeline.return_value = {"kind": "pipeline", "out_dir": str(out_dir), "summary": {}}
+
+                with redirect_stdout(io.StringIO()):
+                    exit_code = desktop_tasks.main([
+                        "run",
+                        "--input",
+                        str(input_path),
+                        "--out",
+                        str(out_dir),
+                        "--chunk-chars",
+                        "1200",
+                        "--kb",
+                        str(kb_path),
+                        "--domain-pack",
+                        str(domain_pack),
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        run_pipeline.assert_called_once_with(
+            input_path,
+            out_dir,
+            skip_review=False,
+            chunk_chars=1200,
+            kb_paths=[kb_path],
+            domain_pack_dir=domain_pack,
+        )
 
     def test_export_task_returns_written_files(self) -> None:
         from desktop_tasks import export_task

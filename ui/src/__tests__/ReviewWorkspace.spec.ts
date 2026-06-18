@@ -111,6 +111,34 @@ describe("review workspace shell", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  it("clears mock rows when the connected API session has no requirements", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\Codex\\out\\empty",
+        }),
+        openDocument: vi.fn(),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    } as Response)
+
+    const wrapper = mount(App)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="empty-requirements"]').exists()).toBe(true)
+    })
+
+    expect(wrapper.find('[data-testid="row-REQ-2024-0001"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="detail-title"]').text()).toContain("未选择需求")
+  })
+
   it("runs pipeline, exports requirements, and assembles spec through the desktop bridge", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -164,6 +192,13 @@ describe("review workspace shell", () => {
         inputPath: "C:\\input\\Appendix 9.docx",
         outDir: expect.stringContaining("requirement-atomizer-runs"),
         skipReview: false,
+        chunkChars: 3500,
+        kbPaths: [
+          "knowledge_bases/energy_metering.json",
+          "knowledge_bases/energy_metering_protocol_layer.json",
+          "knowledge_bases/energy_metering_cosem_classes.json",
+        ],
+        domainPackDir: "domain_packs/dlms_cosem",
       })
     })
     await vi.waitFor(() => {
@@ -183,5 +218,63 @@ describe("review workspace shell", () => {
       enrichRoute: undefined,
     })
     expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it("passes the LLM enrichment route when assembling with LLM mode enabled", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\out\\abnt",
+        }),
+        runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt" }),
+        assembleSpec: vi.fn().mockResolvedValue({ kind: "assemble", count: 1, written: [] }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalled()
+    })
+
+    await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
+    await wrapper.find('[data-testid="action-assemble"]').trigger("click")
+
+    expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({
+      outDir: "E:\\out\\abnt",
+      formats: ["xlsx", "docx", "md"],
+      enrichRoute: "openai_compatible",
+    })
+  })
+
+  it("surfaces desktop task failures without leaving the UI silent", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        runPipeline: vi.fn().mockRejectedValue(new Error("backend exploded")),
+      },
+    })
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("backend exploded")
+    })
   })
 })

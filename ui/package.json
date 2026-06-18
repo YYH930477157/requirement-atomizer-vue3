@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "desktop:dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "desktop:pack": "npm run build && electron-builder --win portable",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run"
@@ -22,11 +23,33 @@
     "@vue/test-utils": "^2.4.6",
     "concurrently": "^9.1.0",
     "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "jsdom": "^25.0.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vitest": "^2.1.8",
     "vue-tsc": "^2.1.10",
     "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.requirementatomizer.desktop",
+    "productName": "Requirement Atomizer",
+    "asar": true,
+    "win": {
+      "signAndEditExecutable": false
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "..", "to": ".", "filter": ["*.py"] },
+      { "from": "../gui", "to": "gui", "filter": ["review_actions.py", "__init__.py"] },
+      { "from": "../parsers", "to": "parsers" },
+      { "from": "../domain_packs", "to": "domain_packs" },
+      { "from": "../knowledge_bases", "to": "knowledge_bases" },
+      { "from": "../llm_agents", "to": "llm_agents" }
+    ]
   }
 }

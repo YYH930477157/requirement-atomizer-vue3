@@ -50,7 +50,7 @@
             <button class="action" type="button" @click="handleOpenOutput">打开输出目录</button>
             <button class="action" type="button" data-testid="action-export" @click="handleExport">导出</button>
             <label class="llm-toggle">
-              <input v-model="llmMode" type="checkbox" />
+              <input v-model="llmMode" type="checkbox" data-testid="llm-mode-toggle" />
               <span>LLM 富化模式</span>
             </label>
             <button class="action primary" type="button" data-testid="action-assemble" @click="handleAssemble">装配实现规格</button>
@@ -143,6 +143,9 @@
                   </tr>
                 </thead>
                 <tbody>
+                  <tr v-if="filteredRequirements.length === 0" data-testid="empty-requirements">
+                    <td class="empty-cell" colspan="9">当前输出目录暂无需求</td>
+                  </tr>
                   <tr
                     v-for="row in filteredRequirements"
                     :key="row.id"
@@ -258,7 +261,7 @@
                   <button class="decision-button expert" type="button" @click="updateStatus('expert_pending')">交给专家</button>
                 </div>
                 <textarea class="comment-box" placeholder="请输入审查意见，支持 @ 提及回事，/ 快捷操作" />
-                <div v-if="apiMessage" class="api-message">{{ apiMessage }}</div>
+                <div v-if="apiMessage" class="api-message" data-testid="api-message">{{ apiMessage }}</div>
               </section>
             </div>
           </aside>
@@ -300,6 +303,32 @@ const apiMessage = ref("")
 const currentInputPath = ref("")
 const currentOutputDir = ref("")
 const latestTaskSummary = ref<Record<string, unknown> | null>(null)
+
+const abntPreset = {
+  chunkChars: 3500,
+  kbPaths: [
+    "knowledge_bases/energy_metering.json",
+    "knowledge_bases/energy_metering_protocol_layer.json",
+    "knowledge_bases/energy_metering_cosem_classes.json",
+  ],
+  domainPackDir: "domain_packs/dlms_cosem",
+}
+
+const emptyRequirement: Requirement = {
+  id: "未选择需求",
+  backendId: "",
+  type: "功能",
+  object: "-",
+  chineseText: "当前输出目录暂无需求。",
+  originalText: "请选择文档运行抽取，或打开包含 atomic_requirements.jsonl 的输出目录。",
+  sourceDocument: "-",
+  sourceLocation: "-",
+  confidence: 0,
+  risk: "低",
+  status: "candidate",
+  keyPoints: [],
+  ambiguity: { level: "低", reasons: [] },
+}
 
 const moduleDescriptions: Record<string, string> = {
   工作台: "总览当前任务、流程和系统状态。",
@@ -364,7 +393,7 @@ const filteredRequirements = computed(() => requirementRows.value.filter((item) 
   return true
 }))
 
-const selectedRequirement = computed(() => requirementRows.value.find((item) => item.id === selectedRequirementId.value) ?? requirementRows.value[0])
+const selectedRequirement = computed(() => requirementRows.value.find((item) => item.id === selectedRequirementId.value) ?? requirementRows.value[0] ?? emptyRequirement)
 const tableFooterText = computed(() => {
   const total = filteredRequirements.value.length
   if (total === 0) return "显示第 0 条，共 0 条"
@@ -495,39 +524,52 @@ async function handleOpenOutput() {
 }
 
 async function handleRunPipeline() {
-  if (!currentInputPath.value) {
-    await handleOpenDocument()
+  try {
+    if (!currentInputPath.value) {
+      await handleOpenDocument()
+    }
+    if (!currentInputPath.value || !window.ratomizerDesktop?.runPipeline) return
+    apiMessage.value = "正在运行抽取与审查..."
+    const outDir = currentOutputDir.value || defaultOutputDir(currentInputPath.value)
+    const payload = await window.ratomizerDesktop.runPipeline({
+      inputPath: currentInputPath.value,
+      outDir,
+      skipReview: false,
+      ...abntPreset,
+    })
+    latestTaskSummary.value = objectValue(payload.summary)
+    currentOutputDir.value = String(payload.out_dir || payload.outDir || outDir)
+    apiMessage.value = "抽取与审查完成"
+    await refreshAfterDesktopTask(currentOutputDir.value)
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : "抽取与审查失败"
   }
-  if (!currentInputPath.value || !window.ratomizerDesktop?.runPipeline) return
-  apiMessage.value = "正在运行抽取与审查..."
-  const outDir = currentOutputDir.value || defaultOutputDir(currentInputPath.value)
-  const payload = await window.ratomizerDesktop.runPipeline({
-    inputPath: currentInputPath.value,
-    outDir,
-    skipReview: false,
-  })
-  latestTaskSummary.value = objectValue(payload.summary)
-  currentOutputDir.value = String(payload.out_dir || payload.outDir || outDir)
-  apiMessage.value = "抽取与审查完成"
-  await refreshAfterDesktopTask(currentOutputDir.value)
 }
 
 async function handleExport() {
   if (!currentOutputDir.value || !window.ratomizerDesktop?.exportRequirements) return
-  const payload = await window.ratomizerDesktop.exportRequirements({ outDir: currentOutputDir.value, formats: ["csv", "md"] })
-  latestTaskSummary.value = objectValue(payload.summary)
-  apiMessage.value = `已导出：${(payload.written || []).join(", ")}`
+  try {
+    const payload = await window.ratomizerDesktop.exportRequirements({ outDir: currentOutputDir.value, formats: ["csv", "md"] })
+    latestTaskSummary.value = objectValue(payload.summary)
+    apiMessage.value = `已导出：${(payload.written || []).join(", ")}`
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : "导出失败"
+  }
 }
 
 async function handleAssemble() {
   if (!currentOutputDir.value || !window.ratomizerDesktop?.assembleSpec) return
-  const payload = await window.ratomizerDesktop.assembleSpec({
-    outDir: currentOutputDir.value,
-    formats: ["xlsx", "docx", "md"],
-    enrichRoute: undefined,
-  })
-  latestTaskSummary.value = objectValue(payload.summary)
-  apiMessage.value = `已装配实现规格：${payload.count ?? 0} 条`
+  try {
+    const payload = await window.ratomizerDesktop.assembleSpec({
+      outDir: currentOutputDir.value,
+      formats: ["xlsx", "docx", "md"],
+      enrichRoute: llmMode.value ? "openai_compatible" : undefined,
+    })
+    latestTaskSummary.value = objectValue(payload.summary)
+    apiMessage.value = `已装配实现规格：${payload.count ?? 0} 条`
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : "装配实现规格失败"
+  }
 }
 
 async function loadInitialApiSession() {
@@ -544,10 +586,8 @@ async function loadFromSession(session: { baseUrl: string; token: string; output
   apiClient.value = client
   try {
     const rows = (await client.loadRequirements()).map(mapBackendRequirement)
-    if (rows.length > 0) {
-      requirementRows.value = rows
-      selectedRequirementId.value = rows[0].id
-    }
+    requirementRows.value = rows
+    selectedRequirementId.value = rows[0]?.id ?? ""
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "需求加载失败"
   }
@@ -1042,6 +1082,14 @@ tbody tr.selected {
 .confidence-cell {
   font-weight: 900;
   font-variant-numeric: tabular-nums;
+}
+
+.empty-cell {
+  height: 96px;
+  text-align: center;
+  color: #64748b;
+  font-weight: 800;
+  cursor: default;
 }
 
 .row-action {

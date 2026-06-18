@@ -118,7 +118,7 @@ def build_output_summary(out_dir: Path) -> dict[str, Any]:
     }
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Requirement Atomizer desktop tasks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -141,11 +141,11 @@ def parse_args() -> argparse.Namespace:
 
     summary_parser = subparsers.add_parser("summary")
     summary_parser.add_argument("--out", type=Path, required=True)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     try:
         if args.command == "run":
             payload = run_pipeline_task(

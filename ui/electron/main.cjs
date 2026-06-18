@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { buildRunPipelineArgs, resolvePythonScriptPath } = require("./main.helpers.cjs");
 
 let mainWindow = null;
 let apiProcess = null;
@@ -73,14 +74,7 @@ ipcMain.handle("shell:open-path", async (_event, targetPath) => {
 ipcMain.handle("api:get-session", async () => apiSession);
 ipcMain.handle("api:start-session", async (_event, outDir) => startApiServer(outDir));
 ipcMain.handle("task:run-pipeline", async (_event, input) => {
-  const payload = await runDesktopTaskProcess([
-    "run",
-    "--input",
-    input.inputPath,
-    "--out",
-    input.outDir,
-    ...(input.skipReview ? ["--skip-review"] : []),
-  ]);
+  const payload = await runDesktopTaskProcess(buildRunPipelineArgs(input));
   await startApiServer(String(payload.out_dir || input.outDir));
   return payload;
 });
@@ -174,21 +168,11 @@ function waitForApiReady(child, port, token, outputDir) {
 }
 
 function resolveApiServerPath() {
-  const candidates = [
-    path.resolve(__dirname, "../..", "api_server.py"),
-    path.resolve(__dirname, "../../..", "api_server.py"),
-    path.resolve(process.resourcesPath || "", "api_server.py"),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+  return resolvePythonScriptPath("api_server.py", { dirname: __dirname, resourcesPath: process.resourcesPath, existsSync: fs.existsSync });
 }
 
 function resolveDesktopTasksPath() {
-  const candidates = [
-    path.resolve(__dirname, "../..", "desktop_tasks.py"),
-    path.resolve(__dirname, "../../..", "desktop_tasks.py"),
-    path.resolve(process.resourcesPath || "", "desktop_tasks.py"),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+  return resolvePythonScriptPath("desktop_tasks.py", { dirname: __dirname, resourcesPath: process.resourcesPath, existsSync: fs.existsSync });
 }
 
 function resolvePythonCommand() {

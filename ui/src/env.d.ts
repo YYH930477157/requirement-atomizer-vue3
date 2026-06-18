@@ -26,7 +26,14 @@ declare global {
       openPath: (targetPath: string) => Promise<void>
       getApiSession: () => Promise<RequirementAtomizerApiSession | null>
       startApiSession: (outDir: string) => Promise<RequirementAtomizerApiSession | null>
-      runPipeline: (input: { inputPath: string; outDir: string; skipReview?: boolean }) => Promise<RequirementAtomizerTaskPayload>
+      runPipeline: (input: {
+        inputPath: string
+        outDir: string
+        skipReview?: boolean
+        chunkChars?: number
+        kbPaths?: string[]
+        domainPackDir?: string
+      }) => Promise<RequirementAtomizerTaskPayload>
       exportRequirements: (input: { outDir: string; formats: string[] }) => Promise<RequirementAtomizerTaskPayload>
       assembleSpec: (input: { outDir: string; formats: string[]; enrichRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
     }

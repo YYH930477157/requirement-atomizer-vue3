@@ -16,6 +16,9 @@ export type PipelineTaskInput = {
   inputPath: string
   outDir: string
   skipReview?: boolean
+  chunkChars?: number
+  kbPaths?: string[]
+  domainPackDir?: string
 }
 
 export type ExportTaskInput = {
