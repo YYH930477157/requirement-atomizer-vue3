@@ -55,6 +55,25 @@ describe("RequirementApiClient", () => {
       }),
     })
   })
+
+  it("calls browser fetch with the window/global receiver", async () => {
+    const fetchMock = vi.fn(function (this: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError("Illegal invocation")
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => [{ stable_req_id: "SREQ-1" }],
+      })
+    }) as unknown as typeof fetch
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770",
+      token: "local-token",
+      fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadRequirements()).resolves.toEqual([{ stable_req_id: "SREQ-1" }])
+  })
 })
 
 describe("desktop bridge tasks", () => {

@@ -173,6 +173,8 @@ def parse_int(value: str, *, default: int) -> int:
 def is_allowed_origin(origin: str, allowed_origins: set[str]) -> bool:
     if not origin:
         return True
+    if origin == "file://" or origin.startswith("file://"):
+        return True
     return origin in allowed_origins
 
 

@@ -32,7 +32,7 @@ export class RequirementApiClient {
   constructor(options: RequirementApiClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "")
     this.token = options.token
-    this.fetchImpl = options.fetchImpl ?? fetch
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis)
   }
 
   async loadRequirements(limit = 5000): Promise<BackendRequirement[]> {
@@ -57,7 +57,7 @@ export class RequirementApiClient {
     if (this.token) {
       headers["X-Requirement-Atomizer-Token"] = this.token
     }
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers })
+    const response = await this.fetchImpl.call(globalThis, `${this.baseUrl}${path}`, { ...init, headers })
     if (!response.ok) {
       throw new Error(`API request failed: ${response.status}`)
     }

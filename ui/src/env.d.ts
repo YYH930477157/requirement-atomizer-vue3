@@ -22,6 +22,7 @@ declare global {
   interface Window {
     ratomizerDesktop?: {
       openDocument: () => Promise<string | null>
+      selectOutputDir: () => Promise<string | null>
       openOutput: () => Promise<RequirementAtomizerApiSession | null>
       openPath: (targetPath: string) => Promise<void>
       getApiSession: () => Promise<RequirementAtomizerApiSession | null>

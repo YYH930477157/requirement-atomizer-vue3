@@ -1,150 +1,130 @@
 <template>
   <n-config-provider>
     <div class="shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark">标</div>
-          <div class="brand-copy">
-            <div class="brand-title">标准需求抽取与审查平台</div>
-            <div class="brand-subtitle">GUI Phase 1</div>
-          </div>
-        </div>
-
-        <nav class="nav-groups">
-          <section v-for="group in navGroups" :key="group.title" class="nav-group">
-            <h3 v-if="group.title" class="nav-group-title">{{ group.title }}</h3>
-            <button
-              v-for="item in group.items"
-              :key="item"
-              class="nav-item"
-              :class="{ active: activeNav === item }"
-              :data-testid="'nav-' + item"
-              @click="setModule(item)"
-            >
-              {{ item }}
-            </button>
-          </section>
-        </nav>
-
-        <div class="sidebar-footer">
-          <div class="user-chip">
-            <div class="user-avatar">审</div>
-            <div>
-              <div class="user-name">审查员</div>
-              <div class="user-role">zhangsan</div>
-            </div>
-          </div>
-        </div>
+      <aside class="side-nav">
+        <div class="nav-mark">标</div>
+        <button
+          v-for="item in phaseNavItems"
+          :key="item.id"
+          class="nav-button"
+          :class="{ active: activeNav === item.id }"
+          :data-testid="`nav-${item.label}`"
+          type="button"
+          @click="handleNavAction(item.id)"
+        >
+          <span class="nav-icon">{{ item.icon }}</span>
+          <span>{{ item.label }}</span>
+        </button>
       </aside>
 
-      <main class="main-panel">
-        <header class="topbar">
-          <div class="title-area">
-            <div class="page-title">标准需求抽取与审查平台</div>
-            <div class="page-badge">GUI Phase 1</div>
+      <main class="main">
+        <header class="app-bar">
+          <div class="brand-line">
+            <div class="brand-text">
+              <div class="product-name">标准需求抽取与审查平台</div>
+              <div class="doc-name">{{ documentDisplayName }}</div>
+            </div>
+            <div class="phase-pill">GUI Phase 1</div>
           </div>
 
-          <div class="top-actions">
-            <button class="action primary" type="button" data-testid="action-run-pipeline" @click="handleRunPipeline">运行抽取</button>
-            <button class="action" type="button" data-testid="action-open-document" @click="handleOpenDocument">导入文档</button>
-            <button class="action" type="button" @click="handleOpenOutput">打开输出目录</button>
-            <button class="action" type="button" data-testid="action-export" @click="handleExport">导出</button>
+          <div class="app-actions">
+            <button class="button primary" type="button" data-testid="action-run-pipeline" :disabled="isRunning" @click="handleRunPipeline">
+              {{ isRunning ? "运行中" : "运行" }}
+            </button>
+            <button class="button" type="button" data-testid="action-open-document" @click="handleOpenDocument">导入文档</button>
+            <button class="button" type="button" data-testid="action-select-output-dir" @click="handleOpenOutput">选择输出目录</button>
+            <button class="button" type="button" data-testid="action-export" @click="handleExport">导出</button>
             <label class="llm-toggle">
               <input v-model="llmMode" type="checkbox" data-testid="llm-mode-toggle" />
-              <span>LLM 富化模式</span>
+              <span>LLM 富化</span>
             </label>
-            <button class="action primary" type="button" data-testid="action-assemble" @click="handleAssemble">装配实现规格</button>
+            <button class="button primary" type="button" data-testid="action-assemble" @click="handleAssemble">装配规格</button>
           </div>
         </header>
 
-        <section class="workflow-card" data-testid="workflow-stepper">
-          <div class="workflow-stepper">
-            <div
-              v-for="step in workflowSteps"
-              :key="step.id"
-              class="workflow-step"
-              :class="step.status"
-            >
-              <div class="workflow-circle">{{ step.id }}</div>
-              <div class="workflow-copy">
-                <div class="workflow-title">{{ step.title }}</div>
-                <div class="workflow-subtitle">{{ step.subtitle }}</div>
-              </div>
-            </div>
+        <section class="selection-bar">
+          <div class="selection-item">
+            <span>导入文档</span>
+            <strong data-testid="selected-input-path">{{ currentInputPath || "尚未选择文档" }}</strong>
           </div>
-
-          <div class="summary-grid">
-            <article v-for="card in liveSummaryCards" :key="card.label" class="summary-card" :class="`tone-${card.tone}`">
-              <div class="summary-label">{{ card.label }}</div>
-              <div class="summary-value">{{ card.value }}</div>
-              <div v-if="card.delta !== undefined" class="summary-delta">{{ card.delta }}</div>
-            </article>
-
-            <article class="summary-card distribution-card">
-              <div class="summary-label">置信度分布</div>
-              <div class="distribution-list">
-                <div v-for="item in liveConfidenceDistribution" :key="item.label" class="distribution-row">
-                  <div class="distribution-track">
-                    <div class="distribution-fill" :class="`tone-${item.tone}`" :style="{ width: `${item.percent}%` }" />
-                  </div>
-                  <div class="distribution-caption">{{ item.label }} {{ item.value }} ({{ item.percent }}%)</div>
-                </div>
-              </div>
-            </article>
+          <div class="selection-item">
+            <span>输出目录</span>
+            <strong data-testid="selected-output-dir">{{ currentOutputDir || "尚未选择输出目录" }}</strong>
+          </div>
+          <div class="run-meter" data-testid="run-progress">
+            <div class="run-meter-head">
+              <span>{{ runStage }}</span>
+              <strong>{{ runProgress }}%</strong>
+            </div>
+            <div class="run-meter-track">
+              <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
+            </div>
           </div>
         </section>
 
-        <section v-if="isReviewWorkspace" class="workspace-grid">
-          <section class="table-card">
-            <div class="filters-panel">
-              <div class="filter-row">
-                <select v-model="typeFilter" class="filter-select">
-                  <option v-for="item in typeOptions" :key="item" :value="item">{{ item }}</option>
-                </select>
-                <select v-model="statusFilter" class="filter-select">
-                  <option v-for="item in statusOptions" :key="item" :value="item">{{ statusOptionLabel(item) }}</option>
-                </select>
-                <select v-model.number="confidenceFilter" class="filter-select">
-                  <option :value="0">全部置信度</option>
-                  <option :value="0.7">≥ 0.70</option>
-                  <option :value="0.8">≥ 0.80</option>
-                  <option :value="0.9">≥ 0.90</option>
-                </select>
-                <label class="switch-label">
-                  <input v-model="ambiguousOnly" type="checkbox" />
-                  <span>仅看歧义</span>
-                </label>
-                <input v-model="searchText" class="search-input" type="search" placeholder="搜索需求、对象或编号" />
-              </div>
+        <section class="stat-strip" data-testid="phase1-stats">
+          <button
+            v-for="card in phaseStats"
+            :key="card.label"
+            class="stat-card"
+            :class="{ active: card.active }"
+            type="button"
+            @click="applyStatFilter(card.filter)"
+          >
+            <span>
+              <span class="stat-label">{{ card.label }}</span>
+              <strong class="stat-value">{{ card.value.toLocaleString("zh-CN") }}</strong>
+            </span>
+            <span class="stat-hint">{{ card.hint }}</span>
+          </button>
+        </section>
 
-              <div class="toolbar-row">
-                <button class="toolbar-button primary" type="button">批量审查</button>
-                <button class="toolbar-button" type="button">接受</button>
-                <button class="toolbar-button" type="button">拒绝</button>
-                <button class="toolbar-button" type="button">标记歧义</button>
-                <button class="toolbar-button" type="button">发起讨论</button>
-                <div class="toolbar-note">已选择 0 项</div>
+        <section class="filter-bar">
+          <select v-model="typeFilter" class="filter-select" aria-label="类型">
+            <option v-for="item in typeOptions" :key="item" :value="item">类型：{{ item }}</option>
+          </select>
+          <select v-model="statusFilter" class="filter-select" aria-label="状态">
+            <option v-for="item in statusOptions" :key="item" :value="item">状态：{{ statusOptionLabel(item) }}</option>
+          </select>
+          <select v-model.number="confidenceFilter" class="filter-select" aria-label="置信度">
+            <option :value="0">置信度：全部</option>
+            <option :value="0.7">置信度 ≥ 0.70</option>
+            <option :value="0.8">置信度 ≥ 0.80</option>
+            <option :value="0.9">置信度 ≥ 0.90</option>
+          </select>
+          <label class="switch-label">
+            <input v-model="ambiguousOnly" type="checkbox" />
+            <span>仅歧义</span>
+          </label>
+          <input v-model="searchText" class="search-input" type="search" placeholder="搜索需求、对象或编号" />
+        </section>
+
+        <section class="workspace">
+          <section class="table-panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">需求表格</div>
+                <div class="panel-subtitle">中文界面显示，底层状态与类型仍按后端原值处理</div>
               </div>
+              <div class="panel-subtitle">{{ tableFooterText }}</div>
             </div>
 
             <div class="table-wrap" data-testid="requirement-table">
               <table>
                 <thead>
                   <tr>
-                    <th class="check-col"></th>
-                    <th>编号</th>
-                    <th>类型</th>
-                    <th>对象</th>
-                    <th>需求（中文）</th>
-                    <th>置信度</th>
-                    <th>状态</th>
-                    <th>歧义</th>
-                    <th>操作</th>
+                    <th class="col-id">编号</th>
+                    <th class="col-type">类型</th>
+                    <th class="col-object">对象</th>
+                    <th>需求</th>
+                    <th class="col-confidence">置信度</th>
+                    <th class="col-status">状态</th>
+                    <th class="col-amb">歧义</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-if="filteredRequirements.length === 0" data-testid="empty-requirements">
-                    <td class="empty-cell" colspan="9">当前输出目录暂无需求</td>
+                    <td class="empty-cell" colspan="7">当前输出目录暂无需求</td>
                   </tr>
                   <tr
                     v-for="row in filteredRequirements"
@@ -153,134 +133,94 @@
                     :data-testid="`row-${row.id}`"
                     @click="selectRequirement(row.id)"
                   >
-                    <td class="check-col">
-                      <input type="checkbox" :checked="row.id === selectedRequirementId" @click.stop="selectRequirement(row.id)" />
-                    </td>
                     <td class="id-cell">{{ row.id }}</td>
-                    <td>
-                      <span class="type-tag" :class="typeToneClass(row.type)">{{ row.type }}</span>
-                    </td>
+                    <td><span class="type-tag" :class="typeToneClass(row.type)">{{ row.type }}</span></td>
                     <td>{{ row.object }}</td>
-                    <td>{{ row.chineseText }}</td>
-                    <td>
-                      <div class="confidence-cell">{{ row.confidence.toFixed(2) }}</div>
-                    </td>
+                    <td><div class="requirement-cell">{{ row.chineseText }}</div></td>
+                    <td><div class="confidence-cell">{{ row.confidence.toFixed(2) }}</div></td>
                     <td>
                       <span class="status-tag" :class="statusToneClass(row.status)" :data-testid="`row-status-${row.id}`">{{ statusDisplay(row.status) }}</span>
                     </td>
-                    <td>
-                      <span class="ambiguity-tag" :class="riskToneClass(row.ambiguity.level)">{{ row.ambiguity.level }}</span>
-                    </td>
-                    <td>
-                      <span class="row-action">查看</span>
-                    </td>
+                    <td><span class="ambiguity-tag" :class="riskToneClass(row.ambiguity.level)">{{ row.ambiguity.level }}</span></td>
                   </tr>
                 </tbody>
               </table>
             </div>
-
-            <footer class="table-footer">
-              <div>{{ tableFooterText }}</div>
-              <div class="pagination">
-                <span>20 条/页</span>
-                <span class="page active">1</span>
-                <span class="page">2</span>
-                <span class="page">3</span>
-                <span class="page">4</span>
-                <span class="page">5</span>
-                <span class="page">…</span>
-                <span class="page">6</span>
-              </div>
-            </footer>
           </section>
 
-          <aside class="detail-card" data-testid="detail-panel">
-            <div class="detail-head">
+          <aside class="detail-panel" data-testid="detail-panel">
+            <div class="panel-head">
               <div>
-                <div class="detail-id" data-testid="detail-title">{{ selectedRequirement.id }}</div>
-                <div class="detail-subtitle">{{ selectedRequirement.object }} · {{ selectedRequirement.sourceDocument }}</div>
+                <div class="panel-title" data-testid="detail-title">{{ selectedRequirement.id }}</div>
+                <div class="panel-subtitle">{{ selectedRequirement.object }} · {{ selectedRequirement.sourceDocument }}</div>
               </div>
               <span class="status-tag" :class="statusToneClass(selectedRequirement.status)" data-testid="detail-status">{{ statusDisplay(selectedRequirement.status) }}</span>
             </div>
 
-            <div class="detail-tabs">
-              <button v-for="tab in detailTabs" :key="tab" class="detail-tab" :class="{ active: currentTab === tab }" @click="currentTab = tab">
-                {{ tab }}
-              </button>
-            </div>
+            <div class="detail-content">
+              <section class="readonly-card">
+                <div class="readonly-head">① 原始需求</div>
+                <div class="readonly-body">{{ selectedRequirement.originalText }}</div>
+              </section>
 
-            <div class="detail-stack">
-              <section class="detail-section">
-                <div class="section-title">原始需求（来自文档）</div>
-                <div class="detail-body">
-                  <div class="meta-line">来源：{{ selectedRequirement.sourceDocument }} · 位置：{{ selectedRequirement.sourceLocation }}</div>
-                  <p>{{ selectedRequirement.originalText }}</p>
+              <section class="readonly-card">
+                <div class="readonly-head">
+                  <span>② 中文翻译</span>
+                  <button class="mini-button" type="button" disabled>翻译</button>
+                </div>
+                <div class="readonly-body muted">{{ translationText }}</div>
+              </section>
+
+              <section class="readonly-card">
+                <div class="readonly-head">③ AI 理解的需求</div>
+                <div class="readonly-body">{{ aiUnderstandingText }}</div>
+              </section>
+
+              <section class="metadata">
+                <div v-for="item in metadataRows" :key="item.key" class="metadata-item">
+                  <span class="metadata-key">{{ item.key }}</span>
+                  <strong class="metadata-value">{{ item.value }}</strong>
                 </div>
               </section>
 
-              <section class="detail-section">
-                <div class="section-title">AI 抽取结果</div>
-                <div class="detail-body">
-                  <p>{{ selectedRequirement.chineseText }}</p>
-                  <div class="metrics-grid">
-                    <div><span>类型</span><strong>{{ selectedRequirement.type }}</strong></div>
-                    <div><span>对象</span><strong>{{ selectedRequirement.object }}</strong></div>
-                    <div><span>置信度</span><strong>{{ selectedRequirement.confidence.toFixed(2) }}</strong></div>
-                  </div>
-                  <div class="progress-wrap">
-                    <div class="progress-label">置信度</div>
-                    <div class="progress-track">
-                      <div class="progress-fill" :style="{ width: `${selectedRequirement.confidence * 100}%` }" />
-                    </div>
-                  </div>
+              <section class="mini-row">
+                <div class="mini-head">溯源原文</div>
+                <div class="mini-body">{{ selectedRequirement.sourceDocument }} · {{ selectedRequirement.sourceLocation }}</div>
+              </section>
+
+              <section class="mini-row">
+                <div class="mini-head">知识库匹配</div>
+                <div class="mini-body">{{ knowledgeMatches }}</div>
+              </section>
+
+              <section class="review-box">
+                <div class="mini-head">评审</div>
+                <div class="review-body">
+                  <p>裁决：{{ statusDisplay(selectedRequirement.status) }}</p>
+                  <p>风险：{{ selectedRequirement.ambiguity.level }} 风险</p>
+                  <p>{{ reviewNote }}</p>
+                  <ul v-if="selectedRequirement.ambiguity.reasons.length > 0" class="bullet-list">
+                    <li v-for="reason in selectedRequirement.ambiguity.reasons" :key="reason">{{ reason }}</li>
+                  </ul>
                 </div>
               </section>
 
-              <section class="detail-section">
-                <div class="section-title">AI 理解与要点</div>
-                <ul class="bullet-list">
-                  <li v-for="point in selectedRequirement.keyPoints" :key="point">{{ point }}</li>
-                </ul>
-                <div class="note-box">{{ reviewNote }}</div>
-              </section>
-
-              <section class="detail-section">
-                <div class="section-title">歧义风险提示</div>
-                <span class="risk-badge" :class="riskToneClass(selectedRequirement.ambiguity.level)">{{ selectedRequirement.ambiguity.level }} 风险</span>
-                <ul class="bullet-list risk-list">
-                  <li v-for="reason in selectedRequirement.ambiguity.reasons" :key="reason">{{ reason }}</li>
-                </ul>
-              </section>
-
-              <section class="detail-section">
-                <div class="section-title">审查决策</div>
-                <div class="decision-grid">
-                  <button class="decision-button accept" type="button" data-testid="decision-accepted" @click="updateStatus('accepted')">接受</button>
-                  <button class="decision-button reject" type="button" data-testid="decision-rejected" @click="updateStatus('rejected')">拒绝</button>
-                  <button class="decision-button discuss" type="button" @click="updateStatus('needs_discussion')">发起讨论</button>
-                  <button class="decision-button expert" type="button" @click="updateStatus('expert_pending')">交给专家</button>
-                </div>
-                <textarea class="comment-box" placeholder="请输入审查意见，支持 @ 提及回事，/ 快捷操作" />
-                <div v-if="apiMessage" class="api-message" data-testid="api-message">{{ apiMessage }}</div>
-              </section>
+              <div class="detail-actions">
+                <button class="button" type="button" data-testid="decision-accepted" @click="updateStatus('accepted')">接受</button>
+                <button class="button" type="button" data-testid="decision-rejected" @click="updateStatus('rejected')">拒绝</button>
+                <button class="button" type="button" @click="updateStatus('needs_discussion')">讨论</button>
+                <button class="button" type="button" @click="updateStatus('expert_pending')">专家</button>
+              </div>
+              <textarea class="comment-box" placeholder="请输入审查意见" />
+              <div v-if="apiMessage" class="api-message" data-testid="api-message">{{ apiMessage }}</div>
             </div>
           </aside>
         </section>
 
-        <section v-else class="module-page" data-testid="module-page">
-          <div class="module-hero">
-            <div class="module-kicker">{{ currentModule }}</div>
-            <h2>{{ currentModule }}</h2>
-            <p>{{ moduleDescriptions[currentModule] }}</p>
-          </div>
-
-          <div class="module-grid">
-            <article v-for="item in modulePanels[currentModule]" :key="item.title" class="module-card">
-              <div class="module-card-title">{{ item.title }}</div>
-              <div class="module-card-body">{{ item.body }}</div>
-            </article>
-          </div>
-        </section>
+        <footer class="status-bar">
+          <span>输出目录：{{ currentOutputDir || "尚未选择输出目录" }}</span>
+          <span class="kbd-hints">快捷键：A 接受 · R 拒绝 · D 讨论 · P 固定</span>
+        </footer>
       </main>
     </div>
   </n-config-provider>
@@ -290,18 +230,29 @@
 import { computed, onMounted, ref } from "vue"
 import { NConfigProvider } from "naive-ui"
 import { RequirementApiClient } from "./api-client"
-import { confidenceDistribution, navGroups, requirements as mockRequirements, summaryCards, workflowSteps } from "./mock-data"
+import { requirements as mockRequirements } from "./mock-data"
 import { applyReviewState, mapBackendRequirement, statusDisplay as displayStatus } from "./requirement-mapper"
-import type { DistributionItem, Requirement, ReviewStatus, SummaryCard } from "./types"
+import type { Requirement, ReviewStatus } from "./types"
 
-const activeNav = ref("审查工作区")
-const currentModule = ref(activeNav.value)
+type PhaseNavId = "review" | "document" | "export" | "settings"
+type StatFilter = "all" | "accepted" | "expert_pending" | "ambiguous"
+
+const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
+  { id: "review", label: "审查", icon: "▣" },
+  { id: "document", label: "文档", icon: "▤" },
+  { id: "export", label: "导出", icon: "↧" },
+  { id: "settings", label: "设置", icon: "⚙" },
+]
+
+const activeNav = ref<PhaseNavId>("review")
 const llmMode = ref(false)
-const currentTab = ref("需求详情")
 const apiClient = ref<RequirementApiClient | null>(null)
 const apiMessage = ref("")
 const currentInputPath = ref("")
 const currentOutputDir = ref("")
+const isRunning = ref(false)
+const runProgress = ref(0)
+const runStage = ref("待运行")
 const latestTaskSummary = ref<Record<string, unknown> | null>(null)
 
 const abntPreset = {
@@ -330,36 +281,6 @@ const emptyRequirement: Requirement = {
   ambiguity: { level: "低", reasons: [] },
 }
 
-const moduleDescriptions: Record<string, string> = {
-  工作台: "总览当前任务、流程和系统状态。",
-  审查工作区: "在这里进行逐条审查、决策和讨论。",
-  专家工作区: "转交复杂或高风险需求给专家。",
-  装配规格: "把已审查需求映射到实现规格。",
-  "术语/词库": "维护标准术语与同义词。",
-  文档管理: "查看文档解析记录、版本和来源。",
-  版本管理: "跟踪输出版本与差异。",
-  审查统计: "查看审查进度、通过率和待处理数量。",
-  质量分析: "分析低置信度、歧义和风险分布。",
-  用户管理: "管理审查员和专家账号。",
-  权限管理: "控制模块与动作权限。",
-  设置中心: "调整本地工具与界面设置。",
-}
-
-const modulePanels: Record<string, Array<{ title: string; body: string }>> = {
-  工作台: [{ title: "当前任务", body: "1 份文档正在审查，2 份待处理。" }],
-  审查工作区: [{ title: "当前文档", body: "需求规格说明书_v2.1.docx" }],
-  专家工作区: [{ title: "待专家确认", body: "高风险或歧义需求会在这里集中处理。" }],
-  装配规格: [{ title: "规格映射", body: "从审查结果进入实现规格装配。" }],
-  "术语/词库": [{ title: "术语同步", body: "支持标准术语、缩写和同义词维护。" }],
-  文档管理: [{ title: "文档解析记录", body: "显示导入、抽取、审核和导出的文档链路。" }, { title: "版本列表", body: "按版本号查看文档快照与差异。" }],
-  版本管理: [{ title: "输出版本", body: "管理每次导出的审查版本。" }],
-  审查统计: [{ title: "审查进度", body: "展示待审查、已接受、待专家确认的汇总。" }],
-  质量分析: [{ title: "低置信度分布", body: "帮助快速定位需要人工复核的需求。" }, { title: "歧义热点", body: "按对象、类型和风险聚类。" }],
-  用户管理: [{ title: "用户列表", body: "审查员、专家和管理员账号。" }],
-  权限管理: [{ title: "角色权限", body: "定义可见模块和可执行操作。" }],
-  设置中心: [{ title: "界面设置", body: "配置主题、语言和桌面行为。" }],
-}
-
 const requirementRows = ref<Requirement[]>(
   mockRequirements.map((item) => ({
     ...item,
@@ -376,10 +297,8 @@ const confidenceFilter = ref(0.7)
 const ambiguousOnly = ref(false)
 const searchText = ref("")
 
-const detailTabs = ["需求详情", "审查记录", "关联信息", "讨论 (2)"]
 const typeOptions = computed(() => ["全部", ...Array.from(new Set(requirementRows.value.map((item) => item.type)))])
 const statusOptions: Array<ReviewStatus | "全部"> = ["全部", "candidate", "llm_reviewed", "accepted", "rejected", "expert_pending", "needs_discussion", "needs_rework", "flagged", "frozen"]
-const isReviewWorkspace = computed(() => currentModule.value === "审查工作区")
 
 const filteredRequirements = computed(() => requirementRows.value.filter((item) => {
   if (typeFilter.value !== "全部" && item.type !== typeFilter.value) return false
@@ -394,6 +313,14 @@ const filteredRequirements = computed(() => requirementRows.value.filter((item) 
 }))
 
 const selectedRequirement = computed(() => requirementRows.value.find((item) => item.id === selectedRequirementId.value) ?? requirementRows.value[0] ?? emptyRequirement)
+const documentDisplayName = computed(() => {
+  if (currentInputPath.value) return `当前文档：${fileName(currentInputPath.value)}`
+  if (currentOutputDir.value) return `当前输出：${currentOutputDir.value}`
+  if (selectedRequirement.value.sourceDocument && selectedRequirement.value.sourceDocument !== "-") {
+    return `当前文档：${selectedRequirement.value.sourceDocument}`
+  }
+  return "当前文档：尚未导入"
+})
 const tableFooterText = computed(() => {
   const total = filteredRequirements.value.length
   if (total === 0) return "显示第 0 条，共 0 条"
@@ -405,45 +332,63 @@ const reviewNote = computed(() => {
   if (selectedRequirement.value.status === "needs_discussion") return "当前条目正在讨论中。"
   return "系统理解已抽取，可继续审查。"
 })
-const liveSummaryCards = computed<SummaryCard[]>(() => {
+const phaseStats = computed(() => {
   const total = requirementRows.value.length
   const accepted = countStatus("accepted")
   const expert = countStatus("expert_pending")
-  const rejected = countStatus("rejected")
   const ambiguous = requirementRows.value.filter((item) => item.ambiguity.level !== "低").length
-  if (!apiClient.value && !latestTaskSummary.value) return summaryCards
   return [
-    { label: "总需求", value: total, tone: "blue" },
-    { label: "待审查", value: countStatus("candidate") + countStatus("llm_reviewed"), tone: "orange" },
-    { label: "已审查", value: accepted + expert + rejected, delta: total > 0 ? `${(((accepted + expert + rejected) / total) * 100).toFixed(1)}%` : "0.0%", tone: "green" },
-    { label: "待专家确认", value: expert, tone: "purple" },
-    { label: "岐义需求", value: ambiguous, tone: "red" },
+    { label: "总数", value: total, hint: "全部", filter: "all" as StatFilter, active: statusFilter.value === "全部" && !ambiguousOnly.value },
+    { label: "已接受", value: accepted, hint: "筛选", filter: "accepted" as StatFilter, active: statusFilter.value === "accepted" },
+    { label: "待专家", value: expert, hint: "筛选", filter: "expert_pending" as StatFilter, active: statusFilter.value === "expert_pending" },
+    { label: "歧义", value: ambiguous, hint: "筛选", filter: "ambiguous" as StatFilter, active: ambiguousOnly.value },
   ]
 })
-const liveConfidenceDistribution = computed<DistributionItem[]>(() => {
-  if (!apiClient.value && !latestTaskSummary.value) return confidenceDistribution
-  const total = Math.max(1, requirementRows.value.length)
-  const high = requirementRows.value.filter((item) => item.confidence >= 0.9).length
-  const medium = requirementRows.value.filter((item) => item.confidence >= 0.7 && item.confidence < 0.9).length
-  const low = requirementRows.value.filter((item) => item.confidence < 0.7).length
-  return [
-    { label: "≥ 0.90", value: high, percent: percentage(high, total), tone: "green" },
-    { label: "0.70 - 0.90", value: medium, percent: percentage(medium, total), tone: "blue" },
-    { label: "< 0.70", value: low, percent: percentage(low, total), tone: "red" },
-  ]
+const translationText = computed(() => "（尚未翻译，将在后续版本接入）")
+const aiUnderstandingText = computed(() => selectedRequirement.value.chineseText || "（尚未经过 AI 审查）")
+const metadataRows = computed(() => [
+  { key: "编号", value: selectedRequirement.value.id },
+  { key: "类型", value: selectedRequirement.value.type },
+  { key: "对象", value: selectedRequirement.value.object },
+  { key: "置信度", value: selectedRequirement.value.confidence.toFixed(2) },
+  { key: "歧义", value: selectedRequirement.value.ambiguity.level },
+  { key: "状态", value: statusDisplay(selectedRequirement.value.status) },
+])
+const knowledgeMatches = computed(() => {
+  const points = selectedRequirement.value.keyPoints
+  return points.length > 0 ? points.join(" · ") : "暂无知识库匹配"
 })
 
 onMounted(() => {
   loadInitialApiSession()
 })
 
-function setModule(item: string) {
+function handleNavAction(item: PhaseNavId) {
   activeNav.value = item
-  currentModule.value = item
+  if (item === "document") {
+    void handleOpenDocument()
+  } else if (item === "export") {
+    void handleExport()
+  } else if (item === "settings") {
+    apiMessage.value = "设置将在后续版本接入。"
+  }
 }
 
 function selectRequirement(id: string) {
   selectedRequirementId.value = id
+}
+
+function applyStatFilter(filter: StatFilter) {
+  if (filter === "all") {
+    statusFilter.value = "全部"
+    ambiguousOnly.value = false
+  } else if (filter === "ambiguous") {
+    statusFilter.value = "全部"
+    ambiguousOnly.value = true
+  } else {
+    statusFilter.value = filter
+    ambiguousOnly.value = false
+  }
 }
 
 async function updateStatus(status: ReviewStatus) {
@@ -513,36 +458,65 @@ async function handleOpenDocument() {
   if (path) {
     currentInputPath.value = path
     apiMessage.value = `已选择文档：${path}`
+    runStage.value = "待运行"
+    runProgress.value = 0
   }
 }
 
 async function handleOpenOutput() {
-  const session = await window.ratomizerDesktop?.openOutput()
+  if (window.ratomizerDesktop?.selectOutputDir) {
+    const path = await window.ratomizerDesktop.selectOutputDir()
+    if (path) {
+      currentOutputDir.value = path
+      apiMessage.value = `已选择输出目录：${path}`
+      runStage.value = "待运行"
+    }
+    return
+  }
+  const session = await window.ratomizerDesktop?.openOutput?.()
   if (session && typeof session === "object" && "baseUrl" in session) {
     await loadFromSession(session)
   }
 }
 
 async function handleRunPipeline() {
+  if (isRunning.value) return
   try {
     if (!currentInputPath.value) {
-      await handleOpenDocument()
+      apiMessage.value = "请先导入文档"
+      runStage.value = "等待导入文档"
+      runProgress.value = 0
+      return
     }
     if (!currentInputPath.value || !window.ratomizerDesktop?.runPipeline) return
-    apiMessage.value = "正在运行抽取与审查..."
     const outDir = currentOutputDir.value || defaultOutputDir(currentInputPath.value)
+    currentOutputDir.value = outDir
+    isRunning.value = true
+    runProgress.value = 8
+    runStage.value = "准备运行"
+    apiMessage.value = "正在运行抽取与审查..."
+    await nextUiTick()
+    runProgress.value = 18
+    runStage.value = "运行后端解析"
     const payload = await window.ratomizerDesktop.runPipeline({
       inputPath: currentInputPath.value,
       outDir,
       skipReview: false,
       ...abntPreset,
     })
+    runProgress.value = 82
+    runStage.value = "加载解析结果"
     latestTaskSummary.value = objectValue(payload.summary)
     currentOutputDir.value = String(payload.out_dir || payload.outDir || outDir)
-    apiMessage.value = "抽取与审查完成"
     await refreshAfterDesktopTask(currentOutputDir.value)
+    runProgress.value = 100
+    runStage.value = "运行完成"
+    apiMessage.value = "抽取与审查完成"
   } catch (error) {
+    runStage.value = "运行失败"
     apiMessage.value = error instanceof Error ? error.message : "抽取与审查失败"
+  } finally {
+    isRunning.value = false
   }
 }
 
@@ -590,6 +564,7 @@ async function loadFromSession(session: { baseUrl: string; token: string; output
     selectedRequirementId.value = rows[0]?.id ?? ""
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "需求加载失败"
+    throw error
   }
 }
 
@@ -609,12 +584,16 @@ function countStatus(status: ReviewStatus) {
   return requirementRows.value.filter((item) => item.status === status).length
 }
 
-function percentage(value: number, total: number) {
-  return Number(((value / total) * 100).toFixed(1))
-}
-
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function nextUiTick() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+}
+
+function fileName(path: string) {
+  return path.split(/[\\/]/).pop() || path
 }
 </script>
 <style scoped>
@@ -1406,6 +1385,752 @@ tbody tr.selected {
   }
 
   .module-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Phase 1 Chinese dashboard shell */
+.shell {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  min-height: 100vh;
+  background: #f6f7f9;
+  color: #1f2937;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+  letter-spacing: 0;
+}
+
+.side-nav {
+  background: #edf1f5;
+  border-right: 1px solid #dfe5ec;
+  padding: 18px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.nav-mark {
+  width: 44px;
+  height: 44px;
+  margin: 2px auto 10px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 22px;
+  font-weight: 900;
+  background: linear-gradient(145deg, #2563eb, #0f9f93);
+  border-radius: 12px;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.2);
+}
+
+.nav-button {
+  position: relative;
+  min-height: 72px;
+  padding: 10px 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: #4b5565;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  background: transparent;
+  cursor: pointer;
+}
+
+.nav-button:hover,
+.nav-button.active {
+  color: #2563eb;
+  background: #fff;
+  border-color: #b9cdfb;
+  box-shadow: 0 5px 14px rgba(37, 99, 235, 0.08);
+}
+
+.nav-button.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 14px;
+  width: 4px;
+  height: 44px;
+  border-radius: 0 4px 4px 0;
+  background: #2563eb;
+}
+
+.nav-icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  color: currentColor;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.main {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 78px auto 118px 72px minmax(0, 1fr) 32px;
+}
+
+.app-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 26px;
+  background: #fff;
+  border-bottom: 1px solid #dfe5ec;
+}
+
+.brand-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brand-text {
+  min-width: 0;
+}
+
+.product-name {
+  color: #172033;
+  font-size: 24px;
+  line-height: 1.2;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.doc-name {
+  margin-top: 4px;
+  color: #687386;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.phase-pill {
+  flex: 0 0 auto;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid #d3dbe6;
+  border-radius: 999px;
+  color: #526070;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.app-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.selection-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  gap: 14px;
+  padding: 12px 26px;
+  background: #fff;
+  border-bottom: 1px solid #dfe5ec;
+}
+
+.selection-item {
+  min-width: 0;
+  height: 52px;
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  border: 1px solid #dfe5ec;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 8px 12px;
+}
+
+.selection-item span,
+.run-meter-head span {
+  color: #687386;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.selection-item strong {
+  min-width: 0;
+  color: #172033;
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-meter {
+  min-width: 0;
+  height: 52px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  border: 1px solid #b9cdfb;
+  border-radius: 8px;
+  background: #eef4ff;
+  padding: 8px 12px;
+}
+
+.run-meter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.run-meter-head strong {
+  color: #2156c7;
+  font-size: 13px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-meter-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #d8e5ff;
+  overflow: hidden;
+}
+
+.run-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #2563eb;
+  transition: width 180ms ease;
+}
+
+.button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid #ccd5df;
+  border-radius: 8px;
+  color: #273344;
+  background: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.button.primary {
+  color: #fff;
+  border-color: #1d57d3;
+  background: #2563eb;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.22);
+}
+
+.button:disabled,
+.mini-button:disabled {
+  color: #97a1af;
+  background: #f2f4f7;
+  border-color: #e0e5eb;
+  box-shadow: none;
+  cursor: default;
+}
+
+.llm-toggle,
+.switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #445066;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  padding: 18px 26px;
+  background: #f6f7f9;
+  border-bottom: 1px solid #dfe5ec;
+}
+
+.stat-card {
+  min-width: 0;
+  height: 82px;
+  padding: 15px 18px;
+  border: 1px solid #dfe5ec;
+  border-radius: 10px;
+  background: #fff;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stat-card.active {
+  border-color: #b9cdfb;
+  background: linear-gradient(180deg, #fff 0%, #f5f8ff 100%);
+}
+
+.stat-label {
+  color: #687386;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.stat-value {
+  display: block;
+  margin-top: 5px;
+  color: #172033;
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.stat-hint {
+  align-self: start;
+  height: 24px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  color: #587099;
+  background: #eef4ff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 26px;
+  background: #fff;
+  border-bottom: 1px solid #dfe5ec;
+}
+
+.filter-select,
+.search-input {
+  height: 38px;
+  border: 1px solid #ccd5df;
+  border-radius: 8px;
+  background: #fff;
+  color: #273344;
+  padding: 0 11px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.filter-select {
+  min-width: 152px;
+}
+
+.search-input {
+  flex: 1 1 auto;
+  min-width: 280px;
+}
+
+.workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 430px;
+  background: #f6f7f9;
+}
+
+.table-panel,
+.detail-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: #fff;
+}
+
+.table-panel {
+  border-right: 1px solid #dfe5ec;
+}
+
+.panel-head {
+  min-height: 52px;
+  padding: 10px 20px;
+  border-bottom: 1px solid #dfe5ec;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.panel-title {
+  color: #172033;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.panel-subtitle {
+  color: #687386;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.table-wrap {
+  min-height: 0;
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+thead th {
+  height: 42px;
+  padding: 0 12px;
+  color: #536173;
+  background: #f8fafc;
+  border-bottom: 1px solid #dfe5ec;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+tbody td {
+  height: 62px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #edf1f5;
+  color: #293445;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr.selected td,
+tbody tr:hover td {
+  background: #f2f7ff;
+}
+
+.col-id {
+  width: 120px;
+}
+
+.col-type {
+  width: 150px;
+}
+
+.col-object {
+  width: 142px;
+}
+
+.col-confidence {
+  width: 96px;
+}
+
+.col-status {
+  width: 112px;
+}
+
+.col-amb {
+  width: 72px;
+}
+
+.requirement-cell {
+  line-height: 1.35;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.type-tag,
+.status-tag,
+.ambiguity-tag,
+.risk-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  max-width: 100%;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.type-tag.functional,
+.type-tag.interface,
+.type-tag.data,
+.type-tag.environment,
+.type-tag.constraint {
+  color: #2156c7;
+  background: #e7efff;
+}
+
+.type-tag.security,
+.type-tag.performance {
+  color: #6d4aff;
+  background: #f1edff;
+}
+
+.status-tag.accept {
+  color: #148451;
+  background: #eaf7f1;
+  border: 1px solid #bbf7d0;
+}
+
+.status-tag.reject {
+  color: #b42318;
+  background: #fff0ed;
+  border: 1px solid #fecaca;
+}
+
+.status-tag.warning {
+  color: #a46105;
+  background: #fff4df;
+  border: 1px solid #fed7aa;
+}
+
+.status-tag.review {
+  color: #2156c7;
+  background: #e7efff;
+  border: 1px solid #bfdbfe;
+}
+
+.status-tag.discuss {
+  color: #6d4aff;
+  background: #f1edff;
+  border: 1px solid #ddd6fe;
+}
+
+.ambiguity-tag.low,
+.risk-badge.low {
+  color: #148451;
+  background: #eaf7f1;
+}
+
+.ambiguity-tag.middle,
+.risk-badge.middle {
+  color: #a46105;
+  background: #fff4df;
+}
+
+.ambiguity-tag.high,
+.risk-badge.high {
+  color: #b42318;
+  background: #fff0ed;
+}
+
+.id-cell,
+.confidence-cell {
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.id-cell {
+  color: #2563eb;
+}
+
+.empty-cell {
+  height: 96px;
+  text-align: center;
+  color: #64748b;
+  font-weight: 800;
+  cursor: default;
+}
+
+.detail-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.detail-content {
+  min-height: 0;
+  padding: 16px 18px 18px;
+  overflow: auto;
+  display: grid;
+  grid-auto-rows: max-content;
+  gap: 12px;
+  background: #fbfcfe;
+}
+
+.readonly-card,
+.mini-row,
+.review-box {
+  border: 1px solid #dfe5ec;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.readonly-head,
+.mini-head {
+  min-height: 34px;
+  padding: 8px 12px 7px;
+  color: #293445;
+  background: #f7f9fc;
+  border-bottom: 1px solid #e7ecf2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.readonly-body,
+.mini-body,
+.review-body {
+  padding: 11px 12px 12px;
+  color: #293445;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.readonly-body.muted {
+  color: #7b8796;
+}
+
+.mini-button {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid #ccd5df;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.metadata {
+  border: 1px solid #dfe5ec;
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+}
+
+.metadata-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.metadata-key {
+  color: #687386;
+  font-weight: 800;
+}
+
+.metadata-value {
+  min-width: 0;
+  color: #273344;
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-body p {
+  margin: 0 0 6px;
+}
+
+.bullet-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  line-height: 1.6;
+}
+
+.detail-actions {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.comment-box {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid #ccd5df;
+  border-radius: 10px;
+  padding: 10px;
+  color: #1e293b;
+  font-family: inherit;
+}
+
+.api-message {
+  color: #2156c7;
+  background: #eef4ff;
+  border: 1px solid #b9cdfb;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.status-bar {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  color: #647084;
+  background: #fff;
+  border-top: 1px solid #dfe5ec;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.kbd-hints {
+  color: #8792a3;
+}
+
+@media (max-width: 1180px) {
+  .main {
+    grid-template-rows: auto auto auto auto minmax(0, 1fr) 32px;
+  }
+
+  .app-bar,
+  .filter-bar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .selection-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stat-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspace {
     grid-template-columns: minmax(0, 1fr);
   }
 }

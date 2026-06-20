@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
@@ -10,6 +10,7 @@ let apiProcess = null;
 let apiSession = null;
 
 function createWindow() {
+  Menu.setApplicationMenu(null);
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 980,
@@ -64,6 +65,13 @@ ipcMain.handle("dialog:open-output", async () => {
   return startApiServer(result.filePaths[0]);
 });
 
+ipcMain.handle("dialog:select-output-dir", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory", "createDirectory"],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 ipcMain.handle("shell:open-path", async (_event, targetPath) => {
   if (!targetPath || !apiSession || !isInside(apiSession.outputDir, targetPath)) {
     return;
@@ -109,6 +117,8 @@ async function startApiServer(outputDir) {
     String(port),
     "--allow-origin",
     "http://127.0.0.1:5173",
+    "--allow-origin",
+    "file://",
     "--token",
     token,
   ], {

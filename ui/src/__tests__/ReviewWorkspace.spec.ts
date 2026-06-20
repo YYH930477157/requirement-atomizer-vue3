@@ -1,4 +1,4 @@
-import { mount } from "@vue/test-utils"
+import { flushPromises, mount } from "@vue/test-utils"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import App from "../App.vue"
 
@@ -8,15 +8,19 @@ describe("review workspace shell", () => {
     Reflect.deleteProperty(window, "ratomizerDesktop")
   })
 
-  it("renders the enterprise review workspace structure", () => {
+  it("renders the Phase 1 Chinese dashboard structure", () => {
     const wrapper = mount(App)
 
     expect(wrapper.text()).toContain("标准需求抽取与审查平台")
-    expect(wrapper.text()).toContain("审查工作区")
-    expect(wrapper.text()).toContain("人工审查")
-    expect(wrapper.text()).toContain("需求详情")
+    expect(wrapper.text()).toContain("GUI Phase 1")
+    expect(wrapper.text()).toContain("总数")
+    expect(wrapper.text()).toContain("已接受")
+    expect(wrapper.text()).toContain("待专家")
+    expect(wrapper.text()).toContain("① 原始需求")
+    expect(wrapper.text()).toContain("② 中文翻译")
+    expect(wrapper.text()).toContain("③ AI 理解的需求")
     expect(wrapper.text()).toContain("REQ-2024-0001")
-    expect(wrapper.find('[data-testid="workflow-stepper"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="phase1-stats"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="requirement-table"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-panel"]').exists()).toBe(true)
   })
@@ -33,16 +37,23 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="row-status-REQ-2024-0003"]').text()).toContain("已拒绝")
   })
 
-  it("switches sidebar modules instead of only highlighting navigation", async () => {
+  it("uses the Phase 1 side navigation for document, export, and settings actions", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        exportRequirements: vi.fn(),
+      },
+    })
     const wrapper = mount(App)
 
-    await wrapper.find('[data-testid="nav-文档管理"]').trigger("click")
-    expect(wrapper.find('[data-testid="module-page"]').text()).toContain("文档管理")
-    expect(wrapper.find('[data-testid="module-page"]').text()).toContain("文档解析记录")
+    await wrapper.find('[data-testid="nav-文档"]').trigger("click")
+    expect(window.ratomizerDesktop?.openDocument).toHaveBeenCalled()
+    expect(wrapper.text()).toContain("当前文档：Appendix 9.docx")
 
-    await wrapper.find('[data-testid="nav-质量分析"]').trigger("click")
-    expect(wrapper.find('[data-testid="module-page"]').text()).toContain("质量分析")
-    expect(wrapper.find('[data-testid="module-page"]').text()).toContain("低置信度分布")
+    await wrapper.find('[data-testid="nav-设置"]').trigger("click")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("设置将在后续版本接入")
   })
 
   it("loads real requirements from the desktop API session and persists decisions", async () => {
@@ -145,6 +156,7 @@ describe("review workspace shell", () => {
       value: {
         getApiSession: vi.fn().mockResolvedValue(null),
         openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
         openOutput: vi.fn(),
         openPath: vi.fn(),
         startApiSession: vi.fn().mockResolvedValue({
@@ -186,11 +198,12 @@ describe("review workspace shell", () => {
     const wrapper = mount(App)
 
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
     await vi.waitFor(() => {
       expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalledWith({
         inputPath: "C:\\input\\Appendix 9.docx",
-        outDir: expect.stringContaining("requirement-atomizer-runs"),
+        outDir: "E:\\out\\abnt",
         skipReview: false,
         chunkChars: 3500,
         kbPaths: [
@@ -204,6 +217,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="row-SREQ-RUN-1"]').exists()).toBe(true)
     })
+    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
 
     await wrapper.find('[data-testid="action-export"]').trigger("click")
     expect(window.ratomizerDesktop?.exportRequirements).toHaveBeenCalledWith({
@@ -218,6 +232,108 @@ describe("review workspace shell", () => {
       enrichRoute: undefined,
     })
     expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it("shows selected paths and waits for Run before parsing", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        runPipeline: vi.fn(),
+      },
+    })
+
+    const wrapper = mount(App)
+
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    expect(wrapper.find('[data-testid="selected-input-path"]').text()).toContain("C:\\input\\Appendix 9.docx")
+    expect(window.ratomizerDesktop?.runPipeline).not.toHaveBeenCalled()
+
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    expect(wrapper.find('[data-testid="selected-output-dir"]').text()).toContain("E:\\out\\abnt")
+    expect(window.ratomizerDesktop?.runPipeline).not.toHaveBeenCalled()
+  })
+
+  it("shows percentage progress while a pipeline run is active", async () => {
+    let resolveRun!: (payload: { kind: string; out_dir: string }) => void
+    const runPromise = new Promise<{ kind: string; out_dir: string }>((resolve) => {
+      resolveRun = resolve
+    })
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\out\\abnt",
+        }),
+        runPipeline: vi.fn().mockReturnValue(runPromise),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+
+    void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("%")
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("运行")
+    })
+
+    resolveRun({ kind: "pipeline", out_dir: "E:\\out\\abnt" })
+    await flushPromises()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
+    })
+  })
+
+  it("keeps the API loading error visible when results cannot be loaded after a run", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\out\\abnt",
+        }),
+        runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt" }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: "Origin not allowed" }),
+    } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("API request failed: 403")
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("运行失败")
+    })
+    expect(wrapper.find('[data-testid="api-message"]').text()).not.toContain("抽取与审查完成")
   })
 
   it("passes the LLM enrichment route when assembling with LLM mode enabled", async () => {
@@ -272,6 +388,7 @@ describe("review workspace shell", () => {
     })
 
     const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("backend exploded")

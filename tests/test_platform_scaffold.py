@@ -356,6 +356,7 @@ class PlatformScaffoldTests(unittest.TestCase):
 
         self.assertTrue(is_allowed_origin("http://127.0.0.1:8770", allowed))
         self.assertTrue(is_allowed_origin("", allowed))
+        self.assertTrue(is_allowed_origin("file://", allowed))
         self.assertFalse(is_allowed_origin("https://example.com", allowed))
 
     def test_api_token_accepts_header_and_rejects_query_value(self) -> None:
