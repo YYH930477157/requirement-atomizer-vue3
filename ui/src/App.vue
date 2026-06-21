@@ -56,6 +56,7 @@
               <span>{{ runStage }}</span>
               <strong>{{ runProgress }}%</strong>
             </div>
+            <div class="run-meter-detail" data-testid="run-progress-detail">{{ runProgressDetail }}</div>
             <div class="run-meter-track">
               <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
             </div>
@@ -80,8 +81,14 @@
         </section>
 
         <section class="filter-bar">
+          <select v-model="moduleFilter" class="filter-select" aria-label="模块">
+            <option v-for="item in moduleOptions" :key="item" :value="item">模块：{{ item }}</option>
+          </select>
+          <select v-model="categoryFilter" class="filter-select" aria-label="细分类">
+            <option v-for="item in categoryOptions" :key="item" :value="item">细分类：{{ item }}</option>
+          </select>
           <select v-model="typeFilter" class="filter-select" aria-label="类型">
-            <option v-for="item in typeOptions" :key="item" :value="item">类型：{{ item }}</option>
+            <option v-for="item in typeOptions" :key="item" :value="item">大类：{{ item }}</option>
           </select>
           <select v-model="statusFilter" class="filter-select" aria-label="状态">
             <option v-for="item in statusOptions" :key="item" :value="item">状态：{{ statusOptionLabel(item) }}</option>
@@ -99,7 +106,7 @@
           <input v-model="searchText" class="search-input" type="search" placeholder="搜索需求、对象或编号" />
         </section>
 
-        <section class="workspace">
+        <section class="workspace right-detail-workspace" data-testid="workspace">
           <section class="table-panel">
             <div class="panel-head">
               <div>
@@ -109,12 +116,14 @@
               <div class="panel-subtitle">{{ tableFooterText }}</div>
             </div>
 
-            <div class="table-wrap" data-testid="requirement-table">
+            <div class="table-wrap independent-table-scroll" data-testid="requirement-table">
               <table>
                 <thead>
                   <tr>
                     <th class="col-id">编号</th>
-                    <th class="col-type">类型</th>
+                    <th class="col-module">模块</th>
+                    <th class="col-category">细分类</th>
+                    <th class="col-type">大类</th>
                     <th class="col-object">对象</th>
                     <th>需求</th>
                     <th class="col-confidence">置信度</th>
@@ -124,7 +133,7 @@
                 </thead>
                 <tbody>
                   <tr v-if="filteredRequirements.length === 0" data-testid="empty-requirements">
-                    <td class="empty-cell" colspan="7">当前输出目录暂无需求</td>
+                    <td class="empty-cell" colspan="9">当前输出目录暂无需求</td>
                   </tr>
                   <tr
                     v-for="row in filteredRequirements"
@@ -134,6 +143,8 @@
                     @click="selectRequirement(row.id)"
                   >
                     <td class="id-cell">{{ row.id }}</td>
+                    <td><span class="module-chip">{{ row.module || "未分模块" }}</span></td>
+                    <td><span class="category-chip" :title="row.categoryCode">{{ row.category || row.categoryCode || "未分类" }}</span></td>
                     <td><span class="type-tag" :class="typeToneClass(row.type)">{{ row.type }}</span></td>
                     <td>{{ row.object }}</td>
                     <td><div class="requirement-cell">{{ row.chineseText }}</div></td>
@@ -157,7 +168,7 @@
               <span class="status-tag" :class="statusToneClass(selectedRequirement.status)" data-testid="detail-status">{{ statusDisplay(selectedRequirement.status) }}</span>
             </div>
 
-            <div class="detail-content">
+            <div class="detail-content independent-detail-scroll" data-testid="detail-scroll">
               <section class="readonly-card">
                 <div class="readonly-head">① 原始需求</div>
                 <div class="readonly-body">{{ selectedRequirement.originalText }}</div>
@@ -166,14 +177,22 @@
               <section class="readonly-card">
                 <div class="readonly-head">
                   <span>② 中文翻译</span>
-                  <button class="mini-button" type="button" disabled>翻译</button>
+                  <button
+                    class="mini-button"
+                    type="button"
+                    data-testid="action-translate"
+                    :disabled="isTranslating || selectedRequirement.id === emptyRequirement.id"
+                    @click="handleTranslate"
+                  >
+                    {{ isTranslating ? "翻译中" : "翻译" }}
+                  </button>
                 </div>
-                <div class="readonly-body muted">{{ translationText }}</div>
+                <div class="readonly-body muted" data-testid="translation-text">{{ translationText }}</div>
               </section>
 
               <section class="readonly-card">
-                <div class="readonly-head">③ AI 理解的需求</div>
-                <div class="readonly-body">{{ aiUnderstandingText }}</div>
+                <div class="readonly-head">③ 原子化需求</div>
+                <div class="readonly-body">{{ atomizedRequirementText }}</div>
               </section>
 
               <section class="metadata">
@@ -191,6 +210,16 @@
               <section class="mini-row">
                 <div class="mini-head">知识库匹配</div>
                 <div class="mini-body">{{ knowledgeMatches }}</div>
+              </section>
+
+              <section class="mini-row">
+                <div class="mini-head">领域标签</div>
+                <div class="mini-body">{{ domainTagText }}</div>
+              </section>
+
+              <section class="mini-row">
+                <div class="mini-head">来源章节</div>
+                <div class="mini-body">{{ sectionPathText }}</div>
               </section>
 
               <section class="review-box">
@@ -222,6 +251,116 @@
           <span class="kbd-hints">快捷键：A 接受 · R 拒绝 · D 讨论 · P 固定</span>
         </footer>
       </main>
+
+      <div
+        v-if="showSettingsPanel"
+        class="settings-overlay"
+        data-testid="settings-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="设置"
+        @click.self="closeSettingsPanel"
+      >
+        <section class="settings-dialog">
+          <header class="settings-head">
+            <div>
+              <div class="settings-title">设置</div>
+              <div class="settings-subtitle">本地运行、LLM 富化和 ABNT 预设</div>
+            </div>
+            <button class="icon-button" type="button" data-testid="settings-close" aria-label="关闭设置" @click="closeSettingsPanel">×</button>
+          </header>
+
+          <div class="settings-body">
+            <section class="settings-section">
+              <div class="settings-section-title">运行模式与模型 API</div>
+              <label class="settings-toggle">
+                <input v-model="llmMode" type="checkbox" data-testid="settings-llm-mode" />
+                <span>
+                  <strong>LLM 富化</strong>
+                  <small>开启后，翻译、装配规格富化和后续 LLM 审查都使用 openai_compatible 配置。</small>
+                </span>
+              </label>
+              <div class="settings-form-grid">
+                <label class="settings-field wide">
+                  <span>Base URL</span>
+                  <input v-model="llmSettings.baseUrl" data-testid="settings-base-url" type="url" placeholder="http://127.0.0.1:11434/v1" />
+                </label>
+                <label class="settings-field">
+                  <span>模型名</span>
+                  <input v-model="llmSettings.model" data-testid="settings-model" type="text" placeholder="qwen2.5:14b" />
+                </label>
+                <label class="settings-field">
+                  <span>API Key 环境变量</span>
+                  <input v-model="llmSettings.apiKeyEnv" data-testid="settings-api-key-env" type="text" placeholder="RATOMIZER_LLM_API_KEY" />
+                </label>
+                <label class="settings-field wide">
+                  <span>API Key</span>
+                  <input v-model="llmApiKey" data-testid="settings-api-key" type="password" placeholder="仅本次会话生效，不写入配置文件" />
+                </label>
+                <label class="settings-field">
+                  <span>Temperature</span>
+                  <input v-model.number="llmSettings.temperature" data-testid="settings-temperature" type="number" min="0" max="2" step="0.1" />
+                </label>
+                <label class="settings-field">
+                  <span>Max Tokens</span>
+                  <input v-model.number="llmSettings.maxTokens" data-testid="settings-max-tokens" type="number" min="1" step="1" />
+                </label>
+                <label class="settings-field">
+                  <span>超时（秒）</span>
+                  <input v-model.number="llmSettings.timeoutS" data-testid="settings-timeout" type="number" min="1" step="1" />
+                </label>
+                <label class="settings-field">
+                  <span>重试次数</span>
+                  <input v-model.number="llmSettings.maxRetries" data-testid="settings-max-retries" type="number" min="0" step="1" />
+                </label>
+              </div>
+              <div class="settings-actions">
+                <button class="button primary" type="button" data-testid="settings-save" :disabled="isSavingSettings" @click="handleSaveLlmSettings">
+                  {{ isSavingSettings ? "保存中" : "保存配置" }}
+                </button>
+                <button class="button" type="button" data-testid="settings-test" :disabled="isTestingSettings" @click="handleTestLlmConnection">
+                  {{ isTestingSettings ? "测试中" : "测试连接" }}
+                </button>
+                <span class="settings-status" data-testid="settings-status">{{ settingsStatus }}</span>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <div class="settings-section-title">当前会话</div>
+              <div class="settings-row">
+                <span>API 连接</span>
+                <strong>{{ apiClient ? "已连接" : "未连接" }}</strong>
+              </div>
+              <div class="settings-row">
+                <span>导入文档</span>
+                <strong>{{ currentInputPath || "尚未选择" }}</strong>
+              </div>
+              <div class="settings-row">
+                <span>输出目录</span>
+                <strong>{{ currentOutputDir || "尚未选择" }}</strong>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <div class="settings-section-title">ABNT 默认预设</div>
+              <div class="settings-row">
+                <span>切片长度</span>
+                <strong>{{ abntPreset.chunkChars.toLocaleString("zh-CN") }} 字符</strong>
+              </div>
+              <div class="settings-row">
+                <span>领域包</span>
+                <strong>{{ abntPreset.domainPackDir }}</strong>
+              </div>
+              <div class="settings-kb-list">
+                <span>知识库</span>
+                <ul>
+                  <li v-for="path in abntPreset.kbPaths" :key="path">{{ path }}</li>
+                </ul>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
     </div>
   </n-config-provider>
 </template>
@@ -236,6 +375,16 @@ import type { Requirement, ReviewStatus } from "./types"
 
 type PhaseNavId = "review" | "document" | "export" | "settings"
 type StatFilter = "all" | "accepted" | "expert_pending" | "ambiguous"
+type LlmSettings = {
+  enabled: boolean
+  baseUrl: string
+  model: string
+  apiKeyEnv: string
+  temperature: number
+  maxTokens: number
+  timeoutS: number
+  maxRetries: number
+}
 
 const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
   { id: "review", label: "审查", icon: "▣" },
@@ -251,8 +400,26 @@ const apiMessage = ref("")
 const currentInputPath = ref("")
 const currentOutputDir = ref("")
 const isRunning = ref(false)
+const isTranslating = ref(false)
+const showSettingsPanel = ref(false)
+const isSavingSettings = ref(false)
+const isTestingSettings = ref(false)
+const translationError = ref("")
+const settingsStatus = ref("")
+const llmApiKey = ref("")
+const llmSettings = ref<LlmSettings>({
+  enabled: false,
+  baseUrl: "http://127.0.0.1:11434/v1",
+  model: "qwen2.5:14b",
+  apiKeyEnv: "RATOMIZER_LLM_API_KEY",
+  temperature: 0,
+  maxTokens: 1024,
+  timeoutS: 60,
+  maxRetries: 3,
+})
 const runProgress = ref(0)
 const runStage = ref("待运行")
+const runProgressDetail = ref("等待开始")
 const latestTaskSummary = ref<Record<string, unknown> | null>(null)
 
 const abntPreset = {
@@ -269,11 +436,18 @@ const emptyRequirement: Requirement = {
   id: "未选择需求",
   backendId: "",
   type: "功能",
+  module: "未分模块",
+  moduleCode: "",
+  category: "未分类",
+  categoryCode: "",
   object: "-",
   chineseText: "当前输出目录暂无需求。",
   originalText: "请选择文档运行抽取，或打开包含 atomic_requirements.jsonl 的输出目录。",
+  translation: "",
   sourceDocument: "-",
   sourceLocation: "-",
+  domainTags: [],
+  sectionPath: [],
   confidence: 0,
   risk: "低",
   status: "candidate",
@@ -292,21 +466,39 @@ const requirementRows = ref<Requirement[]>(
 const selectedRequirementId = ref(requirementRows.value[1].id)
 
 const typeFilter = ref("全部")
+const moduleFilter = ref("全部")
+const categoryFilter = ref("全部")
 const statusFilter = ref("全部")
 const confidenceFilter = ref(0.7)
 const ambiguousOnly = ref(false)
 const searchText = ref("")
 
 const typeOptions = computed(() => ["全部", ...Array.from(new Set(requirementRows.value.map((item) => item.type)))])
+const moduleOptions = computed(() => ["全部", ...Array.from(new Set(requirementRows.value.map((item) => item.module || "未分模块"))).sort()])
+const categoryOptions = computed(() => ["全部", ...Array.from(new Set(requirementRows.value.map((item) => item.category || item.categoryCode || "未分类"))).sort()])
 const statusOptions: Array<ReviewStatus | "全部"> = ["全部", "candidate", "llm_reviewed", "accepted", "rejected", "expert_pending", "needs_discussion", "needs_rework", "flagged", "frozen"]
 
 const filteredRequirements = computed(() => requirementRows.value.filter((item) => {
+  if (moduleFilter.value !== "全部" && (item.module || "未分模块") !== moduleFilter.value) return false
+  if (categoryFilter.value !== "全部" && (item.category || item.categoryCode || "未分类") !== categoryFilter.value) return false
   if (typeFilter.value !== "全部" && item.type !== typeFilter.value) return false
   if (statusFilter.value !== "全部" && item.status !== statusFilter.value) return false
   if (item.confidence < confidenceFilter.value) return false
   if (ambiguousOnly.value && item.ambiguity.level === "低") return false
   if (searchText.value) {
-    const haystack = [item.id, item.type, item.object, item.chineseText, item.originalText].join(" ").toLowerCase()
+    const haystack = [
+      item.id,
+      item.type,
+      item.module,
+      item.moduleCode,
+      item.category,
+      item.categoryCode,
+      item.object,
+      item.chineseText,
+      item.originalText,
+      ...(item.domainTags || []),
+      ...(item.sectionPath || []),
+    ].join(" ").toLowerCase()
     if (!haystack.includes(searchText.value.toLowerCase())) return false
   }
   return true
@@ -344,16 +536,31 @@ const phaseStats = computed(() => {
     { label: "歧义", value: ambiguous, hint: "筛选", filter: "ambiguous" as StatFilter, active: ambiguousOnly.value },
   ]
 })
-const translationText = computed(() => "（尚未翻译，将在后续版本接入）")
-const aiUnderstandingText = computed(() => selectedRequirement.value.chineseText || "（尚未经过 AI 审查）")
+const translationText = computed(() => {
+  if (translationError.value) return translationError.value
+  if (selectedRequirement.value.translation) return selectedRequirement.value.translation
+  return "（尚未翻译，点击右上角“翻译”生成中文译文）"
+})
+const atomizedRequirementText = computed(() => selectedRequirement.value.chineseText || "（尚未生成原子化需求）")
 const metadataRows = computed(() => [
   { key: "编号", value: selectedRequirement.value.id },
-  { key: "类型", value: selectedRequirement.value.type },
+  { key: "模块", value: selectedRequirement.value.module || "未分模块" },
+  { key: "细分类", value: selectedRequirement.value.category || selectedRequirement.value.categoryCode || "未分类" },
+  { key: "原始分类", value: selectedRequirement.value.categoryCode || "-" },
+  { key: "大类", value: selectedRequirement.value.type },
   { key: "对象", value: selectedRequirement.value.object },
   { key: "置信度", value: selectedRequirement.value.confidence.toFixed(2) },
   { key: "歧义", value: selectedRequirement.value.ambiguity.level },
   { key: "状态", value: statusDisplay(selectedRequirement.value.status) },
 ])
+const domainTagText = computed(() => {
+  const tags = selectedRequirement.value.domainTags || []
+  return tags.length > 0 ? tags.join(" · ") : "暂无领域标签"
+})
+const sectionPathText = computed(() => {
+  const path = selectedRequirement.value.sectionPath || []
+  return path.length > 0 ? path.join(" > ") : "暂无章节路径"
+})
 const knowledgeMatches = computed(() => {
   const points = selectedRequirement.value.keyPoints
   return points.length > 0 ? points.join(" · ") : "暂无知识库匹配"
@@ -365,17 +572,109 @@ onMounted(() => {
 
 function handleNavAction(item: PhaseNavId) {
   activeNav.value = item
-  if (item === "document") {
+    if (item === "document") {
     void handleOpenDocument()
   } else if (item === "export") {
     void handleExport()
   } else if (item === "settings") {
-    apiMessage.value = "设置将在后续版本接入。"
+    showSettingsPanel.value = true
+    void loadLlmSettings()
   }
+}
+
+function closeSettingsPanel() {
+  showSettingsPanel.value = false
+  if (activeNav.value === "settings") {
+    activeNav.value = "review"
+  }
+}
+
+async function loadLlmSettings() {
+  const saved = await window.ratomizerDesktop?.getLlmSettings?.()
+  if (saved) {
+    applyLlmSettings(saved)
+    settingsStatus.value = "已加载本机 API 设置"
+  }
+}
+
+async function handleSaveLlmSettings() {
+  isSavingSettings.value = true
+  settingsStatus.value = ""
+  try {
+    const saved = await window.ratomizerDesktop?.saveLlmSettings?.(buildLlmSettingsPayload(true))
+    if (saved) {
+      applyLlmSettings(saved)
+    }
+    llmApiKey.value = ""
+    settingsStatus.value = "配置已保存，API Key 已写入当前会话环境变量"
+  } catch (error) {
+    settingsStatus.value = error instanceof Error ? error.message : "保存配置失败"
+  } finally {
+    isSavingSettings.value = false
+  }
+}
+
+async function handleTestLlmConnection() {
+  isTestingSettings.value = true
+  settingsStatus.value = ""
+  try {
+    const payload = await window.ratomizerDesktop?.testLlmConnection?.(buildLlmSettingsPayload(false))
+    settingsStatus.value = payload?.message || "测试完成"
+  } catch (error) {
+    settingsStatus.value = error instanceof Error ? error.message : "测试连接失败"
+  } finally {
+    isTestingSettings.value = false
+  }
+}
+
+function buildLlmSettingsPayload(includeApiKey: boolean): LlmSettings & { apiKey: string } {
+  const payload = normalizeUiLlmSettings({
+    ...llmSettings.value,
+    enabled: llmMode.value,
+  })
+  return {
+    ...payload,
+    apiKey: includeApiKey ? llmApiKey.value.trim() : "",
+  }
+}
+
+function applyLlmSettings(payload: Partial<LlmSettings>) {
+  const normalized = normalizeUiLlmSettings(payload)
+  llmSettings.value = normalized
+  llmMode.value = normalized.enabled
+}
+
+function normalizeUiLlmSettings(payload: Partial<LlmSettings>): LlmSettings {
+  return {
+    enabled: Boolean(payload.enabled),
+    baseUrl: stringOr(payload.baseUrl, "http://127.0.0.1:11434/v1"),
+    model: stringOr(payload.model, "qwen2.5:14b"),
+    apiKeyEnv: stringOr(payload.apiKeyEnv, "RATOMIZER_LLM_API_KEY"),
+    temperature: numberOr(payload.temperature, 0),
+    maxTokens: integerOr(payload.maxTokens, 1024),
+    timeoutS: numberOr(payload.timeoutS, 60),
+    maxRetries: integerOr(payload.maxRetries, 3),
+  }
+}
+
+function stringOr(value: unknown, fallback: string) {
+  const text = typeof value === "string" ? value.trim() : ""
+  return text || fallback
+}
+
+function numberOr(value: unknown, fallback: number) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function integerOr(value: unknown, fallback: number) {
+  const parsed = Number.parseInt(String(value), 10)
+  return Number.isFinite(parsed) ? parsed : fallback
 }
 
 function selectRequirement(id: string) {
   selectedRequirementId.value = id
+  translationError.value = ""
 }
 
 function applyStatFilter(filter: StatFilter) {
@@ -412,6 +711,42 @@ async function updateStatus(status: ReviewStatus) {
     }
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "审查状态写入失败"
+  }
+}
+
+async function handleTranslate() {
+  const row = selectedRequirement.value
+  if (!apiClient.value) {
+    translationError.value = "请先连接输出目录后再翻译。"
+    return
+  }
+  const sourceText = row.chineseText && row.chineseText !== "-" ? row.chineseText : row.originalText
+  if (!sourceText || sourceText === "-") {
+    translationError.value = "当前条目没有可翻译文本。"
+    return
+  }
+  isTranslating.value = true
+  translationError.value = ""
+  apiMessage.value = ""
+  try {
+    const payload = await apiClient.value.translateRequirement({
+      requirementId: row.backendId || row.id,
+      text: sourceText,
+      context: row.object,
+    })
+    const index = requirementRows.value.findIndex((item) => item.id === row.id)
+    if (index >= 0) {
+      requirementRows.value[index] = {
+        ...requirementRows.value[index],
+        translation: payload.translation,
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "翻译失败"
+    translationError.value = message
+    apiMessage.value = message
+  } finally {
+    isTranslating.value = false
   }
 }
 
@@ -481,43 +816,64 @@ async function handleOpenOutput() {
 
 async function handleRunPipeline() {
   if (isRunning.value) return
+  let stopProgress: (() => void) | undefined
   try {
     if (!currentInputPath.value) {
       apiMessage.value = "请先导入文档"
       runStage.value = "等待导入文档"
       runProgress.value = 0
+      runProgressDetail.value = "尚未选择导入文档"
       return
     }
     if (!currentInputPath.value || !window.ratomizerDesktop?.runPipeline) return
+    stopProgress = window.ratomizerDesktop.onTaskProgress?.(handleTaskProgress)
     const outDir = currentOutputDir.value || defaultOutputDir(currentInputPath.value)
     currentOutputDir.value = outDir
     isRunning.value = true
     runProgress.value = 8
     runStage.value = "准备运行"
+    runProgressDetail.value = "准备启动本地任务"
     apiMessage.value = "正在运行抽取与审查..."
     await nextUiTick()
     runProgress.value = 18
     runStage.value = "运行后端解析"
+    runProgressDetail.value = "正在抽取原子化需求"
     const payload = await window.ratomizerDesktop.runPipeline({
       inputPath: currentInputPath.value,
       outDir,
       skipReview: false,
+      llmRoute: llmMode.value ? "openai_compatible" : undefined,
+      reviewScope: llmMode.value ? "targeted" : undefined,
       ...abntPreset,
     })
     runProgress.value = 82
     runStage.value = "加载解析结果"
+    runProgressDetail.value = "正在加载结果文件"
     latestTaskSummary.value = objectValue(payload.summary)
     currentOutputDir.value = String(payload.out_dir || payload.outDir || outDir)
     await refreshAfterDesktopTask(currentOutputDir.value)
     runProgress.value = 100
     runStage.value = "运行完成"
+    runProgressDetail.value = "全部阶段完成"
     apiMessage.value = "抽取与审查完成"
   } catch (error) {
     runStage.value = "运行失败"
+    runProgressDetail.value = "请查看错误信息"
     apiMessage.value = error instanceof Error ? error.message : "抽取与审查失败"
   } finally {
+    stopProgress?.()
     isRunning.value = false
   }
+}
+
+function handleTaskProgress(event: { stage: string; completed?: number; total?: number; percent?: number; model?: string }) {
+  if (event.stage !== "llm_review") return
+  const completed = Math.max(0, Number(event.completed || 0))
+  const total = Math.max(0, Number(event.total || 0))
+  const percent = Number.isFinite(Number(event.percent)) ? Math.max(0, Math.min(100, Number(event.percent))) : 0
+  runStage.value = total ? `AI 审查 ${completed}/${total}` : "AI 审查"
+  runProgress.value = percent
+  runProgressDetail.value = event.model ? `模型：${event.model}` : "模型正在逐条审查需求"
 }
 
 async function handleExport() {
@@ -1393,7 +1749,8 @@ tbody tr.selected {
 .shell {
   display: grid;
   grid-template-columns: 108px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: #f6f7f9;
   color: #1f2937;
   font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
@@ -1401,6 +1758,8 @@ tbody tr.selected {
 }
 
 .side-nav {
+  min-height: 0;
+  overflow: auto;
   background: #edf1f5;
   border-right: 1px solid #dfe5ec;
   padding: 18px 12px;
@@ -1470,9 +1829,12 @@ tbody tr.selected {
 }
 
 .main {
+  height: 100vh;
   min-width: 0;
+  min-height: 0;
   display: grid;
   grid-template-rows: 78px auto 118px 72px minmax(0, 1fr) 32px;
+  overflow: hidden;
 }
 
 .app-bar {
@@ -1575,10 +1937,10 @@ tbody tr.selected {
 
 .run-meter {
   min-width: 0;
-  height: 52px;
+  min-height: 64px;
   display: grid;
   align-content: center;
-  gap: 8px;
+  gap: 5px;
   border: 1px solid #b9cdfb;
   border-radius: 8px;
   background: #eef4ff;
@@ -1597,6 +1959,16 @@ tbody tr.selected {
   font-size: 13px;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
+}
+
+.run-meter-detail {
+  min-width: 0;
+  color: #526070;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .run-meter-track {
@@ -1746,8 +2118,9 @@ tbody tr.selected {
 
 .workspace {
   min-height: 0;
+  overflow: hidden;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 430px;
+  grid-template-columns: minmax(0, 1fr) 400px;
   background: #f6f7f9;
 }
 
@@ -1755,6 +2128,7 @@ tbody tr.selected {
 .detail-panel {
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   background: #fff;
@@ -1788,12 +2162,15 @@ tbody tr.selected {
 
 .table-wrap {
   min-height: 0;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
 }
 
 table {
   width: 100%;
-  min-width: 900px;
+  min-width: 1260px;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 13px;
@@ -1831,23 +2208,31 @@ tbody tr:hover td {
 }
 
 .col-id {
-  width: 120px;
+  width: 116px;
+}
+
+.col-module {
+  width: 108px;
+}
+
+.col-category {
+  width: 132px;
 }
 
 .col-type {
-  width: 150px;
+  width: 76px;
 }
 
 .col-object {
-  width: 142px;
+  width: 150px;
 }
 
 .col-confidence {
-  width: 96px;
+  width: 86px;
 }
 
 .col-status {
-  width: 112px;
+  width: 96px;
 }
 
 .col-amb {
@@ -1864,6 +2249,8 @@ tbody tr:hover td {
 }
 
 .type-tag,
+.module-chip,
+.category-chip,
 .status-tag,
 .ambiguity-tag,
 .risk-badge {
@@ -1877,6 +2264,17 @@ tbody tr:hover td {
   font-size: 12px;
   font-weight: 900;
   white-space: nowrap;
+}
+
+.module-chip,
+.category-chip {
+  color: #23506e;
+  background: #eaf4f8;
+}
+
+.category-chip {
+  color: #5b4b8f;
+  background: #f1edff;
 }
 
 .type-tag.functional,
@@ -1962,12 +2360,15 @@ tbody tr:hover td {
 
 .detail-panel {
   grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
 }
 
 .detail-content {
   min-height: 0;
   padding: 16px 18px 18px;
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   display: grid;
   grid-auto-rows: max-content;
   gap: 12px;
@@ -2092,6 +2493,218 @@ tbody tr:hover td {
   padding: 8px 10px;
   font-size: 12px;
   font-weight: 800;
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+.settings-dialog {
+  width: min(720px, 100%);
+  max-height: min(760px, calc(100vh - 56px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+}
+
+.settings-head {
+  min-height: 70px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #dfe5ec;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-title {
+  color: #172033;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 900;
+}
+
+.settings-subtitle {
+  margin-top: 4px;
+  color: #687386;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.icon-button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #ccd5df;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  color: #1d57d3;
+  border-color: #b9cdfb;
+  background: #f8fbff;
+}
+
+.settings-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+  background: #f8fafc;
+}
+
+.settings-section {
+  border: 1px solid #dfe5ec;
+  border-radius: 10px;
+  background: #fff;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.settings-section-title {
+  color: #172033;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.settings-toggle {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #e7ecf2;
+  border-radius: 8px;
+  background: #fbfcfe;
+  padding: 10px 12px;
+  color: #273344;
+}
+
+.settings-toggle input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.settings-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-toggle strong,
+.settings-row strong,
+.settings-kb-list li {
+  color: #273344;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.settings-toggle small {
+  color: #687386;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.settings-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.settings-field.wide {
+  grid-column: 1 / -1;
+}
+
+.settings-field span {
+  color: #687386;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-field input {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #ccd5df;
+  border-radius: 8px;
+  background: #fff;
+  color: #273344;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-field input:focus {
+  outline: none;
+  border-color: #7aa2f7;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.settings-actions {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.settings-status {
+  min-width: 0;
+  color: #2156c7;
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.settings-row,
+.settings-kb-list {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.settings-row span,
+.settings-kb-list > span {
+  color: #687386;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-kb-list ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 5px;
 }
 
 .status-bar {

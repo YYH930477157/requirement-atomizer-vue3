@@ -16,6 +16,18 @@ export type ReviewActionInput = {
   reason: string
 }
 
+export type TranslationInput = {
+  requirementId: string
+  text: string
+  context?: string
+}
+
+export type TranslationPayload = {
+  requirement_id: string
+  translation: string
+  model?: string
+}
+
 type FetchLike = typeof fetch
 
 type RequirementApiClientOptions = {
@@ -48,6 +60,18 @@ export class RequirementApiClient {
         status: input.status,
         actor: input.actor,
         reason: input.reason,
+      }),
+    })
+  }
+
+  async translateRequirement(input: TranslationInput): Promise<TranslationPayload> {
+    return this.request<TranslationPayload>("/translations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requirement_id: input.requirementId,
+        text: input.text,
+        context: input.context || "",
       }),
     })
   }

@@ -20,12 +20,52 @@ describe("requirement mapper", () => {
     expect(row.id).toBe("SREQ-1")
     expect(row.backendId).toBe("SREQ-1")
     expect(row.type).toBe("接口")
+    expect(row.category).toBe("COSEM 属性访问")
+    expect(row.categoryCode).toBe("cosem_attribute_access")
     expect(row.object).toBe("Clock")
     expect(row.chineseText).toBe("The meter shall expose Clock attributes.")
     expect(row.originalText).toBe("Clock object attributes shall be accessible.")
     expect(row.status).toBe("expert_pending")
     expect(row.ambiguity.level).toBe("高")
     expect(row.ambiguity.reasons).toEqual(["needs expert confirmation"])
+  })
+
+  it("preserves ABNT module and raw classification fields for review", () => {
+    const row = mapBackendRequirement({
+      stable_req_id: "SREQ-ABNT-1",
+      requirement_type: "cosem_attribute_access",
+      object: "Clock",
+      requirement: "The Clock object shall expose attribute 2.",
+      domain: "access_control",
+      domain_tags: ["access_control", "cosem_object", "meter_function"],
+      section_path: ["2 20 Control of"],
+      source_refs: ["BLK-002001"],
+      confidence: 0.72,
+    })
+
+    expect(row.type).toBe("接口")
+    expect(row.module).toBe("访问控制")
+    expect(row.moduleCode).toBe("access_control")
+    expect(row.category).toBe("COSEM 属性访问")
+    expect(row.categoryCode).toBe("cosem_attribute_access")
+    expect(row.domainTags).toEqual(["access_control", "cosem_object", "meter_function"])
+    expect(row.sectionPath).toEqual(["2 20 Control of"])
+    expect(row.sourceLocation).toBe("BLK-002001")
+  })
+
+  it("does not collapse access-control requirements into a generic functional label", () => {
+    const row = mapBackendRequirement({
+      stable_req_id: "SREQ-ABNT-2",
+      requirement_type: "access_control",
+      object: "Public Client",
+      requirement: "The Public Client shall only read public data.",
+      domain: "association",
+    })
+
+    expect(row.type).toBe("安全")
+    expect(row.category).toBe("访问控制")
+    expect(row.categoryCode).toBe("access_control")
+    expect(row.module).toBe("关联/客户端")
   })
 
   it("keeps backend status values separate from display labels", () => {

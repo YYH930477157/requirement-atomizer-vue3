@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from atomic_requirement_schema import validate_atomic_requirement_payload, validate_atomic_requirements
 from api_server import RequirementAPIHandler, enrich_requirements, is_allowed_origin, token_is_valid
@@ -433,6 +434,38 @@ class PlatformScaffoldTests(unittest.TestCase):
             states = read_jsonl(out_dir / "review_states.jsonl")
 
         self.assertEqual(states, [])
+
+    def test_api_translation_endpoint_returns_llm_translation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            server = self.start_api_server(out_dir, token="secret-token")
+            try:
+                with patch("api_server.translate_requirement_text") as translate:
+                    translate.return_value = "读取客户端应支持 xDLMS 服务：使用 GET 的块传输。"
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{server.server_port}/translations",
+                        data=json.dumps(
+                            {
+                                "requirement_id": "SREQ-1",
+                                "text": 'Reading client shall support xDLMS Service: Block transfer with "GET".',
+                            }
+                        ).encode("utf-8"),
+                        headers={"Content-Type": "application/json", "X-Requirement-Atomizer-Token": "secret-token"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+
+        self.assertEqual(payload["requirement_id"], "SREQ-1")
+        self.assertEqual(payload["translation"], "读取客户端应支持 xDLMS 服务：使用 GET 的块传输。")
+        translate.assert_called_once_with(
+            'Reading client shall support xDLMS Service: Block transfer with "GET".',
+            requirement_id="SREQ-1",
+            output_dir=out_dir.resolve(),
+        )
 
     def test_review_state_validates_transitions(self) -> None:
         state = RequirementReviewState("AREQ-1")

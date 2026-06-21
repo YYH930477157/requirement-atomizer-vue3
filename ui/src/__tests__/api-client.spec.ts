@@ -56,6 +56,41 @@ describe("RequirementApiClient", () => {
     })
   })
 
+  it("posts requirement text for translation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        requirement_id: "SREQ-1",
+        translation: "读取客户端应支持 xDLMS 服务：使用 GET 的块传输。",
+      }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770/",
+      token: "local-token",
+      fetchImpl: fetchMock,
+    })
+
+    const payload = await client.translateRequirement({
+      requirementId: "SREQ-1",
+      text: 'Reading client shall support xDLMS Service: Block transfer with "GET".',
+      context: "Reading client",
+    })
+
+    expect(payload.translation).toBe("读取客户端应支持 xDLMS 服务：使用 GET 的块传输。")
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8770/translations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requirement-Atomizer-Token": "local-token",
+      },
+      body: JSON.stringify({
+        requirement_id: "SREQ-1",
+        text: 'Reading client shall support xDLMS Service: Block transfer with "GET".',
+        context: "Reading client",
+      }),
+    })
+  })
+
   it("calls browser fetch with the window/global receiver", async () => {
     const fetchMock = vi.fn(function (this: unknown) {
       if (this !== globalThis) {

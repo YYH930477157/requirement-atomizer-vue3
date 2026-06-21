@@ -11,7 +11,7 @@ from typing import Any
 from unittest.mock import patch
 
 from llm_client import LLMClientConfig, LLMConnectionError
-from llm_pipeline import read_jsonl, run_review_pipeline, write_jsonl
+from llm_pipeline import llm_config_from_route, read_jsonl, run_review_pipeline, write_jsonl
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +57,38 @@ class ScriptedOpenAIService:
         self.server.shutdown()
         self.thread.join(timeout=5)
         self.server.server_close()
+
+
+class EnvironmentRouteOverrideTests(unittest.TestCase):
+    def test_llm_route_can_be_overridden_from_desktop_environment(self) -> None:
+        route = {
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "qwen2.5:14b",
+            "api_key_env": "RATOMIZER_LLM_API_KEY",
+            "temperature": 0,
+            "max_tokens": 1024,
+            "timeout_s": 60,
+            "max_retries": 3,
+        }
+        overrides = {
+            "RATOMIZER_LLM_BASE_URL": "https://example.test/v1",
+            "RATOMIZER_LLM_MODEL": "glm-4-plus",
+            "RATOMIZER_LLM_API_KEY_ENV": "CUSTOM_LLM_KEY",
+            "RATOMIZER_LLM_TEMPERATURE": "0.2",
+            "RATOMIZER_LLM_MAX_TOKENS": "2048",
+            "RATOMIZER_LLM_TIMEOUT_S": "15",
+            "RATOMIZER_LLM_MAX_RETRIES": "0",
+        }
+        with patch.dict("os.environ", overrides, clear=False):
+            config = llm_config_from_route(route)
+
+        self.assertEqual(config.base_url, "https://example.test/v1")
+        self.assertEqual(config.model, "glm-4-plus")
+        self.assertEqual(config.api_key_env, "CUSTOM_LLM_KEY")
+        self.assertEqual(config.temperature, 0.2)
+        self.assertEqual(config.max_tokens, 2048)
+        self.assertEqual(config.timeout_s, 15.0)
+        self.assertEqual(config.max_retries, 0)
 
 
 def openai_review(decision: str = "accept", confidence: float = 0.88) -> dict[str, Any]:
@@ -227,6 +259,36 @@ class LLMPipelineRouteTests(unittest.TestCase):
         self.assertEqual(second["llm_reviewed"], 2)
         self.assertEqual(len(service.requests), 2)
         self.assertEqual(len(cache_rows), 2)
+
+    def test_openai_review_reports_progress_for_each_completed_llm_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [
+                    requirement("SREQ-0000000000000A01", confidence=0.70),
+                    requirement("SREQ-0000000000000A02", confidence=0.70),
+                    requirement("SREQ-0000000000000A03", confidence=0.70),
+                ],
+            )
+            events: list[dict[str, Any]] = []
+
+            with ScriptedOpenAIService(lambda body, count: {"body": openai_review()}) as service:
+                pipeline_path = tmp_path / "review_pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                run_review_pipeline(
+                    out_dir,
+                    pipeline_path=pipeline_path,
+                    route="openai_compatible",
+                    progress_callback=events.append,
+                )
+
+        llm_progress = [event for event in events if event.get("stage") == "llm_review"]
+        self.assertEqual([event["completed"] for event in llm_progress], [1, 2, 3])
+        self.assertTrue(all(event["total"] == 3 for event in llm_progress))
+        self.assertEqual(llm_progress[-1]["percent"], 100)
 
     def test_single_llm_failure_falls_back_to_stub_without_failing_batch(self) -> None:
         def handler(body: dict[str, Any], count: int) -> dict[str, Any]:

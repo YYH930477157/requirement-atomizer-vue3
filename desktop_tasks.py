@@ -15,6 +15,7 @@ from spec_export import export_spec
 
 
 ASSEMBLED_JSON = "dlms_cosem_spec_requirements.json"
+PROGRESS_PREFIX = "__RATOMIZER_PROGRESS__"
 
 
 def run_pipeline_task(
@@ -22,6 +23,8 @@ def run_pipeline_task(
     out_dir: Path,
     *,
     skip_review: bool = False,
+    llm_route: str | None = None,
+    review_scope: str | None = None,
     chunk_chars: int = 3500,
     kb_paths: list[Path] | None = None,
     domain_pack_dir: Path | None = None,
@@ -35,7 +38,12 @@ def run_pipeline_task(
         kb_paths=kb_paths or [],
         domain_pack_dir=domain_pack_dir,
     )
-    review = None if skip_review else run_review_pipeline(out_dir)
+    review = None if skip_review else run_review_pipeline(
+        out_dir,
+        route=llm_route,
+        scope=review_scope,
+        progress_callback=emit_progress,
+    )
     return {
         "kind": "pipeline",
         "out_dir": str(out_dir),
@@ -126,6 +134,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_parser.add_argument("--input", type=Path, required=True)
     run_parser.add_argument("--out", type=Path, required=True)
     run_parser.add_argument("--skip-review", action="store_true")
+    run_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default=None)
+    run_parser.add_argument("--review-scope", choices=["targeted", "all"], default=None)
     run_parser.add_argument("--chunk-chars", type=int, default=3500)
     run_parser.add_argument("--kb", type=Path, action="append", default=[])
     run_parser.add_argument("--domain-pack", type=Path, default=None)
@@ -152,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.input,
                 args.out,
                 skip_review=args.skip_review,
+                llm_route=args.llm_route,
+                review_scope=args.review_scope,
                 chunk_chars=args.chunk_chars,
                 kb_paths=args.kb,
                 domain_pack_dir=args.domain_pack,
@@ -171,6 +183,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def split_formats(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def emit_progress(event: dict[str, Any]) -> None:
+    print(f"{PROGRESS_PREFIX}{json.dumps(event, ensure_ascii=False)}", flush=True)
 
 
 if __name__ == "__main__":

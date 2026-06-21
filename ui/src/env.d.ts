@@ -27,10 +27,54 @@ declare global {
       openPath: (targetPath: string) => Promise<void>
       getApiSession: () => Promise<RequirementAtomizerApiSession | null>
       startApiSession: (outDir: string) => Promise<RequirementAtomizerApiSession | null>
+      getLlmSettings: () => Promise<{
+        enabled: boolean
+        baseUrl: string
+        model: string
+        apiKeyEnv: string
+        temperature: number
+        maxTokens: number
+        timeoutS: number
+        maxRetries: number
+      } | null>
+      saveLlmSettings: (input: {
+        enabled: boolean
+        baseUrl: string
+        model: string
+        apiKeyEnv: string
+        apiKey?: string
+        temperature: number
+        maxTokens: number
+        timeoutS: number
+        maxRetries: number
+      }) => Promise<{
+        enabled: boolean
+        baseUrl: string
+        model: string
+        apiKeyEnv: string
+        temperature: number
+        maxTokens: number
+        timeoutS: number
+        maxRetries: number
+      }>
+      testLlmConnection: (input: {
+        enabled: boolean
+        baseUrl: string
+        model: string
+        apiKeyEnv: string
+        apiKey?: string
+        temperature: number
+        maxTokens: number
+        timeoutS: number
+        maxRetries: number
+      }) => Promise<{ ok: boolean; message: string }>
+      onTaskProgress: (handler: (event: { stage: string; completed?: number; total?: number; percent?: number; model?: string }) => void) => () => void
       runPipeline: (input: {
         inputPath: string
         outDir: string
         skipReview?: boolean
+        llmRoute?: string
+        reviewScope?: string
         chunkChars?: number
         kbPaths?: string[]
         domainPackDir?: string

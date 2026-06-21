@@ -18,11 +18,25 @@ describe("review workspace shell", () => {
     expect(wrapper.text()).toContain("待专家")
     expect(wrapper.text()).toContain("① 原始需求")
     expect(wrapper.text()).toContain("② 中文翻译")
-    expect(wrapper.text()).toContain("③ AI 理解的需求")
+    expect(wrapper.text()).toContain("③ 原子化需求")
+    expect(wrapper.text()).not.toContain("③ AI 理解的需求")
     expect(wrapper.text()).toContain("REQ-2024-0001")
     expect(wrapper.find('[data-testid="phase1-stats"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="requirement-table"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="detail-panel"]').exists()).toBe(true)
+  })
+
+  it("keeps details on the right while the table can scroll horizontally", () => {
+    const wrapper = mount(App)
+
+    const workspace = wrapper.find('[data-testid="workspace"]')
+    const tableScroll = wrapper.find('[data-testid="requirement-table"]')
+    expect(workspace.exists()).toBe(true)
+    expect(workspace.classes()).toContain("right-detail-workspace")
+    expect(tableScroll.exists()).toBe(true)
+    expect(tableScroll.classes()).toContain("independent-table-scroll")
+    expect(wrapper.find('[data-testid="detail-panel"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="detail-scroll"]').classes()).toContain("independent-detail-scroll")
   })
 
   it("updates the selected requirement status from review decisions", async () => {
@@ -42,6 +56,7 @@ describe("review workspace shell", () => {
       configurable: true,
       value: {
         getApiSession: vi.fn().mockResolvedValue(null),
+        getLlmSettings: vi.fn().mockResolvedValue(null),
         openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
         exportRequirements: vi.fn(),
       },
@@ -53,7 +68,87 @@ describe("review workspace shell", () => {
     expect(wrapper.text()).toContain("当前文档：Appendix 9.docx")
 
     await wrapper.find('[data-testid="nav-设置"]').trigger("click")
-    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("设置将在后续版本接入")
+    expect(wrapper.find('[data-testid="settings-panel"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="settings-panel"]').text()).toContain("设置")
+    expect(wrapper.find('[data-testid="settings-panel"]').text()).toContain("LLM 富化")
+
+    await wrapper.find('[data-testid="settings-close"]').trigger("click")
+    expect(wrapper.find('[data-testid="settings-panel"]').exists()).toBe(false)
+  })
+
+  it("saves and tests OpenAI-compatible API settings from the settings panel", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        getLlmSettings: vi.fn().mockResolvedValue({
+          enabled: false,
+          baseUrl: "http://127.0.0.1:11434/v1",
+          model: "qwen2.5:14b",
+          apiKeyEnv: "RATOMIZER_LLM_API_KEY",
+          temperature: 0,
+          maxTokens: 1024,
+          timeoutS: 60,
+          maxRetries: 3,
+        }),
+        saveLlmSettings: vi.fn().mockResolvedValue({
+          enabled: true,
+          baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+          model: "glm-4-plus",
+          apiKeyEnv: "ZHIPU_API_KEY",
+          temperature: 0.2,
+          maxTokens: 2048,
+          timeoutS: 20,
+          maxRetries: 0,
+        }),
+        testLlmConnection: vi.fn().mockResolvedValue({ ok: true, message: "调用成功" }),
+      },
+    })
+    const wrapper = mount(App)
+
+    await wrapper.find('[data-testid="nav-设置"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="settings-base-url"]').element).toHaveProperty("value", "http://127.0.0.1:11434/v1")
+    })
+
+    await wrapper.find('[data-testid="settings-llm-mode"]').setValue(true)
+    await wrapper.find('[data-testid="settings-base-url"]').setValue("https://open.bigmodel.cn/api/paas/v4")
+    await wrapper.find('[data-testid="settings-model"]').setValue("glm-4-plus")
+    await wrapper.find('[data-testid="settings-api-key-env"]').setValue("ZHIPU_API_KEY")
+    await wrapper.find('[data-testid="settings-api-key"]').setValue("sk-secret")
+    await wrapper.find('[data-testid="settings-temperature"]').setValue("0.2")
+    await wrapper.find('[data-testid="settings-max-tokens"]').setValue("2048")
+    await wrapper.find('[data-testid="settings-timeout"]').setValue("20")
+    await wrapper.find('[data-testid="settings-max-retries"]').setValue("0")
+
+    await wrapper.find('[data-testid="settings-save"]').trigger("click")
+    expect(window.ratomizerDesktop?.saveLlmSettings).toHaveBeenCalledWith({
+      enabled: true,
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+      model: "glm-4-plus",
+      apiKeyEnv: "ZHIPU_API_KEY",
+      apiKey: "sk-secret",
+      temperature: 0.2,
+      maxTokens: 2048,
+      timeoutS: 20,
+      maxRetries: 0,
+    })
+
+    await wrapper.find('[data-testid="settings-test"]').trigger("click")
+    expect(window.ratomizerDesktop?.testLlmConnection).toHaveBeenCalledWith({
+      enabled: true,
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+      model: "glm-4-plus",
+      apiKeyEnv: "ZHIPU_API_KEY",
+      apiKey: "",
+      temperature: 0.2,
+      maxTokens: 2048,
+      timeoutS: 20,
+      maxRetries: 0,
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="settings-status"]').text()).toContain("调用成功")
+    })
   })
 
   it("loads real requirements from the desktop API session and persists decisions", async () => {
@@ -82,6 +177,9 @@ describe("review workspace shell", () => {
               object_name: "Security Setup",
               description: "The meter shall reject invalid keys.",
               source_quote: "Invalid keys shall be rejected.",
+              domain: "security_policy",
+              domain_tags: ["security_policy", "key_management"],
+              section_path: ["Security"],
               confidence: 0.91,
               review_state: { requirement_id: "SREQ-UI-1", status: "expert_pending" },
               review: { risk: "high", review_notes: ["Confirm key scope"] },
@@ -112,11 +210,79 @@ describe("review workspace shell", () => {
     })
 
     expect(wrapper.text()).toContain("Security Setup")
+    expect(wrapper.text()).toContain("安全策略")
+    expect(wrapper.text()).toContain("安全要求")
+    expect(wrapper.text()).toContain("security_policy · key_management")
     expect(wrapper.find('[data-testid="detail-status"]').text()).toContain("待专家确认")
 
     await wrapper.find('[data-testid="decision-accepted"]').trigger("click")
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="detail-status"]').text()).toContain("已接受")
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("translates the selected requirement through the local API", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\Codex\\out\\run",
+        }),
+        openDocument: vi.fn(),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+      },
+    })
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/requirements?limit=5000")) {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              stable_req_id: "SREQ-TRANSLATE-1",
+              requirement_type: "communication",
+              object: "Reading client",
+              requirement: 'Reading client shall support xDLMS Service: Block transfer with "GET".',
+              source_quote: 'Reading client shall support xDLMS Service: Block transfer with "GET".',
+              confidence: 0.82,
+              review_state: { requirement_id: "SREQ-TRANSLATE-1", status: "candidate" },
+            },
+          ],
+        } as Response
+      }
+      if (String(input).endsWith("/translations")) {
+        expect(init?.headers).toMatchObject({
+          "Content-Type": "application/json",
+          "X-Requirement-Atomizer-Token": "local-token",
+        })
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          requirement_id: "SREQ-TRANSLATE-1",
+          text: 'Reading client shall support xDLMS Service: Block transfer with "GET".',
+          context: "Reading client",
+        })
+        return {
+          ok: true,
+          json: async () => ({
+            requirement_id: "SREQ-TRANSLATE-1",
+            translation: "读取客户端应支持 xDLMS 服务：使用 GET 的块传输。",
+          }),
+        } as Response
+      }
+      throw new Error(`Unexpected request: ${String(input)}`)
+    })
+
+    const wrapper = mount(App)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="row-SREQ-TRANSLATE-1"]').exists()).toBe(true)
+    })
+
+    await wrapper.find('[data-testid="action-translate"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="translation-text"]').text()).toContain("读取客户端应支持 xDLMS 服务")
     })
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -205,6 +371,8 @@ describe("review workspace shell", () => {
         inputPath: "C:\\input\\Appendix 9.docx",
         outDir: "E:\\out\\abnt",
         skipReview: false,
+        llmRoute: undefined,
+        reviewScope: undefined,
         chunkChars: 3500,
         kbPaths: [
           "knowledge_bases/energy_metering.json",
@@ -232,6 +400,52 @@ describe("review workspace shell", () => {
       enrichRoute: undefined,
     })
     expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it("shows module and precise backend classification for ABNT extracted rows", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "C:\\Users\\YYHwudi\\Desktop\\Canna-29\\test2",
+        }),
+        openDocument: vi.fn(),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => [
+        {
+          stable_req_id: "SREQ-ABNT-UI",
+          requirement_type: "cosem_attribute_access",
+          object: "Clock",
+          requirement: "The Clock object shall expose time attributes.",
+          domain: "access_control",
+          domain_tags: ["access_control", "cosem_object", "meter_function"],
+          section_path: ["2 20 Control of"],
+          source_refs: ["BLK-002001"],
+          confidence: 0.77,
+          review_state: { requirement_id: "SREQ-ABNT-UI", status: "candidate" },
+        },
+      ],
+    } as Response)
+
+    const wrapper = mount(App)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="row-SREQ-ABNT-UI"]').exists()).toBe(true)
+    })
+
+    expect(wrapper.find('[data-testid="requirement-table"]').text()).toContain("访问控制")
+    expect(wrapper.find('[data-testid="requirement-table"]').text()).toContain("COSEM 属性访问")
+    expect(wrapper.find('[data-testid="detail-panel"]').text()).toContain("模块")
+    expect(wrapper.find('[data-testid="detail-panel"]').text()).toContain("细分类")
+    expect(wrapper.find('[data-testid="detail-panel"]').text()).toContain("cosem_attribute_access")
+    expect(wrapper.find('[data-testid="detail-panel"]').text()).toContain("access_control · cosem_object · meter_function")
+    expect(wrapper.find('[data-testid="detail-panel"]').text()).toContain("2 20 Control of")
   })
 
   it("shows selected paths and waits for Run before parsing", async () => {
@@ -263,6 +477,10 @@ describe("review workspace shell", () => {
     const runPromise = new Promise<{ kind: string; out_dir: string }>((resolve) => {
       resolveRun = resolve
     })
+    type ProgressHandler = (event: { stage: string; completed: number; total: number; percent: number }) => void
+    let progressHandler: ProgressHandler = () => {
+      throw new Error("progress handler was not registered")
+    }
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
@@ -277,6 +495,10 @@ describe("review workspace shell", () => {
           outputDir: "E:\\out\\abnt",
         }),
         runPipeline: vi.fn().mockReturnValue(runPromise),
+        onTaskProgress: vi.fn((handler: ProgressHandler) => {
+          progressHandler = handler
+          return vi.fn()
+        }),
       },
     })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -292,6 +514,13 @@ describe("review workspace shell", () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("%")
       expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("运行")
+      expect(window.ratomizerDesktop?.onTaskProgress).toHaveBeenCalled()
+      expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalled()
+    })
+    progressHandler({ stage: "llm_review", completed: 2, total: 5, percent: 40 })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("AI 审查 2/5")
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("40%")
     })
 
     resolveRun({ kind: "pipeline", out_dir: "E:\\out\\abnt" })

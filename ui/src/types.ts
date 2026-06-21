@@ -24,11 +24,18 @@ export type Requirement = {
   id: string
   backendId: string
   type: RequirementType
+  module?: string
+  moduleCode?: string
+  category?: string
+  categoryCode?: string
   object: string
   chineseText: string
   originalText: string
+  translation?: string
   sourceDocument: string
   sourceLocation: string
+  domainTags?: string[]
+  sectionPath?: string[]
   confidence: number
   risk: "低" | "中" | "高"
   status: ReviewStatus

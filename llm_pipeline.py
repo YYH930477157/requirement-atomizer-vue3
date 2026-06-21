@@ -4,9 +4,10 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -159,6 +160,7 @@ def review_requirements_detailed(
     out_dir: Path | None = None,
     route: str | None = None,
     scope: str | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> ReviewBatchResult:
     route_name = resolve_route_name(pipeline, route)
     if route_name == "stub":
@@ -174,7 +176,7 @@ def review_requirements_detailed(
         raise ValueError(f"Unsupported LLM route: {route_name}")
     if out_dir is None:
         raise ValueError("out_dir is required for openai_compatible review caching")
-    return review_requirements_with_openai(requirements, pipeline, out_dir=out_dir, scope=scope)
+    return review_requirements_with_openai(requirements, pipeline, out_dir=out_dir, scope=scope, progress_callback=progress_callback)
 
 
 def resolve_route_name(pipeline: ReviewPipeline, route: str | None) -> str:
@@ -189,6 +191,7 @@ def review_requirements_with_openai(
     *,
     out_dir: Path,
     scope: str | None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> ReviewBatchResult:
     route_payload = dict(pipeline.model_routes.get("openai_compatible") or {})
     client_config = llm_config_from_route(route_payload)
@@ -222,6 +225,16 @@ def review_requirements_with_openai(
     completed_llm = llm_reviewed
 
     def record_progress() -> None:
+        if progress_callback is not None and selected_total:
+            progress_callback(
+                {
+                    "stage": "llm_review",
+                    "completed": completed_llm,
+                    "total": selected_total,
+                    "percent": int(round(completed_llm * 100 / selected_total)),
+                    "model": client_config.model,
+                }
+            )
         if completed_llm and completed_llm % PROGRESS_INTERVAL == 0:
             LOGGER.info("llm review %s/%s", completed_llm, selected_total)
 
@@ -332,6 +345,7 @@ def build_review_states(requirements: list[dict[str, Any]], reviews: list[dict[s
 
 
 def llm_config_from_route(payload: dict[str, Any]) -> LLMClientConfig:
+    payload = apply_llm_environment_overrides(payload)
     base_url = str(payload.get("base_url") or "").strip()
     model = str(payload.get("model") or "").strip()
     if not base_url or not model:
@@ -345,6 +359,24 @@ def llm_config_from_route(payload: dict[str, Any]) -> LLMClientConfig:
         timeout_s=float(payload.get("timeout_s", 60.0)),
         max_retries=int(payload.get("max_retries", 3)),
     )
+
+
+def apply_llm_environment_overrides(payload: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(payload)
+    env_map = {
+        "base_url": "RATOMIZER_LLM_BASE_URL",
+        "model": "RATOMIZER_LLM_MODEL",
+        "api_key_env": "RATOMIZER_LLM_API_KEY_ENV",
+        "temperature": "RATOMIZER_LLM_TEMPERATURE",
+        "max_tokens": "RATOMIZER_LLM_MAX_TOKENS",
+        "timeout_s": "RATOMIZER_LLM_TIMEOUT_S",
+        "max_retries": "RATOMIZER_LLM_MAX_RETRIES",
+    }
+    for key, env_name in env_map.items():
+        value = os.environ.get(env_name)
+        if value is not None and value != "":
+            merged[key] = value
+    return merged
 
 
 def effective_review_scope(pipeline: ReviewPipeline, scope: str | None) -> dict[str, Any]:
@@ -601,6 +633,7 @@ def run_review_pipeline(
     limit: int = 0,
     route: str | None = None,
     scope: str | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     pipeline_path = pipeline_path.expanduser().resolve()
@@ -611,7 +644,14 @@ def run_review_pipeline(
     domain_pack_path = domain_pack_path.expanduser().resolve() if domain_pack_path else None
     pipeline = merge_review_policy(load_review_pipeline(pipeline_path), domain_pack_path)
     LOGGER.info("reviewing %s requirements", len(requirements))
-    result = review_requirements_detailed(requirements, pipeline, out_dir=out_dir, route=route, scope=scope)
+    result = review_requirements_detailed(
+        requirements,
+        pipeline,
+        out_dir=out_dir,
+        route=route,
+        scope=scope,
+        progress_callback=progress_callback,
+    )
     reviews = result.reviews
     states = result.states
     assert_valid_review_results(reviews)

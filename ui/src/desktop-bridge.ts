@@ -16,6 +16,8 @@ export type PipelineTaskInput = {
   inputPath: string
   outDir: string
   skipReview?: boolean
+  llmRoute?: string
+  reviewScope?: string
   chunkChars?: number
   kbPaths?: string[]
   domainPackDir?: string
@@ -32,16 +34,35 @@ export type AssembleTaskInput = {
   enrichRoute?: string
 }
 
+export type LlmSettingsInput = {
+  enabled: boolean
+  baseUrl: string
+  model: string
+  apiKeyEnv: string
+  apiKey?: string
+  temperature: number
+  maxTokens: number
+  timeoutS: number
+  maxRetries: number
+}
+
+export type LlmSettingsPayload = Omit<LlmSettingsInput, "apiKey">
+
 export type DesktopBridge = {
+  getLlmSettings?: () => Promise<LlmSettingsPayload | null>
+  saveLlmSettings?: (input: LlmSettingsInput) => Promise<LlmSettingsPayload>
+  testLlmConnection?: (input: LlmSettingsInput) => Promise<{ ok: boolean; message: string }>
   runPipeline: (input: PipelineTaskInput) => Promise<DesktopTaskPayload>
   exportRequirements: (input: ExportTaskInput) => Promise<DesktopTaskPayload>
   assembleSpec: (input: AssembleTaskInput) => Promise<DesktopTaskPayload>
 }
 
-export async function runDesktopTask<K extends keyof DesktopBridge>(
-  bridge: Pick<DesktopBridge, K>,
+type DesktopTaskBridge = Pick<DesktopBridge, "runPipeline" | "exportRequirements" | "assembleSpec">
+
+export async function runDesktopTask<K extends keyof DesktopTaskBridge>(
+  bridge: Pick<DesktopTaskBridge, K>,
   task: K,
-  input: Parameters<DesktopBridge[K]>[0],
+  input: Parameters<DesktopTaskBridge[K]>[0],
 ): Promise<DesktopTaskPayload> {
   const handler = bridge[task] as (value: typeof input) => Promise<DesktopTaskPayload>
   return handler(input)

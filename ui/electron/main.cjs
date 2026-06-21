@@ -3,11 +3,20 @@ const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
-const { buildRunPipelineArgs, resolvePythonScriptPath } = require("./main.helpers.cjs");
+const {
+  DEFAULT_LLM_SETTINGS,
+  buildLlmEnvironment,
+  buildRunPipelineArgs,
+  drainProgressLines,
+  normalizeLlmSettings,
+  resolvePythonScriptPath,
+} = require("./main.helpers.cjs");
 
 let mainWindow = null;
 let apiProcess = null;
 let apiSession = null;
+let llmSettings = null;
+let sessionApiKey = "";
 
 function createWindow() {
   Menu.setApplicationMenu(null);
@@ -33,6 +42,10 @@ function createWindow() {
 }
 
 app.whenReady().then(createWindow);
+
+app.whenReady().then(() => {
+  llmSettings = loadLlmSettings();
+});
 
 app.on("window-all-closed", () => {
   stopApiServer();
@@ -81,6 +94,9 @@ ipcMain.handle("shell:open-path", async (_event, targetPath) => {
 
 ipcMain.handle("api:get-session", async () => apiSession);
 ipcMain.handle("api:start-session", async (_event, outDir) => startApiServer(outDir));
+ipcMain.handle("llm:get-settings", async () => loadLlmSettings());
+ipcMain.handle("llm:save-settings", async (_event, input) => saveLlmSettings(input));
+ipcMain.handle("llm:test-connection", async (_event, input) => testLlmConnection(input));
 ipcMain.handle("task:run-pipeline", async (_event, input) => {
   const payload = await runDesktopTaskProcess(buildRunPipelineArgs(input));
   await startApiServer(String(payload.out_dir || input.outDir));
@@ -123,6 +139,7 @@ async function startApiServer(outputDir) {
     token,
   ], {
     cwd: path.dirname(apiServerPath),
+    env: buildCurrentLlmEnvironment(),
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -154,6 +171,11 @@ function waitForApiReady(child, port, token, outputDir) {
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
+      const parsed = drainProgressLines(stdout);
+      stdout = `${parsed.output}${parsed.remaining}`;
+      for (const event of parsed.events) {
+        mainWindow?.webContents.send("task:progress", event);
+      }
       const jsonStart = stdout.indexOf("{");
       const jsonEnd = stdout.lastIndexOf("}");
       if (jsonStart >= 0 && jsonEnd > jsonStart) {
@@ -207,13 +229,20 @@ function runDesktopTaskProcess(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(resolvePythonCommand(), [taskPath, ...args], {
       cwd: path.dirname(taskPath),
+      env: buildCurrentLlmEnvironment(),
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
+    let stdoutTail = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
+      const parsed = drainProgressLines(stdoutTail + chunk.toString("utf8"));
+      stdout += parsed.output;
+      stdoutTail = parsed.remaining;
+      for (const event of parsed.events) {
+        mainWindow?.webContents.send("task:progress", event);
+      }
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
@@ -225,12 +254,83 @@ function runDesktopTaskProcess(args) {
         return;
       }
       try {
-        resolve(JSON.parse(stdout));
+        resolve(JSON.parse(`${stdout}${stdoutTail}`.trim()));
       } catch (error) {
         reject(new Error(`desktop task returned invalid JSON: ${error.message}`));
       }
     });
   });
+}
+
+function loadLlmSettings() {
+  if (llmSettings) {
+    return llmSettings;
+  }
+  try {
+    const text = fs.readFileSync(llmSettingsPath(), "utf8");
+    llmSettings = normalizeLlmSettings(JSON.parse(text));
+  } catch {
+    llmSettings = normalizeLlmSettings(DEFAULT_LLM_SETTINGS);
+  }
+  return llmSettings;
+}
+
+function saveLlmSettings(input) {
+  const normalized = normalizeLlmSettings(input);
+  const apiKey = typeof input?.apiKey === "string" ? input.apiKey.trim() : "";
+  if (apiKey) {
+    sessionApiKey = apiKey;
+    process.env[normalized.apiKeyEnv] = apiKey;
+  }
+  llmSettings = normalized;
+  fs.mkdirSync(app.getPath("userData"), { recursive: true });
+  fs.writeFileSync(llmSettingsPath(), JSON.stringify(normalized, null, 2), "utf8");
+  if (apiSession?.outputDir) {
+    void startApiServer(apiSession.outputDir).catch(() => undefined);
+  }
+  return normalized;
+}
+
+async function testLlmConnection(input) {
+  const settings = normalizeLlmSettings(input || loadLlmSettings());
+  const apiKey = typeof input?.apiKey === "string" && input.apiKey.trim() ? input.apiKey.trim() : sessionApiKey;
+  const env = buildLlmEnvironment({ ...settings, apiKey }, process.env);
+  const body = JSON.stringify({
+    model: settings.model,
+    messages: [{ role: "user", content: "ping" }],
+    max_tokens: 1,
+    temperature: 0,
+  });
+  const headers = { "Content-Type": "application/json", Accept: "application/json" };
+  const key = env[settings.apiKeyEnv] || "";
+  if (key) {
+    headers.Authorization = `Bearer ${key}`;
+  }
+  const response = await fetch(`${settings.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+    method: "POST",
+    headers,
+    body,
+    signal: AbortSignal.timeout(Math.max(1000, settings.timeoutS * 1000)),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    return { ok: false, message: `调用失败：HTTP ${response.status} ${text.slice(0, 180)}` };
+  }
+  try {
+    const payload = JSON.parse(text);
+    payload.choices[0].message.content;
+  } catch (error) {
+    return { ok: false, message: `已连接，但返回不是标准 OpenAI Chat 响应：${error.message}` };
+  }
+  return { ok: true, message: `调用成功：模型 ${settings.model} 可用` };
+}
+
+function buildCurrentLlmEnvironment() {
+  return buildLlmEnvironment({ ...loadLlmSettings(), apiKey: sessionApiKey }, process.env);
+}
+
+function llmSettingsPath() {
+  return path.join(app.getPath("userData"), "llm-settings.json");
 }
 
 function isInside(rootPath, targetPath) {

@@ -8,6 +8,8 @@ from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
 from gui.review_actions import apply_review_action
+from llm_client import LLMConnectionError, LLMResponseError, chat_json
+from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
 
 
 DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
@@ -83,6 +85,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if not self.local_token or not token_is_valid(self.local_token, self.headers, params):
             self.send_json({"error": "unauthorized"}, status=401)
             return
+        if parsed.path == "/translations":
+            self.handle_translation()
+            return
         if parsed.path != "/review-actions":
             self.send_error(404, "Unknown endpoint")
             return
@@ -103,6 +108,25 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=409)
             return
         self.send_json(state)
+
+    def handle_translation(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        requirement_id = str(payload.get("requirement_id") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            self.send_json({"error": "text is required"}, status=400)
+            return
+        try:
+            translation = translate_requirement_text(text, requirement_id=requirement_id, output_dir=self.output_dir)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (LLMConnectionError, LLMResponseError) as exc:
+            self.send_json({"error": str(exc)}, status=502)
+            return
+        self.send_json({"requirement_id": requirement_id, "translation": translation})
 
     def read_json_body(self) -> dict | None:
         try:
@@ -256,6 +280,33 @@ def build_review_summary(output_dir: Path) -> dict:
             "review_states": "review_states.jsonl",
         },
     }
+
+
+TRANSLATION_SYSTEM_PROMPT = """You are a technical translator for DLMS/COSEM requirements.
+Translate English requirement text into concise Simplified Chinese.
+Preserve identifiers, quoted service names, OBIS codes, class names, attribute names, and protocol acronyms.
+Return only JSON with one string field: translation."""
+
+
+def translate_requirement_text(text: str, *, requirement_id: str = "", output_dir: Path | None = None) -> str:
+    pipeline = load_review_pipeline(DEFAULT_PIPELINE_PATH)
+    route_payload = dict(pipeline.model_routes.get("openai_compatible") or {})
+    config = llm_config_from_route(route_payload)
+    payload = chat_json(
+        config,
+        TRANSLATION_SYSTEM_PROMPT,
+        json.dumps(
+            {
+                "requirement_id": requirement_id,
+                "text": text,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    translation = str(payload.get("translation") or "").strip()
+    if not translation:
+        raise LLMResponseError("LLM translation response missing translation")
+    return translation
 
 
 def parse_args() -> argparse.Namespace:
