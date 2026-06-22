@@ -1,3 +1,5 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { describe, expect, it } from "vitest"
 import path from "node:path"
 
@@ -6,8 +8,10 @@ import {
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
+  loadLlmSettingsConfig,
   normalizeLlmSettings,
   resolvePythonScriptPath,
+  saveLlmSettingsConfig,
 } from "../main.helpers.cjs"
 
 describe("Electron main helpers", () => {
@@ -96,6 +100,54 @@ describe("Electron main helpers", () => {
       RATOMIZER_LLM_MAX_RETRIES: "0",
       ZHIPU_API_KEY: "sk-secret",
     })
+  })
+
+  it("persists OpenAI-compatible API settings in a config file with an encrypted API key", () => {
+    const configDir = mkdtempSync(path.join(tmpdir(), "ratomizer-settings-"))
+    const configPath = path.join(configDir, "llm-settings.json")
+    const safeStorage = {
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(`encrypted:${value}`, "utf8"),
+      decryptString: (value: Buffer) => value.toString("utf8").replace(/^encrypted:/, ""),
+    }
+
+    try {
+      const saved = saveLlmSettingsConfig(configPath, {
+        enabled: true,
+        baseUrl: " https://open.bigmodel.cn/api/paas/v4 ",
+        model: " glm-4-plus ",
+        apiKeyEnv: " ZHIPU_API_KEY ",
+        apiKey: " sk-secret ",
+        temperature: "0.2",
+        maxTokens: "2048",
+        timeoutS: "15",
+        maxRetries: "0",
+      }, safeStorage)
+
+      expect(saved.settings).toMatchObject({
+        enabled: true,
+        baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+        model: "glm-4-plus",
+        apiKeyEnv: "ZHIPU_API_KEY",
+      })
+      expect(saved.apiKey).toBe("sk-secret")
+
+      const rawConfig = readFileSync(configPath, "utf8")
+      expect(rawConfig).toContain("apiKeyProtected")
+      expect(rawConfig).not.toContain("sk-secret")
+
+      const loaded = loadLlmSettingsConfig(configPath, safeStorage)
+
+      expect(loaded.settings).toMatchObject({
+        enabled: true,
+        baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+        model: "glm-4-plus",
+        apiKeyEnv: "ZHIPU_API_KEY",
+      })
+      expect(loaded.apiKey).toBe("sk-secret")
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
   })
 
   it("drains progress lines while preserving final task JSON stdout", () => {

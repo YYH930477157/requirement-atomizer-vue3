@@ -295,7 +295,7 @@
                 </label>
                 <label class="settings-field wide">
                   <span>API Key</span>
-                  <input v-model="llmApiKey" data-testid="settings-api-key" type="password" placeholder="仅本次会话生效，不写入配置文件" />
+                  <input v-model="llmApiKey" data-testid="settings-api-key" type="password" placeholder="加密保存到本机配置文件" />
                 </label>
                 <label class="settings-field">
                   <span>Temperature</span>
@@ -606,7 +606,7 @@ async function handleSaveLlmSettings() {
       applyLlmSettings(saved)
     }
     llmApiKey.value = ""
-    settingsStatus.value = "配置已保存，API Key 已写入当前会话环境变量"
+    settingsStatus.value = "配置已保存，API Key 已加密写入本机配置文件"
   } catch (error) {
     settingsStatus.value = error instanceof Error ? error.message : "保存配置失败"
   } finally {

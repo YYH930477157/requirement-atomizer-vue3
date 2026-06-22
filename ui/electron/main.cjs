@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, safeStorage, shell } = require("electron");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
@@ -8,8 +8,10 @@ const {
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
+  loadLlmSettingsConfig,
   normalizeLlmSettings,
   resolvePythonScriptPath,
+  saveLlmSettingsConfig,
 } = require("./main.helpers.cjs");
 
 let mainWindow = null;
@@ -266,29 +268,26 @@ function loadLlmSettings() {
   if (llmSettings) {
     return llmSettings;
   }
-  try {
-    const text = fs.readFileSync(llmSettingsPath(), "utf8");
-    llmSettings = normalizeLlmSettings(JSON.parse(text));
-  } catch {
-    llmSettings = normalizeLlmSettings(DEFAULT_LLM_SETTINGS);
+  const loaded = loadLlmSettingsConfig(llmSettingsPath(), safeStorage);
+  llmSettings = loaded.settings;
+  sessionApiKey = loaded.apiKey;
+  if (sessionApiKey) {
+    process.env[llmSettings.apiKeyEnv] = sessionApiKey;
   }
   return llmSettings;
 }
 
 function saveLlmSettings(input) {
-  const normalized = normalizeLlmSettings(input);
-  const apiKey = typeof input?.apiKey === "string" ? input.apiKey.trim() : "";
-  if (apiKey) {
-    sessionApiKey = apiKey;
-    process.env[normalized.apiKeyEnv] = apiKey;
+  const saved = saveLlmSettingsConfig(llmSettingsPath(), input, safeStorage, sessionApiKey);
+  llmSettings = saved.settings;
+  sessionApiKey = saved.apiKey;
+  if (sessionApiKey) {
+    process.env[llmSettings.apiKeyEnv] = sessionApiKey;
   }
-  llmSettings = normalized;
-  fs.mkdirSync(app.getPath("userData"), { recursive: true });
-  fs.writeFileSync(llmSettingsPath(), JSON.stringify(normalized, null, 2), "utf8");
   if (apiSession?.outputDir) {
     void startApiServer(apiSession.outputDir).catch(() => undefined);
   }
-  return normalized;
+  return llmSettings;
 }
 
 async function testLlmConnection(input) {

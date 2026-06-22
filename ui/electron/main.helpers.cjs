@@ -30,6 +30,8 @@ const DEFAULT_LLM_SETTINGS = {
   maxRetries: 3,
 };
 
+const SECRET_PREFIX = "safeStorage:v1:";
+
 function normalizeLlmSettings(input = {}) {
   return {
     enabled: Boolean(input.enabled),
@@ -62,6 +64,52 @@ function buildLlmEnvironment(settings, env = process.env) {
     result[normalized.apiKeyEnv] = env[normalized.apiKeyEnv];
   }
   return result;
+}
+
+function loadLlmSettingsConfig(configPath, safeStorage) {
+  try {
+    const payload = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const settings = normalizeLlmSettings(payload);
+    return {
+      settings,
+      apiKey: decryptApiKey(payload.apiKeyProtected, safeStorage),
+    };
+  } catch {
+    return {
+      settings: normalizeLlmSettings(DEFAULT_LLM_SETTINGS),
+      apiKey: "",
+    };
+  }
+}
+
+function saveLlmSettingsConfig(configPath, input, safeStorage, previousApiKey = "") {
+  const settings = normalizeLlmSettings(input);
+  const explicitApiKey = typeof input?.apiKey === "string" ? input.apiKey.trim() : "";
+  const apiKey = explicitApiKey || previousApiKey;
+  const payload = { ...settings };
+  const protectedKey = encryptApiKey(apiKey, safeStorage);
+  if (protectedKey) {
+    payload.apiKeyProtected = protectedKey;
+  }
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(payload, null, 2), "utf8");
+  return { settings, apiKey };
+}
+
+function encryptApiKey(apiKey, safeStorage) {
+  if (!apiKey) return "";
+  if (!safeStorage?.isEncryptionAvailable?.()) return "";
+  return `${SECRET_PREFIX}${safeStorage.encryptString(apiKey).toString("base64")}`;
+}
+
+function decryptApiKey(value, safeStorage) {
+  if (typeof value !== "string" || !value.startsWith(SECRET_PREFIX)) return "";
+  if (!safeStorage?.isEncryptionAvailable?.()) return "";
+  try {
+    return safeStorage.decryptString(Buffer.from(value.slice(SECRET_PREFIX.length), "base64"));
+  } catch {
+    return "";
+  }
 }
 
 function resolvePythonScriptPath(filename, options = {}) {
@@ -125,6 +173,8 @@ module.exports = {
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
+  loadLlmSettingsConfig,
   normalizeLlmSettings,
   resolvePythonScriptPath,
+  saveLlmSettingsConfig,
 };
