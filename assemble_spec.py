@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,18 @@ from cosem_access_security import build_access_security
 from cosem_behavior_spec import build_behavior_spec
 from cosem_external_refs import build_external_refs
 from cosem_object_model import build_object_model
+
+
+_OBIS_LIST_C_MEANING = {
+    "1": "Active Import (+P)",
+    "2": "Active Export (-P)",
+    "3": "Reactive Import (+Q)",
+    "4": "Reactive Export (-Q)",
+    "5": "Reactive QI (+Q)",
+    "6": "Reactive QII (+Q)",
+    "7": "Reactive QIII (-Q)",
+    "8": "Reactive QIV (-Q)",
+}
 
 
 def _req(*, title: str, description: str, source_quote: str, labels: list[str],
@@ -35,6 +48,41 @@ def _req(*, title: str, description: str, source_quote: str, labels: list[str],
     }
 
 
+def _rate_label(value: str) -> str:
+    return "T0" if value == "0" else f"Rate {value}"
+
+
+def _obis_list_style_object_name(obj: dict[str, Any]) -> str:
+    """Return the object-list wording used by customer OBIS spreadsheets when deterministic."""
+    name = str(obj.get("object") or "").strip()
+    obis = str(obj.get("obis") or "").strip()
+    class_id = str(obj.get("class_id") or "").strip()
+    match = re.fullmatch(r"\d+-\d+:(\d+)\.(\d+)\.([0-9xX]+)\.255", obis)
+    if not match or class_id != "4":
+        return name
+
+    c_field, d_field, e_field = match.groups()
+    quantity = _OBIS_LIST_C_MEANING.get(c_field)
+    if not quantity:
+        return name
+
+    e_field = "x" if e_field.lower() == "x" else e_field
+    if d_field == "2":
+        return f"Cumulative MD Register - {quantity} {_rate_label(e_field)}"
+    if d_field == "6":
+        rate_suffix = "" if e_field == "0" else f" {_rate_label(e_field)}"
+        return f"Max Demand Register - {quantity}{rate_suffix}"
+    return name
+
+
+def _object_display(obj: dict[str, Any]) -> dict[str, str]:
+    return {
+        "name": _obis_list_style_object_name(obj),
+        "obis": str(obj.get("obis") or "").strip(),
+        "class_id": str(obj.get("class_id") or "").strip(),
+    }
+
+
 def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
     reqs = []
     for obj in model["objects"]:
@@ -42,10 +90,11 @@ def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
         # Event→事件记录、Threshold→门限范围、Special Days→节假日…），取代旧的 7 域硬映射兜底。
         labels = rs.map_labels(f"{obj['object']} {obj.get('domain') or ''}")
         attrs = obj["attributes"]
+        display = _object_display(obj)
         tt = None
         if attrs:
             tt = {
-                "description": f"{obj['object']} 属性访问表",
+                "description": f"{display['name']} 属性访问表",
                 "columns": ["#", "属性", "类型", "RC", "PC", "SC", "LC", "默认值"],
                 "rows": [[a["index"], a["name"], a["type"],
                           a["access"].get("RC", a["access_raw"]), a["access"].get("PC", ""),
@@ -53,15 +102,17 @@ def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
                          for a in attrs],
             }
         reqs.append(_req(
-            title=f"{obj['object']} (OBIS {obj['obis']} / CL {obj['class_id']})",
-            description=(f"计量软件 SHALL 实现 COSEM 对象 {obj['object']}（OBIS {obj['obis']}，接口类 "
-                         f"{obj['class_id']}），其属性的数据类型与各关联(RC/PC/SC/LC)访问权限按属性表实现。"),
-            source_quote=f"COSEM object {obj['object']} / CL {obj['class_id']} / OBIS {obj['obis']} shall be defined by the profile.",
+            title=f"{display['name']} (OBIS {display['obis']} / CL {display['class_id']})",
+            description=(f"计量软件 SHALL 实现下列 COSEM 对象：Object / Attribute Name: {display['name']}；"
+                         f"OBIS Code: {display['obis']}；Interface Class: {display['class_id']}。"
+                         f"其属性的数据类型与各关联(RC/PC/SC/LC)访问权限按属性表实现。"),
+            source_quote=(f"COSEM object {display['name']} / CL {display['class_id']} / "
+                          f"OBIS {display['obis']} shall be defined by the profile."),
             labels=labels,
             priority="P1",  # 对象模型统一 P1；P0 留给安全基础设施(P2 套件/关联/策略)
             source_section=" / ".join(str(p) for p in (obj.get("section_path") or [])) or str(obj.get("domain") or ""),
             threshold_table=tt,
-            acceptance=[f"读取 {obj['object']} 的 logical_name 返回 OBIS {obj['obis']}",
+            acceptance=[f"读取 {display['name']} 的 logical_name 返回 OBIS {display['obis']}",
                         "各属性的访问权限与数据类型符合属性表"],
             notes=f"对象模型由确定性装配(P1)，OBIS/CL/访问位来自源表、未经 LLM。",
         ))

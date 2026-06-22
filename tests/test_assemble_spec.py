@@ -89,6 +89,63 @@ class AssembleSpecTests(unittest.TestCase):
             self.assertEqual(tt["columns"][:3], ["#", "属性", "类型"])
             self.assertTrue(any("time" in row for row in tt["rows"]))
 
+    def test_wildcard_obis_object_uses_obis_list_style_name(self) -> None:
+        model = {
+            "objects": [{
+                "object": "Cumulative Active Demand (Q1 + Q4)+ - Register import",
+                "obis": "1-0:1.2.x.255",
+                "class_id": "4",
+                "domain": "demand",
+                "section_path": ["Object Model"],
+                "attributes": [],
+            }]
+        }
+
+        req = assemble_spec.p1_requirements(model)[0]
+
+        self.assertIn("Cumulative MD Register - Active Import (+P) Rate x", req["title"])
+        self.assertIn("Object / Attribute Name: Cumulative MD Register - Active Import (+P) Rate x", req["description"])
+        self.assertIn("OBIS Code: 1-0:1.2.x.255", req["description"])
+        self.assertIn("Interface Class: 4", req["description"])
+        self.assertNotIn("Cumulative Active Demand (Q1 + Q4)+ - Register import", req["description"])
+
+    def test_obis_list_style_name_keeps_concrete_rate_labels(self) -> None:
+        reqs = assemble_spec.p1_requirements({
+            "objects": [
+                {"object": "Legacy total", "obis": "1-0:1.2.0.255", "class_id": "4",
+                 "domain": "demand", "attributes": [], "section_path": []},
+                {"object": "Legacy rate", "obis": "1-0:1.2.3.255", "class_id": "4",
+                 "domain": "demand", "attributes": [], "section_path": []},
+            ]
+        })
+
+        self.assertIn("Cumulative MD Register - Active Import (+P) T0", reqs[0]["title"])
+        self.assertIn("Cumulative MD Register - Active Import (+P) Rate 3", reqs[1]["title"])
+
+    def test_obis_list_style_name_is_used_for_attribute_table_title(self) -> None:
+        req = assemble_spec.p1_requirements({
+            "objects": [{
+                "object": "Cumulative Active Demand (Q1 + Q4)+ - Register import",
+                "obis": "1-0:1.2.x.255",
+                "class_id": "4",
+                "domain": "demand",
+                "section_path": [],
+                "attributes": [{
+                    "index": "1",
+                    "name": "logical_name",
+                    "type": "octet-string[6]",
+                    "access": {"RC": "R-", "PC": "--", "SC": "R-", "LC": "R-"},
+                    "access_raw": "R-/--/R-/R-",
+                    "default": "01000102xxFF",
+                }],
+            }]
+        })[0]
+
+        self.assertEqual(
+            req["threshold_table"]["description"],
+            "Cumulative MD Register - Active Import (+P) Rate x 属性访问表",
+        )
+
     def test_security_matrix_requirement_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

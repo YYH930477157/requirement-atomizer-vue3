@@ -102,6 +102,49 @@ class SpecExportTests(unittest.TestCase):
         self.assertIn("preset", md)
         self.assertIn("## 安全（1）", md)
 
+    def test_xlsx_includes_object_model_sheet_in_obis_list_format(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            write_fixture(out)
+            spec_export.export_spec(out, formats=["xlsx"])
+            workbook = load_workbook(out / "dlms_cosem_spec.xlsx")
+
+        self.assertIn("COSEM Object Model", workbook.sheetnames)
+        ws = workbook["COSEM Object Model"]
+        self.assertEqual(
+            [ws.cell(row=1, column=col).value for col in range(1, 12)],
+            [
+                "Index",
+                "Object / Attribute Name",
+                "Attribute Type",
+                "Class",
+                "Ver.",
+                "SN",
+                "OBIS Code / Default Value",
+                "Public(16)",
+                "Data Readout(3)",
+                "Remote Management(1)",
+                "Local Management(2)",
+            ],
+        )
+        self.assertEqual(ws["B2"].value, "Time")
+        self.assertEqual(ws["B2"].fill.fgColor.rgb, "FFFF0000")
+        self.assertEqual(ws["B3"].value, "Clock")
+        self.assertEqual(ws["D3"].value, "8")
+        self.assertEqual(ws["G3"].value, "0-0:1.0.0.255")
+        self.assertEqual(ws["B3"].fill.fgColor.rgb, "FFFFFF00")
+        self.assertEqual(ws["A4"].value, "1")
+        self.assertEqual(ws["B4"].value, "time")
+        self.assertEqual(ws["C4"].value, "octet-string")
+        self.assertEqual(ws["G4"].value, "00")
+        self.assertEqual(ws["H4"].value, "RW")
+        self.assertEqual(ws["I4"].value, "R-")
+        self.assertEqual(ws["J4"].value, "--")
+        self.assertEqual(ws["K4"].value, "R-")
+        self.assertEqual(ws["B4"].fill.fgColor.rgb, "FF00FFFF")
+
 
 if __name__ == "__main__":
     unittest.main()

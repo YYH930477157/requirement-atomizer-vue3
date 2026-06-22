@@ -42,6 +42,20 @@ STATUS_LABELS = {
     "gap": "缺口",
 }
 
+OBJECT_MODEL_COLUMNS = [
+    ("Index", 10),
+    ("Object / Attribute Name", 48),
+    ("Attribute Type", 26),
+    ("Class", 10),
+    ("Ver.", 8),
+    ("SN", 10),
+    ("OBIS Code / Default Value", 30),
+    ("Public(16)", 14),
+    ("Data Readout(3)", 16),
+    ("Remote Management(1)", 22),
+    ("Local Management(2)", 22),
+]
+
 THIN_BORDER = Border(
     left=Side(style="thin", color="D5D8DC"),
     right=Side(style="thin", color="D5D8DC"),
@@ -60,6 +74,10 @@ WRAP_ALIGN = Alignment(wrap_text=True, vertical="top")
 CENTER_ALIGN = Alignment(horizontal="center", vertical="center")
 SUMMARY_FILL = PatternFill(start_color="EBF5FB", end_color="EBF5FB", fill_type="solid")
 ALT_ROW_FILL = PatternFill(start_color="F8F9F9", end_color="F8F9F9", fill_type="solid")
+OBJECT_HEADER_FILL = PatternFill(start_color="FF808080", end_color="FF808080", fill_type="solid")
+OBJECT_GROUP_FILL = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
+OBJECT_ROW_FILL = PatternFill(start_color="FFFFFF00", end_color="FFFFFF00", fill_type="solid")
+ATTRIBUTE_NAME_FILL = PatternFill(start_color="FF00FFFF", end_color="FF00FFFF", fill_type="solid")
 
 TABLE_COLUMNS = [
     ("ID", 12), ("标题", 30), ("类型", 12), ("优先级", 10), ("状态", 10),
@@ -277,6 +295,127 @@ def _write_domain_sheet(wb: Workbook, domain: str, reqs: list[dict]) -> None:
     ws.auto_filter.ref = f"A{header_row}:{get_column_letter(len(TABLE_COLUMNS))}{header_row + len(reqs)}"
 
 
+def _is_object_model_requirement(req: dict[str, Any]) -> bool:
+    title = str(req.get("title") or "")
+    quote = str(req.get("source_quote") or "")
+    tt = req.get("threshold_table")
+    return (
+        "OBIS " in title
+        and " / CL " in title
+        and "COSEM object " in quote
+        and isinstance(tt, dict)
+        and "属性访问表" in str(tt.get("description") or "")
+    )
+
+
+def _split_access_row(row: list[Any]) -> dict[str, Any]:
+    return {
+        "index": row[0] if len(row) > 0 else "",
+        "name": row[1] if len(row) > 1 else "",
+        "type": row[2] if len(row) > 2 else "",
+        "rc": row[3] if len(row) > 3 else "",
+        "pc": row[4] if len(row) > 4 else "",
+        "sc": row[5] if len(row) > 5 else "",
+        "lc": row[6] if len(row) > 6 else "",
+        "default": row[7] if len(row) > 7 else "",
+    }
+
+
+def _object_model_name(req: dict[str, Any]) -> str:
+    title = str(req.get("title") or "")
+    marker = " (OBIS "
+    return title.split(marker, 1)[0].strip() if marker in title else title.strip()
+
+
+def _object_model_class(req: dict[str, Any]) -> str:
+    title = str(req.get("title") or "")
+    if " / CL " not in title:
+        return ""
+    return title.rsplit(" / CL ", 1)[-1].rstrip(")").strip()
+
+
+def _object_model_obis(req: dict[str, Any]) -> str:
+    title = str(req.get("title") or "")
+    if "(OBIS " not in title or " / CL " not in title:
+        return ""
+    return title.split("(OBIS ", 1)[-1].split(" / CL ", 1)[0].strip()
+
+
+def _object_model_group(req: dict[str, Any]) -> str:
+    section = str(req.get("source_section") or "").strip()
+    labels = req.get("labels") or []
+    if section:
+        return section
+    if labels:
+        return str(labels[0])
+    return "COSEM Objects"
+
+
+def _style_object_model_row(ws: Any, row: int, fill: PatternFill, *, bold: bool = False) -> None:
+    for col in range(1, len(OBJECT_MODEL_COLUMNS) + 1):
+        cell = ws.cell(row=row, column=col)
+        cell.fill = fill
+        cell.font = Font(name="Microsoft YaHei", size=10, bold=bold, color="000000")
+        cell.alignment = CENTER_ALIGN if col != 2 else Alignment(vertical="center")
+        cell.border = THIN_BORDER
+
+
+def _write_object_model_sheet(wb: Workbook, requirements: list[dict[str, Any]]) -> None:
+    object_reqs = [req for req in requirements if _is_object_model_requirement(req)]
+    if not object_reqs:
+        return
+
+    ws = wb.create_sheet(title="COSEM Object Model")
+    ws.sheet_properties.tabColor = "00A6A6"
+    for col_idx, (name, width) in enumerate(OBJECT_MODEL_COLUMNS, start=1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.value = name
+        cell.fill = OBJECT_HEADER_FILL
+        cell.font = Font(name="Microsoft YaHei", size=10, bold=True, color="000000")
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+    ws.row_dimensions[1].height = 24
+
+    row_idx = 2
+    current_group = None
+    for req in sorted(object_reqs, key=lambda r: (_object_model_group(r), _object_model_obis(r), _object_model_name(r))):
+        group = _object_model_group(req)
+        if group != current_group:
+            current_group = group
+            ws.cell(row=row_idx, column=2).value = group
+            _style_object_model_row(ws, row_idx, OBJECT_GROUP_FILL, bold=True)
+            row_idx += 1
+
+        ws.cell(row=row_idx, column=2).value = _object_model_name(req)
+        ws.cell(row=row_idx, column=4).value = _object_model_class(req)
+        ws.cell(row=row_idx, column=7).value = _object_model_obis(req)
+        _style_object_model_row(ws, row_idx, OBJECT_ROW_FILL, bold=True)
+        row_idx += 1
+
+        tt = req.get("threshold_table") or {}
+        for raw in tt.get("rows") or []:
+            attr = _split_access_row(list(raw))
+            ws.cell(row=row_idx, column=1).value = attr["index"]
+            ws.cell(row=row_idx, column=2).value = attr["name"]
+            ws.cell(row=row_idx, column=3).value = attr["type"]
+            ws.cell(row=row_idx, column=7).value = attr["default"]
+            ws.cell(row=row_idx, column=8).value = attr["pc"]
+            ws.cell(row=row_idx, column=9).value = attr["rc"]
+            ws.cell(row=row_idx, column=10).value = attr["sc"]
+            ws.cell(row=row_idx, column=11).value = attr["lc"]
+            for col in range(1, len(OBJECT_MODEL_COLUMNS) + 1):
+                cell = ws.cell(row=row_idx, column=col)
+                cell.font = CELL_FONT
+                cell.alignment = CENTER_ALIGN if col != 2 else Alignment(vertical="center")
+                cell.border = THIN_BORDER
+            ws.cell(row=row_idx, column=2).fill = ATTRIBUTE_NAME_FILL
+            row_idx += 1
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(OBJECT_MODEL_COLUMNS))}{max(1, row_idx - 1)}"
+
+
 def write_xlsx(doc: dict[str, Any], output_path: Path) -> Path:
     """把装配好的需求 doc 写成表计行业版 Excel（与公司技能 generate_excel 同版式）。"""
     output_path = Path(output_path)
@@ -291,6 +430,7 @@ def write_xlsx(doc: dict[str, Any], output_path: Path) -> Path:
 
     wb = Workbook()
     _write_summary_sheet(wb, meta, analysis, domain_groups)
+    _write_object_model_sheet(wb, requirements)
     for domain in METERING_DOMAINS:
         if domain in domain_groups:
             _write_domain_sheet(wb, domain, domain_groups[domain])
