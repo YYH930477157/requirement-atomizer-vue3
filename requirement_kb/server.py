@@ -6,8 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from kb_api import KnowledgeRepository
-from kb_query import default_kb_paths
+from .cli import default_kb_paths
+from .repository import KnowledgeRepository
 
 
 class KBRequestHandler(BaseHTTPRequestHandler):
@@ -101,4 +101,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

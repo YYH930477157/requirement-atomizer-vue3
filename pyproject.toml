@@ -24,8 +24,10 @@ ratomizer = "cli:main"
 requirement-atomizer = "atomize:main"
 requirement-review = "llm_pipeline:main"
 requirement-api = "api_server:main"
-validate-kb = "kb_schema:main"
-validate-vault = "validate_vault:main"
+requirement-kb = "requirement_kb.cli:main"
+requirement-kb-server = "requirement_kb.server:main"
+validate-kb = "requirement_kb.schema:main"
+validate-vault = "requirement_kb.vault:main"
 validate-atomic-requirements = "atomic_requirement_schema:main"
 validate-llm-reviews = "llm_review_schema:main"
 
@@ -49,15 +51,9 @@ py-modules = [
   "export_requirements",
   "extract_cosem_instances",
   "extract_terms",
-  "kb_api",
-  "kb_matching",
-  "kb_query",
-  "kb_schema",
-  "kb_server",
   "llm_client",
   "llm_pipeline",
   "llm_review_schema",
-  "obsidian_kb",
   "output_writer",
   "pattern_engine",
   "requirement_schema",
@@ -68,7 +64,6 @@ py-modules = [
   "spec_export",
   "table_pattern_engine",
   "text_normalize",
-  "validate_vault",
   "version",
 ]
 
@@ -79,4 +74,4 @@ version = {attr = "version.__version__"}
 gui = ["theme.qss.template"]
 
 [tool.setuptools.packages.find]
-include = ["gui*", "parsers*"]
+include = ["gui*", "parsers*", "requirement_kb*"]

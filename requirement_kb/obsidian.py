@@ -186,7 +186,7 @@ def export_json_to_vault(kb_paths: Iterable[Path], vault_path: Path) -> list[Pat
     index.write_text(
         "# Energy Metering Knowledge Vault\n\n"
         "This Obsidian vault is the source-editing layer for the requirement atomizer knowledge base.\n\n"
-        "Edit notes here, then compile the vault back to JSON with `obsidian_kb.py compile`.\n",
+        "Edit notes here, then compile the vault back to JSON with `python -m requirement_kb.obsidian compile`.\n",
         encoding="utf-8",
     )
     written.append(index)
@@ -243,4 +243,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

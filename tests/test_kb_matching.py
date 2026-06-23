@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from kb_matching import compile_term_pattern, find_matched_terms, normalize_match_term
+from requirement_kb.matching import compile_term_pattern, find_matched_terms, normalize_match_term
 
 
 class KBMatchingTests(unittest.TestCase):

@@ -152,16 +152,17 @@ When a KB is attached, `blocks.jsonl`, `chunks.jsonl`, `table_items.jsonl`, and 
 
 ## Knowledge Base Architecture
 
-The KB is stored as portable JSON files and exposed through a common query interface.
+The knowledge base is now a reusable Python package, not a private helper inside the atomizer. Obsidian remains the human authoring layer, while compiled JSON files are the runtime format that can be embedded in the desktop app or mounted by other tools.
 
 ```text
-JSON KB files
--> kb_api.py repository
--> CLI / Python API / local HTTP API
--> Windows app, document agent, test agent, or other tools
+obsidian-vault/             # human-maintained Markdown source
+-> knowledge_bases/*.json   # compiled runtime KB files
+-> requirement_kb/          # reusable Python package
+-> Python API / CLI / local HTTP service
+-> atomizer, Electron app, agents, or external tools
 ```
 
-This keeps the storage simple and portable while still giving external tools a stable contract.
+This keeps the storage portable while giving every consumer the same contract. The legacy root-level KB entry modules have been removed; new tools should use `requirement_kb` directly.
 
 ## Domain Pack Direction
 
@@ -264,24 +265,24 @@ This lets the project gradually move table interpretation from hard-coded Python
 
 ### P1-3 KB Schema
 
-The portable KB contract is documented in:
+The portable KB contract belongs to the reusable `requirement_kb` package and is documented in:
 
 ```text
 schemas/kb_schema.json
-kb_schema.py
+requirement_kb/schema.py
 ```
 
 Validate a knowledge base before attaching it:
 
 ```powershell
-python .\kb_schema.py `
+python -m requirement_kb.schema `
   ".\knowledge_bases\energy_metering_cosem_classes.json"
 ```
 
 Use strict mode when preparing a polished external KB:
 
 ```powershell
-python .\kb_schema.py `
+python -m requirement_kb.schema `
   ".\knowledge_bases\compiled_from_obsidian.json" `
   --strict
 ```
@@ -462,7 +463,7 @@ Fields outside the common set are preserved as `metadata` by the interface. This
 
 ```python
 from pathlib import Path
-from kb_api import KnowledgeRepository
+from requirement_kb import KnowledgeRepository
 
 repo = KnowledgeRepository.from_paths([
     Path("knowledge_bases/energy_metering.json"),
@@ -479,25 +480,25 @@ print(repo.export_context("Image Transfer shall support image_activate"))
 ### CLI API
 
 ```powershell
-python .\kb_query.py info
+python -m requirement_kb.cli info
 
-python .\kb_query.py search "class 8"
+python -m requirement_kb.cli search "class 8"
 
-python .\kb_query.py get "KB-L3-IC-8-CLOCK"
+python -m requirement_kb.cli get "KB-L3-IC-8-CLOCK"
 
-python .\kb_query.py match "Image Transfer uses image_transfer_status"
+python -m requirement_kb.cli match "Image Transfer uses image_transfer_status"
 
-python .\kb_query.py context "Association LN object_list shall be readable"
+python -m requirement_kb.cli context "Association LN object_list shall be readable"
 ```
 
-All commands print JSON.
+All commands print JSON. Installed environments also expose the `requirement-kb` console script. External tools can set `REQUIREMENT_KB_HOME` or `RATOMIZER_KB_HOME` to point the default CLI/service commands at a different runtime KB directory.
 
 ### Local HTTP API
 
 Start the local KB service:
 
 ```powershell
-python .\kb_server.py --host 127.0.0.1 --port 8765
+python -m requirement_kb.server --host 127.0.0.1 --port 8765
 ```
 
 Endpoints:
@@ -520,14 +521,14 @@ The recommended long-term workflow is:
 ```text
 Obsidian Markdown vault
 -> compiled JSON KB
--> kb_api.py / kb_server.py
+-> requirement_kb package
 -> Windows app and agents
 ```
 
 Export the current JSON KBs to an Obsidian vault:
 
 ```powershell
-python .\obsidian_kb.py export `
+python -m requirement_kb.obsidian export `
   --vault ".\obsidian-vault" `
   --kb ".\knowledge_bases\energy_metering.json" `
   --kb ".\knowledge_bases\energy_metering_protocol_layer.json" `
@@ -539,7 +540,7 @@ Open `obsidian-vault` in Obsidian and edit the Markdown notes.
 Compile the Obsidian vault back to a runtime JSON KB:
 
 ```powershell
-python .\obsidian_kb.py compile `
+python -m requirement_kb.obsidian compile `
   --vault ".\obsidian-vault" `
   --out ".\knowledge_bases\compiled_from_obsidian.json" `
   --kb-id "obsidian_energy_metering"
@@ -548,7 +549,7 @@ python .\obsidian_kb.py compile `
 Then use the compiled KB with any existing interface:
 
 ```powershell
-python .\kb_query.py `
+python -m requirement_kb.cli `
   --kb ".\knowledge_bases\compiled_from_obsidian.json" `
   search "class 8"
 ```
@@ -867,3 +868,23 @@ gui\theme.qss.template
 ```
 
 This project intentionally uses PyInstaller onedir packaging, not onefile. The startup is faster, and `dist\RequirementAtomizer\llm_agents\review_pipeline.yaml` remains editable after distribution. To switch a packaged copy between Ollama, vLLM, or GLM, edit `base_url`, `model`, and `model_routes.default` in that file and set the environment variable named by `api_key_env`.
+
+### Vue3 / Electron Portable Build
+
+The Vue3 desktop shell is packaged separately with the Python backend source and runtime assets as Electron resources:
+
+```powershell
+cd .\ui
+npm install
+npm run desktop:pack
+```
+
+`npm run desktop:pack` builds the Vue renderer and then runs `electron-builder --win portable`. The packaged resources include the Python entry scripts, `requirement_kb/`, `parsers/`, `domain_packs/`, `knowledge_bases/`, and `llm_agents/`. The Electron shell runs those scripts through `RATOMIZER_PYTHON` when set, or `python` otherwise.
+
+The portable artifact is written to:
+
+```text
+ui\release\<productName> 0.1.0.exe
+```
+
+The unpacked app is written to `ui\release\win-unpacked\`. The build machine needs Node.js and npm. Until the Electron backend is converted to bundled executables, the target workstation also needs a compatible Python runtime and the project dependencies installed or available through `RATOMIZER_PYTHON`.

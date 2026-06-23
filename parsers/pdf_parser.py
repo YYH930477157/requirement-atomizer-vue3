@@ -12,7 +12,6 @@ from atomize import (
     DEFAULT_DOCUMENT_PROFILE,
     AtomizerInputError,
     DocumentProfile,
-    KnowledgeBase,
     SectionState,
     build_table_artifacts,
     clean_text,
@@ -26,6 +25,7 @@ from atomize import (
     merge_tags,
     tag_domains,
 )
+from requirement_kb import KnowledgeRepository
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
@@ -36,10 +36,10 @@ HEADER_FOOTER_BAND_RATIO = 0.12
 
 def extract_pdf(
     input_path: Path,
-    knowledge_bases: list[KnowledgeBase] | None = None,
+    knowledge_bases: KnowledgeRepository | None = None,
     document_profile: DocumentProfile | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    knowledge_bases = knowledge_bases or []
+    knowledge_bases = knowledge_bases or KnowledgeRepository.from_paths([])
     profile = document_profile or DEFAULT_DOCUMENT_PROFILE
     with pdfplumber.open(input_path) as pdf:
         _assert_text_layer(pdf)
@@ -241,7 +241,7 @@ def _append_text_block(
     order: int,
     page_number: int,
     sections: SectionState,
-    knowledge_bases: list[KnowledgeBase],
+    knowledge_bases: KnowledgeRepository,
     repeated_noise: set[str],
     last_caption: str | None,
     profile: DocumentProfile,

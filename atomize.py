@@ -21,8 +21,9 @@ from docx.text.paragraph import Paragraph
 
 from atomic_requirement_schema import validate_atomic_requirements
 from domain_pack import load_domain_pack
-from kb_matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
 from output_writer import build_quality_report, write_json, write_jsonl, write_summary
+from requirement_kb import KnowledgeRepository
+from requirement_kb.matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
 from table_pattern_engine import load_table_patterns, match_table_pattern
 from version import __version__
 
@@ -137,28 +138,7 @@ class DocumentProfile:
 DEFAULT_DOCUMENT_PROFILE = DocumentProfile()
 
 
-@dataclass(frozen=True)
-class KnowledgeEntry:
-    kb_id: str
-    entry_id: str
-    entry_type: str
-    layer: str
-    name: str
-    aliases: tuple[str, ...]
-    keywords: tuple[str, ...]
-    domain_tags: tuple[str, ...]
-    definition: str
-    relations: tuple[dict[str, Any], ...]
-    metadata: dict[str, Any]
-    match_pattern: re.Pattern[str] | None = field(default=None, compare=False, repr=False)
-
-
-@dataclass(frozen=True)
-class KnowledgeBase:
-    kb_id: str
-    name: str
-    version: str
-    entries: tuple[KnowledgeEntry, ...]
+KnowledgeBase = KnowledgeRepository
 
 
 @dataclass
@@ -303,7 +283,7 @@ def build_table_artifacts(
     order: int,
     table_title: str,
     section_path: list[str],
-    knowledge_bases: list[KnowledgeBase],
+    knowledge_bases: KnowledgeRepository,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     table_model = interpret_table_matrix(matrix)
     width = table_model["width"]
@@ -551,64 +531,8 @@ def tag_domains(*texts: str) -> list[str]:
     return tags
 
 
-def load_knowledge_bases(paths: list[Path]) -> list[KnowledgeBase]:
-    knowledge_bases: list[KnowledgeBase] = []
-    for path in paths:
-        resolved = path.expanduser().resolve()
-        payload = json.loads(resolved.read_text(encoding="utf-8"))
-        kb_id = str(payload.get("kb_id") or resolved.stem)
-        entries: list[KnowledgeEntry] = []
-        for raw in payload.get("entries", []):
-            name = clean_text(raw.get("name"))
-            known_keys = {
-                "id",
-                "type",
-                "layer",
-                "name",
-                "aliases",
-                "keywords",
-                "domain_tags",
-                "definition",
-                "relations",
-            }
-            metadata = {key: value for key, value in raw.items() if key not in known_keys}
-            keywords = tuple(
-                sorted(
-                    {
-                        normalize_match_term(term)
-                        for term in [name, *raw.get("aliases", []), *raw.get("keywords", [])]
-                        if len(normalize_match_term(term)) > 1
-                    },
-                    key=len,
-                    reverse=True,
-                )
-            )
-            match_pattern = compile_term_pattern(keywords)
-            entries.append(
-                KnowledgeEntry(
-                    kb_id=kb_id,
-                    entry_id=str(raw.get("id") or name),
-                    entry_type=str(raw.get("type") or "term"),
-                    layer=str(raw.get("layer") or payload.get("layer") or "term"),
-                    name=name,
-                    aliases=tuple(clean_text(v) for v in raw.get("aliases", [])),
-                    keywords=keywords,
-                    domain_tags=tuple(str(v) for v in raw.get("domain_tags", [])),
-                    definition=clean_text(raw.get("definition")),
-                    relations=tuple(raw.get("relations", [])),
-                    metadata=metadata,
-                    match_pattern=match_pattern,
-                )
-            )
-        knowledge_bases.append(
-            KnowledgeBase(
-                kb_id=kb_id,
-                name=clean_text(payload.get("name")) or kb_id,
-                version=str(payload.get("version") or ""),
-                entries=tuple(entries),
-            )
-        )
-    return knowledge_bases
+def load_knowledge_bases(paths: list[Path]) -> KnowledgeRepository:
+    return KnowledgeRepository.from_paths(paths)
 
 
 def stable_requirement_id(row: dict[str, Any]) -> str:
@@ -621,8 +545,8 @@ def stable_requirement_id(row: dict[str, Any]) -> str:
     return f"SREQ-{digest}"
 
 
-def match_knowledge(knowledge_bases: list[KnowledgeBase], *texts: str) -> list[dict[str, Any]]:
-    if not knowledge_bases:
+def match_knowledge(knowledge_bases: KnowledgeRepository | None, *texts: str) -> list[dict[str, Any]]:
+    if not knowledge_bases or not knowledge_bases.entries:
         return []
 
     haystack = normalize_match_term(" ".join(t for t in texts if t))
@@ -631,29 +555,28 @@ def match_knowledge(knowledge_bases: list[KnowledgeBase], *texts: str) -> list[d
 
     matches: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for kb in knowledge_bases:
-        for entry in kb.entries:
-            matched_terms = find_matched_terms(entry.match_pattern, haystack, normalized=True)
-            if not matched_terms:
-                continue
-            key = (entry.kb_id, entry.entry_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            matches.append(
-                {
-                    "kb_id": entry.kb_id,
-                    "entry_id": entry.entry_id,
-                    "type": entry.entry_type,
-                    "layer": entry.layer,
-                    "name": entry.name,
-                    "matched_terms": matched_terms[:8],
-                    "domain_tags": list(entry.domain_tags),
-                    "definition": entry.definition,
-                    "relations": list(entry.relations),
-                    "metadata": entry.metadata,
-                }
-            )
+    for entry in knowledge_bases.entries:
+        matched_terms = find_matched_terms(entry.match_pattern, haystack, normalized=True)
+        if not matched_terms:
+            continue
+        key = (entry.kb_id, entry.entry_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(
+            {
+                "kb_id": entry.kb_id,
+                "entry_id": entry.entry_id,
+                "type": entry.entry_type,
+                "layer": entry.layer,
+                "name": entry.name,
+                "matched_terms": matched_terms[:8],
+                "domain_tags": list(entry.domain_tags),
+                "definition": entry.definition,
+                "relations": list(entry.relations),
+                "metadata": entry.metadata,
+            }
+        )
     matches.sort(key=lambda row: (row["type"], row["name"]))
     return matches
 
@@ -705,10 +628,10 @@ def is_atomic_requirement_like(text: str) -> bool:
 
 def extract_docx(
     input_path: Path,
-    knowledge_bases: list[KnowledgeBase] | None = None,
+    knowledge_bases: KnowledgeRepository | None = None,
     document_profile: DocumentProfile | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    knowledge_bases = knowledge_bases or []
+    knowledge_bases = knowledge_bases or KnowledgeRepository.from_paths([])
     profile = document_profile or DEFAULT_DOCUMENT_PROFILE
     document = Document(input_path)
     sections = SectionState()
@@ -1969,12 +1892,12 @@ def run_atomizer_pipeline(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "knowledge_bases": [
             {
-                "kb_id": kb.kb_id,
-                "name": kb.name,
-                "version": kb.version,
-                "entries": len(kb.entries),
+                "kb_id": info.kb_id,
+                "name": info.name,
+                "version": info.version,
+                "entries": info.entries,
             }
-            for kb in knowledge_bases
+            for info in knowledge_bases.infos
         ],
         "domain_pack": str(domain_pack_dir.expanduser().resolve()) if domain_pack_dir else None,
         "counts": {

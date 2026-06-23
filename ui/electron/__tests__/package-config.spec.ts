@@ -14,6 +14,7 @@ describe("Electron packaging config", () => {
     expect(extraResources).toEqual(expect.arrayContaining([
       { from: "..", to: ".", filter: ["*.py"] },
       { from: "../parsers", to: "parsers" },
+      { from: "../requirement_kb", to: "requirement_kb" },
       { from: "../domain_packs", to: "domain_packs" },
       { from: "../knowledge_bases", to: "knowledge_bases" },
       { from: "../llm_agents", to: "llm_agents" },

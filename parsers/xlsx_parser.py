@@ -8,7 +8,8 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from atomize import DocumentProfile, KnowledgeBase, build_table_artifacts, clean_text
+from atomize import DocumentProfile, build_table_artifacts, clean_text
+from requirement_kb import KnowledgeRepository
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
@@ -17,11 +18,11 @@ MAX_SHEET_ROWS = 50_000
 
 def extract_xlsx(
     input_path: Path,
-    knowledge_bases: list[KnowledgeBase] | None = None,
+    knowledge_bases: KnowledgeRepository | None = None,
     document_profile: DocumentProfile | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     del document_profile
-    knowledge_bases = knowledge_bases or []
+    knowledge_bases = knowledge_bases or KnowledgeRepository.from_paths([])
     workbook = load_workbook(input_path, data_only=True, read_only=True)
     merge_ranges_by_sheet = _merged_ranges_by_sheet(input_path)
     blocks: list[dict[str, Any]] = []

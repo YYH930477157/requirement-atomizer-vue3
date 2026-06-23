@@ -165,9 +165,7 @@ requirement-atomizer/
   extract_cosem_instances.py         # legacy/utility: 从 table_items 提取 COSEM 对象实例
   knowledge_bases/                   # 运行时 JSON 知识库
   obsidian-vault/                    # 人工维护知识库源
-  obsidian_kb.py                     # Obsidian <-> JSON 编译工具
-  kb_api.py / kb_query.py / kb_server.py
-  kb_schema.py / validate_vault.py   # JSON KB 与 Obsidian vault 校验
+  requirement_kb/                    # reusable KB package: repository, matching, schema, Obsidian compiler, vault validator, CLI, server
   llm_pipeline.py                    # 当前 stub 审核管线
   llm_review_schema.py               # llm_review_results JSONL 轻量校验器
   llm_agents/review_pipeline.yaml    # 审核管线配置
@@ -352,12 +350,7 @@ llm_agents/review_pipeline.yaml
 ```text
 knowledge_bases/*.json
 obsidian-vault/
-obsidian_kb.py
-kb_api.py
-kb_query.py
-kb_server.py
-kb_schema.py
-validate_vault.py
+requirement_kb/
 schemas/kb_schema.json
 ```
 
@@ -368,8 +361,8 @@ schemas/kb_schema.json
 
 新增校验能力分为两类：
 
-- `validate_vault.py`：检查 Obsidian 笔记字段、重复 ID、metadata JSON、relations 目标等。
-- `kb_schema.py`：检查编译后的 JSON KB 是否满足 portable KB contract。
+- `requirement_kb.vault`：检查 Obsidian 笔记字段、重复 ID、metadata JSON、relations 目标等。
+- `requirement_kb.schema`：检查编译后的 JSON KB 是否满足 portable KB contract。
 
 知识库在 atomizer 中通过 `--kb` 挂载，匹配结果会进入 blocks、chunks、table_items 和 llm_tasks，支撑后续需求识别与上下文补全。
 
@@ -776,7 +769,7 @@ stateDiagram-v2
 | 层次 | 当前行为 | 风险 | 建议策略 |
 | --- | --- | --- | --- |
 | 输入文档 | `atomize.py` 读取 DOCX；解析失败会中止 | 文档损坏、格式异常、编码异常 | 增加 input preflight：文件存在、扩展名、可打开性、页/表数量探针 |
-| 知识库 | `kb_schema.py`、`validate_vault.py` 可手工校验 | KB 字段缺失、重复 ID、relations 断链 | atomize 前自动运行 schema/vault 校验；warning 不阻断，error 阻断 |
+| 知识库 | `requirement_kb.schema`、`requirement_kb.vault` 可手工校验 | KB 字段缺失、重复 ID、relations 断链 | atomize 前自动运行 schema/vault 校验；warning 不阻断，error 阻断 |
 | 表格解析 | 规则与启发式混合 | 表头合并错误、矩阵误识别 | 在 `quality_report.json` 中记录 unmatched/low-confidence tables |
 | atomic candidate | 以 rule-based 方式生成 | 误抽取、重复、上下文不足 | 保留 `source_refs`、`confidence`、`ambiguity`，高风险进入专家审核 |
 | LLM pipeline | 当前 stub review | 未来真实模型可能超时、返回非法 JSON | 增加 schema validation、retry、timeout、fallback to expert_pending |
@@ -907,7 +900,7 @@ python .\api_server.py --out ".\out\<run>" --port 8770
 atomize.py
 -> docx_blocks.py          # DOCX block/table extraction
 -> table_enrichment.py     # header merge, matrix facts, table item normalization
--> kb_matching.py          # KB match attachment
+-> requirement_kb.matching # KB match attachment
 -> atomic_candidate.py     # atomic_requirements generation
 -> output_writer.py        # JSONL/manifest/summary/quality report writing
 ```

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from validate_vault import Severity, validate_vault
+from requirement_kb.vault import Severity, validate_vault
 
 
 def write_note(

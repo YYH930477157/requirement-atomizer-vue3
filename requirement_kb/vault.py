@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from obsidian_kb import FOLDER_BY_LAYER, extract_definition, split_frontmatter
+from .obsidian import FOLDER_BY_LAYER, extract_definition, split_frontmatter
 
 
 REQUIRED_FRONTMATTER_FIELDS = ("id", "kb_id", "type", "layer", "name")

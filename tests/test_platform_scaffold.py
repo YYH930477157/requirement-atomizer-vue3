@@ -16,7 +16,6 @@ from api_server import RequirementAPIHandler, enrich_requirements, is_allowed_or
 from atomize import assert_valid_atomic_requirements
 from atomize import AtomizerInputError, apply_table_pattern_shadow
 from doc_ir import blocks_to_doc_ir
-from kb_schema import validate_kb_file, validate_kb_payload
 from llm_review_schema import validate_llm_review_result_payload, validate_llm_review_results
 from llm_pipeline import (
     append_review_state_events,
@@ -30,6 +29,7 @@ from llm_pipeline import (
     write_jsonl,
 )
 from output_writer import build_quality_report
+from requirement_kb.schema import validate_kb_file, validate_kb_payload
 from review_state import RequirementReviewState, apply_expert_decision
 from table_pattern_engine import load_table_patterns, match_table_pattern
 
@@ -654,11 +654,23 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertIn("openpyxl>=3.1.0", dependencies)
         self.assertIn("pdfplumber>=0.11", dependencies)
         self.assertIn("llm_client", py_modules)
+        self.assertNotIn("kb_api", py_modules)
+        self.assertNotIn("kb_matching", py_modules)
+        self.assertNotIn("kb_query", py_modules)
+        self.assertNotIn("kb_schema", py_modules)
+        self.assertNotIn("kb_server", py_modules)
+        self.assertNotIn("obsidian_kb", py_modules)
+        self.assertNotIn("validate_vault", py_modules)
         self.assertEqual(scripts["ratomizer"], "cli:main")
         self.assertEqual(scripts["requirement-atomizer"], "atomize:main")
         self.assertEqual(scripts["requirement-review"], "llm_pipeline:main")
+        self.assertEqual(scripts["requirement-kb"], "requirement_kb.cli:main")
+        self.assertEqual(scripts["requirement-kb-server"], "requirement_kb.server:main")
+        self.assertEqual(scripts["validate-kb"], "requirement_kb.schema:main")
+        self.assertEqual(scripts["validate-vault"], "requirement_kb.vault:main")
         self.assertEqual(scripts["validate-atomic-requirements"], "atomic_requirement_schema:main")
         self.assertEqual(scripts["validate-llm-reviews"], "llm_review_schema:main")
+        self.assertIn("requirement_kb*", payload["tool"]["setuptools"]["packages"]["find"]["include"])
         self.assertEqual(payload["project"]["optional-dependencies"]["gui"], ["PySide6>=6.6"])
         self.assertEqual(payload["project"]["optional-dependencies"]["package"], ["pyinstaller>=6.0"])
         self.assertEqual(payload["project"]["gui-scripts"]["ratomizer-gui"], "gui.app:main")

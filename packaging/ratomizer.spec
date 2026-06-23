@@ -38,6 +38,7 @@ hiddenimports = (
     + collect_submodules("yaml")
     + collect_submodules("openpyxl")
     + collect_submodules("pdfplumber")
+    + collect_submodules("requirement_kb")
     + spec_generator_modules
 )
 excludes = [

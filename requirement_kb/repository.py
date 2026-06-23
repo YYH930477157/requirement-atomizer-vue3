@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from kb_matching import clean_text, compile_term_pattern, find_matched_terms, normalize_match_term
+from .matching import clean_text, compile_term_pattern, find_matched_terms, normalize_match_term
 
 
 KNOWN_ENTRY_KEYS = {
