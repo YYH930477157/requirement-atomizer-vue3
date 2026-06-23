@@ -13,6 +13,7 @@ function buildRunPipelineArgs(input) {
     ...(input.skipReview ? ["--skip-review"] : []),
     ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
     ...(input.reviewScope ? ["--review-scope", input.reviewScope] : []),
+    ...(input.llmReviewLimit ? ["--llm-review-limit", String(input.llmReviewLimit)] : []),
     ...(input.chunkChars ? ["--chunk-chars", String(input.chunkChars)] : []),
     ...arrayArgs("--kb", input.kbPaths),
     ...(input.domainPackDir ? ["--domain-pack", input.domainPackDir] : []),

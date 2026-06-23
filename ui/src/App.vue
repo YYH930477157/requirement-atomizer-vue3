@@ -28,9 +28,10 @@
           </div>
 
           <div class="app-actions">
-            <button class="button primary" type="button" data-testid="action-run-pipeline" :disabled="isRunning" @click="handleRunPipeline">
+            <button class="button primary" type="button" data-testid="action-run-pipeline" :disabled="isRunning" @click="() => handleRunPipeline()">
               {{ isRunning ? "运行中" : "运行" }}
             </button>
+            <button class="button" type="button" data-testid="action-test-pipeline" :disabled="isRunning" @click="handleRunPipeline({ llmReviewLimit: TEST_LLM_REVIEW_LIMIT })">测试运行</button>
             <button class="button" type="button" data-testid="action-open-document" @click="handleOpenDocument">导入文档</button>
             <button class="button" type="button" data-testid="action-select-output-dir" @click="handleOpenOutput">选择输出目录</button>
             <button class="button" type="button" data-testid="action-export" @click="handleExport">导出</button>
@@ -431,6 +432,7 @@ const abntPreset = {
   ],
   domainPackDir: "domain_packs/dlms_cosem",
 }
+const TEST_LLM_REVIEW_LIMIT = 50
 
 const emptyRequirement: Requirement = {
   id: "未选择需求",
@@ -814,7 +816,7 @@ async function handleOpenOutput() {
   }
 }
 
-async function handleRunPipeline() {
+async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
   if (isRunning.value) return
   let stopProgress: (() => void) | undefined
   try {
@@ -832,18 +834,20 @@ async function handleRunPipeline() {
     isRunning.value = true
     runProgress.value = 8
     runStage.value = "准备运行"
-    runProgressDetail.value = "准备启动本地任务"
-    apiMessage.value = "正在运行抽取与审查..."
+    runProgressDetail.value = options.llmReviewLimit ? `测试运行：最多 AI 审查 ${options.llmReviewLimit} 条` : "准备启动本地任务"
+    apiMessage.value = options.llmReviewLimit ? `正在测试运行，最多 AI 审查 ${options.llmReviewLimit} 条...` : "正在运行抽取与审查..."
     await nextUiTick()
     runProgress.value = 18
     runStage.value = "运行后端解析"
     runProgressDetail.value = "正在抽取原子化需求"
+    const useLlmReview = llmMode.value || Boolean(options.llmReviewLimit)
     const payload = await window.ratomizerDesktop.runPipeline({
       inputPath: currentInputPath.value,
       outDir,
       skipReview: false,
-      llmRoute: llmMode.value ? "openai_compatible" : undefined,
-      reviewScope: llmMode.value ? "targeted" : undefined,
+      llmRoute: useLlmReview ? "openai_compatible" : undefined,
+      reviewScope: useLlmReview ? "targeted" : undefined,
+      ...(options.llmReviewLimit ? { llmReviewLimit: options.llmReviewLimit } : {}),
       ...abntPreset,
     })
     runProgress.value = 82
@@ -854,8 +858,8 @@ async function handleRunPipeline() {
     await refreshAfterDesktopTask(currentOutputDir.value)
     runProgress.value = 100
     runStage.value = "运行完成"
-    runProgressDetail.value = "全部阶段完成"
-    apiMessage.value = "抽取与审查完成"
+    runProgressDetail.value = options.llmReviewLimit ? `测试运行完成：最多 AI 审查 ${options.llmReviewLimit} 条` : "全部阶段完成"
+    apiMessage.value = options.llmReviewLimit ? "测试运行完成" : "抽取与审查完成"
   } catch (error) {
     runStage.value = "运行失败"
     runProgressDetail.value = "请查看错误信息"

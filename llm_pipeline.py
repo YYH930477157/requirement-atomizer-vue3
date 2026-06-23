@@ -160,6 +160,7 @@ def review_requirements_detailed(
     out_dir: Path | None = None,
     route: str | None = None,
     scope: str | None = None,
+    llm_review_limit: int = 0,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> ReviewBatchResult:
     route_name = resolve_route_name(pipeline, route)
@@ -176,7 +177,14 @@ def review_requirements_detailed(
         raise ValueError(f"Unsupported LLM route: {route_name}")
     if out_dir is None:
         raise ValueError("out_dir is required for openai_compatible review caching")
-    return review_requirements_with_openai(requirements, pipeline, out_dir=out_dir, scope=scope, progress_callback=progress_callback)
+    return review_requirements_with_openai(
+        requirements,
+        pipeline,
+        out_dir=out_dir,
+        scope=scope,
+        llm_review_limit=llm_review_limit,
+        progress_callback=progress_callback,
+    )
 
 
 def resolve_route_name(pipeline: ReviewPipeline, route: str | None) -> str:
@@ -191,6 +199,7 @@ def review_requirements_with_openai(
     *,
     out_dir: Path,
     scope: str | None,
+    llm_review_limit: int = 0,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> ReviewBatchResult:
     route_payload = dict(pipeline.model_routes.get("openai_compatible") or {})
@@ -210,6 +219,10 @@ def review_requirements_with_openai(
 
     for index, requirement in enumerate(requirements):
         if not should_llm_review(requirement, pipeline, scope_config):
+            reviews[index] = build_stub_review(requirement, pipeline)
+            rule_stub += 1
+            continue
+        if llm_review_limit > 0 and llm_reviewed + len(pending) >= llm_review_limit:
             reviews[index] = build_stub_review(requirement, pipeline)
             rule_stub += 1
             continue
@@ -622,6 +635,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0, help="Optional max requirement count for trial runs")
     parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default=None)
     parser.add_argument("--review-scope", choices=["targeted", "all"], default=None)
+    parser.add_argument("--llm-review-limit", type=int, default=0, help="Optional max real LLM review count")
     return parser.parse_args()
 
 
@@ -633,6 +647,7 @@ def run_review_pipeline(
     limit: int = 0,
     route: str | None = None,
     scope: str | None = None,
+    llm_review_limit: int = 0,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
@@ -650,6 +665,7 @@ def run_review_pipeline(
         out_dir=out_dir,
         route=route,
         scope=scope,
+        llm_review_limit=llm_review_limit,
         progress_callback=progress_callback,
     )
     reviews = result.reviews
@@ -686,6 +702,7 @@ def main() -> int:
         limit=args.limit,
         route=args.llm_route,
         scope=args.review_scope,
+        llm_review_limit=args.llm_review_limit,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

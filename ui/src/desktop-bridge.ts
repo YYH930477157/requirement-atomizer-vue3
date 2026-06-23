@@ -18,6 +18,7 @@ export type PipelineTaskInput = {
   skipReview?: boolean
   llmRoute?: string
   reviewScope?: string
+  llmReviewLimit?: number
   chunkChars?: number
   kbPaths?: string[]
   domainPackDir?: string

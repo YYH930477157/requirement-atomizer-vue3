@@ -290,6 +290,43 @@ class LLMPipelineRouteTests(unittest.TestCase):
         self.assertTrue(all(event["total"] == 3 for event in llm_progress))
         self.assertEqual(llm_progress[-1]["percent"], 100)
 
+    def test_llm_review_limit_caps_real_llm_calls_but_keeps_all_reviews(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [requirement(f"SREQ-000000000000L{index:02d}", confidence=0.70) for index in range(6)],
+            )
+            events: list[dict[str, Any]] = []
+
+            with ScriptedOpenAIService(lambda body, count: {"body": openai_review()}) as service:
+                pipeline_path = tmp_path / "review_pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                summary = run_review_pipeline(
+                    out_dir,
+                    pipeline_path=pipeline_path,
+                    route="openai_compatible",
+                    llm_review_limit=2,
+                    progress_callback=events.append,
+                )
+
+            reviews = read_jsonl(out_dir / "llm_review_results.jsonl")
+            states = read_jsonl(out_dir / "review_states.jsonl")
+
+        self.assertEqual(len(service.requests), 2)
+        self.assertEqual(len(reviews), 6)
+        self.assertEqual(len(states), 6)
+        self.assertEqual(summary["requirements"], 6)
+        self.assertEqual(summary["llm_reviewed"], 2)
+        self.assertEqual(summary["rule_stub"], 4)
+        self.assertEqual([review["generated_by"] for review in reviews].count("llm:mock-review-model"), 2)
+        self.assertEqual([review["generated_by"] for review in reviews].count("rule_stub"), 4)
+        llm_progress = [event for event in events if event.get("stage") == "llm_review"]
+        self.assertEqual([event["completed"] for event in llm_progress], [1, 2])
+        self.assertTrue(all(event["total"] == 2 for event in llm_progress))
+
     def test_single_llm_failure_falls_back_to_stub_without_failing_batch(self) -> None:
         def handler(body: dict[str, Any], count: int) -> dict[str, Any]:
             prompt = body["messages"][-1]["content"]

@@ -22,6 +22,7 @@ describe("Electron main helpers", () => {
       skipReview: false,
       llmRoute: "openai_compatible",
       reviewScope: "targeted",
+      llmReviewLimit: 50,
       chunkChars: 3500,
       kbPaths: [
         "knowledge_bases/energy_metering.json",
@@ -39,6 +40,8 @@ describe("Electron main helpers", () => {
       "openai_compatible",
       "--review-scope",
       "targeted",
+      "--llm-review-limit",
+      "50",
       "--chunk-chars",
       "3500",
       "--kb",

@@ -25,6 +25,7 @@ def run_pipeline_task(
     skip_review: bool = False,
     llm_route: str | None = None,
     review_scope: str | None = None,
+    llm_review_limit: int = 0,
     chunk_chars: int = 3500,
     kb_paths: list[Path] | None = None,
     domain_pack_dir: Path | None = None,
@@ -42,6 +43,7 @@ def run_pipeline_task(
         out_dir,
         route=llm_route,
         scope=review_scope,
+        llm_review_limit=llm_review_limit,
         progress_callback=emit_progress,
     )
     return {
@@ -136,6 +138,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_parser.add_argument("--skip-review", action="store_true")
     run_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default=None)
     run_parser.add_argument("--review-scope", choices=["targeted", "all"], default=None)
+    run_parser.add_argument("--llm-review-limit", type=int, default=0)
     run_parser.add_argument("--chunk-chars", type=int, default=3500)
     run_parser.add_argument("--kb", type=Path, action="append", default=[])
     run_parser.add_argument("--domain-pack", type=Path, default=None)
@@ -164,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_review=args.skip_review,
                 llm_route=args.llm_route,
                 review_scope=args.review_scope,
+                llm_review_limit=args.llm_review_limit,
                 chunk_chars=args.chunk_chars,
                 kb_paths=args.kb,
                 domain_pack_dir=args.domain_pack,

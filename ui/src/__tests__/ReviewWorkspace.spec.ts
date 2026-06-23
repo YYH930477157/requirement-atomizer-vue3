@@ -402,6 +402,59 @@ describe("review workspace shell", () => {
     expect(fetchMock).toHaveBeenCalled()
   })
 
+  it("runs a limited LLM test pass from the test button", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\out\\abnt",
+        }),
+        runPipeline: vi.fn().mockResolvedValue({
+          kind: "pipeline",
+          out_dir: "E:\\out\\abnt",
+          summary: { counts: { requirements: 1 } },
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    } as Response)
+
+    const wrapper = mount(App)
+
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
+    await wrapper.find('[data-testid="action-test-pipeline"]').trigger("click")
+
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalledWith({
+        inputPath: "C:\\input\\Appendix 9.docx",
+        outDir: "E:\\out\\abnt",
+        skipReview: false,
+        llmRoute: "openai_compatible",
+        reviewScope: "targeted",
+        llmReviewLimit: 50,
+        chunkChars: 3500,
+        kbPaths: [
+          "knowledge_bases/energy_metering.json",
+          "knowledge_bases/energy_metering_protocol_layer.json",
+          "knowledge_bases/energy_metering_cosem_classes.json",
+        ],
+        domainPackDir: "domain_packs/dlms_cosem",
+      })
+    })
+    expect(wrapper.find('[data-testid="run-progress-detail"]').text()).toContain("50")
+  })
+
   it("shows module and precise backend classification for ABNT extracted rows", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
