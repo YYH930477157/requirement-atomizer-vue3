@@ -9,6 +9,7 @@ ratomizer run <input.docx|input.xlsx|input.pdf> --out DIR [--kb FILE]... [--doma
 ratomizer atomize <input.docx|input.xlsx|input.pdf> --out DIR [--kb FILE]... [--domain-pack DIR] [--chunk-chars N] [--quiet | --verbose]
 ratomizer review --out DIR [--review-pipeline FILE] [--domain-pack FILE] [--limit N] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--quiet | --verbose]
 ratomizer export --out DIR --format md|csv [--status all|accepted|expert_pending|candidate]
+ratomizer compose --out DIR [--quiet | --verbose]
 ratomizer --version
 ```
 
@@ -116,6 +117,14 @@ Export output files:
 
 CSV exports use `utf-8-sig` intentionally so Excel can recognize UTF-8 when opened directly.
 
+Engineering composer output files:
+
+- `engineering_requirements/engineering_requirements.json`
+- `engineering_requirements/requirement_functions.md`
+- `engineering_requirements/dlms_objects.md`
+
+The composer is a post-processing stage. It keeps atomic requirements unchanged and reorganizes them into two developer-facing sections: requirement functions and DLMS/COSEM objects.
+
 ## Examples
 
 End-to-end run:
@@ -146,4 +155,11 @@ ratomizer export `
   --out ".\out\abnt_nbr_16968_atomizer_v5" `
   --format csv `
   --status accepted
+```
+
+Compose engineering requirements:
+
+```powershell
+ratomizer compose `
+  --out ".\out\abnt_nbr_16968_atomizer_v5"
 ```

@@ -25,6 +25,7 @@ spec_generator_modules = [
     "spec_export",
     "spec_excel",
     "spec_enrich",
+    "engineering_composer",
     "cosem_object_model",
     "cosem_access_security",
     "cosem_behavior_spec",

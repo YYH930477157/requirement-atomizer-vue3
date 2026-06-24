@@ -7,7 +7,7 @@ It is built for DLMS/COSEM-style documents where requirements are scattered acro
 ## What It Supports
 
 - Inputs: `.docx`, `.xlsx`, and text-layer `.pdf`
-- Outputs: structured blocks, table rows, atomic requirement candidates, LLM review results, review states, Markdown/CSV exports, and assembled specification files
+- Outputs: structured blocks, table rows, atomic requirement candidates, LLM review results, review states, Markdown/CSV exports, assembled specification files, and engineering requirement summaries
 - Knowledge base: reusable `requirement_kb` Python package, with Obsidian as the human-editing source
 - Review flow: deterministic extraction first, then optional OpenAI-compatible LLM review and expert review
 
@@ -45,6 +45,17 @@ quality_report.json
 manifest.json
 summary.md
 ```
+
+Compose developer-facing requirements from an existing output directory:
+
+```powershell
+ratomizer compose --out ".\out\run-001"
+```
+
+This writes `engineering_requirements/` with two sections:
+
+- `requirement_functions.md`: implementable requirement functions grouped by domain
+- `dlms_objects.md`: DLMS/COSEM objects with OBIS, interface class, attributes, access rights, and traceability
 
 ## Desktop App
 

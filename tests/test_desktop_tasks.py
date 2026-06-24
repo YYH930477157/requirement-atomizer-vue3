@@ -52,7 +52,7 @@ class DesktopTaskTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["counts"]["requirements"], 2)
         self.assertEqual(payload["summary"]["status_counts"]["accepted"], 1)
         atomize.assert_called_once()
-        review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, progress_callback=ANY)
+        review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, llm_review_limit=0, progress_callback=ANY)
 
     def test_main_run_command_passes_kb_and_domain_pack_to_pipeline(self) -> None:
         import desktop_tasks
@@ -92,6 +92,7 @@ class DesktopTaskTests(unittest.TestCase):
             skip_review=False,
             llm_route=None,
             review_scope=None,
+            llm_review_limit=0,
             chunk_chars=1200,
             kb_paths=[kb_path],
             domain_pack_dir=domain_pack,
