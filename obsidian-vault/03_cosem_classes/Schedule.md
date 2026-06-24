@@ -1,19 +1,20 @@
 ---
-id: KB-L3-IC-22-SCHEDULE
+id: KB-L3-IC-22-SINGLE-ACTION-SCHEDULE
 kb_id: energy_metering_cosem_classes
 kb_name: COSEM Interface Classes Seed Knowledge Base
 kb_version: 0.1.0
 type: cosem_interface_class
 layer: cosem_class
-name: Schedule
+name: Single Action Schedule
 aliases:
-- COSEM Schedule
+- COSEM Single Action Schedule
+- Single action schedule object
 - class 22
 - CL 22
 keywords:
 - class 22
 - cl 22
-- schedule
+- single action schedule
 - executed_script
 - execution_time
 - disconnect control scheduler
@@ -23,15 +24,16 @@ domain_tags:
 - meter_function
 ---
 
-# Schedule
+# Single Action Schedule
 
 ## Definition
 
-COSEM class for scheduling script execution at defined times.
+COSEM interface class for scheduling one or more script executions at defined times.
 
 ## Aliases
 
-- COSEM Schedule
+- COSEM Single Action Schedule
+- Single action schedule object
 - class 22
 - CL 22
 

@@ -1,5 +1,5 @@
 ---
-id: KB-L3-IC-122-TCP-UDP-SETUP
+id: KB-L3-IC-41-TCP-UDP-SETUP
 kb_id: energy_metering_cosem_classes
 kb_name: COSEM Interface Classes Seed Knowledge Base
 kb_version: 0.1.0
@@ -8,11 +8,11 @@ layer: cosem_class
 name: TCP-UDP Setup
 aliases:
 - TCP UDP Setup
-- class 122
-- CL 122
+- class 41
+- CL 41
 keywords:
-- class 122
-- cl 122
+- class 41
+- cl 41
 - tcp-udp setup
 - tcp udp setup
 - port
@@ -34,8 +34,8 @@ COSEM class for TCP/UDP transport setup parameters.
 ## Aliases
 
 - TCP UDP Setup
-- class 122
-- CL 122
+- class 41
+- CL 41
 
 ## Domain Tags
 
@@ -47,7 +47,7 @@ COSEM class for TCP/UDP transport setup parameters.
 
 ```json metadata
 {
-  "class_id": 122,
+  "class_id": 41,
   "attributes": [
     {
       "attribute_id": 1,

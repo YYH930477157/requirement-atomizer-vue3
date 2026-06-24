@@ -17,6 +17,8 @@ keywords:
 - cosem logical device name
 - device id
 - security-invocation counter
+- logical_name
+- value
 domain_tags:
 - cosem_class
 - cosem_object
@@ -52,13 +54,15 @@ Generic COSEM interface class for a single data value.
       "name": "logical_name",
       "type": "octet-string[6]",
       "mandatory": true,
+      "storage": "static",
       "meaning": "OBIS logical name of the object"
     },
     {
       "attribute_id": 2,
       "name": "value",
-      "type": "any",
+      "type": "CHOICE",
       "mandatory": true,
+      "storage": "instance_defined",
       "meaning": "Stored data value"
     }
   ],
@@ -79,6 +83,15 @@ Generic COSEM interface class for a single data value.
     {
       "name": "Security-Invocation counter",
       "obis_pattern": "0-0:43.1.x.255"
+    }
+  ],
+  "access_semantics": [
+    "The value data type is determined by the object instance logical_name and must be chosen so the value can be interpreted unambiguously."
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.3.1 Data (class_id = 1, version = 0)"
     }
   ]
 }

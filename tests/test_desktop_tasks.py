@@ -12,6 +12,29 @@ from llm_pipeline import write_jsonl
 
 
 class DesktopTaskTests(unittest.TestCase):
+    def test_run_pipeline_task_uses_default_kbs_when_not_supplied(self) -> None:
+        from desktop_tasks import run_pipeline_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "input.docx"
+            out_dir = root / "out"
+            input_path.write_text("placeholder", encoding="utf-8")
+            out_dir.mkdir()
+
+            with (
+                patch("desktop_tasks.default_kb_paths") as default_kb_paths,
+                patch("desktop_tasks.run_atomizer_pipeline") as atomize,
+            ):
+                default_kb_paths.return_value = [root / "default-a.json", root / "default-b.json"]
+                atomize.return_value = {"counts": {"atomic_requirements": 0}}
+                write_jsonl(out_dir / "atomic_requirements.jsonl", [])
+
+                run_pipeline_task(input_path, out_dir, skip_review=True)
+
+        atomize.assert_called_once()
+        self.assertEqual(atomize.call_args.kwargs["kb_paths"], [root / "default-a.json", root / "default-b.json"])
+
     def test_run_pipeline_task_writes_outputs_and_review_summary(self) -> None:
         from desktop_tasks import run_pipeline_task
 

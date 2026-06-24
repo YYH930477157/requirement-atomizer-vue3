@@ -17,6 +17,8 @@ keywords:
 - current_average_value
 - last_average_value
 - capture_time
+- next_period
+- number_of_periods
 domain_tags:
 - cosem_class
 - demand_register
@@ -51,55 +53,66 @@ COSEM interface class for demand values based on averaging periods.
       "attribute_id": 1,
       "name": "logical_name",
       "type": "octet-string[6]",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 2,
       "name": "current_average_value",
-      "type": "choice",
-      "mandatory": true
+      "type": "CHOICE",
+      "mandatory": true,
+      "storage": "dynamic"
     },
     {
       "attribute_id": 3,
       "name": "last_average_value",
-      "type": "choice",
-      "mandatory": true
+      "type": "CHOICE",
+      "mandatory": true,
+      "storage": "dynamic"
     },
     {
       "attribute_id": 4,
       "name": "scaler_unit",
       "type": "scal_unit_type",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 5,
       "name": "status",
-      "type": "choice",
-      "mandatory": true
+      "type": "CHOICE",
+      "mandatory": true,
+      "storage": "dynamic"
     },
     {
       "attribute_id": 6,
       "name": "capture_time",
-      "type": "date_time",
-      "mandatory": true
+      "type": "octet-string",
+      "mandatory": true,
+      "storage": "dynamic",
+      "format": "date-time"
     },
     {
       "attribute_id": 7,
       "name": "start_time_current",
-      "type": "date_time",
-      "mandatory": true
+      "type": "octet-string",
+      "mandatory": true,
+      "storage": "dynamic",
+      "format": "date-time"
     },
     {
       "attribute_id": 8,
       "name": "period",
       "type": "double-long-unsigned",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 9,
       "name": "number_of_periods",
       "type": "long-unsigned",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     }
   ],
   "methods": [
@@ -107,6 +120,22 @@ COSEM interface class for demand values based on averaging periods.
       "method_id": 1,
       "name": "reset",
       "parameter_type": "integer(0)"
+    },
+    {
+      "method_id": 2,
+      "name": "next_period",
+      "parameter_type": "integer(0)"
+    }
+  ],
+  "behavior_notes": [
+    "current_average_value is the running demand over the current averaging interval.",
+    "last_average_value is calculated over the previous number_of_periods multiplied by period interval.",
+    "period and number_of_periods define the demand calculation interval."
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.3.4 Demand register (class_id = 5, version = 0)"
     }
   ]
 }

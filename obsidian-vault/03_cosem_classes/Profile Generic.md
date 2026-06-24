@@ -19,6 +19,8 @@ keywords:
 - capture_period
 - profile_entries
 - sort_method
+- entries_in_use
+- selective access
 domain_tags:
 - cosem_class
 - profile_generic
@@ -55,49 +57,58 @@ COSEM interface class for storing captured entries such as load profiles, billin
       "attribute_id": 1,
       "name": "logical_name",
       "type": "octet-string[6]",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 2,
       "name": "buffer",
-      "type": "array",
-      "mandatory": true
+      "type": "compact-array or array",
+      "mandatory": true,
+      "storage": "dynamic",
+      "selective_access": "optional"
     },
     {
       "attribute_id": 3,
       "name": "capture_objects",
       "type": "array",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 4,
       "name": "capture_period",
       "type": "double-long-unsigned",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 5,
       "name": "sort_method",
       "type": "enum",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 6,
       "name": "sort_object",
       "type": "capture_object_definition",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 7,
       "name": "entries_in_use",
       "type": "double-long-unsigned",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "dynamic"
     },
     {
       "attribute_id": 8,
       "name": "profile_entries",
       "type": "double-long-unsigned",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     }
   ],
   "methods": [
@@ -120,6 +131,17 @@ COSEM interface class for storing captured entries such as load profiles, billin
     {
       "name": "Failed security operations event log",
       "obis": "0-0:99.98.12.255"
+    }
+  ],
+  "behavior_notes": [
+    "capture_objects defines the attributes copied into the buffer by automatic capture or the capture method.",
+    "Changing capture_objects clears the buffer so all entries remain homogeneous.",
+    "capture_period 0 means no automatic capture; values >= 1 define automatic capture period in seconds."
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.3.6 Profile generic (class_id = 7, version = 1)"
     }
   ]
 }

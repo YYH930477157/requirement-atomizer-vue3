@@ -136,6 +136,7 @@ ratomizer run `
   --kb ".\knowledge_bases\energy_metering.json" `
   --kb ".\knowledge_bases\energy_metering_protocol_layer.json" `
   --kb ".\knowledge_bases\energy_metering_cosem_classes.json" `
+  --kb ".\knowledge_bases\compiled_from_obsidian.json" `
   --export md,csv
 ```
 

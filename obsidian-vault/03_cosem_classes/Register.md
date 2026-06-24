@@ -51,19 +51,22 @@ COSEM interface class for a measured value with scaler and unit.
       "attribute_id": 1,
       "name": "logical_name",
       "type": "octet-string[6]",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 2,
       "name": "value",
-      "type": "choice",
-      "mandatory": true
+      "type": "CHOICE",
+      "mandatory": true,
+      "storage": "dynamic"
     },
     {
       "attribute_id": 3,
       "name": "scaler_unit",
       "type": "scal_unit_type",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     }
   ],
   "methods": [
@@ -82,6 +85,15 @@ COSEM interface class for a measured value with scaler and unit.
     {
       "name": "Threshold for long power failure",
       "obis": "0-0:94.55.60.255"
+    }
+  ],
+  "access_semantics": [
+    "A Register models a process or status value together with its associated scaler and unit; the logical_name identifies the nature of the value."
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.3.2 Register (class_id = 3, version = 0)"
     }
   ]
 }

@@ -18,6 +18,8 @@ keywords:
 - control_mode
 - remote_disconnect
 - remote_reconnect
+- Ready_for_reconnection
+- control_mode
 domain_tags:
 - cosem_class
 - disconnect_control
@@ -79,7 +81,28 @@ COSEM interface class for disconnect/reconnect control.
     },
     {
       "method_id": 2,
-      "name": "remote_reconnect"
+      "name": "remote_reconnect",
+      "parameter_type": "integer(0)"
+    }
+  ],
+  "state_model": {
+    "states": [
+      {"value": 0, "name": "Disconnected", "output_state": false},
+      {"value": 1, "name": "Connected", "output_state": true},
+      {"value": 2, "name": "Ready_for_reconnection", "output_state": false}
+    ],
+    "triggers": ["remote_disconnect", "remote_reconnect", "manual_disconnect", "manual_reconnect", "local_disconnect", "local_reconnect"],
+    "control_mode_note": "control_mode configures which remote, manual, and local transitions are allowed."
+  },
+  "behavior_notes": [
+    "remote_disconnect forces the object into Disconnected when remote disconnection is enabled.",
+    "remote_reconnect either reconnects directly or moves to Ready_for_reconnection depending on control_mode.",
+    "The object has no command memory; commands are executed immediately."
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.5.8 Disconnect control (class_id = 70, version = 1)"
     }
   ]
 }

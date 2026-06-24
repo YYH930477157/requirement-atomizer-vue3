@@ -106,6 +106,7 @@ A COSEM interface class for scalar measured values.
         self.assertEqual(paths[0], Path(tmp).resolve() / "energy_metering.json")
         self.assertEqual(paths[1], Path(tmp).resolve() / "energy_metering_protocol_layer.json")
         self.assertEqual(paths[2], Path(tmp).resolve() / "energy_metering_cosem_classes.json")
+        self.assertEqual(paths[3], Path(tmp).resolve() / "compiled_from_obsidian.json")
 
     def test_http_handler_exposes_package_repository_to_other_tools(self) -> None:
         class TestHandler(KBRequestHandler):

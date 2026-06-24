@@ -333,14 +333,14 @@
       ]
     },
     {
-      "id": "KB-L3-IC-22-SCHEDULE",
+      "id": "KB-L3-IC-22-SINGLE-ACTION-SCHEDULE",
       "type": "cosem_interface_class",
       "layer": "cosem_class",
-      "name": "Schedule",
-      "aliases": ["COSEM Schedule", "class 22", "CL 22"],
-      "keywords": ["class 22", "cl 22", "schedule", "executed_script", "execution_time", "disconnect control scheduler"],
+      "name": "Single Action Schedule",
+      "aliases": ["COSEM Single Action Schedule", "Single action schedule object", "class 22", "CL 22"],
+      "keywords": ["class 22", "cl 22", "single action schedule", "executed_script", "execution_time", "disconnect control scheduler"],
       "domain_tags": ["cosem_class", "schedule", "meter_function"],
-      "definition": "COSEM class for scheduling script execution at defined times.",
+      "definition": "COSEM interface class for scheduling one or more script executions at defined times.",
       "class_id": 22,
       "attributes": [
         {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
@@ -434,15 +434,15 @@
       ]
     },
     {
-      "id": "KB-L3-IC-122-TCP-UDP-SETUP",
+      "id": "KB-L3-IC-41-TCP-UDP-SETUP",
       "type": "cosem_interface_class",
       "layer": "cosem_class",
       "name": "TCP-UDP Setup",
-      "aliases": ["TCP UDP Setup", "class 122", "CL 122"],
-      "keywords": ["class 122", "cl 122", "tcp-udp setup", "tcp udp setup", "port", "ip_reference", "mss", "nb_of_sim_conn"],
+      "aliases": ["TCP UDP Setup", "class 41", "CL 41"],
+      "keywords": ["class 41", "cl 41", "tcp-udp setup", "tcp udp setup", "port", "ip_reference", "mss", "nb_of_sim_conn"],
       "domain_tags": ["cosem_class", "communication_profile", "ip_network"],
       "definition": "COSEM class for TCP/UDP transport setup parameters.",
-      "class_id": 122,
+      "class_id": 41,
       "attributes": [
         {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
         {"attribute_id": 2, "name": "TCP_UDP_port", "type": "long-unsigned", "mandatory": true},
@@ -454,15 +454,15 @@
       "methods": []
     },
     {
-      "id": "KB-L3-IC-128-IPV4-SETUP",
+      "id": "KB-L3-IC-42-IPV4-SETUP",
       "type": "cosem_interface_class",
       "layer": "cosem_class",
       "name": "IPv4 Setup",
-      "aliases": ["class 128", "CL 128"],
-      "keywords": ["class 128", "cl 128", "ipv4 setup", "ip_address", "multicast_ip_address", "gateway_ip_address", "subnet_mask"],
+      "aliases": ["class 42", "CL 42"],
+      "keywords": ["class 42", "cl 42", "ipv4 setup", "ip_address", "multicast_ip_address", "gateway_ip_address", "subnet_mask"],
       "domain_tags": ["cosem_class", "communication_profile", "ip_network"],
       "definition": "COSEM class for IPv4 network setup parameters.",
-      "class_id": 128,
+      "class_id": 42,
       "attributes": [
         {"attribute_id": 1, "name": "logical_name", "type": "octet-string[6]", "mandatory": true},
         {"attribute_id": 2, "name": "DL_reference", "type": "octet-string[6]", "mandatory": true},

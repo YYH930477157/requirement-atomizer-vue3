@@ -20,6 +20,9 @@ keywords:
 - xdlms_context_info
 - authentication_mechanism_name
 - secret
+- security_setup_reference
+- user_list
+- access_rights
 domain_tags:
 - cosem_class
 - association
@@ -103,6 +106,18 @@ COSEM interface class representing a logical-name association between client and
       "name": "security_setup_reference",
       "type": "octet-string[6]",
       "mandatory": true
+    },
+    {
+      "attribute_id": 10,
+      "name": "user_list",
+      "type": "array",
+      "mandatory": true
+    },
+    {
+      "attribute_id": 11,
+      "name": "current_user",
+      "type": "structure",
+      "mandatory": true
     }
   ],
   "methods": [
@@ -121,6 +136,14 @@ COSEM interface class representing a logical-name association between client and
     {
       "method_id": 4,
       "name": "remove_object"
+    },
+    {
+      "method_id": 5,
+      "name": "add_user"
+    },
+    {
+      "method_id": 6,
+      "name": "remove_user"
     }
   ],
   "common_instances": [
@@ -143,6 +166,17 @@ COSEM interface class representing a logical-name association between client and
     {
       "name": "Remote client association",
       "obis": "0-0:40.0.5.255"
+    }
+  ],
+  "access_semantics": [
+    "object_list exposes visible COSEM objects together with attribute and method access rights for the association.",
+    "security_setup_reference links the association to the Security setup object that manages its security context.",
+    "association_status indicates non-associated, association-pending, or associated."
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.4.4 Association LN (class_id = 15, version = 3)"
     }
   ]
 }

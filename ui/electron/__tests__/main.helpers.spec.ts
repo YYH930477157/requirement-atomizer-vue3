@@ -28,6 +28,7 @@ describe("Electron main helpers", () => {
         "knowledge_bases/energy_metering.json",
         "knowledge_bases/energy_metering_protocol_layer.json",
         "knowledge_bases/energy_metering_cosem_classes.json",
+        "knowledge_bases/compiled_from_obsidian.json",
       ],
       domainPackDir: "domain_packs/dlms_cosem",
     })).toEqual([
@@ -50,6 +51,8 @@ describe("Electron main helpers", () => {
       "knowledge_bases/energy_metering_protocol_layer.json",
       "--kb",
       "knowledge_bases/energy_metering_cosem_classes.json",
+      "--kb",
+      "knowledge_bases/compiled_from_obsidian.json",
       "--domain-pack",
       "domain_packs/dlms_cosem",
     ])

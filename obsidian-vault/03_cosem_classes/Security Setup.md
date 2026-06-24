@@ -91,7 +91,7 @@ COSEM interface class for security policy, security suite, system titles, certif
     },
     {
       "method_id": 2,
-      "name": "global_key_transfer"
+      "name": "key_transfer"
     },
     {
       "method_id": 3,
@@ -126,6 +126,16 @@ COSEM interface class for security policy, security suite, system titles, certif
     {
       "name": "Security Setup for local client association",
       "obis": "0-0:43.0.3.255"
+    }
+  ],
+  "access_semantics": [
+    "Instances contain the security suite and policy applicable between a client and server identified by their system titles.",
+    "The class provides methods to increase security level and manage symmetric keys, asymmetric key pairs, and certificates."
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.4.7 Security setup (class_id = 64, version = 1)"
     }
   ]
 }

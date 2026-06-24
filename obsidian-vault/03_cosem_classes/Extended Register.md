@@ -16,6 +16,8 @@ keywords:
 - extended register
 - capture_time
 - status
+- scaler_unit
+- reset
 domain_tags:
 - cosem_class
 - register
@@ -50,31 +52,37 @@ COSEM register with status and capture time in addition to value and scaler/unit
       "attribute_id": 1,
       "name": "logical_name",
       "type": "octet-string[6]",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 2,
       "name": "value",
-      "type": "choice",
-      "mandatory": true
+      "type": "CHOICE",
+      "mandatory": true,
+      "storage": "dynamic"
     },
     {
       "attribute_id": 3,
       "name": "scaler_unit",
       "type": "scal_unit_type",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 4,
       "name": "status",
-      "type": "choice",
-      "mandatory": true
+      "type": "CHOICE",
+      "mandatory": true,
+      "storage": "dynamic"
     },
     {
       "attribute_id": 5,
       "name": "capture_time",
-      "type": "date_time",
-      "mandatory": true
+      "type": "octet-string",
+      "mandatory": true,
+      "storage": "dynamic",
+      "format": "date-time"
     }
   ],
   "methods": [
@@ -82,6 +90,16 @@ COSEM register with status and capture time in addition to value and scaler/unit
       "method_id": 1,
       "name": "reset",
       "parameter_type": "integer(0)"
+    }
+  ],
+  "behavior_notes": [
+    "Extends Register with status and capture_time so the value can be qualified by status and capture timestamp.",
+    "reset sets value to the instance-specific default and sets capture_time to the reset execution time."
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.3.3 Extended register (class_id = 4, version = 0)"
     }
   ]
 }

@@ -1,5 +1,5 @@
 ---
-id: KB-L3-IC-128-IPV4-SETUP
+id: KB-L3-IC-42-IPV4-SETUP
 kb_id: energy_metering_cosem_classes
 kb_name: COSEM Interface Classes Seed Knowledge Base
 kb_version: 0.1.0
@@ -7,11 +7,11 @@ type: cosem_interface_class
 layer: cosem_class
 name: IPv4 Setup
 aliases:
-- class 128
-- CL 128
+- class 42
+- CL 42
 keywords:
-- class 128
-- cl 128
+- class 42
+- cl 42
 - ipv4 setup
 - ip_address
 - multicast_ip_address
@@ -31,8 +31,8 @@ COSEM class for IPv4 network setup parameters.
 
 ## Aliases
 
-- class 128
-- CL 128
+- class 42
+- CL 42
 
 ## Domain Tags
 
@@ -44,7 +44,7 @@ COSEM class for IPv4 network setup parameters.
 
 ```json metadata
 {
-  "class_id": 128,
+  "class_id": 42,
   "attributes": [
     {
       "attribute_id": 1,

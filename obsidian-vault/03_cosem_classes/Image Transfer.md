@@ -19,6 +19,8 @@ keywords:
 - image_transfer_enabled
 - image_transfer_status
 - image_to_activate_info
+- image_activate
+- image_verify
 domain_tags:
 - cosem_class
 - firmware_update
@@ -114,6 +116,17 @@ COSEM interface class for transferring and activating firmware images.
     {
       "name": "Image Transfer",
       "obis": "0-0:44.0.0.255"
+    }
+  ],
+  "behavior_notes": [
+    "Image transfer is initiated, transferred block by block, verified, and then activated.",
+    "image_transferred_blocks_status tracks which blocks have already been transferred.",
+    "image_transfer_enabled controls whether the image transfer procedure is permitted."
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.4.6 Image transfer (class_id = 18, version = 0)"
     }
   ]
 }

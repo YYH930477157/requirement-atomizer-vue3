@@ -30,6 +30,7 @@ ratomizer run `
   --kb ".\knowledge_bases\energy_metering.json" `
   --kb ".\knowledge_bases\energy_metering_protocol_layer.json" `
   --kb ".\knowledge_bases\energy_metering_cosem_classes.json" `
+  --kb ".\knowledge_bases\compiled_from_obsidian.json" `
   --export md,csv
 ```
 
@@ -110,6 +111,8 @@ python -m requirement_kb.server --host 127.0.0.1 --port 8765
 ```
 
 External tools should depend on `requirement_kb` instead of old root-level KB scripts.
+
+The compiled Obsidian KB includes the Blue Book seed knowledge currently used by the analyzer: DLMS UA 1000-1 Ed. 16 Part 1 for OBIS structure and Part 2 for COSEM interface classes.
 
 ## LLM Review
 

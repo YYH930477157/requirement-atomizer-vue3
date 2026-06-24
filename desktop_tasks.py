@@ -11,6 +11,7 @@ from assemble_spec import assemble
 from atomize import run_atomizer_pipeline
 from export_requirements import export_requirements
 from llm_pipeline import read_jsonl, run_review_pipeline
+from requirement_kb.cli import default_kb_paths
 from spec_export import export_spec
 
 
@@ -36,7 +37,7 @@ def run_pipeline_task(
         input_path,
         out_dir,
         chunk_chars=chunk_chars,
-        kb_paths=kb_paths or [],
+        kb_paths=kb_paths if kb_paths is not None else default_kb_paths(),
         domain_pack_dir=domain_pack_dir,
     )
     review = None if skip_review else run_review_pipeline(

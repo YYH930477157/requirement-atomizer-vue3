@@ -14,6 +14,7 @@ from engineering_composer import compose_engineering_requirements, write_enginee
 from export_requirements import export_requirements
 from llm_client import LLMConnectionError
 from llm_pipeline import run_review_pipeline
+from requirement_kb.cli import default_kb_paths
 from version import __version__
 
 
@@ -160,7 +161,7 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
         args.input,
         args.out,
         chunk_chars=args.chunk_chars,
-        kb_paths=args.kb,
+        kb_paths=args.kb or default_kb_paths(),
         domain_pack_dir=args.domain_pack,
     )
     timing_ms["atomize"] = elapsed_ms(atomize_started)
@@ -193,7 +194,7 @@ def command_atomize(args: argparse.Namespace, started: float, timing_ms: dict[st
         args.input,
         args.out,
         chunk_chars=args.chunk_chars,
-        kb_paths=args.kb,
+        kb_paths=args.kb or default_kb_paths(),
         domain_pack_dir=args.domain_pack,
     )
     timing_ms["atomize"] = elapsed_ms(started)
