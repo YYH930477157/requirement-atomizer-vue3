@@ -46,78 +46,108 @@ COSEM class for active and passive tariff calendars, seasons, weeks, and day pro
 ```json metadata
 {
   "class_id": 20,
+  "version": 0,
   "attributes": [
     {
       "attribute_id": 1,
       "name": "logical_name",
       "type": "octet-string[6]",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 2,
       "name": "calendar_name_active",
       "type": "octet-string",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 3,
       "name": "season_profile_active",
       "type": "array",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 4,
       "name": "week_profile_table_active",
       "type": "array",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 5,
       "name": "day_profile_table_active",
       "type": "array",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 6,
       "name": "calendar_name_passive",
       "type": "octet-string",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 7,
       "name": "season_profile_passive",
       "type": "array",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 8,
       "name": "week_profile_table_passive",
       "type": "array",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 9,
       "name": "day_profile_table_passive",
       "type": "array",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
     },
     {
       "attribute_id": 10,
       "name": "activate_passive_calendar_time",
-      "type": "date_time",
-      "mandatory": true
+      "type": "octet-string date-time",
+      "mandatory": true,
+      "storage": "static"
     }
   ],
   "methods": [
     {
       "method_id": 1,
-      "name": "activate_passive_calendar"
+      "name": "activate_passive_calendar",
+      "parameter_type": "integer(0)",
+      "meaning": "Copy all passive calendar attributes to their active counterparts."
     }
+  ],
+  "access_semantics": [
+    "Attributes ending in _active are the currently active calendar data.",
+    "Attributes ending in _passive are configured ahead of activation and become active through activate_passive_calendar or activate_passive_calendar_time.",
+    "Special Days table entries take precedence over Activity Calendar day-profile selection when available."
+  ],
+  "behavior_notes": [
+    "Activity calendar models tariff structures using seasons, week profiles, day profiles, and script actions.",
+    "If Schedule and Activity calendar actions occur at the same activation time, Schedule-triggered actions are executed first.",
+    "After power failure only the last missed Activity calendar action is executed, and it must be ordered correctly with Schedule recovery actions.",
+    "day_profile_table entries reference Script table logical names and selectors for the actions to execute."
   ],
   "common_instances": [
     {
       "name": "Activity Calendar",
       "obis": "0-0:13.0.0.255"
+    }
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.5.5 Activity calendar (class_id = 20, version = 0)"
     }
   ]
 }

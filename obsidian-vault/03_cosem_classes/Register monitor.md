@@ -48,12 +48,54 @@ COSEM interface class for monitoring or controlling device behavior through Regi
       "attribute_id": 1,
       "name": "logical_name",
       "type": "octet-string[6]",
-      "mandatory": true
+      "mandatory": true,
+      "storage": "static"
+    },
+    {
+      "attribute_id": 2,
+      "name": "thresholds",
+      "type": "array",
+      "mandatory": true,
+      "storage": "static"
+    },
+    {
+      "attribute_id": 3,
+      "name": "monitored_value",
+      "type": "value_definition",
+      "mandatory": true,
+      "storage": "static"
+    },
+    {
+      "attribute_id": 4,
+      "name": "actions",
+      "type": "array of action_set",
+      "mandatory": true,
+      "storage": "static"
     }
   ],
   "methods": [],
-  "coverage_level": "catalogue_seed",
-  "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+  "access_semantics": [
+    "thresholds, monitored_value, and actions are static configuration for threshold crossing behavior.",
+    "monitored_value references a simple typed attribute of Data, Register, Extended register, or Demand register.",
+    "actions has the same number of elements as thresholds; each action_set maps upward and downward threshold crossings to Script table actions."
+  ],
+  "behavior_notes": [
+    "Register monitor executes scripts when the referenced value crosses configured thresholds.",
+    "The object requires a Script table instance in the same logical device.",
+    "Threshold values use the same type as the monitored attribute."
+  ],
+  "common_instances": [
+    {
+      "name": "Event monitor",
+      "obis": "implementation-specific"
+    }
+  ],
+  "source_refs": [
+    {
+      "source": "Blue Book Part 2 Ed. 16",
+      "section": "4.5.6 Register monitor (class_id = 21, version = 0)"
+    }
+  ]
 }
 ```
 

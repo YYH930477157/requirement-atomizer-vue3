@@ -407,6 +407,107 @@ class BlueBookKnowledgeBaseTests(unittest.TestCase):
         states = {state["name"] for state in disconnect["state_model"]["states"]}
         self.assertEqual(states, {"Disconnected", "Connected", "Ready_for_reconnection"})
 
+    def test_compiled_obsidian_materializes_representative_obis_object_instances(self) -> None:
+        payload = json.loads((ROOT / "knowledge_bases" / "compiled_from_obsidian.json").read_text(encoding="utf-8"))
+        by_id = {entry["id"]: entry for entry in payload["entries"]}
+
+        expected = {
+            "KB-OBIS-0-0-41-0-0-255-SAP-ASSIGNMENT": ("0-0:41.0.0.255", "SAP Assignment", 17, "general", 8),
+            "KB-OBIS-0-0-40-0-0-255-ASSOCIATION-LN-CURRENT": ("0-0:40.0.0.255", "Association LN - current membership", 15, "general", 8),
+            "KB-OBIS-0-0-13-0-0-255-ACTIVITY-CALENDAR": ("0-0:13.0.0.255", "Activity Calendar", 20, "general", 8),
+            "KB-OBIS-0-0-14-0-0-255-REGISTER-ACTIVATION": ("0-0:14.0.0.255", "Register activation", 6, "general", 8),
+            "KB-OBIS-1-0-1-8-0-255-ACTIVE-ENERGY-IMPORT": ("1-0:1.8.0.255", "Active energy import total", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-2-8-0-255-ACTIVE-ENERGY-EXPORT": ("1-0:2.8.0.255", "Active energy export total", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-32-7-0-255-L1-VOLTAGE-INSTANTANEOUS": ("1-0:32.7.0.255", "L1 voltage instantaneous", 3, "ac_electricity", 13),
+            "KB-OBIS-2-0-12-7-0-255-DC-VOLTAGE-INSTANTANEOUS": ("2-0:12.7.0.255", "DC voltage instantaneous", 3, "dc_electricity", 26),
+            "KB-OBIS-0-B-99-98-E-ABSTRACT-EVENT-LOG": ("0-b:99.98.e", "Abstract event log profile", 7, "general", 12),
+            "KB-OBIS-1-B-99-1-E-AC-LOAD-PROFILE-1": ("1-b:99.1.e", "AC load profile recording period 1", 7, "ac_electricity", 24),
+            "KB-OBIS-1-B-98-10-E-AC-REGISTER-TABLE-GENERAL": ("1-b:98.10.e", "AC general register table", 61, "ac_electricity", 25),
+            "KB-OBIS-2-B-98-1-E-255-DC-BILLING-LIST-1": ("2-b:98.1.e.255", "DC billing period list 1", 1, "dc_electricity", 31),
+            "KB-OBIS-2-B-99-98-E-DC-EVENT-LOG": ("2-b:99.98.e", "DC event log profile", 7, "dc_electricity", 32),
+            "KB-OBIS-2-B-98-10-E-DC-REGISTER-TABLE-GENERAL": ("2-b:98.10.e", "DC general register table", 61, "dc_electricity", 33),
+            "KB-OBIS-0-B-98-1-E-255-ABSTRACT-BILLING-LIST-1": ("0-b:98.1.e.255", "Abstract billing period list 1", 1, "general", 10),
+            "KB-OBIS-0-B-98-10-E-ABSTRACT-REGISTER-TABLE-GENERAL": ("0-b:98.10.e", "Abstract general register table", 61, "general", 11),
+            "KB-OBIS-1-B-97-97-E-AC-ERROR-REGISTER": ("1-b:97.97.e", "AC error register", 3, "ac_electricity", 22),
+            "KB-OBIS-1-B-98-1-E-255-AC-BILLING-LIST-1": ("1-b:98.1.e.255", "AC billing period list 1", 1, "ac_electricity", 23),
+            "KB-OBIS-1-B-0-8-4-VZ-AC-RECORDING-INTERVAL-1": ("1-b:0.8.4.VZ", "AC recording interval 1", 3, "ac_electricity", 21),
+            "KB-OBIS-2-0-11-7-0-255-DC-CURRENT-INSTANTANEOUS": ("2-0:11.7.0.255", "DC current instantaneous", 3, "dc_electricity", 26),
+            "KB-OBIS-2-0-1-8-0-255-DC-POWER-IMPORT-INTEGRAL": ("2-0:1.8.0.255", "DC power plus time integral 1 total", 3, "dc_electricity", 26),
+            "KB-OBIS-2-B-97-97-E-DC-ERROR-REGISTER": ("2-b:97.97.e", "DC error register", 3, "dc_electricity", 30),
+            "KB-OBIS-2-B-0-8-4-VZ-DC-RECORDING-INTERVAL-1": ("2-b:0.8.4.VZ", "DC recording interval 1", 3, "dc_electricity", 29),
+            "KB-OBIS-0-B-0-9-1-LOCAL-TIME": ("0-b:0.9.1", "Local time", 1, "general", 8),
+            "KB-OBIS-0-B-96-1-0-DEVICE-ID-1": ("0-b:96.1.0", "Device ID 1", 1, "general", 8),
+            "KB-OBIS-1-0-3-8-0-255-REACTIVE-ENERGY-IMPORT": ("1-0:3.8.0.255", "Reactive energy import total", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-9-8-0-255-APPARENT-ENERGY-IMPORT": ("1-0:9.8.0.255", "Apparent energy import total", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-11-7-0-255-CURRENT-INSTANTANEOUS": ("1-0:11.7.0.255", "Current any phase instantaneous", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-14-7-0-255-SUPPLY-FREQUENCY": ("1-0:14.7.0.255", "Supply frequency instantaneous", 3, "ac_electricity", 13),
+            "KB-OBIS-2-0-2-8-0-255-DC-POWER-EXPORT-INTEGRAL": ("2-0:2.8.0.255", "DC power minus time integral 1 total", 3, "dc_electricity", 26),
+            "KB-OBIS-2-0-92-7-0-255-DC-VOLTAGE-LOW-TO-GROUND": ("2-0:92.7.0.255", "DC voltage low to ground instantaneous", 3, "dc_electricity", 26),
+        }
+
+        missing = [entry_id for entry_id in expected if entry_id not in by_id]
+        self.assertEqual(missing, [])
+        for entry_id, (obis, name, class_id, medium, table_no) in expected.items():
+            entry = by_id[entry_id]
+            self.assertEqual(entry["type"], "cosem_object_instance")
+            self.assertEqual(entry["obis_pattern"], obis)
+            self.assertEqual(entry["name"], name)
+            self.assertEqual(entry["likely_interface_class_id"], class_id)
+            self.assertEqual(entry["medium"], medium)
+            self.assertEqual(entry["blue_book_table_ref"]["table_no"], table_no)
+            self.assertTrue(entry.get("value_group_mapping"))
+            self.assertTrue(entry.get("applicable_notes"))
+
+    def test_runtime_matching_finds_specific_obis_rows_without_generic_noise(self) -> None:
+        repo = KnowledgeRepository.from_paths([ROOT / "knowledge_bases" / "compiled_from_obsidian.json"])
+
+        text = (
+            "The profile shall expose Active energy import total at OBIS 1-0:1.8.0.255, "
+            "the SAP Assignment at 0-0:41.0.0.255, and the Activity Calendar at 0-0:13.0.0.255."
+        )
+        matches = repo.match_text(text, entry_type="cosem_object_instance", limit=20)
+        matched_ids = {match["entry_id"] for match in matches}
+
+        self.assertIn("KB-OBIS-1-0-1-8-0-255-ACTIVE-ENERGY-IMPORT", matched_ids)
+        self.assertIn("KB-OBIS-0-0-41-0-0-255-SAP-ASSIGNMENT", matched_ids)
+        self.assertIn("KB-OBIS-0-0-13-0-0-255-ACTIVITY-CALENDAR", matched_ids)
+
+        noisy_matches = repo.match_text(
+            "The blue book interface class object shall be supported.",
+            entry_type="cosem_object_instance",
+            limit=20,
+        )
+        self.assertEqual(noisy_matches, [])
+
+    def test_next_high_value_cosem_classes_are_traceable_and_actionable(self) -> None:
+        payload = json.loads((ROOT / "knowledge_bases" / "compiled_from_obsidian.json").read_text(encoding="utf-8"))
+        by_id = {entry["id"]: entry for entry in payload["entries"]}
+        required_ids = [
+            "KB-L3-IC-6-REGISTER-ACTIVATION",
+            "KB-L3-IC-10-SCHEDULE",
+            "KB-L3-IC-22-SINGLE-ACTION-SCHEDULE",
+            "KB-L3-IC-20-ACTIVITY-CALENDAR",
+            "KB-L3-IC-21-REGISTER-MONITOR",
+            "KB-L3-IC-65-PARAMETER-MONITOR",
+            "KB-L3-IC-17-SAP-ASSIGNMENT",
+            "KB-L3-IC-23-IEC-HDLC-SETUP",
+            "KB-L3-IC-41-TCP-UDP-SETUP",
+            "KB-L3-IC-42-IPV4-SETUP",
+        ]
+
+        missing_source_refs = []
+        missing_details = []
+        for entry_id in required_ids:
+            entry = by_id[entry_id]
+            if not entry.get("source_refs"):
+                missing_source_refs.append(entry_id)
+            for key in ["attributes", "methods", "access_semantics", "behavior_notes", "common_instances"]:
+                if key not in entry:
+                    missing_details.append(f"{entry_id}.{key}")
+
+        self.assertEqual(missing_source_refs, [])
+        self.assertEqual(missing_details, [])
+
 
 if __name__ == "__main__":
     unittest.main()
