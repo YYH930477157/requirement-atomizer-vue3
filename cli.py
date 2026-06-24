@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from atomize import AtomizerInputError, AtomizerPipelineError, run_atomizer_pipeline
+from engineering_composer import compose_engineering_requirements, write_engineering_requirements
 from export_requirements import export_requirements
 from llm_client import LLMConnectionError
 from llm_pipeline import run_review_pipeline
@@ -83,6 +84,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     export.add_argument("--status", default="all")
     add_verbosity_arguments(export)
 
+    compose = subparsers.add_parser("compose", help="Compose atomic requirements into engineering requirements.")
+    compose.add_argument("--out", type=Path, required=True)
+    add_verbosity_arguments(compose)
+
     args = parser.parse_args(argv)
     if args.version:
         return args
@@ -129,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
             envelope = command_review(args, started, timing_ms)
         elif args.command == "export":
             envelope = command_export(args, started, timing_ms)
+        elif args.command == "compose":
+            envelope = command_compose(args, started, timing_ms)
         else:
             raise AtomizerInputError(f"Unknown command: {args.command}")
     except AtomizerInputError as exc:
@@ -215,6 +222,16 @@ def command_export(args: argparse.Namespace, started: float, timing_ms: dict[str
     timing_ms["export"] = elapsed_ms(started)
     timing_ms["total"] = timing_ms["export"]
     return success_envelope("export", args.out, exports=exports, timing_ms=timing_ms)
+
+
+def command_compose(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
+    model = compose_engineering_requirements(args.out)
+    exports = write_engineering_requirements(args.out, model)
+    timing_ms["compose"] = elapsed_ms(started)
+    timing_ms["total"] = timing_ms["compose"]
+    envelope = success_envelope("compose", args.out, exports=exports, timing_ms=timing_ms)
+    envelope["engineering"] = model.get("analysis", {})
+    return envelope
 
 
 def success_envelope(

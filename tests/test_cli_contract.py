@@ -378,6 +378,50 @@ class CliContractTests(unittest.TestCase):
             ],
         )
 
+    def test_compose_writes_engineering_requirement_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            rows = [
+                {
+                    "stable_req_id": "OBJ-CLOCK",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Clock object shall be available.",
+                    "object": "Clock",
+                    "source_refs": ["TBL-OBJ"],
+                    "section_path": ["Object model"],
+                },
+                {
+                    "stable_req_id": "FUNC-SYNC",
+                    "requirement_type": "functional",
+                    "requirement": "The meter shall synchronize clock time through DLMS SET service.",
+                    "object": "Clock",
+                    "source_refs": ["BLK-SYNC"],
+                    "section_path": ["Time synchronization"],
+                },
+            ]
+            with (out_dir / "atomic_requirements.jsonl").open("w", encoding="utf-8", newline="\n") as f:
+                for row in rows:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            (out_dir / "table_items.jsonl").write_text(
+                json.dumps({
+                    "item_id": "TBL-OBJ",
+                    "fields": {"Object/attribute name": "Clock", "CL": "8", "Value": "0-0:1.0.0.255"},
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            result = self.run_cli("compose", "--out", str(out_dir), "--quiet")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads(result.stdout)
+        self.assertEqual(envelope["command"], "compose")
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(envelope["engineering"]["requirement_functions"], 1)
+        self.assertEqual(envelope["engineering"]["dlms_objects"], 1)
+        self.assertIn("engineering_requirements/engineering_requirements.json", envelope["exports"])
+
     def test_missing_input_returns_input_error_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = self.run_cli("run", str(Path(tmp) / "missing.docx"), "--out", str(Path(tmp) / "out"), "--quiet")

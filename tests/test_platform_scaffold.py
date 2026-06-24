@@ -653,6 +653,7 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertIn("PyYAML>=6.0.0", dependencies)
         self.assertIn("openpyxl>=3.1.0", dependencies)
         self.assertIn("pdfplumber>=0.11", dependencies)
+        self.assertIn("engineering_composer", py_modules)
         self.assertIn("llm_client", py_modules)
         self.assertNotIn("kb_api", py_modules)
         self.assertNotIn("kb_matching", py_modules)

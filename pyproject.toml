@@ -48,6 +48,7 @@ py-modules = [
   "doc_ir",
   "doc_ir_export",
   "domain_pack",
+  "engineering_composer",
   "export_requirements",
   "extract_cosem_instances",
   "extract_terms",
