@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from requirement_kb import KnowledgeRepository, clean_text, compile_term_pattern, find_matched_terms
 from requirement_kb.cli import default_kb_paths
-from requirement_kb.obsidian import compile_vault_to_json
+from requirement_kb.obsidian import compile_vault_to_json, export_json_to_vault
 from requirement_kb.schema import validate_kb_file
 from requirement_kb.server import KBRequestHandler, ThreadingHTTPServer
 
@@ -77,6 +77,42 @@ A COSEM interface class for scalar measured values.
         self.assertEqual(payload["kb_id"], "obsidian_compiled_kb")
         self.assertEqual(payload["entries"][0]["id"], "KB-REGISTER")
         self.assertEqual([issue for issue in issues if issue.severity == "error"], [])
+
+    def test_obsidian_export_groups_cosem_classes_by_class_id_family(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            kb_path = Path(tmp) / "classes.json"
+            kb_path.write_text(
+                json.dumps(
+                    {
+                        "kb_id": "test_kb",
+                        "name": "Test KB",
+                        "version": "0.1.0",
+                        "entries": [
+                            {
+                                "id": "KB-L3-IC-3-REGISTER",
+                                "type": "cosem_interface_class",
+                                "layer": "cosem_class",
+                                "name": "Register",
+                                "aliases": ["class 3"],
+                                "keywords": ["register"],
+                                "domain_tags": ["cosem_class"],
+                                "definition": "Register class.",
+                                "relations": [],
+                                "class_id": 3,
+                                "version": 0,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            vault = Path(tmp) / "vault"
+
+            written = export_json_to_vault([kb_path], vault)
+
+        self.assertIn(vault / "03_cosem_classes" / "003-Register" / "Register.md", written)
+        self.assertFalse((vault / "03_cosem_classes" / "Register.md").exists())
 
     def test_requirement_kb_cli_info_prints_json(self) -> None:
         completed = subprocess.run(

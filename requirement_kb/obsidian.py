@@ -43,6 +43,15 @@ def slugify(value: str) -> str:
     return value[:120] or "untitled"
 
 
+def folder_for_entry(kb: dict[str, Any], entry: dict[str, Any]) -> Path:
+    layer = entry.get("layer") or kb.get("layer") or "term"
+    folder = Path(FOLDER_BY_LAYER.get(layer, "99_other"))
+    if layer == "cosem_class" and entry.get("class_id") is not None:
+        family = f"{int(entry['class_id']):03d}-{slugify(entry.get('name') or entry.get('id') or 'untitled')}"
+        return folder / family
+    return folder
+
+
 def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if not text.startswith("---\n"):
         return {}, text
@@ -174,8 +183,7 @@ def export_json_to_vault(kb_paths: Iterable[Path], vault_path: Path) -> list[Pat
     for kb_path in kb_paths:
         kb = read_json(kb_path)
         for entry in kb.get("entries", []):
-            layer = entry.get("layer") or kb.get("layer") or "term"
-            folder = FOLDER_BY_LAYER.get(layer, "99_other")
+            folder = folder_for_entry(kb, entry)
             title = slugify(entry.get("name") or entry.get("id") or "untitled")
             out_path = vault_path / folder / f"{title}.md"
             out_path.parent.mkdir(parents=True, exist_ok=True)
