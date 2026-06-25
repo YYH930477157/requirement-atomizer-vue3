@@ -114,6 +114,58 @@ A COSEM interface class for scalar measured values.
         self.assertIn(vault / "03_cosem_classes" / "003-Register" / "Register.md", written)
         self.assertFalse((vault / "03_cosem_classes" / "Register.md").exists())
 
+    def test_obsidian_export_groups_object_instances_by_class_id_family(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            kb_path = Path(tmp) / "objects.json"
+            kb_path.write_text(
+                json.dumps(
+                    {
+                        "kb_id": "test_kb",
+                        "name": "Test KB",
+                        "version": "0.1.0",
+                        "entries": [
+                            {
+                                "id": "KB-L3-IC-3-REGISTER",
+                                "type": "cosem_interface_class",
+                                "layer": "cosem_class",
+                                "name": "Register",
+                                "aliases": [],
+                                "keywords": ["register"],
+                                "domain_tags": ["cosem_class"],
+                                "definition": "Register class.",
+                                "relations": [],
+                                "class_id": 3,
+                                "version": 0,
+                            },
+                            {
+                                "id": "KB-OBIS-1-0-1-8-0-255-ACTIVE-ENERGY-IMPORT",
+                                "type": "cosem_object_instance",
+                                "layer": "cosem_object_instance",
+                                "name": "Active energy import total",
+                                "aliases": [],
+                                "keywords": ["1-0:1.8.0.255"],
+                                "domain_tags": ["cosem_object"],
+                                "definition": "Active energy import object.",
+                                "relations": [],
+                                "likely_interface_class_id": 3,
+                                "likely_interface_class_name": "register",
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            vault = Path(tmp) / "vault"
+
+            written = export_json_to_vault([kb_path], vault)
+
+        self.assertIn(
+            vault / "04_object_instances" / "003-Register" / "Active energy import total.md",
+            written,
+        )
+        self.assertFalse((vault / "04_object_instances" / "Active energy import total.md").exists())
+
     def test_requirement_kb_cli_info_prints_json(self) -> None:
         completed = subprocess.run(
             [

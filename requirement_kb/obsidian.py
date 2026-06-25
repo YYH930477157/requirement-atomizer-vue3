@@ -43,12 +43,30 @@ def slugify(value: str) -> str:
     return value[:120] or "untitled"
 
 
-def folder_for_entry(kb: dict[str, Any], entry: dict[str, Any]) -> Path:
+def family_folder(class_id: Any, class_name: Any) -> str:
+    if class_id is None:
+        return ""
+    return f"{int(class_id):03d}-{slugify(str(class_name) if class_name not in [None, ''] else 'untitled')}"
+
+
+def class_family_index(entries: Iterable[dict[str, Any]]) -> dict[int, str]:
+    families: dict[int, str] = {}
+    for entry in entries:
+        layer = entry.get("layer") or entry.get("type")
+        if layer == "cosem_class" and entry.get("class_id") is not None:
+            families[int(entry["class_id"])] = family_folder(entry.get("class_id"), entry.get("name") or entry.get("id"))
+    return families
+
+
+def folder_for_entry(kb: dict[str, Any], entry: dict[str, Any], class_families: dict[int, str] | None = None) -> Path:
     layer = entry.get("layer") or kb.get("layer") or "term"
     folder = Path(FOLDER_BY_LAYER.get(layer, "99_other"))
     if layer == "cosem_class" and entry.get("class_id") is not None:
-        family = f"{int(entry['class_id']):03d}-{slugify(entry.get('name') or entry.get('id') or 'untitled')}"
-        return folder / family
+        return folder / family_folder(entry.get("class_id"), entry.get("name") or entry.get("id"))
+    if layer == "cosem_object_instance" and entry.get("likely_interface_class_id") is not None:
+        class_id = int(entry["likely_interface_class_id"])
+        family = (class_families or {}).get(class_id)
+        return folder / (family or family_folder(class_id, entry.get("likely_interface_class_name") or entry.get("name") or entry.get("id")))
     return folder
 
 
@@ -182,8 +200,9 @@ def export_json_to_vault(kb_paths: Iterable[Path], vault_path: Path) -> list[Pat
     vault_path.mkdir(parents=True, exist_ok=True)
     for kb_path in kb_paths:
         kb = read_json(kb_path)
+        class_families = class_family_index(kb.get("entries", []))
         for entry in kb.get("entries", []):
-            folder = folder_for_entry(kb, entry)
+            folder = folder_for_entry(kb, entry, class_families=class_families)
             title = slugify(entry.get("name") or entry.get("id") or "untitled")
             out_path = vault_path / folder / f"{title}.md"
             out_path.parent.mkdir(parents=True, exist_ok=True)

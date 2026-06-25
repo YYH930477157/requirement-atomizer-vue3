@@ -8,4 +8,4 @@ Edit notes here, then compile the vault back to JSON with `python -m requirement
 
 COSEM interface class notes under `03_cosem_classes/` are grouped by `class_id` using directories such as `003-Register/`.
 Keep all versions of the same `class_id` in the same family directory, and distinguish versions in the note filename/frontmatter/metadata.
-Row-level OBIS object instances stay under `04_object_instances/` and reference their likely interface class through `likely_interface_class_id`.
+Row-level OBIS object instances under `04_object_instances/` are grouped by their `likely_interface_class_id` using the same family directory names, for example `003-Register/`.

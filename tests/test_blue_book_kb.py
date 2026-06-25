@@ -271,6 +271,31 @@ class BlueBookKnowledgeBaseTests(unittest.TestCase):
             class_id = int(text.split(marker, 1)[1].split(",", 1)[0])
             self.assertTrue(note_path.parent.name.startswith(f"{class_id:03d}-"), note_path)
 
+    def test_obsidian_object_instance_notes_are_grouped_by_class_id_family(self) -> None:
+        instance_root = ROOT / "obsidian-vault" / "04_object_instances"
+        flat_notes = sorted(path.name for path in instance_root.glob("*.md"))
+        self.assertEqual(flat_notes, [])
+
+        expected_dirs = {
+            "001-Data",
+            "003-Register",
+            "006-Register Activation",
+            "007-Profile Generic",
+            "015-Association LN",
+            "017-SAP Assignment",
+            "020-Activity Calendar",
+            "061-Register Table",
+        }
+        actual_dirs = {path.name for path in instance_root.iterdir() if path.is_dir()}
+        self.assertTrue(expected_dirs.issubset(actual_dirs))
+
+        for note_path in sorted(instance_root.rglob("*.md")):
+            text = note_path.read_text(encoding="utf-8")
+            marker = '"likely_interface_class_id": '
+            self.assertIn(marker, text, note_path)
+            class_id = int(text.split(marker, 1)[1].split(",", 1)[0])
+            self.assertTrue(note_path.parent.name.startswith(f"{class_id:03d}-"), note_path)
+
     def test_compiled_obsidian_covers_blue_book_part_2_current_interface_classes(self) -> None:
         payload = json.loads((ROOT / "knowledge_bases" / "compiled_from_obsidian.json").read_text(encoding="utf-8"))
         actual = {
@@ -464,10 +489,23 @@ class BlueBookKnowledgeBaseTests(unittest.TestCase):
             "KB-OBIS-0-B-0-9-1-LOCAL-TIME": ("0-b:0.9.1", "Local time", 1, "general", 8),
             "KB-OBIS-0-B-96-1-0-DEVICE-ID-1": ("0-b:96.1.0", "Device ID 1", 1, "general", 8),
             "KB-OBIS-1-0-3-8-0-255-REACTIVE-ENERGY-IMPORT": ("1-0:3.8.0.255", "Reactive energy import total", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-4-8-0-255-REACTIVE-ENERGY-EXPORT": ("1-0:4.8.0.255", "Reactive energy export total", 3, "ac_electricity", 13),
             "KB-OBIS-1-0-9-8-0-255-APPARENT-ENERGY-IMPORT": ("1-0:9.8.0.255", "Apparent energy import total", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-10-8-0-255-APPARENT-ENERGY-EXPORT": ("1-0:10.8.0.255", "Apparent energy export total", 3, "ac_electricity", 13),
             "KB-OBIS-1-0-11-7-0-255-CURRENT-INSTANTANEOUS": ("1-0:11.7.0.255", "Current any phase instantaneous", 3, "ac_electricity", 13),
             "KB-OBIS-1-0-14-7-0-255-SUPPLY-FREQUENCY": ("1-0:14.7.0.255", "Supply frequency instantaneous", 3, "ac_electricity", 13),
             "KB-OBIS-1-0-1-7-0-255-INSTANTANEOUS-ACTIVE-IMPORT-POWER": ("1-0:1.7.0.255", "Instantaneous active import power (+P)", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-3-7-0-255-INSTANTANEOUS-REACTIVE-IMPORT-POWER": ("1-0:3.7.0.255", "Instantaneous reactive import power (+Q)", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-4-7-0-255-INSTANTANEOUS-REACTIVE-EXPORT-POWER": ("1-0:4.7.0.255", "Instantaneous reactive export power (-Q)", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-9-7-0-255-INSTANTANEOUS-APPARENT-IMPORT-POWER": ("1-0:9.7.0.255", "Instantaneous apparent import power (+S)", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-10-7-0-255-INSTANTANEOUS-APPARENT-EXPORT-POWER": ("1-0:10.7.0.255", "Instantaneous apparent export power (-S)", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-12-7-0-255-VOLTAGE-ANY-PHASE-INSTANTANEOUS": ("1-0:12.7.0.255", "Voltage any phase instantaneous", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-31-7-0-255-L1-CURRENT-INSTANTANEOUS": ("1-0:31.7.0.255", "L1 current instantaneous", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-51-7-0-255-L2-CURRENT-INSTANTANEOUS": ("1-0:51.7.0.255", "L2 current instantaneous", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-71-7-0-255-L3-CURRENT-INSTANTANEOUS": ("1-0:71.7.0.255", "L3 current instantaneous", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-52-7-0-255-L2-VOLTAGE-INSTANTANEOUS": ("1-0:52.7.0.255", "L2 voltage instantaneous", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-72-7-0-255-L3-VOLTAGE-INSTANTANEOUS": ("1-0:72.7.0.255", "L3 voltage instantaneous", 3, "ac_electricity", 13),
+            "KB-OBIS-1-0-13-7-0-255-POWER-FACTOR-INSTANTANEOUS": ("1-0:13.7.0.255", "Power factor instantaneous", 3, "ac_electricity", 13),
             "KB-OBIS-1-0-1-9-0-255-INCREMENTAL-ACTIVE-ENERGY-IMPORT": ("1-0:1.9.0.255", "Incremental active energy import (+A) - Total", 3, "ac_electricity", 13),
             "KB-OBIS-1-0-1-24-0-255-AVERAGE-ACTIVE-IMPORT-POWER-CURRENT": ("1-0:1.24.0.255", "Average active import power (+A) - Current", 3, "ac_electricity", 13),
             "KB-OBIS-1-0-1-25-0-255-AVERAGE-ACTIVE-IMPORT-POWER-LAST": ("1-0:1.25.0.255", "Average active import power (+A) - Last", 3, "ac_electricity", 13),
@@ -527,6 +565,22 @@ class BlueBookKnowledgeBaseTests(unittest.TestCase):
         self.assertIn("KB-OBIS-1-0-1-7-0-255-INSTANTANEOUS-ACTIVE-IMPORT-POWER", matched_ids)
         self.assertIn("KB-OBIS-1-0-2-9-0-255-INCREMENTAL-ACTIVE-ENERGY-EXPORT", matched_ids)
         self.assertIn("KB-OBIS-1-0-2-25-0-255-AVERAGE-ACTIVE-EXPORT-POWER-LAST", matched_ids)
+
+    def test_runtime_matching_finds_ac_phase_and_power_quality_rows(self) -> None:
+        repo = KnowledgeRepository.from_paths([ROOT / "knowledge_bases" / "compiled_from_obsidian.json"])
+
+        text = (
+            "The meter shall expose L2 voltage at OBIS 1-0:52.7.0.255, L3 current at "
+            "OBIS 1-0:71.7.0.255, reactive energy export at OBIS 1-0:4.8.0.255, "
+            "and power factor at OBIS 1-0:13.7.0.255."
+        )
+        matches = repo.match_text(text, entry_type="cosem_object_instance", limit=20)
+        matched_ids = {match["entry_id"] for match in matches}
+
+        self.assertIn("KB-OBIS-1-0-52-7-0-255-L2-VOLTAGE-INSTANTANEOUS", matched_ids)
+        self.assertIn("KB-OBIS-1-0-71-7-0-255-L3-CURRENT-INSTANTANEOUS", matched_ids)
+        self.assertIn("KB-OBIS-1-0-4-8-0-255-REACTIVE-ENERGY-EXPORT", matched_ids)
+        self.assertIn("KB-OBIS-1-0-13-7-0-255-POWER-FACTOR-INSTANTANEOUS", matched_ids)
 
     def test_next_high_value_cosem_classes_are_traceable_and_actionable(self) -> None:
         payload = json.loads((ROOT / "knowledge_bases" / "compiled_from_obsidian.json").read_text(encoding="utf-8"))
