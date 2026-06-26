@@ -10,7 +10,7 @@ const {
   drainProgressLines,
   loadLlmSettingsConfig,
   normalizeLlmSettings,
-  resolvePythonScriptPath,
+  resolveBackendCommand,
   saveLlmSettingsConfig,
 } = require("./main.helpers.cjs");
 
@@ -41,6 +41,11 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
   }
+
+  if (process.argv.includes("--smoke")) {
+    setImmediate(() => app.quit());
+  }
+
 }
 
 app.whenReady().then(createWindow);
@@ -119,14 +124,20 @@ ipcMain.handle("task:assemble-spec", async (_event, input) => runDesktopTaskProc
   (input.formats || ["xlsx", "docx", "md"]).join(","),
   ...(input.enrichRoute ? ["--enrich-route", input.enrichRoute] : []),
 ]));
+ipcMain.handle("task:compose-engineering", async (_event, input) => runDesktopTaskProcess([
+  "compose",
+  "--out",
+  input.outDir,
+]));
 
 async function startApiServer(outputDir) {
   stopApiServer();
   const token = crypto.randomBytes(24).toString("hex");
   const port = await findFreePort();
-  const apiServerPath = resolveApiServerPath();
-  apiProcess = spawn(resolvePythonCommand(), [
-    apiServerPath,
+  const backend = resolveBackendCommand("api_server.py", { dirname: __dirname, resourcesPath: process.resourcesPath, existsSync: fs.existsSync });
+  apiProcess = spawn(backend.command, [
+    ...backend.args,
+    ...(backend.packaged ? ["--serve-api"] : []),
     "--out",
     outputDir,
     "--host",
@@ -140,7 +151,7 @@ async function startApiServer(outputDir) {
     "--token",
     token,
   ], {
-    cwd: path.dirname(apiServerPath),
+    cwd: backend.cwd,
     env: buildCurrentLlmEnvironment(),
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -201,18 +212,6 @@ function waitForApiReady(child, port, token, outputDir) {
   });
 }
 
-function resolveApiServerPath() {
-  return resolvePythonScriptPath("api_server.py", { dirname: __dirname, resourcesPath: process.resourcesPath, existsSync: fs.existsSync });
-}
-
-function resolveDesktopTasksPath() {
-  return resolvePythonScriptPath("desktop_tasks.py", { dirname: __dirname, resourcesPath: process.resourcesPath, existsSync: fs.existsSync });
-}
-
-function resolvePythonCommand() {
-  return process.env.RATOMIZER_PYTHON || "python";
-}
-
 function findFreePort() {
   const net = require("node:net");
   return new Promise((resolve, reject) => {
@@ -227,10 +226,10 @@ function findFreePort() {
 }
 
 function runDesktopTaskProcess(args) {
-  const taskPath = resolveDesktopTasksPath();
+  const backend = resolveBackendCommand("desktop_tasks.py", { dirname: __dirname, resourcesPath: process.resourcesPath, existsSync: fs.existsSync });
   return new Promise((resolve, reject) => {
-    const child = spawn(resolvePythonCommand(), [taskPath, ...args], {
-      cwd: path.dirname(taskPath),
+    const child = spawn(backend.command, [...backend.args, ...args], {
+      cwd: backend.cwd,
       env: buildCurrentLlmEnvironment(),
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],

@@ -31,6 +31,61 @@ F_ACCESS = "Access rights RC/PC/SC/LC"
 F_MEANING = "Meaning"
 F_INDEX = "#"
 ASSOCIATIONS = ("RC", "PC", "SC", "LC")
+CLASS_NAME_TO_ID = {
+    "Data": "1",
+    "Register": "3",
+    "Extended Register": "4",
+    "Demand Register": "5",
+    "Register Activation": "6",
+    "Profile Generic": "7",
+    "Clock": "8",
+    "Script Table": "9",
+    "Schedule": "10",
+    "Special Days Table": "11",
+    "Association SN": "12",
+    "Association LN": "15",
+    "SAP Assignment": "17",
+    "Image Transfer": "18",
+    "Activity Calendar": "20",
+    "Single Action Schedule": "22",
+    "Register Table": "61",
+    "Compact Data": "62",
+    "Security Setup": "64",
+    "Disconnect Control": "70",
+}
+CLASS_LEVEL_ATTRIBUTE_NAMES = {
+    "Data": {"logical_name", "value"},
+    "Register": {"logical_name", "value", "scaler_unit"},
+    "Extended Register": {"logical_name", "value", "scaler_unit", "status", "capture_time", "reset"},
+    "Demand Register": {
+        "logical_name",
+        "current_average_value",
+        "last_average_value",
+        "scaler_unit",
+        "status",
+        "capture_time",
+        "start_time_current",
+        "period",
+        "number_of_periods",
+        "reset",
+        "next_period",
+    },
+    "Profile Generic": {
+        "logical_name",
+        "buffer",
+        "capture_objects",
+        "capture_period",
+        "sort_method",
+        "sort_object",
+        "entries_in_use",
+        "profile_entries",
+    },
+    "Script Table": {"logical_name", "scripts", "execute"},
+    "Single Action Schedule": {"logical_name", "executed_script", "type", "execution_time"},
+    "Register Table": {"logical_name", "table_cell_values", "table_cell_definition", "capture"},
+    "Compact Data": {"logical_name", "compact_buffer", "capture_objects", "template_id", "template_description", "capture_method"},
+    "Disconnect Control": {"logical_name", "output_state", "control_state", "control_mode", "remote_disconnect", "remote_connect"},
+}
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -95,10 +150,14 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
     index = build_source_index(read_jsonl(out_dir / "table_items.jsonl"))
     status_by_id = review_status_by_id(read_jsonl(out_dir / "review_states.jsonl"))
 
-    objects: dict[str, dict[str, Any]] = {}
+    objects: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    object_keys_by_name: dict[str, list[tuple[str, str, str, str]]] = defaultdict(list)
+    object_keys_by_class_id: dict[str, list[tuple[str, str, str, str]]] = defaultdict(list)
     conflicts: list[dict[str, Any]] = []
     orphan_attributes: list[dict[str, Any]] = []
     units: list[dict[str, Any]] = []
+    source_attribute_requirements = 0
+    projected_class_attributes = 0
 
     # 1) 对象实例
     for row in requirements:
@@ -110,37 +169,46 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
             continue
         obis = str(fields.get(F_OBIS) or "").strip()
         class_id = str(fields.get(F_CLASS) or "").strip()
-        existing = objects.get(name)
+        object_key = (name, obis, class_id, first_source_item_id(row, index))
+        existing = objects.get(object_key)
         if existing is not None:
-            if (existing["obis"], existing["class_id"]) != (obis, class_id):
-                conflicts.append({
-                    "object": name,
-                    "kind": "duplicate_object_instance",
-                    "existing": {"obis": existing["obis"], "class_id": existing["class_id"]},
-                    "incoming": {"obis": obis, "class_id": class_id},
-                })
+            conflicts.append({
+                "object": name,
+                "kind": "duplicate_object_instance",
+                "existing": {"obis": existing["obis"], "class_id": existing["class_id"]},
+                "incoming": {"obis": obis, "class_id": class_id},
+            })
             continue
-        objects[name] = {
+        objects[object_key] = {
             "object": name,
             "obis": obis,
             "class_id": class_id,
+            "source_table_ids": table_ids_for_row(row, index),
+            "source_item_id": first_source_item_id(row, index),
+            "source_order": source_order_for_row(row, index),
             "meaning": str(fields.get(F_MEANING) or "").strip(),
             "domain": str(row.get("domain") or ""),
             "section_path": row.get("section_path") or [],
             "confidence": row.get("confidence"),
             "review_status": status_of(row, status_by_id),
             "source_refs": row.get("source_refs") or [],
+            "source_atomic_requirements": [_row_id(row)],
             "attributes": [],
         }
+        object_keys_by_name[name].append(object_key)
+        if class_id:
+            object_keys_by_class_id[class_id].append(object_key)
 
     # 2) 属性访问 → 挂到父对象
     for row in requirements:
         if row.get("requirement_type") != "cosem_attribute_access":
             continue
+        source_attribute_requirements += 1
         fields = source_fields(row, index)
         obj_attr = str(row.get("object") or "").strip()
         parent, _, attr_inline = obj_attr.partition(".")
-        attr_name = str(fields.get(F_NAME) or attr_inline or "").strip()
+        raw_attr_name = str(fields.get(F_NAME) or attr_inline or "").strip()
+        attr_name = canonical_attribute_name(parent, raw_attr_name)
         access_raw = str(fields.get(F_ACCESS) or "").strip()
         attribute = {
             "index": normalize_numeric(fields.get(F_INDEX)),
@@ -155,12 +223,23 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
             "ambiguity": bool(row.get("ambiguity")),
             "review_status": status_of(row, status_by_id),
             "source_refs": row.get("source_refs") or [],
+            "source_atomic_requirements": [_row_id(row)],
         }
-        parent_obj = objects.get(parent)
-        if parent_obj is None:
+        parent_objs = find_parent_objects(parent, row, objects, object_keys_by_name, object_keys_by_class_id, index, attr_name)
+        if not parent_objs:
             orphan_attributes.append({"parent": parent, **attribute})
         else:
-            parent_obj["attributes"].append(attribute)
+            is_class_template = is_class_template_attribute(parent)
+            for parent_obj in parent_objs:
+                attached_attribute = dict(attribute)
+                if is_class_template and str(parent_obj.get("object") or "") != parent:
+                    attached_attribute["scope"] = "class_template"
+                    attached_attribute["template_parent"] = parent
+                    projected_class_attributes += 1
+                parent_obj["attributes"].append(attached_attribute)
+                for req_id in attribute["source_atomic_requirements"]:
+                    if req_id and req_id not in parent_obj["source_atomic_requirements"]:
+                        parent_obj["source_atomic_requirements"].append(req_id)
 
     # 3) 计量量纲单位（附录）
     for row in requirements:
@@ -175,7 +254,7 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
             "source_refs": row.get("source_refs") or [],
         })
 
-    object_list = sorted(objects.values(), key=lambda o: (o["obis"] or "~", o["object"]))
+    object_list = sorted(objects.values(), key=lambda o: (o.get("source_order", ("~", 0, "")), o["obis"] or "~", o["object"]))
     attr_total = sum(len(o["attributes"]) for o in object_list) + len(orphan_attributes)
     return {
         "objects": object_list,
@@ -189,8 +268,263 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
             "orphan_attributes": len(orphan_attributes),
             "units": len(units),
             "conflicts": len(conflicts),
+            "source_attribute_requirements": source_attribute_requirements,
+            "projected_class_attributes": projected_class_attributes,
         },
     }
+
+
+def _row_id(row: dict[str, Any]) -> str:
+    return str(row.get("stable_req_id") or row.get("req_id") or row.get("requirement_id") or "").strip()
+
+
+def first_source_item_id(row: dict[str, Any], index: dict[str, dict[str, Any]]) -> str:
+    for ref in row.get("source_refs", []) or []:
+        if str(ref) in index:
+            return str(ref)
+    return ""
+
+
+def source_order_for_row(row: dict[str, Any], index: dict[str, dict[str, Any]]) -> tuple[str, int, str]:
+    for ref in row.get("source_refs", []) or []:
+        item = index.get(str(ref))
+        if not item:
+            continue
+        table_id = str(item.get("table_id") or "")
+        try:
+            row_index = int(item.get("row_index") or 0)
+        except (TypeError, ValueError):
+            row_index = 0
+        return (table_id, row_index, str(ref))
+    return ("", 0, "")
+
+
+def table_ids_for_row(row: dict[str, Any], index: dict[str, dict[str, Any]]) -> list[str]:
+    table_ids: list[str] = []
+    for ref in row.get("source_refs", []) or []:
+        item = index.get(str(ref))
+        table_id = str(item.get("table_id") or "") if item else ""
+        if table_id and table_id not in table_ids:
+            table_ids.append(table_id)
+    return table_ids
+
+
+def is_class_template_attribute(parent: str) -> bool:
+    return parent in CLASS_LEVEL_ATTRIBUTE_NAMES
+
+
+def canonical_attribute_name(parent: str, attr_name: str) -> str:
+    allowed_attrs = CLASS_LEVEL_ATTRIBUTE_NAMES.get(parent)
+    if not allowed_attrs:
+        return attr_name
+    normalized = normalize_attribute_name(attr_name)
+    for allowed in allowed_attrs:
+        if normalize_attribute_name(allowed) == normalized:
+            return allowed
+    return attr_name
+
+
+def normalize_attribute_name(value: str) -> str:
+    return "_".join(str(value or "").replace("-", "_").split()).lower()
+
+
+def find_parent_objects(
+    parent: str,
+    row: dict[str, Any],
+    objects: dict[tuple[str, str, str, str], dict[str, Any]],
+    object_keys_by_name: dict[str, list[tuple[str, str, str, str]]],
+    object_keys_by_class_id: dict[str, list[tuple[str, str, str, str]]],
+    index: dict[str, dict[str, Any]],
+    attr_name: str,
+) -> list[dict[str, Any]]:
+    keys = object_keys_by_name.get(parent) or []
+    if keys:
+        row_order = source_order_for_row(row, index)
+        row_table = row_order[0]
+        candidates = [objects[key] for key in keys]
+        same_table_previous = [
+            obj
+            for obj in candidates
+            if obj.get("source_order", ("", 0, ""))[0] == row_table
+            and obj.get("source_order", ("", 0, ""))[1] <= row_order[1]
+            and attribute_matches_parent_context(row, obj, index, attr_name)
+        ]
+        if same_table_previous:
+            return [max(same_table_previous, key=lambda obj: obj.get("source_order", ("", 0, ""))[1])]
+
+        previous = [
+            obj
+            for obj in candidates
+            if obj.get("source_order", ("", 0, "")) <= row_order
+            and attribute_matches_parent_context(row, obj, index, attr_name)
+        ]
+        if previous:
+            return [max(previous, key=lambda obj: obj.get("source_order", ("", 0, "")))]
+        valid_candidates = [obj for obj in candidates if attribute_matches_parent_context(row, obj, index, attr_name)]
+        if valid_candidates:
+            return [valid_candidates[0]]
+
+    same_table_prefix = same_table_prefix_parent_objects(parent, row, objects, index, attr_name)
+    if same_table_prefix:
+        return same_table_prefix
+
+    same_table_attribute_parent = same_table_attribute_name_parent_objects(parent, row, objects, index, attr_name)
+    if same_table_attribute_parent:
+        return same_table_attribute_parent
+
+    return class_template_parent_objects(parent, row, objects, object_keys_by_class_id, index, attr_name)
+
+
+def class_template_parent_objects(
+    parent: str,
+    row: dict[str, Any],
+    objects: dict[tuple[str, str, str, str], dict[str, Any]],
+    object_keys_by_class_id: dict[str, list[tuple[str, str, str, str]]],
+    index: dict[str, dict[str, Any]],
+    attr_name: str,
+) -> list[dict[str, Any]]:
+    class_id = CLASS_NAME_TO_ID.get(parent)
+    allowed_attrs = CLASS_LEVEL_ATTRIBUTE_NAMES.get(parent)
+    if not class_id or allowed_attrs is None or canonical_allowed_attribute(allowed_attrs, attr_name) is None:
+        return []
+
+    candidates = [objects[key] for key in object_keys_by_class_id.get(class_id, [])]
+    if not candidates:
+        return []
+
+    row_order = source_order_for_row(row, index)
+    row_table = row_order[0]
+    if row_table:
+        same_table_previous = [
+            obj
+            for obj in candidates
+            if obj.get("source_order", ("", 0, ""))[0] == row_table
+            and obj.get("source_order", ("", 0, ""))[1] <= row_order[1]
+            and attribute_matches_parent_context(row, obj, index, attr_name)
+        ]
+        if same_table_previous:
+            return [max(same_table_previous, key=lambda obj: obj.get("source_order", ("", 0, ""))[1])]
+
+    return candidates if len(candidates) == 1 else []
+
+
+def same_table_prefix_parent_objects(
+    parent: str,
+    row: dict[str, Any],
+    objects: dict[tuple[str, str, str, str], dict[str, Any]],
+    index: dict[str, dict[str, Any]],
+    attr_name: str,
+) -> list[dict[str, Any]]:
+    row_order = source_order_for_row(row, index)
+    row_table = row_order[0]
+    if not parent or not row_table:
+        return []
+    matches: list[dict[str, Any]] = []
+    normalized_parent = normalized_name(parent)
+    for obj in objects.values():
+        object_order = obj.get("source_order", ("", 0, ""))
+        if object_order[0] != row_table or object_order[1] > row_order[1]:
+            continue
+        object_name = str(obj.get("object") or "")
+        if not normalized_name(object_name).startswith(normalized_parent):
+            continue
+        class_id = str(obj.get("class_id") or "")
+        allowed_attrs = CLASS_LEVEL_ATTRIBUTE_NAMES.get(class_name_for_id(class_id) or "", set())
+        if canonical_allowed_attribute(allowed_attrs, attr_name) is None:
+            continue
+        if attribute_matches_parent_context(row, obj, index, attr_name):
+            matches.append(obj)
+    if not matches:
+        return []
+    return [max(matches, key=lambda obj: obj.get("source_order", ("", 0, ""))[1])]
+
+
+def same_table_attribute_name_parent_objects(
+    parent: str,
+    row: dict[str, Any],
+    objects: dict[tuple[str, str, str, str], dict[str, Any]],
+    index: dict[str, dict[str, Any]],
+    attr_name: str,
+) -> list[dict[str, Any]]:
+    row_order = source_order_for_row(row, index)
+    row_table = row_order[0]
+    if not row_table or normalize_attribute_name(parent) != normalize_attribute_name(attr_name):
+        return []
+    matches: list[dict[str, Any]] = []
+    for obj in objects.values():
+        object_order = obj.get("source_order", ("", 0, ""))
+        if object_order[0] != row_table or object_order[1] > row_order[1]:
+            continue
+        class_name = class_name_for_id(str(obj.get("class_id") or ""))
+        allowed_attrs = CLASS_LEVEL_ATTRIBUTE_NAMES.get(class_name, set())
+        if canonical_allowed_attribute(allowed_attrs, attr_name) is not None:
+            matches.append(obj)
+    if not matches:
+        return []
+    return [max(matches, key=lambda obj: obj.get("source_order", ("", 0, ""))[1])]
+
+
+def normalized_name(value: str) -> str:
+    return " ".join(str(value or "").replace(".", " ").split()).lower()
+
+
+def class_name_for_id(class_id: str) -> str:
+    for name, candidate_id in CLASS_NAME_TO_ID.items():
+        if str(candidate_id) == str(class_id):
+            return name
+    return ""
+
+
+def canonical_allowed_attribute(allowed_attrs: set[str], attr_name: str) -> str | None:
+    normalized = normalize_attribute_name(attr_name)
+    for allowed in allowed_attrs:
+        if normalize_attribute_name(allowed) == normalized:
+            return allowed
+    return None
+
+
+def find_parent_object(
+    parent: str,
+    row: dict[str, Any],
+    objects: dict[tuple[str, str, str, str], dict[str, Any]],
+    object_keys_by_name: dict[str, list[tuple[str, str, str, str]]],
+    index: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    result = find_parent_objects(parent, row, objects, object_keys_by_name, defaultdict(list), index, "")
+    return result[0] if result else None
+
+
+PROFILE_ATTRIBUTE_NAMES = {
+    "buffer",
+    "capture_objects",
+    "capture_period",
+    "sort_method",
+    "sort_object",
+    "entries_in_use",
+    "profile_entries",
+}
+
+
+def attribute_matches_parent_context(
+    row: dict[str, Any],
+    parent_obj: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    attr_name: str,
+) -> bool:
+    parent_table_ids = set(parent_obj.get("source_table_ids") or [])
+    class_id = str(parent_obj.get("class_id") or "")
+    if str(attr_name or "").strip() in PROFILE_ATTRIBUTE_NAMES and class_id != "7":
+        return False
+    if not parent_table_ids:
+        return True
+    row_table_ids = set(table_ids_for_row(row, index))
+    if not row_table_ids:
+        return True
+    if parent_table_ids & row_table_ids:
+        return True
+    row_order = source_order_for_row(row, index)
+    parent_order = parent_obj.get("source_order", ("", 0, ""))
+    return parent_order <= row_order
 
 
 # --- 渲染 -----------------------------------------------------------------------

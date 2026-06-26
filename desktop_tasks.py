@@ -9,6 +9,7 @@ from typing import Any
 
 from assemble_spec import assemble
 from atomize import run_atomizer_pipeline
+from engineering_composer import compose_engineering_requirements, write_engineering_requirements
 from export_requirements import export_requirements
 from llm_pipeline import read_jsonl, run_review_pipeline
 from requirement_kb.cli import default_kb_paths
@@ -95,6 +96,21 @@ def assemble_task(out_dir: Path, *, formats: list[str] | None = None, enrich_rou
     }
 
 
+def compose_task(out_dir: Path) -> dict[str, Any]:
+    out_dir = out_dir.expanduser().resolve()
+    model = compose_engineering_requirements(out_dir)
+    written = write_engineering_requirements(out_dir, model)
+    analysis = model.get("analysis", {})
+    return {
+        "kind": "compose",
+        "out_dir": str(out_dir),
+        "count": int(analysis.get("requirement_functions") or len(model.get("requirement_functions", []))),
+        "analysis": analysis,
+        "written": written,
+        "summary": build_output_summary(out_dir),
+    }
+
+
 def build_output_summary(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
@@ -153,6 +169,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     assemble_parser.add_argument("--formats", default="xlsx,docx,md")
     assemble_parser.add_argument("--enrich-route", default="")
 
+    compose_parser = subparsers.add_parser("compose")
+    compose_parser.add_argument("--out", type=Path, required=True)
+
     summary_parser = subparsers.add_parser("summary")
     summary_parser.add_argument("--out", type=Path, required=True)
     return parser.parse_args(argv)
@@ -177,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = export_task(args.out, split_formats(args.formats))
         elif args.command == "assemble":
             payload = assemble_task(args.out, formats=split_formats(args.formats), enrich_route=args.enrich_route or None)
+        elif args.command == "compose":
+            payload = compose_task(args.out)
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:

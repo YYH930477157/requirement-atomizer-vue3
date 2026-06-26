@@ -15,7 +15,7 @@ from domain_pack import load_domain_pack
 from llm_client import LLMClientConfig, LLMConnectionError, LLMError, LLMResponseError, chat_json, chat_json_messages
 from llm_review_schema import validate_llm_review_result_payload, validate_llm_review_results
 from resources import package_root
-from review_state import RequirementReviewState
+from review_state import RequirementReviewState, merge_review_states, review_event_key, review_state_lock
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
@@ -598,7 +598,23 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> int:
     return count
 
 
+def atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> int:
+    count = 0
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="\n") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                count += 1
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+    return count
+
+
 def append_review_state_events(path: Path, states: list[dict[str, Any]]) -> int:
+    existing_keys = {review_event_row_key(row) for row in read_jsonl(path)}
     count = 0
     with path.open("a", encoding="utf-8", newline="\n") as f:
         for state in states:
@@ -612,9 +628,18 @@ def append_review_state_events(path: Path, states: list[dict[str, Any]]) -> int:
                     "current_status": state.get("status"),
                     **event,
                 }
+                key = review_event_row_key(row)
+                if key in existing_keys:
+                    continue
+                existing_keys.add(key)
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 count += 1
     return count
+
+
+def review_event_row_key(row: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    event_key = review_event_key(row)
+    return (str(row.get("requirement_id") or row.get("stable_req_id") or ""), *event_key)
 
 
 def parse_args() -> argparse.Namespace:
@@ -672,8 +697,10 @@ def run_review_pipeline(
     states = result.states
     assert_valid_review_results(reviews)
     write_jsonl(out_dir / "llm_review_results.jsonl", reviews)
-    write_jsonl(out_dir / "review_states.jsonl", states)
-    event_count = append_review_state_events(out_dir / "review_state_events.jsonl", states)
+    with review_state_lock(out_dir):
+        states = merge_review_states(read_jsonl(out_dir / "review_states.jsonl"), states)
+        atomic_write_jsonl(out_dir / "review_states.jsonl", states)
+        event_count = append_review_state_events(out_dir / "review_state_events.jsonl", states)
     return {
         "pipeline_id": pipeline.pipeline_id,
         "out": str(out_dir),

@@ -309,7 +309,7 @@ def translate_requirement_text(text: str, *, requirement_id: str = "", output_di
     return translation
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve requirement atomizer output over a local HTTP API.")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--host", default="127.0.0.1")
@@ -321,11 +321,11 @@ def parse_args() -> argparse.Namespace:
         help="Allowed browser Origin. Can be provided multiple times.",
     )
     parser.add_argument("--token", default="", help="Optional local API token required for data endpoints.")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     RequirementAPIHandler.output_dir = args.out.expanduser().resolve()
     RequirementAPIHandler.allowed_origins = build_allowed_origins(args.host, args.port, args.allow_origin)
     RequirementAPIHandler.local_token = args.token

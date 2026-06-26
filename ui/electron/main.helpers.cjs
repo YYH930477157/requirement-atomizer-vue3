@@ -126,6 +126,35 @@ function resolvePythonScriptPath(filename, options = {}) {
   return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
 }
 
+function resolveBackendCommand(filename, options = {}) {
+  const resourcesPath = options.resourcesPath || process.resourcesPath || "";
+  const existsSync = options.existsSync || fs.existsSync;
+  const platform = options.platform || process.platform;
+  const env = options.env || process.env;
+  const executableName = platform === "win32" ? "ratomizer-desktop.exe" : "ratomizer-desktop";
+  const backendCandidates = [
+    path.resolve(resourcesPath, "backend", executableName),
+    path.resolve(resourcesPath, "app.asar.unpacked", "backend", executableName),
+  ];
+  const backendExe = backendCandidates.find((candidate) => existsSync(candidate));
+  if (backendExe) {
+    return {
+      command: backendExe,
+      args: [],
+      cwd: path.dirname(backendExe),
+      packaged: true,
+    };
+  }
+
+  const scriptPath = resolvePythonScriptPath(filename, options);
+  return {
+    command: env.RATOMIZER_PYTHON || "python",
+    args: [scriptPath],
+    cwd: path.dirname(scriptPath),
+    packaged: false,
+  };
+}
+
 function drainProgressLines(buffer, prefix = PROGRESS_PREFIX) {
   const lines = buffer.split(/\r?\n/);
   const remaining = lines.pop() || "";
@@ -176,6 +205,7 @@ module.exports = {
   drainProgressLines,
   loadLlmSettingsConfig,
   normalizeLlmSettings,
+  resolveBackendCommand,
   resolvePythonScriptPath,
   saveLlmSettingsConfig,
 };

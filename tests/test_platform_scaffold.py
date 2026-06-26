@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import http.client
+import os
 import tempfile
 import threading
+import time
 import tomllib
 import unittest
 import urllib.error
@@ -26,6 +29,7 @@ from llm_pipeline import (
     merge_review_policy,
     read_jsonl,
     review_requirements,
+    run_review_pipeline,
     write_jsonl,
 )
 from output_writer import build_quality_report
@@ -37,8 +41,69 @@ from table_pattern_engine import load_table_patterns, match_table_pattern
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class TestAPIServer:
+    def __init__(self, server: ThreadingHTTPServer, thread: threading.Thread):
+        self.server = server
+        self.thread = thread
+
+    @property
+    def server_port(self) -> int:
+        return int(self.server.server_port)
+
+    def shutdown(self) -> None:
+        self.server.shutdown()
+        self.thread.join(timeout=5)
+        self.server.server_close()
+
+    def post_json(self, path: str, payload: dict, headers: dict[str, str] | None = None) -> tuple[int, dict]:
+        body = json.dumps(payload).encode("utf-8")
+        request_headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+        request_headers.update(headers or {})
+        connection = http.client.HTTPConnection("127.0.0.1", self.server_port, timeout=5)
+        try:
+            connection.request("POST", path, body=body, headers=request_headers)
+            response = connection.getresponse()
+            raw = response.read()
+            parsed = json.loads(raw.decode("utf-8")) if raw else {}
+            return response.status, parsed
+        finally:
+            connection.close()
+
+
 class PlatformScaffoldTests(unittest.TestCase):
-    def start_api_server(self, out_dir: Path, *, token: str = "") -> ThreadingHTTPServer:
+    def test_package_root_prefers_pyinstaller_meipass_resources(self) -> None:
+        import resources
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exe_dir = root / "dist-backend"
+            meipass = root / "_MEI12345"
+            exe_dir.mkdir()
+            (meipass / "llm_agents").mkdir(parents=True)
+
+            with patch.object(resources.sys, "frozen", True, create=True), \
+                    patch.object(resources.sys, "executable", str(exe_dir / "ratomizer-desktop.exe")), \
+                    patch.object(resources.sys, "_MEIPASS", str(meipass), create=True):
+                self.assertEqual(resources.package_root(), meipass.resolve())
+
+    def test_package_root_prefers_electron_resource_parent_for_backend_exe(self) -> None:
+        import resources
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            resources_root = root / "resources"
+            backend_dir = resources_root / "backend"
+            backend_dir.mkdir(parents=True)
+            (resources_root / "llm_agents").mkdir()
+            meipass = root / "_MEI12345"
+            meipass.mkdir()
+
+            with patch.object(resources.sys, "frozen", True, create=True), \
+                    patch.object(resources.sys, "executable", str(backend_dir / "ratomizer-desktop.exe")), \
+                    patch.object(resources.sys, "_MEIPASS", str(meipass), create=True):
+                self.assertEqual(resources.package_root(), resources_root.resolve())
+
+    def start_api_server(self, out_dir: Path, *, token: str = "") -> TestAPIServer:
         class TestHandler(RequirementAPIHandler):
             pass
 
@@ -48,7 +113,7 @@ class PlatformScaffoldTests(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        return server
+        return TestAPIServer(server, thread)
 
     def test_blocks_to_doc_ir_preserves_table_rows(self) -> None:
         blocks = [
@@ -335,6 +400,38 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertEqual(rows[0]["to_status"], "llm_reviewed")
         self.assertEqual(rows[0]["status_after"], "llm_reviewed")
 
+    def test_append_review_state_events_deduplicates_existing_events(self) -> None:
+        state = {
+            "requirement_id": "SREQ-1",
+            "status": "accepted",
+            "history": [
+                {
+                    "from_status": "candidate",
+                    "to_status": "llm_reviewed",
+                    "actor": "llm_pipeline",
+                    "reason": "decision=accept",
+                    "timestamp": "2026-06-10T00:00:00+00:00",
+                },
+                {
+                    "from_status": "llm_reviewed",
+                    "to_status": "accepted",
+                    "actor": "llm_pipeline",
+                    "reason": "low-risk acceptance",
+                    "timestamp": "2026-06-10T00:00:01+00:00",
+                },
+            ],
+            "metadata": {"req_id": "AREQ-1", "stable_req_id": "SREQ-1"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "review_state_events.jsonl"
+            self.assertEqual(append_review_state_events(path, [state]), 2)
+            self.assertEqual(append_review_state_events(path, [state]), 0)
+
+            rows = read_jsonl(path)
+
+        self.assertEqual(len(rows), 2)
+
     def test_api_enriches_requirements_by_stable_req_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
@@ -374,35 +471,22 @@ class PlatformScaffoldTests(unittest.TestCase):
             write_jsonl(out_dir / "review_states.jsonl", [{"requirement_id": "SREQ-1", "status": "expert_pending"}])
             server = self.start_api_server(out_dir, token="secret-token")
             try:
-                forbidden = urllib.request.Request(
-                    f"http://127.0.0.1:{server.server_port}/review-actions",
-                    data=json.dumps({"requirement_id": "SREQ-1", "status": "accepted"}).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with self.assertRaises(urllib.error.HTTPError) as raised:
-                    urllib.request.urlopen(forbidden, timeout=5)
-                self.assertEqual(raised.exception.code, 401)
-                raised.exception.close()
+                status, _ = server.post_json("/review-actions", {"requirement_id": "SREQ-1", "status": "accepted"})
+                self.assertEqual(status, 401)
 
-                request = urllib.request.Request(
-                    f"http://127.0.0.1:{server.server_port}/review-actions",
-                    data=json.dumps(
-                        {
-                            "requirement_id": "SREQ-1",
-                            "status": "accepted",
-                            "actor": "vue3-test",
-                            "reason": "accepted in Vue3 UI",
-                        }
-                    ).encode("utf-8"),
-                    headers={"Content-Type": "application/json", "X-Requirement-Atomizer-Token": "secret-token"},
-                    method="POST",
+                status, payload = server.post_json(
+                    "/review-actions",
+                    {
+                        "requirement_id": "SREQ-1",
+                        "status": "accepted",
+                        "actor": "vue3-test",
+                        "reason": "accepted in Vue3 UI",
+                    },
+                    headers={"X-Requirement-Atomizer-Token": "secret-token"},
                 )
-                with urllib.request.urlopen(request, timeout=5) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(status, 200)
             finally:
                 server.shutdown()
-                server.server_close()
 
             states = read_jsonl(out_dir / "review_states.jsonl")
             events = read_jsonl(out_dir / "review_state_events.jsonl")
@@ -417,19 +501,10 @@ class PlatformScaffoldTests(unittest.TestCase):
             out_dir = Path(tmp)
             server = self.start_api_server(out_dir)
             try:
-                request = urllib.request.Request(
-                    f"http://127.0.0.1:{server.server_port}/review-actions",
-                    data=json.dumps({"requirement_id": "SREQ-1", "status": "accepted"}).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with self.assertRaises(urllib.error.HTTPError) as raised:
-                    urllib.request.urlopen(request, timeout=5)
-                self.assertEqual(raised.exception.code, 401)
-                raised.exception.close()
+                status, _ = server.post_json("/review-actions", {"requirement_id": "SREQ-1", "status": "accepted"})
+                self.assertEqual(status, 401)
             finally:
                 server.shutdown()
-                server.server_close()
 
             states = read_jsonl(out_dir / "review_states.jsonl")
 
@@ -442,22 +517,17 @@ class PlatformScaffoldTests(unittest.TestCase):
             try:
                 with patch("api_server.translate_requirement_text") as translate:
                     translate.return_value = "读取客户端应支持 xDLMS 服务：使用 GET 的块传输。"
-                    request = urllib.request.Request(
-                        f"http://127.0.0.1:{server.server_port}/translations",
-                        data=json.dumps(
-                            {
-                                "requirement_id": "SREQ-1",
-                                "text": 'Reading client shall support xDLMS Service: Block transfer with "GET".',
-                            }
-                        ).encode("utf-8"),
-                        headers={"Content-Type": "application/json", "X-Requirement-Atomizer-Token": "secret-token"},
-                        method="POST",
+                    status, payload = server.post_json(
+                        "/translations",
+                        {
+                            "requirement_id": "SREQ-1",
+                            "text": 'Reading client shall support xDLMS Service: Block transfer with "GET".',
+                        },
+                        headers={"X-Requirement-Atomizer-Token": "secret-token"},
                     )
-                    with urllib.request.urlopen(request, timeout=5) as response:
-                        payload = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(status, 200)
             finally:
                 server.shutdown()
-                server.server_close()
 
         self.assertEqual(payload["requirement_id"], "SREQ-1")
         self.assertEqual(payload["translation"], "读取客户端应支持 xDLMS 服务：使用 GET 的块传输。")
@@ -633,6 +703,207 @@ class PlatformScaffoldTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Cannot override frozen review state"):
                 apply_expert_decision(out_dir, "SREQ-1", "rejected", actor="expert")
 
+    def test_apply_expert_decision_serializes_concurrent_writes(self) -> None:
+        import review_state as review_state_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            original_read_jsonl = review_state_module._read_jsonl
+            barrier = threading.Barrier(2)
+
+            def slow_read(path: Path) -> list[dict]:
+                rows = original_read_jsonl(path)
+                if path.name == "review_states.jsonl":
+                    try:
+                        barrier.wait(timeout=1)
+                    except threading.BrokenBarrierError:
+                        pass
+                return rows
+
+            with patch("review_state._read_jsonl", side_effect=slow_read):
+                threads = [
+                    threading.Thread(
+                        target=apply_expert_decision,
+                        args=(out_dir, f"SREQ-{index}", "accepted"),
+                        kwargs={"actor": f"expert-{index}"},
+                    )
+                    for index in range(2)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=5)
+
+            states = read_jsonl(out_dir / "review_states.jsonl")
+            events = read_jsonl(out_dir / "review_state_events.jsonl")
+
+        self.assertEqual({state["requirement_id"] for state in states}, {"SREQ-0", "SREQ-1"})
+        self.assertEqual({event["requirement_id"] for event in events}, {"SREQ-0", "SREQ-1"})
+
+    def test_review_state_lock_recovers_stale_lock_file(self) -> None:
+        import review_state as review_state_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            lock_path = out_dir / "review_states.lock"
+            lock_path.write_text("stale", encoding="ascii")
+            old_time = time.time() - 3600
+            os.utime(lock_path, (old_time, old_time))
+
+            with review_state_module.review_state_lock(out_dir, timeout_s=0.2, stale_after_s=0.0):
+                self.assertTrue(lock_path.exists())
+
+            self.assertFalse(lock_path.exists())
+
+    def test_review_pipeline_preserves_existing_expert_decision_on_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [
+                    {
+                        "req_id": "AREQ-1",
+                        "stable_req_id": "SREQ-1",
+                        "source_id": "SRC-1",
+                        "source_type": "table_row",
+                        "source_refs": ["SRC-1"],
+                        "section_path": ["Scope"],
+                        "domain": "dlms_cosem",
+                        "object": "Clock",
+                        "requirement_type": "event_definition",
+                        "requirement": "Clock event shall be recorded.",
+                        "parameters": {},
+                        "verification_method": "test",
+                        "ambiguity": False,
+                        "review_questions": [],
+                        "confidence": 0.95,
+                        "kb_matches": [],
+                        "generated_by": "rule_based_atomizer_v1",
+                    }
+                ],
+            )
+            apply_expert_decision(out_dir, "SREQ-1", "rejected", actor="expert", reason="not applicable")
+
+            summary = run_review_pipeline(out_dir, route="stub", domain_pack_path=None)
+            states = read_jsonl(out_dir / "review_states.jsonl")
+            events = read_jsonl(out_dir / "review_state_events.jsonl")
+
+        self.assertEqual(states[0]["status"], "rejected")
+        self.assertEqual(states[0]["history"][-1]["actor"], "expert")
+        self.assertEqual(summary["accepted"], 0)
+        self.assertEqual([event["actor"] for event in events].count("expert"), 1)
+
+    def test_review_pipeline_preserves_existing_vue3_ui_decision_on_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [
+                    {
+                        "req_id": "AREQ-1",
+                        "stable_req_id": "SREQ-1",
+                        "source_id": "SRC-1",
+                        "source_type": "table_row",
+                        "source_refs": ["SRC-1"],
+                        "section_path": ["Scope"],
+                        "domain": "dlms_cosem",
+                        "object": "Clock",
+                        "requirement_type": "event_definition",
+                        "requirement": "Clock event shall be recorded.",
+                        "parameters": {},
+                        "verification_method": "test",
+                        "ambiguity": False,
+                        "review_questions": [],
+                        "confidence": 0.95,
+                        "kb_matches": [],
+                        "generated_by": "rule_based_atomizer_v1",
+                    }
+                ],
+            )
+            apply_expert_decision(out_dir, "SREQ-1", "rejected", actor="vue3-ui", reason="manual reject from UI")
+
+            summary = run_review_pipeline(out_dir, route="stub", domain_pack_path=None)
+            states = read_jsonl(out_dir / "review_states.jsonl")
+            events = read_jsonl(out_dir / "review_state_events.jsonl")
+
+        self.assertEqual(states[0]["status"], "rejected")
+        self.assertEqual(states[0]["history"][-1]["actor"], "vue3-ui")
+        self.assertEqual(summary["accepted"], 0)
+        self.assertEqual([event["actor"] for event in events], ["vue3-ui"])
+
+    def test_review_pipeline_does_not_append_ignored_auto_events_after_expert_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [
+                    {
+                        "req_id": "AREQ-1",
+                        "stable_req_id": "SREQ-1",
+                        "source_id": "SRC-1",
+                        "source_type": "table_row",
+                        "source_refs": ["SRC-1"],
+                        "section_path": ["Scope"],
+                        "domain": "dlms_cosem",
+                        "object": "Clock",
+                        "requirement_type": "event_definition",
+                        "requirement": "Clock event shall be recorded.",
+                        "parameters": {},
+                        "verification_method": "test",
+                        "ambiguity": False,
+                        "review_questions": [],
+                        "confidence": 0.95,
+                        "kb_matches": [],
+                        "generated_by": "rule_based_atomizer_v1",
+                    }
+                ],
+            )
+            apply_expert_decision(out_dir, "SREQ-1", "rejected", actor="expert", reason="not applicable")
+
+            run_review_pipeline(out_dir, route="stub", domain_pack_path=None)
+            run_review_pipeline(out_dir, route="stub", domain_pack_path=None)
+            states = read_jsonl(out_dir / "review_states.jsonl")
+            events = read_jsonl(out_dir / "review_state_events.jsonl")
+
+        self.assertEqual(states[0]["status"], "rejected")
+        self.assertEqual([event["actor"] for event in events], ["expert"])
+
+    def test_review_pipeline_writes_merged_states_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [
+                    {
+                        "req_id": "AREQ-1",
+                        "stable_req_id": "SREQ-1",
+                        "source_id": "SRC-1",
+                        "source_type": "table_row",
+                        "source_refs": ["SRC-1"],
+                        "section_path": ["Scope"],
+                        "domain": "dlms_cosem",
+                        "object": "Clock",
+                        "requirement_type": "event_definition",
+                        "requirement": "Clock event shall be recorded.",
+                        "parameters": {},
+                        "verification_method": "test",
+                        "ambiguity": False,
+                        "review_questions": [],
+                        "confidence": 0.95,
+                        "kb_matches": [],
+                        "generated_by": "rule_based_atomizer_v1",
+                    }
+                ],
+            )
+            with patch("llm_pipeline.atomic_write_jsonl") as atomic_write:
+                atomic_write.side_effect = lambda path, rows: write_jsonl(path, rows)
+
+                run_review_pipeline(out_dir, route="stub", domain_pack_path=None)
+
+            written = [call.args[0].name for call in atomic_write.call_args_list]
+
+        self.assertIn("review_states.jsonl", written)
+
     def test_api_output_fixture_exists(self) -> None:
         manifest_path = ROOT / "out" / "abnt_nbr_16968_atomizer_v5" / "manifest.json"
         if not manifest_path.exists():
@@ -654,6 +925,7 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertIn("openpyxl>=3.1.0", dependencies)
         self.assertIn("pdfplumber>=0.11", dependencies)
         self.assertIn("engineering_composer", py_modules)
+        self.assertIn("desktop_backend", py_modules)
         self.assertIn("llm_client", py_modules)
         self.assertNotIn("kb_api", py_modules)
         self.assertNotIn("kb_matching", py_modules)

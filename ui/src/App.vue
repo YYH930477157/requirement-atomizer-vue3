@@ -40,6 +40,7 @@
               <span>LLM 富化</span>
             </label>
             <button class="button primary" type="button" data-testid="action-assemble" @click="handleAssemble">装配规格</button>
+            <button class="button" type="button" data-testid="action-compose-engineering" @click="handleComposeEngineering">研发需求</button>
           </div>
         </header>
 
@@ -904,6 +905,19 @@ async function handleAssemble() {
     apiMessage.value = `已装配实现规格：${payload.count ?? 0} 条`
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "装配实现规格失败"
+  }
+}
+
+async function handleComposeEngineering() {
+  if (!currentOutputDir.value || !window.ratomizerDesktop?.composeEngineeringRequirements) return
+  try {
+    const payload = await window.ratomizerDesktop.composeEngineeringRequirements({
+      outDir: currentOutputDir.value,
+    })
+    latestTaskSummary.value = objectValue(payload.summary)
+    apiMessage.value = `已生成研发需求：${payload.count ?? 0} 项`
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : "研发需求生成失败"
   }
 }
 

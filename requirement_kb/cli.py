@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .obsidian import compile_vault_to_json, export_json_to_vault
+from .blue_book_report import build_blue_book_coverage_report, write_blue_book_coverage_report
 from .repository import KnowledgeRepository
 from .schema import validate_kb_file
 from .vault import validate_vault
@@ -67,6 +68,10 @@ def parse_args() -> argparse.Namespace:
     context.add_argument("text")
     context.add_argument("--limit", type=int, default=20)
 
+    blue_book = sub.add_parser("blue-book-report", help="Report Blue Book coverage in a compiled KB")
+    blue_book.add_argument("--kb", type=Path, default=Path("knowledge_bases/compiled_from_obsidian.json"))
+    blue_book.add_argument("--out", type=Path, default=None)
+
     validate = sub.add_parser("validate", help="Validate compiled JSON KB files")
     validate.add_argument("path", type=Path)
     validate.add_argument("--strict", action="store_true", help="Treat warnings as errors.")
@@ -114,6 +119,13 @@ def main() -> int:
         report = validate_vault(args.vault)
         print_json(report.to_dict())
         return 0 if report.ok else 1
+
+    if args.command == "blue-book-report":
+        if args.out:
+            print_json(write_blue_book_coverage_report(args.kb, args.out))
+        else:
+            print_json(build_blue_book_coverage_report(args.kb))
+        return 0
 
     if args.command == "export-vault":
         written = export_json_to_vault(args.kb, args.vault)

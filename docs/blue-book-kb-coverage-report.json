@@ -1,0 +1,222 @@
+{
+  "kb_id": "obsidian_energy_metering",
+  "entries_total": 283,
+  "part1_obis_tables": {
+    "covered": 73,
+    "total": 73,
+    "missing": []
+  },
+  "part2_interface_classes": {
+    "covered": 87,
+    "total": 87,
+    "enriched": 45,
+    "catalogue_seed": 42,
+    "missing": [],
+    "seed_classes": [
+      {
+        "class_id": 50,
+        "name": "S-FSK Phy&MAC set-up"
+      },
+      {
+        "class_id": 51,
+        "name": "S-FSK Active initiator"
+      },
+      {
+        "class_id": 52,
+        "name": "S-FSK MAC synchronization timeouts"
+      },
+      {
+        "class_id": 53,
+        "name": "S-FSK MAC counters"
+      },
+      {
+        "class_id": 55,
+        "name": "IEC 61334-4-32 LLC setup"
+      },
+      {
+        "class_id": 56,
+        "name": "S-FSK Reporting system list"
+      },
+      {
+        "class_id": 57,
+        "name": "ISO/IEC 8802-2 LLC Type 1 setup"
+      },
+      {
+        "class_id": 58,
+        "name": "ISO/IEC 8802-2 LLC Type 2 setup"
+      },
+      {
+        "class_id": 59,
+        "name": "ISO/IEC 8802-2 LLC Type 3 setup"
+      },
+      {
+        "class_id": 63,
+        "name": "Status mapping"
+      },
+      {
+        "class_id": 66,
+        "name": "Measurement data monitoring objects"
+      },
+      {
+        "class_id": 67,
+        "name": "Sensor manager"
+      },
+      {
+        "class_id": 68,
+        "name": "Arbitrator"
+      },
+      {
+        "class_id": 73,
+        "name": "Wireless Mode Q channel"
+      },
+      {
+        "class_id": 80,
+        "name": "61334-4-32 LLC SSCS setup"
+      },
+      {
+        "class_id": 82,
+        "name": "PRIME NB OFDM PLC MAC setup"
+      },
+      {
+        "class_id": 84,
+        "name": "PRIME NB OFDM PLC MAC counters"
+      },
+      {
+        "class_id": 90,
+        "name": "G3-PLC MAC layer counters"
+      },
+      {
+        "class_id": 91,
+        "name": "G3-PLC MAC setup"
+      },
+      {
+        "class_id": 92,
+        "name": "G3-PLC 6LoWPAN adaptation layer setup"
+      },
+      {
+        "class_id": 101,
+        "name": "ZigBee SAS startup"
+      },
+      {
+        "class_id": 102,
+        "name": "ZigBee SAS join"
+      },
+      {
+        "class_id": 103,
+        "name": "ZigBee SAS APS fragmentation"
+      },
+      {
+        "class_id": 104,
+        "name": "ZigBee network control"
+      },
+      {
+        "class_id": 105,
+        "name": "ZigBee tunnel setup"
+      },
+      {
+        "class_id": 111,
+        "name": "Account"
+      },
+      {
+        "class_id": 112,
+        "name": "Credit"
+      },
+      {
+        "class_id": 113,
+        "name": "Charge"
+      },
+      {
+        "class_id": 115,
+        "name": "Token gateway"
+      },
+      {
+        "class_id": 116,
+        "name": "IEC 62055-41 attributes"
+      },
+      {
+        "class_id": 123,
+        "name": "Array manager"
+      },
+      {
+        "class_id": 124,
+        "name": "Communication port protection"
+      },
+      {
+        "class_id": 130,
+        "name": "ISO/IEC 14908 identification"
+      },
+      {
+        "class_id": 131,
+        "name": "ISO/IEC 14908 protocol setup"
+      },
+      {
+        "class_id": 132,
+        "name": "ISO/IEC 14908 protocol status"
+      },
+      {
+        "class_id": 133,
+        "name": "ISO/IEC 14908 diagnostic"
+      },
+      {
+        "class_id": 140,
+        "name": "HS-PLC ISO/IEC 12139-1 MAC setup"
+      },
+      {
+        "class_id": 141,
+        "name": "HS-PLC ISO/IEC 12139-1 CPAS setup"
+      },
+      {
+        "class_id": 142,
+        "name": "HS-PLC ISO/IEC 12139-1 IP SSAS setup"
+      },
+      {
+        "class_id": 153,
+        "name": "CoAP diagnostic"
+      },
+      {
+        "class_id": 160,
+        "name": "G3-PLC Hybrid RF MAC layer counters"
+      },
+      {
+        "class_id": 161,
+        "name": "G3-PLC Hybrid RF MAC setup"
+      }
+    ]
+  },
+  "object_instances": {
+    "total": 52,
+    "by_medium": {
+      "ac_electricity": 33,
+      "dc_electricity": 10,
+      "general": 9
+    },
+    "by_class_id": {
+      "1": 5,
+      "15": 1,
+      "17": 1,
+      "20": 1,
+      "3": 37,
+      "6": 1,
+      "61": 3,
+      "7": 3
+    },
+    "by_table": {
+      "8": 6,
+      "10": 1,
+      "11": 1,
+      "12": 1,
+      "13": 28,
+      "21": 1,
+      "22": 1,
+      "23": 1,
+      "24": 1,
+      "25": 1,
+      "26": 5,
+      "29": 1,
+      "30": 1,
+      "31": 1,
+      "32": 1,
+      "33": 1
+    }
+  }
+}

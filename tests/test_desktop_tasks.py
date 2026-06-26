@@ -155,6 +155,51 @@ class DesktopTaskTests(unittest.TestCase):
         self.assertIn(str(out_dir / "dlms_cosem_spec_requirements.md"), payload["written"])
         export_spec.assert_called_once()
 
+    def test_compose_task_writes_engineering_requirement_outputs(self) -> None:
+        from desktop_tasks import compose_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            with (
+                patch("desktop_tasks.compose_engineering_requirements") as compose,
+                patch("desktop_tasks.write_engineering_requirements") as write_outputs,
+            ):
+                compose.return_value = {
+                    "analysis": {"requirement_functions": 2, "dlms_objects": 3},
+                    "requirement_functions": [{}, {}],
+                    "dlms_objects": [{}, {}, {}],
+                }
+                write_outputs.return_value = [
+                    "engineering_requirements/engineering_requirements.json",
+                    "engineering_requirements/requirement_functions.md",
+                    "engineering_requirements/dlms_objects.md",
+                ]
+
+                payload = compose_task(out_dir)
+
+        self.assertEqual(payload["kind"], "compose")
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["analysis"]["dlms_objects"], 3)
+        self.assertIn("engineering_requirements/requirement_functions.md", payload["written"])
+        compose.assert_called_once_with(out_dir.resolve())
+        write_outputs.assert_called_once_with(out_dir.resolve(), compose.return_value)
+
+    def test_main_compose_command_runs_engineering_composer(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            with patch("desktop_tasks.compose_task") as compose:
+                compose.return_value = {"kind": "compose", "out_dir": str(out_dir), "count": 1, "written": []}
+
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = desktop_tasks.main(["compose", "--out", str(out_dir)])
+
+        self.assertEqual(exit_code, 0)
+        compose.assert_called_once_with(out_dir)
+        self.assertEqual(json.loads(stdout.getvalue())["kind"], "compose")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,10 @@ export type AssembleTaskInput = {
   enrichRoute?: string
 }
 
+export type ComposeTaskInput = {
+  outDir: string
+}
+
 export type LlmSettingsInput = {
   enabled: boolean
   baseUrl: string
@@ -56,9 +60,10 @@ export type DesktopBridge = {
   runPipeline: (input: PipelineTaskInput) => Promise<DesktopTaskPayload>
   exportRequirements: (input: ExportTaskInput) => Promise<DesktopTaskPayload>
   assembleSpec: (input: AssembleTaskInput) => Promise<DesktopTaskPayload>
+  composeEngineeringRequirements: (input: ComposeTaskInput) => Promise<DesktopTaskPayload>
 }
 
-type DesktopTaskBridge = Pick<DesktopBridge, "runPipeline" | "exportRequirements" | "assembleSpec">
+type DesktopTaskBridge = Pick<DesktopBridge, "runPipeline" | "exportRequirements" | "assembleSpec" | "composeEngineeringRequirements">
 
 export async function runDesktopTask<K extends keyof DesktopTaskBridge>(
   bridge: Pick<DesktopTaskBridge, K>,

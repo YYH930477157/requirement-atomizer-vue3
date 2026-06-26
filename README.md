@@ -58,6 +58,8 @@ This writes `engineering_requirements/` with two sections:
 - `requirement_functions.md`: implementable requirement functions grouped by domain
 - `dlms_objects.md`: DLMS/COSEM objects with OBIS, interface class, attributes, access rights, and traceability
 
+Function outputs include deterministic acceptance criteria derived from source atom metadata. DLMS object outputs include implementation and access summaries for handoff to development.
+
 ## Desktop App
 
 Install and run the Vue3/Electron UI:
@@ -81,7 +83,7 @@ Package the portable Electron app:
 npm run desktop:pack
 ```
 
-The Electron package includes the Python source files and runtime assets such as `requirement_kb/`, `parsers/`, `domain_packs/`, `knowledge_bases/`, and `llm_agents/`. Until the backend is bundled as executables, the target machine still needs a compatible Python runtime.
+The packaging command first builds `dist-backend/ratomizer-desktop.exe` with PyInstaller, then includes that backend plus runtime assets such as `requirement_kb/`, `parsers/`, `domain_packs/`, `knowledge_bases/`, and `llm_agents/`. The packaged app prefers the embedded backend executable and falls back to local Python only during development.
 
 ## Knowledge Base
 
@@ -113,6 +115,14 @@ python -m requirement_kb.server --host 127.0.0.1 --port 8765
 External tools should depend on `requirement_kb` instead of old root-level KB scripts.
 
 The compiled Obsidian KB includes the Blue Book seed knowledge currently used by the analyzer: DLMS UA 1000-1 Ed. 16 Part 1 for OBIS structure and Part 2 for COSEM interface classes.
+
+Refresh the Blue Book coverage report:
+
+```powershell
+python -m requirement_kb.cli blue-book-report `
+  --kb ".\knowledge_bases\compiled_from_obsidian.json" `
+  --out ".\docs\blue-book-kb-coverage-report.json"
+```
 
 ## LLM Review
 

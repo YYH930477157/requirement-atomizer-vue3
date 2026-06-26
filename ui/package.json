@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "desktop:dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "desktop:pack": "npm run build && electron-builder --win portable",
+    "backend:build": "powershell -ExecutionPolicy Bypass -File ../packaging/build-electron-backend.ps1",
+    "desktop:pack": "npm run backend:build && npm run build && electron-builder --win portable",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run"
@@ -50,7 +51,8 @@
       { "from": "../requirement_kb", "to": "requirement_kb" },
       { "from": "../domain_packs", "to": "domain_packs" },
       { "from": "../knowledge_bases", "to": "knowledge_bases" },
-      { "from": "../llm_agents", "to": "llm_agents" }
+      { "from": "../llm_agents", "to": "llm_agents" },
+      { "from": "../dist-backend", "to": "backend" }
     ]
   }
 }

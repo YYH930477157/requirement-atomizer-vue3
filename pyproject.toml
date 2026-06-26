@@ -57,6 +57,7 @@ py-modules = [
   "llm_review_schema",
   "output_writer",
   "pattern_engine",
+  "desktop_backend",
   "requirement_schema",
   "resources",
   "review_state",

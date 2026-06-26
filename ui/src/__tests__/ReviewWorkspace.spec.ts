@@ -344,6 +344,14 @@ describe("review workspace shell", () => {
           count: 1,
           written: ["dlms_cosem_spec_requirements.json"],
         }),
+        composeEngineeringRequirements: vi.fn().mockResolvedValue({
+          kind: "compose",
+          count: 2,
+          written: [
+            "engineering_requirements/requirement_functions.md",
+            "engineering_requirements/dlms_objects.md",
+          ],
+        }),
       },
     })
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -400,6 +408,12 @@ describe("review workspace shell", () => {
       formats: ["xlsx", "docx", "md"],
       enrichRoute: undefined,
     })
+
+    await wrapper.find('[data-testid="action-compose-engineering"]').trigger("click")
+    expect(window.ratomizerDesktop?.composeEngineeringRequirements).toHaveBeenCalledWith({
+      outDir: "E:\\out\\abnt",
+    })
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("2")
     expect(fetchMock).toHaveBeenCalled()
   })
 

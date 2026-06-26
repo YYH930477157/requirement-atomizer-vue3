@@ -123,7 +123,7 @@ Engineering composer output files:
 - `engineering_requirements/requirement_functions.md`
 - `engineering_requirements/dlms_objects.md`
 
-The composer is a post-processing stage. It keeps atomic requirements unchanged and reorganizes them into two developer-facing sections: requirement functions and DLMS/COSEM objects.
+The composer is a post-processing stage. It keeps atomic requirements unchanged and reorganizes them into two developer-facing sections: requirement functions and DLMS/COSEM objects. Function entries include deterministic acceptance criteria derived from atom metadata; DLMS object entries include implementation and access summaries.
 
 ## Examples
 

@@ -10,6 +10,7 @@ import {
   drainProgressLines,
   loadLlmSettingsConfig,
   normalizeLlmSettings,
+  resolveBackendCommand,
   resolvePythonScriptPath,
   saveLlmSettingsConfig,
 } from "../main.helpers.cjs"
@@ -69,6 +70,45 @@ describe("Electron main helpers", () => {
     })
 
     expect(resolved).toBe(unpackedScript)
+  })
+
+  it("prefers packaged backend executable over a system Python runtime", () => {
+    const resourcesPath = "C:\\Program Files\\Requirement Atomizer\\resources"
+    const backendExe = path.resolve(resourcesPath, "backend", "ratomizer-desktop.exe")
+
+    const command = resolveBackendCommand("desktop_tasks.py", {
+      dirname: "C:\\Program Files\\Requirement Atomizer\\resources\\app.asar\\electron",
+      resourcesPath,
+      existsSync: (candidate: string) => candidate === backendExe,
+      env: {},
+      platform: "win32",
+    })
+
+    expect(command).toEqual({
+      command: backendExe,
+      args: [],
+      cwd: path.dirname(backendExe),
+      packaged: true,
+    })
+  })
+
+  it("falls back to Python source execution during development", () => {
+    const scriptPath = path.resolve("D:\\Codex\\requirement-atomizer-vue3", "desktop_tasks.py")
+
+    const command = resolveBackendCommand("desktop_tasks.py", {
+      dirname: "D:\\Codex\\requirement-atomizer-vue3\\ui\\electron",
+      resourcesPath: "",
+      existsSync: (candidate: string) => candidate === scriptPath,
+      env: { RATOMIZER_PYTHON: "py -3.12" },
+      platform: "win32",
+    })
+
+    expect(command).toEqual({
+      command: "py -3.12",
+      args: [scriptPath],
+      cwd: path.dirname(scriptPath),
+      packaged: false,
+    })
   })
 
   it("normalizes API settings and exposes them to Python child processes without persisting secrets", () => {

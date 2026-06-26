@@ -6258,6 +6258,10 @@
       ],
       "keywords": [
         "association sn",
+        "short name association",
+        "object list",
+        "access rights list",
+        "security setup reference",
         "class 12",
         "cl 12"
       ],
@@ -6265,7 +6269,7 @@
         "cosem_class",
         "access_control"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 for Association SN objects.",
+      "definition": "COSEM interface class for short-name association objects, access rights, and xDLMS context negotiation.",
       "relations": [
         {
           "relation": "defined_by",
@@ -6279,12 +6283,98 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "mandatory": true,
+          "meaning": "OBIS logical name of the Association SN object"
+        },
+        {
+          "attribute_id": 2,
+          "name": "object_list",
+          "type": "array",
+          "mandatory": true,
+          "meaning": "List of objects visible in the short-name association, including class, version, logical name, and short-name base"
+        },
+        {
+          "attribute_id": 3,
+          "name": "associated_partners_id",
+          "type": "structure",
+          "mandatory": true,
+          "meaning": "Client and server SAP identifiers participating in the association"
+        },
+        {
+          "attribute_id": 4,
+          "name": "application_context_name",
+          "type": "octet-string",
+          "mandatory": true,
+          "meaning": "xDLMS application context negotiated for the association"
+        },
+        {
+          "attribute_id": 5,
+          "name": "xDLMS_context_info",
+          "type": "structure",
+          "mandatory": true,
+          "meaning": "Negotiated conformance, PDU size, and context parameters"
+        },
+        {
+          "attribute_id": 6,
+          "name": "authentication_mechanism_name",
+          "type": "octet-string",
+          "mandatory": true,
+          "meaning": "Authentication mechanism used by the association"
+        },
+        {
+          "attribute_id": 7,
+          "name": "secret",
+          "type": "octet-string",
+          "mandatory": false,
+          "meaning": "Association secret used by authentication mechanisms"
+        },
+        {
+          "attribute_id": 8,
+          "name": "association_status",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Current association state"
+        },
+        {
+          "attribute_id": 9,
+          "name": "security_setup_reference",
+          "type": "octet-string[6]",
+          "mandatory": false,
+          "meaning": "Logical name of the related Security setup object"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reply_to_HLS_authentication",
+          "meaning": "Completes high-level security authentication where applicable"
+        },
+        {
+          "method_id": 2,
+          "name": "change_HLS_secret",
+          "meaning": "Changes the association secret used by HLS mechanisms"
+        }
+      ],
+      "access_semantics": [
+        "Association SN controls which short-name objects and access rights are visible to a client.",
+        "The object list and access rights define the implementable data model for this client association.",
+        "Secret and authentication fields are security-sensitive and should be handled as credentials.",
+        "Security setup reference links the association to security policy, suite, and key-management configuration."
+      ],
+      "common_instances": [
+        {
+          "name": "Association SN",
+          "obis_pattern": "0-0:40.0.0.255"
+        }
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.4.12 Association SN (class_id = 12, version = 4)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with object list, association partners, xDLMS context, authentication, HLS methods, and security setup semantics."
     },
     {
       "id": "KB-L3-IC-15-ASSOCIATION-LN",
@@ -6648,6 +6738,10 @@
       ],
       "keywords": [
         "iec local port setup",
+        "optical port",
+        "local port baud rate",
+        "default mode",
+        "proposed baudrate",
         "class 19",
         "cl 19"
       ],
@@ -6669,12 +6763,86 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "mandatory": true,
+          "meaning": "OBIS logical name of the local port setup object"
+        },
+        {
+          "attribute_id": 2,
+          "name": "default_mode",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Initial IEC local port protocol mode after opening the optical/local port"
+        },
+        {
+          "attribute_id": 3,
+          "name": "default_baud",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Initial communication speed used before protocol negotiation"
+        },
+        {
+          "attribute_id": 4,
+          "name": "proposed_baud",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Baud rate proposed for the negotiated communication session"
+        },
+        {
+          "attribute_id": 5,
+          "name": "response_time",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "IEC local-port response timing profile"
+        },
+        {
+          "attribute_id": 6,
+          "name": "device_addr",
+          "type": "octet-string",
+          "mandatory": true,
+          "meaning": "Device address used by the IEC local port protocol"
+        },
+        {
+          "attribute_id": 7,
+          "name": "password1",
+          "type": "octet-string",
+          "mandatory": false,
+          "meaning": "Local-port password used by lower-level IEC access where applicable"
+        },
+        {
+          "attribute_id": 8,
+          "name": "password2",
+          "type": "octet-string",
+          "mandatory": false,
+          "meaning": "Second local-port password used by IEC access where applicable"
+        },
+        {
+          "attribute_id": 9,
+          "name": "password5",
+          "type": "octet-string",
+          "mandatory": false,
+          "meaning": "Higher-level local-port password used by IEC access where applicable"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "The setup object controls local optical/IEC port negotiation and timing parameters.",
+        "Password attributes are security-sensitive and should not be logged or exported in plaintext by consuming tools.",
+        "Changing baud-rate or mode attributes can affect subsequent local communication sessions and should be treated as configuration writes."
+      ],
+      "common_instances": [
+        {
+          "name": "IEC local port setup",
+          "obis_pattern": "0-0:20.0.0.255"
+        }
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.4.19 IEC local port setup (class_id = 19, version = 1)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with local-port negotiation, baud-rate, timing, device address, and password semantics for engineering requirement composition."
     },
     {
       "id": "KB-L3-IC-20-ACTIVITY-CALENDAR",
@@ -7106,6 +7274,10 @@
       ],
       "keywords": [
         "iec twisted pair (1) setup",
+        "twisted pair setup",
+        "IEC 62056-21 twisted pair",
+        "local wired port",
+        "network address",
         "class 24",
         "cl 24"
       ],
@@ -7127,12 +7299,58 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "mandatory": true,
+          "meaning": "OBIS logical name of the IEC twisted-pair setup object"
+        },
+        {
+          "attribute_id": 2,
+          "name": "mode",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Operating mode of the IEC twisted-pair communication port"
+        },
+        {
+          "attribute_id": 3,
+          "name": "speed",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Configured communication speed for the twisted-pair link"
+        },
+        {
+          "attribute_id": 4,
+          "name": "primary_address",
+          "type": "unsigned",
+          "mandatory": true,
+          "meaning": "Primary address used on the IEC twisted-pair bus"
+        },
+        {
+          "attribute_id": 5,
+          "name": "tabis",
+          "type": "long-unsigned",
+          "mandatory": false,
+          "meaning": "Timing parameter used by IEC twisted-pair communication"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "The setup object defines wired IEC twisted-pair communication parameters, including mode, speed, and bus addressing.",
+        "Address and speed writes affect physical-link interoperability and should be validated against the meter profile before applying.",
+        "Timing parameters should be treated as protocol configuration rather than metering data."
+      ],
+      "common_instances": [
+        {
+          "name": "IEC twisted pair setup",
+          "obis_pattern": "0-0:23.0.0.255"
+        }
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.4.24 IEC twisted pair (1) setup (class_id = 24, version = 1)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with wired IEC mode, speed, address, and timing semantics."
     },
     {
       "id": "KB-L3-IC-25-M-BUS-SLAVE-PORT-SETUP",
@@ -7141,18 +7359,25 @@
       "name": "M-Bus slave port setup",
       "aliases": [
         "class 25",
-        "CL 25"
+        "CL 25",
+        "M-Bus slave port",
+        "M-Bus slave port setup object"
       ],
       "keywords": [
         "m-bus slave port setup",
         "class 25",
-        "cl 25"
+        "cl 25",
+        "default_baud",
+        "available_baud",
+        "address_state"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "m_bus",
+        "port_setup"
       ],
-      "definition": "COSEM interface class for configuring M-Bus slave port setup parameters in DLMS/COSEM devices.",
+      "definition": "COSEM interface class for configuring the M-Bus slave port of a DLMS/COSEM device, including baud-rate capabilities and slave address state.",
       "relations": [
         {
           "relation": "defined_by",
@@ -7166,12 +7391,60 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "default_baud",
+          "type": "enum",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Default communication speed used by the M-Bus slave port"
+        },
+        {
+          "attribute_id": 3,
+          "name": "available_baud",
+          "type": "array",
+          "access": "R",
+          "mandatory": true,
+          "meaning": "Baud rates supported by the physical M-Bus slave port"
+        },
+        {
+          "attribute_id": 4,
+          "name": "address_state",
+          "type": "enum",
+          "access": "R",
+          "mandatory": true,
+          "meaning": "State of the M-Bus slave addressing procedure"
+        },
+        {
+          "attribute_id": 5,
+          "name": "bus_address",
+          "type": "long-unsigned",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Configured M-Bus slave address"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "The setup object configures local M-Bus slave communication parameters rather than metrology values.",
+        "default_baud and bus_address are implementation configuration points and should be protected by the management access profile.",
+        "available_baud and address_state are read-only diagnostic or capability attributes."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention M-Bus slave port speed, supported baud rates, bus address assignment, or slave address state.",
+        "It complements M-Bus client/master setup classes; this object represents the local slave-side port setup."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.6 M-Bus slave port setup (class_id = 25, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with M-Bus slave port baud-rate and address-state semantics for communication setup requirements."
     },
     {
       "id": "KB-L3-IC-26-UTILITY-TABLES",
@@ -7180,18 +7453,25 @@
       "name": "Utility tables",
       "aliases": [
         "class 26",
-        "CL 26"
+        "CL 26",
+        "utility table object",
+        "table object"
       ],
       "keywords": [
         "utility tables",
         "class 26",
-        "cl 26"
+        "cl 26",
+        "table_cell_values",
+        "table_active_axis",
+        "table passive axis",
+        "utility table buffer"
       ],
       "domain_tags": [
         "cosem_class",
-        "measurement_data"
+        "measurement_data",
+        "table_model"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 for Utility tables objects.",
+      "definition": "COSEM interface class for representing compact utility-defined tables whose cells are addressed through active and passive axes.",
       "relations": [
         {
           "relation": "defined_by",
@@ -7205,12 +7485,51 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "table_cell_values",
+          "type": "array",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Table payload values arranged according to the active and passive axis definitions"
+        },
+        {
+          "attribute_id": 3,
+          "name": "table_active_axis",
+          "type": "structure",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Definition of the active axis used to address or interpret rows, columns, or intervals"
+        },
+        {
+          "attribute_id": 4,
+          "name": "table_passive_axis",
+          "type": "structure",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Definition of the passive axis used together with the active axis to interpret table cells"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "table_cell_values is the main data payload and should be interpreted only with the matching active and passive axis definitions.",
+        "Axis attributes are configuration data; changing them changes the meaning of the stored table values and should be restricted to authorized clients."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention utility-defined tables, tabular measurement data, active axis, passive axis, or addressed table cells.",
+        "Requirements involving Utility tables should preserve both table value constraints and axis interpretation constraints; a cell value alone is usually insufficient for implementation."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.3.7 Utility tables (class_id = 26, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with table payload, axis configuration, and implementation semantics."
     },
     {
       "id": "KB-L3-IC-27-MODEM-CONFIGURATION",
@@ -7223,6 +7542,10 @@
       ],
       "keywords": [
         "modem configuration",
+        "initialization string",
+        "modem profile",
+        "communication speed",
+        "PSTN modem",
         "class 27",
         "cl 27"
       ],
@@ -7230,7 +7553,7 @@
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 for Modem configuration objects.",
+      "definition": "COSEM interface class for configuring modem communication profiles and initialization behavior.",
       "relations": [
         {
           "relation": "defined_by",
@@ -7244,12 +7567,51 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "mandatory": true,
+          "meaning": "OBIS logical name of the modem configuration object"
+        },
+        {
+          "attribute_id": 2,
+          "name": "comm_speed",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Configured modem communication speed"
+        },
+        {
+          "attribute_id": 3,
+          "name": "initialization_string",
+          "type": "octet-string",
+          "mandatory": true,
+          "meaning": "Command string used to initialize the modem before communication"
+        },
+        {
+          "attribute_id": 4,
+          "name": "modem_profile",
+          "type": "array",
+          "mandatory": false,
+          "meaning": "Profile of modem initialization and communication settings"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "The object stores modem initialization and speed parameters used before establishing a communication session.",
+        "Initialization strings are configuration commands and may contain vendor-specific modem control sequences.",
+        "Profile changes can alter remote communication availability and should be reviewed as communication configuration."
+      ],
+      "common_instances": [
+        {
+          "name": "Modem configuration",
+          "obis_pattern": "0-0:2.0.0.255"
+        }
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.4.27 Modem configuration (class_id = 27, version = 1)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with modem speed, initialization string, and profile semantics."
     },
     {
       "id": "KB-L3-IC-28-AUTO-ANSWER",
@@ -7262,13 +7624,18 @@
       ],
       "keywords": [
         "auto answer",
+        "listening window",
+        "number of rings",
+        "auto answer mode",
+        "incoming call",
         "class 28",
         "cl 28"
       ],
       "domain_tags": [
-        "cosem_class"
+        "cosem_class",
+        "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 for Auto answer objects.",
+      "definition": "COSEM interface class for controlling how a device answers incoming communication calls.",
       "relations": [
         {
           "relation": "defined_by",
@@ -7282,12 +7649,59 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "mandatory": true,
+          "meaning": "OBIS logical name of the auto answer object"
+        },
+        {
+          "attribute_id": 2,
+          "name": "mode",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Auto-answer operating mode"
+        },
+        {
+          "attribute_id": 3,
+          "name": "listening_window",
+          "type": "array",
+          "mandatory": true,
+          "meaning": "Time windows during which the device is allowed to answer incoming calls"
+        },
+        {
+          "attribute_id": 4,
+          "name": "status",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Current auto-answer status"
+        },
+        {
+          "attribute_id": 5,
+          "name": "number_of_calls",
+          "type": "long-unsigned",
+          "mandatory": false,
+          "meaning": "Number of answered incoming calls or calls tracked by the auto-answer function"
+        },
+        {
+          "attribute_id": 6,
+          "name": "number_of_rings",
+          "type": "long-unsigned",
+          "mandatory": false,
+          "meaning": "Number of rings before the device answers"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "The auto answer object determines whether and when the meter accepts incoming communication sessions.",
+        "Listening-window configuration is time-dependent behavior and should be validated with clock/time-zone assumptions.",
+        "Ring and call counters support diagnostics but should not be confused with metering event logs."
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.4.28 Auto answer (class_id = 28, version = 2)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with incoming-call mode, listening-window, status, calls, and ring semantics."
     },
     {
       "id": "KB-L3-IC-29-AUTO-CONNECT",
@@ -7300,13 +7714,18 @@
       ],
       "keywords": [
         "auto connect",
+        "calling window",
+        "destination list",
+        "repetition delay",
+        "remote connection",
         "class 29",
         "cl 29"
       ],
       "domain_tags": [
-        "cosem_class"
+        "cosem_class",
+        "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 for Auto connect objects.",
+      "definition": "COSEM interface class for controlling automatic outgoing communication attempts.",
       "relations": [
         {
           "relation": "defined_by",
@@ -7320,12 +7739,59 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "mandatory": true,
+          "meaning": "OBIS logical name of the auto connect object"
+        },
+        {
+          "attribute_id": 2,
+          "name": "mode",
+          "type": "enum",
+          "mandatory": true,
+          "meaning": "Auto-connect operating mode"
+        },
+        {
+          "attribute_id": 3,
+          "name": "repetitions",
+          "type": "unsigned",
+          "mandatory": true,
+          "meaning": "Number of repeated outgoing connection attempts"
+        },
+        {
+          "attribute_id": 4,
+          "name": "repetition_delay",
+          "type": "long-unsigned",
+          "mandatory": true,
+          "meaning": "Delay between repeated connection attempts"
+        },
+        {
+          "attribute_id": 5,
+          "name": "calling_window",
+          "type": "array",
+          "mandatory": true,
+          "meaning": "Time windows during which automatic outgoing calls are permitted"
+        },
+        {
+          "attribute_id": 6,
+          "name": "destinations",
+          "type": "array",
+          "mandatory": true,
+          "meaning": "Destination endpoints or identifiers used for outgoing connections"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "The auto connect object controls scheduled or triggered outgoing communication attempts.",
+        "Calling windows and repetition parameters define retry behavior and should be treated as operational communication policy.",
+        "Destination entries may include addresses or endpoint identifiers and should be validated before deployment."
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.4.29 Auto connect (class_id = 29, version = 2)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with outgoing-call mode, retry, calling-window, and destination semantics."
     },
     {
       "id": "KB-L3-IC-30-COSEM-DATA-PROTECTION",
@@ -7334,19 +7800,26 @@
       "name": "COSEM data protection",
       "aliases": [
         "class 30",
-        "CL 30"
+        "CL 30",
+        "data protection object",
+        "protected cosem data"
       ],
       "keywords": [
         "cosem data protection",
         "class 30",
-        "cl 30"
+        "cl 30",
+        "protection_buffer",
+        "protection_parameters",
+        "protection status",
+        "protected data"
       ],
       "domain_tags": [
         "cosem_class",
         "measurement_data",
-        "access_control"
+        "access_control",
+        "security"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 for COSEM data protection objects.",
+      "definition": "COSEM interface class for binding COSEM data to protection metadata, protection parameters, and status used by secure data handling.",
       "relations": [
         {
           "relation": "defined_by",
@@ -7360,12 +7833,65 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "protection_buffer",
+          "type": "octet-string",
+          "access": "R",
+          "mandatory": true,
+          "meaning": "Protected payload or protected representation of the associated COSEM data"
+        },
+        {
+          "attribute_id": 3,
+          "name": "protection_parameters",
+          "type": "structure",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Parameters controlling how the protected data is generated, verified, or interpreted"
+        },
+        {
+          "attribute_id": 4,
+          "name": "protection_status",
+          "type": "enum",
+          "access": "R",
+          "mandatory": true,
+          "meaning": "Current status of the protected data object and its protection process"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "protect",
+          "mandatory": false,
+          "meaning": "Trigger generation or update of protected data when supported by the implementation"
+        },
+        {
+          "method_id": 2,
+          "name": "verify",
+          "mandatory": false,
+          "meaning": "Verify protected data or protection metadata when supported by the implementation"
+        }
+      ],
+      "access_semantics": [
+        "protection_buffer is security-sensitive output and should be exposed only according to the configured association and security policy.",
+        "protection_parameters control security behavior and should require management-level write privileges.",
+        "Protection methods, when available, are active operations and should be treated as high-risk operations in requirements review."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention protected COSEM data, data protection status, cryptographic protection parameters, or protected payload verification.",
+        "This class belongs with security and access-control requirements, not ordinary measurement display requirements."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.4.3 COSEM data protection (class_id = 30, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with protected payload, protection parameter, status, and high-risk operation semantics."
     },
     {
       "id": "KB-L3-IC-40-PUSH-SETUP",
@@ -7765,18 +8291,25 @@
       "name": "MAC address setup",
       "aliases": [
         "class 43",
-        "CL 43"
+        "CL 43",
+        "MAC address object",
+        "Ethernet MAC address setup"
       ],
       "keywords": [
         "mac address setup",
         "class 43",
-        "cl 43"
+        "cl 43",
+        "mac_address",
+        "ethernet address",
+        "physical address"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "network_setup",
+        "ethernet"
       ],
-      "definition": "COSEM interface class for configuring MAC address setup parameters in DLMS/COSEM devices.",
+      "definition": "COSEM interface class for exposing or configuring the network MAC address used by DLMS/COSEM communication profiles.",
       "relations": [
         {
           "relation": "defined_by",
@@ -7790,12 +8323,35 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "MAC_address",
+          "type": "octet-string",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Layer-2 MAC address assigned to the communication interface"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "MAC_address identifies the local layer-2 network interface and is usually read by clients for communication inventory.",
+        "Write access to MAC_address, when supported by a profile, should be limited to management clients because it changes network identity."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention MAC address setup, Ethernet physical address, or layer-2 interface identity.",
+        "It is normally used together with TCP-UDP, IPv4, IPv6, PPP, or other communication setup classes."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.21 MAC address setup (class_id = 43, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with MAC_address attribute and layer-2 identity semantics."
     },
     {
       "id": "KB-L3-IC-44-PPP-SETUP",
@@ -7804,18 +8360,26 @@
       "name": "PPP setup",
       "aliases": [
         "class 44",
-        "CL 44"
+        "CL 44",
+        "PPP configuration",
+        "PPP setup object"
       ],
       "keywords": [
         "ppp setup",
         "class 44",
-        "cl 44"
+        "cl 44",
+        "phy_reference",
+        "lcp_options",
+        "ipcp_options",
+        "ppp authentication"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "ppp",
+        "network_setup"
       ],
-      "definition": "COSEM interface class for configuring PPP setup parameters in DLMS/COSEM devices.",
+      "definition": "COSEM interface class for configuring Point-to-Point Protocol setup parameters, including physical link reference and negotiated PPP options.",
       "relations": [
         {
           "relation": "defined_by",
@@ -7829,12 +8393,60 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "PHY_reference",
+          "type": "octet-string[6]",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Logical name reference to the physical communication setup object used below PPP"
+        },
+        {
+          "attribute_id": 3,
+          "name": "LCP_options",
+          "type": "array",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "PPP Link Control Protocol options supported or negotiated by the device"
+        },
+        {
+          "attribute_id": 4,
+          "name": "IPCP_options",
+          "type": "array",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "PPP IP Control Protocol options for IP layer negotiation"
+        },
+        {
+          "attribute_id": 5,
+          "name": "PPP_authentication",
+          "type": "structure",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "Authentication parameters used by PPP when required by the profile"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "PHY_reference links PPP setup to the underlying serial, modem, or other physical communication setup object.",
+        "LCP_options and IPCP_options determine negotiated link and IP behavior and should be managed by authorized clients.",
+        "PPP authentication values are security-sensitive and should not be exposed to low-privilege clients."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention PPP negotiation, LCP, IPCP, physical-link reference, or PPP authentication.",
+        "PPP setup is part of the communication stack and should be linked to TCP-UDP/IP setup requirements when IP transport is used."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.22 PPP setup (class_id = 44, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with PPP link-reference, LCP/IPCP, and authentication semantics."
     },
     {
       "id": "KB-L3-IC-45-GPRS-MODEM-SETUP",
@@ -7843,16 +8455,25 @@
       "name": "GPRS modem setup",
       "aliases": [
         "class 45",
-        "CL 45"
+        "CL 45",
+        "GPRS modem configuration",
+        "cellular modem setup"
       ],
       "keywords": [
         "gprs modem setup",
         "class 45",
-        "cl 45"
+        "cl 45",
+        "apn",
+        "pin code",
+        "quality_of_service",
+        "cellular modem",
+        "gprs qos"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "cellular",
+        "network_setup"
       ],
       "definition": "COSEM interface class for configuring GPRS modem setup parameters in DLMS/COSEM devices.",
       "relations": [
@@ -7868,12 +8489,60 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "APN",
+          "type": "visible-string",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Access Point Name used by the cellular network connection"
+        },
+        {
+          "attribute_id": 3,
+          "name": "PIN_code",
+          "type": "visible-string",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "SIM PIN or access credential required by the cellular modem"
+        },
+        {
+          "attribute_id": 4,
+          "name": "default_quality_of_service",
+          "type": "structure",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "Default GPRS quality-of-service parameters requested by the device"
+        },
+        {
+          "attribute_id": 5,
+          "name": "requested_quality_of_service",
+          "type": "structure",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "Requested GPRS quality-of-service parameters for network attachment"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "APN controls cellular packet data attachment and should be configurable only by authorized clients.",
+        "PIN_code is credential-like data and should not be exposed in low-privilege read contexts.",
+        "Quality-of-service attributes affect cellular network behavior and should be validated against the supported profile."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention GPRS, cellular modem APN, SIM PIN, or GPRS quality of service.",
+        "GPRS modem setup is normally paired with IP, TCP-UDP, PPP, or application-layer setup requirements."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.23 GPRS modem setup (class_id = 45, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with cellular APN, PIN, quality-of-service, and credential handling semantics."
     },
     {
       "id": "KB-L3-IC-46-SMTP-SETUP",
@@ -7882,16 +8551,25 @@
       "name": "SMTP setup",
       "aliases": [
         "class 46",
-        "CL 46"
+        "CL 46",
+        "SMTP configuration",
+        "email setup object"
       ],
       "keywords": [
         "smtp setup",
         "class 46",
-        "cl 46"
+        "cl 46",
+        "smtp server",
+        "email destination",
+        "sender address",
+        "recipient address",
+        "mail authentication"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "application_profile",
+        "messaging"
       ],
       "definition": "COSEM interface class for configuring SMTP setup parameters in DLMS/COSEM devices.",
       "relations": [
@@ -7907,12 +8585,60 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "SMTP_server",
+          "type": "visible-string",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Server address or host name used for outgoing SMTP messages"
+        },
+        {
+          "attribute_id": 3,
+          "name": "sender_address",
+          "type": "visible-string",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Sender address used by the device for SMTP notifications"
+        },
+        {
+          "attribute_id": 4,
+          "name": "recipient_addresses",
+          "type": "array",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Configured e-mail recipients for SMTP based notifications or reports"
+        },
+        {
+          "attribute_id": 5,
+          "name": "authentication",
+          "type": "structure",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "SMTP authentication data when required by the mail server"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "SMTP_server, sender_address, and recipient_addresses define where device-generated notifications are sent and should be managed as communication configuration.",
+        "Authentication values are security-sensitive and must not be exposed to low-privilege clients.",
+        "Recipient configuration changes can redirect alarms or reports and should be audited."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention SMTP, e-mail alarm delivery, sender address, recipient list, or mail server configuration.",
+        "SMTP setup belongs to application-level communication requirements and often depends on TCP-UDP/IP network setup."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.24 SMTP setup (class_id = 46, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with server, sender, recipient, authentication, and notification redirection semantics."
     },
     {
       "id": "KB-L3-IC-48-IPV6-SETUP",
@@ -9189,18 +9915,27 @@
       "name": "M-Bus client",
       "aliases": [
         "class 72",
-        "CL 72"
+        "CL 72",
+        "wired m-bus client",
+        "m-bus slave client"
       ],
       "keywords": [
         "m-bus client",
         "class 72",
-        "cl 72"
+        "cl 72",
+        "capture_period",
+        "primary_address",
+        "identification_number",
+        "manufacturer_id",
+        "m-bus value"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "m_bus",
+        "submetering"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 for M-Bus client objects.",
+      "definition": "COSEM interface class for representing and managing data collected from an M-Bus device through a DLMS/COSEM server.",
       "relations": [
         {
           "relation": "defined_by",
@@ -9214,12 +9949,103 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "m_bus_port_reference",
+          "type": "octet-string[6]",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Reference to the M-Bus port setup object used for this client"
+        },
+        {
+          "attribute_id": 3,
+          "name": "capture_period",
+          "type": "long-unsigned",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Periodic capture interval for values read from the attached M-Bus device"
+        },
+        {
+          "attribute_id": 4,
+          "name": "primary_address",
+          "type": "unsigned",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Primary M-Bus address of the attached slave device"
+        },
+        {
+          "attribute_id": 5,
+          "name": "identification_number",
+          "type": "double-long-unsigned",
+          "access": "R",
+          "mandatory": true,
+          "meaning": "Identification number reported by the M-Bus device"
+        },
+        {
+          "attribute_id": 6,
+          "name": "manufacturer_id",
+          "type": "long-unsigned",
+          "access": "R",
+          "mandatory": true,
+          "meaning": "Manufacturer identifier of the attached M-Bus device"
+        },
+        {
+          "attribute_id": 7,
+          "name": "data_header",
+          "type": "structure",
+          "access": "R",
+          "mandatory": false,
+          "meaning": "Header metadata for the captured M-Bus data set"
+        },
+        {
+          "attribute_id": 8,
+          "name": "value_information",
+          "type": "array",
+          "access": "R",
+          "mandatory": false,
+          "meaning": "Value information blocks describing captured M-Bus values"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "slave_install",
+          "mandatory": false,
+          "meaning": "Install or bind an M-Bus slave device to the client object"
+        },
+        {
+          "method_id": 2,
+          "name": "slave_deinstall",
+          "mandatory": false,
+          "meaning": "Remove the binding between the client object and an M-Bus slave device"
+        },
+        {
+          "method_id": 3,
+          "name": "capture",
+          "mandatory": false,
+          "meaning": "Trigger capture of data from the attached M-Bus device"
+        }
+      ],
+      "access_semantics": [
+        "m_bus_port_reference and primary_address determine the physical slave selected by the client object and require controlled write access.",
+        "capture_period controls polling frequency and can affect bus load and battery-powered slave behavior.",
+        "Install, deinstall, and capture methods are active operations and should be reviewed as operational commands."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention M-Bus client, attached M-Bus slave, primary address, capture period, manufacturer ID, or imported submeter data.",
+        "M-Bus client requirements often combine communication setup constraints with measurement capture and data mapping constraints."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.35 M-Bus client (class_id = 72, version = 2)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with M-Bus slave binding, capture, addressing, identification, and operational method semantics."
     },
     {
       "id": "KB-L3-IC-73-WIRELESS-MODE-Q-CHANNEL",
@@ -9267,16 +10093,24 @@
       "name": "M-Bus master port setup",
       "aliases": [
         "class 74",
-        "CL 74"
+        "CL 74",
+        "m-bus master port",
+        "wired m-bus port setup"
       ],
       "keywords": [
         "m-bus master port setup",
         "class 74",
-        "cl 74"
+        "cl 74",
+        "m-bus baud rate",
+        "m-bus address",
+        "m-bus communication speed",
+        "m-bus port reference"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "m_bus",
+        "port_setup"
       ],
       "definition": "COSEM interface class for configuring M-Bus master port setup parameters in DLMS/COSEM devices.",
       "relations": [
@@ -9292,12 +10126,52 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "comm_speed",
+          "type": "enum",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "M-Bus communication speed used by the master port"
+        },
+        {
+          "attribute_id": 3,
+          "name": "m_bus_profile",
+          "type": "enum",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "M-Bus profile or mode used on the port when the implementation supports multiple profiles"
+        },
+        {
+          "attribute_id": 4,
+          "name": "active_devices",
+          "type": "array",
+          "access": "R",
+          "mandatory": false,
+          "meaning": "List or count of active M-Bus devices known on the master port"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "comm_speed must match the attached M-Bus segment and should be writable only through authorized communication configuration.",
+        "active_devices is diagnostic/inventory information and should be interpreted together with M-Bus client objects.",
+        "Changing port setup can temporarily disrupt reads from all clients using the same M-Bus master port."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention M-Bus master port speed, bus profile, active devices, or wired M-Bus segment setup.",
+        "This class configures the shared bus port; per-slave capture behavior belongs to M-Bus client objects."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.37 M-Bus master port setup (class_id = 74, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with M-Bus port speed, profile, inventory, and shared-port behavior semantics."
     },
     {
       "id": "KB-L3-IC-76-DLMS-SERVER-M-BUS-PORT-SETUP",
@@ -9306,16 +10180,25 @@
       "name": "DLMS server M-Bus port setup",
       "aliases": [
         "class 76",
-        "CL 76"
+        "CL 76",
+        "dlms server m-bus port",
+        "server side m-bus port setup"
       ],
       "keywords": [
         "dlms server m-bus port setup",
         "class 76",
-        "cl 76"
+        "cl 76",
+        "server m-bus communication",
+        "server port setup",
+        "m-bus server address",
+        "m-bus server speed"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "m_bus",
+        "port_setup",
+        "server_port"
       ],
       "definition": "COSEM interface class for configuring DLMS server M-Bus port setup parameters in DLMS/COSEM devices.",
       "relations": [
@@ -9331,12 +10214,52 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "comm_speed",
+          "type": "enum",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Communication speed used by the DLMS server M-Bus port"
+        },
+        {
+          "attribute_id": 3,
+          "name": "server_primary_address",
+          "type": "unsigned",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "Primary address used when the DLMS server exposes itself through an M-Bus port"
+        },
+        {
+          "attribute_id": 4,
+          "name": "identification_number",
+          "type": "double-long-unsigned",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "Identification number exposed through the server-side M-Bus port"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "comm_speed and server_primary_address affect external reachability through the M-Bus server port and require controlled write access.",
+        "Identification values should be aligned with device identity and installation requirements.",
+        "Server-side M-Bus port setup is distinct from M-Bus client configuration used to read attached slave devices."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention DLMS server access over M-Bus, server M-Bus primary address, or M-Bus port identity.",
+        "Pair these requirements with association and communication profile requirements when external clients access the server through M-Bus."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.39 DLMS server M-Bus port setup (class_id = 76, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with server-side M-Bus speed, addressing, identity, and access semantics."
     },
     {
       "id": "KB-L3-IC-77-M-BUS-DIAGNOSTIC",
@@ -9345,18 +10268,26 @@
       "name": "M-Bus diagnostic",
       "aliases": [
         "class 77",
-        "CL 77"
+        "CL 77",
+        "m-bus diagnostics",
+        "m-bus diagnostic counters"
       ],
       "keywords": [
         "m-bus diagnostic",
         "class 77",
-        "cl 77"
+        "cl 77",
+        "m-bus counter",
+        "m-bus error counter",
+        "m-bus communication status",
+        "diagnostic counter"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "m_bus",
+        "diagnostics"
       ],
-      "definition": "COSEM interface class for exposing M-Bus diagnostic diagnostic, status, or counter information.",
+      "definition": "COSEM interface class for exposing M-Bus diagnostic status, error counters, and communication health information.",
       "relations": [
         {
           "relation": "defined_by",
@@ -9370,12 +10301,67 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "received_frames_counter",
+          "type": "double-long-unsigned",
+          "access": "R",
+          "mandatory": true,
+          "meaning": "Counter for M-Bus frames received by the diagnostic object"
+        },
+        {
+          "attribute_id": 3,
+          "name": "transmitted_frames_counter",
+          "type": "double-long-unsigned",
+          "access": "R",
+          "mandatory": true,
+          "meaning": "Counter for M-Bus frames transmitted by the diagnostic object"
+        },
+        {
+          "attribute_id": 4,
+          "name": "error_counter",
+          "type": "double-long-unsigned",
+          "access": "R",
+          "mandatory": true,
+          "meaning": "Counter for detected M-Bus communication errors"
+        },
+        {
+          "attribute_id": 5,
+          "name": "last_communication_status",
+          "type": "enum",
+          "access": "R",
+          "mandatory": false,
+          "meaning": "Last known M-Bus communication status or failure reason"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "mandatory": false,
+          "meaning": "Reset diagnostic counters when supported by the implementation"
+        }
+      ],
+      "access_semantics": [
+        "Diagnostic counters are read-only operational evidence used for maintenance, installation, and troubleshooting.",
+        "Counter reset is an active maintenance operation and should be restricted or audited.",
+        "Diagnostic status should be correlated with M-Bus client and port setup requirements before deriving implementation defects."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention M-Bus error counters, communication diagnostics, received/transmitted frame counts, or resetting diagnostics.",
+        "Diagnostics requirements should not be merged with ordinary measurement capture requirements; they describe communication health."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.40 M-Bus diagnostic (class_id = 77, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with diagnostic counters, communication status, reset operation, and troubleshooting semantics."
     },
     {
       "id": "KB-L3-IC-80-61334-4-32-LLC-SSCS-SETUP",
@@ -9618,18 +10604,26 @@
       "name": "NTP setup",
       "aliases": [
         "class 100",
-        "CL 100"
+        "CL 100",
+        "NTP client setup",
+        "network time protocol setup"
       ],
       "keywords": [
         "ntp setup",
         "class 100",
-        "cl 100"
+        "cl 100",
+        "ntp server",
+        "network time",
+        "time synchronization",
+        "synchronization interval"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "time_sync",
+        "network_setup"
       ],
-      "definition": "COSEM interface class for configuring NTP setup parameters in DLMS/COSEM devices.",
+      "definition": "COSEM interface class for configuring Network Time Protocol synchronization parameters used by DLMS/COSEM devices.",
       "relations": [
         {
           "relation": "defined_by",
@@ -9643,12 +10637,76 @@
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "access": "R",
           "mandatory": true
+        },
+        {
+          "attribute_id": 2,
+          "name": "activated",
+          "type": "boolean",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Enables or disables NTP time synchronization"
+        },
+        {
+          "attribute_id": 3,
+          "name": "server_address",
+          "type": "visible-string",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "Configured NTP server address or host name"
+        },
+        {
+          "attribute_id": 4,
+          "name": "port",
+          "type": "long-unsigned",
+          "access": "R/W",
+          "mandatory": true,
+          "meaning": "UDP port used for NTP communication"
+        },
+        {
+          "attribute_id": 5,
+          "name": "authentication_method",
+          "type": "enum",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "Authentication mode used for NTP packets when supported"
+        },
+        {
+          "attribute_id": 6,
+          "name": "authentication_keys",
+          "type": "array",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "NTP authentication key material or key references"
+        },
+        {
+          "attribute_id": 7,
+          "name": "client_key",
+          "type": "structure",
+          "access": "R/W",
+          "mandatory": false,
+          "meaning": "Client key information used by authenticated NTP"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "activated, server_address, and port are management configuration attributes for network time synchronization.",
+        "authentication_method, authentication_keys, and client_key are security-sensitive and should be writable only by authorized management clients.",
+        "Read access to key material should be restricted or suppressed according to the security profile."
+      ],
+      "behavior_notes": [
+        "Use this class when requirements mention NTP, network time synchronization, server address, UDP port 123, or authenticated time sync.",
+        "NTP setup complements Clock class requirements: Clock stores meter time, while NTP setup defines how network time is obtained."
+      ],
+      "source_refs": [
+        {
+          "standard": "DLMS UA Blue Book Part 2",
+          "section": "4.7.50 NTP setup (class_id = 100, version = 0)"
+        }
+      ],
+      "coverage_level": "enriched",
+      "coverage_note": "Expanded with NTP activation, server, port, and authentication semantics."
     },
     {
       "id": "KB-L3-IC-101-ZIGBEE-SAS-STARTUP",

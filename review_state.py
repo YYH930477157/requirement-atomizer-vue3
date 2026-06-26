@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from threading import RLock
+from typing import Any, Iterator
 
 
 VALID_TRANSITIONS = {
@@ -21,6 +24,9 @@ VALID_TRANSITIONS = {
 }
 
 EXPERT_DECISION_STATUSES = {"accepted", "rejected", "needs_discussion", "expert_pending"}
+EXPERT_ACTORS = {"expert", "vue3-test", "gui", "vue3-ui"}
+_PROCESS_LOCKS: dict[Path, RLock] = {}
+_PROCESS_LOCKS_GUARD = RLock()
 
 
 @dataclass
@@ -71,30 +77,121 @@ def apply_expert_decision(
     states_path = out_dir / "review_states.jsonl"
     events_path = out_dir / "review_state_events.jsonl"
 
-    states = _read_jsonl(states_path)
-    state_index = _find_state_index(states, requirement_id)
-    if state_index is None:
-        state = RequirementReviewState(requirement_id)
-        states.append(state.to_dict())
-        state_index = len(states) - 1
-    else:
-        state = _state_from_dict(states[state_index])
+    with review_state_lock(out_dir):
+        states = _read_jsonl(states_path)
+        state_index = _find_state_index(states, requirement_id)
+        if state_index is None:
+            state = RequirementReviewState(requirement_id)
+            states.append(state.to_dict())
+            state_index = len(states) - 1
+        else:
+            state = _state_from_dict(states[state_index])
 
-    if state.status == "frozen" and status != "frozen":
-        raise ValueError("Cannot override frozen review state")
+        if state.status == "frozen" and status != "frozen":
+            raise ValueError("Cannot override frozen review state")
 
-    event: dict[str, Any] | None = None
-    if state.status != status:
-        review_event = ReviewEvent(from_status=state.status, to_status=status, actor=actor, reason=reason)
-        state.history.append(review_event)
-        state.status = status
-        event = review_event.__dict__
-    states[state_index] = state.to_dict()
+        event: dict[str, Any] | None = None
+        if state.status != status:
+            review_event = ReviewEvent(from_status=state.status, to_status=status, actor=actor, reason=reason)
+            state.history.append(review_event)
+            state.status = status
+            event = review_event.__dict__
+        states[state_index] = state.to_dict()
 
-    _atomic_write_jsonl(states_path, states)
-    if event is not None:
-        _append_review_state_event(events_path, states[state_index], event)
-    return states[state_index]
+        _atomic_write_jsonl(states_path, states)
+        if event is not None:
+            _append_review_state_event(events_path, states[state_index], event)
+        return states[state_index]
+
+
+def merge_review_states(
+    existing_states: list[dict[str, Any]],
+    generated_states: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = [dict(state) for state in generated_states]
+    for existing in existing_states:
+        existing_state = _state_from_dict(existing).to_dict()
+        index = _find_matching_state_index(merged, existing_state)
+        if index is None:
+            merged.append(existing_state)
+            continue
+        if is_expert_controlled(existing_state) or str(existing_state.get("status") or "") == "frozen":
+            merged[index] = _merge_state_payload(merged[index], existing_state)
+        else:
+            merged[index] = _merge_history(merged[index], existing_state)
+    return merged
+
+
+def is_expert_controlled(state: dict[str, Any]) -> bool:
+    for event in state.get("history", []) or []:
+        if not isinstance(event, dict):
+            continue
+        actor = str(event.get("actor") or "")
+        if actor in EXPERT_ACTORS or actor.startswith("expert") or actor.startswith("user:") or actor.endswith("-ui"):
+            return True
+    return False
+
+
+def _find_matching_state_index(states: list[dict[str, Any]], needle: dict[str, Any]) -> int | None:
+    for key in requirement_identity_keys(needle):
+        index = _find_state_index(states, key)
+        if index is not None:
+            return index
+    return None
+
+
+def _merge_state_payload(generated: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    metadata = dict(generated.get("metadata") or {})
+    metadata.update(dict(existing.get("metadata") or {}))
+    merged["metadata"] = metadata
+    merged["history"] = _dedupe_history(existing.get("history") or [])
+    return merged
+
+
+def _merge_history(generated: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(generated)
+    metadata = dict(existing.get("metadata") or {})
+    metadata.update(dict(generated.get("metadata") or {}))
+    merged["metadata"] = metadata
+    merged["history"] = _dedupe_history([
+        *(existing.get("history") or []),
+        *(generated.get("history") or []),
+    ])
+    return merged
+
+
+def _dedupe_history(events: list[Any]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str, str, str]] = set()
+    result: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        payload = dict(event)
+        key = review_event_key(payload)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(payload)
+    return result
+
+
+def requirement_identity_keys(row: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for name in ("requirement_id", "stable_req_id", "req_id"):
+        value = row.get(name)
+        if value:
+            text = str(value)
+            if text not in keys:
+                keys.append(text)
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    for name in ("stable_req_id", "req_id"):
+        value = metadata.get(name)
+        if value:
+            text = str(value)
+            if text not in keys:
+                keys.append(text)
+    return keys
 
 
 def _find_state_index(states: list[dict[str, Any]], requirement_id: str) -> int | None:
@@ -134,6 +231,56 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+@contextmanager
+def review_state_lock(out_dir: Path, *, timeout_s: float = 10.0, stale_after_s: float = 300.0) -> Iterator[None]:
+    out_dir = out_dir.expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    process_lock = _process_lock_for(out_dir)
+    with process_lock:
+        lock_path = out_dir / "review_states.lock"
+        deadline = time.monotonic() + timeout_s
+        fd: int | None = None
+        while fd is None:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if _remove_stale_lock(lock_path, stale_after_s):
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for review state lock: {lock_path}")
+                time.sleep(0.01)
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            yield
+        finally:
+            os.close(fd)
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _process_lock_for(out_dir: Path) -> RLock:
+    with _PROCESS_LOCKS_GUARD:
+        return _PROCESS_LOCKS.setdefault(out_dir, RLock())
+
+
+def _remove_stale_lock(lock_path: Path, stale_after_s: float) -> bool:
+    if stale_after_s < 0:
+        return False
+    try:
+        age_s = time.time() - lock_path.stat().st_mtime
+    except FileNotFoundError:
+        return True
+    if age_s < stale_after_s:
+        return False
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        return True
+    return True
+
+
 def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
@@ -158,3 +305,13 @@ def _append_review_state_event(path: Path, state: dict[str, Any], event: dict[st
     }
     with path.open("a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def review_event_key(event: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        str(event.get("timestamp") or ""),
+        str(event.get("from_status") or ""),
+        str(event.get("to_status") or ""),
+        str(event.get("actor") or ""),
+        str(event.get("reason") or ""),
+    )
