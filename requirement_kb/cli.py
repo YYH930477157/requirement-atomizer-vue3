@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .coverage import build_coverage_report, render_report
 from .obsidian import compile_vault_to_json, export_json_to_vault
 from .blue_book_report import build_blue_book_coverage_report, write_blue_book_coverage_report
 from .repository import KnowledgeRepository
@@ -88,6 +89,10 @@ def parse_args() -> argparse.Namespace:
     vault_compile.add_argument("--out", type=Path, required=True)
     vault_compile.add_argument("--kb-id", default="obsidian_energy_metering")
 
+    coverage = sub.add_parser("coverage", help="Print Blue Book KB coverage report (Part 1/Part 2/distribution)")
+    coverage.add_argument("path", type=Path, help="Compiled KB JSON file")
+    coverage.add_argument("--format", choices=["json", "markdown"], default="markdown")
+
     return parser.parse_args()
 
 
@@ -135,6 +140,14 @@ def main() -> int:
     if args.command == "compile-vault":
         payload = compile_vault_to_json(args.vault, args.out, kb_id=args.kb_id)
         print_json({"output": str(args.out.resolve()), "entries": len(payload["entries"])})
+        return 0
+
+    if args.command == "coverage":
+        report = build_coverage_report(args.path)
+        if args.format == "json":
+            print_json(report)
+        else:
+            print(render_report(report))
         return 0
 
     return 0

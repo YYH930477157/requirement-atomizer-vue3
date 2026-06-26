@@ -73,4 +73,24 @@ describe("requirement mapper", () => {
     expect(statusDisplay("rejected")).toBe("已拒绝")
     expect(toBackendStatus("accepted")).toBe("accepted")
   })
+
+  it("maps backend risk values (high_risk / mandatory_review / low_risk) to UI levels", () => {
+    const base = {
+      stable_req_id: "SREQ-RISK-1",
+      requirement_type: "security_policy_bit",
+      object: "Security Policy",
+      requirement: "shall enforce security policy.",
+      confidence: 0.9,
+    }
+
+    const high = mapBackendRequirement({ ...base, review: { risk: "high_risk" } })
+    expect(high.risk).toBe("高")
+    expect(high.ambiguity.level).toBe("高")
+
+    const mandatory = mapBackendRequirement({ ...base, review: { risk: "mandatory_review" } })
+    expect(mandatory.risk).toBe("高")
+
+    const low = mapBackendRequirement({ ...base, review: { risk: "low_risk" } })
+    expect(low.risk).toBe("低")
+  })
 })

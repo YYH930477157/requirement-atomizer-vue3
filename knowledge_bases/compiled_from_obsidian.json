@@ -6734,7 +6734,8 @@
       "name": "IEC local port setup",
       "aliases": [
         "class 19",
-        "CL 19"
+        "CL 19",
+        "IEC 62056-21 local port"
       ],
       "keywords": [
         "iec local port setup",
@@ -6743,13 +6744,22 @@
         "default mode",
         "proposed baudrate",
         "class 19",
-        "cl 19"
+        "cl 19",
+        "default_mode",
+        "default_baud",
+        "prop_baud",
+        "response_time",
+        "device_addr",
+        "pass_p1",
+        "pass_p2",
+        "pass_w5"
       ],
       "domain_tags": [
         "cosem_class",
-        "communication_profile"
+        "communication_profile",
+        "iec_local_port"
       ],
-      "definition": "COSEM interface class for configuring IEC local port setup parameters in DLMS/COSEM devices.",
+      "definition": "COSEM interface class (class_id = 19, version = 1) for configuring communication ports using the protocols specified in IEC 62056-21:2002. Allows modelling the configuration of the local (optical/electrical) port of a DLMS/COSEM device. Several ports can be configured (0...n instances).",
       "relations": [
         {
           "relation": "defined_by",
@@ -6758,76 +6768,126 @@
       ],
       "class_id": 19,
       "version": 1,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "static": true,
           "mandatory": true,
-          "meaning": "OBIS logical name of the local port setup object"
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
           "name": "default_mode",
           "type": "enum",
+          "static": true,
           "mandatory": true,
-          "meaning": "Initial IEC local port protocol mode after opening the optical/local port"
+          "access_rights": "RW",
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
           "name": "default_baud",
           "type": "enum",
+          "static": true,
           "mandatory": true,
-          "meaning": "Initial communication speed used before protocol negotiation"
+          "access_rights": "RW",
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
-          "name": "proposed_baud",
+          "name": "prop_baud",
           "type": "enum",
+          "static": true,
           "mandatory": true,
-          "meaning": "Baud rate proposed for the negotiated communication session"
+          "access_rights": "RW",
+          "short_name": "0x18"
         },
         {
           "attribute_id": 5,
           "name": "response_time",
           "type": "enum",
+          "static": true,
           "mandatory": true,
-          "meaning": "IEC local-port response timing profile"
+          "access_rights": "RW",
+          "short_name": "0x20"
         },
         {
           "attribute_id": 6,
           "name": "device_addr",
           "type": "octet-string",
+          "static": true,
           "mandatory": true,
-          "meaning": "Device address used by the IEC local port protocol"
+          "access_rights": "RW",
+          "short_name": "0x28"
         },
         {
           "attribute_id": 7,
-          "name": "password1",
+          "name": "pass_p1",
           "type": "octet-string",
-          "mandatory": false,
-          "meaning": "Local-port password used by lower-level IEC access where applicable"
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x30"
         },
         {
           "attribute_id": 8,
-          "name": "password2",
+          "name": "pass_p2",
           "type": "octet-string",
-          "mandatory": false,
-          "meaning": "Second local-port password used by IEC access where applicable"
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x38"
         },
         {
           "attribute_id": 9,
-          "name": "password5",
+          "name": "pass_w5",
           "type": "octet-string",
-          "mandatory": false,
-          "meaning": "Higher-level local-port password used by IEC access where applicable"
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x40"
         }
       ],
       "methods": [],
+      "enum_definitions": {
+        "default_mode": {
+          "0": "IEC 62056-21:2002 modes A-E",
+          "1": "IEC 62056-46:2002/AMD1:2006",
+          "2": "protocol not specified"
+        },
+        "default_baud": {
+          "0": "300",
+          "1": "600",
+          "2": "1200",
+          "3": "2400",
+          "4": "4800",
+          "5": "9600",
+          "6": "19200",
+          "7": "38400",
+          "8": "57600",
+          "9": "115200"
+        },
+        "response_time": {
+          "0": "20 ms",
+          "1": "200 ms"
+        }
+      },
       "access_semantics": [
-        "The setup object controls local optical/IEC port negotiation and timing parameters.",
-        "Password attributes are security-sensitive and should not be logged or exported in plaintext by consuming tools.",
-        "Changing baud-rate or mode attributes can affect subsequent local communication sessions and should be treated as configuration writes."
+        "All attributes are static, read-write (RW) via SET by an authorised management client; logical_name read-only for all.",
+        "default_mode selects the port protocol; when (1) or (2) is selected, most other attributes become not applicable.",
+        "pass_p1/pass_p2/pass_w5 are sensitive passwords per IEC 62056-21 and must be protected."
+      ],
+      "behavior_notes": [
+        "IEC local port setup configures communication ports per IEC 62056-21:2002. Cardinality 0...n.",
+        "default_mode: enum (0) IEC 62056-21 modes A-E, (1) IEC 62056-46, (2) unspecified; (1)/(2) make most attributes N/A.",
+        "default_baud/prop_baud: enum 0-9 maps to 300...115200 baud.",
+        "response_time: enum (0) 20 ms, (1) 200 ms.",
+        "No specific methods; configuration via SET on static attributes.",
+        "Use this class when a requirement mentions local optical-port setup, IEC local port baud rates, IEC response time, or local-port passwords.",
+        "Treat password attributes as credential material even when source documents list them alongside ordinary communication parameters."
       ],
       "common_instances": [
         {
@@ -6835,14 +6895,8 @@
           "obis_pattern": "0-0:20.0.0.255"
         }
       ],
-      "source_refs": [
-        {
-          "source": "Blue Book Part 2 Ed. 16",
-          "section": "4.4.19 IEC local port setup (class_id = 19, version = 1)"
-        }
-      ],
-      "coverage_level": "enriched",
-      "coverage_note": "Expanded with local-port negotiation, baud-rate, timing, device address, and password semantics for engineering requirement composition."
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-25 from Blue Book Part 2 Ed.16 section 4.7.1. Full attributes with access_rights, enum definitions, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-20-ACTIVITY-CALENDAR",
@@ -7151,100 +7205,171 @@
       "name": "IEC HDLC Setup",
       "aliases": [
         "class 23",
-        "CL 23"
+        "CL 23",
+        "HDLC setup"
       ],
       "keywords": [
         "class 23",
         "cl 23",
         "iec hdlc setup",
-        "communication_speed",
+        "comm_speed",
         "window_size_transmit",
-        "window_size_receive"
+        "window_size_receive",
+        "max_info_field_length_transmit",
+        "max_info_field_length_receive",
+        "inter_octet_time_out",
+        "inactivity_time_out",
+        "device_address"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile",
         "hdlc"
       ],
-      "definition": "COSEM class for IEC HDLC communication setup parameters.",
-      "relations": [],
+      "definition": "COSEM interface class (class_id = 23, version = 1) for modelling and configuring communication channels according to DLMS UA 1000-2 Ed.11:2021 Clause 8 and IEC 62056-46:2007. Several communication channels can be configured (0...n instances).",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
       "class_id": 23,
       "version": 1,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
           "name": "comm_speed",
           "type": "enum",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "min": 0,
+          "max": 9,
+          "default": 5,
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
           "name": "window_size_transmit",
           "type": "unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "min": 1,
+          "max": 7,
+          "default": 1,
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
           "name": "window_size_receive",
           "type": "unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "min": 1,
+          "max": 7,
+          "default": 1,
+          "short_name": "0x18"
         },
         {
           "attribute_id": 5,
           "name": "max_info_field_length_transmit",
           "type": "long-unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "min": 32,
+          "max": 2030,
+          "default": 128,
+          "short_name": "0x20"
         },
         {
           "attribute_id": 6,
           "name": "max_info_field_length_receive",
           "type": "long-unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "min": 32,
+          "max": 2030,
+          "default": 128,
+          "short_name": "0x28"
         },
         {
           "attribute_id": 7,
           "name": "inter_octet_time_out",
           "type": "long-unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "min": 20,
+          "max": 6000,
+          "default": 25,
+          "short_name": "0x30"
         },
         {
           "attribute_id": 8,
           "name": "inactivity_time_out",
           "type": "long-unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "min": 0,
+          "max": 120,
+          "short_name": "0x38"
         },
         {
           "attribute_id": 9,
           "name": "device_address",
           "type": "long-unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "min": 0,
+          "max": 1023,
+          "default": 16,
+          "short_name": "0x40"
         }
       ],
       "methods": [],
+      "enum_definitions": {
+        "comm_speed": {
+          "0": "300",
+          "1": "600",
+          "2": "1200",
+          "3": "2400",
+          "4": "4800",
+          "5": "9600",
+          "6": "19200",
+          "7": "38400",
+          "8": "57600",
+          "9": "115200"
+        }
+      },
       "access_semantics": [
-        "All IEC HDLC setup attributes are static channel configuration parameters.",
+        "All attributes are static channel configuration parameters, read-write (RW) via SET by an authorised management client.",
+        "logical_name is read-only for all clients.",
         "comm_speed enumerates 300 through 115200 baud values and may be overridden by entering HDLC mode through another protocol.",
         "window sizes and maximum information field lengths may be negotiated to smaller values during logon."
       ],
       "behavior_notes": [
-        "IEC HDLC setup configures one communication channel according to IEC 62056-46.",
-        "inter_octet_time_out defines when received octets are treated as a complete frame.",
-        "inactivity_time_out defines disconnection processing when no frame is received; zero disables the timeout.",
-        "device_address contains the physical HDLC device address with reserved, calling, and broadcast ranges."
+        "IEC HDLC setup configures one communication channel per IEC 62056-46. Cardinality 0...n.",
+        "comm_speed: enum 0-9 maps to 300...115200 baud; default 5 (9600).",
+        "window_size_transmit/receive: range 1-7, default 1, negotiable during logon.",
+        "max_info_field_length_transmit/receive: range 32-2030 bytes, default 128; max raised from 128 for efficiency.",
+        "inter_octet_time_out: range 20-6000 ms, default 25; max raised from 1000 for long-delay media.",
+        "inactivity_time_out: range 0-120 s; 0 disables disconnection processing.",
+        "device_address: one-byte addressing, 0x10-0x7D usable, 0x7E calling, 0x7F broadcast."
       ],
       "common_instances": [
         {
@@ -7261,7 +7386,9 @@
           "source": "Blue Book Part 2 Ed. 16",
           "section": "5.7.2 IEC HDLC setup (class_id = 23, version = 0)"
         }
-      ]
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-25 from Blue Book Part 2 Ed.16 section 4.7.2. Full attributes with access_rights, value ranges, enum definitions, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-24-IEC-TWISTED-PAIR-1-SETUP",
@@ -8056,74 +8183,93 @@
         "port",
         "ip_reference",
         "mss",
-        "nb_of_sim_conn"
+        "nb_of_sim_conn",
+        "inactivity_time_out"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile",
         "ip_network"
       ],
-      "definition": "COSEM class for TCP/UDP transport setup parameters.",
-      "relations": [],
+      "definition": "COSEM interface class (class_id = 41, version = 0) for modelling the setup of the TCP or UDP sub-layer of the COSEM TCP/UDP based transport layer (TCP-UDP/IP profile) or the UDP sub-layer of the DLMS/COSEM CoAP transport layer. Cardinality 0...n.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
       "class_id": 41,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
-          "name": "TCP_UDP_port",
+          "name": "TCP-UDP_port",
           "type": "long-unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
           "name": "IP_reference",
           "type": "octet-string[6]",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
           "name": "MSS",
           "type": "long-unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static",
-          "minimum": 40,
-          "maximum": 65535,
-          "default": 576
+          "access_rights": "RW",
+          "min": 40,
+          "max": 65535,
+          "default": 576,
+          "short_name": "0x18"
         },
         {
           "attribute_id": 5,
           "name": "nb_of_sim_conn",
           "type": "unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static",
-          "minimum": 1
+          "access_rights": "RW",
+          "min": 1,
+          "short_name": "0x20"
         },
         {
           "attribute_id": 6,
           "name": "inactivity_time_out",
           "type": "long-unsigned",
+          "static": true,
           "mandatory": true,
-          "storage": "static",
-          "default": 180
+          "access_rights": "RW",
+          "default": 180,
+          "short_name": "0x28"
         }
       ],
       "methods": [],
       "access_semantics": [
-        "TCP_UDP_port defines the TCP/UDP or CoAP UDP endpoint port used by the physical device.",
+        "All attributes are static, read-write (RW) via SET by an authorised management client; logical_name is read-only.",
+        "TCP-UDP_port defines the TCP/UDP or CoAP UDP endpoint port (IANA 4059) used by the physical device.",
         "IP_reference points to the IPv4 or IPv6 setup object that owns IP-layer address settings.",
         "MSS is advertised only in the initial TCP SYN and is not negotiated by this attribute."
       ],
       "behavior_notes": [
-        "TCP-UDP setup models the TCP or UDP sub-layer for TCP-UDP/IP and CoAP communication profiles.",
+        "TCP-UDP setup models the TCP or UDP sub-layer for TCP-UDP/IP and CoAP profiles. Cardinality 0...n; one instance per data link layer.",
         "Within a physical device, each client AP or server logical device is bound to a wrapper port with help from SAP Assignment.",
         "nb_of_sim_conn limits simultaneous TCP/UDP connections supported by the transport layer.",
         "inactivity_time_out aborts inactive TCP connections; zero disables this timeout."
@@ -8139,7 +8285,9 @@
           "source": "Blue Book Part 2 Ed. 16",
           "section": "4.9.1 TCP-UDP setup (class_id = 41, version = 0)"
         }
-      ]
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.9.1. Full attributes with access_rights, value ranges, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-42-IPV4-SETUP",
@@ -8157,87 +8305,108 @@
         "ip_address",
         "multicast_ip_address",
         "gateway_ip_address",
-        "subnet_mask"
+        "subnet_mask",
+        "dl_reference",
+        "use_dhcp_flag",
+        "primary_dns_address"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile",
         "ip_network"
       ],
-      "definition": "COSEM class for IPv4 network setup parameters.",
-      "relations": [],
+      "definition": "COSEM interface class (class_id = 42, version = 0) for modelling the setup of the IPv4 layer, handling all information related to the IP address settings of a given device and lower layer connection. There shall be one instance per network interface implemented (cardinality 0...n).",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
       "class_id": 42,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
           "name": "DL_reference",
           "type": "octet-string[6]",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
           "name": "IP_address",
           "type": "double-long-unsigned",
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "RW",
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
           "name": "multicast_IP_address",
           "type": "array",
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "RW",
+          "short_name": "0x18"
         },
         {
           "attribute_id": 5,
           "name": "IP_options",
           "type": "array",
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "RW",
+          "short_name": "0x20"
         },
         {
           "attribute_id": 6,
           "name": "subnet_mask",
           "type": "double-long-unsigned",
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "RW",
+          "short_name": "0x28"
         },
         {
           "attribute_id": 7,
           "name": "gateway_IP_address",
           "type": "double-long-unsigned",
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "RW",
+          "short_name": "0x30"
         },
         {
           "attribute_id": 8,
           "name": "use_DHCP_flag",
           "type": "boolean",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "short_name": "0x38"
         },
         {
           "attribute_id": 9,
           "name": "primary_DNS_address",
           "type": "double-long-unsigned",
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "RW",
+          "short_name": "0x40"
         },
         {
           "attribute_id": 10,
           "name": "secondary_DNS_address",
           "type": "double-long-unsigned",
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "RW",
+          "short_name": "0x48"
         }
       ],
       "methods": [
@@ -8245,31 +8414,35 @@
           "method_id": 1,
           "name": "add_mc_IP_address",
           "parameter_type": "double-long-unsigned",
+          "short_name": "0x60",
           "meaning": "Add one multicast IPv4 address."
         },
         {
           "method_id": 2,
           "name": "delete_mc_IP_address",
           "parameter_type": "double-long-unsigned",
+          "short_name": "0x68",
           "meaning": "Delete one multicast IPv4 address."
         },
         {
           "method_id": 3,
           "name": "get_nbof_mc_IP_addresses",
           "parameter_type": "integer(0)",
+          "short_name": "0x70",
           "meaning": "Return the number of configured multicast IPv4 addresses."
         }
       ],
       "access_semantics": [
+        "logical_name and static config attributes (DL_reference, use_DHCP_flag) are RW via SET by management client; logical_name read-only for all.",
+        "Dynamic address attributes (IP_address, multicast, subnet_mask, gateway, DNS) are RW but runtime values may reflect DHCP negotiation when use_DHCP_flag is true.",
         "DL_reference points to the lower data-link setup object used by this IPv4 interface.",
-        "IP_address may be static or dynamic; when no address is assigned the value is zero.",
-        "multicast_IP_address holds class-D multicast addresses accepted by the device.",
-        "use_DHCP_flag controls dynamic IP assignment, while DNS and gateway attributes hold resulting network parameters."
+        "multicast_IP_address holds class-D multicast addresses (224.0.0.0 - 239.255.255.255) accepted by the device."
       ],
       "behavior_notes": [
-        "A device has one IPv4 setup instance for each network interface that uses TCP-UDP/IPv4.",
-        "IPv4 addresses are encoded as double-long-unsigned values, for example 192.168.0.1 as C0A80001.",
-        "IP_options may carry RFC 791 options such as security, source route, record route, or internet timestamp."
+        "A device has one IPv4 setup instance per network interface using TCP-UDP/IPv4. Cardinality 0...n.",
+        "IPv4 addresses are encoded as double-long-unsigned, e.g. 192.168.0.1 = C0A80001 = 3232235521.",
+        "IP_address may be static or dynamic (DHCP); 0 means no address assigned.",
+        "IP_options may carry RFC 791 options (security, source route, record route, internet timestamp)."
       ],
       "common_instances": [
         {
@@ -8282,7 +8455,9 @@
           "source": "Blue Book Part 2 Ed. 16",
           "section": "4.9.2 IPv4 setup (class_id = 42, version = 0)"
         }
-      ]
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.9.2. Full attributes with access_rights, method behavior, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-43-MAC-ADDRESS-SETUP",
@@ -8371,6 +8546,7 @@
         "phy_reference",
         "lcp_options",
         "ipcp_options",
+        "ppp_authentication",
         "ppp authentication"
       ],
       "domain_tags": [
@@ -8379,7 +8555,7 @@
         "ppp",
         "network_setup"
       ],
-      "definition": "COSEM interface class for configuring Point-to-Point Protocol setup parameters, including physical link reference and negotiated PPP options.",
+      "definition": "COSEM interface class (class_id = 44, version = 0) for modelling the setup of interfaces using the PPP protocol, handling all information related to PPP settings of a given physical device and lower layer connection. One instance per network interface (cardinality 0...n).",
       "relations": [
         {
           "relation": "defined_by",
@@ -8388,65 +8564,86 @@
       ],
       "class_id": 44,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "access": "R",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
           "name": "PHY_reference",
           "type": "octet-string[6]",
-          "access": "R/W",
+          "static": true,
           "mandatory": true,
-          "meaning": "Logical name reference to the physical communication setup object used below PPP"
+          "access_rights": "RW",
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
           "name": "LCP_options",
-          "type": "array",
-          "access": "R/W",
+          "type": "LCP_options_type",
+          "static": true,
           "mandatory": true,
-          "meaning": "PPP Link Control Protocol options supported or negotiated by the device"
+          "access_rights": "RW",
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
           "name": "IPCP_options",
-          "type": "array",
-          "access": "R/W",
+          "type": "IPCP_options_type",
+          "static": true,
           "mandatory": true,
-          "meaning": "PPP IP Control Protocol options for IP layer negotiation"
+          "access_rights": "RW",
+          "short_name": "0x18"
         },
         {
           "attribute_id": 5,
           "name": "PPP_authentication",
-          "type": "structure",
-          "access": "R/W",
-          "mandatory": false,
-          "meaning": "Authentication parameters used by PPP when required by the profile"
+          "type": "PPP_auth_type",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x20"
         }
       ],
       "methods": [],
+      "enum_definitions": {
+        "LCP_Option_Type": {
+          "1": "MRU (default 1500)",
+          "2": "ACCM (Async-Control-Character-Map)",
+          "3": "Authentication-Protocol (default no auth)",
+          "5": "Magic-Number",
+          "7": "Protocol-Field-Compression",
+          "9": "FCS-Alternatives",
+          "10": "Address-and-Control-Field-Compression",
+          "13": "Callback"
+        }
+      },
       "access_semantics": [
-        "PHY_reference links PPP setup to the underlying serial, modem, or other physical communication setup object.",
-        "LCP_options and IPCP_options determine negotiated link and IP behavior and should be managed by authorized clients.",
-        "PPP authentication values are security-sensitive and should not be exposed to low-privilege clients."
+        "All attributes are static, read-write (RW) via SET by an authorised management client; logical_name read-only for all.",
+        "PHY_reference points to the physical layer interface object supporting the PPP layer.",
+        "LCP_options and IPCP_options govern PPP link and IP-layer negotiation per IETF STD 51 / RFC 1661.",
+        "PPP_authentication carries authentication parameters (e.g. PAP/CHAP)."
       ],
       "behavior_notes": [
-        "Use this class when requirements mention PPP negotiation, LCP, IPCP, physical-link reference, or PPP authentication.",
-        "PPP setup is part of the communication stack and should be linked to TCP-UDP/IP setup requirements when IP transport is used."
+        "A device has one PPP setup instance per network interface. Cardinality 0...n.",
+        "LCP_options: array of {Type, Length, Data} structures; MRU default 1500 octets, Authentication-Protocol default no auth.",
+        "IPCP_options: array of IP-layer negotiation option structures.",
+        "PPP_authentication: authentication type/parameters per PPP_auth_type."
       ],
       "source_refs": [
         {
-          "standard": "DLMS UA Blue Book Part 2",
-          "section": "4.7.22 PPP setup (class_id = 44, version = 0)"
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.9.5 PPP setup (class_id = 44, version = 0)"
         }
       ],
-      "coverage_level": "enriched",
-      "coverage_note": "Expanded with PPP link-reference, LCP/IPCP, and authentication semantics."
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.9.5. Full attributes with access_rights, LCP option enum definitions, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-45-GPRS-MODEM-SETUP",
@@ -8464,6 +8661,7 @@
         "class 45",
         "cl 45",
         "apn",
+        "pin_code",
         "pin code",
         "quality_of_service",
         "cellular modem",
@@ -8472,10 +8670,11 @@
       "domain_tags": [
         "cosem_class",
         "communication_profile",
+        "gprs",
         "cellular",
         "network_setup"
       ],
-      "definition": "COSEM interface class for configuring GPRS modem setup parameters in DLMS/COSEM devices.",
+      "definition": "COSEM interface class (class_id = 45, version = 0) for setting up GPRS modems, handling all data necessary for modem management. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -8484,65 +8683,65 @@
       ],
       "class_id": 45,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "access": "R",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
           "name": "APN",
-          "type": "visible-string",
-          "access": "R/W",
+          "type": "octet-string",
+          "static": true,
           "mandatory": true,
-          "meaning": "Access Point Name used by the cellular network connection"
+          "access_rights": "RW",
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
           "name": "PIN_code",
-          "type": "visible-string",
-          "access": "R/W",
-          "mandatory": false,
-          "meaning": "SIM PIN or access credential required by the cellular modem"
+          "type": "long-unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
-          "name": "default_quality_of_service",
+          "name": "quality_of_service",
           "type": "structure",
-          "access": "R/W",
-          "mandatory": false,
-          "meaning": "Default GPRS quality-of-service parameters requested by the device"
-        },
-        {
-          "attribute_id": 5,
-          "name": "requested_quality_of_service",
-          "type": "structure",
-          "access": "R/W",
-          "mandatory": false,
-          "meaning": "Requested GPRS quality-of-service parameters for network attachment"
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x18"
         }
       ],
       "methods": [],
       "access_semantics": [
-        "APN controls cellular packet data attachment and should be configurable only by authorized clients.",
-        "PIN_code is credential-like data and should not be exposed in low-privilege read contexts.",
-        "Quality-of-service attributes affect cellular network behavior and should be validated against the supported profile."
+        "All attributes are static, read-write (RW) via SET by an authorised management client; logical_name read-only for all.",
+        "APN identifies the GPRS network access point.",
+        "PIN_code is the SIM PIN (sensitive, required for SIM authentication).",
+        "quality_of_service carries GPRS QoS parameters affecting modem connectivity."
       ],
       "behavior_notes": [
-        "Use this class when requirements mention GPRS, cellular modem APN, SIM PIN, or GPRS quality of service.",
-        "GPRS modem setup is normally paired with IP, TCP-UDP, PPP, or application-layer setup requirements."
+        "GPRS modem setup handles all data necessary for GPRS modem management. Cardinality 0...n.",
+        "APN: Access Point Name for the GPRS network.",
+        "PIN_code: SIM card PIN (long-unsigned); sensitive.",
+        "quality_of_service: structure of GPRS QoS parameters (peak/mean throughput, reliability class)."
       ],
       "source_refs": [
         {
-          "standard": "DLMS UA Blue Book Part 2",
-          "section": "4.7.23 GPRS modem setup (class_id = 45, version = 0)"
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.7.7 GPRS modem setup (class_id = 45, version = 0)"
         }
       ],
-      "coverage_level": "enriched",
-      "coverage_note": "Expanded with cellular APN, PIN, quality-of-service, and credential handling semantics."
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.7.7. Full attributes with access_rights, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-46-SMTP-SETUP",
@@ -8559,19 +8758,24 @@
         "smtp setup",
         "class 46",
         "cl 46",
+        "server_port",
+        "user_name",
+        "login_password",
+        "server_address",
+        "sender_address",
         "smtp server",
         "email destination",
-        "sender address",
         "recipient address",
         "mail authentication"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile",
+        "smtp",
         "application_profile",
         "messaging"
       ],
-      "definition": "COSEM interface class for configuring SMTP setup parameters in DLMS/COSEM devices.",
+      "definition": "COSEM interface class (class_id = 46, version = 0) for setting up data exchange using the SMTP protocol. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -8580,65 +8784,84 @@
       ],
       "class_id": 46,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "access": "R",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
-          "name": "SMTP_server",
-          "type": "visible-string",
-          "access": "R/W",
+          "name": "server_port",
+          "type": "long-unsigned",
+          "static": true,
           "mandatory": true,
-          "meaning": "Server address or host name used for outgoing SMTP messages"
+          "access_rights": "RW",
+          "default": 25,
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
-          "name": "sender_address",
-          "type": "visible-string",
-          "access": "R/W",
+          "name": "user_name",
+          "type": "octet-string",
+          "static": true,
           "mandatory": true,
-          "meaning": "Sender address used by the device for SMTP notifications"
+          "access_rights": "RW",
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
-          "name": "recipient_addresses",
-          "type": "array",
-          "access": "R/W",
+          "name": "login_password",
+          "type": "octet-string",
+          "static": true,
           "mandatory": true,
-          "meaning": "Configured e-mail recipients for SMTP based notifications or reports"
+          "access_rights": "RW",
+          "short_name": "0x18"
         },
         {
           "attribute_id": 5,
-          "name": "authentication",
-          "type": "structure",
-          "access": "R/W",
-          "mandatory": false,
-          "meaning": "SMTP authentication data when required by the mail server"
+          "name": "server_address",
+          "type": "octet-string",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "sender_address",
+          "type": "octet-string",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x28"
         }
       ],
       "methods": [],
       "access_semantics": [
-        "SMTP_server, sender_address, and recipient_addresses define where device-generated notifications are sent and should be managed as communication configuration.",
-        "Authentication values are security-sensitive and must not be exposed to low-privilege clients.",
-        "Recipient configuration changes can redirect alarms or reports and should be audited."
+        "All attributes are static, read-write (RW) via SET by an authorised management client; logical_name read-only for all.",
+        "server_port defaults to IANA SMTP port 25.",
+        "login_password is sensitive; void string means no authentication.",
+        "server_address/sender_address may be DNS names or dotted-IP octet-strings."
       ],
       "behavior_notes": [
-        "Use this class when requirements mention SMTP, e-mail alarm delivery, sender address, recipient list, or mail server configuration.",
-        "SMTP setup belongs to application-level communication requirements and often depends on TCP-UDP/IP network setup."
+        "SMTP setup allows data exchange using the SMTP protocol. Cardinality 0...n.",
+        "server_port: default 25 (IANA smtp 25/tcp, 25/udp).",
+        "login_password: void string = no authentication; otherwise sensitive.",
+        "server_address/sender_address: DNS-resolvable name or dotted IP format."
       ],
       "source_refs": [
         {
-          "standard": "DLMS UA Blue Book Part 2",
-          "section": "4.7.24 SMTP setup (class_id = 46, version = 0)"
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.9.6 SMTP setup (class_id = 46, version = 0)"
         }
       ],
-      "coverage_level": "enriched",
-      "coverage_note": "Expanded with server, sender, recipient, authentication, and notification redirection semantics."
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.9.6. Full attributes with access_rights, value defaults, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-48-IPV6-SETUP",
@@ -8660,6 +8883,7 @@
         "gateway_ipv6_addresses",
         "primary_dns_address",
         "secondary_dns_address",
+        "traffic_class",
         "neighbor discovery",
         "address configuration"
       ],
@@ -8668,7 +8892,7 @@
         "communication_profile",
         "ip_network"
       ],
-      "definition": "COSEM interface class for IPv6 network setup parameters, including address configuration mode, IPv6 addresses, gateways, DNS addresses, and neighbor discovery related configuration.",
+      "definition": "COSEM interface class (class_id = 48, version = 0) for modelling the setup of the IPv6 layer, handling all information related to the IPv6 address settings of a given device and lower layer connection. One instance per network interface (cardinality 0...n).",
       "relations": [
         {
           "relation": "defined_by",
@@ -8677,68 +8901,150 @@
       ],
       "class_id": 48,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
           "name": "DL_reference",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
           "name": "address_config_mode",
           "type": "enum",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": 0,
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
           "name": "unicast_IPv6_addresses",
           "type": "array",
-          "mandatory": true
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x18"
         },
         {
           "attribute_id": 5,
           "name": "multicast_IPv6_addresses",
           "type": "array",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": [],
+          "short_name": "0x20"
         },
         {
           "attribute_id": 6,
           "name": "gateway_IPv6_addresses",
           "type": "array",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": [],
+          "short_name": "0x28"
         },
         {
           "attribute_id": 7,
           "name": "primary_DNS_address",
           "type": "octet-string[16]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": 0,
+          "short_name": "0x30"
         },
         {
           "attribute_id": 8,
           "name": "secondary_DNS_address",
           "type": "octet-string[16]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": 0,
+          "short_name": "0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "traffic_class",
+          "type": "unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "min": 0,
+          "max": 63,
+          "default": 0,
+          "short_name": "0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "neighbor_discovery_setup",
+          "type": "array",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x48"
         }
       ],
-      "methods": [],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "add_IPv6_address",
+          "parameter_type": "data",
+          "short_name": "0x60",
+          "meaning": "Add one IPv6 address."
+        },
+        {
+          "method_id": 2,
+          "name": "remove_IPv6_address",
+          "parameter_type": "data",
+          "short_name": "0x68",
+          "meaning": "Remove one IPv6 address."
+        }
+      ],
+      "enum_definitions": {
+        "address_config_mode": {
+          "0": "Auto-configuration (default)",
+          "1": "DHCPv6",
+          "2": "Manual",
+          "3": "ND (Neighbour Discovery)"
+        }
+      },
       "access_semantics": [
+        "logical_name is read-only for all clients; static config attributes are RW via SET by management client.",
         "DL_reference links the IPv6 setup object to the lower-layer communication setup object.",
-        "address_config_mode defines the IPv6 address configuration mechanism used by the device.",
-        "unicast, multicast, gateway, and DNS address attributes describe the IPv6 network configuration visible through COSEM."
+        "address_config_mode defines the IPv6 address configuration mechanism (auto/DHCPv6/manual/ND); common for all addresses of this instance.",
+        "unicast_IPv6_addresses is managed via add/remove methods; empty array = no address or reset."
+      ],
+      "behavior_notes": [
+        "A device has one IPv6 setup instance per network interface. Cardinality 0...n.",
+        "address_config_mode: enum 0=auto-config (default), 1=DHCPv6, 2=Manual, 3=ND.",
+        "unicast/multicast/gateway IPv6 addresses follow RFC 3513 format; empty array resets all.",
+        "traffic_class: range 0-63, default 0.",
+        "neighbor_discovery_setup holds ND parameters."
       ],
       "source_refs": [
         {
           "source": "Blue Book Part 2 Ed. 16",
           "section": "4.9.3 IPv6 setup (class_id = 48, version = 0)"
         }
-      ]
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.9.3. Full attributes with access_rights, methods, value ranges, enum definitions, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-50-S-FSK-PHY-MAC-SET-UP",
@@ -9295,13 +9601,17 @@
       "keywords": [
         "status mapping",
         "class 63",
-        "cl 63"
+        "cl 63",
+        "status_word",
+        "mapping_table",
+        "ref_table_id"
       ],
       "domain_tags": [
         "cosem_class",
-        "measurement_data"
+        "measurement_data",
+        "status"
       ],
-      "definition": "COSEM interface class for exposing Status mapping diagnostic, status, or counter information.",
+      "definition": "COSEM interface class (class_id = 63, version = 0) for modelling the mapping of bits in a status word to entries in a reference table. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -9310,17 +9620,54 @@
       ],
       "class_id": 63,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
+        },
+        {
+          "attribute_id": 2,
+          "name": "status_word",
+          "type": "CHOICE",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "mapping_table",
+          "type": "structure",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x10"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "logical_name and mapping_table are static RW via SET by management client; logical_name read-only for all.",
+        "status_word is dynamic, read-only (R); reflects current runtime value of the monitored status word.",
+        "mapping_table.ref_table_id identifies the reference status table for bit-to-entry mapping."
+      ],
+      "behavior_notes": [
+        "Status mapping models the mapping of bits in a status word to entries in a reference table. Cardinality 0...n.",
+        "status_word: dynamic, CHOICE of bit-string/integer/octet-string etc.; size n*8 bits, max 65536 bits; always interpreted as bit-string.",
+        "mapping_table: {ref_table_id, ref_table_mapping CHOICE}. long-unsigned = sequential bit-to-entry; array = explicit mapping."
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.3.9 Status mapping (class_id = 63, version = 0)"
+        }
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.3.9. Full attributes with access_rights (status_word dynamic R, mapping_table static RW), access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-64-SECURITY-SETUP",
@@ -9454,13 +9801,21 @@
       "keywords": [
         "parameter monitor",
         "class 65",
-        "cl 65"
+        "cl 65",
+        "changed_parameter",
+        "capture_time",
+        "parameter_list",
+        "parameter_list_name",
+        "hash_algorithm_id",
+        "parameter_value_digest",
+        "parameter_values"
       ],
       "domain_tags": [
         "cosem_class",
-        "control"
+        "control",
+        "monitoring"
       ],
-      "definition": "COSEM interface class for monitoring or controlling device behavior through Parameter monitor functions.",
+      "definition": "COSEM interface class (class_id = 65, version = 1) for monitoring configuration changes. Holds parameter_list_name, hash_algorithm_id, parameter_value_digest, and parameter values so clients can detect configuration drift via digest comparison. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -9469,62 +9824,78 @@
       ],
       "class_id": 65,
       "version": 1,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
           "name": "changed_parameter",
           "type": "structure",
+          "dynamic": true,
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "R",
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
           "name": "capture_time",
           "type": "date-time",
+          "dynamic": true,
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "R",
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
           "name": "parameter_list",
           "type": "array",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "short_name": "0x18"
         },
         {
           "attribute_id": 5,
           "name": "parameter_list_name",
           "type": "octet-string",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "short_name": "0x20"
         },
         {
           "attribute_id": 6,
           "name": "hash_algorithm_id",
           "type": "enum",
+          "static": true,
           "mandatory": true,
-          "storage": "static"
+          "access_rights": "RW",
+          "short_name": "0x28"
         },
         {
           "attribute_id": 7,
           "name": "parameter_value_digest",
           "type": "octet-string",
+          "dynamic": true,
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "R",
+          "short_name": "0x30"
         },
         {
           "attribute_id": 8,
           "name": "parameter_values",
           "type": "structure",
+          "dynamic": true,
           "mandatory": true,
-          "storage": "dynamic"
+          "access_rights": "R",
+          "short_name": "0x38"
         }
       ],
       "methods": [
@@ -9532,22 +9903,26 @@
           "method_id": 1,
           "name": "add_parameter",
           "parameter_type": "parameter_list_element",
+          "short_name": "0x40",
           "meaning": "Add one parameter reference to parameter_list."
         },
         {
           "method_id": 2,
           "name": "delete_parameter",
           "parameter_type": "parameter_list_element",
+          "short_name": "0x48",
           "meaning": "Delete one parameter reference from parameter_list."
         }
       ],
       "access_semantics": [
-        "parameter_list defines the monitored class_id, logical_name, and attribute_index references.",
-        "changed_parameter and capture_time report the most recent change.",
+        "logical_name and static config attributes (parameter_list, parameter_list_name, hash_algorithm_id) are RW via SET by management client; logical_name read-only for all.",
+        "Dynamic attributes (changed_parameter, capture_time, parameter_value_digest, parameter_values) are read-only (R) — reflect runtime state.",
+        "parameter_list defines the monitored class_id, logical_name, and attribute_index references; managed via add/delete methods.",
         "parameter_value_digest lets clients compare a known configuration snapshot before reading parameter_values."
       ],
       "behavior_notes": [
-        "Parameter monitor supports configuration-change detection for a defined list of COSEM attributes.",
+        "Parameter monitor supports configuration-change detection for a defined list of COSEM attributes. Cardinality 0...n.",
+        "changed_parameter/capture_time report the most recent change (dynamic, read-only).",
         "The digest is calculated over parameter values in parameter_list order using hash_algorithm_id.",
         "parameter_values holds A-XDR encoded copies of referenced attributes and may be captured into Profile generic buffers."
       ],
@@ -9562,7 +9937,9 @@
           "source": "Blue Book Part 2 Ed. 16",
           "section": "4.5.10 Parameter monitor (class_id = 65, version = 1)"
         }
-      ]
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.5.10. Full attributes with access_rights (dynamic R vs static RW), methods, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-66-MEASUREMENT-DATA-MONITORING-OBJECTS",
@@ -9571,19 +9948,26 @@
       "name": "Measurement data monitoring objects",
       "aliases": [
         "class 66",
-        "CL 66"
+        "CL 66",
+        "waveform capture"
       ],
       "keywords": [
         "measurement data monitoring objects",
         "class 66",
-        "cl 66"
+        "cl 66",
+        "waveform_data",
+        "trigger_time",
+        "trigger_source",
+        "sampling_rate",
+        "scaler_unit"
       ],
       "domain_tags": [
         "cosem_class",
         "measurement_data",
-        "control"
+        "control",
+        "waveform"
       ],
-      "definition": "COSEM interface class for monitoring or controlling device behavior through Measurement data monitoring objects functions.",
+      "definition": "COSEM interface class (class_id = 66, version = 0) for capturing waveform data of a monitored quantity (voltage or current) around a trigger event. One instance holds samples of only one measured quantity at a time. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -9592,17 +9976,127 @@
       ],
       "class_id": 66,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
+        },
+        {
+          "attribute_id": 2,
+          "name": "waveform_data",
+          "type": "compact-array",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "trigger_time",
+          "type": "long64-unsigned",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "trigger_source",
+          "type": "structure",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "status",
+          "type": "enum",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "sampling_rate",
+          "type": "double-long-unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "number_of_samples_before_trigger",
+          "type": "double-long-unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": 0,
+          "short_name": "0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "number_of_samples_after_trigger",
+          "type": "double-long-unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": 0,
+          "short_name": "0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "scaler_unit",
+          "type": "structure",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x40"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "parameter_type": "data",
+          "short_name": "0x48",
+          "meaning": "Reset the waveform capture."
+        },
+        {
+          "method_id": 2,
+          "name": "trigger",
+          "parameter_type": "data",
+          "short_name": "0x50",
+          "meaning": "Initiate a waveform capture (manual or register-monitor driven)."
+        }
+      ],
+      "access_semantics": [
+        "logical_name and static config (sampling_rate, before/after sample counts, scaler_unit) are RW via SET by management client; logical_name read-only for all.",
+        "Dynamic attributes (waveform_data, trigger_time, trigger_source, status) are read-only (R) — reflect runtime capture state.",
+        "Capture only enabled when number_of_samples_before/after_trigger are non-zero."
+      ],
+      "behavior_notes": [
+        "Captures waveform samples of one measured quantity around a trigger event. One quantity per instance. Cardinality 0...n.",
+        "waveform_data: dynamic compact-array; total samples = before + after window.",
+        "trigger_time: microseconds clock precision for exact capture timing.",
+        "trigger_source: {origin remote/local-script, cause}; trigger method manual or register-monitor driven.",
+        "waveform_data is a Profile generic capture candidate."
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.3.11 Measurement data monitoring objects (class_id = 66, version = 0)"
+        }
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.3.11. Full attributes with access_rights (dynamic R vs static RW), methods, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-67-SENSOR-MANAGER",
@@ -9616,12 +10110,20 @@
       "keywords": [
         "sensor manager",
         "class 67",
-        "cl 67"
+        "cl 67",
+        "serial_number",
+        "metrological_identification",
+        "output_type",
+        "raw_value",
+        "processed_value",
+        "sealing_method"
       ],
       "domain_tags": [
-        "cosem_class"
+        "cosem_class",
+        "sensor",
+        "monitoring"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 for Sensor manager objects.",
+      "definition": "COSEM interface class (class_id = 67, version = 0) for managing detailed information related to a sensor (mainly non-electricity metering). Combines nameplate/site data, an Extended-register function for raw values, and Register-monitor functions for raw and processed values. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -9630,17 +10132,174 @@
       ],
       "class_id": 67,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
+        },
+        {
+          "attribute_id": 2,
+          "name": "serial_number",
+          "type": "octet-string",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "metrological_identification",
+          "type": "octet-string",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "output_type",
+          "type": "enum",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "adjustment_method",
+          "type": "octet-string",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "sealing_method",
+          "type": "enum",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "raw_value",
+          "type": "CHOICE",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "scaler_unit",
+          "type": "structure",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "status",
+          "type": "CHOICE",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "capture_time",
+          "type": "date-time",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x48"
+        },
+        {
+          "attribute_id": 11,
+          "name": "raw_value_thresholds",
+          "type": "array",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x50"
+        },
+        {
+          "attribute_id": 12,
+          "name": "raw_value_actions",
+          "type": "array",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x58"
+        },
+        {
+          "attribute_id": 13,
+          "name": "processed_value",
+          "type": "processed_value_definition",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x60"
+        },
+        {
+          "attribute_id": 14,
+          "name": "processed_value_thresholds",
+          "type": "array",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x68"
+        },
+        {
+          "attribute_id": 15,
+          "name": "processed_value_actions",
+          "type": "array",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x70"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x80",
+          "meaning": "Reset the sensor manager."
+        }
+      ],
+      "access_semantics": [
+        "logical_name read-only for all; all other attributes dynamic.",
+        "Nameplate/site data (attr 2-6) and runtime values (raw_value, status, capture_time, processed_value) are read-only (R).",
+        "Monitor thresholds/actions (attr 11-12, 14-15) are RW via SET by management client where configurable.",
+        "Not all modules necessarily present; unused attributes may be unimplemented."
+      ],
+      "behavior_notes": [
+        "Sensor manager manages complex sensor information, mainly for non-electricity metering (MID). No OBIS codes. Cardinality 0...n.",
+        "Nameplate/site data: serial_number, metrological_identification, output_type, adjustment_method, sealing_method.",
+        "Extended register for raw value (attr 7-10): raw data without own OBIS code included here.",
+        "Register monitor for raw value (attr 11-12) and processed value (attr 13-15).",
+        "Not all modules necessarily present."
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.5.11 Sensor manager (class_id = 67, version = 0)"
+        }
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.5.11. Full 15 attributes with access_rights, reset method, module structure, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-68-ARBITRATOR",
@@ -10612,6 +11271,13 @@
         "ntp setup",
         "class 100",
         "cl 100",
+        "activated",
+        "server_address",
+        "server_port",
+        "authentication_method",
+        "authentication_keys",
+        "client_key",
+        "synchronize",
         "ntp server",
         "network time",
         "time synchronization",
@@ -10620,10 +11286,11 @@
       "domain_tags": [
         "cosem_class",
         "communication_profile",
+        "ntp",
         "time_sync",
         "network_setup"
       ],
-      "definition": "COSEM interface class for configuring Network Time Protocol synchronization parameters used by DLMS/COSEM devices.",
+      "definition": "COSEM interface class (class_id = 100, version = 0) for setting up time synchronisation using the NTP protocol as specified in RFC 5905. One or several instances may be configured to support multiple time servers. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -10632,81 +11299,120 @@
       ],
       "class_id": 100,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "access": "R",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
         },
         {
           "attribute_id": 2,
           "name": "activated",
           "type": "boolean",
-          "access": "R/W",
+          "static": true,
           "mandatory": true,
-          "meaning": "Enables or disables NTP time synchronization"
+          "access_rights": "RW",
+          "default": false,
+          "short_name": "0x08"
         },
         {
           "attribute_id": 3,
           "name": "server_address",
-          "type": "visible-string",
-          "access": "R/W",
+          "type": "octet-string",
+          "static": true,
           "mandatory": true,
-          "meaning": "Configured NTP server address or host name"
+          "access_rights": "RW",
+          "short_name": "0x10"
         },
         {
           "attribute_id": 4,
-          "name": "port",
+          "name": "server_port",
           "type": "long-unsigned",
-          "access": "R/W",
+          "static": true,
           "mandatory": true,
-          "meaning": "UDP port used for NTP communication"
+          "access_rights": "RW",
+          "default": 123,
+          "short_name": "0x18"
         },
         {
           "attribute_id": 5,
           "name": "authentication_method",
           "type": "enum",
-          "access": "R/W",
-          "mandatory": false,
-          "meaning": "Authentication mode used for NTP packets when supported"
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x20"
         },
         {
           "attribute_id": 6,
           "name": "authentication_keys",
           "type": "array",
-          "access": "R/W",
-          "mandatory": false,
-          "meaning": "NTP authentication key material or key references"
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x28"
         },
         {
           "attribute_id": 7,
           "name": "client_key",
-          "type": "structure",
-          "access": "R/W",
-          "mandatory": false,
-          "meaning": "Client key information used by authenticated NTP"
+          "type": "octet-string",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x30"
         }
       ],
-      "methods": [],
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "synchronize",
+          "parameter_type": "data",
+          "mandatory": true,
+          "short_name": "0x38",
+          "meaning": "Trigger NTP time synchronisation."
+        },
+        {
+          "method_id": 2,
+          "name": "add_authentication_key",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x40",
+          "meaning": "Add one NTP authentication key."
+        },
+        {
+          "method_id": 3,
+          "name": "delete_authentication_key",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x48",
+          "meaning": "Delete one NTP authentication key."
+        }
+      ],
       "access_semantics": [
-        "activated, server_address, and port are management configuration attributes for network time synchronization.",
-        "authentication_method, authentication_keys, and client_key are security-sensitive and should be writable only by authorized management clients.",
-        "Read access to key material should be restricted or suppressed according to the security profile."
+        "All attributes are static, read-write (RW) via SET by an authorised management client; logical_name read-only for all.",
+        "activated toggles NTP synchronisation on/off (default FALSE).",
+        "server_address may be DNS name, IPv4 dotted-decimal, or IPv6 text.",
+        "authentication_keys and client_key are sensitive cryptographic material."
       ],
       "behavior_notes": [
-        "Use this class when requirements mention NTP, network time synchronization, server address, UDP port 123, or authenticated time sync.",
-        "NTP setup complements Clock class requirements: Clock stores meter time, while NTP setup defines how network time is obtained."
+        "NTP setup allows time synchronisation via NTP (RFC 5905). Cardinality 0...n; multiple instances support multiple time servers.",
+        "activated: boolean, TRUE = sync active, default FALSE.",
+        "server_port: default 123 (IANA ntp 123/udp).",
+        "synchronize method triggers synchronisation; add/delete_authentication_key manage auth keys.",
+        "authentication_method: enum defining NTP authentication mode."
       ],
       "source_refs": [
         {
-          "standard": "DLMS UA Blue Book Part 2",
-          "section": "4.7.50 NTP setup (class_id = 100, version = 0)"
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.9.7 NTP setup (class_id = 100, version = 0)"
         }
       ],
-      "coverage_level": "enriched",
-      "coverage_note": "Expanded with NTP activation, server, port, and authentication semantics."
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.9.7. Full attributes with access_rights, methods with semantics, value defaults, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-101-ZIGBEE-SAS-STARTUP",
@@ -10915,13 +11621,22 @@
       "keywords": [
         "account",
         "class 111",
-        "cl 111"
+        "cl 111",
+        "account_mode_and_status",
+        "current_credit_in_use",
+        "available_credit",
+        "aggregated_debt",
+        "credit_reference_list",
+        "charge_reference_list",
+        "currency",
+        "low_credit_threshold",
+        "max_provision"
       ],
       "domain_tags": [
         "cosem_class",
         "payment_metering"
       ],
-      "definition": "COSEM interface class for payment metering functions related to Account.",
+      "definition": "COSEM interface class (class_id = 111, version = 0) for payment metering. The Account object holds the payment mode/status, current credit in use, available credit, debt, and references to Credit/Charge/Token-gateway objects. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -10930,17 +11645,235 @@
       ],
       "class_id": 111,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
+        },
+        {
+          "attribute_id": 2,
+          "name": "account_mode_and_status",
+          "type": "structure",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "current_credit_in_use",
+          "type": "unsigned",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "current_credit_status",
+          "type": "bit-string",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "available_credit",
+          "type": "double-long",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "default": 0,
+          "short_name": "0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "amount_to_clear",
+          "type": "double-long",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "default": 0,
+          "short_name": "0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "clearance_threshold",
+          "type": "double-long",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "aggregated_debt",
+          "type": "double-long",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "default": 0,
+          "short_name": "0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "credit_reference_list",
+          "type": "array",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": [],
+          "short_name": "0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "charge_reference_list",
+          "type": "array",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": [],
+          "short_name": "0x48"
+        },
+        {
+          "attribute_id": 11,
+          "name": "credit_charge_configuration",
+          "type": "array",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": [],
+          "short_name": "0x50"
+        },
+        {
+          "attribute_id": 12,
+          "name": "token_gateway_configuration",
+          "type": "array",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": [],
+          "short_name": "0x58"
+        },
+        {
+          "attribute_id": 13,
+          "name": "account_activation_time",
+          "type": "octet-string",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x60"
+        },
+        {
+          "attribute_id": 14,
+          "name": "account_closure_time",
+          "type": "octet-string",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x68"
+        },
+        {
+          "attribute_id": 15,
+          "name": "currency",
+          "type": "structure",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x70"
+        },
+        {
+          "attribute_id": 16,
+          "name": "low_credit_threshold",
+          "type": "double-long",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "default": 0,
+          "short_name": "0x78"
+        },
+        {
+          "attribute_id": 17,
+          "name": "next_credit_available_threshold",
+          "type": "double-long",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "default": 0,
+          "short_name": "0x80"
+        },
+        {
+          "attribute_id": 18,
+          "name": "max_provision",
+          "type": "long-unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "default": 0,
+          "short_name": "0x88"
+        },
+        {
+          "attribute_id": 19,
+          "name": "max_provision_period",
+          "type": "double-long",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x90"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "activate_account",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x98",
+          "meaning": "Activate the account."
+        },
+        {
+          "method_id": 2,
+          "name": "close_account",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0xA0",
+          "meaning": "Close the account."
+        },
+        {
+          "method_id": 3,
+          "name": "reset_account",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0xA8",
+          "meaning": "Reset the account."
+        }
+      ],
+      "access_semantics": [
+        "logical_name and static config (reference lists, thresholds, currency, activation/closure time, max_provision) are RW via SET by management client; logical_name read-only for all.",
+        "Dynamic payment-state attributes (current_credit_in_use/status, available_credit, amount_to_clear, aggregated_debt, low/next credit thresholds) are read-only (R).",
+        "available_credit = sum of referenced Credit objects' amounts minus aggregated_debt."
+      ],
+      "behavior_notes": [
+        "Account holds payment metering state. Cardinality 0...n.",
+        "account_mode_and_status: {payment_mode enum, status enum}.",
+        "available_credit/aggregated_debt/amount_to_clear are dynamic runtime payment state.",
+        "credit/charge/token reference lists link to Credit(112)/Charge(113)/Token-gateway(115) objects.",
+        "activate/close/reset_account methods manage account lifecycle."
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.6.2 Account (class_id = 111, version = 0)"
+        }
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.6.2. Full 19 attributes with access_rights (dynamic R vs static RW), 3 lifecycle methods, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-112-CREDIT",
@@ -10954,13 +11887,22 @@
       "keywords": [
         "credit",
         "class 112",
-        "cl 112"
+        "cl 112",
+        "current_credit_amount",
+        "credit_type",
+        "priority",
+        "warning_threshold",
+        "limit",
+        "credit_configuration",
+        "credit_status",
+        "preset_credit_amount",
+        "period"
       ],
       "domain_tags": [
         "cosem_class",
         "payment_metering"
       ],
-      "definition": "COSEM interface class for payment metering functions related to Credit.",
+      "definition": "COSEM interface class (class_id = 112, version = 0) representing a single credit object in payment metering. Each Credit object holds a current amount, type (token/reserved/emergency/time-based/consumption-based), priority, thresholds, and contributes to the Account's available_credit. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -10969,17 +11911,163 @@
       ],
       "class_id": 112,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
+        },
+        {
+          "attribute_id": 2,
+          "name": "current_credit_amount",
+          "type": "double-long",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "default": 0,
+          "short_name": "0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "credit_type",
+          "type": "enum",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "priority",
+          "type": "unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "warning_threshold",
+          "type": "double-long",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "limit",
+          "type": "double-long",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "credit_configuration",
+          "type": "bit-string",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "credit_status",
+          "type": "enum",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "preset_credit_amount",
+          "type": "double-long",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "credit_available_threshold",
+          "type": "double-long",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x48"
+        },
+        {
+          "attribute_id": 11,
+          "name": "period",
+          "type": "date-time",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x50"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "update_amount",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x58",
+          "meaning": "Update current_credit_amount."
+        },
+        {
+          "method_id": 2,
+          "name": "set_amount_to_value",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x60",
+          "meaning": "Set current_credit_amount to a value."
+        },
+        {
+          "method_id": 3,
+          "name": "invoke_credit",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x68",
+          "meaning": "Invoke the credit (emergency/time-based/consumption-based)."
+        }
+      ],
+      "enum_definitions": {
+        "credit_type": {
+          "0": "token_credit",
+          "1": "reserved_credit",
+          "2": "emergency_credit",
+          "3": "time-based credit",
+          "4": "consumption-based credit"
+        }
+      },
+      "access_semantics": [
+        "logical_name and static config (credit_type, priority, thresholds, limit, configuration, period) are RW via SET by management client; logical_name read-only for all.",
+        "Dynamic attributes (current_credit_amount, credit_status) are read-only (R) — updated by methods, top-ups, charge collection.",
+        "current_credit_amount contributes to the referencing Account's available_credit."
+      ],
+      "behavior_notes": [
+        "Credit represents one credit object in payment metering. Cardinality 0...n.",
+        "current_credit_amount: dynamic, scaled per Account currency; updated by methods/top-ups/charges.",
+        "credit_type enum: token/reserved/emergency/time-based/consumption-based; determines which attributes are processed.",
+        "preset_credit_amount applies to emergency and some time-based/consumption-based credits.",
+        "period applies to time-based and consumption-based credit."
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.6.3 Credit (class_id = 112, version = 0)"
+        }
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.6.3. Full 11 attributes with access_rights (dynamic R vs static RW), 3 methods, credit_type enum, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-113-CHARGE",
@@ -10993,13 +12081,23 @@
       "keywords": [
         "charge",
         "class 113",
-        "cl 113"
+        "cl 113",
+        "total_amount_paid",
+        "charge_type",
+        "priority",
+        "unit_charge_active",
+        "unit_charge_passive",
+        "period",
+        "charge_configuration",
+        "last_collection_time",
+        "total_amount_remaining",
+        "proportion"
       ],
       "domain_tags": [
         "cosem_class",
         "payment_metering"
       ],
-      "definition": "COSEM interface class for payment metering functions related to Charge.",
+      "definition": "COSEM interface class (class_id = 113, version = 0) for managing a single Charge in payment metering. Depending on configured attributes (amount per price, period), the Charge is taken at appropriate times from the \"Credit\" object in use. All Charges for one supply are referenced in the Account's charge_reference_list. Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -11008,17 +12106,187 @@
       ],
       "class_id": 113,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
+        },
+        {
+          "attribute_id": 2,
+          "name": "total_amount_paid",
+          "type": "double-long",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "charge_type",
+          "type": "enum",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "priority",
+          "type": "unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "unit_charge_active",
+          "type": "structure",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "unit_charge_passive",
+          "type": "structure",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "unit_charge_activation_time",
+          "type": "octet-string",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "period",
+          "type": "double-long-unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "charge_configuration",
+          "type": "bit-string",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "last_collection_time",
+          "type": "date-time",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x48"
+        },
+        {
+          "attribute_id": 11,
+          "name": "last_collection_amount",
+          "type": "double-long",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x50"
+        },
+        {
+          "attribute_id": 12,
+          "name": "total_amount_remaining",
+          "type": "double-long",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x58"
+        },
+        {
+          "attribute_id": 13,
+          "name": "proportion",
+          "type": "long-unsigned",
+          "static": true,
+          "mandatory": true,
+          "access_rights": "RW",
+          "short_name": "0x60"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "update_unit_charge",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x68",
+          "meaning": "Update the unit charge."
+        },
+        {
+          "method_id": 2,
+          "name": "activate_passive_unit_charge",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x70",
+          "meaning": "Activate the passive unit charge."
+        },
+        {
+          "method_id": 3,
+          "name": "collect",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x78",
+          "meaning": "Collect the charge (time-based/payment-event-based)."
+        },
+        {
+          "method_id": 4,
+          "name": "update_total_amount_remaining",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x80",
+          "meaning": "Update total_amount_remaining (payment-event-based)."
+        },
+        {
+          "method_id": 5,
+          "name": "set_total_amount_remaining",
+          "parameter_type": "data",
+          "mandatory": false,
+          "short_name": "0x88",
+          "meaning": "Set total_amount_remaining (payment-event-based)."
+        }
+      ],
+      "access_semantics": [
+        "logical_name and static config (charge_type, priority, unit charges, period, configuration, proportion) are RW via SET by management client; logical_name read-only for all.",
+        "Dynamic collection-state attributes (total_amount_paid, last_collection_time/amount, total_amount_remaining) are read-only (R).",
+        "Charge is taken from the Credit object in use; referenced in Account.charge_reference_list."
+      ],
+      "behavior_notes": [
+        "Charge manages a single charge taken from the Credit in use. Cardinality 0...n.",
+        "charge_type enum: time-based / consumption-based / payment-event-based collection.",
+        "unit_charge_active/passive + activation_time support tariff switching.",
+        "period relates to time-based/consumption-based collection; proportion to payment-event-based.",
+        "collect/update/set_total_amount_remaining methods drive the collection cycle."
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.6.4 Charge (class_id = 113, version = 0)"
+        }
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.6.4. Full 13 attributes with access_rights (dynamic R vs static RW), 5 methods, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-115-TOKEN-GATEWAY",
@@ -11032,13 +12300,20 @@
       "keywords": [
         "token gateway",
         "class 115",
-        "cl 115"
+        "cl 115",
+        "token",
+        "token_time",
+        "token_description",
+        "token_delivery_method",
+        "token_status",
+        "enter"
       ],
       "domain_tags": [
         "cosem_class",
-        "payment_metering"
+        "payment_metering",
+        "token"
       ],
-      "definition": "COSEM interface class for payment metering functions related to Token gateway.",
+      "definition": "COSEM interface class (class_id = 115, version = 0) implementing the Token Carrier Interface. A single Token gateway instance is instantiated for each Account object (and hence each supply contract). Cardinality 0...n.",
       "relations": [
         {
           "relation": "defined_by",
@@ -11047,17 +12322,92 @@
       ],
       "class_id": 115,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
           "type": "octet-string[6]",
-          "mandatory": true
+          "static": true,
+          "mandatory": true,
+          "access_rights": "R"
+        },
+        {
+          "attribute_id": 2,
+          "name": "token",
+          "type": "octet-string",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "token_time",
+          "type": "octet-string",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "token_description",
+          "type": "array",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "token_delivery_method",
+          "type": "enum",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "token_status",
+          "type": "structure",
+          "dynamic": true,
+          "mandatory": true,
+          "access_rights": "R",
+          "short_name": "0x28"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "enter",
+          "parameter_type": "data",
+          "mandatory": true,
+          "short_name": "0x30",
+          "meaning": "Enter a token into the gateway (primary token-entry action)."
+        }
+      ],
+      "access_semantics": [
+        "logical_name read-only for all; all other attributes are dynamic read-only (R).",
+        "Tokens are entered via the mandatory enter method, which populates the dynamic token/token_time/description/delivery_method/status attributes.",
+        "One Token gateway instance per Account/supply contract."
+      ],
+      "behavior_notes": [
+        "Token gateway implements the Token Carrier Interface; one instance per Account/supply contract. Cardinality 0...n.",
+        "token/token_time/token_description: dynamic, reflect the most recently entered token.",
+        "token_delivery_method: enum (keypad/optical/remote etc.).",
+        "token_status: structure with processing result (accepted/rejected/invalid).",
+        "enter method is mandatory — the sole token-entry action."
+      ],
+      "source_refs": [
+        {
+          "source": "Blue Book Part 2 Ed. 16",
+          "section": "4.6.5 Token gateway (class_id = 115, version = 0)"
+        }
+      ],
+      "coverage_level": "rich",
+      "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.6.5. Full 6 attributes with access_rights (all dynamic R except logical_name), mandatory enter method, access_semantics, and behavior_notes."
     },
     {
       "id": "KB-L3-IC-116-IEC-62055-41-ATTRIBUTES",
@@ -11844,6 +13194,185 @@
       ]
     },
     {
+      "id": "KB-OBIS-1-0-97-98-20-255-ALARM-DESC-AC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "AC alarm descriptor",
+      "aliases": [
+        "OBIS 1-0:97.98.20.255",
+        "alarm descriptor ac"
+      ],
+      "keywords": [
+        "1-0:97.98.20.255",
+        "alarm descriptor",
+        "alarm",
+        "descriptor",
+        97.98,
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "alarm"
+      ],
+      "definition": "Row-level OBIS object for AC alarm descriptor. Pattern 1-0:97.98.20.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
+        }
+      ],
+      "obis_pattern": "1-0:97.98.20.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0",
+        "C": "97 error/alarm",
+        "D": "98 alarm",
+        "E": "20 alarm descriptor",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 alarm descriptor objects; A=1, C=97, D=98, E=20..29"
+        }
+      ],
+      "applicable_notes": [
+        "Alarm descriptor provides additional alarm context. E=20..29 available per Blue Book Table 9."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-97-98-10-255-ALARM-FILTER-AC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "AC alarm filter",
+      "aliases": [
+        "OBIS 1-0:97.98.10.255",
+        "alarm filter ac"
+      ],
+      "keywords": [
+        "1-0:97.98.10.255",
+        "alarm filter",
+        "alarm",
+        "filter",
+        97.98,
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "alarm"
+      ],
+      "definition": "Row-level OBIS object for AC alarm filter. Pattern 1-0:97.98.10.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
+        }
+      ],
+      "obis_pattern": "1-0:97.98.10.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0",
+        "C": "97 error/alarm",
+        "D": "98 alarm",
+        "E": "10 alarm filter",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 alarm filter objects; A=1, C=97, D=98, E=10..19"
+        }
+      ],
+      "applicable_notes": [
+        "Alarm filter masks selected alarm bits. E=10..19 available per Blue Book Table 9."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-97-98-0-255-ALARM-REG-AC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "AC alarm register",
+      "aliases": [
+        "OBIS 1-0:97.98.0.255",
+        "alarm register ac"
+      ],
+      "keywords": [
+        "1-0:97.98.0.255",
+        "alarm register",
+        "alarm",
+        97.98,
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "alarm"
+      ],
+      "definition": "Row-level OBIS object for AC alarm register. Pattern 1-0:97.98.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
+        }
+      ],
+      "obis_pattern": "1-0:97.98.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "97 error/alarm objects",
+        "D": "98 alarm register",
+        "E": "0 alarm register instance 0",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 error/alarm objects; A=1, C=97, D=98, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "Alarm register holds alarm status bits per Blue Book Table 9. E=0..9 available."
+      ]
+    },
+    {
       "id": "KB-OBIS-1-B-97-97-E-AC-ERROR-REGISTER",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
@@ -12023,6 +13552,644 @@
       ]
     },
     {
+      "id": "KB-OBIS-1-0-1-49-0-255-AC-DCODE-49",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import average value for recording interval 1",
+      "aliases": [
+        "OBIS 1-0:1.49.0.255",
+        "active energy import average value for recording interval 1"
+      ],
+      "keywords": [
+        "1-0:1.49.0.255",
+        "active energy import average value for recording interval 1",
+        "average value for recording interval 1",
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import, average over recording interval 1. D=49 (Average value for recording interval 1) per Blue Book Table 14. Pattern 1-0:1.49.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
+        }
+      ],
+      "obis_pattern": "1-0:1.49.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "49 average value for recording interval 1",
+        "E": "0 total",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 AC electricity D codes; C=1, D=49 Average value for recording interval 1, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "D=49 identifies 'Average value for recording interval 1' (average over recording interval 1)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-46-0-255-AC-DCODE-46",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import contracted value",
+      "aliases": [
+        "OBIS 1-0:1.46.0.255",
+        "active energy import contracted value"
+      ],
+      "keywords": [
+        "1-0:1.46.0.255",
+        "active energy import contracted value",
+        "contracted value",
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import, contracted (agreed) value of the quantity. D=46 (Contracted value) per Blue Book Table 14. Pattern 1-0:1.46.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
+        }
+      ],
+      "obis_pattern": "1-0:1.46.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "46 contracted value",
+        "E": "0 total",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 AC electricity D codes; C=1, D=46 Contracted value, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "D=46 identifies 'Contracted value' (contracted (agreed) value of the quantity)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-2-0-255-AC-DCODE-2",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import cumulative maximum 1",
+      "aliases": [
+        "OBIS 1-0:1.2.0.255",
+        "active energy import cumulative maximum 1"
+      ],
+      "keywords": [
+        "1-0:1.2.0.255",
+        "active energy import cumulative maximum 1",
+        "cumulative maximum 1",
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import, cumulative maximum over all past billing periods. D=2 (Cumulative maximum 1) per Blue Book Table 14. Pattern 1-0:1.2.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
+        }
+      ],
+      "obis_pattern": "1-0:1.2.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "2 cumulative maximum 1",
+        "E": "0 total",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 AC electricity D codes; C=1, D=2 Cumulative maximum 1, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "D=2 identifies 'Cumulative maximum 1' (cumulative maximum over all past billing periods)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-6-0-255-AC-DCODE-6",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import maximum 1",
+      "aliases": [
+        "OBIS 1-0:1.6.0.255",
+        "active energy import maximum 1"
+      ],
+      "keywords": [
+        "1-0:1.6.0.255",
+        "active energy import maximum 1",
+        "maximum 1",
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import, maximum last-average value during a billing period. D=6 (Maximum 1) per Blue Book Table 14. Pattern 1-0:1.6.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
+        }
+      ],
+      "obis_pattern": "1-0:1.6.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "6 maximum 1",
+        "E": "0 total",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 AC electricity D codes; C=1, D=6 Maximum 1, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "D=6 identifies 'Maximum 1' (maximum last-average value during a billing period)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-35-0-255-AC-DCODE-35",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import over limit threshold",
+      "aliases": [
+        "OBIS 1-0:1.35.0.255",
+        "active energy import over limit threshold"
+      ],
+      "keywords": [
+        "1-0:1.35.0.255",
+        "active energy import over limit threshold",
+        "over limit threshold",
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import, threshold above which a quantity is considered over-limit. D=35 (Over limit threshold) per Blue Book Table 14. Pattern 1-0:1.35.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
+        }
+      ],
+      "obis_pattern": "1-0:1.35.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "35 over limit threshold",
+        "E": "0 total",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 AC electricity D codes; C=1, D=35 Over limit threshold, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "D=35 identifies 'Over limit threshold' (threshold above which a quantity is considered over-limit)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-8-1-255-TARIFF-RATE1",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import Rate 1 tariff",
+      "aliases": [
+        "Tariff Rate 1 active energy import",
+        "OBIS 1-0:1.8.1.255"
+      ],
+      "keywords": [
+        "1-0:1.8.1.255",
+        "tariff rate 1",
+        "active energy import rate 1"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import under tariff rate 1. Pattern 1-0:1.8.1.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-15"
+        }
+      ],
+      "obis_pattern": "1-0:1.8.1.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "1 rate 1",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 15,
+        "title": "Value group E codes - AC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 15 AC electricity tariff rates; E=1 Rate 1"
+        }
+      ],
+      "applicable_notes": [
+        "E=1 identifies Rate 1 per Blue Book Table 15."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-8-2-255-TARIFF-RATE2",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import Rate 2 tariff",
+      "aliases": [
+        "Tariff Rate 2 active energy import",
+        "OBIS 1-0:1.8.2.255"
+      ],
+      "keywords": [
+        "1-0:1.8.2.255",
+        "tariff rate 2",
+        "active energy import rate 2"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import under tariff rate 2. Pattern 1-0:1.8.2.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-15"
+        }
+      ],
+      "obis_pattern": "1-0:1.8.2.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "2 rate 2",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 15,
+        "title": "Value group E codes - AC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 15 AC electricity tariff rates; E=2 Rate 2"
+        }
+      ],
+      "applicable_notes": [
+        "E=2 identifies Rate 2 per Blue Book Table 15."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-8-3-255-TARIFF-RATE3",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import Rate 3 tariff",
+      "aliases": [
+        "Tariff Rate 3 active energy import",
+        "OBIS 1-0:1.8.3.255"
+      ],
+      "keywords": [
+        "1-0:1.8.3.255",
+        "tariff rate 3",
+        "active energy import rate 3"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import under tariff rate 3. Pattern 1-0:1.8.3.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-15"
+        }
+      ],
+      "obis_pattern": "1-0:1.8.3.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "3 rate 3",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 15,
+        "title": "Value group E codes - AC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 15 AC electricity tariff rates; E=3 Rate 3"
+        }
+      ],
+      "applicable_notes": [
+        "E=3 identifies Rate 3 per Blue Book Table 15."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-8-4-255-TARIFF-RATE4",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import Rate 4 tariff",
+      "aliases": [
+        "Tariff Rate 4 active energy import",
+        "OBIS 1-0:1.8.4.255"
+      ],
+      "keywords": [
+        "1-0:1.8.4.255",
+        "tariff rate 4",
+        "active energy import rate 4"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import under tariff rate 4. Pattern 1-0:1.8.4.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-15"
+        }
+      ],
+      "obis_pattern": "1-0:1.8.4.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "4 rate 4",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 15,
+        "title": "Value group E codes - AC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 15 AC electricity tariff rates; E=4 Rate 4"
+        }
+      ],
+      "applicable_notes": [
+        "E=4 identifies Rate 4 per Blue Book Table 15."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-8-0-255-TARIFF-TOTAL",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import Total tariff",
+      "aliases": [
+        "Tariff Total active energy import",
+        "OBIS 1-0:1.8.0.255"
+      ],
+      "keywords": [
+        "1-0:1.8.0.255",
+        "tariff total",
+        "active energy import total"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import under total tariff. Pattern 1-0:1.8.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-15"
+        }
+      ],
+      "obis_pattern": "1-0:1.8.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "0 total",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 15,
+        "title": "Value group E codes - AC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 15 AC electricity tariff rates; E=0 Total"
+        }
+      ],
+      "applicable_notes": [
+        "E=0 identifies Total per Blue Book Table 15."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-10-0-255-AC-DCODE-10",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import time integral 3",
+      "aliases": [
+        "OBIS 1-0:1.10.0.255",
+        "active energy import time integral 3"
+      ],
+      "keywords": [
+        "1-0:1.10.0.255",
+        "active energy import time integral 3",
+        "time integral 3",
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import, third time-integral energy quantity family. D=10 (Time integral 3) per Blue Book Table 14. Pattern 1-0:1.10.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
+        }
+      ],
+      "obis_pattern": "1-0:1.10.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "10 time integral 3",
+        "E": "0 total",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 AC electricity D codes; C=1, D=10 Time integral 3, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "D=10 identifies 'Time integral 3' (third time-integral energy quantity family)."
+      ]
+    },
+    {
       "id": "KB-OBIS-1-0-1-8-0-255-ACTIVE-ENERGY-IMPORT",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
@@ -12081,6 +14248,64 @@
       "applicable_notes": [
         "C=1 identifies active power/energy import direction for the aggregate phase system.",
         "D=8 is used for time-integral energy quantity families; E=0 identifies total."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-1-31-0-255-AC-DCODE-31",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Active energy import under limit threshold",
+      "aliases": [
+        "OBIS 1-0:1.31.0.255",
+        "active energy import under limit threshold"
+      ],
+      "keywords": [
+        "1-0:1.31.0.255",
+        "active energy import under limit threshold",
+        "under limit threshold",
+        "ac_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "active_energy"
+      ],
+      "definition": "Row-level OBIS object for AC electricity active energy import, threshold below which a quantity is considered under-limit. D=31 (Under limit threshold) per Blue Book Table 14. Pattern 1-0:1.31.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
+        }
+      ],
+      "obis_pattern": "1-0:1.31.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "1 active energy import",
+        "D": "31 under limit threshold",
+        "E": "0 total",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 AC electricity D codes; C=1, D=31 Under limit threshold, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "D=31 identifies 'Under limit threshold' (threshold below which a quantity is considered under-limit)."
       ]
     },
     {
@@ -12518,6 +14743,536 @@
       ]
     },
     {
+      "id": "KB-OBIS-2-0-1-8-1-255-DC-TARIFF-RATE1",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "DC active energy import Rate 1 tariff",
+      "aliases": [
+        "Tariff Rate 1 DC active energy import",
+        "OBIS 2-0:1.8.1.255"
+      ],
+      "keywords": [
+        "2-0:1.8.1.255",
+        "tariff rate 1",
+        "dc",
+        "dc active energy import rate 1"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for DC electricity active energy import under tariff Rate 1. Pattern 2-0:1.8.1.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-28"
+        }
+      ],
+      "obis_pattern": "2-0:1.8.1.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "1 rate 1",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 28,
+        "title": "Value group E codes - DC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 28 DC electricity tariff rates; E=1 Rate 1"
+        }
+      ],
+      "applicable_notes": [
+        "E=1 identifies Rate 1 per Blue Book Table 28."
+      ]
+    },
+    {
+      "id": "KB-OBIS-2-0-1-8-2-255-DC-TARIFF-RATE2",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "DC active energy import Rate 2 tariff",
+      "aliases": [
+        "Tariff Rate 2 DC active energy import",
+        "OBIS 2-0:1.8.2.255"
+      ],
+      "keywords": [
+        "2-0:1.8.2.255",
+        "tariff rate 2",
+        "dc",
+        "dc active energy import rate 2"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for DC electricity active energy import under tariff Rate 2. Pattern 2-0:1.8.2.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-28"
+        }
+      ],
+      "obis_pattern": "2-0:1.8.2.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "2 rate 2",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 28,
+        "title": "Value group E codes - DC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 28 DC electricity tariff rates; E=2 Rate 2"
+        }
+      ],
+      "applicable_notes": [
+        "E=2 identifies Rate 2 per Blue Book Table 28."
+      ]
+    },
+    {
+      "id": "KB-OBIS-2-0-1-8-3-255-DC-TARIFF-RATE3",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "DC active energy import Rate 3 tariff",
+      "aliases": [
+        "Tariff Rate 3 DC active energy import",
+        "OBIS 2-0:1.8.3.255"
+      ],
+      "keywords": [
+        "2-0:1.8.3.255",
+        "tariff rate 3",
+        "dc",
+        "dc active energy import rate 3"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for DC electricity active energy import under tariff Rate 3. Pattern 2-0:1.8.3.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-28"
+        }
+      ],
+      "obis_pattern": "2-0:1.8.3.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "3 rate 3",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 28,
+        "title": "Value group E codes - DC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 28 DC electricity tariff rates; E=3 Rate 3"
+        }
+      ],
+      "applicable_notes": [
+        "E=3 identifies Rate 3 per Blue Book Table 28."
+      ]
+    },
+    {
+      "id": "KB-OBIS-2-0-1-8-4-255-DC-TARIFF-RATE4",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "DC active energy import Rate 4 tariff",
+      "aliases": [
+        "Tariff Rate 4 DC active energy import",
+        "OBIS 2-0:1.8.4.255"
+      ],
+      "keywords": [
+        "2-0:1.8.4.255",
+        "tariff rate 4",
+        "dc",
+        "dc active energy import rate 4"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for DC electricity active energy import under tariff Rate 4. Pattern 2-0:1.8.4.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-28"
+        }
+      ],
+      "obis_pattern": "2-0:1.8.4.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "4 rate 4",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 28,
+        "title": "Value group E codes - DC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 28 DC electricity tariff rates; E=4 Rate 4"
+        }
+      ],
+      "applicable_notes": [
+        "E=4 identifies Rate 4 per Blue Book Table 28."
+      ]
+    },
+    {
+      "id": "KB-OBIS-2-0-1-8-0-255-DC-TARIFF-TOTAL",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "DC active energy import Total tariff",
+      "aliases": [
+        "Tariff Total DC active energy import",
+        "OBIS 2-0:1.8.0.255"
+      ],
+      "keywords": [
+        "2-0:1.8.0.255",
+        "tariff total",
+        "dc",
+        "dc active energy import total"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "active_energy",
+        "tariff"
+      ],
+      "definition": "Row-level OBIS object for DC electricity active energy import under tariff Total. Pattern 2-0:1.8.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-28"
+        }
+      ],
+      "obis_pattern": "2-0:1.8.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0",
+        "C": "1 active energy import",
+        "D": "8 time integral 1",
+        "E": "0 total",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 28,
+        "title": "Value group E codes - DC electricity - Tariff rates"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 28 DC electricity tariff rates; E=0 Total"
+        }
+      ],
+      "applicable_notes": [
+        "E=0 identifies Total per Blue Book Table 28."
+      ]
+    },
+    {
+      "id": "KB-OBIS-2-0-1-24-0-255-DC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Dc Active Power Import Current Average",
+      "aliases": [
+        "OBIS 2-0:1.24.0.255",
+        "DC active power import current average"
+      ],
+      "keywords": [
+        "2-0:1.24.0.255",
+        "DC active power import current average",
+        "dc",
+        "dc_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "active_energy"
+      ],
+      "definition": "Row-level OBIS object for DC active power import current average. Pattern 2-0:1.24.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-27"
+        }
+      ],
+      "obis_pattern": "2-0:1.24.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0",
+        "C": "1",
+        "D": "24 current average 3",
+        "E": "0 total",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 27,
+        "title": "Value group D codes - DC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 27 DC electricity D codes; C=1, D=current average"
+        }
+      ],
+      "applicable_notes": [
+        "D=24 current average 3 per Blue Book Table 27."
+      ]
+    },
+    {
+      "id": "KB-OBIS-2-0-1-7-0-255-DC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Dc Active Power Import Instantaneous",
+      "aliases": [
+        "OBIS 2-0:1.7.0.255",
+        "DC active power import instantaneous"
+      ],
+      "keywords": [
+        "2-0:1.7.0.255",
+        "DC active power import instantaneous",
+        "dc",
+        "dc_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "active_energy"
+      ],
+      "definition": "Row-level OBIS object for DC active power import instantaneous. Pattern 2-0:1.7.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-27"
+        }
+      ],
+      "obis_pattern": "2-0:1.7.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0",
+        "C": "1",
+        "D": "7 instantaneous value",
+        "E": "0 total",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 27,
+        "title": "Value group D codes - DC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 27 DC electricity D codes; C=1, D=instantaneous"
+        }
+      ],
+      "applicable_notes": [
+        "D=7 instantaneous value per Blue Book Table 27."
+      ]
+    },
+    {
+      "id": "KB-OBIS-2-0-97-98-10-255-ALARM-FILTER-DC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "DC alarm filter",
+      "aliases": [
+        "OBIS 2-0:97.98.10.255",
+        "alarm filter dc"
+      ],
+      "keywords": [
+        "2-0:97.98.10.255",
+        "alarm filter",
+        "alarm",
+        "filter",
+        97.98,
+        "dc_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "alarm"
+      ],
+      "definition": "Row-level OBIS object for DC alarm filter. Pattern 2-0:97.98.10.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
+        }
+      ],
+      "obis_pattern": "2-0:97.98.10.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0",
+        "C": "97 error/alarm",
+        "D": "98 alarm",
+        "E": "10 alarm filter",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 alarm filter objects; A=2, C=97, D=98, E=10..19"
+        }
+      ],
+      "applicable_notes": [
+        "Alarm filter masks selected alarm bits. E=10..19 available per Blue Book Table 9."
+      ]
+    },
+    {
+      "id": "KB-OBIS-2-0-97-98-0-255-ALARM-REG-DC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "DC alarm register",
+      "aliases": [
+        "OBIS 2-0:97.98.0.255",
+        "alarm register dc"
+      ],
+      "keywords": [
+        "2-0:97.98.0.255",
+        "alarm register",
+        "alarm",
+        97.98,
+        "dc_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "alarm"
+      ],
+      "definition": "Row-level OBIS object for DC alarm register. Pattern 2-0:97.98.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
+        }
+      ],
+      "obis_pattern": "2-0:97.98.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0 no channel",
+        "C": "97 error/alarm objects",
+        "D": "98 alarm register",
+        "E": "0 alarm register instance 0",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 error/alarm objects; A=2, C=97, D=98, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "Alarm register holds alarm status bits per Blue Book Table 9. E=0..9 available."
+      ]
+    },
+    {
       "id": "KB-OBIS-2-0-11-7-0-255-DC-CURRENT-INSTANTANEOUS",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
@@ -12774,6 +15529,64 @@
       ]
     },
     {
+      "id": "KB-OBIS-2-0-3-8-0-255-DC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Dc Reactive Energy Import Total",
+      "aliases": [
+        "OBIS 2-0:3.8.0.255",
+        "DC reactive energy import total"
+      ],
+      "keywords": [
+        "2-0:3.8.0.255",
+        "DC reactive energy import total",
+        "dc",
+        "dc_electricity"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "dc_electricity",
+        "reactive_energy"
+      ],
+      "definition": "Row-level OBIS object for DC reactive energy import total. Pattern 2-0:3.8.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-27"
+        }
+      ],
+      "obis_pattern": "2-0:3.8.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "dc_electricity",
+      "value_group_mapping": {
+        "A": "2 dc_electricity",
+        "B": "0",
+        "C": "3",
+        "D": "8 time integral 1",
+        "E": "0 total",
+        "F": "255"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 27,
+        "title": "Value group D codes - DC electricity"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 27 DC electricity D codes; C=3, D=total"
+        }
+      ],
+      "applicable_notes": [
+        "D=8 time integral 1 per Blue Book Table 27."
+      ]
+    },
+    {
       "id": "KB-OBIS-2-B-0-8-4-VZ-DC-RECORDING-INTERVAL-1",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
@@ -12952,6 +15765,720 @@
       "applicable_notes": [
         "C=92 identifies DC voltage low-to-ground in the DC electricity C-code family.",
         "D=7 identifies an instantaneous measurement value."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-113-7-1-255-DISTORTION-113-1",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L1 Distortion Power Minus (distortion)",
+      "aliases": [
+        "OBIS 1-0:113.7.1.255",
+        "distortion power l1 distortion power minus"
+      ],
+      "keywords": [
+        "1-0:113.7.1.255",
+        "distortion power",
+        "distortion",
+        "l1 distortion power minus",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "distortion"
+      ],
+      "definition": "Row-level OBIS object for AC electricity L1 distortion power, negative (QIII+QIV). Distortion power is the imaginary component of apparent power. E=1 per Blue Book Table 20. Pattern 1-0:113.7.1.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-20"
+        }
+      ],
+      "obis_pattern": "1-0:113.7.1.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "113 distortion power",
+        "D": "7 instantaneous value",
+        "E": "1 minus",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 20,
+        "title": "Value group E codes for distortion power and energy"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 20 AC electricity distortion power; C=113, D=7, E=1"
+        }
+      ],
+      "applicable_notes": [
+        "C=113 identifies L2 distortion power. E=1 = negative (QIII+QIV)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-113-7-0-255-DISTORTION-113-0",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L1 Distortion Power Plus (distortion)",
+      "aliases": [
+        "OBIS 1-0:113.7.0.255",
+        "distortion power l1 distortion power plus"
+      ],
+      "keywords": [
+        "1-0:113.7.0.255",
+        "distortion power",
+        "distortion",
+        "l1 distortion power plus",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "distortion"
+      ],
+      "definition": "Row-level OBIS object for AC electricity L1 distortion power, positive (QI+QII). Distortion power is the imaginary component of apparent power. E=0 per Blue Book Table 20. Pattern 1-0:113.7.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-20"
+        }
+      ],
+      "obis_pattern": "1-0:113.7.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "113 distortion power",
+        "D": "7 instantaneous value",
+        "E": "0 plus",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 20,
+        "title": "Value group E codes for distortion power and energy"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 20 AC electricity distortion power; C=113, D=7, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "C=113 identifies L2 distortion power. E=0 = positive (QI+QII)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-114-7-0-255-DISTORTION-114-0",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L2 Distortion Power Plus (distortion)",
+      "aliases": [
+        "OBIS 1-0:114.7.0.255",
+        "distortion power l2 distortion power plus"
+      ],
+      "keywords": [
+        "1-0:114.7.0.255",
+        "distortion power",
+        "distortion",
+        "l2 distortion power plus",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "distortion"
+      ],
+      "definition": "Row-level OBIS object for AC electricity L2 distortion power, positive (QI+QII). Distortion power is the imaginary component of apparent power. E=0 per Blue Book Table 20. Pattern 1-0:114.7.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-20"
+        }
+      ],
+      "obis_pattern": "1-0:114.7.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "114 distortion power",
+        "D": "7 instantaneous value",
+        "E": "0 plus",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 20,
+        "title": "Value group E codes for distortion power and energy"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 20 AC electricity distortion power; C=114, D=7, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "C=114 identifies L3 distortion power. E=0 = positive (QI+QII)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-115-7-1-255-DISTORTION-115-1",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L3 Distortion Power Minus (distortion)",
+      "aliases": [
+        "OBIS 1-0:115.7.1.255",
+        "distortion power l3 distortion power minus"
+      ],
+      "keywords": [
+        "1-0:115.7.1.255",
+        "distortion power",
+        "distortion",
+        "l3 distortion power minus",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "distortion"
+      ],
+      "definition": "Row-level OBIS object for AC electricity L3 distortion power, negative (QIII+QIV). Distortion power is the imaginary component of apparent power. E=1 per Blue Book Table 20. Pattern 1-0:115.7.1.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-20"
+        }
+      ],
+      "obis_pattern": "1-0:115.7.1.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "115 distortion power",
+        "D": "7 instantaneous value",
+        "E": "1 minus",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 20,
+        "title": "Value group E codes for distortion power and energy"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 20 AC electricity distortion power; C=115, D=7, E=1"
+        }
+      ],
+      "applicable_notes": [
+        "C=115 identifies L4 distortion power. E=1 = negative (QIII+QIV)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-112-7-1-255-DISTORTION-112-1",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Sum (Li) Distortion Power Minus (distortion)",
+      "aliases": [
+        "OBIS 1-0:112.7.1.255",
+        "distortion power sum (li) distortion power minus"
+      ],
+      "keywords": [
+        "1-0:112.7.1.255",
+        "distortion power",
+        "distortion",
+        "sum (li) distortion power minus",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "distortion"
+      ],
+      "definition": "Row-level OBIS object for AC electricity total 3-phase distortion power, negative (QIII+QIV). Distortion power is the imaginary component of apparent power. E=1 per Blue Book Table 20. Pattern 1-0:112.7.1.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-20"
+        }
+      ],
+      "obis_pattern": "1-0:112.7.1.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "112 distortion power",
+        "D": "7 instantaneous value",
+        "E": "1 minus",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 20,
+        "title": "Value group E codes for distortion power and energy"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 20 AC electricity distortion power; C=112, D=7, E=1"
+        }
+      ],
+      "applicable_notes": [
+        "C=112 identifies sum (Li) distortion power. E=1 = negative (QIII+QIV)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-112-7-0-255-DISTORTION-112-0",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Sum (Li) Distortion Power Plus (distortion)",
+      "aliases": [
+        "OBIS 1-0:112.7.0.255",
+        "distortion power sum (li) distortion power plus"
+      ],
+      "keywords": [
+        "1-0:112.7.0.255",
+        "distortion power",
+        "distortion",
+        "sum (li) distortion power plus",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "distortion"
+      ],
+      "definition": "Row-level OBIS object for AC electricity total 3-phase distortion power, positive (QI+QII). Distortion power is the imaginary component of apparent power. E=0 per Blue Book Table 20. Pattern 1-0:112.7.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-20"
+        }
+      ],
+      "obis_pattern": "1-0:112.7.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "112 distortion power",
+        "D": "7 instantaneous value",
+        "E": "0 plus",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 20,
+        "title": "Value group E codes for distortion power and energy"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 20 AC electricity distortion power; C=112, D=7, E=0"
+        }
+      ],
+      "applicable_notes": [
+        "C=112 identifies sum (Li) distortion power. E=0 = positive (QI+QII)."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-11-7-124-255-HARMONIC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L1 current THD (harmonics)",
+      "aliases": [
+        "OBIS 1-0:11.7.124.255",
+        "L1 current harmonic thd"
+      ],
+      "keywords": [
+        "1-0:11.7.124.255",
+        "harmonics",
+        "thd",
+        "l1 current"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "harmonics"
+      ],
+      "definition": "Row-level OBIS object for AC electricity harmonic measurement. THD of L1 current. Pattern 1-0:11.7.124.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-16"
+        }
+      ],
+      "obis_pattern": "1-0:11.7.124.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "11 L1 current",
+        "D": "7 instantaneous value",
+        "E": "124 thd",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 16,
+        "title": "Value group E codes - AC electricity - Harmonics"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 16 AC electricity harmonics; C=11 L1 current, D=7, E=124 THD"
+        }
+      ],
+      "applicable_notes": [
+        "E=124 identifies THD per Blue Book Table 16."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-11-7-0-255-HARMONIC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L1 current Total harmonic content (harmonics)",
+      "aliases": [
+        "OBIS 1-0:11.7.0.255",
+        "L1 current harmonic total harmonic content"
+      ],
+      "keywords": [
+        "1-0:11.7.0.255",
+        "harmonics",
+        "total harmonic content",
+        "l1 current"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "harmonics"
+      ],
+      "definition": "Row-level OBIS object for AC electricity harmonic measurement. Total of L1 current. Pattern 1-0:11.7.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-16"
+        }
+      ],
+      "obis_pattern": "1-0:11.7.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "11 L1 current",
+        "D": "7 instantaneous value",
+        "E": "0 total harmonic content",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 16,
+        "title": "Value group E codes - AC electricity - Harmonics"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 16 AC electricity harmonics; C=11 L1 current, D=7, E=0 Total harmonic content"
+        }
+      ],
+      "applicable_notes": [
+        "E=0 identifies Total harmonic content per Blue Book Table 16."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-32-7-1-255-HARMONIC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L1 voltage Fundamental (harmonics)",
+      "aliases": [
+        "OBIS 1-0:32.7.1.255",
+        "L1 voltage harmonic fundamental"
+      ],
+      "keywords": [
+        "1-0:32.7.1.255",
+        "harmonics",
+        "fundamental",
+        "l1 voltage"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "harmonics"
+      ],
+      "definition": "Row-level OBIS object for AC electricity harmonic measurement. Fundamental component of L1 voltage. Pattern 1-0:32.7.1.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-16"
+        }
+      ],
+      "obis_pattern": "1-0:32.7.1.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "32 L1 voltage",
+        "D": "7 instantaneous value",
+        "E": "1 fundamental",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 16,
+        "title": "Value group E codes - AC electricity - Harmonics"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 16 AC electricity harmonics; C=32 L1 voltage, D=7, E=1 Fundamental"
+        }
+      ],
+      "applicable_notes": [
+        "E=1 identifies Fundamental per Blue Book Table 16."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-32-7-125-255-HARMONIC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L1 voltage TDD (harmonics)",
+      "aliases": [
+        "OBIS 1-0:32.7.125.255",
+        "L1 voltage harmonic tdd"
+      ],
+      "keywords": [
+        "1-0:32.7.125.255",
+        "harmonics",
+        "tdd",
+        "l1 voltage"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "harmonics"
+      ],
+      "definition": "Row-level OBIS object for AC electricity harmonic measurement. TDD of L1 voltage. Pattern 1-0:32.7.125.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-16"
+        }
+      ],
+      "obis_pattern": "1-0:32.7.125.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "32 L1 voltage",
+        "D": "7 instantaneous value",
+        "E": "125 tdd",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 16,
+        "title": "Value group E codes - AC electricity - Harmonics"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 16 AC electricity harmonics; C=32 L1 voltage, D=7, E=125 TDD"
+        }
+      ],
+      "applicable_notes": [
+        "E=125 identifies TDD per Blue Book Table 16."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-32-7-124-255-HARMONIC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L1 voltage THD (harmonics)",
+      "aliases": [
+        "OBIS 1-0:32.7.124.255",
+        "L1 voltage harmonic thd"
+      ],
+      "keywords": [
+        "1-0:32.7.124.255",
+        "harmonics",
+        "thd",
+        "l1 voltage"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "harmonics"
+      ],
+      "definition": "Row-level OBIS object for AC electricity harmonic measurement. THD of L1 voltage. Pattern 1-0:32.7.124.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-16"
+        }
+      ],
+      "obis_pattern": "1-0:32.7.124.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "32 L1 voltage",
+        "D": "7 instantaneous value",
+        "E": "124 thd",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 16,
+        "title": "Value group E codes - AC electricity - Harmonics"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 16 AC electricity harmonics; C=32 L1 voltage, D=7, E=124 THD"
+        }
+      ],
+      "applicable_notes": [
+        "E=124 identifies THD per Blue Book Table 16."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-32-7-0-255-HARMONIC",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "L1 voltage Total harmonic content (harmonics)",
+      "aliases": [
+        "OBIS 1-0:32.7.0.255",
+        "L1 voltage harmonic total harmonic content"
+      ],
+      "keywords": [
+        "1-0:32.7.0.255",
+        "harmonics",
+        "total harmonic content",
+        "l1 voltage"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "harmonics"
+      ],
+      "definition": "Row-level OBIS object for AC electricity harmonic measurement. Total (fundamental + all harmonics) of L1 voltage. Pattern 1-0:32.7.0.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-16"
+        }
+      ],
+      "obis_pattern": "1-0:32.7.0.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "32 L1 voltage",
+        "D": "7 instantaneous value",
+        "E": "0 total harmonic content",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 16,
+        "title": "Value group E codes - AC electricity - Harmonics"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 16 AC electricity harmonics; C=32 L1 voltage, D=7, E=0 Total harmonic content"
+        }
+      ],
+      "applicable_notes": [
+        "E=0 identifies Total harmonic content per Blue Book Table 16."
       ]
     },
     {
@@ -13808,6 +17335,606 @@
       ]
     },
     {
+      "id": "KB-OBIS-1-0-83-7-1-VZ-LOSS-1",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Loss active line losses plus",
+      "aliases": [
+        "OBIS 1-0:83.7.1.VZ",
+        "transformer line loss active line losses plus"
+      ],
+      "keywords": [
+        "1-0:83.7.1.VZ",
+        "loss",
+        "active line losses plus",
+        "transformer loss",
+        "line loss",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "loss"
+      ],
+      "definition": "Row-level OBIS object for AC electricity On-load active line losses, positive (QI+QIV). E=1 (Active line losses plus) per Blue Book Table 18. Pattern 1-0:83.7.1.VZ.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-18"
+        }
+      ],
+      "obis_pattern": "1-0:83.7.1.VZ",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "83 transformer and line losses",
+        "D": "7 instantaneous value",
+        "E": "1 active line losses plus",
+        "F": "VZ wildcard"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 18,
+        "title": "Value group E codes - AC electricity - Transformer and line losses"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 18 AC electricity transformer/line losses; C=83, D=7, E=1"
+        }
+      ],
+      "applicable_notes": [
+        "C=83 identifies transformer and line loss quantities. E=1 = Active line losses plus."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-83-7-4-VZ-LOSS-4",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Loss active transformer losses plus",
+      "aliases": [
+        "OBIS 1-0:83.7.4.VZ",
+        "transformer line loss active transformer losses plus"
+      ],
+      "keywords": [
+        "1-0:83.7.4.VZ",
+        "loss",
+        "active transformer losses plus",
+        "transformer loss",
+        "line loss",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "loss"
+      ],
+      "definition": "Row-level OBIS object for AC electricity No-load active transformer losses, positive (QI+QIV). E=4 (Active transformer losses plus) per Blue Book Table 18. Pattern 1-0:83.7.4.VZ.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-18"
+        }
+      ],
+      "obis_pattern": "1-0:83.7.4.VZ",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "83 transformer and line losses",
+        "D": "7 instantaneous value",
+        "E": "4 active transformer losses plus",
+        "F": "VZ wildcard"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 18,
+        "title": "Value group E codes - AC electricity - Transformer and line losses"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 18 AC electricity transformer/line losses; C=83, D=7, E=4"
+        }
+      ],
+      "applicable_notes": [
+        "C=83 identifies transformer and line loss quantities. E=4 = Active transformer losses plus."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-83-7-10-VZ-LOSS-10",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Loss reactive line losses plus",
+      "aliases": [
+        "OBIS 1-0:83.7.10.VZ",
+        "transformer line loss reactive line losses plus"
+      ],
+      "keywords": [
+        "1-0:83.7.10.VZ",
+        "loss",
+        "reactive line losses plus",
+        "transformer loss",
+        "line loss",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "loss"
+      ],
+      "definition": "Row-level OBIS object for AC electricity On-load reactive line losses, positive (QI+QII). E=10 (Reactive line losses plus) per Blue Book Table 18. Pattern 1-0:83.7.10.VZ.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-18"
+        }
+      ],
+      "obis_pattern": "1-0:83.7.10.VZ",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "83 transformer and line losses",
+        "D": "7 instantaneous value",
+        "E": "10 reactive line losses plus",
+        "F": "VZ wildcard"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 18,
+        "title": "Value group E codes - AC electricity - Transformer and line losses"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 18 AC electricity transformer/line losses; C=83, D=7, E=10"
+        }
+      ],
+      "applicable_notes": [
+        "C=83 identifies transformer and line loss quantities. E=10 = Reactive line losses plus."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-83-7-7-VZ-LOSS-7",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Loss total active losses plus",
+      "aliases": [
+        "OBIS 1-0:83.7.7.VZ",
+        "transformer line loss total active losses plus"
+      ],
+      "keywords": [
+        "1-0:83.7.7.VZ",
+        "loss",
+        "total active losses plus",
+        "transformer loss",
+        "line loss",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "loss"
+      ],
+      "definition": "Row-level OBIS object for AC electricity Total active losses (line + transformer), positive (QI+QIV). E=7 (Total active losses plus) per Blue Book Table 18. Pattern 1-0:83.7.7.VZ.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-18"
+        }
+      ],
+      "obis_pattern": "1-0:83.7.7.VZ",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "83 transformer and line losses",
+        "D": "7 instantaneous value",
+        "E": "7 total active losses plus",
+        "F": "VZ wildcard"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 18,
+        "title": "Value group E codes - AC electricity - Transformer and line losses"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 18 AC electricity transformer/line losses; C=83, D=7, E=7"
+        }
+      ],
+      "applicable_notes": [
+        "C=83 identifies transformer and line loss quantities. E=7 = Total active losses plus."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-83-7-16-VZ-LOSS-16",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Loss total reactive losses plus",
+      "aliases": [
+        "OBIS 1-0:83.7.16.VZ",
+        "transformer line loss total reactive losses plus"
+      ],
+      "keywords": [
+        "1-0:83.7.16.VZ",
+        "loss",
+        "total reactive losses plus",
+        "transformer loss",
+        "line loss",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "loss"
+      ],
+      "definition": "Row-level OBIS object for AC electricity Total reactive losses, positive (QI+QII). E=16 (Total reactive losses plus) per Blue Book Table 18. Pattern 1-0:83.7.16.VZ.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-18"
+        }
+      ],
+      "obis_pattern": "1-0:83.7.16.VZ",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "83 transformer and line losses",
+        "D": "7 instantaneous value",
+        "E": "16 total reactive losses plus",
+        "F": "VZ wildcard"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 18,
+        "title": "Value group E codes - AC electricity - Transformer and line losses"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 18 AC electricity transformer/line losses; C=83, D=7, E=16"
+        }
+      ],
+      "applicable_notes": [
+        "C=83 identifies transformer and line loss quantities. E=16 = Total reactive losses plus."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-81-7-44-255-PHASEANGLE",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Phase angle U(L1) to I(L1)",
+      "aliases": [
+        "OBIS 1-0:81.7.44.255",
+        "phase angle 44"
+      ],
+      "keywords": [
+        "1-0:81.7.44.255",
+        "phase angle",
+        44,
+        "power factor"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "phase_angle"
+      ],
+      "definition": "Row-level OBIS object for AC electricity extended phase angle. E=44: angle of I(L1) referenced to U(L1) - power factor angle. Pattern 1-0:81.7.44.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
+        }
+      ],
+      "obis_pattern": "1-0:81.7.44.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "81 phase angles",
+        "D": "7 instantaneous value",
+        "E": "44 phase angle matrix code",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 AC electricity phase angle matrix; C=81, D=7, E=44"
+        }
+      ],
+      "applicable_notes": [
+        "E=44 is a matrix code per Blue Book Table 17."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-81-7-01-255-PHASEANGLE",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Phase angle U(L1) to U(L2)",
+      "aliases": [
+        "OBIS 1-0:81.7.01.255",
+        "phase angle 01"
+      ],
+      "keywords": [
+        "1-0:81.7.01.255",
+        "phase angle",
+        1,
+        "power factor"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "phase_angle"
+      ],
+      "definition": "Row-level OBIS object for AC electricity extended phase angle. E=01: angle of U(L2) referenced to U(L1). Pattern 1-0:81.7.01.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
+        }
+      ],
+      "obis_pattern": "1-0:81.7.01.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "81 phase angles",
+        "D": "7 instantaneous value",
+        "E": "01 phase angle matrix code",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 AC electricity phase angle matrix; C=81, D=7, E=01"
+        }
+      ],
+      "applicable_notes": [
+        "E=01 is a matrix code per Blue Book Table 17."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-81-7-02-255-PHASEANGLE",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Phase angle U(L1) to U(L3)",
+      "aliases": [
+        "OBIS 1-0:81.7.02.255",
+        "phase angle 02"
+      ],
+      "keywords": [
+        "1-0:81.7.02.255",
+        "phase angle",
+        2,
+        "power factor"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "phase_angle"
+      ],
+      "definition": "Row-level OBIS object for AC electricity extended phase angle. E=02: angle of U(L3) referenced to U(L1). Pattern 1-0:81.7.02.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
+        }
+      ],
+      "obis_pattern": "1-0:81.7.02.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "81 phase angles",
+        "D": "7 instantaneous value",
+        "E": "02 phase angle matrix code",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 AC electricity phase angle matrix; C=81, D=7, E=02"
+        }
+      ],
+      "applicable_notes": [
+        "E=02 is a matrix code per Blue Book Table 17."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-81-7-55-255-PHASEANGLE",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Phase angle U(L2) to I(L2)",
+      "aliases": [
+        "OBIS 1-0:81.7.55.255",
+        "phase angle 55"
+      ],
+      "keywords": [
+        "1-0:81.7.55.255",
+        "phase angle",
+        55,
+        "power factor"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "phase_angle"
+      ],
+      "definition": "Row-level OBIS object for AC electricity extended phase angle. E=55: angle of I(L2) referenced to U(L2). Pattern 1-0:81.7.55.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
+        }
+      ],
+      "obis_pattern": "1-0:81.7.55.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "81 phase angles",
+        "D": "7 instantaneous value",
+        "E": "55 phase angle matrix code",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 AC electricity phase angle matrix; C=81, D=7, E=55"
+        }
+      ],
+      "applicable_notes": [
+        "E=55 is a matrix code per Blue Book Table 17."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-81-7-66-255-PHASEANGLE",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Phase angle U(L3) to I(L3)",
+      "aliases": [
+        "OBIS 1-0:81.7.66.255",
+        "phase angle 66"
+      ],
+      "keywords": [
+        "1-0:81.7.66.255",
+        "phase angle",
+        66,
+        "power factor"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "phase_angle"
+      ],
+      "definition": "Row-level OBIS object for AC electricity extended phase angle. E=66: angle of I(L3) referenced to U(L3). Pattern 1-0:81.7.66.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
+        }
+      ],
+      "obis_pattern": "1-0:81.7.66.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 AC electricity",
+        "B": "0 no channel",
+        "C": "81 phase angles",
+        "D": "7 instantaneous value",
+        "E": "66 phase angle matrix code",
+        "F": "255 current billing period"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 AC electricity phase angle matrix; C=81, D=7, E=66"
+        }
+      ],
+      "applicable_notes": [
+        "E=66 is a matrix code per Blue Book Table 17."
+      ]
+    },
+    {
       "id": "KB-OBIS-1-0-13-7-0-255-POWER-FACTOR-INSTANTANEOUS",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
@@ -14106,6 +18233,254 @@
       "applicable_notes": [
         "C=12 identifies voltage for any phase in the AC electricity C-code family.",
         "D=7 identifies an instantaneous measurement value."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-12-32-23-255-VOLTAGEDIP-23",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Voltage dip (deep dip, long)",
+      "aliases": [
+        "OBIS 1-0:12.32.23.255",
+        "voltage dip deep dip, long",
+        "UNIPEDE voltage dip"
+      ],
+      "keywords": [
+        "1-0:12.32.23.255",
+        "voltage dip",
+        "voltage sag",
+        "UNIPEDE",
+        "deep dip, long",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "voltage_dip"
+      ],
+      "definition": "Row-level OBIS object for AC electricity UNIPEDE voltage dip measurement, 30-70% residual, 3-20s duration. E=23 is a matrix code (residual depth x duration) per Blue Book Table 19 / IEC TR 61000-2-8. Pattern 1-0:12.32.23.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
+        }
+      ],
+      "obis_pattern": "1-0:12.32.23.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "12 L1 voltage",
+        "D": "32 voltage dip measurement",
+        "E": "23 UNIPEDE dip class",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 AC electricity UNIPEDE voltage dips; C=12, D=32, E=23 (30-70% residual, 3-20s duration)"
+        }
+      ],
+      "applicable_notes": [
+        "UNIPEDE dip class E=23: 30-70% residual, 3-20s duration."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-12-32-12-255-VOLTAGEDIP-12",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Voltage dip (moderate dip, medium)",
+      "aliases": [
+        "OBIS 1-0:12.32.12.255",
+        "voltage dip moderate dip, medium",
+        "UNIPEDE voltage dip"
+      ],
+      "keywords": [
+        "1-0:12.32.12.255",
+        "voltage dip",
+        "voltage sag",
+        "UNIPEDE",
+        "moderate dip, medium",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "voltage_dip"
+      ],
+      "definition": "Row-level OBIS object for AC electricity UNIPEDE voltage dip measurement, 15-85% residual, 1-3s duration. E=12 is a matrix code (residual depth x duration) per Blue Book Table 19 / IEC TR 61000-2-8. Pattern 1-0:12.32.12.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
+        }
+      ],
+      "obis_pattern": "1-0:12.32.12.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "12 L1 voltage",
+        "D": "32 voltage dip measurement",
+        "E": "12 UNIPEDE dip class",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 AC electricity UNIPEDE voltage dips; C=12, D=32, E=12 (15-85% residual, 1-3s duration)"
+        }
+      ],
+      "applicable_notes": [
+        "UNIPEDE dip class E=12: 15-85% residual, 1-3s duration."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-12-32-01-255-VOLTAGEDIP-01",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Voltage dip (shallow dip, short)",
+      "aliases": [
+        "OBIS 1-0:12.32.01.255",
+        "voltage dip shallow dip, short",
+        "UNIPEDE voltage dip"
+      ],
+      "keywords": [
+        "1-0:12.32.01.255",
+        "voltage dip",
+        "voltage sag",
+        "UNIPEDE",
+        "shallow dip, short",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "voltage_dip"
+      ],
+      "definition": "Row-level OBIS object for AC electricity UNIPEDE voltage dip measurement, 10-90% residual, 0.1-0.5s duration. E=01 is a matrix code (residual depth x duration) per Blue Book Table 19 / IEC TR 61000-2-8. Pattern 1-0:12.32.01.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
+        }
+      ],
+      "obis_pattern": "1-0:12.32.01.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "12 L1 voltage",
+        "D": "32 voltage dip measurement",
+        "E": "01 UNIPEDE dip class",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 AC electricity UNIPEDE voltage dips; C=12, D=32, E=01 (10-90% residual, 0.1-0.5s duration)"
+        }
+      ],
+      "applicable_notes": [
+        "UNIPEDE dip class E=01: 10-90% residual, 0.1-0.5s duration."
+      ]
+    },
+    {
+      "id": "KB-OBIS-1-0-12-32-34-255-VOLTAGEDIP-34",
+      "type": "cosem_object_instance",
+      "layer": "cosem_object_instance",
+      "name": "Voltage dip (very deep dip, very long)",
+      "aliases": [
+        "OBIS 1-0:12.32.34.255",
+        "voltage dip very deep dip, very long",
+        "UNIPEDE voltage dip"
+      ],
+      "keywords": [
+        "1-0:12.32.34.255",
+        "voltage dip",
+        "voltage sag",
+        "UNIPEDE",
+        "very deep dip, very long",
+        "power_quality"
+      ],
+      "domain_tags": [
+        "cosem_object",
+        "ac_electricity",
+        "power_quality",
+        "voltage_dip"
+      ],
+      "definition": "Row-level OBIS object for AC electricity UNIPEDE voltage dip measurement, 60-40% residual, 20-60s duration. E=34 is a matrix code (residual depth x duration) per Blue Book Table 19 / IEC TR 61000-2-8. Pattern 1-0:12.32.34.255.",
+      "relations": [
+        {
+          "relation": "instance_of",
+          "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
+        }
+      ],
+      "obis_pattern": "1-0:12.32.34.255",
+      "likely_interface_class_id": 3,
+      "likely_interface_class_name": "Register",
+      "medium": "ac_electricity",
+      "value_group_mapping": {
+        "A": "1 ac_electricity",
+        "B": "0 no channel",
+        "C": "12 L1 voltage",
+        "D": "32 voltage dip measurement",
+        "E": "34 UNIPEDE dip class",
+        "F": "255 current"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
+      },
+      "source_refs": [
+        {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 AC electricity UNIPEDE voltage dips; C=12, D=32, E=34 (60-40% residual, 20-60s duration)"
+        }
+      ],
+      "applicable_notes": [
+        "UNIPEDE dip class E=34: 60-40% residual, 20-60s duration."
       ]
     },
     {

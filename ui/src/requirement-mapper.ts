@@ -183,8 +183,22 @@ function moduleLabel(value: string, sectionPath: string[]): string {
 
 function riskLevel(value: string): "低" | "中" | "高" {
   const normalized = value.toLowerCase()
-  if (normalized === "high" || value === "高") return "高"
-  if (normalized === "medium" || normalized === "middle" || value === "中") return "中"
+  if (
+    normalized === "high" ||
+    normalized === "high_risk" ||
+    normalized === "mandatory_review" ||
+    value === "高"
+  ) {
+    return "高"
+  }
+  if (
+    normalized === "medium" ||
+    normalized === "middle" ||
+    normalized === "medium_risk" ||
+    value === "中"
+  ) {
+    return "中"
+  }
   return "低"
 }
 

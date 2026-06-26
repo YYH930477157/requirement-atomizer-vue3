@@ -23,7 +23,10 @@ def extract_xlsx(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     del document_profile
     knowledge_bases = knowledge_bases or KnowledgeRepository.from_paths([])
-    workbook = load_workbook(input_path, data_only=True, read_only=True)
+    # read_only=True 时，部分含条件格式/数据校验的 xlsx 不预填 sheet.max_row/max_column
+    # （返回 None），导致所有 sheet 被误判为空。改用 read_only=False 保证维度可靠，
+    # 且 _merged_fill_values 需要 sheet.cell() 随机访问（read_only 下不可用）。
+    workbook = load_workbook(input_path, data_only=True, read_only=False)
     merge_ranges_by_sheet = _merged_ranges_by_sheet(input_path)
     blocks: list[dict[str, Any]] = []
     table_items: list[dict[str, Any]] = []

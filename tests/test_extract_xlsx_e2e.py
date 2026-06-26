@@ -103,6 +103,20 @@ class ExtractXlsxE2ETests(unittest.TestCase):
         self.assertTrue(envelope["ok"])
         self.assertEqual(envelope["manifest"]["input_format"], "xlsx")
 
+    def test_extract_xlsx_returns_one_heading_per_visible_sheet_not_zero(self) -> None:
+        """回归：read_only=True 对含条件格式的 xlsx 返回 max_row=None 导致全部 sheet 产出空。
+        改 read_only=False 后必须保证每个可见 sheet 都被解析，不因维度探测失效而静默跳过。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "multi_sheet.xlsx"
+            write_synthetic_xlsx(input_path)
+            blocks, table_items = extract_xlsx(input_path, knowledge_bases=[], document_profile=None)
+
+        headings = [block["text"] for block in blocks if block["type"] == "heading"]
+        # write_synthetic_xlsx creates 3 visible sheets + 1 hidden
+        self.assertEqual(headings, ["Requirements", "Capability Matrix", "Mixed Types"])
+        self.assertGreater(len(table_items), 0)
+
     def test_unsupported_excel_and_unknown_formats_are_input_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
