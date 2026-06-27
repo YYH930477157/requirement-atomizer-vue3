@@ -83,7 +83,10 @@ export class RequirementApiClient {
     }
     const response = await this.fetchImpl.call(globalThis, `${this.baseUrl}${path}`, { ...init, headers })
     if (!response.ok) {
-      throw new Error(`API request failed: ${response.status}`)
+      // 后端对每个错误路径都返回 {"error": "..."}（如 409 冻结、400 缺字段、502 LLM 故障）。
+      // 透出该信息而不是只显示状态码，让审查者看到可操作的原因。
+      const body = (await response.json().catch(() => null)) as { error?: string } | null
+      throw new Error(body?.error || `API request failed: ${response.status}`)
     }
     return response.json() as Promise<T>
   }

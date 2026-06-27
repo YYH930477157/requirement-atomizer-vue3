@@ -237,12 +237,12 @@
               </section>
 
               <div class="detail-actions">
-                <button class="button" type="button" data-testid="decision-accepted" @click="updateStatus('accepted')">接受</button>
-                <button class="button" type="button" data-testid="decision-rejected" @click="updateStatus('rejected')">拒绝</button>
-                <button class="button" type="button" @click="updateStatus('needs_discussion')">讨论</button>
-                <button class="button" type="button" @click="updateStatus('expert_pending')">专家</button>
+                <button class="button" type="button" :disabled="isSubmitting" data-testid="decision-accepted" @click="updateStatus('accepted')">接受</button>
+                <button class="button" type="button" :disabled="isSubmitting" data-testid="decision-rejected" @click="updateStatus('rejected')">拒绝</button>
+                <button class="button" type="button" :disabled="isSubmitting" @click="updateStatus('needs_discussion')">讨论</button>
+                <button class="button" type="button" :disabled="isSubmitting" @click="updateStatus('expert_pending')">专家</button>
               </div>
-              <textarea class="comment-box" placeholder="请输入审查意见" />
+              <textarea v-model="reviewComment" class="comment-box" placeholder="请输入审查意见" />
               <div v-if="apiMessage" class="api-message" data-testid="api-message">{{ apiMessage }}</div>
             </div>
           </aside>
@@ -403,6 +403,8 @@ const currentInputPath = ref("")
 const currentOutputDir = ref("")
 const isRunning = ref(false)
 const isTranslating = ref(false)
+const isSubmitting = ref(false)
+const reviewComment = ref("")
 const showSettingsPanel = ref(false)
 const isSavingSettings = ref(false)
 const isTestingSettings = ref(false)
@@ -473,7 +475,7 @@ const typeFilter = ref("全部")
 const moduleFilter = ref("全部")
 const categoryFilter = ref("全部")
 const statusFilter = ref("全部")
-const confidenceFilter = ref(0.7)
+const confidenceFilter = ref(0)
 const ambiguousOnly = ref(false)
 const searchText = ref("")
 
@@ -695,6 +697,7 @@ function applyStatFilter(filter: StatFilter) {
 }
 
 async function updateStatus(status: ReviewStatus) {
+  if (isSubmitting.value) return
   const row = requirementRows.value.find((item) => item.id === selectedRequirementId.value)
   if (!row) return
   apiMessage.value = ""
@@ -702,19 +705,23 @@ async function updateStatus(status: ReviewStatus) {
     row.status = status
     return
   }
+  isSubmitting.value = true
   try {
     const state = await apiClient.value.applyReviewAction({
       requirementId: row.backendId,
       status,
       actor: "vue3-ui",
-      reason: `set ${status} from Vue3 UI`,
+      reason: reviewComment.value.trim() || `set ${status} from Vue3 UI`,
     })
     const index = requirementRows.value.findIndex((item) => item.id === row.id)
     if (index >= 0) {
       requirementRows.value[index] = applyReviewState(row, state)
     }
+    reviewComment.value = ""
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "审查状态写入失败"
+  } finally {
+    isSubmitting.value = false
   }
 }
 

@@ -109,6 +109,7 @@ const VALID_STATUSES = new Set<ReviewStatus>([
 export function mapBackendRequirement(row: BackendRequirement): Requirement {
   const reviewState = objectValue(row.review_state)
   const review = objectValue(row.review)
+  const sourceContext = objectValue(row.source_context)
   const id = textValue(row.stable_req_id) || textValue(row.requirement_id) || textValue(row.req_id) || "REQ-UNKNOWN"
   const backendId = textValue(reviewState.requirement_id) || id
   const categoryCode = textValue(row.requirement_type) || textValue(row.type)
@@ -129,7 +130,7 @@ export function mapBackendRequirement(row: BackendRequirement): Requirement {
     categoryCode,
     object: textValue(row.object_name) || textValue(row.object) || textValue(row.class_name) || "-",
     chineseText: textValue(row.description) || textValue(row.requirement) || textValue(review.revised_requirement) || "-",
-    originalText: textValue(row.source_quote) || textValue(row.original_text) || textValue(row.text) || "-",
+    originalText: textValue(row.source_quote) || textValue(row.original_text) || textValue(sourceContext.paragraph_text) || textValue(row.requirement) || textValue(row.text) || "-",
     sourceDocument: textValue(row.source_document) || textValue(row.document) || "当前输出目录",
     sourceLocation: textValue(row.source_ref) || textValue(row.source_location) || sourceRefs.join(" · ") || textValue(row.block_id) || "-",
     domainTags,

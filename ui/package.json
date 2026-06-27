@@ -46,7 +46,6 @@
     ],
     "extraResources": [
       { "from": "..", "to": ".", "filter": ["*.py"] },
-      { "from": "../gui", "to": "gui", "filter": ["review_actions.py", "__init__.py"] },
       { "from": "../parsers", "to": "parsers" },
       { "from": "../requirement_kb", "to": "requirement_kb" },
       { "from": "../domain_packs", "to": "domain_packs" },

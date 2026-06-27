@@ -45,7 +45,7 @@ from gui.requirements_model import (
     TypeDelegate,
     load_output_bundle,
 )
-from gui.review_actions import apply_review_action
+from review_actions import apply_review_action
 
 
 STATUS_FILTERS = [

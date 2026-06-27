@@ -62,6 +62,12 @@ Function outputs include deterministic acceptance criteria derived from source a
 
 ## Desktop App
 
+> The official desktop product is the **Vue3 + Electron** UI below. The older
+> PySide6 shell in `gui/` is **frozen** as of 2026-06-27 — no longer developed.
+> It is fully decoupled from the backend (`review_actions` lives at the repo
+> root, not under `gui/`), so `gui/` is a no-dependency PySide6 leaf; its code
+> and tests are kept but should not be extended. New UI work goes in `ui/`.
+
 Install and run the Vue3/Electron UI:
 
 ```powershell

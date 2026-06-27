@@ -628,7 +628,7 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("API request failed: 403")
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("Origin not allowed")
       expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("运行失败")
     })
     expect(wrapper.find('[data-testid="api-message"]').text()).not.toContain("抽取与审查完成")

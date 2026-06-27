@@ -182,7 +182,7 @@ class GuiModelTests(unittest.TestCase):
 
     def test_review_action_updates_state_and_cli_export_uses_same_status(self) -> None:
         from export_requirements import export_requirements
-        from gui.review_actions import apply_review_action
+        from review_actions import apply_review_action
 
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
@@ -197,7 +197,7 @@ class GuiModelTests(unittest.TestCase):
         self.assertEqual([row["req_id"] for row in rows], ["AREQ-1", "AREQ-2"])
 
     def test_review_action_defaults_actor_to_current_user(self) -> None:
-        from gui.review_actions import apply_review_action
+        from review_actions import apply_review_action
 
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
