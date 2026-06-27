@@ -18,6 +18,10 @@ from typing import Any
 
 def _table_no(entry: dict[str, Any]):
     """取 instance 的 Blue Book table 号（可能在顶层 blue_book_table_ref 或 metadata）。"""
+    if entry.get("table_no") is not None:
+        return entry.get("table_no")
+    if entry.get("table") is not None:
+        return entry.get("table")
     bt = entry.get("blue_book_table_ref")
     if isinstance(bt, dict) and bt.get("table_no") is not None:
         return bt.get("table_no")
@@ -25,6 +29,25 @@ def _table_no(entry: dict[str, Any]):
     if isinstance(meta, dict):
         return meta.get("table_no") or meta.get("table")
     return None
+
+
+CATALOGUE_ONLY_OBIS_TABLE_FAMILIES = {
+    "obis_code_structure",
+    "specific_code_ranges",
+    "value_group_definition",
+    "tariff_rates",
+}
+
+
+def _object_family(entry: dict[str, Any]) -> str:
+    family = entry.get("object_family")
+    if family is None and isinstance(entry.get("metadata"), dict):
+        family = entry["metadata"].get("object_family")
+    return str(family or "").strip()
+
+
+def _expects_row_level_instances(entry: dict[str, Any]) -> bool:
+    return _object_family(entry) not in CATALOGUE_ONLY_OBIS_TABLE_FAMILIES
 
 
 def build_coverage_report(kb_path: Path) -> dict[str, Any]:
@@ -45,14 +68,24 @@ def build_coverage_report(kb_path: Path) -> dict[str, Any]:
         key = tn if tn is not None else "?"
         by_table[key] = by_table.get(key, 0) + 1
 
+    catalogue_by_table_no = {
+        _table_no(t): t for t in tables_catalogue if _table_no(t) is not None
+    }
+
     # 已知 OBIS table catalogue 条目（说明这些 table 至少有目录级覆盖）
-    known_table_nos = sorted({
-        _table_no(t) for t in tables_catalogue if _table_no(t) is not None
-    } | {tn for tn in by_table if tn != "?"})
+    known_table_nos = sorted(set(catalogue_by_table_no) | {tn for tn in by_table if tn != "?"})
+
+    catalogue_only_table_nos = sorted(
+        tn for tn, entry in catalogue_by_table_no.items()
+        if by_table.get(tn, 0) == 0 and not _expects_row_level_instances(entry)
+    )
 
     # 哪些 table 有目录但 row-level 为空
     tables_with_catalogue_no_rows = sorted(
-        tn for tn in known_table_nos if tn != "?" and by_table.get(tn, 0) == 0
+        tn for tn in known_table_nos
+        if tn != "?"
+        and by_table.get(tn, 0) == 0
+        and tn not in catalogue_only_table_nos
     )
 
     # Part 2 class enrichment level
@@ -104,6 +137,7 @@ def build_coverage_report(kb_path: Path) -> dict[str, Any]:
             "row_level_instances": len(instances),
             "instances_by_table_no": dict(sorted(by_table.items(), key=lambda x: str(x[0]))),
             "tables_with_catalogue_but_no_rows": tables_with_catalogue_no_rows,
+            "tables_not_expected_to_have_row_instances": catalogue_only_table_nos,
         },
         "part2_interface_classes": {
             "total": len(classes),
@@ -146,6 +180,9 @@ def render_report(report: dict[str, Any]) -> str:
     if p1["tables_with_catalogue_but_no_rows"]:
         lines.append("- ⚠ Tables with catalogue but NO row-level instances: "
                      + ", ".join(f"table {tn}" for tn in p1["tables_with_catalogue_but_no_rows"]))
+    if p1.get("tables_not_expected_to_have_row_instances"):
+        lines.append("- Catalogue/structure tables not expected to have row-level instances: "
+                     + ", ".join(f"table {tn}" for tn in p1["tables_not_expected_to_have_row_instances"]))
     lines.append("")
     p2 = report["part2_interface_classes"]
     lines.append("## Part 2 — COSEM Interface Classes")

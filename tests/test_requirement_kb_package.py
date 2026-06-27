@@ -186,6 +186,28 @@ A COSEM interface class for scalar measured values.
         payload = json.loads(completed.stdout)
         self.assertEqual(payload[0]["kb_id"], "energy_metering")
 
+    def test_requirement_kb_cli_coverage_prints_utf8_when_console_encoding_is_gbk(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "requirement_kb.cli",
+                "coverage",
+                str(ROOT / "knowledge_bases" / "compiled_from_obsidian.json"),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            env={"PYTHONIOENCODING": "gbk"},
+            encoding="utf-8",
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("KB Coverage Report", completed.stdout)
+        self.assertIn("Catalogue/structure tables not expected to have row-level instances", completed.stdout)
+        self.assertNotIn("Tables with catalogue but NO row-level instances", completed.stdout)
+
     def test_default_kb_paths_can_be_overridden_for_external_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict("os.environ", {"REQUIREMENT_KB_HOME": tmp}, clear=False):

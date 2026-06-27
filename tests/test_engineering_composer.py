@@ -220,6 +220,15 @@ class EngineeringComposerTests(unittest.TestCase):
                     "source_refs": ["BLK-BILLING-2"],
                     "section_path": ["Control of billing period"],
                 },
+                {
+                    "stable_req_id": "BILLING-DAILY-RATES",
+                    "requirement_type": "functional",
+                    "requirement": 'For information daily rates, the "Date of billing period 2" object must be used.',
+                    "object": "Date of billing period 2",
+                    "domain": "billing",
+                    "source_refs": ["BLK-BILLING-3"],
+                    "section_path": ["Control of billing period"],
+                },
             ])
             write_jsonl(out_dir / "table_items.jsonl", [])
 
@@ -231,14 +240,65 @@ class EngineeringComposerTests(unittest.TestCase):
             {
                 "trigger": "At billing period close, finalize the period data set.",
                 "minimum_records": "Keep at least 12 billing period records.",
-                "required_objects": ["Date of billing Period 1"],
+                "required_objects": ["Date of billing Period 1", "Date of billing period 2"],
             },
         )
         self.assertIn("Keep at least 12 billing period records.", spec["processing_rules"])
+        self.assertIn("Use billing object: Date of billing Period 1.", spec["processing_rules"])
+        self.assertIn("Use billing object: Date of billing period 2.", spec["processing_rules"])
+        self.assertNotIn(
+            "There must be at least 12 billing records at the end of the period.",
+            spec["processing_rules"],
+        )
+        self.assertNotIn(
+            "For the information of invoicing at the final of period, the object Date of billing Period 1 must be used.",
+            spec["processing_rules"],
+        )
+        self.assertNotIn(
+            'For information daily rates, the "Date of billing period 2" object must be used.',
+            spec["processing_rules"],
+        )
         write_engineering_requirements(out_dir, model)
         markdown = (out_dir / "engineering_requirements" / "requirement_functions.md").read_text(encoding="utf-8")
         self.assertIn("Billing period:", markdown)
         self.assertIn("Minimum records: Keep at least 12 billing period records.", markdown)
+
+    def test_billing_profile_capacity_row_stays_with_billing_period_function(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "BILLING-RECORDS",
+                    "requirement_type": "functional",
+                    "requirement": "There must be at least 12 billing records at the end of the period.",
+                    "object": "Charge",
+                    "domain": "billing_profile",
+                    "source_refs": ["BLK-BILLING-1"],
+                    "section_path": ["2 20 Control of"],
+                },
+                {
+                    "stable_req_id": "BILLING-CAPACITY",
+                    "requirement_type": "cosem_object",
+                    "requirement": "The recording capacity must be a maximum of ten records (ten days).",
+                    "object": "Charge",
+                    "domain": "billing_profile",
+                    "source_refs": ["BLK-BILLING-2"],
+                    "section_path": ["2 20 Control of"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+
+        self.assertEqual(len(model["requirement_functions"]), 1)
+        function = model["requirement_functions"][0]
+        self.assertEqual(function["title"], "Control of billing period")
+        self.assertEqual(function["module"], "billing")
+        self.assertEqual(function["source_atomic_requirements"], ["BILLING-RECORDS", "BILLING-CAPACITY"])
+        self.assertIn(
+            "Limit billing period recording capacity to 10 records (ten days).",
+            function["implementation_spec"]["processing_rules"],
+        )
 
     def test_low_confidence_ambiguous_function_outputs_review_acceptance_criteria(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -340,6 +400,8 @@ class EngineeringComposerTests(unittest.TestCase):
         )
         self.assertIn('Allow Public client to use "GET".', spec["processing_rules"])
         self.assertIn('Allow Reading client to use Block transfer with "GET".', spec["processing_rules"])
+        self.assertNotIn('Public client shall support xDLMS Service: "GET".', spec["processing_rules"])
+        self.assertNotIn('Reading client shall support xDLMS Service: Block transfer with "GET".', spec["processing_rules"])
         write_engineering_requirements(out_dir, model)
         markdown = (out_dir / "engineering_requirements" / "requirement_functions.md").read_text(encoding="utf-8")
         self.assertIn("Capability matrix:", markdown)
@@ -499,6 +561,118 @@ class EngineeringComposerTests(unittest.TestCase):
             spec["processing_rules"],
         )
 
+    def test_structured_security_rules_suppress_duplicate_raw_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "SEC-SUITE",
+                    "requirement_type": "functional",
+                    "requirement": "The security suite determines the cryptographic algorithms and key sizes that must be available.",
+                    "object": "security suite",
+                    "domain": "security",
+                    "source_refs": ["BLK-SEC-SUITE"],
+                    "section_path": ["Security"],
+                },
+                {
+                    "stable_req_id": "SEC-UNPROTECTED",
+                    "requirement_type": "functional",
+                    "requirement": 'When a client implementation does not need protection, the security policy must remain "0" in the corresponding security policy object.',
+                    "object": "security policy",
+                    "domain": "security",
+                    "source_refs": ["BLK-SEC-POLICY"],
+                    "section_path": ["Security"],
+                },
+                {
+                    "stable_req_id": "SEC-KEYS",
+                    "requirement_type": "functional",
+                    "requirement": "The meter must support the following keys:",
+                    "object": "keys",
+                    "domain": "security",
+                    "source_refs": ["BLK-SEC-KEYS"],
+                    "section_path": ["Security"],
+                },
+                {
+                    "stable_req_id": "SEC-KEY-EXPIRATION",
+                    "requirement_type": "functional",
+                    "requirement": "Secure keys can also expire, according to a programmed time, leaving to be accepted, and must then be reestablished.",
+                    "object": "keys",
+                    "domain": "security",
+                    "source_refs": ["BLK-SEC-KEY-EXP"],
+                    "section_path": ["Security"],
+                },
+                {
+                    "stable_req_id": "SEC-COUNTERS",
+                    "requirement_type": "functional",
+                    "requirement": "The meter must implement an independent unicast communication invocation counter for each secure client.",
+                    "object": "invocation counter",
+                    "domain": "security",
+                    "source_refs": ["BLK-SEC-COUNTER"],
+                    "section_path": ["Security"],
+                },
+                {
+                    "stable_req_id": "SEC-COUNTER-RESET",
+                    "requirement_type": "functional",
+                    "requirement": 'These invocation counters must be incremented for each protected message and must be reset (to the value "0") when the corresponding key is replaced or reset.',
+                    "object": "invocation counter",
+                    "domain": "security",
+                    "source_refs": ["BLK-SEC-COUNTER-RESET"],
+                    "section_path": ["Security"],
+                },
+                {
+                    "stable_req_id": "SEC-MGMT-HLS",
+                    "requirement_type": "association_security_matrix",
+                    "requirement": "Management client shall have Server application process: Management Logical Device set to High Level of Security (HLS).",
+                    "object": "Management client",
+                    "domain": "security",
+                    "source_refs": ["TBL-SEC-R1"],
+                    "section_path": ["Security"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+
+        spec = model["requirement_functions"][0]["implementation_spec"]
+        rules = spec["processing_rules"]
+        self.assertIn(
+            "Define the cryptographic algorithms and key sizes that must be available for each supported security suite.",
+            rules,
+        )
+        self.assertIn(
+            'Increment invocation counters for each protected message and reset the corresponding counter to "0" when its key is replaced or reset.',
+            rules,
+        )
+        self.assertIn(
+            "Require Management client to access Management Logical Device with High Level of Security (HLS).",
+            rules,
+        )
+        self.assertNotIn(
+            "The security suite determines the cryptographic algorithms and key sizes that must be available.",
+            rules,
+        )
+        self.assertNotIn(
+            'When a client implementation does not need protection, the security policy must remain "0" in the corresponding security policy object.',
+            rules,
+        )
+        self.assertNotIn("The meter must support the following keys:.", rules)
+        self.assertNotIn(
+            "Secure keys can also expire, according to a programmed time, leaving to be accepted, and must then be reestablished.",
+            rules,
+        )
+        self.assertNotIn(
+            "The meter must implement an independent unicast communication invocation counter for each secure client.",
+            rules,
+        )
+        self.assertNotIn(
+            'These invocation counters must be incremented for each protected message and must be reset (to the value "0") when the corresponding key is replaced or reset.',
+            rules,
+        )
+        self.assertNotIn(
+            "Management client shall have Server application process: Management Logical Device set to High Level of Security (HLS).",
+            rules,
+        )
+
     def test_abnt_security_translation_residue_is_summarized_and_linked_to_security_objects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
@@ -627,6 +801,37 @@ class EngineeringComposerTests(unittest.TestCase):
             spec["processing_rules"],
         )
 
+    def test_key_loading_integrity_noise_is_not_duplicated_after_structuring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "SEC-KEY-INTEGRITY-NOISE",
+                    "requirement_type": "functional",
+                    "requirement": "During O process in unveiling from the key for O loading from the new master key and from key global, The integrity from the new key must be checked.",
+                    "object": "key loading",
+                    "domain": "security",
+                    "source_refs": ["BLK-SEC-KEY-INTEGRITY"],
+                    "section_path": ["Security"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        spec = function["implementation_spec"]
+        self.assertEqual(
+            spec["key_management"]["key_loading_integrity"],
+            "During key unwrapping and loading, verify the integrity of each new master key and global key before accepting it.",
+        )
+        self.assertIn(
+            "During key unwrapping and loading, verify the integrity of each new master key and global key before accepting it.",
+            spec["processing_rules"],
+        )
+        self.assertNotIn("During O process", json.dumps(function, ensure_ascii=False))
+        self.assertNotIn("unveiling from the key", json.dumps(function, ensure_ascii=False))
+
     def test_security_section_overrides_clock_keyword_noise(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
@@ -648,6 +853,53 @@ class EngineeringComposerTests(unittest.TestCase):
             self.assertEqual(function["domain"], "安全")
             self.assertEqual(function["title"], "Security and key management")
             self.assertEqual(function["module"], "security")
+
+    def test_key_expiration_single_action_schedule_is_not_security_function(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "OBJ-KEY-EXPIRATION-SCHEDULE-INSTANCE",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Key expiration Single action schedule shall be available.",
+                    "object": "Key expiration Single action schedule",
+                    "domain": "obis_code",
+                    "source_refs": ["TBL-SCHEDULE-R1"],
+                    "section_path": ["2 20 Control of"],
+                },
+                {
+                    "stable_req_id": "OBJ-KEY-EXPIRATION-SCHEDULE",
+                    "requirement_type": "cosem_object",
+                    "requirement": (
+                        'Key expiration Single action schedule | 22 | 0-0:15.x.7.255 | '
+                        'Time stamp for expiration and activation of actions required by selecting the entry in the "script table" object'
+                    ),
+                    "object": "Schedule",
+                    "domain": "obis_code",
+                    "source_refs": ["TBL-SCHEDULE-R1"],
+                    "section_path": ["2 20 Control of"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [
+                {
+                    "item_id": "TBL-SCHEDULE-R1",
+                    "table_id": "TBL-SCHEDULE",
+                    "row_index": 1,
+                    "fields": {
+                        "Object/attribute name": "Key expiration Single action schedule",
+                        "CL": "22",
+                        "Value": "0-0:15.x.7.255",
+                    },
+                },
+            ])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        self.assertNotEqual(function["title"], "Security and key management")
+        self.assertEqual(function["module"], "time")
+        self.assertEqual(function["title"], "Scheduled action behavior")
+        self.assertEqual(function["related_dlms_objects"], ["Key expiration Single action schedule"])
 
     def test_reserved_not_used_bit_rows_are_not_promoted_to_functions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -894,8 +1146,10 @@ class EngineeringComposerTests(unittest.TestCase):
 
             hint = model["requirement_functions"][0]["class_hints"][0]
             self.assertEqual(hint["entry_id"], "KB-L3-IC-46-SMTP-SETUP")
-            self.assertIn("Authentication values are security-sensitive", " ".join(hint["behavior_notes"] + hint["access_semantics"]))
-            self.assertIn("SMTP setup", hint["definition"])
+            semantic_text = " ".join(hint["behavior_notes"] + hint["access_semantics"])
+            self.assertIn("login_password", semantic_text)
+            self.assertIn("sensitive", semantic_text)
+            self.assertIn("SMTP protocol", hint["definition"])
 
     def test_requirement_functions_markdown_groups_by_engineering_module(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -992,7 +1246,7 @@ class EngineeringComposerTests(unittest.TestCase):
                         "Apply COSEM class semantics: SMTP setup (class 46).",
                     ],
                     "dlms_object_impact": [
-                        "Configure SMTP setup.",
+                        "SMTP setup: interface class 46, OBIS 0-0:25.9.0.255.",
                     ],
                     "error_and_boundary_behavior": [],
                     "acceptance_checks": [
@@ -1011,6 +1265,158 @@ class EngineeringComposerTests(unittest.TestCase):
             self.assertIn("Processing rules:", markdown)
             self.assertIn("DLMS object impact:", markdown)
             self.assertIn("Acceptance checks:", markdown)
+
+    def test_dlms_object_impact_includes_object_metadata_for_developers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "OBJ-SMTP",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "SMTP setup object shall be available.",
+                    "object": "SMTP setup",
+                    "source_refs": ["TBL-SMTP-OBJ"],
+                    "section_path": ["Object model"],
+                },
+                {
+                    "stable_req_id": "ATTR-SMTP-SERVER",
+                    "requirement_type": "cosem_attribute_access",
+                    "requirement": "server_address shall be readable and writable.",
+                    "object": "SMTP setup.server_address",
+                    "source_refs": ["TBL-SMTP-ATTR"],
+                    "section_path": ["Object model"],
+                },
+                {
+                    "stable_req_id": "METHOD-SMTP-LOGIN",
+                    "requirement_type": "cosem_attribute_access",
+                    "requirement": "login_password shall be executable by secure clients.",
+                    "object": "SMTP setup.login_password",
+                    "source_refs": ["TBL-SMTP-METHOD"],
+                    "section_path": ["Object model"],
+                },
+                {
+                    "stable_req_id": "SMTP-FUNC",
+                    "requirement_type": "functional",
+                    "requirement": "The meter shall send alarm notifications through SMTP setup.",
+                    "object": "SMTP setup",
+                    "domain": "communication",
+                    "source_refs": ["BLK-SMTP"],
+                    "section_path": ["E-mail notification"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [
+                {
+                    "item_id": "TBL-SMTP-OBJ",
+                    "table_id": "TBL-SMTP",
+                    "row_index": 1,
+                    "fields": {
+                        "Object/attribute name": "SMTP setup",
+                        "CL": "46",
+                        "Value": "0-0:25.9.0.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-SMTP-ATTR",
+                    "table_id": "TBL-SMTP",
+                    "row_index": 2,
+                    "fields": {
+                        "#": "2",
+                        "Object/attribute name": "server_address",
+                        "Type": "octet-string",
+                        "Access rights RC/PC/SC/LC": "R-/RW/RW/R-",
+                    },
+                },
+                {
+                    "item_id": "TBL-SMTP-METHOD",
+                    "table_id": "TBL-SMTP",
+                    "row_index": 3,
+                    "fields": {
+                        "#": "1",
+                        "Object/attribute name": "login_password",
+                        "Type": "method",
+                        "Access rights RC/PC/SC/LC": "--/--/-W/-W",
+                    },
+                },
+            ])
+
+            model = compose_engineering_requirements(out_dir)
+            write_engineering_requirements(out_dir, model)
+            function = model["requirement_functions"][0]
+            markdown = (out_dir / "engineering_requirements" / "requirement_functions.md").read_text(encoding="utf-8")
+
+        self.assertEqual(
+            function["implementation_spec"]["dlms_object_impact"],
+            [
+                "SMTP setup: interface class 46, OBIS 0-0:25.9.0.255; attributes server_address (R-/RW/RW/R-); methods login_password (--/--/-W/-W).",
+            ],
+        )
+        self.assertIn("attributes server_address (R-/RW/RW/R-)", markdown)
+        self.assertIn("methods login_password (--/--/-W/-W)", markdown)
+
+    def test_dlms_object_impact_preserves_duplicate_named_object_instances(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "OBJ-SEC-CLIENT",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Client Security Setup shall be available.",
+                    "object": "Security Setup",
+                    "source_refs": ["TBL-SEC-R1"],
+                    "section_path": ["Security objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-SEC-SERVER",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Server Security Setup shall be available.",
+                    "object": "Security Setup",
+                    "source_refs": ["TBL-SEC-R2"],
+                    "section_path": ["Security objects"],
+                },
+                {
+                    "stable_req_id": "FUNC-SEC",
+                    "requirement_type": "functional",
+                    "requirement": "Security Setup objects shall protect secure communication.",
+                    "object": "Security Setup",
+                    "domain": "security",
+                    "source_refs": ["BLK-SEC"],
+                    "section_path": ["Security"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [
+                {
+                    "item_id": "TBL-SEC-R1",
+                    "table_id": "TBL-SEC",
+                    "row_index": 1,
+                    "fields": {
+                        "Object/attribute name": "Security Setup",
+                        "CL": "64",
+                        "Value": "0-0:43.0.1.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-SEC-R2",
+                    "table_id": "TBL-SEC",
+                    "row_index": 2,
+                    "fields": {
+                        "Object/attribute name": "Security Setup",
+                        "CL": "64",
+                        "Value": "0-0:43.0.3.255",
+                    },
+                },
+            ])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        self.assertEqual(
+            function["implementation_spec"]["dlms_object_impact"],
+            [
+                "Security Setup: 2 instances.",
+                "Security Setup [1]: interface class 64, OBIS 0-0:43.0.1.255.",
+                "Security Setup [2]: interface class 64, OBIS 0-0:43.0.3.255.",
+            ],
+        )
 
     def test_class_hint_without_explicit_object_keeps_semantics_but_does_not_link_objects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1275,7 +1681,7 @@ class EngineeringComposerTests(unittest.TestCase):
         self.assertEqual(function["related_dlms_objects"], ["Date of billing period 1 Stored Billing Values Profile"])
         self.assertEqual(dlms_object["related_functions"], [function["id"]])
         self.assertIn(
-            "Configure Date of billing period 1 Stored Billing Values Profile.",
+            "Date of billing period 1 Stored Billing Values Profile: interface class 7, OBIS 1-0:98.1.0.255.",
             function["implementation_spec"]["dlms_object_impact"],
         )
 
@@ -1481,6 +1887,279 @@ class EngineeringComposerTests(unittest.TestCase):
         self.assertIn("pull and push mechanisms must be available", blob)
         self.assertNotIn("If The functionality you are gift", blob)
 
+    def test_application_layer_pull_push_availability_emits_structured_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "COMM-PULL-PUSH",
+                    "requirement_type": "functional",
+                    "requirement": 'DLMS/COSEM application layer " pull " and " push " mechanisms must be available.',
+                    "object": "",
+                    "domain": "communication",
+                    "source_refs": ["BLK-COMM"],
+                    "section_path": ["Communication profiles"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        spec = function["implementation_spec"]
+        self.assertEqual(function["title"], "Communication profiles")
+        self.assertEqual(
+            spec["application_layer"],
+            {
+                "availability": "Expose both DLMS/COSEM pull and push application-layer mechanisms.",
+                "pull_mechanism": "Support client-initiated pull access through DLMS/COSEM application services.",
+                "push_mechanism": "Support server-initiated push delivery through DLMS/COSEM push communication.",
+            },
+        )
+        self.assertIn(
+            "Expose both DLMS/COSEM pull and push application-layer mechanisms.",
+            spec["processing_rules"],
+        )
+        self.assertIn(
+            "Support server-initiated push delivery through DLMS/COSEM push communication.",
+            spec["processing_rules"],
+        )
+        self.assertNotEqual(
+            spec["processing_rules"],
+            ['DLMS/COSEM application layer " pull " and " push " mechanisms must be available.'],
+        )
+        self.assertIn("DLMS/COSEM pull/push", function["description"])
+
+    def test_xdlms_service_table_intro_emits_service_catalog_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "XDLMS-SERVICE-TABLE",
+                    "requirement_type": "functional",
+                    "requirement": "The xDLMS services required by client application processes are shown in Table 1.",
+                    "object": "",
+                    "domain": "communication",
+                    "source_refs": ["BLK-SERVICE-TABLE"],
+                    "section_path": ["Terms and Definitions"],
+                    "verification_method": "configuration_check",
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        spec = function["implementation_spec"]
+        self.assertEqual(function["title"], "xDLMS service capability matrix")
+        self.assertEqual(
+            spec["service_catalog"],
+            {
+                "source_table": "Table 1",
+                "catalog_scope": "xDLMS services required by client application processes.",
+                "implementation_rule": "Drive client-role xDLMS service enablement from the Table 1 capability matrix.",
+            },
+        )
+        self.assertIn(
+            "Treat Table 1 as the normative xDLMS service catalogue for client application processes.",
+            spec["processing_rules"],
+        )
+        self.assertIn(
+            "Drive client-role xDLMS service enablement from the Table 1 capability matrix.",
+            spec["processing_rules"],
+        )
+        self.assertNotEqual(
+            spec["processing_rules"],
+            ["The xDLMS services required by client application processes are shown in Table 1."],
+        )
+        self.assertIn("xDLMS 服务目录", function["description"])
+
+    def test_xdlms_service_catalog_and_capability_rows_stay_in_one_communication_function(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "XDLMS-SERVICE-TABLE",
+                    "requirement_type": "functional",
+                    "requirement": "The xDLMS services required by client application processes are shown in Table 1.",
+                    "object": "",
+                    "domain": "communication",
+                    "source_refs": ["BLK-SERVICE-TABLE"],
+                    "section_path": ["Terms and Definitions"],
+                    "verification_method": "configuration_check",
+                },
+                {
+                    "stable_req_id": "CAP-PUBLIC-GET",
+                    "requirement_type": "capability_matrix",
+                    "requirement": 'Public customer shall support xDLMS Service: "GET".',
+                    "object": "Public customer.GET",
+                    "domain": "communication",
+                    "source_refs": ["TBL-CAP-R1"],
+                    "section_path": ["Terms and Definitions"],
+                    "verification_method": "configuration_check",
+                },
+                {
+                    "stable_req_id": "CAP-MGMT-EVENT",
+                    "requirement_type": "capability_matrix",
+                    "requirement": 'Local and remote management clients shall support xDLMS Service: "EventNotification".',
+                    "object": "Local and remote management clients.EventNotification",
+                    "domain": "event",
+                    "source_refs": ["TBL-CAP-R2"],
+                    "section_path": ["Terms and Definitions"],
+                    "verification_method": "configuration_check",
+                    "kb_matches": [
+                        {
+                            "entry_id": "KB-L3-IC-40-PUSH-SETUP",
+                            "name": "Push Setup",
+                            "type": "cosem_interface_class",
+                            "class_id": 40,
+                        }
+                    ],
+                },
+                {
+                    "stable_req_id": "CAP-MGMT-DATA",
+                    "requirement_type": "capability_matrix",
+                    "requirement": 'Local and remote management clients shall support xDLMS Service: "DataNotification" ("Push setup").',
+                    "object": "Local and remote management clients.DataNotification",
+                    "domain": "push",
+                    "source_refs": ["TBL-CAP-R3"],
+                    "section_path": ["Terms and Definitions"],
+                    "verification_method": "configuration_check",
+                    "kb_matches": [
+                        {
+                            "entry_id": "KB-L3-IC-40-PUSH-SETUP",
+                            "name": "Push Setup",
+                            "type": "cosem_interface_class",
+                            "class_id": 40,
+                        }
+                    ],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+
+        self.assertEqual(len(model["requirement_functions"]), 1)
+        function = model["requirement_functions"][0]
+        spec = function["implementation_spec"]
+        self.assertEqual(function["module"], "communication")
+        self.assertEqual(function["domain"], "通信协议")
+        self.assertEqual(function["title"], "xDLMS service capability matrix")
+        self.assertEqual(
+            spec["service_catalog"],
+            {
+                "source_table": "Table 1",
+                "catalog_scope": "xDLMS services required by client application processes.",
+                "implementation_rule": "Drive client-role xDLMS service enablement from the Table 1 capability matrix.",
+            },
+        )
+        self.assertEqual(
+            spec["capability_matrix"],
+            {
+                "actors": {
+                    "Public customer": ['"GET"'],
+                    "Local and remote management clients": [
+                        '"EventNotification"',
+                        '"DataNotification" ("Push setup")',
+                    ],
+                }
+            },
+        )
+        self.assertIn("COSEM class hint: Push Setup (class 40).", function["acceptance_criteria"])
+        self.assertIn('Allow Local and remote management clients to use "EventNotification".', spec["processing_rules"])
+        self.assertIn('Allow Local and remote management clients to use "DataNotification" ("Push setup").', spec["processing_rules"])
+
+    def test_alarm_record_flag_text_emits_structured_event_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "OBJ-ALARM",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Alarm Object shall be available.",
+                    "object": "Alarm Object",
+                    "source_refs": ["TBL-ALARM-R1"],
+                    "section_path": ["Alarm objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-ALARM-FILTER",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Alarm Filter shall be available.",
+                    "object": "Alarm Filter",
+                    "source_refs": ["TBL-ALARM-R2"],
+                    "section_path": ["Alarm objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-STANDARD-EVENT-LOG",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Standard Event Log shall be available.",
+                    "object": "Standard Event Log",
+                    "source_refs": ["TBL-EVENT-LOG-R1"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "EVENT-ALARM-FLAG",
+                    "requirement_type": "functional",
+                    "requirement": 'If one of these events to occur, O " flag " corresponding at the record in alarm must be set.',
+                    "object": "",
+                    "domain": "event",
+                    "source_refs": ["BLK-ALARM"],
+                    "section_path": ["Event recording behavior"],
+                    "verification_method": "inspection",
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [
+                {
+                    "item_id": "TBL-ALARM-R1",
+                    "table_id": "TBL-ALARM",
+                    "row_index": 1,
+                    "fields": {
+                        "Object/attribute name": "Alarm Object",
+                        "CL": "3",
+                        "Value": "0-0:97.98.0.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-ALARM-R2",
+                    "table_id": "TBL-ALARM",
+                    "row_index": 2,
+                    "fields": {
+                        "Object/attribute name": "Alarm Filter",
+                        "CL": "1",
+                        "Value": "0-0:97.98.10.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-EVENT-LOG-R1",
+                    "table_id": "TBL-EVENT-LOG",
+                    "row_index": 1,
+                    "fields": {
+                        "Object/attribute name": "Standard Event Log",
+                        "CL": "7",
+                        "Value": "0-0:99.98.0.255",
+                    },
+                },
+            ])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        spec = function["implementation_spec"]
+        self.assertEqual(function["title"], "Event recording behavior")
+        self.assertEqual(function["related_dlms_objects"], ["Alarm Object", "Alarm Filter"])
+        self.assertNotIn("Standard Event Log", function["related_dlms_objects"])
+        self.assertEqual(
+            spec["alarm_recording"],
+            {
+                "trigger": "When any configured alarm event occurs.",
+                "alarm_action": "Set the corresponding flag in the alarm record.",
+            },
+        )
+        self.assertIn("When any configured alarm event occurs.", spec["processing_rules"])
+        self.assertIn("Set the corresponding flag in the alarm record.", spec["processing_rules"])
+        self.assertNotIn("O \" flag \"", json.dumps(function, ensure_ascii=False))
+        self.assertIn("告警记录", function["description"])
+
     def test_event_and_billing_translation_noise_are_cleaned_in_engineering_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
@@ -1601,7 +2280,8 @@ class EngineeringComposerTests(unittest.TestCase):
             model = compose_engineering_requirements(out_dir)
             written = write_engineering_requirements(out_dir, model)
 
-            spec = model["requirement_functions"][0]["implementation_spec"]
+            function = model["requirement_functions"][0]
+            spec = function["implementation_spec"]
             self.assertEqual(
                 spec["event_retention"]["subgroups"],
                 [
@@ -1613,10 +2293,21 @@ class EngineeringComposerTests(unittest.TestCase):
                 "Keep at least 100 records for event subgroup G1-SG10 (Non-special events).",
                 spec["processing_rules"],
             )
+            self.assertNotIn(
+                "Event subgroup G1-SG10 shall keep at least 100 records for Non-special events.",
+                spec["processing_rules"],
+            )
+            self.assertNotIn(
+                "Event subgroup G2-SG20 shall keep at least 30 records for Connection related.",
+                spec["processing_rules"],
+            )
             self.assertIn("engineering_requirements/requirement_functions.md", written)
             markdown = (out_dir / "engineering_requirements" / "requirement_functions.md").read_text(encoding="utf-8")
         self.assertIn("Event retention:", markdown)
         self.assertIn("G1-SG10: keep at least 100 records", markdown)
+        function = model["requirement_functions"][0]
+        self.assertIn("2 event retention subgroups", function["description"])
+        self.assertNotIn("Connection related", function["description"])
 
     def test_event_retention_detail_normalizes_spelled_group_number(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1672,7 +2363,8 @@ class EngineeringComposerTests(unittest.TestCase):
             model = compose_engineering_requirements(out_dir)
             written = write_engineering_requirements(out_dir, model)
 
-            spec = model["requirement_functions"][0]["implementation_spec"]
+            function = model["requirement_functions"][0]
+            spec = function["implementation_spec"]
             self.assertEqual(
                 spec["event_definitions"]["events"],
                 [
@@ -1696,10 +2388,252 @@ class EngineeringComposerTests(unittest.TestCase):
                 "Map event G1-SG10-E1 to description: \" Reboot \" with data loss.",
                 spec["processing_rules"],
             )
+            self.assertNotIn(
+                "Event G1-SG10-E1 shall be defined as: \" Reboot \" with data loss.",
+                spec["processing_rules"],
+            )
+            self.assertNotIn(
+                "Event G3-SG31-E1 shall be defined as: voltage between phases below the limit.",
+                spec["processing_rules"],
+            )
+            self.assertIn("2 event code definitions", function["description"])
+            self.assertNotIn("voltage between phases below the limit", function["description"])
             self.assertIn("engineering_requirements/requirement_functions.md", written)
             markdown = (out_dir / "engineering_requirements" / "requirement_functions.md").read_text(encoding="utf-8")
             self.assertIn("Event definitions:", markdown)
             self.assertIn("G3-SG31-E1: voltage between phases below the limit", markdown)
+
+    def test_event_definition_text_with_billing_words_does_not_emit_billing_period_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "EVENT-BILLING-RESET",
+                    "requirement_type": "event_definition",
+                    "requirement": "Event G1-SG10-E2 shall be defined as: End of billing period reset.",
+                    "object": "G1-SG10-E2",
+                    "domain": "event",
+                    "source_refs": ["TBL-EVENT-BILLING"],
+                    "section_path": ["Event definitions"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        self.assertEqual(function["module"], "events")
+        self.assertEqual(function["title"], "Event recording behavior")
+        self.assertNotIn("billing_period", function["implementation_spec"])
+        self.assertIn("event_definitions", function["implementation_spec"])
+        self.assertNotIn("billing period records", json.dumps(function["implementation_spec"], ensure_ascii=False))
+        self.assertNotIn("结算周期", function["description"])
+
+    def test_status_bit_definition_rows_emit_structured_developer_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "STATUS-BIT-AL",
+                    "requirement_type": "functional",
+                    "requirement": "Bit 1 AL | Power failure: This bit is set to indicate that a failure has occurred in energy.",
+                    "object": "Extended Register",
+                    "domain": "metering",
+                    "source_refs": ["TBL-STATUS-R1"],
+                    "section_path": ["Meter profile status"],
+                },
+                {
+                    "stable_req_id": "STATUS-BIT-INT",
+                    "requirement_type": "functional",
+                    "requirement": (
+                        "Bit 2 INT | Communication irregularity detection: This bit is set to indicate that someone "
+                        "has attempted to connect to the meter without permission."
+                    ),
+                    "object": "Extended Register",
+                    "domain": "communication",
+                    "source_refs": ["TBL-STATUS-R2"],
+                    "section_path": ["Meter profile status"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+            written = write_engineering_requirements(out_dir, model)
+
+            function = model["requirement_functions"][0]
+            markdown = (out_dir / "engineering_requirements" / "requirement_functions.md").read_text(encoding="utf-8")
+
+        self.assertEqual(function["title"], "Status bit definitions")
+        self.assertIn("2 status bit definitions", function["description"])
+        self.assertEqual(
+            function["implementation_spec"]["status_bits"],
+            {
+                "bits": [
+                    {
+                        "bit": 1,
+                        "code": "AL",
+                        "name": "Power failure",
+                        "set_condition": "a failure has occurred in energy",
+                    },
+                    {
+                        "bit": 2,
+                        "code": "INT",
+                        "name": "Communication irregularity detection",
+                        "set_condition": "someone has attempted to connect to the meter without permission",
+                    },
+                ]
+            },
+        )
+        self.assertIn("Set status bit AL (bit 1) when a failure has occurred in energy.", function["implementation_spec"]["processing_rules"])
+        self.assertIn("Status bits:", markdown)
+        self.assertIn("bit 2 INT Communication irregularity detection", markdown)
+        self.assertIn("engineering_requirements/requirement_functions.md", written)
+
+    def test_status_bit_indicates_must_be_set_variant_is_structured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "STATUS-BIT-MP",
+                    "requirement_type": "functional",
+                    "requirement": (
+                        "Bit 3 MP | Parameters changed: Indicates that a parameter has been modified. "
+                        "It must be set ever what to occur one operation xDLMS_SET or xDLMS ACTION."
+                    ),
+                    "object": "Extended Register",
+                    "domain": "metering",
+                    "source_refs": ["TBL-STATUS-R3"],
+                    "section_path": ["Meter profile status"],
+                },
+                {
+                    "stable_req_id": "STATUS-BIT-AL",
+                    "requirement_type": "functional",
+                    "requirement": "Bit 1 AL | Power failure: This bit is set to indicate that a failure has occurred in energy.",
+                    "object": "Extended Register",
+                    "domain": "metering",
+                    "source_refs": ["TBL-STATUS-R1"],
+                    "section_path": ["Meter profile status"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+
+        functions = model["requirement_functions"]
+        self.assertEqual(len(functions), 1)
+        function = functions[0]
+        self.assertEqual(function["title"], "Status bit definitions")
+        self.assertEqual(
+            function["implementation_spec"]["status_bits"]["bits"][0],
+            {
+                "bit": 3,
+                "code": "MP",
+                "name": "Parameters changed",
+                "meaning": "a parameter has been modified",
+                "set_condition": "every time an xDLMS_SET or xDLMS ACTION operation occurs",
+            },
+        )
+        self.assertIn(
+            "Set status bit MP (bit 3) when every time an xDLMS_SET or xDLMS ACTION operation occurs.",
+            function["implementation_spec"]["processing_rules"],
+        )
+
+    def test_accumulator_rollover_requirement_emits_structured_measurement_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "MEAS-ACCUMULATOR-ROLLOVER",
+                    "requirement_type": "functional",
+                    "requirement": 'The value of accumulator registers must return to zero when it reaches the maximum of "9s" what',
+                    "object": "Register",
+                    "domain": "metering",
+                    "verification_method": "inspection",
+                    "source_refs": ["BLK-ACCUMULATOR"],
+                    "section_path": ["Measurement data behavior"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+            written = write_engineering_requirements(out_dir, model)
+            function = model["requirement_functions"][0]
+            markdown = (out_dir / "engineering_requirements" / "requirement_functions.md").read_text(encoding="utf-8")
+
+        self.assertEqual(function["title"], "Accumulator rollover behavior")
+        self.assertIn("累计寄存器回卷", function["description"])
+        self.assertEqual(
+            function["implementation_spec"]["measurement_rollover"],
+            {
+                "target": "accumulator registers",
+                "maximum_value": 'maximum all-9s value',
+                "rollover_action": "Return the accumulator value to zero when the maximum all-9s value is reached.",
+            },
+        )
+        self.assertIn(
+            "Return the accumulator value to zero when the maximum all-9s value is reached.",
+            function["implementation_spec"]["processing_rules"],
+        )
+        self.assertNotIn("when it reaches the maximum of \"9s\" what", json.dumps(function, ensure_ascii=False))
+        self.assertIn("Measurement rollover:", markdown)
+        self.assertIn("engineering_requirements/requirement_functions.md", written)
+
+    def test_accumulator_rollover_links_only_cumulative_register_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "OBJ-CUMULATIVE-DEMAND",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Cumulative active demand register shall be available.",
+                    "object": "Cumulative Active Demand Register import",
+                    "source_refs": ["TBL-CUMULATIVE-DEMAND"],
+                    "section_path": ["Measurement data behavior"],
+                },
+                {
+                    "stable_req_id": "OBJ-ACTIVE-ENERGY",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Active energy import register shall be available.",
+                    "object": "Active Energy Import Total",
+                    "source_refs": ["TBL-ACTIVE-ENERGY"],
+                    "section_path": ["Measurement data behavior"],
+                },
+                {
+                    "stable_req_id": "MEAS-ACCUMULATOR-ROLLOVER",
+                    "requirement_type": "functional",
+                    "requirement": 'The value of accumulator registers must return to zero when it reaches the maximum of "9s" what',
+                    "object": "Register",
+                    "domain": "metering",
+                    "source_refs": ["BLK-ACCUMULATOR"],
+                    "section_path": ["Measurement data behavior"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [
+                {
+                    "item_id": "TBL-CUMULATIVE-DEMAND",
+                    "table_id": "TBL-MEASUREMENT",
+                    "fields": {
+                        "Object/attribute name": "Cumulative Active Demand Register import",
+                        "CL": "4",
+                        "Value": "1-0:1.2.0.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-ACTIVE-ENERGY",
+                    "table_id": "TBL-MEASUREMENT",
+                    "fields": {
+                        "Object/attribute name": "Active Energy Import Total",
+                        "CL": "3",
+                        "Value": "1-0:1.8.0.255",
+                    },
+                },
+            ])
+
+            model = compose_engineering_requirements(out_dir)
+
+            function = model["requirement_functions"][0]
+            self.assertEqual(function["title"], "Accumulator rollover behavior")
+            self.assertEqual(function["related_dlms_objects"], ["Cumulative Active Demand Register import"])
 
     def test_short_object_name_does_not_match_inside_words(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2041,6 +2975,135 @@ class EngineeringComposerTests(unittest.TestCase):
         self.assertNotIn("door PLC", blob)
         self.assertNotIn("door optics", blob)
 
+    def test_event_definitions_link_only_high_confidence_event_log_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "OBJ-STANDARD-EVENT-LOG",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Standard Event Log shall be available.",
+                    "object": "Standard Event Log",
+                    "source_refs": ["TBL-STANDARD-EVENT-LOG"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-FRAUD-DETECTION-LOG",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Fraud Detection Log shall be available.",
+                    "object": "Fraud Detection Log",
+                    "source_refs": ["TBL-FRAUD-DETECTION-LOG"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-POWER-QUALITY-LOG",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Power Quality Event Log shall be available.",
+                    "object": "Power Quality Event Log",
+                    "source_refs": ["TBL-POWER-QUALITY-LOG"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-COMMON-EVENT-LOG",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Common Event Log shall be available.",
+                    "object": "Common Event Log",
+                    "source_refs": ["TBL-COMMON-EVENT-LOG"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-POWER-QUALITY-EVENT-OBJECT",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Event Object - Power Quality Log shall be available.",
+                    "object": "Event Object - Power Quality Log",
+                    "source_refs": ["TBL-POWER-QUALITY-EVENT-OBJECT"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-POWER-QUALITY-FILTER",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Power Quality Event Log Filter shall be available.",
+                    "object": "Power Quality Event Log Filter",
+                    "source_refs": ["TBL-POWER-QUALITY-FILTER"],
+                    "section_path": ["Event log filters"],
+                },
+                {
+                    "stable_req_id": "OBJ-DRP-LOG",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "DRP Log shall be available.",
+                    "object": "DRP Log",
+                    "source_refs": ["TBL-DRP-LOG"],
+                    "section_path": ["Demand logs"],
+                },
+                {
+                    "stable_req_id": "EVENT-G1-STANDARD",
+                    "requirement_type": "event_definition",
+                    "requirement": "Event G1-SG10-E3 shall be defined as: Lack of power.",
+                    "object": "G1-SG10-E3",
+                    "domain": "event",
+                    "source_refs": ["TBL-EVENTS-R1"],
+                    "section_path": ["Control of"],
+                },
+                {
+                    "stable_req_id": "EVENT-G3-QUALITY",
+                    "requirement_type": "event_definition",
+                    "requirement": "Event G3-SG31-E1 shall be defined as: voltage between phases below the limit.",
+                    "object": "G3-SG31-E1",
+                    "domain": "event",
+                    "source_refs": ["TBL-EVENTS-R2"],
+                    "section_path": ["Control of"],
+                },
+                {
+                    "stable_req_id": "EVENT-G4-FRAUD",
+                    "requirement_type": "event_definition",
+                    "requirement": "Event G4-SG40-E1 shall be defined as: Wrapping with the seal broken.",
+                    "object": "G4-SG40-E1",
+                    "domain": "event",
+                    "source_refs": ["TBL-EVENTS-R3"],
+                    "section_path": ["Control of"],
+                },
+                {
+                    "stable_req_id": "EVENT-G5-DEMAND",
+                    "requirement_type": "event_definition",
+                    "requirement": "Event G5-SG50-E1 shall be defined as: Demand reset.",
+                    "object": "G5-SG50-E1",
+                    "domain": "event",
+                    "source_refs": ["TBL-EVENTS-R4"],
+                    "section_path": ["Control of"],
+                },
+                {
+                    "stable_req_id": "EVENT-G6-COMMUNICATION",
+                    "requirement_type": "event_definition",
+                    "requirement": "Event G6-SG60-E1 shall be defined as: Start of communication on the PLC port.",
+                    "object": "G6-SG60-E1",
+                    "domain": "event",
+                    "source_refs": ["TBL-EVENTS-R5"],
+                    "section_path": ["Control of"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [
+                {"item_id": "TBL-STANDARD-EVENT-LOG", "fields": {"Object/attribute name": "Standard Event Log", "CL": "7", "Value": "0-0:99.98.0.255"}},
+                {"item_id": "TBL-FRAUD-DETECTION-LOG", "fields": {"Object/attribute name": "Fraud Detection Log", "CL": "7", "Value": "0-0:99.98.1.255"}},
+                {"item_id": "TBL-POWER-QUALITY-LOG", "fields": {"Object/attribute name": "Power Quality Event Log", "CL": "7", "Value": "0-0:99.98.5.255"}},
+                {"item_id": "TBL-COMMON-EVENT-LOG", "fields": {"Object/attribute name": "Common Event Log", "CL": "7", "Value": "0-0:99.98.7.255"}},
+                {"item_id": "TBL-POWER-QUALITY-EVENT-OBJECT", "fields": {"Object/attribute name": "Event Object - Power Quality Log", "CL": "1", "Value": "0-0:96.11.5.255"}},
+                {"item_id": "TBL-POWER-QUALITY-FILTER", "fields": {"Object/attribute name": "Power Quality Event Log Filter", "CL": "1", "Value": "0-1:94.55.107.255"}},
+                {"item_id": "TBL-DRP-LOG", "fields": {"Object/attribute name": "DRP Log", "CL": "7", "Value": "1-0:94.55.178.255"}},
+            ])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        self.assertEqual(function["title"], "Event recording behavior")
+        self.assertEqual(
+            function["related_dlms_objects"],
+            ["Power Quality Event Log", "Fraud Detection Log", "Common Event Log"],
+        )
+        self.assertNotIn("Standard Event Log", function["related_dlms_objects"])
+        self.assertNotIn("Event Object - Power Quality Log", function["related_dlms_objects"])
+        self.assertNotIn("Power Quality Event Log Filter", function["related_dlms_objects"])
+        self.assertNotIn("DRP Log", function["related_dlms_objects"])
+
     def test_event_retention_scope_mentions_do_not_create_dlms_object_impact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
@@ -2081,6 +3144,141 @@ class EngineeringComposerTests(unittest.TestCase):
         function = model["requirement_functions"][0]
         self.assertEqual(function["title"], "Event retention requirements")
         self.assertEqual(function["related_dlms_objects"], [])
+
+    def test_event_retention_links_to_available_event_log_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "OBJ-STANDARD-EVENT-LOG",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Standard Event Log shall be available.",
+                    "object": "Standard Event Log",
+                    "source_refs": ["TBL-EVENT-LOG-R1"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-FRAUD-EVENT-LOG",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Fraud Detection Log shall be available.",
+                    "object": "Fraud Detection Log",
+                    "source_refs": ["TBL-EVENT-LOG-R2"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-STANDARD-EVENT-OBJECT",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Event Object - Standard Event Log shall be available.",
+                    "object": "Event Object - Standard Event Log",
+                    "source_refs": ["TBL-EVENT-LOG-R3"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-STANDARD-EVENT-LOG-FILTER",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Standard Event Log Filter shall be available.",
+                    "object": "Standard Event Log Filter",
+                    "source_refs": ["TBL-EVENT-LOG-R4"],
+                    "section_path": ["Event log objects"],
+                },
+                {
+                    "stable_req_id": "OBJ-DRP-LOG",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "DRP Log shall be available.",
+                    "object": "DRP Log",
+                    "source_refs": ["TBL-DEMAND-LOG-R1"],
+                    "section_path": ["Demand logs"],
+                },
+                {
+                    "stable_req_id": "OBJ-CLOCK",
+                    "requirement_type": "cosem_object_instance",
+                    "requirement": "Clock shall be available.",
+                    "object": "Clock",
+                    "source_refs": ["TBL-CLOCK-R1"],
+                    "section_path": ["Clock objects"],
+                },
+                {
+                    "stable_req_id": "EVENT-RETENTION-POWER",
+                    "requirement_type": "event_group_retention",
+                    "requirement": "Event subgroup G1-SG10 shall keep at least 100 records for Non-special events.",
+                    "object": "G1-SG10",
+                    "domain": "event",
+                    "source_refs": ["TBL-EVENTS-R1"],
+                    "section_path": ["Event retention"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [
+                {
+                    "item_id": "TBL-EVENT-LOG-R1",
+                    "table_id": "TBL-EVENT-LOG",
+                    "row_index": 1,
+                    "fields": {
+                        "Object/attribute name": "Standard Event Log",
+                        "CL": "7",
+                        "Value": "0-0:99.98.0.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-EVENT-LOG-R2",
+                    "table_id": "TBL-EVENT-LOG",
+                    "row_index": 2,
+                    "fields": {
+                        "Object/attribute name": "Fraud Detection Log",
+                        "CL": "7",
+                        "Value": "0-0:99.98.1.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-CLOCK-R1",
+                    "table_id": "TBL-CLOCK",
+                    "row_index": 1,
+                    "fields": {
+                        "Object/attribute name": "Clock",
+                        "CL": "8",
+                        "Value": "0-0:1.0.0.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-EVENT-LOG-R3",
+                    "table_id": "TBL-EVENT-LOG",
+                    "row_index": 3,
+                    "fields": {
+                        "Object/attribute name": "Event Object - Standard Event Log",
+                        "CL": "1",
+                        "Value": "0-0:96.11.0.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-EVENT-LOG-R4",
+                    "table_id": "TBL-EVENT-LOG",
+                    "row_index": 4,
+                    "fields": {
+                        "Object/attribute name": "Standard Event Log Filter",
+                        "CL": "1",
+                        "Value": "0-1:94.55.105.255",
+                    },
+                },
+                {
+                    "item_id": "TBL-DEMAND-LOG-R1",
+                    "table_id": "TBL-DEMAND-LOG",
+                    "row_index": 1,
+                    "fields": {
+                        "Object/attribute name": "DRP Log",
+                        "CL": "7",
+                        "Value": "1-0:94.55.178.255",
+                    },
+                },
+            ])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        self.assertEqual(function["title"], "Event retention requirements")
+        self.assertEqual(function["related_dlms_objects"], ["Standard Event Log", "Fraud Detection Log"])
+        self.assertNotIn("Event Object - Standard Event Log", function["related_dlms_objects"])
+        self.assertNotIn("Standard Event Log Filter", function["related_dlms_objects"])
+        self.assertNotIn("DRP Log", function["related_dlms_objects"])
+        self.assertNotIn("Clock", function["related_dlms_objects"])
 
     def test_absolute_load_curve_requirement_uses_load_profile_module_and_links_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2141,11 +3339,103 @@ class EngineeringComposerTests(unittest.TestCase):
         self.assertEqual(function["module"], "load_profile")
         self.assertEqual(function["title"], "Load profile collection and storage")
         self.assertEqual(
+            function["implementation_spec"]["load_profile"]["daily_collection"],
+            "Collect absolute load curve energy quantities every day at 00:00:00.",
+        )
+        self.assertEqual(
+            function["implementation_spec"]["load_profile"]["minimum_retention"],
+            "Keep at least three months of absolute load curve records.",
+        )
+        self.assertIn(
+            "Collect absolute load curve energy quantities every day at 00:00:00.",
+            function["implementation_spec"]["processing_rules"],
+        )
+        self.assertIn(
+            "Keep at least three months of absolute load curve records.",
+            function["implementation_spec"]["processing_rules"],
+        )
+        self.assertNotIn(
+            (
+                "The energy quantities related to the absolute load curve should be collected every day "
+                "at 00:00:00, and record capacity must be at least three months."
+            ),
+            function["implementation_spec"]["processing_rules"],
+        )
+        self.assertEqual(
             function["related_dlms_objects"],
             [
                 "AMR profile status for Load profile and quality with period 1",
                 "Load profile and quality with period 1",
             ],
+        )
+
+    def test_capture_period_requirements_use_structured_load_profile_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [
+                {
+                    "stable_req_id": "FUNC-CAPTURE-PERIODS",
+                    "requirement_type": "functional",
+                    "requirement": (
+                        "The quantities whose objects are defined in this Standard are listed in Tables 13 to 17; "
+                        "the concessionaire must define the quantities that are effectively captured in the meter "
+                        "technical specification according to operational needs, and may organize them into two lists "
+                        "with programmable capture periods."
+                    ),
+                    "object": "Profile Generic",
+                    "domain": "load_profile",
+                    "source_refs": ["BLK-CAPTURE-PERIODS"],
+                    "section_path": ["20 Control of"],
+                },
+                {
+                    "stable_req_id": "FUNC-CAPTURE-LIST-STATUS",
+                    "requirement_type": "functional",
+                    "requirement": (
+                        "The timestamp at the end of the capture period and the meter profile status code must be "
+                        "recorded in the capture list."
+                    ),
+                    "object": "Profile Generic",
+                    "domain": "load_profile",
+                    "source_refs": ["BLK-CAPTURE-LIST"],
+                    "section_path": ["20 Control of"],
+                },
+            ])
+            write_jsonl(out_dir / "table_items.jsonl", [])
+
+            model = compose_engineering_requirements(out_dir)
+
+        function = model["requirement_functions"][0]
+        self.assertEqual(function["module"], "load_profile")
+        self.assertEqual(function["title"], "Load profile collection and storage")
+        self.assertIn("capture periods", function["description"])
+        self.assertNotIn("20 Control of", function["title"])
+        self.assertEqual(
+            function["implementation_spec"]["load_profile"],
+            {
+                "capture_periods": (
+                    "Allow the meter technical specification to select captured quantities and organize them into "
+                    "two lists with programmable capture periods."
+                ),
+                "capture_list_status": (
+                    "Record the capture-period end timestamp and meter profile status code in the capture list."
+                ),
+            },
+        )
+        self.assertNotIn(
+            (
+                "The quantities whose objects are defined in this Standard are listed in Tables 13 to 17; "
+                "the concessionaire must define the quantities that are effectively captured in the meter "
+                "technical specification according to operational needs, and may organize them into two lists "
+                "with programmable capture periods."
+            ),
+            function["implementation_spec"]["processing_rules"],
+        )
+        self.assertNotIn(
+            (
+                "The timestamp at the end of the capture period and the meter profile status code must be "
+                "recorded in the capture list."
+            ),
+            function["implementation_spec"]["processing_rules"],
         )
 
     def test_context_attribute_from_different_table_is_not_attached_to_object(self) -> None:

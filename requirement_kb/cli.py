@@ -42,6 +42,16 @@ def print_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def configure_stdio() -> None:
+    for stream, kwargs in (
+        (sys.stdout, {"encoding": "utf-8"}),
+        (sys.stderr, {"encoding": "utf-8", "errors": "replace"}),
+    ):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(**kwargs)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Query, validate, and compile Requirement Atomizer knowledge bases.")
     parser.add_argument("--kb", type=Path, action="append", default=[], help="Knowledge base JSON file. Can be repeated.")
@@ -97,6 +107,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    configure_stdio()
     args = parse_args()
     if args.command in {"info", "search", "get", "match", "context"}:
         kb_paths = args.kb or default_kb_paths()

@@ -203,12 +203,48 @@ def _append_function_markdown(lines: list[str], item: dict[str, Any], *, heading
                 description = str(event.get("description") or "").strip()
                 if event_code and description:
                     lines.append(f"    - {event_code}: {description}")
+        status_bits = spec.get("status_bits") if isinstance(spec.get("status_bits"), dict) else {}
+        status_rows = status_bits.get("bits") if isinstance(status_bits.get("bits"), list) else []
+        if status_rows:
+            lines.append("  - Status bits:")
+            for bit in status_rows:
+                if not isinstance(bit, dict):
+                    continue
+                bit_number = bit.get("bit")
+                code = str(bit.get("code") or "").strip()
+                name = str(bit.get("name") or "").strip()
+                set_condition = str(bit.get("set_condition") or "").strip()
+                if bit_number is not None and code and name:
+                    suffix = f": set when {set_condition}" if set_condition else ""
+                    lines.append(f"    - bit {bit_number} {code} {name}{suffix}")
+        measurement_rollover = spec.get("measurement_rollover") if isinstance(spec.get("measurement_rollover"), dict) else {}
+        if measurement_rollover:
+            lines.append("  - Measurement rollover:")
+            for key, label in (
+                ("target", "Target"),
+                ("maximum_value", "Maximum value"),
+                ("rollover_action", "Rollover action"),
+            ):
+                value = str(measurement_rollover.get(key) or "").strip()
+                if value:
+                    lines.append(f"    - {label}: {value}")
+        alarm_recording = spec.get("alarm_recording") if isinstance(spec.get("alarm_recording"), dict) else {}
+        if alarm_recording:
+            lines.append("  - Alarm recording:")
+            for key, label in (
+                ("trigger", "Trigger"),
+                ("alarm_action", "Action"),
+            ):
+                value = str(alarm_recording.get(key) or "").strip()
+                if value:
+                    lines.append(f"    - {label}: {value}")
         billing_period = spec.get("billing_period") if isinstance(spec.get("billing_period"), dict) else {}
         if billing_period:
             lines.append("  - Billing period:")
             for key, label in (
                 ("trigger", "Trigger"),
                 ("minimum_records", "Minimum records"),
+                ("maximum_records", "Maximum records"),
             ):
                 value = str(billing_period.get(key) or "").strip()
                 if value:
@@ -221,8 +257,34 @@ def _append_function_markdown(lines: list[str], item: dict[str, Any], *, heading
             for key, label in (
                 ("collection_interval", "Collection interval"),
                 ("storage_capacity", "Storage capacity"),
+                ("daily_collection", "Daily collection"),
+                ("minimum_retention", "Minimum retention"),
+                ("capture_periods", "Capture periods"),
+                ("capture_list_status", "Capture list status"),
             ):
                 value = str(load_profile.get(key) or "").strip()
+                if value:
+                    lines.append(f"    - {label}: {value}")
+        application_layer = spec.get("application_layer") if isinstance(spec.get("application_layer"), dict) else {}
+        if application_layer:
+            lines.append("  - Application layer:")
+            for key, label in (
+                ("availability", "Availability"),
+                ("pull_mechanism", "Pull mechanism"),
+                ("push_mechanism", "Push mechanism"),
+            ):
+                value = str(application_layer.get(key) or "").strip()
+                if value:
+                    lines.append(f"    - {label}: {value}")
+        service_catalog = spec.get("service_catalog") if isinstance(spec.get("service_catalog"), dict) else {}
+        if service_catalog:
+            lines.append("  - Service catalog:")
+            for key, label in (
+                ("source_table", "Source table"),
+                ("catalog_scope", "Scope"),
+                ("implementation_rule", "Implementation rule"),
+            ):
+                value = str(service_catalog.get(key) or "").strip()
                 if value:
                     lines.append(f"    - {label}: {value}")
         capability_matrix = spec.get("capability_matrix") if isinstance(spec.get("capability_matrix"), dict) else {}
@@ -415,7 +477,7 @@ def _compose_requirement_functions(
         item["acceptance_criteria"] = _acceptance_criteria(item)
         item.pop("_row_acceptance_criteria", None)
         item["implementation_tasks"] = _implementation_tasks(item)
-        item["implementation_spec"] = _implementation_spec(item)
+        item["implementation_spec"] = _implementation_spec(item, object_index)
     return functions
 
 
@@ -553,6 +615,7 @@ def _link_functions_to_objects(functions: list[dict[str, Any]], objects: list[di
 
 def _dlms_object_index(dlms_objects: list[dict[str, Any]]) -> dict[str, Any]:
     names: list[str] = []
+    by_name: dict[str, list[dict[str, Any]]] = {}
     by_obis: dict[str, str] = {}
     by_class_id: dict[str, list[dict[str, Any]]] = {}
     by_table_id: dict[str, list[dict[str, Any]]] = {}
@@ -560,6 +623,7 @@ def _dlms_object_index(dlms_objects: list[dict[str, Any]]) -> dict[str, Any]:
         name = str(obj.get("object_name") or "").strip()
         if name:
             names.append(name)
+            by_name.setdefault(name, []).append(obj)
         obis = str(obj.get("obis") or "").strip()
         if name and obis:
             by_obis[obis.lower()] = name
@@ -570,12 +634,12 @@ def _dlms_object_index(dlms_objects: list[dict[str, Any]]) -> dict[str, Any]:
         for table_id in obj.get("source_table_ids") or []:
             if name and table_id:
                 by_table_id.setdefault(str(table_id), []).append(obj)
-    return {"names": names, "by_obis": by_obis, "by_class_id": by_class_id, "by_table_id": by_table_id}
+    return {"names": names, "by_name": by_name, "by_obis": by_obis, "by_class_id": by_class_id, "by_table_id": by_table_id}
 
 
 def _related_object_names(row: dict[str, Any], object_index: dict[str, Any]) -> list[str]:
     if row.get("requirement_type") == "event_group_retention":
-        return []
+        return _event_log_object_names(object_index)
     object_text = str(row.get("object") or "")
     requirement_text = str(row.get("requirement") or "")
     cleaned_requirement_text = _clean_requirement_detail(requirement_text)
@@ -595,6 +659,40 @@ def _related_object_names(row: dict[str, Any], object_index: dict[str, Any]) -> 
     return related
 
 
+def _event_log_object_names(object_index: dict[str, Any]) -> list[str]:
+    related: list[str] = []
+    for obj in _iter_indexed_objects(object_index):
+        name = str(obj.get("object_name") or "").strip()
+        if not name:
+            continue
+        lowered = name.lower()
+        class_id = str(obj.get("class_id") or "").strip()
+        obis = str(obj.get("obis") or "").strip()
+        if class_id == "7" and " log" in lowered and ":99.98." in obis:
+            _append_unique(related, name)
+    return related
+
+
+def _iter_indexed_objects(object_index: dict[str, Any]) -> list[dict[str, Any]]:
+    by_name = object_index.get("by_name") if isinstance(object_index, dict) else {}
+    if not isinstance(by_name, dict):
+        return []
+    objects: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for values in by_name.values():
+        if not isinstance(values, list):
+            continue
+        for obj in values:
+            if not isinstance(obj, dict):
+                continue
+            marker = id(obj)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            objects.append(obj)
+    return objects
+
+
 def _semantic_related_object_names(row: dict[str, Any], object_index: dict[str, Any], haystack: str) -> list[str]:
     related: list[str] = []
     module_hint = f"{row.get('domain') or ''} {_context_title(row)}".lower()
@@ -609,7 +707,67 @@ def _semantic_related_object_names(row: dict[str, Any], object_index: dict[str, 
         for name in object_index["names"]:
             if "load profile" in name.lower():
                 _append_unique(related, name)
+    if _has_alarm_record_context(module_hint, haystack):
+        for name in object_index["names"]:
+            lowered = name.lower()
+            if lowered in {"alarm object", "alarm filter"}:
+                _append_unique(related, name)
+    if _is_accumulator_rollover_text(haystack):
+        _extend_unique(related, _cumulative_register_object_names(object_index))
+    if row.get("requirement_type") == "event_definition":
+        _extend_unique(related, _event_definition_log_object_names(row, object_index))
     return related
+
+
+def _event_definition_log_object_names(row: dict[str, Any], object_index: dict[str, Any]) -> list[str]:
+    group_tokens = _event_definition_group_tokens(row)
+    if not group_tokens:
+        return []
+    target_names_by_group = {
+        "G3": {"power quality event log"},
+        "G4": {"fraud detection log"},
+        "G6": {"common event log"},
+    }
+    target_names: set[str] = set()
+    for group in group_tokens:
+        target_names.update(target_names_by_group.get(group, set()))
+    if not target_names:
+        return []
+    related: list[str] = []
+    for obj in _iter_indexed_objects(object_index):
+        name = str(obj.get("object_name") or "").strip()
+        if not name or name.lower() not in target_names:
+            continue
+        class_id = str(obj.get("class_id") or "").strip()
+        obis = str(obj.get("obis") or "").strip()
+        if class_id == "7" and ":99.98." in obis:
+            _append_unique(related, name)
+    return related
+
+
+def _event_definition_group_tokens(row: dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for value in (row.get("object"), row.get("requirement")):
+        for match in re.finditer(r"\b(G\w+)-SG\w+-E\w+\b", str(value or ""), flags=re.IGNORECASE):
+            tokens.add(_normalize_event_token(match.group(1)))
+    return tokens
+
+
+def _cumulative_register_object_names(object_index: dict[str, Any]) -> list[str]:
+    related: list[str] = []
+    for obj in _iter_indexed_objects(object_index):
+        name = str(obj.get("object_name") or "").strip()
+        if not name or "cumulative" not in name.lower():
+            continue
+        class_id = str(obj.get("class_id") or "").strip()
+        if class_id in {"3", "4"}:
+            _append_unique(related, name)
+    return related
+
+
+def _has_alarm_record_context(module_hint: str, haystack: str) -> bool:
+    text = f"{module_hint} {haystack}".lower()
+    return "alarm record" in text or "record in alarm" in text
 
 
 def _has_security_object_context(module_hint: str, haystack: str) -> bool:
@@ -814,6 +972,10 @@ def _split_object_attribute(row: dict[str, Any]) -> tuple[str, str]:
 def _domain_label(row: dict[str, Any]) -> str:
     if row.get("requirement_type") in {"event_definition", "event_group_retention"}:
         return "事件记录"
+    if _is_xdlms_service_matrix_row(row):
+        return "通信协议"
+    if _parse_status_bit_definition(row.get("requirement")):
+        return "状态字"
     section = _context_title(row).lower()
     text = f"{row.get('domain') or ''} {row.get('object') or ''} {row.get('requirement') or ''} {section}".lower()
     if str(row.get("domain") or "").lower() == "load_profile" or any(
@@ -845,6 +1007,10 @@ def _domain_label(row: dict[str, Any]) -> str:
 
 def _module_label(row: dict[str, Any], domain: str) -> str:
     text = f"{row.get('domain') or ''} {row.get('object') or ''} {row.get('requirement') or ''} {_context_title(row)}".lower()
+    if domain == "状态字" or _parse_status_bit_definition(row.get("requirement")):
+        return "status"
+    if _is_xdlms_service_matrix_row(row):
+        return "communication"
     if str(row.get("domain") or "").lower() == "load_profile" or any(
         keyword in text for keyword in ("load profile", "load curve", "mass memory", "capture period", "storage capacity")
     ):
@@ -861,6 +1027,7 @@ def _module_label(row: dict[str, Any], domain: str) -> str:
         "曲线": "load_profile",
         "计量": "metering",
         "通信协议": "communication",
+        "状态字": "status",
     }
     if domain in domain_map:
         return domain_map[domain]
@@ -888,11 +1055,25 @@ def _context_title(row: dict[str, Any]) -> str:
     return ""
 
 
+def _is_xdlms_service_matrix_row(row: dict[str, Any]) -> bool:
+    text = f"{row.get('requirement') or ''} {_context_title(row)}".lower()
+    if "xdlms service" in text:
+        return True
+    return "xdlms services required by client application processes" in text
+
+
+def _is_scheduled_action_row(row: dict[str, Any]) -> bool:
+    text = f"{row.get('object') or ''} {row.get('requirement') or ''} {_context_title(row)}".lower()
+    return "single action schedule" in text or "script table" in text and "time stamp" in text
+
+
 def _semantic_title(row: dict[str, Any]) -> str:
     text = f"{row.get('object') or ''} {row.get('requirement') or ''}".lower()
     section = _context_title(row).lower()
     if row.get("requirement_type") == "event_group_retention":
         return "Event retention requirements"
+    if _is_xdlms_service_matrix_row(row):
+        return "xDLMS service capability matrix"
     if row.get("requirement_type") == "event_definition":
         if (
             "secure" in text
@@ -905,9 +1086,26 @@ def _semantic_title(row: dict[str, Any]) -> str:
         ):
             return "Security event definitions"
         return "Event recording behavior"
+    if _parse_status_bit_definition(row.get("requirement")):
+        return "Status bit definitions"
+    if _is_accumulator_rollover_text(row.get("requirement")):
+        return "Accumulator rollover behavior"
+    if str(row.get("domain") or "").lower() == "billing_profile":
+        return "Control of billing period"
     if "billing" in text or "invoicing" in text or "billing" in section:
         return "Control of billing period"
-    if "load profile" in text or "load curve" in text or "collection" in text or "mass memory" in text or "storage capacity" in text:
+    if _is_scheduled_action_row(row):
+        return "Scheduled action behavior"
+    if any(keyword in text for keyword in (
+        "load profile",
+        "load curve",
+        "collection",
+        "mass memory",
+        "storage capacity",
+        "capture period",
+        "capture list",
+        "profile status",
+    )):
         return "Load profile collection and storage"
     if "security" in text or "cipher" in text or "key" in text or "security" in section:
         return "Security and key management"
@@ -935,14 +1133,24 @@ def _function_topic(row: dict[str, Any], object_index: dict[str, Any]) -> str:
         return "event handling"
     if requirement_type == "event_group_retention":
         return "event retention requirements"
+    if semantic_title == "xDLMS service capability matrix":
+        return "xdlms service capability matrix"
     if requirement_type in {"capability_matrix", "association_security_matrix"}:
         return semantic_title or _context_title(row).lower()
+    if str(row.get("domain") or "").lower() == "billing_profile" and semantic_title == "Control of billing period":
+        return "control of billing period"
     if semantic_title in {"Control of billing period", "Load profile collection and storage"}:
+        return semantic_title.lower()
+    if semantic_title == "Scheduled action behavior":
         return semantic_title.lower()
     if semantic_title == "Security and key management":
         return semantic_title.lower()
     if requirement_type == "event_definition":
         return semantic_title or "event definitions"
+    if semantic_title == "Status bit definitions":
+        return "status bit definitions"
+    if semantic_title == "Accumulator rollover behavior":
+        return "accumulator rollover behavior"
     related = _related_object_names(row, object_index)
     if related:
         return "|".join(related)
@@ -985,6 +1193,36 @@ def _is_low_information_function_row(row: dict[str, Any]) -> bool:
 def _function_description(item: dict[str, Any]) -> str:
     if _event_handling_spec(item):
         return "研发实现应覆盖事件记录与事件推送控制：按事件寄存器位记录事件，按事件推送位发送 push notification。"
+    event_retention = _event_retention_spec(item)
+    if event_retention:
+        subgroups = event_retention.get("subgroups") or []
+        noun = "subgroup" if len(subgroups) == 1 else "subgroups"
+        return (
+            f"研发实现应覆盖 {len(subgroups)} event retention {noun}："
+            "按事件子组配置最小留存记录数，并保持事件范围与存储容量可审计。"
+        )
+    event_definitions = _event_definitions_spec(item)
+    if event_definitions:
+        events = event_definitions.get("events") or []
+        noun = "definition" if len(events) == 1 else "definitions"
+        return (
+            f"研发实现应覆盖 {len(events)} event code {noun}："
+            "按事件组/子组/编号建立事件码到事件含义的映射，并保持事件记录表可追溯。"
+        )
+    status_bits = _status_bits_spec(item)
+    if status_bits:
+        bits = status_bits.get("bits") or []
+        noun = "definition" if len(bits) == 1 else "definitions"
+        return (
+            f"研发实现应覆盖 {len(bits)} status bit {noun}："
+            "按状态位编号、缩写和触发条件设置状态字，并保持配置检查可追溯。"
+        )
+    measurement_rollover = _measurement_rollover_spec(item)
+    if measurement_rollover:
+        return "研发实现应覆盖累计寄存器回卷：当累计值达到全 9 最大值时归零，并保持计量值连续可解释。"
+    alarm_recording = _alarm_recording_spec(item)
+    if alarm_recording:
+        return "研发实现应覆盖告警记录标志位：当配置的告警事件发生时，设置告警记录中的对应 flag。"
     security_policy = _security_policy_spec(item)
     key_management = _key_management_spec(item)
     access_control = _access_control_matrix_spec(item)
@@ -999,6 +1237,11 @@ def _function_description(item: dict[str, Any]) -> str:
         return "研发实现应覆盖" + "、".join(parts) + "：按结构化安全策略配置对象、密钥流程和安全访问规则。"
     load_profile = _load_profile_spec(item)
     if load_profile:
+        if load_profile.get("capture_periods") or load_profile.get("capture_list_status"):
+            return (
+                "研发实现应覆盖负荷曲线采集与存储：按可编程 capture periods 组织采集量，"
+                "并在 capture list 记录周期结束时间戳和状态码。"
+            )
         return "研发实现应覆盖负荷曲线采集与存储：按可编程采集周期采集曲线数据，并满足质量/状态记录和存储容量要求。"
     billing_period = _billing_period_spec(item)
     if billing_period:
@@ -1006,6 +1249,12 @@ def _function_description(item: dict[str, Any]) -> str:
     capability_matrix = _capability_matrix_spec(item)
     if capability_matrix:
         return "研发实现应覆盖 xDLMS 能力矩阵：按客户端角色启用允许的服务集合。"
+    application_layer = _application_layer_spec(item)
+    if application_layer:
+        return "研发实现应覆盖 DLMS/COSEM pull/push 应用层能力：同时支持客户端拉取访问与服务端主动推送。"
+    service_catalog = _service_catalog_spec(item)
+    if service_catalog:
+        return "研发实现应覆盖 xDLMS 服务目录：以规范表格作为客户端角色服务能力配置的来源。"
     details = [str(detail) for detail in item.get("functional_details") or [] if str(detail)]
     if not details:
         return f"研发实现应覆盖 {item.get('title') or item.get('id')} 相关规范要求。"
@@ -1045,11 +1294,11 @@ def _implementation_tasks(item: dict[str, Any]) -> list[str]:
     return tasks
 
 
-def _implementation_spec(item: dict[str, Any]) -> dict[str, Any]:
+def _implementation_spec(item: dict[str, Any], object_index: dict[str, Any] | None = None) -> dict[str, Any]:
     spec = {
         "trigger_or_input": _trigger_or_input(item),
         "processing_rules": _processing_rules(item),
-        "dlms_object_impact": _dlms_object_impact(item),
+        "dlms_object_impact": _dlms_object_impact(item, object_index),
         "error_and_boundary_behavior": _error_and_boundary_behavior(item),
         "acceptance_checks": list(item.get("acceptance_criteria") or []),
     }
@@ -1062,12 +1311,27 @@ def _implementation_spec(item: dict[str, Any]) -> dict[str, Any]:
     event_definitions = _event_definitions_spec(item)
     if event_definitions:
         spec["event_definitions"] = event_definitions
+    status_bits = _status_bits_spec(item)
+    if status_bits:
+        spec["status_bits"] = status_bits
+    measurement_rollover = _measurement_rollover_spec(item)
+    if measurement_rollover:
+        spec["measurement_rollover"] = measurement_rollover
+    alarm_recording = _alarm_recording_spec(item)
+    if alarm_recording:
+        spec["alarm_recording"] = alarm_recording
     billing_period = _billing_period_spec(item)
     if billing_period:
         spec["billing_period"] = billing_period
     load_profile = _load_profile_spec(item)
     if load_profile:
         spec["load_profile"] = load_profile
+    application_layer = _application_layer_spec(item)
+    if application_layer:
+        spec["application_layer"] = application_layer
+    service_catalog = _service_catalog_spec(item)
+    if service_catalog:
+        spec["service_catalog"] = service_catalog
     capability_matrix = _capability_matrix_spec(item)
     if capability_matrix:
         spec["capability_matrix"] = capability_matrix
@@ -1112,10 +1376,26 @@ def _processing_rules(item: dict[str, Any]) -> list[str]:
     if event_definitions:
         for event in event_definitions["events"]:
             _append_unique(rules, f"Map event {event['event_code']} to description: {event['description']}.")
+    status_bits = _status_bits_spec(item)
+    if status_bits:
+        for bit in status_bits["bits"]:
+            _append_unique(
+                rules,
+                f"Set status bit {bit['code']} (bit {bit['bit']}) when {bit['set_condition']}.",
+            )
+    measurement_rollover = _measurement_rollover_spec(item)
+    if measurement_rollover:
+        _append_unique(rules, measurement_rollover["rollover_action"])
+    alarm_recording = _alarm_recording_spec(item)
+    if alarm_recording:
+        _append_unique(rules, alarm_recording["trigger"])
+        _append_unique(rules, alarm_recording["alarm_action"])
     billing_period = _billing_period_spec(item)
     if billing_period:
         _append_unique(rules, billing_period["trigger"])
         _append_unique(rules, billing_period["minimum_records"])
+        if billing_period.get("maximum_records"):
+            _append_unique(rules, billing_period["maximum_records"])
         for required_object in billing_period["required_objects"]:
             _append_unique(rules, f"Use billing object: {required_object}.")
     load_profile = _load_profile_spec(item)
@@ -1124,6 +1404,26 @@ def _processing_rules(item: dict[str, Any]) -> list[str]:
             _append_unique(rules, load_profile["collection_interval"])
         if load_profile.get("storage_capacity"):
             _append_unique(rules, load_profile["storage_capacity"])
+        if load_profile.get("capture_periods"):
+            _append_unique(rules, load_profile["capture_periods"])
+        if load_profile.get("capture_list_status"):
+            _append_unique(rules, load_profile["capture_list_status"])
+        if load_profile.get("daily_collection"):
+            _append_unique(rules, load_profile["daily_collection"])
+        if load_profile.get("minimum_retention"):
+            _append_unique(rules, load_profile["minimum_retention"])
+    application_layer = _application_layer_spec(item)
+    if application_layer:
+        _append_unique(rules, application_layer["availability"])
+        _append_unique(rules, application_layer["pull_mechanism"])
+        _append_unique(rules, application_layer["push_mechanism"])
+    service_catalog = _service_catalog_spec(item)
+    if service_catalog:
+        _append_unique(
+            rules,
+            f"Treat {service_catalog['source_table']} as the normative xDLMS service catalogue for client application processes.",
+        )
+        _append_unique(rules, service_catalog["implementation_rule"])
     capability_matrix = _capability_matrix_spec(item)
     if capability_matrix:
         for actor, services in capability_matrix["actors"].items():
@@ -1151,6 +1451,90 @@ def _processing_rules(item: dict[str, Any]) -> list[str]:
             "event recording and push notification",
             "case o bit corresponding to the shipping of event",
         ])
+    if load_profile:
+        structured_patterns.extend([
+            "mass memory",
+            "capacity to store data for flow curves",
+            "collection must be carried out at programmable intervals",
+            "mass memory storage capacity",
+            "absolute load curve",
+            "record capacity must be at least three months",
+            "organize them into two lists with programmable capture periods",
+            "meter profile status code",
+            "recorded in the capture list",
+        ])
+    if event_retention:
+        structured_patterns.extend([
+            "event subgroup",
+            "shall keep at least",
+        ])
+    if event_definitions:
+        structured_patterns.extend([
+            "shall be defined as",
+        ])
+    if billing_period:
+        structured_patterns.extend([
+            "billing records",
+            "recording capacity",
+            "must be used",
+        ])
+    if application_layer:
+        structured_patterns.extend([
+            "dlms/cosem application layer",
+            "pull",
+            "push",
+        ])
+    if service_catalog:
+        structured_patterns.extend([
+            "xdlms services required by client application processes",
+            "shown in table",
+        ])
+    if capability_matrix:
+        structured_patterns.extend([
+            "shall support xdlms service",
+        ])
+    if access_control_matrix:
+        structured_patterns.extend([
+            "shall have server application process",
+        ])
+    if security_policy:
+        structured_patterns.extend([
+            "security suite determines",
+            "cryptographic algorithms",
+            "security policy must remain",
+            "does not need protection",
+            "must support the following keys",
+            "secure keys can",
+            "reestablished",
+            "re-established",
+            "independent unicast communication invocation counter",
+        ])
+    if key_management:
+        structured_patterns.extend([
+            "key unwrapping",
+            "key loading",
+            "integrity of each new master key",
+            "integrity of the new key",
+            "protected message",
+            "invocation counters must be incremented",
+        ])
+    if status_bits:
+        structured_patterns.extend([
+            "this bit is set to indicate",
+            "bit ",
+        ])
+    if measurement_rollover:
+        structured_patterns.extend([
+            "accumulator registers",
+            "maximum of",
+            "9s",
+        ])
+    if alarm_recording:
+        structured_patterns.extend([
+            "configured alarm event",
+            "alarm record",
+            'o " flag "',
+        ])
     for detail in item.get("functional_details") or []:
         if _detail_is_covered_by_structured_spec(detail, structured_patterns):
             continue
@@ -1170,11 +1554,56 @@ def _detail_is_covered_by_structured_spec(detail: Any, patterns: list[str]) -> b
     return any(pattern in text for pattern in patterns)
 
 
-def _dlms_object_impact(item: dict[str, Any]) -> list[str]:
+def _dlms_object_impact(item: dict[str, Any], object_index: dict[str, Any] | None = None) -> list[str]:
     impacts: list[str] = []
+    by_name = (object_index or {}).get("by_name") if isinstance(object_index, dict) else {}
+    if not isinstance(by_name, dict):
+        by_name = {}
     for object_name in item.get("related_dlms_objects") or []:
-        _append_unique(impacts, f"Configure {object_name}.")
+        details = by_name.get(str(object_name))
+        if isinstance(details, list) and details:
+            if len(details) > 1:
+                _append_unique(impacts, f"{object_name}: {len(details)} instances.")
+                for index, detail in enumerate(details, 1):
+                    if isinstance(detail, dict):
+                        _append_unique(impacts, _dlms_object_impact_summary(f"{object_name} [{index}]", detail))
+            elif isinstance(details[0], dict):
+                _append_unique(impacts, _dlms_object_impact_summary(str(object_name), details[0]))
+        else:
+            _append_unique(impacts, f"Configure {object_name}.")
     return impacts
+
+
+def _dlms_object_impact_summary(object_name: str, detail: dict[str, Any]) -> str:
+    class_id = str(detail.get("class_id") or "-").strip() or "-"
+    obis = str(detail.get("obis") or "-").strip() or "-"
+    text = f"{object_name}: interface class {class_id}, OBIS {obis}"
+    member_parts: list[str] = []
+    attr_summary = _object_member_impact_summary(detail.get("attributes") or [])
+    if attr_summary:
+        member_parts.append(f"attributes {attr_summary}")
+    method_summary = _object_member_impact_summary(detail.get("methods") or [])
+    if method_summary:
+        member_parts.append(f"methods {method_summary}")
+    if member_parts:
+        text += "; " + "; ".join(member_parts)
+    return text + "."
+
+
+def _object_member_impact_summary(members: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for member in members[:5]:
+        name = str(member.get("name") or "").strip()
+        if not name:
+            continue
+        access = str(member.get("access_rights") or "").strip()
+        if access:
+            parts.append(f"{name} ({access})")
+        else:
+            parts.append(name)
+    if len(members) > 5:
+        parts.append(f"+{len(members) - 5} more")
+    return ", ".join(parts)
 
 
 def _event_handling_spec(item: dict[str, Any]) -> dict[str, str] | None:
@@ -1254,6 +1683,93 @@ def _event_definitions_spec(item: dict[str, Any]) -> dict[str, Any] | None:
     return {"events": events} if events else None
 
 
+def _status_bits_spec(item: dict[str, Any]) -> dict[str, Any] | None:
+    bits: list[dict[str, Any]] = []
+    for detail in item.get("functional_details") or []:
+        payload = _parse_status_bit_definition(detail)
+        if payload and payload not in bits:
+            bits.append(payload)
+    return {"bits": bits} if bits else None
+
+
+def _parse_status_bit_definition(value: Any) -> dict[str, Any] | None:
+    text = str(value or "")
+    match = re.search(
+        r"\bBit\s+(\d+)\s+([A-Z][A-Z0-9_-]*)\s*\|\s*([^:|]+?)\s*:\s*This bit is set to indicate that\s+(.+?)\s*\.?$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return {
+            "bit": int(match.group(1)),
+            "code": match.group(2).upper(),
+            "name": " ".join(match.group(3).split()),
+            "set_condition": match.group(4).strip(" ."),
+        }
+    match = re.search(
+        r"\bBit\s+(\d+)\s+([A-Z][A-Z0-9_-]*)\s*\|\s*([^:|]+?)\s*:\s*Indicates that\s+(.+?)\.\s*It must be set\s+(.+?)\s*\.?$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return {
+            "bit": int(match.group(1)),
+            "code": match.group(2).upper(),
+            "name": " ".join(match.group(3).split()),
+            "meaning": match.group(4).strip(" ."),
+            "set_condition": _normalize_status_bit_condition(match.group(5).strip(" .")),
+        }
+    return None
+
+
+def _normalize_status_bit_condition(value: str) -> str:
+    text = " ".join(str(value or "").split())
+    text = re.sub(
+        r"\bever what to occur one operation\s+(xDLMS_SET)\s+or\s+(xDLMS ACTION)\b",
+        r"every time an \1 or \2 operation occurs",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text
+
+
+def _measurement_rollover_spec(item: dict[str, Any]) -> dict[str, str] | None:
+    for detail in item.get("functional_details") or []:
+        if _is_accumulator_rollover_text(detail):
+            return {
+                "target": "accumulator registers",
+                "maximum_value": "maximum all-9s value",
+                "rollover_action": "Return the accumulator value to zero when the maximum all-9s value is reached.",
+            }
+    return None
+
+
+def _is_accumulator_rollover_text(value: Any) -> bool:
+    text = str(value or "").lower()
+    return "accumulator register" in text and "return to zero" in text and "9s" in text
+
+
+def _alarm_recording_spec(item: dict[str, Any]) -> dict[str, str] | None:
+    for detail in item.get("functional_details") or []:
+        if _is_alarm_record_flag_text(detail):
+            return {
+                "trigger": "When any configured alarm event occurs.",
+                "alarm_action": "Set the corresponding flag in the alarm record.",
+            }
+    return None
+
+
+def _is_alarm_record_flag_text(value: Any) -> bool:
+    text = " ".join(str(value or "").lower().split())
+    return (
+        "event" in text
+        and "flag" in text
+        and "record" in text
+        and "alarm" in text
+        and ("must be set" in text or "set the corresponding flag" in text)
+    )
+
+
 def _normalize_event_description(value: str) -> str:
     text = " ".join(str(value or "").split())
     replacements = (
@@ -1294,7 +1810,29 @@ def _normalize_event_token(value: str) -> str:
     return text
 
 
+def _normalize_count_word(value: str) -> str:
+    text = str(value or "").strip().lower()
+    replacements = {
+        "one": "1",
+        "two": "2",
+        "three": "3",
+        "four": "4",
+        "five": "5",
+        "six": "6",
+        "seven": "7",
+        "eight": "8",
+        "nine": "9",
+        "ten": "10",
+    }
+    return replacements.get(text, text)
+
+
 def _billing_period_spec(item: dict[str, Any]) -> dict[str, Any] | None:
+    source_ids = [str(value) for value in item.get("source_atomic_requirements") or []]
+    if source_ids and all(value.upper().startswith("EVENT-") for value in source_ids):
+        return None
+    if _event_definitions_spec(item) or _event_retention_spec(item):
+        return None
     text = " ".join(str(detail) for detail in item.get("functional_details") or [])
     lowered = text.lower()
     if "billing" not in f"{item.get('module') or ''} {item.get('domain') or ''} {item.get('title') or ''} {lowered}".lower():
@@ -1309,20 +1847,37 @@ def _billing_period_spec(item: dict[str, Any]) -> dict[str, Any] | None:
         result["minimum_records"] = f"Keep at least {records_match.group(1)} billing period records."
     else:
         result["minimum_records"] = "Keep billing period records according to the source requirements."
+    maximum_match = re.search(r"recording capacity must be (?:a )?maximum of\s+(\w+)\s+records(?:\s*\(([^)]+)\))?", lowered)
+    if maximum_match:
+        count = _normalize_count_word(maximum_match.group(1))
+        suffix = f" ({maximum_match.group(2)})" if maximum_match.group(2) else ""
+        result["maximum_records"] = f"Limit billing period recording capacity to {count} records{suffix}."
     required_objects: list[str] = []
     for detail in item.get("functional_details") or []:
-        match = re.search(r"object\s+(.+?)\s+must be used", str(detail), flags=re.IGNORECASE)
-        if match:
-            _append_unique(required_objects, match.group(1).strip(" ."))
+        text_detail = str(detail)
+        for pattern in (
+            r"object\s+(.+?)\s+must be used",
+            r'"([^"]+)"\s+object\s+must be used',
+        ):
+            match = re.search(pattern, text_detail, flags=re.IGNORECASE)
+            if match:
+                _append_unique(required_objects, match.group(1).strip(" .\""))
     result["required_objects"] = required_objects
-    return result if result["minimum_records"] or result["required_objects"] else None
+    return result if result["minimum_records"] or result.get("maximum_records") or result["required_objects"] else None
 
 
 def _load_profile_spec(item: dict[str, Any]) -> dict[str, str] | None:
     text = " ".join(str(detail) for detail in item.get("functional_details") or [])
     lowered = text.lower()
     if "load_profile" not in str(item.get("module") or "") and not any(
-        keyword in lowered for keyword in ("load profile", "mass memory", "collection")
+        keyword in lowered for keyword in (
+            "load profile",
+            "mass memory",
+            "collection",
+            "capture period",
+            "capture list",
+            "profile status",
+        )
     ):
         return None
     result: dict[str, str] = {}
@@ -1337,7 +1892,54 @@ def _load_profile_spec(item: dict[str, Any]) -> dict[str, str] | None:
             result["storage_capacity"] = f"Maintain mass memory storage for at least {days_match.group(1)} days."
         else:
             result["storage_capacity"] = "Maintain mass memory storage according to the source requirements."
+    if "capture period" in lowered and ("two lists" in lowered or "captured quantities" in lowered or "effectively captured" in lowered):
+        result["capture_periods"] = (
+            "Allow the meter technical specification to select captured quantities and organize them into "
+            "two lists with programmable capture periods."
+        )
+    if "capture list" in lowered and ("profile status" in lowered or "status code" in lowered):
+        result["capture_list_status"] = (
+            "Record the capture-period end timestamp and meter profile status code in the capture list."
+        )
+    if "absolute load curve" in lowered and ("00:00:00" in lowered or "00:00" in lowered):
+        result["daily_collection"] = "Collect absolute load curve energy quantities every day at 00:00:00."
+    if "absolute load curve" in lowered and "three months" in lowered:
+        result["minimum_retention"] = "Keep at least three months of absolute load curve records."
     return result or None
+
+
+def _application_layer_spec(item: dict[str, Any]) -> dict[str, str] | None:
+    text = " ".join(str(detail) for detail in item.get("functional_details") or [])
+    lowered = " ".join(text.lower().replace('"', " ").split())
+    if not (
+        "dlms/cosem application layer" in lowered
+        and "pull" in lowered
+        and "push" in lowered
+        and "mechanisms must be available" in lowered
+    ):
+        return None
+    return {
+        "availability": "Expose both DLMS/COSEM pull and push application-layer mechanisms.",
+        "pull_mechanism": "Support client-initiated pull access through DLMS/COSEM application services.",
+        "push_mechanism": "Support server-initiated push delivery through DLMS/COSEM push communication.",
+    }
+
+
+def _service_catalog_spec(item: dict[str, Any]) -> dict[str, str] | None:
+    text = " ".join(str(detail) for detail in item.get("functional_details") or [])
+    match = re.search(
+        r"xDLMS services required by client application processes are shown in (Table\s+\d+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    source_table = " ".join(match.group(1).split())
+    return {
+        "source_table": source_table,
+        "catalog_scope": "xDLMS services required by client application processes.",
+        "implementation_rule": f"Drive client-role xDLMS service enablement from the {source_table} capability matrix.",
+    }
 
 
 def _capability_matrix_spec(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -1489,6 +2091,8 @@ def _clean_requirement_detail(value: Any) -> str:
             "When the event shipping bit is set, send an EVENT-NOTIFICATION-REQUEST "
             "through push communication to notify the client."
         )
+    if re.search(r'\bO\s+"\s*flag\s+"\s+corresponding at the record in alarm must be set\b', text, flags=re.IGNORECASE):
+        return "When any configured alarm event occurs, set the corresponding flag in the alarm record."
     if re.search(
         r"To the magnitudes whose objects they were defined in this Standard they are presented in the Tables 13 The 17",
         text,
@@ -1507,6 +2111,12 @@ def _clean_requirement_detail(value: Any) -> str:
         )
     if re.search(r"\bO set in security determines O set in algorithms cryptographic\b", text, flags=re.IGNORECASE):
         return "The security suite determines the cryptographic algorithms and key sizes that must be available."
+    if re.search(
+        r"\bDuring O process in unveiling from the key for O loading from the new master key and from key global\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return "During key unwrapping and loading, verify the integrity of each new master key and global key before accepting it."
     text = re.sub(
         r"\bAt the case in what one Implementation of client no need to be protected,\s*The policy in security must remain",
         "When a client implementation does not need protection, the security policy must remain",

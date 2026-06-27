@@ -46,6 +46,42 @@ class CoverageReportTests(unittest.TestCase):
         # table 14 has a catalogue entry but no row-level instances
         self.assertEqual(report["part1_obis"]["tables_with_catalogue_but_no_rows"], [14])
 
+    def test_report_flags_empty_top_level_table_no_catalogue_entries(self) -> None:
+        kb = self._write_kb([
+            {"id": "KB-T61", "type": "obis_table", "table_no": 61},
+            _instance(13),
+        ])
+        report = build_coverage_report(kb)
+        self.assertIn(61, report["part1_obis"]["tables_with_catalogue_but_no_rows"])
+
+    def test_report_separates_catalogue_only_obis_tables_from_row_level_gaps(self) -> None:
+        kb = self._write_kb([
+            {"id": "KB-T52", "type": "obis_table", "table_no": 52, "object_family": "value_group_definition"},
+            {"id": "KB-T14", "type": "obis_table", "table_no": 14, "object_family": "value_group_definition"},
+            {"id": "KB-T50", "type": "obis_table", "table_no": 50, "object_family": "obis_code_family"},
+            {"id": "KB-T41", "type": "obis_table", "table_no": 41, "object_family": "examples"},
+            _instance(14),
+            _instance(13),
+        ])
+        report = build_coverage_report(kb)
+        part1 = report["part1_obis"]
+        self.assertNotIn(52, part1["tables_with_catalogue_but_no_rows"])
+        self.assertEqual(part1["tables_not_expected_to_have_row_instances"], [52])
+        self.assertEqual(part1["tables_with_catalogue_but_no_rows"], [41, 50])
+
+    def test_real_compiled_obsidian_row_level_gaps_only_include_object_tables(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        kb = root / "knowledge_bases" / "compiled_from_obsidian.json"
+        if not kb.exists():
+            self.skipTest("compiled_from_obsidian.json not present")
+        report = build_coverage_report(kb)
+        part1 = report["part1_obis"]
+        self.assertEqual(part1["tables_with_catalogue_but_no_rows"], [])
+        self.assertEqual(
+            part1["tables_not_expected_to_have_row_instances"],
+            [1, 2, 3, 4, 5, 6, 7, 34, 35, 36, 43, 44, 52, 53, 54, 55, 56, 57, 58, 59, 60, 66, 67, 73],
+        )
+
     def test_report_splits_part2_classes_into_rich_and_seed(self) -> None:
         kb = self._write_kb([
             _class(class_id=1, rich=True, name="Data"),
@@ -102,7 +138,7 @@ class CoverageReportTests(unittest.TestCase):
     def test_real_compiled_obsidian_kb_has_no_seed_classes_and_expected_instance_total(self) -> None:
         """回归保护：覆盖度报表必须与真实 compiled_from_obsidian.json 一致。
 
-        交接 baseline 已更新为：87 class 全部 rich（0 seed）、103 row-level instance、334 total。
+        交接 baseline 已更新为：87 class 全部 rich（0 seed）、136 row-level instance、367 total。
         AC electricity 表 14-20 全部 materialized (tariff/harmonics/phase angle/loss/dips/distortion)。
         表 9/14-20/27/28 于 2026-06-25 从蓝皮书原文 materialize。
         任何人补 KB 后跑此测试，若 class 退化成 seed 或总数骤变会立即暴露。
@@ -114,8 +150,14 @@ class CoverageReportTests(unittest.TestCase):
         report = build_coverage_report(kb)
         self.assertEqual(report["part2_interface_classes"]["catalogue_only_seed"], 0)
         self.assertEqual(report["part2_interface_classes"]["total"], 87)
-        self.assertGreaterEqual(report["part1_obis"]["row_level_instances"], 103)
-        self.assertGreaterEqual(report["total_entries"], 334)
+        self.assertGreaterEqual(report["part1_obis"]["row_level_instances"], 140)
+        self.assertGreaterEqual(report["total_entries"], 371)
+        by_medium = report["instance_distribution"]["by_medium"]
+        self.assertGreaterEqual(by_medium.get("gas", 0), 10)
+        self.assertGreaterEqual(by_medium.get("water", 0), 8)
+        self.assertGreaterEqual(by_medium.get("hot_water", 0), 4)
+        self.assertGreaterEqual(by_medium.get("thermal_energy", 0), 7)
+        self.assertGreaterEqual(by_medium.get("hca", 0), 4)
         # AC electricity 表 14-20 应全部有 row-level 覆盖
         for tn in (14, 15, 16, 17, 18, 19, 20):
             self.assertIn(tn, report["part1_obis"]["instances_by_table_no"],

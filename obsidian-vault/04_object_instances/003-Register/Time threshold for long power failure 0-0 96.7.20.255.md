@@ -1,0 +1,69 @@
+---
+id: KB-ABNT-OBIS-0-0-96-7-20-255-TIME-THRESHOLD-FOR-LONG-POWER-FAILURE
+kb_id: obsidian_energy_metering
+type: cosem_object_instance
+layer: cosem_object_instance
+name: Time threshold for long power failure
+aliases:
+- OBIS 0-0:96.7.20.255
+keywords:
+- 0-0:96.7.20.255
+- Time threshold for long power failure
+- TBL-000047
+domain_tags:
+- cosem_object
+- general
+- abnt_bulk_import
+relations:
+- relation: instance_of
+  target: KB-L3-IC-3-REGISTER
+---
+
+# Time threshold for long power failure
+
+## Definition
+
+ABNT Appendix 9 row-level COSEM object `Time threshold for long power failure` with OBIS pattern `0-0:96.7.20.255` and interface class 3 (Register).
+
+## Structured Data
+
+```json metadata
+{
+  "obis_pattern": "0-0:96.7.20.255",
+  "likely_interface_class_id": 3,
+  "likely_interface_class_name": "Register",
+  "medium": "general",
+  "value_group_mapping": {
+    "A": "0",
+    "B": "0",
+    "C": "96",
+    "D": "7",
+    "E": "20",
+    "F": "255"
+  },
+  "source_refs": [
+    {
+      "source": "ABNT Appendix 9 extracted COSEM object model",
+      "section": "TBL-000047-R000002, TBL-000047"
+    }
+  ],
+  "applicable_notes": [
+    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
+    "Review against Blue Book semantics before treating this row as manually curated."
+  ],
+  "bulk_import": {
+    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
+    "source_item_id": "TBL-000047-R000002",
+    "source_refs": [
+      "BLK-000660",
+      "TBL-000047-R000002",
+      "TBL-000047"
+    ],
+    "source_table_ids": [
+      "TBL-000047"
+    ]
+  }
+}
+```
+
+## Notes
