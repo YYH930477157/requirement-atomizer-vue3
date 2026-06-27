@@ -8864,6 +8864,45 @@
       "coverage_note": "Enriched 2026-06-26 from Blue Book Part 2 Ed.16 section 4.9.6. Full attributes with access_rights, value defaults, access_semantics, and behavior_notes."
     },
     {
+      "id": "KB-L3-IC-47-GSM-DIAGNOSTIC",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "GSM diagnostic",
+      "aliases": [
+        "class 47",
+        "CL 47"
+      ],
+      "keywords": [
+        "gsm diagnostic",
+        "class 47",
+        "cl 47"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for GSM diagnostic objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 47,
+      "version": 2,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
       "id": "KB-L3-IC-48-IPV6-SETUP",
       "type": "cosem_interface_class",
       "layer": "cosem_class",
@@ -11062,6 +11101,45 @@
       "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
     },
     {
+      "id": "KB-L3-IC-81-PRIME-NB-OFDM-PLC-PHYSICAL-LAYER-COUNTERS",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "PRIME NB OFDM PLC Physical layer counters",
+      "aliases": [
+        "class 81",
+        "CL 81"
+      ],
+      "keywords": [
+        "prime nb ofdm plc physical layer counters",
+        "class 81",
+        "cl 81"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for PRIME NB OFDM PLC Physical layer counters objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 81,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
       "id": "KB-L3-IC-82-PRIME-NB-OFDM-PLC-MAC-SETUP",
       "type": "cosem_interface_class",
       "layer": "cosem_class",
@@ -11101,6 +11179,45 @@
       "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
     },
     {
+      "id": "KB-L3-IC-83-PRIME-NB-OFDM-PLC-MAC-FUNCTIONAL-PARAMETERS",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "PRIME NB OFDM PLC MAC functional parameters",
+      "aliases": [
+        "class 83",
+        "CL 83"
+      ],
+      "keywords": [
+        "prime nb ofdm plc mac functional parameters",
+        "class 83",
+        "cl 83"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for PRIME NB OFDM PLC MAC functional parameters objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 83,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
       "id": "KB-L3-IC-84-PRIME-NB-OFDM-PLC-MAC-COUNTERS",
       "type": "cosem_interface_class",
       "layer": "cosem_class",
@@ -11138,6 +11255,84 @@
       "methods": [],
       "coverage_level": "catalogue_seed",
       "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-85-PRIME-NB-OFDM-PLC-MAC-NETWORK-ADMINISTRATION-DATA",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "PRIME NB OFDM PLC MAC network administration data",
+      "aliases": [
+        "class 85",
+        "CL 85"
+      ],
+      "keywords": [
+        "prime nb ofdm plc mac network administration data",
+        "class 85",
+        "cl 85"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for PRIME NB OFDM PLC MAC network administration data objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 85,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-86-PRIME-NB-OFDM-PLC-APPLICATION-IDENTIFICATION",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "PRIME NB OFDM PLC Application identification",
+      "aliases": [
+        "class 86",
+        "CL 86"
+      ],
+      "keywords": [
+        "prime nb ofdm plc application identification",
+        "class 86",
+        "cl 86"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for PRIME NB OFDM PLC Application identification objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 86,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
     },
     {
       "id": "KB-L3-IC-90-G3-PLC-MAC-LAYER-COUNTERS",
@@ -11255,6 +11450,162 @@
       "methods": [],
       "coverage_level": "catalogue_seed",
       "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-95-WI-SUN-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Wi-SUN setup",
+      "aliases": [
+        "class 95",
+        "CL 95"
+      ],
+      "keywords": [
+        "wi-sun setup",
+        "class 95",
+        "cl 95"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for Wi-SUN setup objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 95,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-96-WI-SUN-DIAGNOSTIC",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Wi-SUN diagnostic",
+      "aliases": [
+        "class 96",
+        "CL 96"
+      ],
+      "keywords": [
+        "wi-sun diagnostic",
+        "class 96",
+        "cl 96"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for Wi-SUN diagnostic objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 96,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-97-RPL-DIAGNOSTIC",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "RPL diagnostic",
+      "aliases": [
+        "class 97",
+        "CL 97"
+      ],
+      "keywords": [
+        "rpl diagnostic",
+        "class 97",
+        "cl 97"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for RPL diagnostic objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 97,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-98-MPL-DIAGNOSTIC",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "MPL diagnostic",
+      "aliases": [
+        "class 98",
+        "CL 98"
+      ],
+      "keywords": [
+        "mpl diagnostic",
+        "class 98",
+        "cl 98"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for MPL diagnostic objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 98,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
     },
     {
       "id": "KB-L3-IC-100-NTP-SETUP",
@@ -12449,6 +12800,45 @@
       "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
     },
     {
+      "id": "KB-L3-IC-122-FUNCTION-CONTROL",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "Function control",
+      "aliases": [
+        "class 122",
+        "CL 122"
+      ],
+      "keywords": [
+        "function control",
+        "class 122",
+        "cl 122"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "access_control"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for Function control objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 122,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
       "id": "KB-L3-IC-123-ARRAY-MANAGER",
       "type": "cosem_interface_class",
       "layer": "cosem_class",
@@ -12525,6 +12915,162 @@
       "methods": [],
       "coverage_level": "catalogue_seed",
       "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-126-SCHC-LPWAN-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "SCHC-LPWAN setup",
+      "aliases": [
+        "class 126",
+        "CL 126"
+      ],
+      "keywords": [
+        "schc-lpwan setup",
+        "class 126",
+        "cl 126"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for SCHC-LPWAN setup objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 126,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-127-SCHC-LPWAN-DIAGNOSTIC",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "SCHC-LPWAN diagnostic",
+      "aliases": [
+        "class 127",
+        "CL 127"
+      ],
+      "keywords": [
+        "schc-lpwan diagnostic",
+        "class 127",
+        "cl 127"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for SCHC-LPWAN diagnostic objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 127,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-128-LORAWAN-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "LoRaWAN setup",
+      "aliases": [
+        "class 128",
+        "CL 128"
+      ],
+      "keywords": [
+        "lorawan setup",
+        "class 128",
+        "cl 128"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for LoRaWAN setup objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 128,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-129-LORAWAN-DIAGNOSTIC",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "LoRaWAN diagnostic",
+      "aliases": [
+        "class 129",
+        "CL 129"
+      ],
+      "keywords": [
+        "lorawan diagnostic",
+        "class 129",
+        "cl 129"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for LoRaWAN diagnostic objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 129,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
     },
     {
       "id": "KB-L3-IC-130-ISO-IEC-14908-IDENTIFICATION",
@@ -12797,6 +13343,123 @@
       "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
     },
     {
+      "id": "KB-L3-IC-143-HS-PLC-ISO-IEC-12139-1-HDLC-SSAS-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "HS-PLC ISO/IEC 12139-1 HDLC SSAS setup",
+      "aliases": [
+        "class 143",
+        "CL 143"
+      ],
+      "keywords": [
+        "hs-plc iso/iec 12139-1 hdlc ssas setup",
+        "class 143",
+        "cl 143"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for HS-PLC ISO/IEC 12139-1 HDLC SSAS setup objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 143,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-151-LTE-MONITORING",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "LTE monitoring",
+      "aliases": [
+        "class 151",
+        "CL 151"
+      ],
+      "keywords": [
+        "lte monitoring",
+        "class 151",
+        "cl 151"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for LTE monitoring objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 151,
+      "version": 1,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-152-COAP-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "CoAP setup",
+      "aliases": [
+        "class 152",
+        "CL 152"
+      ],
+      "keywords": [
+        "coap setup",
+        "class 152",
+        "cl 152"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for CoAP setup objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 152,
+      "version": 0,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
       "id": "KB-L3-IC-153-COAP-DIAGNOSTIC",
       "type": "cosem_interface_class",
       "layer": "cosem_class",
@@ -12912,6 +13575,45 @@
       "methods": [],
       "coverage_level": "catalogue_seed",
       "coverage_note": "Seeded from the Blue Book Part 2 current interface class catalogue; attribute and method details should be expanded during detailed knowledge-base enrichment."
+    },
+    {
+      "id": "KB-L3-IC-162-G3-PLC-HYBRID-6LOWPAN-ADAPTATION-LAYER-SETUP",
+      "type": "cosem_interface_class",
+      "layer": "cosem_class",
+      "name": "G3-PLC Hybrid 6LoWPAN adaptation layer setup",
+      "aliases": [
+        "class 162",
+        "CL 162"
+      ],
+      "keywords": [
+        "g3-plc hybrid 6lowpan adaptation layer setup",
+        "class 162",
+        "cl 162"
+      ],
+      "domain_tags": [
+        "cosem_class",
+        "communication_profile"
+      ],
+      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for G3-PLC Hybrid 6LoWPAN adaptation layer setup objects.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-PART-2-IC"
+        }
+      ],
+      "class_id": 162,
+      "version": 1,
+      "attributes": [
+        {
+          "attribute_id": 1,
+          "name": "logical_name",
+          "type": "octet-string[6]",
+          "mandatory": true
+        }
+      ],
+      "methods": [],
+      "coverage_level": "catalogue_seed",
+      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
     },
     {
       "id": "KB-OBIS-0-B-98-1-E-255-ABSTRACT-BILLING-LIST-1",

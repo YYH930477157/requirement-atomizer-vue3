@@ -51,7 +51,7 @@ PART2_CURRENT_CLASSES = [
     (74, 0, "M-Bus master port setup"),
     (76, 0, "DLMS server M-Bus port setup"),
     (77, 0, "M-Bus diagnostic"),
-    (40, 0, "Push setup"),
+    (40, 3, "Push setup"),
     (41, 0, "TCP-UDP setup"),
     (42, 0, "IPv4 setup"),
     (48, 0, "IPv6 setup"),
@@ -89,6 +89,27 @@ PART2_CURRENT_CLASSES = [
     (131, 0, "ISO/IEC 14908 protocol setup"),
     (132, 0, "ISO/IEC 14908 protocol status"),
     (133, 0, "ISO/IEC 14908 diagnostic"),
+    # 2026-06-27 补漏：Blue Book Part 2 Ed.16 Chapter 4 的 current 接口类，原 catalog 遗漏。
+    # 经对照 Part 2 PDF（章节号 4.X.Y 确认为 current），主要为较新的蜂窝/PLC/Wi-SUN/LPWAN/
+    # LoRaWAN 通信类；编译 KB 此前一并缺失这些类条目。
+    (47, 2, "GSM diagnostic"),
+    (81, 0, "PRIME NB OFDM PLC Physical layer counters"),
+    (83, 0, "PRIME NB OFDM PLC MAC functional parameters"),
+    (85, 0, "PRIME NB OFDM PLC MAC network administration data"),
+    (86, 0, "PRIME NB OFDM PLC Application identification"),
+    (95, 0, "Wi-SUN setup"),
+    (96, 0, "Wi-SUN diagnostic"),
+    (97, 0, "RPL diagnostic"),
+    (98, 0, "MPL diagnostic"),
+    (122, 0, "Function control"),
+    (126, 0, "SCHC-LPWAN setup"),
+    (127, 0, "SCHC-LPWAN diagnostic"),
+    (128, 0, "LoRaWAN setup"),
+    (129, 0, "LoRaWAN diagnostic"),
+    (143, 0, "HS-PLC ISO/IEC 12139-1 HDLC SSAS setup"),
+    (151, 1, "LTE monitoring"),
+    (152, 0, "CoAP setup"),
+    (162, 1, "G3-PLC Hybrid 6LoWPAN adaptation layer setup"),
 ]
 
 
