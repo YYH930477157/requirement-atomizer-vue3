@@ -105,6 +105,53 @@ class CosemObjectModelTests(unittest.TestCase):
         self.assertEqual(by_name["Transformer ratio - current denominator"]["obis"], "1-0:0.4.5.255")
         self.assertEqual(model["counts"]["objects"], 2)
 
+    def test_obis_two_digit_value_group_is_not_silently_split(self) -> None:
+        # 回归护栏：历史实现会把缺一段的 "0-0:96.1.0" 静默拆成 "0-0:9.6.1.0"，
+        # 把合法的 C=96 腐蚀成 9.6（OBIS 错一位即严重缺陷）。无空格证据时必须原样保留。
+        self.assertEqual(com.normalize_obis_value("0-0:96.1.0"), "0-0:96.1.0")
+        self.assertEqual(com.normalize_obis_value("1-0:18.0.255"), "1-0:18.0.255")
+        # 完整 6 段、含 2 位值组的合法 OBIS 不动
+        self.assertEqual(com.normalize_obis_value("0-0:96.1.0.255"), "0-0:96.1.0.255")
+        # 有空格证据时仍把空格还原为分隔点（"0 4" -> "0.4"）；分隔符颠倒仍归一
+        self.assertEqual(com.normalize_obis_value("1-0:0 4.5.255"), "1-0:0.4.5.255")
+        self.assertEqual(com.normalize_obis_value("0:0-10.0.111.255"), "0-0:10.0.111.255")
+
+    def test_unparseable_access_blanks_columns_and_surfaces_for_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            write_jsonl(out / "atomic_requirements.jsonl", [
+                {"stable_req_id": "O-ASSOC", "requirement_type": "cosem_object_instance",
+                 "object": "Association LN", "source_refs": ["TBL-A-R1"]},
+                {"stable_req_id": "A-ADDUSER", "requirement_type": "cosem_attribute_access",
+                 "object": "Association LN.add_user", "source_refs": ["TBL-A-R2"]},
+            ])
+            write_jsonl(out / "table_items.jsonl", [
+                {"item_id": "TBL-A-R1", "table_id": "TBL-A", "row_index": 1,
+                 "fields": {"Object/attribute name": "Association LN", "CL": "15", "Value": "0-0:40.0.0.255"}},
+                {"item_id": "TBL-A-R2", "table_id": "TBL-A", "row_index": 2,
+                 "fields": {"#": "1", "Object/attribute name": "add_user", "Type": "date",
+                            # 非 4 段的访问串（实测 Association LN.add_user 真实样本）
+                            "Access rights RC/PC/SC/LC": "-/-/-A--"}},
+            ])
+            write_jsonl(out / "review_states.jsonl", [])
+            model = com.build_object_model(out)
+
+        all_attrs = [a for o in model["objects"] for a in o["attributes"]] + model["orphan_attributes"]
+        add_user = [a for a in all_attrs if a["name"] == "add_user"]
+        self.assertEqual(len(add_user), 1)
+        # 解析失败：四列绝不携带原始串（H4 核心——不得错列到 RC）
+        self.assertEqual(com.access_cells(add_user[0]), ("", "", "", ""))
+        # 原始串保留在 access_raw，并进未解析附录待专家确认
+        self.assertEqual(add_user[0]["access_raw"], "-/-/-A--")
+        self.assertEqual(model["counts"]["unresolved_access"], 1)
+        self.assertEqual(model["unresolved_access"][0]["attribute"], "add_user")
+
+    def test_wellformed_access_still_populates_four_columns(self) -> None:
+        # 反向保护：合法 4 段访问串照常填四列，未解析计数为 0
+        attr = {"access": com.parse_access("R-/RW/--/R-"), "access_raw": "R-/RW/--/R-"}
+        self.assertEqual(com.access_cells(attr), ("R-", "RW", "--", "R-"))
+        self.assertFalse(com.attr_access_unresolved(attr))
+
     def test_orphan_surfaced(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

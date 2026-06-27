@@ -71,7 +71,17 @@ class KnowledgeRepository:
         self.entries = entries
         self.infos = infos
         self._by_entry_id = {(entry.kb_id, entry.entry_id): entry for entry in entries}
-        self._by_id = {entry.entry_id: entry for entry in entries}
+        # 同一 entry_id 可能跨多个 KB 文件出现（实测默认 4 个 KB 有 86 处冲突）。
+        # 旧实现用 dict 推导，悄悄保留「最后加载」的那份、遮蔽权威条目，且结果随加载顺序漂移。
+        # 改为「首个加载优先」（default_kb_paths 把权威 KB 排在前），并记录冲突以便暴露而非静默。
+        self._by_id: dict[str, KBEntry] = {}
+        self._id_collisions: dict[str, list[str]] = {}
+        for entry in entries:
+            existing = self._by_id.get(entry.entry_id)
+            if existing is None:
+                self._by_id[entry.entry_id] = entry
+            elif entry.kb_id != existing.kb_id:
+                self._id_collisions.setdefault(entry.entry_id, [existing.kb_id]).append(entry.kb_id)
 
     @classmethod
     def from_paths(cls, paths: Iterable[Path]) -> "KnowledgeRepository":
@@ -125,9 +135,20 @@ class KnowledgeRepository:
     def info(self) -> list[dict[str, Any]]:
         return [info.__dict__ for info in self.infos]
 
+    def id_collisions(self) -> dict[str, list[str]]:
+        """entry_id -> 含该 id 的全部 kb_id 列表（仅跨 KB 冲突的 id）。"""
+        return {entry_id: list(kb_ids) for entry_id, kb_ids in self._id_collisions.items()}
+
     def get(self, entry_id: str, kb_id: str | None = None) -> dict[str, Any] | None:
         entry = self._by_entry_id.get((kb_id, entry_id)) if kb_id else self._by_id.get(entry_id)
-        return entry.to_dict() if entry else None
+        if entry is None:
+            return None
+        row = entry.to_dict()
+        if not kb_id and entry_id in self._id_collisions:
+            # 未指定 kb_id 且该 id 跨多个 KB：返回首个（权威优先），但暴露歧义，
+            # 提醒调用方用 kb_id 精确取，避免静默拿到非权威条目。
+            row["kb_id_collisions"] = self._id_collisions[entry_id]
+        return row
 
     def search(
         self,

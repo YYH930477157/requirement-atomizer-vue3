@@ -20,7 +20,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from text_normalize import normalize_numeric
+from text_normalize import formula_safe, normalize_numeric
 
 
 # 源表字段键（取自真实 ABNT 输出）
@@ -195,6 +195,34 @@ def parse_access(raw: str) -> dict[str, str]:
     return {}
 
 
+def attr_access_unresolved(attr: dict[str, Any]) -> bool:
+    """True when an attribute carries a non-empty raw access string that did
+    not parse into the four expected associations (RC/PC/SC/LC)."""
+    return bool(str(attr.get("access_raw") or "").strip()) and not (attr.get("access") or {})
+
+
+def access_cells(attr: dict[str, Any]) -> tuple[str, str, str, str]:
+    """Return the (RC, PC, SC, LC) display cells for an attribute.
+
+    When the raw access string could not be parsed into the four expected
+    associations, all four cells are left blank instead of dumping the whole
+    raw string into the RC column. The old ``access.get("RC", access_raw)``
+    fallback silently mislabelled access rights (a reader would appear to be
+    granted everything under RC). The unparsed raw string is preserved
+    separately via ``access_raw`` / the unresolved-access appendix so the row
+    can still be traced and confirmed by an expert.
+    """
+    access = attr.get("access") or {}
+    if not access:
+        return ("", "", "", "")
+    return (
+        str(access.get("RC", "")),
+        str(access.get("PC", "")),
+        str(access.get("SC", "")),
+        str(access.get("LC", "")),
+    )
+
+
 def build_object_model(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
@@ -308,11 +336,34 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
 
     object_list = sorted(objects.values(), key=lambda o: (o.get("source_order", ("~", 0, "")), o["obis"] or "~", o["object"]))
     attr_total = sum(len(o["attributes"]) for o in object_list) + len(orphan_attributes)
+    unresolved_access: list[dict[str, Any]] = []
+    for obj in object_list:
+        for attr in obj["attributes"]:
+            if attr_access_unresolved(attr):
+                unresolved_access.append({
+                    "object": obj["object"],
+                    "obis": obj["obis"],
+                    "class_id": obj["class_id"],
+                    "attribute": attr["name"],
+                    "access_raw": attr["access_raw"],
+                    "source_refs": attr.get("source_refs") or [],
+                })
+    for attr in orphan_attributes:
+        if attr_access_unresolved(attr):
+            unresolved_access.append({
+                "object": str(attr.get("parent") or ""),
+                "obis": "",
+                "class_id": "",
+                "attribute": attr["name"],
+                "access_raw": attr["access_raw"],
+                "source_refs": attr.get("source_refs") or [],
+            })
     return {
         "objects": object_list,
         "orphan_attributes": orphan_attributes,
         "units": units,
         "conflicts": conflicts,
+        "unresolved_access": unresolved_access,
         "counts": {
             "objects": len(object_list),
             "attributes": attr_total,
@@ -320,6 +371,7 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
             "orphan_attributes": len(orphan_attributes),
             "units": len(units),
             "conflicts": len(conflicts),
+            "unresolved_access": len(unresolved_access),
             "source_attribute_requirements": source_attribute_requirements,
             "projected_class_attributes": projected_class_attributes,
         },
@@ -720,6 +772,13 @@ def normalize_obis_value(value: Any) -> str:
         return ""
     if " " not in text:
         return _normalize_single_obis_value(text)
+    # 含空格：在 OBIS 形态里，值组区的空格几乎总是丢失的分隔点（如 "0 4" 实为 "0.4"）。
+    # 把空格直接还原为点以保留分隔证据，而不是先 compact 成相邻数字——后者会迫使下游用
+    # 无证据的数字拆分，可能把合法的 2 位值组（如 96）错切成 9.6，腐蚀 OBIS 码。
+    head, sep, tail = text.partition(":")
+    if sep:
+        tail_dotted = re.sub(r"\s+", ".", tail.strip())
+        text = f"{head.replace(' ', '')}:{tail_dotted}"
     compact = text.replace(" ", "")
     if re.fullmatch(r"\d+-\d+:[0-9A-Za-z]+(?:\.[0-9A-Za-z]+){2,3}", compact):
         return _normalize_single_obis_value(compact)
@@ -728,13 +787,14 @@ def normalize_obis_value(value: Any) -> str:
 
 def _normalize_single_obis_value(value: str) -> str:
     text = str(value or "").strip()
+    # 修复值组与 A-B 头颠倒的写法（"A:B-C.D.E.F" -> "A-B:C.D.E.F"）——有依据的格式归一。
     match = re.fullmatch(r"(\d+):(\d+)-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+){3})", text)
     if match:
         return f"{match.group(1)}-{match.group(2)}:{match.group(3)}"
-    match = re.fullmatch(r"(\d+-\d+):(\d{2})((?:\.[0-9A-Za-z]+){2})", text)
-    if match:
-        merged = match.group(2)
-        return f"{match.group(1)}:{merged[0]}.{merged[1]}{match.group(3)}"
+    # 刻意不做"把 2 位值组拆成两个单数字"的无证据数字拆分。历史实现会把
+    # "0-0:96.1.0" 静默改成 "0-0:9.6.1.0"——把合法的 C=96 腐蚀成 9.6，违反
+    # "OBIS 码错一位即严重缺陷" 的纪律。缺分隔点的修复改由 normalize_obis_value
+    # 的空格还原路径处理（仅在有空格证据时），不再盲拆相邻数字。
     return text
 
 
@@ -846,11 +906,10 @@ def render_markdown(model: dict[str, Any]) -> str:
                 lines.append("| # | 属性 | 类型 | RC | PC | SC | LC | 默认值 |")
                 lines.append("|---|------|------|----|----|----|----|--------|")
                 for attr in obj["attributes"]:
-                    access = attr["access"] or {}
+                    rc, pc, sc, lc = access_cells(attr)
                     lines.append(
                         f"| {attr['index']} | {attr['name']} | {attr['type']} | "
-                        f"{access.get('RC', attr['access_raw'])} | {access.get('PC', '')} | "
-                        f"{access.get('SC', '')} | {access.get('LC', '')} | {attr['default']} |"
+                        f"{rc} | {pc} | {sc} | {lc} | {attr['default']} |"
                     )
                 lines.append("")
 
@@ -876,11 +935,10 @@ def render_markdown(model: dict[str, Any]) -> str:
             lines.append("| # | 属性 | 类型 | RC | PC | SC | LC | 默认值 |")
             lines.append("|---|------|------|----|----|----|----|--------|")
             for attr in attrs:
-                access = attr["access"] or {}
+                rc, pc, sc, lc = access_cells(attr)
                 lines.append(
                     f"| {attr['index']} | {attr['name']} | {attr['type']} | "
-                    f"{access.get('RC', attr['access_raw'])} | {access.get('PC', '')} | "
-                    f"{access.get('SC', '')} | {access.get('LC', '')} | {attr['default']} |"
+                    f"{rc} | {pc} | {sc} | {lc} | {attr['default']} |"
                 )
             lines.append("")
 
@@ -893,13 +951,27 @@ def render_markdown(model: dict[str, Any]) -> str:
             lines.append(f"| {unit['quantity']} | {unit['group']} | {unit['unit']} |")
         lines.append("")
 
+    if model.get("unresolved_access"):
+        lines.append(f"## ⚠ 访问权限未解析（待专家确认，共 {len(model['unresolved_access'])} 条）")
+        lines.append("")
+        lines.append("> 原始访问串无法切分为 RC/PC/SC/LC 四关联，已在属性表中留空以免错列；"
+                     "以下保留原始串供核对。")
+        lines.append("")
+        lines.append("| 对象 | OBIS | 属性 | 原始访问串 |")
+        lines.append("|------|------|------|-----------|")
+        for item in model["unresolved_access"]:
+            lines.append(
+                f"| {item['object']} | {item['obis']} | {item['attribute']} | `{item['access_raw']}` |"
+            )
+        lines.append("")
+
     return "\n".join(lines)
 
 
 def write_attribute_matrix_csv(path: Path, model: dict[str, Any]) -> None:
     columns = [
         "object", "obis", "class_id", "attr_index", "attribute", "type",
-        "RC", "PC", "SC", "LC", "default", "verification_method",
+        "RC", "PC", "SC", "LC", "access_raw", "default", "verification_method",
         "confidence", "ambiguity", "review_status", "source_refs",
     ]
     with path.open("w", encoding="utf-8-sig", newline="") as f:
@@ -907,25 +979,27 @@ def write_attribute_matrix_csv(path: Path, model: dict[str, Any]) -> None:
         writer.writeheader()
         for obj in model["objects"]:
             for attr in obj["attributes"]:
-                access = attr["access"] or {}
-                writer.writerow({
+                rc, pc, sc, lc = access_cells(attr)
+                row = {
                     "object": obj["object"],
                     "obis": obj["obis"],
                     "class_id": obj["class_id"],
                     "attr_index": attr["index"],
                     "attribute": attr["name"],
                     "type": attr["type"],
-                    "RC": access.get("RC", attr["access_raw"]),
-                    "PC": access.get("PC", ""),
-                    "SC": access.get("SC", ""),
-                    "LC": access.get("LC", ""),
+                    "RC": rc,
+                    "PC": pc,
+                    "SC": sc,
+                    "LC": lc,
+                    "access_raw": attr["access_raw"],
                     "default": attr["default"],
                     "verification_method": attr["verification_method"],
                     "confidence": attr["confidence"],
                     "ambiguity": attr["ambiguity"],
                     "review_status": attr["review_status"],
                     "source_refs": "; ".join(str(r) for r in attr["source_refs"]),
-                })
+                }
+                writer.writerow({key: formula_safe(value) for key, value in row.items()})
 
 
 def parse_args() -> argparse.Namespace:

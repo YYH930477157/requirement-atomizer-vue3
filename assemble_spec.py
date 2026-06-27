@@ -21,7 +21,7 @@ import requirement_schema as rs
 from cosem_access_security import build_access_security
 from cosem_behavior_spec import build_behavior_spec
 from cosem_external_refs import build_external_refs
-from cosem_object_model import build_object_model
+from cosem_object_model import access_cells, build_object_model
 
 
 _OBIS_LIST_C_MEANING = {
@@ -96,9 +96,7 @@ def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
             tt = {
                 "description": f"{display['name']} 属性访问表",
                 "columns": ["#", "属性", "类型", "RC", "PC", "SC", "LC", "默认值"],
-                "rows": [[a["index"], a["name"], a["type"],
-                          a["access"].get("RC", a["access_raw"]), a["access"].get("PC", ""),
-                          a["access"].get("SC", ""), a["access"].get("LC", ""), a["default"]]
+                "rows": [[a["index"], a["name"], a["type"], *access_cells(a), a["default"]]
                          for a in attrs],
             }
         reqs.append(_req(
@@ -133,9 +131,7 @@ def p1_class_template_requirements(model: dict[str, Any]) -> list[dict[str, Any]
         tt = {
             "description": f"{parent} 类级属性模板",
             "columns": ["#", "属性", "类型", "RC", "PC", "SC", "LC", "默认值"],
-            "rows": [[a["index"], a["name"], a["type"],
-                      a["access"].get("RC", a["access_raw"]), a["access"].get("PC", ""),
-                      a["access"].get("SC", ""), a["access"].get("LC", ""), a["default"]]
+            "rows": [[a["index"], a["name"], a["type"], *access_cells(a), a["default"]]
                      for a in attrs],
         }
         reqs.append(_req(
