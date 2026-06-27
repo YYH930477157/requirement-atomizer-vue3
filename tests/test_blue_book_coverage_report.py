@@ -21,8 +21,9 @@ class BlueBookCoverageReportTests(unittest.TestCase):
         # 2026-06-27: 补漏 18 个 Blue Book Part 2 Ed.16 current 通信类（87→105）。
         self.assertEqual(report["part2_interface_classes"]["covered"], 105)
         self.assertEqual(report["part2_interface_classes"]["total"], 105)
-        self.assertEqual(report["part2_interface_classes"]["enriched"], 35)
-        self.assertEqual(report["part2_interface_classes"]["catalogue_seed"], 53)
+        # 2026-06-28: 18 个新增通信类从 IC 属性/方法表富化（catalogue_seed 53→35，enriched 35→53）。
+        self.assertEqual(report["part2_interface_classes"]["enriched"], 53)
+        self.assertEqual(report["part2_interface_classes"]["catalogue_seed"], 35)
         self.assertEqual(report["object_instances"]["total"], 495)
         self.assertEqual(report["object_instances"]["by_medium"]["ac_electricity"], 328)
         self.assertEqual(report["object_instances"]["by_medium"]["general"], 102)

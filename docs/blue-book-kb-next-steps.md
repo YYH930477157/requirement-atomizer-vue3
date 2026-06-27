@@ -18,7 +18,7 @@ python -m requirement_kb.cli coverage knowledge_bases/compiled_from_obsidian.jso
 - Current compiled coverage after the ABNT bulk OBIS import and the 2026-06-27 Part 2 gap fix:
   - 744 total compiled Obsidian entries.
   - 105/105 Blue Book Part 2 COSEM interface classes, all 105 with attributes or methods. The count was corrected from 87 on 2026-06-27 after a PDF re-audit added 18 missing Ed.16 current communication classes (cellular/PRIME/G3/HS-PLC/Wi-SUN/SCHC-LPWAN/LoRaWAN/Function control/CoAP setup); the Push setup (40) catalogue version was also corrected 0→3.
-  - Strict Blue Book snapshot: 35 deeply enriched classes and 53 catalogue-seed classes.
+  - Strict Blue Book snapshot: 53 deeply enriched classes and 35 catalogue-seed classes. The 18 newly-added Ed.16 communication classes were enriched 2026-06-28 from the IC attribute/method tables (verbatim attributes/types/short-names/methods).
   - 73/73 Blue Book Part 1 OBIS table catalogue entries.
   - 495 row-level `cosem_object_instance` entries, distributed across general, AC electricity, DC electricity, HCA, thermal energy, gas, cold-water, and hot-water object families.
   - 255 row-level entries were bulk-generated from `out/abnt_current_kb_smoke/cosem_object_model.json` and tagged `abnt_bulk_import` to provide exact OBIS lookup coverage for the current ABNT smoke. They are intentionally marked for later Blue Book semantic review.
