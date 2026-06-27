@@ -15,13 +15,14 @@ class BlueBookCoverageReportTests(unittest.TestCase):
     def test_report_summarizes_current_kb_coverage(self) -> None:
         report = build_blue_book_coverage_report(ROOT / "knowledge_bases" / "compiled_from_obsidian.json")
 
-        self.assertEqual(report["entries_total"], 726)
+        self.assertEqual(report["entries_total"], 744)
         self.assertEqual(report["part1_obis_tables"]["covered"], 73)
         self.assertEqual(report["part1_obis_tables"]["total"], 73)
-        self.assertEqual(report["part2_interface_classes"]["covered"], 87)
-        self.assertEqual(report["part2_interface_classes"]["total"], 87)
+        # 2026-06-27: 补漏 18 个 Blue Book Part 2 Ed.16 current 通信类（87→105）。
+        self.assertEqual(report["part2_interface_classes"]["covered"], 105)
+        self.assertEqual(report["part2_interface_classes"]["total"], 105)
         self.assertEqual(report["part2_interface_classes"]["enriched"], 35)
-        self.assertEqual(report["part2_interface_classes"]["catalogue_seed"], 35)
+        self.assertEqual(report["part2_interface_classes"]["catalogue_seed"], 53)
         self.assertEqual(report["object_instances"]["total"], 495)
         self.assertEqual(report["object_instances"]["by_medium"]["ac_electricity"], 328)
         self.assertEqual(report["object_instances"]["by_medium"]["general"], 102)

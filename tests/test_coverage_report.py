@@ -138,7 +138,8 @@ class CoverageReportTests(unittest.TestCase):
     def test_real_compiled_obsidian_kb_has_no_seed_classes_and_expected_instance_total(self) -> None:
         """回归保护：覆盖度报表必须与真实 compiled_from_obsidian.json 一致。
 
-        交接 baseline 已更新为：87 class 全部 rich（0 seed）、136 row-level instance、367 total。
+        交接 baseline 已更新为：105 class 全部 rich（0 seed；2026-06-27 补 18 个 Part 2 Ed.16 通信类）、
+        495 row-level instance、744 total。
         AC electricity 表 14-20 全部 materialized (tariff/harmonics/phase angle/loss/dips/distortion)。
         表 9/14-20/27/28 于 2026-06-25 从蓝皮书原文 materialize。
         任何人补 KB 后跑此测试，若 class 退化成 seed 或总数骤变会立即暴露。
@@ -149,7 +150,7 @@ class CoverageReportTests(unittest.TestCase):
             self.skipTest("compiled_from_obsidian.json not present")
         report = build_coverage_report(kb)
         self.assertEqual(report["part2_interface_classes"]["catalogue_only_seed"], 0)
-        self.assertEqual(report["part2_interface_classes"]["total"], 87)
+        self.assertEqual(report["part2_interface_classes"]["total"], 105)
         self.assertGreaterEqual(report["part1_obis"]["row_level_instances"], 140)
         self.assertGreaterEqual(report["total_entries"], 371)
         by_medium = report["instance_distribution"]["by_medium"]
