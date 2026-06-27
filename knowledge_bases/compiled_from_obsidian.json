@@ -8875,13 +8875,21 @@
       "keywords": [
         "gsm diagnostic",
         "class 47",
-        "cl 47"
+        "cl 47",
+        "logical_name",
+        "operator",
+        "status",
+        "cs_attachment",
+        "ps_status",
+        "cell_info",
+        "adjacent_cells",
+        "capture_time"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for GSM diagnostic objects.",
+      "definition": "COSEM interface class (class_id = 47, version = 2). Stores GSM/GPRS, UMTS, CDMA or LTE cellular network parameters (registration status, signal quality, cell info) for diagnosing communication problems.",
       "relations": [
         {
           "relation": "defined_by",
@@ -8890,17 +8898,76 @@
       ],
       "class_id": 47,
       "version": 2,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "operator",
+          "mode": "dynamic",
+          "type": "visible-string",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "status",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "cs_attachment",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "ps_status",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "cell_info",
+          "mode": "dynamic",
+          "type": "cell_info_type",
+          "short_name": "x + 0x30"
+        },
+        {
+          "attribute_id": 7,
+          "name": "adjacent_cells",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x38"
+        },
+        {
+          "attribute_id": 8,
+          "name": "capture_time",
+          "mode": "dynamic",
+          "type": "date-time",
+          "short_name": "x + 0x40"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Stores GSM/GPRS, UMTS, CDMA or LTE cellular network parameters (registration status, signal quality, cell info) for diagnosing communication problems.",
+        "No specific methods defined."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.7.8; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-48-IPV6-SETUP",
@@ -11112,13 +11179,19 @@
       "keywords": [
         "prime nb ofdm plc physical layer counters",
         "class 81",
-        "cl 81"
+        "cl 81",
+        "logical_name",
+        "phy_stats_crc_incorrect_count",
+        "phy_stats_crc_fail_count",
+        "phy_stats_tx_drop_count",
+        "phy_stats_rx_drop_count",
+        "reset"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for PRIME NB OFDM PLC Physical layer counters objects.",
+      "definition": "COSEM interface class (class_id = 81, version = 0). Holds PRIME NB OFDM PLC physical-layer statistics counters (CRC errors, dropped frames).",
       "relations": [
         {
           "relation": "defined_by",
@@ -11127,17 +11200,61 @@
       ],
       "class_id": 81,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "phy_stats_crc_incorrect_count",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "phy_stats_crc_fail_count",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "phy_stats_tx_drop_count",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "phy_stats_rx_drop_count",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x20"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "short_name": "x + 0x28"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Holds PRIME NB OFDM PLC physical-layer statistics counters (CRC errors, dropped frames).",
+        "Specific methods: reset."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.12.5; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-82-PRIME-NB-OFDM-PLC-MAC-SETUP",
@@ -11190,13 +11307,27 @@
       "keywords": [
         "prime nb ofdm plc mac functional parameters",
         "class 83",
-        "cl 83"
+        "cl 83",
+        "logical_name",
+        "mac_LNID",
+        "mac_LSID",
+        "mac_SID",
+        "mac_SNA",
+        "mac_state",
+        "mac_scp_length",
+        "mac_node_hierarchy_level",
+        "mac_beacon_slot_count",
+        "mac_beacon_rx_slot",
+        "mac_beacon_tx_slot",
+        "mac_beacon_rx_frequency",
+        "mac_beacon_tx_frequency",
+        "mac_capabilities"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for PRIME NB OFDM PLC MAC functional parameters objects.",
+      "definition": "COSEM interface class (class_id = 83, version = 0). Holds PRIME NB OFDM PLC MAC functional parameters (LNID/LSID/SID, MAC state, beacon slots/frequencies, capabilities).",
       "relations": [
         {
           "relation": "defined_by",
@@ -11205,17 +11336,118 @@
       ],
       "class_id": 83,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "mac_LNID",
+          "mode": "static",
+          "type": "long",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "mac_LSID",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "mac_SID",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "mac_SNA",
+          "mode": "static",
+          "type": "octet-string",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "mac_state",
+          "mode": "static",
+          "type": "enum",
+          "short_name": "x + 0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "mac_scp_length",
+          "mode": "static",
+          "type": "long",
+          "short_name": "x + 0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "mac_node_hierarchy_level",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "mac_beacon_slot_count",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "mac_beacon_rx_slot",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x48"
+        },
+        {
+          "attribute_id": 11,
+          "name": "mac_beacon_tx_slot",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x50"
+        },
+        {
+          "attribute_id": 12,
+          "name": "mac_beacon_rx_frequency",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x58"
+        },
+        {
+          "attribute_id": 13,
+          "name": "mac_beacon_tx_frequency",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x60"
+        },
+        {
+          "attribute_id": 14,
+          "name": "mac_capabilities",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x68"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Holds PRIME NB OFDM PLC MAC functional parameters (LNID/LSID/SID, MAC state, beacon slots/frequencies, capabilities).",
+        "No specific methods defined."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.12.7; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-84-PRIME-NB-OFDM-PLC-MAC-COUNTERS",
@@ -11268,13 +11500,20 @@
       "keywords": [
         "prime nb ofdm plc mac network administration data",
         "class 85",
-        "cl 85"
+        "cl 85",
+        "logical_name",
+        "mac_list_multicast_entries",
+        "mac_list_switch_table",
+        "mac_list_direct_table",
+        "mac_list_available_switches",
+        "mac_list_phy_comm",
+        "reset"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for PRIME NB OFDM PLC MAC network administration data objects.",
+      "definition": "COSEM interface class (class_id = 85, version = 0). Holds PRIME NB OFDM PLC MAC network administration data (multicast/switch/direct/available-switch/phy-comm lists).",
       "relations": [
         {
           "relation": "defined_by",
@@ -11283,17 +11522,68 @@
       ],
       "class_id": 85,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "mac_list_multicast_entries",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "mac_list_switch_table",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "mac_list_direct_table",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "mac_list_available_switches",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "mac_list_phy_comm",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x28"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "short_name": "x + 0x30"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Holds PRIME NB OFDM PLC MAC network administration data (multicast/switch/direct/available-switch/phy-comm lists).",
+        "Specific methods: reset."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.12.9; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-86-PRIME-NB-OFDM-PLC-APPLICATION-IDENTIFICATION",
@@ -11307,13 +11597,17 @@
       "keywords": [
         "prime nb ofdm plc application identification",
         "class 86",
-        "cl 86"
+        "cl 86",
+        "logical_name",
+        "firmware_version",
+        "vendor_Id",
+        "product_Id"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for PRIME NB OFDM PLC Application identification objects.",
+      "definition": "COSEM interface class (class_id = 86, version = 0). Holds PRIME NB OFDM PLC application identification (firmware version, vendor and product IDs).",
       "relations": [
         {
           "relation": "defined_by",
@@ -11322,17 +11616,48 @@
       ],
       "class_id": 86,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "firmware_version",
+          "mode": "static",
+          "type": "octet-string",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "vendor_Id",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "product_Id",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x18"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Holds PRIME NB OFDM PLC application identification (firmware version, vendor and product IDs).",
+        "No specific methods defined."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.12.11; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-90-G3-PLC-MAC-LAYER-COUNTERS",
@@ -11463,13 +11788,29 @@
       "keywords": [
         "wi-sun setup",
         "class 95",
-        "cl 95"
+        "cl 95",
+        "logical_name",
+        "network_name",
+        "routing_method",
+        "pan_id",
+        "disc_imin",
+        "disc_imax",
+        "data_message_imin",
+        "data_message_imax",
+        "default_dio_interval_min",
+        "default_dio_interval_doublings",
+        "channel_plan",
+        "channel_function",
+        "excluded_channels",
+        "join_state",
+        "reg_channel_exclusions",
+        "reset_join_state"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for Wi-SUN setup objects.",
+      "definition": "COSEM interface class (class_id = 95, version = 0). Models the Wi-SUN FAN network setup parameters (network name, routing method, PAN id, DIO/Trickle timers, channel plan).",
       "relations": [
         {
           "relation": "defined_by",
@@ -11478,17 +11819,131 @@
       ],
       "class_id": 95,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "network_name",
+          "mode": "static",
+          "type": "octet-string",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "routing_method",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "pan_id",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "disc_imin",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "disc_imax",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "data_message_imin",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "data_message_imax",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "default_dio_interval_min",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "default_dio_interval_doublings",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x48"
+        },
+        {
+          "attribute_id": 11,
+          "name": "channel_plan",
+          "mode": "static",
+          "type": "structure",
+          "short_name": "x + 0x50"
+        },
+        {
+          "attribute_id": 12,
+          "name": "channel_function",
+          "mode": "static",
+          "type": "enum",
+          "short_name": "x + 0x58"
+        },
+        {
+          "attribute_id": 13,
+          "name": "excluded_channels",
+          "mode": "static",
+          "type": "CHOICE",
+          "short_name": "x + 0x60"
+        },
+        {
+          "attribute_id": 14,
+          "name": "join_state",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x68"
+        },
+        {
+          "attribute_id": 15,
+          "name": "reg_channel_exclusions",
+          "mode": "static",
+          "type": "structure",
+          "short_name": "x + 0x70"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset_join_state",
+          "short_name": "x + 0x78"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Models the Wi-SUN FAN network setup parameters (network name, routing method, PAN id, DIO/Trickle timers, channel plan).",
+        "Specific methods: reset_join_state."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.18.1; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-96-WI-SUN-DIAGNOSTIC",
@@ -11502,13 +11957,20 @@
       "keywords": [
         "wi-sun diagnostic",
         "class 96",
-        "cl 96"
+        "cl 96",
+        "logical_name",
+        "sysdescr",
+        "ifnumber",
+        "iftable",
+        "neighbour_table_information",
+        "transmission_information",
+        "reset"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for Wi-SUN diagnostic objects.",
+      "definition": "COSEM interface class (class_id = 96, version = 0). Provides Wi-SUN network diagnostic information (system descriptor, interface table, neighbour and transmission info).",
       "relations": [
         {
           "relation": "defined_by",
@@ -11517,17 +11979,68 @@
       ],
       "class_id": 96,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "sysdescr",
+          "mode": "dynamic",
+          "type": "octet-string",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "ifnumber",
+          "mode": "dynamic",
+          "type": "integer",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "iftable",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "neighbour_table_information",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "transmission_information",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x28"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "short_name": "x + 0x30"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Provides Wi-SUN network diagnostic information (system descriptor, interface table, neighbour and transmission info).",
+        "Specific methods: reset."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.18.2; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-97-RPL-DIAGNOSTIC",
@@ -11541,13 +12054,23 @@
       "keywords": [
         "rpl diagnostic",
         "class 97",
-        "cl 97"
+        "cl 97",
+        "logical_name",
+        "rpl_instance_id",
+        "dodag_version_number",
+        "dodag_rank",
+        "grounded",
+        "mode_of_operation",
+        "dodag_prf",
+        "dodag_dtsn",
+        "dodag_id",
+        "reset"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for RPL diagnostic objects.",
+      "definition": "COSEM interface class (class_id = 97, version = 0). Provides RPL (RFC 6550) routing diagnostic information about the device's DODAG (rank, version, mode of operation).",
       "relations": [
         {
           "relation": "defined_by",
@@ -11556,17 +12079,89 @@
       ],
       "class_id": 97,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "rpl_instance_id",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "dodag_version_number",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "dodag_rank",
+          "mode": "dynamic",
+          "type": "long",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "grounded",
+          "mode": "dynamic",
+          "type": "boolean",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "mode_of_operation",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "dodag_prf",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "dodag_dtsn",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "dodag_id",
+          "mode": "dynamic",
+          "type": "octet-string",
+          "short_name": "x + 0x40"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "short_name": "x + 0x48"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Provides RPL (RFC 6550) routing diagnostic information about the device's DODAG (rank, version, mode of operation).",
+        "Specific methods: reset."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.18.3; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-98-MPL-DIAGNOSTIC",
@@ -11580,13 +12175,27 @@
       "keywords": [
         "mpl diagnostic",
         "class 98",
-        "cl 98"
+        "cl 98",
+        "logical_name",
+        "proactive_forwarding",
+        "z",
+        "tunit",
+        "se_lifetime",
+        "dm_k",
+        "dm_imin",
+        "dm_imax",
+        "dm_t_exp",
+        "c_k",
+        "c_imin",
+        "c_imax",
+        "c_t_exp",
+        "reset"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for MPL diagnostic objects.",
+      "definition": "COSEM interface class (class_id = 98, version = 0). Provides MPL (RFC 7731) multicast forwarding diagnostic parameters for the Wi-SUN network.",
       "relations": [
         {
           "relation": "defined_by",
@@ -11595,17 +12204,117 @@
       ],
       "class_id": 98,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "proactive_forwarding",
+          "mode": "dynamic",
+          "type": "boolean",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "z",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 4,
+          "name": "tunit",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 5,
+          "name": "se_lifetime",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x28"
+        },
+        {
+          "attribute_id": 6,
+          "name": "dm_k",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x30"
+        },
+        {
+          "attribute_id": 7,
+          "name": "dm_imin",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x38"
+        },
+        {
+          "attribute_id": 8,
+          "name": "dm_imax",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x40"
+        },
+        {
+          "attribute_id": 9,
+          "name": "dm_t_exp",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x48"
+        },
+        {
+          "attribute_id": 10,
+          "name": "c_k",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x50"
+        },
+        {
+          "attribute_id": 11,
+          "name": "c_imin",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x58"
+        },
+        {
+          "attribute_id": 12,
+          "name": "c_imax",
+          "mode": "dynamic",
+          "type": "unsigned",
+          "short_name": "x + 0x60"
+        },
+        {
+          "attribute_id": 13,
+          "name": "c_t_exp",
+          "mode": "dynamic",
+          "type": "long-unsigned",
+          "short_name": "x + 0x68"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "short_name": "x + 0x70"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Provides MPL (RFC 7731) multicast forwarding diagnostic parameters for the Wi-SUN network.",
+        "Specific methods: reset."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.18.4; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-100-NTP-SETUP",
@@ -12811,13 +13520,19 @@
       "keywords": [
         "function control",
         "class 122",
-        "cl 122"
+        "cl 122",
+        "logical_name",
+        "activation_status",
+        "function_list",
+        "set_function_status",
+        "add_function",
+        "remove_function"
       ],
       "domain_tags": [
         "cosem_class",
         "access_control"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for Function control objects.",
+      "definition": "COSEM interface class (class_id = 122, version = 0). Controls activation of metering functions: an activation status and a function list, with methods to enable/add/remove functions.",
       "relations": [
         {
           "relation": "defined_by",
@@ -12826,17 +13541,57 @@
       ],
       "class_id": 122,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "activation_status",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "function_list",
+          "mode": "static",
+          "type": "array",
+          "short_name": "x + 0x10"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "set_function_status",
+          "short_name": "x + 0x20"
+        },
+        {
+          "method_id": 2,
+          "name": "add_function",
+          "short_name": "x + 0x28"
+        },
+        {
+          "method_id": 3,
+          "name": "remove_function",
+          "short_name": "x + 0x30"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Controls activation of metering functions: an activation status and a function list, with methods to enable/add/remove functions.",
+        "Specific methods: set_function_status, add_function, remove_function."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.4.10; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-123-ARRAY-MANAGER",
@@ -12928,13 +13683,17 @@
       "keywords": [
         "schc-lpwan setup",
         "class 126",
-        "cl 126"
+        "cl 126",
+        "logical_name",
+        "lpwan_reference",
+        "schc_cd_rules",
+        "schc_fr_param"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for SCHC-LPWAN setup objects.",
+      "definition": "COSEM interface class (class_id = 126, version = 0). Sets up SCHC (RFC 8724) compression/decompression and fragmentation/reassembly rules for DLMS over LPWAN.",
       "relations": [
         {
           "relation": "defined_by",
@@ -12943,17 +13702,48 @@
       ],
       "class_id": 126,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "lpwan_reference",
+          "mode": "static",
+          "type": "octet-string",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "schc_cd_rules",
+          "mode": "static",
+          "type": "array",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "schc_fr_param",
+          "mode": "static",
+          "type": "structure",
+          "short_name": "x + 0x18"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Sets up SCHC (RFC 8724) compression/decompression and fragmentation/reassembly rules for DLMS over LPWAN.",
+        "No specific methods defined."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.16.2.1; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-127-SCHC-LPWAN-DIAGNOSTIC",
@@ -12967,13 +13757,21 @@
       "keywords": [
         "schc-lpwan diagnostic",
         "class 127",
-        "cl 127"
+        "cl 127",
+        "logical_name",
+        "schc_packets_tx_counter",
+        "schc_packets_rx_counter",
+        "schc_fragments_tx_counter",
+        "schc_fragments_rx_counter",
+        "schc_ack_tx_counter",
+        "schc_ack_rx_counter",
+        "reset"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for SCHC-LPWAN diagnostic objects.",
+      "definition": "COSEM interface class (class_id = 127, version = 0). Provides SCHC-over-LPWAN diagnostic counters (packets, fragments, ACKs transmitted/received).",
       "relations": [
         {
           "relation": "defined_by",
@@ -12982,17 +13780,75 @@
       ],
       "class_id": 127,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "schc_packets_tx_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "schc_packets_rx_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "schc_fragments_tx_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "schc_fragments_rx_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "schc_ack_tx_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "schc_ack_rx_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x30"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "short_name": "x + 0x40"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Provides SCHC-over-LPWAN diagnostic counters (packets, fragments, ACKs transmitted/received).",
+        "Specific methods: reset."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.16.2.2; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-128-LORAWAN-SETUP",
@@ -13006,13 +13862,27 @@
       "keywords": [
         "lorawan setup",
         "class 128",
-        "cl 128"
+        "cl 128",
+        "logical_name",
+        "class",
+        "state",
+        "max_transmit_EIRP_setting",
+        "ADR_mode",
+        "regional_parameters",
+        "device_operation",
+        "modem_versions",
+        "devAddr",
+        "join_strategy",
+        "multicasts_parameters",
+        "disconnect_from_network",
+        "change_class",
+        "change_region"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for LoRaWAN setup objects.",
+      "definition": "COSEM interface class (class_id = 128, version = 0). Holds the parameters to set up a LoRaWAN 1.0.3 device (class, state, EIRP, ADR, regional parameters, device operation).",
       "relations": [
         {
           "relation": "defined_by",
@@ -13021,17 +13891,113 @@
       ],
       "class_id": 128,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "class",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "state",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "max_transmit_EIRP_setting",
+          "mode": "static",
+          "type": "integer",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "ADR_mode",
+          "mode": "dynamic",
+          "type": "boolean",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "regional_parameters",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "device_operation",
+          "mode": "dynamic",
+          "type": "structure",
+          "short_name": "x + 0x38"
+        },
+        {
+          "attribute_id": 8,
+          "name": "modem_versions",
+          "mode": "static",
+          "type": "structure",
+          "short_name": "x + 0x40"
+        },
+        {
+          "attribute_id": 9,
+          "name": "devAddr",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x48"
+        },
+        {
+          "attribute_id": 10,
+          "name": "join_strategy",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x50"
+        },
+        {
+          "attribute_id": 11,
+          "name": "multicasts_parameters",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x58"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "disconnect_from_network",
+          "short_name": "x + 0x60"
+        },
+        {
+          "method_id": 2,
+          "name": "change_class",
+          "short_name": "x + 0x68"
+        },
+        {
+          "method_id": 3,
+          "name": "change_region",
+          "short_name": "x + 0x70"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Holds the parameters to set up a LoRaWAN 1.0.3 device (class, state, EIRP, ADR, regional parameters, device operation).",
+        "Specific methods: disconnect_from_network, change_class, change_region."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.17.2.2; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-129-LORAWAN-DIAGNOSTIC",
@@ -13045,13 +14011,28 @@
       "keywords": [
         "lorawan diagnostic",
         "class 129",
-        "cl 129"
+        "cl 129",
+        "logical_name",
+        "internal_error_code",
+        "out_frames_u_counter",
+        "out_frames_c_counter",
+        "in_frames_u_counter",
+        "in_frames_c_counter",
+        "in_mac_command_counter",
+        "in_mac_ans_error_counter",
+        "in_mac_ignored_counter",
+        "in_per",
+        "in_mean_rssi_rx1",
+        "in_mean_snr_rx1",
+        "in_mean_rssi_rx2",
+        "in_mean_snr_rx2",
+        "reset"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for LoRaWAN diagnostic objects.",
+      "definition": "COSEM interface class (class_id = 129, version = 0). Provides LoRaWAN diagnostic information (internal error code, uplink/downlink frame counters, link quality RSSI/SNR).",
       "relations": [
         {
           "relation": "defined_by",
@@ -13060,17 +14041,124 @@
       ],
       "class_id": 129,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "internal_error_code",
+          "mode": "dynamic",
+          "type": "enum",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "out_frames_u_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "out_frames_c_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "in_frames_u_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "in_frames_c_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "in_mac_command_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "in_mac_ans_error_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "in_mac_ignored_counter",
+          "mode": "dynamic",
+          "type": "double-long-unsigned",
+          "short_name": "x + 0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "in_per",
+          "mode": "dynamic",
+          "type": "integer",
+          "short_name": "x + 0x48"
+        },
+        {
+          "attribute_id": 11,
+          "name": "in_mean_rssi_rx1",
+          "mode": "dynamic",
+          "type": "integer",
+          "short_name": "x + 0x50"
+        },
+        {
+          "attribute_id": 12,
+          "name": "in_mean_snr_rx1",
+          "mode": "dynamic",
+          "type": "integer",
+          "short_name": "x + 0x58"
+        },
+        {
+          "attribute_id": 13,
+          "name": "in_mean_rssi_rx2",
+          "mode": "dynamic",
+          "type": "integer",
+          "short_name": "x + 0x60"
+        },
+        {
+          "attribute_id": 14,
+          "name": "in_mean_snr_rx2",
+          "mode": "dynamic",
+          "type": "integer",
+          "short_name": "x + 0x68"
         }
       ],
-      "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "methods": [
+        {
+          "method_id": 1,
+          "name": "reset",
+          "short_name": "x + 0x70"
+        }
+      ],
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Provides LoRaWAN diagnostic information (internal error code, uplink/downlink frame counters, link quality RSSI/SNR).",
+        "Specific methods: reset."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.17.2.3; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-130-ISO-IEC-14908-IDENTIFICATION",
@@ -13354,13 +14442,15 @@
       "keywords": [
         "hs-plc iso/iec 12139-1 hdlc ssas setup",
         "class 143",
-        "cl 143"
+        "cl 143",
+        "logical_name",
+        "master_station_id"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for HS-PLC ISO/IEC 12139-1 HDLC SSAS setup objects.",
+      "definition": "COSEM interface class (class_id = 143, version = 0). Holds parameters to set up the HDLC SSAS of the HS-PLC ISO/IEC 12139-1 profile (master station identifier).",
       "relations": [
         {
           "relation": "defined_by",
@@ -13369,17 +14459,34 @@
       ],
       "class_id": 143,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "master_station_id",
+          "mode": "static",
+          "type": "long64-unsigned",
+          "short_name": "x + 0x08"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Holds parameters to set up the HDLC SSAS of the HS-PLC ISO/IEC 12139-1 profile (master station identifier).",
+        "No specific methods defined."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.14.5; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-151-LTE-MONITORING",
@@ -13393,13 +14500,16 @@
       "keywords": [
         "lte monitoring",
         "class 151",
-        "cl 151"
+        "cl 151",
+        "logical_name",
+        "LTE_network_parameters",
+        "LTE_quality_of_service"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for LTE monitoring objects.",
+      "definition": "COSEM interface class (class_id = 151, version = 1). Monitors LTE network parameters and quality of service for cellular-connected meters.",
       "relations": [
         {
           "relation": "defined_by",
@@ -13408,17 +14518,41 @@
       ],
       "class_id": 151,
       "version": 1,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "LTE_network_parameters",
+          "mode": "dynamic",
+          "type": "LTE_network_parameters_type",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "LTE_quality_of_service",
+          "mode": "dynamic",
+          "type": "LTE_QoS_type",
+          "short_name": "x + 0x10"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Monitors LTE network parameters and quality of service for cellular-connected meters.",
+        "No specific methods defined."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.7.9; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-152-COAP-SETUP",
@@ -13432,13 +14566,26 @@
       "keywords": [
         "coap setup",
         "class 152",
-        "cl 152"
+        "cl 152",
+        "logical_name",
+        "UDP_reference",
+        "ack_timeout",
+        "ack_random_factor",
+        "max_retransmit",
+        "nstart",
+        "delay_ack_timeout",
+        "exponential_back_off",
+        "probing_rate",
+        "CoAP_uri_path",
+        "transport_mode",
+        "version",
+        "token_length"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for CoAP setup objects.",
+      "definition": "COSEM interface class (class_id = 152, version = 0). Sets up CoAP transport parameters (UDP reference, ACK/retransmit timers, uri-path, transport mode, token length).",
       "relations": [
         {
           "relation": "defined_by",
@@ -13447,17 +14594,111 @@
       ],
       "class_id": 152,
       "version": 0,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "UDP_reference",
+          "mode": "static",
+          "type": "octet-string",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "ack_timeout",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "ack_random_factor",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "max_retransmit",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "nstart",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "delay_ack_timeout",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "exponential_back_off",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "probing_rate",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "CoAP_uri_path",
+          "mode": "static",
+          "type": "octet-string",
+          "short_name": "x + 0x48"
+        },
+        {
+          "attribute_id": 11,
+          "name": "transport_mode",
+          "mode": "static",
+          "type": "enum",
+          "short_name": "x + 0x50"
+        },
+        {
+          "attribute_id": 12,
+          "name": "version",
+          "mode": "dynamic",
+          "type": "CHOICE",
+          "short_name": "x + 0x58"
+        },
+        {
+          "attribute_id": 13,
+          "name": "token_length",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x60"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Sets up CoAP transport parameters (UDP reference, ACK/retransmit timers, uri-path, transport mode, token length).",
+        "No specific methods defined."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.9.8; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-L3-IC-153-COAP-DIAGNOSTIC",
@@ -13588,13 +14829,32 @@
       "keywords": [
         "g3-plc hybrid 6lowpan adaptation layer setup",
         "class 162",
-        "cl 162"
+        "cl 162",
+        "logical_name",
+        "adp_routing_table",
+        "adp_blacklist_table",
+        "adp_low_LQI_value_RF",
+        "adp_high_LQI_value_RF",
+        "adp_routing_configuration_RF",
+        "adp_use_backup_media",
+        "adp_weak_LQI_value_RF",
+        "adp_trickle_LQI_threshold_low_RF",
+        "adp_delay_low_LQI_RF",
+        "adp_delay_high_LQI_RF",
+        "adp_RREQ_jitter_low_LQI_RF",
+        "adp_RREQ_jitter_high_LQI_RF",
+        "adp_cluster_trickle_I_RF",
+        "adp_cluster_trickle_K_RF",
+        "adp_cluster_min_LQI_RF",
+        "adp_last_gasp",
+        "adp_probing_interval",
+        "adp_trickle_LQI_threshold_high_RF"
       ],
       "domain_tags": [
         "cosem_class",
         "communication_profile"
       ],
-      "definition": "COSEM interface class defined by Blue Book Part 2 Ed. 16 (Chapter 4) for G3-PLC Hybrid 6LoWPAN adaptation layer setup objects.",
+      "definition": "COSEM interface class (class_id = 162, version = 1). Holds the G3-Hybrid 6LoWPAN adaptation-layer parameters (routing/blacklist tables, LQI thresholds, RREQ jitter, Trickle/cluster timers).",
       "relations": [
         {
           "relation": "defined_by",
@@ -13603,17 +14863,153 @@
       ],
       "class_id": 162,
       "version": 1,
+      "cardinality": "0...n",
       "attributes": [
         {
           "attribute_id": 1,
           "name": "logical_name",
-          "type": "octet-string[6]",
-          "mandatory": true
+          "mode": "static",
+          "type": "octet-string"
+        },
+        {
+          "attribute_id": 2,
+          "name": "adp_routing_table",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x08"
+        },
+        {
+          "attribute_id": 3,
+          "name": "adp_blacklist_table",
+          "mode": "dynamic",
+          "type": "array",
+          "short_name": "x + 0x10"
+        },
+        {
+          "attribute_id": 4,
+          "name": "adp_low_LQI_value_RF",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x18"
+        },
+        {
+          "attribute_id": 5,
+          "name": "adp_high_LQI_value_RF",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x20"
+        },
+        {
+          "attribute_id": 6,
+          "name": "adp_routing_configuration_RF",
+          "mode": "static",
+          "type": "array",
+          "short_name": "x + 0x28"
+        },
+        {
+          "attribute_id": 7,
+          "name": "adp_use_backup_media",
+          "mode": "static",
+          "type": "boolean",
+          "short_name": "x + 0x30"
+        },
+        {
+          "attribute_id": 8,
+          "name": "adp_weak_LQI_value_RF",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x38"
+        },
+        {
+          "attribute_id": 9,
+          "name": "adp_trickle_LQI_threshold_low_RF",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x40"
+        },
+        {
+          "attribute_id": 10,
+          "name": "adp_delay_low_LQI_RF",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x48"
+        },
+        {
+          "attribute_id": 11,
+          "name": "adp_delay_high_LQI_RF",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x50"
+        },
+        {
+          "attribute_id": 12,
+          "name": "adp_RREQ_jitter_low_LQI_RF",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x58"
+        },
+        {
+          "attribute_id": 13,
+          "name": "adp_RREQ_jitter_high_LQI_RF",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x60"
+        },
+        {
+          "attribute_id": 14,
+          "name": "adp_cluster_trickle_I_RF",
+          "mode": "static",
+          "type": "long-unsigned",
+          "short_name": "x + 0x68"
+        },
+        {
+          "attribute_id": 15,
+          "name": "adp_cluster_trickle_K_RF",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x70"
+        },
+        {
+          "attribute_id": 16,
+          "name": "adp_cluster_min_LQI_RF",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x78"
+        },
+        {
+          "attribute_id": 17,
+          "name": "adp_last_gasp",
+          "mode": "static",
+          "type": "boolean",
+          "short_name": "x + 0x80"
+        },
+        {
+          "attribute_id": 18,
+          "name": "adp_probing_interval",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x88"
+        },
+        {
+          "attribute_id": 19,
+          "name": "adp_trickle_LQI_threshold_high_RF",
+          "mode": "static",
+          "type": "unsigned",
+          "short_name": "x + 0x90"
         }
       ],
       "methods": [],
-      "coverage_level": "catalogue_seed",
-      "coverage_note": "Seeded from the Blue Book Part 2 Ed. 16 current interface class catalogue (Chapter 4); attribute and method details should be expanded during detailed knowledge-base enrichment."
+      "access_semantics": [
+        "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
+        "logical_name (attribute 1) is read-only for all clients.",
+        "Per-attribute access rights follow the COSEM access model and the association's access_rights_list; the Blue Book IC table specifies static/dynamic only, not concrete R/RW per client."
+      ],
+      "behavior_notes": [
+        "Holds the G3-Hybrid 6LoWPAN adaptation-layer parameters (routing/blacklist tables, LQI thresholds, RREQ jitter, Trickle/cluster timers).",
+        "No specific methods defined."
+      ],
+      "common_instances": [],
+      "coverage_note": "Enriched 2026-06-28 from Blue Book Part 2 Ed.16 section 4.13.8; attributes (id/name/static-or-dynamic/data-type/short-name) and methods taken verbatim from the IC table. access_rights are described semantically, not hard-coded per attribute, because the IC table does not specify concrete R/RW per client."
     },
     {
       "id": "KB-OBIS-0-B-98-1-E-255-ABSTRACT-BILLING-LIST-1",

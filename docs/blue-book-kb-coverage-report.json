@@ -9,14 +9,10 @@
   "part2_interface_classes": {
     "covered": 105,
     "total": 105,
-    "enriched": 35,
-    "catalogue_seed": 53,
+    "enriched": 53,
+    "catalogue_seed": 35,
     "missing": [],
     "seed_classes": [
-      {
-        "class_id": 47,
-        "name": "GSM diagnostic"
-      },
       {
         "class_id": 50,
         "name": "S-FSK Phy&MAC set-up"
@@ -66,28 +62,12 @@
         "name": "61334-4-32 LLC SSCS setup"
       },
       {
-        "class_id": 81,
-        "name": "PRIME NB OFDM PLC Physical layer counters"
-      },
-      {
         "class_id": 82,
         "name": "PRIME NB OFDM PLC MAC setup"
       },
       {
-        "class_id": 83,
-        "name": "PRIME NB OFDM PLC MAC functional parameters"
-      },
-      {
         "class_id": 84,
         "name": "PRIME NB OFDM PLC MAC counters"
-      },
-      {
-        "class_id": 85,
-        "name": "PRIME NB OFDM PLC MAC network administration data"
-      },
-      {
-        "class_id": 86,
-        "name": "PRIME NB OFDM PLC Application identification"
       },
       {
         "class_id": 90,
@@ -100,22 +80,6 @@
       {
         "class_id": 92,
         "name": "G3-PLC 6LoWPAN adaptation layer setup"
-      },
-      {
-        "class_id": 95,
-        "name": "Wi-SUN setup"
-      },
-      {
-        "class_id": 96,
-        "name": "Wi-SUN diagnostic"
-      },
-      {
-        "class_id": 97,
-        "name": "RPL diagnostic"
-      },
-      {
-        "class_id": 98,
-        "name": "MPL diagnostic"
       },
       {
         "class_id": 101,
@@ -142,32 +106,12 @@
         "name": "IEC 62055-41 attributes"
       },
       {
-        "class_id": 122,
-        "name": "Function control"
-      },
-      {
         "class_id": 123,
         "name": "Array manager"
       },
       {
         "class_id": 124,
         "name": "Communication port protection"
-      },
-      {
-        "class_id": 126,
-        "name": "SCHC-LPWAN setup"
-      },
-      {
-        "class_id": 127,
-        "name": "SCHC-LPWAN diagnostic"
-      },
-      {
-        "class_id": 128,
-        "name": "LoRaWAN setup"
-      },
-      {
-        "class_id": 129,
-        "name": "LoRaWAN diagnostic"
       },
       {
         "class_id": 130,
@@ -198,18 +142,6 @@
         "name": "HS-PLC ISO/IEC 12139-1 IP SSAS setup"
       },
       {
-        "class_id": 143,
-        "name": "HS-PLC ISO/IEC 12139-1 HDLC SSAS setup"
-      },
-      {
-        "class_id": 151,
-        "name": "LTE monitoring"
-      },
-      {
-        "class_id": 152,
-        "name": "CoAP setup"
-      },
-      {
         "class_id": 153,
         "name": "CoAP diagnostic"
       },
@@ -220,10 +152,6 @@
       {
         "class_id": 161,
         "name": "G3-PLC Hybrid RF MAC setup"
-      },
-      {
-        "class_id": 162,
-        "name": "G3-PLC Hybrid 6LoWPAN adaptation layer setup"
       }
     ]
   },
