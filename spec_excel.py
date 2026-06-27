@@ -14,6 +14,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from text_normalize import formula_safe
+
 
 # 表计行业 21 功能域（Sheet 顺序）
 METERING_DOMAINS = [
@@ -278,7 +280,7 @@ def _write_domain_sheet(wb: Workbook, domain: str, reqs: list[dict]) -> None:
         ]
         for col_idx, val in enumerate(values):
             cell = ws.cell(row=r, column=col_idx + 1)
-            cell.value = val
+            cell.value = formula_safe(val)
             cell.font = CELL_FONT
             cell.alignment = WRAP_ALIGN
             cell.border = THIN_BORDER
@@ -387,23 +389,23 @@ def _write_object_model_sheet(wb: Workbook, requirements: list[dict[str, Any]]) 
             _style_object_model_row(ws, row_idx, OBJECT_GROUP_FILL, bold=True)
             row_idx += 1
 
-        ws.cell(row=row_idx, column=2).value = _object_model_name(req)
-        ws.cell(row=row_idx, column=4).value = _object_model_class(req)
-        ws.cell(row=row_idx, column=7).value = _object_model_obis(req)
+        ws.cell(row=row_idx, column=2).value = formula_safe(_object_model_name(req))
+        ws.cell(row=row_idx, column=4).value = formula_safe(_object_model_class(req))
+        ws.cell(row=row_idx, column=7).value = formula_safe(_object_model_obis(req))
         _style_object_model_row(ws, row_idx, OBJECT_ROW_FILL, bold=True)
         row_idx += 1
 
         tt = req.get("threshold_table") or {}
         for raw in tt.get("rows") or []:
             attr = _split_access_row(list(raw))
-            ws.cell(row=row_idx, column=1).value = attr["index"]
-            ws.cell(row=row_idx, column=2).value = attr["name"]
-            ws.cell(row=row_idx, column=3).value = attr["type"]
-            ws.cell(row=row_idx, column=7).value = attr["default"]
-            ws.cell(row=row_idx, column=8).value = attr["pc"]
-            ws.cell(row=row_idx, column=9).value = attr["rc"]
-            ws.cell(row=row_idx, column=10).value = attr["sc"]
-            ws.cell(row=row_idx, column=11).value = attr["lc"]
+            ws.cell(row=row_idx, column=1).value = formula_safe(attr["index"])
+            ws.cell(row=row_idx, column=2).value = formula_safe(attr["name"])
+            ws.cell(row=row_idx, column=3).value = formula_safe(attr["type"])
+            ws.cell(row=row_idx, column=7).value = formula_safe(attr["default"])
+            ws.cell(row=row_idx, column=8).value = formula_safe(attr["pc"])
+            ws.cell(row=row_idx, column=9).value = formula_safe(attr["rc"])
+            ws.cell(row=row_idx, column=10).value = formula_safe(attr["sc"])
+            ws.cell(row=row_idx, column=11).value = formula_safe(attr["lc"])
             for col in range(1, len(OBJECT_MODEL_COLUMNS) + 1):
                 cell = ws.cell(row=row_idx, column=col)
                 cell.font = CELL_FONT

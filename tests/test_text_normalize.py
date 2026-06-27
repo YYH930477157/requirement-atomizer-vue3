@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from text_normalize import normalize_event_id, normalize_numeric
+from text_normalize import formula_safe, normalize_event_id, normalize_numeric
 
 
 class NormalizeNumericTests(unittest.TestCase):
@@ -41,6 +41,28 @@ class NormalizeEventIdTests(unittest.TestCase):
         # 没有事件号结构时，正文里的 'someone'/'two' 一概不动
         self.assertEqual(normalize_event_id("someone may send two messages"),
                          "someone may send two messages")
+
+
+class FormulaSafeTests(unittest.TestCase):
+    def test_neutralizes_formula_prefixes(self) -> None:
+        # = + @ 及 - 开头的可疑文本被前置单引号转为纯文本，防 Excel/CSV 公式注入
+        self.assertEqual(formula_safe("=cmd|' /C calc'!A0"), "'=cmd|' /C calc'!A0")
+        self.assertEqual(formula_safe("+1+1"), "'+1+1")
+        self.assertEqual(formula_safe("@SUM(A1)"), "'@SUM(A1)")
+        self.assertEqual(formula_safe("-2+3+cmd"), "'-2+3+cmd")
+        self.assertEqual(formula_safe("\t=evil"), "'\t=evil")
+
+    def test_exempts_legitimate_dlms_values(self) -> None:
+        # DLMS 访问码、纯数字、OBIS、普通文本不被误伤
+        for safe in ("R-", "--", "-A--", "-/-/-A--", "0-0:96.1.0", "1-0:1.8.0.255",
+                     "double-long-unsigned", "octet-string", "-5", "-1.5", "100%"):
+            self.assertEqual(formula_safe(safe), safe)
+
+    def test_non_strings_pass_through(self) -> None:
+        self.assertEqual(formula_safe(17), 17)
+        self.assertEqual(formula_safe(0.9), 0.9)
+        self.assertIsNone(formula_safe(None))
+        self.assertEqual(formula_safe(""), "")
 
 
 if __name__ == "__main__":

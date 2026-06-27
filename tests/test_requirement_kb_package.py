@@ -35,6 +35,29 @@ class RequirementKBPackageTests(unittest.TestCase):
         self.assertIn("matched_terms", first)
         self.assertIn("score", first)
 
+    def test_duplicate_entry_id_across_kbs_is_exposed_not_shadowed(self) -> None:
+        # 回归护栏：同一 entry_id 跨多个 KB 文件时（实测默认 4 库有 86 处冲突），
+        # 旧实现悄悄保留「最后加载」的那份、遮蔽权威条目。现在首个加载优先且暴露歧义。
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "kb_a.json").write_text(json.dumps({
+                "kb_id": "kb_a",
+                "entries": [{"id": "KB-DUP", "name": "Authoritative", "definition": "from A"}],
+            }), encoding="utf-8")
+            (d / "kb_b.json").write_text(json.dumps({
+                "kb_id": "kb_b",
+                "entries": [{"id": "KB-DUP", "name": "Shadow", "definition": "from B"}],
+            }), encoding="utf-8")
+            repo = KnowledgeRepository.from_paths([d / "kb_a.json", d / "kb_b.json"])
+
+        self.assertEqual(repo.id_collisions(), {"KB-DUP": ["kb_a", "kb_b"]})
+        row = repo.get("KB-DUP")
+        self.assertEqual(row["kb_id"], "kb_a")  # 首个/权威优先，不被 B 遮蔽
+        self.assertEqual(row["kb_id_collisions"], ["kb_a", "kb_b"])
+        explicit = repo.get("KB-DUP", kb_id="kb_b")
+        self.assertEqual(explicit["definition"], "from B")
+        self.assertNotIn("kb_id_collisions", explicit)
+
     def test_matching_helpers_are_exported_from_package(self) -> None:
         pattern = compile_term_pattern(["register"])
 

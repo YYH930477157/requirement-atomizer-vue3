@@ -42,3 +42,26 @@ def _fix_event_id(eid: str) -> str:
 def normalize_event_id(text: str) -> str:
     """把文本里事件号(G..-SG..-E..)内部的英文数词还原为数字，其余文本不动。"""
     return _EVENT_ID.sub(lambda m: _fix_event_id(m.group(0)), str(text or ""))
+
+
+# 公式注入守卫：Excel/LibreOffice/Sheets 把以这些字符开头的单元格文本当作公式执行。
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+_NUMERIC_CELL = re.compile(r"[+-]?\d+(?:[.,]\d+)*%?")
+_ACCESS_CODE_CELL = re.compile(r"[RWAXrwax/\- ]+")
+
+
+def formula_safe(value: object) -> object:
+    """防电子表格公式注入。
+
+    技术标准文档（含导入的客户 .xlsx/PDF）里的自由文本可能以 = + - @（或制表/回车）开头，
+    导出到 Excel/CSV 后会被当作活公式——既是注入向量也是数值损坏。这里对以危险前缀开头的
+    字符串前置单引号转为纯文本；非字符串（数字/None）原样返回；纯数字串与 DLMS 访问码串
+    （R-/--/-A-- 等）豁免，避免误伤合法值。
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    if value[0] not in _FORMULA_TRIGGERS:
+        return value
+    if _NUMERIC_CELL.fullmatch(value) or _ACCESS_CODE_CELL.fullmatch(value):
+        return value
+    return "'" + value

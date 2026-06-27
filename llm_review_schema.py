@@ -32,7 +32,10 @@ def validate_llm_review_result_payload(
 ) -> list[LLMReviewIssue]:
     issues: list[LLMReviewIssue] = []
     for field in sorted(REQUIRED_FIELDS):
-        if field not in row:
+        # 用 `is None` 而非 `not in`：补全阶段（complete_llm_review_payload）总是注入这些键，
+        # 模型省略时值为 None。只检查键是否存在会让 decision=None / confidence=None 通过校验，
+        # 架空 schema 修复回路，把畸形响应静默洗成合法审查。
+        if row.get(field) is None:
             issues.append(LLMReviewIssue("error", f"{path}.{field}", f"missing required field: {field}"))
 
     for field in ("task_id",):
