@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
-from gui.review_actions import apply_review_action
+from review_actions import apply_review_action
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
 

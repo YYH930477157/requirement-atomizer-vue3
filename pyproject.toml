@@ -60,6 +60,7 @@ py-modules = [
   "desktop_backend",
   "requirement_schema",
   "resources",
+  "review_actions",
   "review_state",
   "spec_enrich",
   "spec_excel",
