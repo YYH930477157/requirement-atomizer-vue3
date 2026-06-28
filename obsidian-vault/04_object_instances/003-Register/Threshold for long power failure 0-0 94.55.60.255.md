@@ -13,17 +13,34 @@ keywords:
 domain_tags:
 - cosem_object
 - general
-- abnt_bulk_import
+- power_quality
 relations:
 - relation: instance_of
   target: KB-L3-IC-3-REGISTER
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-9
 ---
 
 # Threshold for long power failure
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Threshold for long power failure` with OBIS pattern `0-0:94.55.60.255` and interface class 3 (Register).
+Row-level Register object at logical name `0-0:94.55.60.255`. Threshold duration defining a long power failure
+
+## Aliases
+
+- OBIS 0-0:94.55.60.255
+
+## Domain Tags
+
+- `cosem_object`
+- `general`
+- `power_quality`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-3-REGISTER`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-9`
 
 ## Structured Data
 
@@ -34,35 +51,32 @@ ABNT Appendix 9 row-level COSEM object `Threshold for long power failure` with O
   "likely_interface_class_name": "Register",
   "medium": "general",
   "value_group_mapping": {
-    "A": "0",
-    "B": "0",
-    "C": "94",
-    "D": "55",
-    "E": "60",
-    "F": "255"
+    "A": "0 abstract/general",
+    "B": "0 no channel",
+    "C": "94 utility/country-specific data objects",
+    "D": "55 country-specific (Brazil)",
+    "E": "60 long power-failure threshold",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 9,
+    "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000047-R000006, TBL-000047"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Threshold for long power failure at 0-0:94.55.60.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000047-R000006",
-    "source_refs": [
-      "BLK-000660",
-      "TBL-000047-R000006",
-      "TBL-000047"
-    ],
-    "source_table_ids": [
-      "TBL-000047"
-    ]
-  }
+    "Use this row when matching requirements about threshold duration defining a long power failure.",
+    "ABNT Appendix 9 describes this object as: threshold duration defining a long power failure."
+  ]
 }
 ```
 

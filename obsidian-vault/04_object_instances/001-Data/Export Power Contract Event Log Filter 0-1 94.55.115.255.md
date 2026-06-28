@@ -7,27 +7,41 @@ name: Export Power Contract Event Log Filter
 aliases:
 - OBIS 0-1:94.55.115.255
 - Contract Event Log Filter export of energy it contains enabling logging and enabling
-  notification of event
 keywords:
 - 0-1:94.55.115.255
 - Export Power Contract Event Log Filter
 - Contract Event Log Filter export of energy it contains enabling logging and enabling
-  notification of event
-- TBL-000062
 domain_tags:
 - cosem_object
 - general
-- abnt_bulk_import
+- event
 relations:
 - relation: instance_of
   target: KB-L3-IC-1-DATA
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-9
 ---
 
 # Export Power Contract Event Log Filter
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Export Power Contract Event Log Filter` with OBIS pattern `0-1:94.55.115.255` and interface class 1 (Data). Contract Event Log Filter export of energy it contains enabling logging and enabling notification of event
+Row-level Data object at logical name `0-1:94.55.115.255`. Export power contract event log filter
+
+## Aliases
+
+- OBIS 0-1:94.55.115.255
+
+## Domain Tags
+
+- `cosem_object`
+- `general`
+- `event`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-1-DATA`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-9`
 
 ## Structured Data
 
@@ -38,35 +52,32 @@ ABNT Appendix 9 row-level COSEM object `Export Power Contract Event Log Filter` 
   "likely_interface_class_name": "Data",
   "medium": "general",
   "value_group_mapping": {
-    "A": "0",
-    "B": "1",
-    "C": "94",
-    "D": "55",
-    "E": "115",
-    "F": "255"
+    "A": "0 abstract/general",
+    "B": "1 channel 1",
+    "C": "94 utility/country-specific data objects",
+    "D": "55 country-specific (Brazil)",
+    "E": "115 export power contract event log filter",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 9,
+    "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000062-R000003, TBL-000062"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Export Power Contract Event Log Filter at 0-1:94.55.115.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000062-R000003",
-    "source_refs": [
-      "BLK-000698",
-      "TBL-000062-R000003",
-      "TBL-000062"
-    ],
-    "source_table_ids": [
-      "TBL-000062"
-    ]
-  }
+    "Use this row when matching requirements about export power contract event log filter.",
+    "ABNT Appendix 9 describes this object as: export power contract event log filter."
+  ]
 }
 ```
 

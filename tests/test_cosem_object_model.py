@@ -116,6 +116,27 @@ class CosemObjectModelTests(unittest.TestCase):
         self.assertEqual(com.normalize_obis_value("1-0:0 4.5.255"), "1-0:0.4.5.255")
         self.assertEqual(com.normalize_obis_value("0:0-10.0.111.255"), "0-0:10.0.111.255")
 
+    def test_split_obis_values_splits_multi_obis_cell(self) -> None:
+        # ABNT 把主码 + 94.55 国别码同格登记：>=2 个 'A-B:' 头时拆成独立 OBIS。
+        self.assertEqual(
+            com.split_obis_values("1-0:132.8.x.255 1-0:94.55.x.255"),
+            ["1-0:132.8.x.255", "1-0:94.55.x.255"],
+        )
+
+    def test_split_obis_values_keeps_single_obis_unchanged(self) -> None:
+        # 单 OBIS（含 2 位值组）绝不拆。
+        self.assertEqual(com.split_obis_values("0-0:96.1.0.255"), ["0-0:96.1.0.255"])
+        self.assertEqual(com.split_obis_values("1-0:1.8.0.255"), ["1-0:1.8.0.255"])
+
+    def test_split_obis_values_does_not_split_lost_dot_spacing(self) -> None:
+        # 只有 1 个 'A-B:' 头、靠空格补丢失的分隔点：仍还原为单个 OBIS，不拆。
+        self.assertEqual(com.split_obis_values("1-0:0 4.5.255"), ["1-0:0.4.5.255"])
+        self.assertEqual(com.split_obis_values("1-0:96 1 0 255"), ["1-0:96.1.0.255"])
+
+    def test_split_obis_values_empty_returns_empty(self) -> None:
+        self.assertEqual(com.split_obis_values(""), [])
+        self.assertEqual(com.split_obis_values(None), [])
+
     def test_unparseable_access_blanks_columns_and_surfaces_for_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

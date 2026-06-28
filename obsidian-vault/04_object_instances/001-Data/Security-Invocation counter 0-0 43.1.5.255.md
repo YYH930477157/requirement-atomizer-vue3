@@ -6,26 +6,45 @@ layer: cosem_object_instance
 name: Security-Invocation counter
 aliases:
 - OBIS 0-0:43.1.5.255
-- Summon Counter in reception - " unicast " key (remote)
+- Summon Counter in reception - "unicast" key (remote)
 keywords:
 - 0-0:43.1.5.255
 - Security-Invocation counter
-- Summon Counter in reception - " unicast " key (remote)
+- security invocation counter
+- unicast key remote
 - TBL-000036
 domain_tags:
 - cosem_object
 - general
-- abnt_bulk_import
+- security
 relations:
 - relation: instance_of
   target: KB-L3-IC-1-DATA
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-8
 ---
 
 # Security-Invocation counter
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Security-Invocation counter` with OBIS pattern `0-0:43.1.5.255` and interface class 1 (Data). Summon Counter in reception - " unicast " key (remote)
+Row-level Data object holding the security invocation (summon) counter for the remote unicast key at logical name `0-0:43.1.5.255`.
+
+## Aliases
+
+- OBIS 0-0:43.1.5.255
+- Summon Counter in reception - "unicast" key (remote)
+
+## Domain Tags
+
+- `cosem_object`
+- `general`
+- `security`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-1-DATA`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-8`
 
 ## Structured Data
 
@@ -36,35 +55,32 @@ ABNT Appendix 9 row-level COSEM object `Security-Invocation counter` with OBIS p
   "likely_interface_class_name": "Data",
   "medium": "general",
   "value_group_mapping": {
-    "A": "0",
-    "B": "0",
-    "C": "43",
-    "D": "1",
-    "E": "5",
-    "F": "255"
+    "A": "0 abstract/general",
+    "B": "0 no channel",
+    "C": "43 security management",
+    "D": "1 security setup/invocation",
+    "E": "5 invocation counter (remote unicast key, per ABNT)",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 8,
+    "title": "OBIS codes for general and service entry objects"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000036-R000003, TBL-000036"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 8 general and service entry objects"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Security-Invocation counter at 0-0:43.1.5.255 (Summon Counter in reception - unicast key, remote)"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000036-R000003",
-    "source_refs": [
-      "BLK-000618",
-      "TBL-000036-R000003",
-      "TBL-000036"
-    ],
-    "source_table_ids": [
-      "TBL-000036"
-    ]
-  }
+    "Use this row when matching requirements about per-key security invocation / replay counters for the remote unicast key.",
+    "ABNT Appendix 9 describes this object as the summon counter in reception for the remote unicast key."
+  ]
 }
 ```
 

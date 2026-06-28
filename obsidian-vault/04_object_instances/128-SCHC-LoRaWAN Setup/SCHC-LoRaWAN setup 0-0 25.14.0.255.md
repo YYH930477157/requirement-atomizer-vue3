@@ -9,19 +9,36 @@ aliases:
 keywords:
 - 0-0:25.14.0.255
 - SCHC-LoRaWAN setup
+- schc lorawan setup
 - TBL-000075
 domain_tags:
 - cosem_object
 - general
-- abnt_bulk_import
-relations: []
+- communication_profile
+relations:
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-8
 ---
 
 # SCHC-LoRaWAN setup
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `SCHC-LoRaWAN setup` with OBIS pattern `0-0:25.14.0.255` and interface class 128 (SCHC-LoRaWAN Setup).
+Row-level SCHC-LoRaWAN Setup object at logical name `0-0:25.14.0.255`, configuring the LPWAN profile for a LoRaWAN lower layer.
+
+## Aliases
+
+- OBIS 0-0:25.14.0.255
+
+## Domain Tags
+
+- `cosem_object`
+- `general`
+- `communication_profile`
+
+## Relations
+
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-8`
 
 ## Structured Data
 
@@ -32,35 +49,32 @@ ABNT Appendix 9 row-level COSEM object `SCHC-LoRaWAN setup` with OBIS pattern `0
   "likely_interface_class_name": "SCHC-LoRaWAN Setup",
   "medium": "general",
   "value_group_mapping": {
-    "A": "0",
-    "B": "0",
-    "C": "25",
-    "D": "14",
+    "A": "0 abstract/general",
+    "B": "0 no channel",
+    "C": "25 LPWAN/M-Bus port setup",
+    "D": "14 SCHC-LoRaWAN setup",
     "E": "0",
-    "F": "255"
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 8,
+    "title": "OBIS codes for general and service entry objects"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000075-R000010, TBL-000075"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 8 general and service entry objects"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "SCHC-LoRaWAN setup at 0-0:25.14.0.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000075-R000010",
-    "source_refs": [
-      "BLK-000736",
-      "TBL-000075-R000010",
-      "TBL-000075"
-    ],
-    "source_table_ids": [
-      "TBL-000075"
-    ]
-  }
+    "Use this row when matching requirements that set up or diagnose the SCHC/LoRaWAN LPWAN communication profile.",
+    "ABNT Appendix 9 registers this object as the SCHC-LoRaWAN setup (interface class 128) for the meter."
+  ]
 }
 ```
 

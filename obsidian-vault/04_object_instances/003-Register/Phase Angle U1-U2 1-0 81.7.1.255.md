@@ -13,17 +13,34 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
+- power_quality
 relations:
 - relation: instance_of
   target: KB-L3-IC-3-REGISTER
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-17
 ---
 
 # Phase Angle U1-U2
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Phase Angle U1-U2` with OBIS pattern `1-0:81.7.1.255` and interface class 3 (Register).
+Row-level Register object at logical name `1-0:81.7.1.255`. Phase Angle U1-U2.
+
+## Aliases
+
+- OBIS 1-0:81.7.1.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+- `power_quality`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-3-REGISTER`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-17`
 
 ## Structured Data
 
@@ -34,35 +51,32 @@ ABNT Appendix 9 row-level COSEM object `Phase Angle U1-U2` with OBIS pattern `1-
   "likely_interface_class_name": "Register",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "81",
-    "D": "7",
-    "E": "1",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "81 phase angle",
+    "D": "7 instantaneous value",
+    "E": "0 no tariff/total value",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 17,
+    "title": "Value group E codes - AC electricity - Extended phase angle measurement"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000128-R000004, TBL-000128"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 17 Value group E codes - AC electricity - Extended phase angle measurement"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Phase Angle U1-U2 at 1-0:81.7.1.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000128-R000004",
-    "source_refs": [
-      "BLK-000864",
-      "TBL-000128-R000004",
-      "TBL-000128"
-    ],
-    "source_table_ids": [
-      "TBL-000128"
-    ]
-  }
+    "Use this row when matching requirements about phase angle u1-u2.",
+    "ABNT Appendix 9 describes this object as: Phase Angle U1-U2."
+  ]
 }
 ```
 

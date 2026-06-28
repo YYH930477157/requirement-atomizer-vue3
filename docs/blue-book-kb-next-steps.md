@@ -21,7 +21,7 @@ python -m requirement_kb.cli coverage knowledge_bases/compiled_from_obsidian.jso
   - Strict Blue Book snapshot: all 105 current Part 2 classes deeply enriched (88 communication/control/payment + 17 earlier-enriched), 0 catalogue-seed classes. The 18 newly-added Ed.16 communication classes plus the remaining 35 catalogue-seed communication classes (S-FSK 50-53/55/56, ISO/IEC 8802-2 57-59, Arbitrator 68, Wireless Mode Q 73, LLC SSCS 80, PRIME MAC 82/84, G3-PLC 90-92/160/161, ZigBee 101-105, IEC 62055-41 116, Array manager 123, Comm port protection 124, ISO/IEC 14908 130-133, HS-PLC 140-142, CoAP 153) were all enriched 2026-06-28 from the IC attribute/method tables (verbatim attributes/types/short-names/methods). Part 2 current 105 classes are now fully enriched.
   - 73/73 Blue Book Part 1 OBIS table catalogue entries.
   - 495 row-level `cosem_object_instance` entries, distributed across general, AC electricity, DC electricity, HCA, thermal energy, gas, cold-water, and hot-water object families.
-  - 255 row-level entries were bulk-generated from `out/abnt_current_kb_smoke/cosem_object_model.json` and tagged `abnt_bulk_import` to provide exact OBIS lookup coverage for the current ABNT smoke. They are intentionally marked for later Blue Book semantic review.
+  - All 255 previously bulk-generated ABNT rows (from `out/abnt_current_kb_smoke/cosem_object_model.json`) have been curated into Blue Book Part 1-traced notes (Blue Book table reference + semantic value-group + ABNT-sourced notes, `abnt_bulk_import` tag removed). The 3 rows that originally had a merged two-OBIS extraction artifact (UFER / Cumulative DMCR+ / DMCR) were fixed at the parser level (`cosem_object_model.split_obis_values` splits multi-OBIS source cells into independent object instances); each merged note was replaced by a clean main-code note (Table 14), with the country-specific `1-0:94.55.x.255` equivalents covered by existing Table 24 notes.
   - Generic coverage now distinguishes true row-level object table gaps from catalogue-only structure/value-group tables. The current `tables_with_catalogue_but_no_rows` list is empty.
   - AC electricity tables 14-20 are materialized for tariff, harmonics, phase angle, loss, voltage dips, and distortion rows.
   - ABNT maximum-demand Extended Register rows for `1-0:1.6.x.255` through `1-0:8.6.x.255` and cumulative-demand rows for `1-0:1.2.x.255` through `1-0:8.2.x.255` are now materialized as class 4 objects.
@@ -63,10 +63,10 @@ Input: `C:\Users\YYHwudi\Desktop\Canna-29\Canna-29电表软件标准化需求列
 
 ## Continue In This Order
 
-1. Review and curate the ABNT bulk OBIS rows.
-   - `tools/generate_abnt_obis_notes.py` now fills all exact OBIS gaps found in the current ABNT COSEM object-model smoke in one run.
-   - The first verification gate is exact coverage, not manual semantic quality: `tests.test_blue_book_kb.BlueBookKnowledgeBaseTests.test_compiled_obsidian_has_exact_obis_for_current_abnt_object_model`.
-   - After coverage is closed, review `abnt_bulk_import` notes against Blue Book source text and replace generic bulk metadata with curated table references, richer aliases, and behavior notes where needed.
+1. ABNT bulk OBIS rows are fully curated (DONE 2026-06-28).
+   - All 255 `abnt_bulk_import` rows were curated in batches B1-B8 into Blue Book Part 1-traced notes with ABNT-sourced semantics; `abnt_bulk_import` count is now 0.
+   - The merged two-OBIS extraction artifact (UFER / Cumulative DMCR+ / DMCR) was fixed at the parser level: `cosem_object_model.split_obis_values` detects source cells with >=2 OBIS heads and splits them into independent object instances. The 3 merged notes were replaced by 3 clean main-code notes (Table 14); country-specific `1-0:94.55.x.255` equivalents are covered by existing Table 24 notes. No KB entry carries a space-containing obis_pattern.
+   - The exact-coverage gate `tests.test_blue_book_kb.BlueBookKnowledgeBaseTests.test_compiled_obsidian_has_exact_obis_for_current_abnt_object_model` still passes.
 
 2. Materialize ABNT/Canna-relevant OBIS rows not present in the current smoke.
    - There are no longer any table-catalogue entries with zero row-level object coverage in the generic coverage report. Tables 41, 49, 50, and 72 now each have three representative value rows; continue deepening table 50 gas conversion data-flow objects and table 72 water examples when source text or real document evidence identifies additional concrete rows.

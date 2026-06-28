@@ -3,7 +3,7 @@ id: KB-ABNT-OBIS-1-0-6-29-0-255-REACTIVE-ENERGY-QII-RC-INCREMENTAL-PERIOD-1
 kb_id: obsidian_energy_metering
 type: cosem_object_instance
 layer: cosem_object_instance
-name: Reactive energy QII (+Rc) incremental - period 1
+name: Reactive energy QII incremental period 1
 aliases:
 - OBIS 1-0:6.29.0.255
 - value for the load profile - period 1
@@ -15,17 +15,32 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
 relations:
 - relation: instance_of
   target: KB-L3-IC-3-REGISTER
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-14
 ---
 
-# Reactive energy QII (+Rc) incremental - period 1
+# Reactive energy QII incremental period 1
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Reactive energy QII (+Rc) incremental - period 1` with OBIS pattern `1-0:6.29.0.255` and interface class 3 (Register). value for the load profile - period 1
+Row-level Register object at logical name `1-0:6.29.0.255`. Reactive energy QII (+Rc) incremental value for the load profile, period 1
+
+## Aliases
+
+- OBIS 1-0:6.29.0.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-3-REGISTER`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-14`
 
 ## Structured Data
 
@@ -36,35 +51,32 @@ ABNT Appendix 9 row-level COSEM object `Reactive energy QII (+Rc) incremental - 
   "likely_interface_class_name": "Register",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "6",
-    "D": "29",
-    "E": "0",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "6 reactive energy (Q2/+Rc)",
+    "D": "29 incremental period 1",
+    "E": "0 no tariff/total value",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 14,
+    "title": "Value group D codes - AC electricity"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000082-R000002, TBL-000082"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 14 Value group D codes - AC electricity"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Reactive energy QII incremental period 1 at 1-0:6.29.0.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000082-R000002",
-    "source_refs": [
-      "BLK-000756",
-      "TBL-000082-R000002",
-      "TBL-000082"
-    ],
-    "source_table_ids": [
-      "TBL-000082"
-    ]
-  }
+    "Use this row when matching requirements about reactive energy qii (+rc) incremental value for the load profile.",
+    "ABNT Appendix 9 describes this object as: reactive energy QII (+Rc) incremental value for the load profile, period 1."
+  ]
 }
 ```
 

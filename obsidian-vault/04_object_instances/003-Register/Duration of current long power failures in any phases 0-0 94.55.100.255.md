@@ -15,17 +15,34 @@ keywords:
 domain_tags:
 - cosem_object
 - general
-- abnt_bulk_import
+- power_quality
 relations:
 - relation: instance_of
   target: KB-L3-IC-3-REGISTER
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-9
 ---
 
 # Duration of current long power failures in any phases
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Duration of current long power failures in any phases` with OBIS pattern `0-0:94.55.100.255` and interface class 3 (Register). time to failure of current (open) power in any phase
+Row-level Register object at logical name `0-0:94.55.100.255`. Time to failure of current (open) power in any phase; duration of the ongoing long power failure across all phases
+
+## Aliases
+
+- OBIS 0-0:94.55.100.255
+
+## Domain Tags
+
+- `cosem_object`
+- `general`
+- `power_quality`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-3-REGISTER`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-9`
 
 ## Structured Data
 
@@ -36,35 +53,32 @@ ABNT Appendix 9 row-level COSEM object `Duration of current long power failures 
   "likely_interface_class_name": "Register",
   "medium": "general",
   "value_group_mapping": {
-    "A": "0",
-    "B": "0",
-    "C": "94",
-    "D": "55",
-    "E": "100",
-    "F": "255"
+    "A": "0 abstract/general",
+    "B": "0 no channel",
+    "C": "94 utility/country-specific data objects",
+    "D": "55 country-specific (Brazil)",
+    "E": "100 current long power-failure duration (all phases)",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 9,
+    "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000048-R000014, TBL-000048"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Duration of current long power failures in any phases at 0-0:94.55.100.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000048-R000014",
-    "source_refs": [
-      "BLK-000662",
-      "TBL-000048-R000014",
-      "TBL-000048"
-    ],
-    "source_table_ids": [
-      "TBL-000048"
-    ]
-  }
+    "Use this row when matching requirements about time to failure of current (open) power in any phase.",
+    "ABNT Appendix 9 describes this object as: time to failure of current (open) power in any phase; duration of the ongoing long power failure across all phases."
+  ]
 }
 ```
 

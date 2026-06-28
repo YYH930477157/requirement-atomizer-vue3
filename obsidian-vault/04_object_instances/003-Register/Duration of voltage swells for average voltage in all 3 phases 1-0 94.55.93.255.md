@@ -13,18 +13,32 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
 relations:
 - relation: instance_of
   target: KB-L3-IC-3-REGISTER
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-24
 ---
 
 # Duration of voltage swells for average voltage in all 3 phases
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Duration of voltage swells for average voltage in all 3 phases` with OBIS pattern `1-0:94.55.93.255` and interface class 3 (Register).
+Row-level Register object at logical name `1-0:94.55.93.255`. Duration of voltage swells for average voltage in all 3 phases.
 
+## Aliases
+
+- OBIS 1-0:94.55.93.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-3-REGISTER`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-24`
 ## Structured Data
 
 ```json metadata
@@ -34,35 +48,32 @@ ABNT Appendix 9 row-level COSEM object `Duration of voltage swells for average v
   "likely_interface_class_name": "Register",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "94",
-    "D": "55",
-    "E": "93",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "94 utility/country-specific data objects",
+    "D": "55 country-specific (Brazil)",
+    "E": "93 country-specific object (per ABNT)",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 24,
+    "title": "OBIS codes for data profile objects - AC electricity"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000140-R000007, TBL-000140"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 24 OBIS codes for data profile objects - AC electricity"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Duration of voltage swells for average voltage in all 3 phases at 1-0:94.55.93.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000140-R000007",
-    "source_refs": [
-      "BLK-000892",
-      "TBL-000140-R000007",
-      "TBL-000140"
-    ],
-    "source_table_ids": [
-      "TBL-000140"
-    ]
-  }
+    "Use this row when matching requirements about duration of voltage swells for average voltage in all 3 phases.",
+    "ABNT Appendix 9 (NBR 16968:2022) defines this Brazil-specific object as: Duration of voltage swells for average voltage in all 3 phases. The Blue Book covers only the value-group structure (utility/country-specific); it does not name this object."
+  ]
 }
 ```
 

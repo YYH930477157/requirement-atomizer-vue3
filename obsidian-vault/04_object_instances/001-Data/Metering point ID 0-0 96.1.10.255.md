@@ -13,17 +13,34 @@ keywords:
 domain_tags:
 - cosem_object
 - general
-- abnt_bulk_import
+- general
 relations:
 - relation: instance_of
   target: KB-L3-IC-1-DATA
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-8
 ---
 
 # Metering point ID
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Metering point ID` with OBIS pattern `0-0:96.1.10.255` and interface class 1 (Data).
+Row-level Data object at logical name `0-0:96.1.10.255`. Metering point identifier
+
+## Aliases
+
+- OBIS 0-0:96.1.10.255
+
+## Domain Tags
+
+- `cosem_object`
+- `general`
+- `general`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-1-DATA`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-8`
 
 ## Structured Data
 
@@ -34,35 +51,32 @@ ABNT Appendix 9 row-level COSEM object `Metering point ID` with OBIS pattern `0-
   "likely_interface_class_name": "Data",
   "medium": "general",
   "value_group_mapping": {
-    "A": "0",
-    "B": "0",
-    "C": "96",
-    "D": "1",
-    "E": "10",
-    "F": "255"
+    "A": "0 abstract/general",
+    "B": "0 no channel",
+    "C": "96 abstract general data objects",
+    "D": "1 identification",
+    "E": "10 metering point ID",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 8,
+    "title": "OBIS codes for general and service entry objects"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000070-R000002, TBL-000070"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 8 OBIS codes for general and service entry objects"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Metering point ID at 0-0:96.1.10.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000070-R000002",
-    "source_refs": [
-      "BLK-000726",
-      "TBL-000070-R000002",
-      "TBL-000070"
-    ],
-    "source_table_ids": [
-      "TBL-000070"
-    ]
-  }
+    "Use this row when matching requirements about metering point identifier.",
+    "ABNT Appendix 9 describes this object as: metering point identifier."
+  ]
 }
 ```
 

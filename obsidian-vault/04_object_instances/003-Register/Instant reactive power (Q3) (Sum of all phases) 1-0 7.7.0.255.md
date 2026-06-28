@@ -3,7 +3,7 @@ id: KB-ABNT-OBIS-1-0-7-7-0-255-INSTANT-REACTIVE-POWER-Q3-SUM-OF-ALL-PHASES
 kb_id: obsidian_energy_metering
 type: cosem_object_instance
 layer: cosem_object_instance
-name: Instant reactive power (Q3) (Sum of all phases)
+name: Instantaneous reactive power Q3 phase L1
 aliases:
 - OBIS 1-0:7.7.0.255
 keywords:
@@ -13,17 +13,32 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
 relations:
 - relation: instance_of
   target: KB-L3-IC-3-REGISTER
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-13
 ---
 
-# Instant reactive power (Q3) (Sum of all phases)
+# Instantaneous reactive power Q3 phase L1
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Instant reactive power (Q3) (Sum of all phases)` with OBIS pattern `1-0:7.7.0.255` and interface class 3 (Register).
+Row-level Register object at logical name `1-0:7.7.0.255`. Instantaneous reactive power (Q3) on phase L1
+
+## Aliases
+
+- OBIS 1-0:7.7.0.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-3-REGISTER`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-13`
 
 ## Structured Data
 
@@ -34,35 +49,32 @@ ABNT Appendix 9 row-level COSEM object `Instant reactive power (Q3) (Sum of all 
   "likely_interface_class_name": "Register",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "7",
-    "D": "7",
-    "E": "0",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "7 reactive energy (Q3/-Ri)",
+    "D": "7 instantaneous",
+    "E": "0 no tariff/total value",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 13,
+    "title": "Value group C codes - AC Electricity"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000123-R000006, TBL-000123"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 13 Value group C codes - AC Electricity"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Instantaneous reactive power Q3 phase L1 at 1-0:7.7.0.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000123-R000006",
-    "source_refs": [
-      "BLK-000854",
-      "TBL-000123-R000006",
-      "TBL-000123"
-    ],
-    "source_table_ids": [
-      "TBL-000123"
-    ]
-  }
+    "Use this row when matching requirements about instantaneous reactive power (q3) on phase l1.",
+    "ABNT Appendix 9 describes this object as: instantaneous reactive power (Q3) on phase L1."
+  ]
 }
 ```
 

@@ -15,18 +15,32 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
 relations:
 - relation: instance_of
   target: KB-L3-IC-1-DATA
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-24
 ---
 
 # Time trigger for monthly DRP/DRC calculation
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Time trigger for monthly DRP/DRC calculation` with OBIS pattern `1-0:94.55.184.255` and interface class 1 (Data). Time stamp for the log in DRP It is CKD monthly
+Row-level Data object at logical name `1-0:94.55.184.255`. Time trigger for monthly DRP/DRC calculation.
 
+## Aliases
+
+- OBIS 1-0:94.55.184.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-1-DATA`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-24`
 ## Structured Data
 
 ```json metadata
@@ -36,35 +50,32 @@ ABNT Appendix 9 row-level COSEM object `Time trigger for monthly DRP/DRC calcula
   "likely_interface_class_name": "Data",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "94",
-    "D": "55",
-    "E": "184",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "94 utility/country-specific data objects",
+    "D": "55 country-specific (Brazil)",
+    "E": "184 country-specific object (per ABNT)",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 24,
+    "title": "OBIS codes for data profile objects - AC electricity"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000144-R000018, TBL-000144"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 24 OBIS codes for data profile objects - AC electricity"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Time trigger for monthly DRP/DRC calculation at 1-0:94.55.184.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000144-R000018",
-    "source_refs": [
-      "BLK-000900",
-      "TBL-000144-R000018",
-      "TBL-000144"
-    ],
-    "source_table_ids": [
-      "TBL-000144"
-    ]
-  }
+    "Use this row when matching requirements about time trigger for monthly drp/drc calculation.",
+    "ABNT Appendix 9 (NBR 16968:2022) defines this Brazil-specific object as: Time trigger for monthly DRP/DRC calculation. The Blue Book covers only the value-group structure (utility/country-specific); it does not name this object."
+  ]
 }
 ```
 

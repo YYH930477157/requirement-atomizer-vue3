@@ -246,37 +246,42 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
         name = str(row.get("object") or fields.get(F_NAME) or "").strip()
         if not name:
             continue
-        obis = normalize_obis_value(fields.get(F_OBIS))
-        class_id = str(fields.get(F_CLASS) or "").strip()
-        object_key = (name, obis, class_id, first_source_item_id(row, index))
-        existing = objects.get(object_key)
-        if existing is not None:
-            conflicts.append({
+        # 一个源单元格可能含多个 OBIS（ABNT 把主码 + 94.55 国别码同格登记）。
+        # 拆成独立对象实例：每个 OBIS 各一个实例（同 name/class_id/attributes）。
+        obis_values = split_obis_values(fields.get(F_OBIS))
+        if not obis_values:
+            obis_values = [""]
+        for obis in obis_values:
+            class_id = str(fields.get(F_CLASS) or "").strip()
+            object_key = (name, obis, class_id, first_source_item_id(row, index))
+            existing = objects.get(object_key)
+            if existing is not None:
+                conflicts.append({
+                    "object": name,
+                    "kind": "duplicate_object_instance",
+                    "existing": {"obis": existing["obis"], "class_id": existing["class_id"]},
+                    "incoming": {"obis": obis, "class_id": class_id},
+                })
+                continue
+            objects[object_key] = {
                 "object": name,
-                "kind": "duplicate_object_instance",
-                "existing": {"obis": existing["obis"], "class_id": existing["class_id"]},
-                "incoming": {"obis": obis, "class_id": class_id},
-            })
-            continue
-        objects[object_key] = {
-            "object": name,
-            "obis": obis,
-            "class_id": class_id,
-            "source_table_ids": table_ids_for_row(row, index),
-            "source_item_id": first_source_item_id(row, index),
-            "source_order": source_order_for_row(row, index),
-            "meaning": str(fields.get(F_MEANING) or "").strip(),
-            "domain": str(row.get("domain") or ""),
-            "section_path": row.get("section_path") or [],
-            "confidence": row.get("confidence"),
-            "review_status": status_of(row, status_by_id),
-            "source_refs": row.get("source_refs") or [],
-            "source_atomic_requirements": [_row_id(row)],
-            "attributes": [],
-        }
-        object_keys_by_name[name].append(object_key)
-        if class_id:
-            object_keys_by_class_id[class_id].append(object_key)
+                "obis": obis,
+                "class_id": class_id,
+                "source_table_ids": table_ids_for_row(row, index),
+                "source_item_id": first_source_item_id(row, index),
+                "source_order": source_order_for_row(row, index),
+                "meaning": str(fields.get(F_MEANING) or "").strip(),
+                "domain": str(row.get("domain") or ""),
+                "section_path": row.get("section_path") or [],
+                "confidence": row.get("confidence"),
+                "review_status": status_of(row, status_by_id),
+                "source_refs": row.get("source_refs") or [],
+                "source_atomic_requirements": [_row_id(row)],
+                "attributes": [],
+            }
+            object_keys_by_name[name].append(object_key)
+            if class_id:
+                object_keys_by_class_id[class_id].append(object_key)
 
     # 2) 属性访问 → 挂到父对象
     for row in requirements:
@@ -764,6 +769,30 @@ def same_table_attribute_name_parent_objects(
 
 def normalized_name(value: str) -> str:
     return " ".join(str(value or "").replace(".", " ").split()).lower()
+
+
+OBIS_HEAD = re.compile(r"\d+-\d+:")
+
+
+def split_obis_values(raw: Any) -> list[str]:
+    """把可能含多个 OBIS 的源单元格拆成多个规范化 OBIS。
+
+    ABNT 源表有时把同一计量对象登记在两套编码下（主码 + 94.55 国别码），两码同处一个单元格、
+    以空格分隔。检测依据：仅当出现 >=2 个 'A-B:' 头时才拆（多 OBIS）；否则按
+    normalize_obis_value 的单串处理（保留 Phase 1 的"空格=丢失的分隔点"还原，
+    不影响其余单 OBIS 行）。
+    """
+    text = " ".join(str(raw or "").split()).strip()
+    if len(OBIS_HEAD.findall(text)) >= 2:
+        parts = re.split(r"(?=\d+-\d+:)", text)
+        normalized: list[str] = []
+        for part in parts:
+            value = normalize_obis_value(part)
+            if value:
+                normalized.append(value)
+        return normalized
+    value = normalize_obis_value(text)
+    return [value] if value else []
 
 
 def normalize_obis_value(value: Any) -> str:
