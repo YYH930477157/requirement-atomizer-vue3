@@ -39,6 +39,21 @@ class ResolveKbPathsTests(unittest.TestCase):
             with patch("desktop_tasks.package_root", return_value=root):
                 self.assertEqual(resolve_kb_paths([rel]), [root / rel])
 
+    def test_resolve_bundled_path_none_returns_none(self) -> None:
+        from desktop_tasks import resolve_bundled_path
+
+        self.assertIsNone(resolve_bundled_path(None))
+
+    def test_resolve_bundled_path_relative_domain_pack_uses_package_root(self) -> None:
+        from desktop_tasks import resolve_bundled_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # domain pack 预设相对路径（cwd 命中不到）-> package_root 兜底（打包后即 resources/）
+            rel = Path("domain_packs") / "__resolve_pack_probe__"
+            with patch("desktop_tasks.package_root", return_value=root):
+                self.assertEqual(resolve_bundled_path(rel), root / rel)
+
 
 class DesktopTaskTests(unittest.TestCase):
     def test_run_pipeline_task_uses_default_kbs_when_not_supplied(self) -> None:

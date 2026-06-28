@@ -20,21 +20,27 @@ ASSEMBLED_JSON = "dlms_cosem_spec_requirements.json"
 PROGRESS_PREFIX = "__RATOMIZER_PROGRESS__"
 
 
-def resolve_kb_paths(kb_paths: list[Path] | None) -> list[Path]:
-    """把显式 --kb 路径解析成可用的绝对路径。
+def resolve_bundled_path(path: Path | None) -> Path | None:
+    """把前端预设送来的相对资源路径解析成可用的绝对路径。
 
-    前端预设送的是相对名（如 "knowledge_bases/energy_metering.json"），dev 下 cwd=仓库根能命中，
-    但打包后后端 cwd=resources/backend 命中不到。这里：绝对路径或 cwd 下已存在的相对路径原样保留
-    （兼容 CLI 习惯）；否则按 package_root() 解析（dev=仓库根 / Electron=resources/，KB 真正所在）。
+    前端预设送相对名（KB 用 "knowledge_bases/…json"、domain pack 用 "domain_packs/dlms_cosem"），
+    dev 下 cwd=仓库根能命中，但打包后后端 cwd=resources/backend 命中不到。这里：绝对路径或 cwd 下
+    已存在的相对路径原样保留（兼容 CLI 习惯）；否则按 package_root() 解析（dev=仓库根 /
+    Electron=resources/，捆绑资源真正所在）。
     """
+    if path is None:
+        return None
+    path = Path(path)
+    if path.is_absolute() or path.exists():
+        return path
+    return package_root() / path
+
+
+def resolve_kb_paths(kb_paths: list[Path] | None) -> list[Path]:
+    """把显式 --kb 路径列表逐个解析（见 resolve_bundled_path）；None 时用 default_kb_paths()。"""
     if kb_paths is None:
         return default_kb_paths()
-    root = package_root()
-    resolved: list[Path] = []
-    for raw in kb_paths:
-        path = Path(raw)
-        resolved.append(path if path.is_absolute() or path.exists() else root / path)
-    return resolved
+    return [resolve_bundled_path(path) for path in kb_paths]
 
 
 def run_pipeline_task(
@@ -56,7 +62,7 @@ def run_pipeline_task(
         out_dir,
         chunk_chars=chunk_chars,
         kb_paths=resolve_kb_paths(kb_paths),
-        domain_pack_dir=domain_pack_dir,
+        domain_pack_dir=resolve_bundled_path(domain_pack_dir),
     )
     review = None if skip_review else run_review_pipeline(
         out_dir,
