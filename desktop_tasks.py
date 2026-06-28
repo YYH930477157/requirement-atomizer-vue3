@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import ai_extract
 from assemble_spec import assemble
 from atomize import run_atomizer_pipeline
 from engineering_composer import compose_engineering_requirements, write_engineering_requirements
@@ -134,6 +135,23 @@ def compose_task(out_dir: Path) -> dict[str, Any]:
     }
 
 
+def ai_extract_task(out_dir: Path, *, route: str | None) -> dict[str, Any]:
+    """AI 主抽 + 双引擎合并：AI 行为需求 + 确定性结构需求 → merged_spec.xlsx/json。"""
+    out_dir = out_dir.expanduser().resolve()
+    result = ai_extract.run_ai_extract(out_dir, route=route, merge_deterministic=True)
+    return {
+        "kind": "ai_extract",
+        "out_dir": str(out_dir),
+        "route": result.get("route"),
+        "count": result.get("requirements", 0),
+        "merged": result.get("merged", {}),
+        "code_drift_flagged": result.get("code_drift_flagged", 0),
+        "int_drift_flagged": result.get("int_drift_flagged", 0),
+        "written": [str(out_dir / name) for name in result.get("written", [])],
+        "summary": build_output_summary(out_dir),
+    }
+
+
 def build_output_summary(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
@@ -195,6 +213,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     compose_parser = subparsers.add_parser("compose")
     compose_parser.add_argument("--out", type=Path, required=True)
 
+    ai_extract_parser = subparsers.add_parser("ai-extract")
+    ai_extract_parser.add_argument("--out", type=Path, required=True)
+    ai_extract_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="openai_compatible")
+
     summary_parser = subparsers.add_parser("summary")
     summary_parser.add_argument("--out", type=Path, required=True)
     return parser.parse_args(argv)
@@ -221,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = assemble_task(args.out, formats=split_formats(args.formats), enrich_route=args.enrich_route or None)
         elif args.command == "compose":
             payload = compose_task(args.out)
+        elif args.command == "ai-extract":
+            payload = ai_extract_task(args.out, route=args.llm_route)
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:

@@ -24,19 +24,9 @@ export type PipelineTaskInput = {
   domainPackDir?: string
 }
 
-export type ExportTaskInput = {
+export type AiExtractTaskInput = {
   outDir: string
-  formats: string[]
-}
-
-export type AssembleTaskInput = {
-  outDir: string
-  formats: string[]
-  enrichRoute?: string
-}
-
-export type ComposeTaskInput = {
-  outDir: string
+  llmRoute?: string
 }
 
 export type LlmSettingsInput = {
@@ -58,12 +48,10 @@ export type DesktopBridge = {
   saveLlmSettings?: (input: LlmSettingsInput) => Promise<LlmSettingsPayload>
   testLlmConnection?: (input: LlmSettingsInput) => Promise<{ ok: boolean; message: string }>
   runPipeline: (input: PipelineTaskInput) => Promise<DesktopTaskPayload>
-  exportRequirements: (input: ExportTaskInput) => Promise<DesktopTaskPayload>
-  assembleSpec: (input: AssembleTaskInput) => Promise<DesktopTaskPayload>
-  composeEngineeringRequirements: (input: ComposeTaskInput) => Promise<DesktopTaskPayload>
+  aiExtract: (input: AiExtractTaskInput) => Promise<DesktopTaskPayload>
 }
 
-type DesktopTaskBridge = Pick<DesktopBridge, "runPipeline" | "exportRequirements" | "assembleSpec" | "composeEngineeringRequirements">
+type DesktopTaskBridge = Pick<DesktopBridge, "runPipeline" | "aiExtract">
 
 export async function runDesktopTask<K extends keyof DesktopTaskBridge>(
   bridge: Pick<DesktopTaskBridge, K>,

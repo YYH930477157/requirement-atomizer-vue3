@@ -16,7 +16,5 @@ contextBridge.exposeInMainWorld("ratomizerDesktop", {
     return () => ipcRenderer.removeListener("task:progress", listener);
   },
   runPipeline: (input) => ipcRenderer.invoke("task:run-pipeline", input),
-  exportRequirements: (input) => ipcRenderer.invoke("task:export-requirements", input),
-  assembleSpec: (input) => ipcRenderer.invoke("task:assemble-spec", input),
-  composeEngineeringRequirements: (input) => ipcRenderer.invoke("task:compose-engineering", input),
+  aiExtract: (input) => ipcRenderer.invoke("task:ai-extract", input),
 });

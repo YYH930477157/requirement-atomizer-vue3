@@ -244,6 +244,41 @@ class DesktopTaskTests(unittest.TestCase):
         compose.assert_called_once_with(out_dir)
         self.assertEqual(json.loads(stdout.getvalue())["kind"], "compose")
 
+    def test_ai_extract_task_wraps_run_ai_extract(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            with patch("ai_extract.run_ai_extract") as run_ai:
+                run_ai.return_value = {
+                    "route": "openai_compatible", "requirements": 3,
+                    "merged": {"total": 10, "ai_behavioral": 3, "deterministic_structural": 7},
+                    "code_drift_flagged": 0, "int_drift_flagged": 1,
+                    "written": ["merged_spec.xlsx", "merged_spec_requirements.json"],
+                }
+                payload = desktop_tasks.ai_extract_task(out_dir, route="openai_compatible")
+
+        run_ai.assert_called_once_with(out_dir.resolve(), route="openai_compatible", merge_deterministic=True)
+        self.assertEqual(payload["kind"], "ai_extract")
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual(payload["merged"]["total"], 10)
+        self.assertIn(str(out_dir.resolve() / "merged_spec.xlsx"), payload["written"])
+
+    def test_main_ai_extract_command_dispatches(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            with patch("desktop_tasks.ai_extract_task") as task:
+                task.return_value = {"kind": "ai_extract", "out_dir": str(out_dir), "count": 0}
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = desktop_tasks.main(["ai-extract", "--out", str(out_dir), "--llm-route", "stub"])
+
+        self.assertEqual(exit_code, 0)
+        task.assert_called_once_with(out_dir, route="stub")
+        self.assertEqual(json.loads(stdout.getvalue())["kind"], "ai_extract")
+
 
 if __name__ == "__main__":
     unittest.main()

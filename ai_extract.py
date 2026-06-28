@@ -32,6 +32,7 @@ from cosem_behavior_spec import extract_codes, extract_ints
 from llm_client import LLMClientConfig, LLMError, chat_json
 from llm_pipeline import (
     DEFAULT_PIPELINE_PATH,
+    apply_llm_environment_overrides,
     llm_config_from_route,
     load_review_pipeline,
     read_jsonl,
@@ -365,7 +366,9 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
     route_name = resolve_route_name(pipeline, route)
     if route_name != "openai_compatible":
         return None
-    return llm_config_from_route(dict(pipeline.model_routes.get("openai_compatible") or {}))
+    # 复用 review 同一套 env 覆盖：GUI 在设置面板配的端点经 RATOMIZER_LLM_* 覆盖 yaml
+    payload = apply_llm_environment_overrides(dict(pipeline.model_routes.get("openai_compatible") or {}))
+    return llm_config_from_route(payload)
 
 
 def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAULT_MERGE_CHARS,

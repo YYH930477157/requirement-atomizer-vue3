@@ -109,25 +109,11 @@ ipcMain.handle("task:run-pipeline", async (_event, input) => {
   await startApiServer(String(payload.out_dir || input.outDir));
   return payload;
 });
-ipcMain.handle("task:export-requirements", async (_event, input) => runDesktopTaskProcess([
-  "export",
+ipcMain.handle("task:ai-extract", async (_event, input) => runDesktopTaskProcess([
+  "ai-extract",
   "--out",
   input.outDir,
-  "--formats",
-  (input.formats || ["csv", "md"]).join(","),
-]));
-ipcMain.handle("task:assemble-spec", async (_event, input) => runDesktopTaskProcess([
-  "assemble",
-  "--out",
-  input.outDir,
-  "--formats",
-  (input.formats || ["xlsx", "docx", "md"]).join(","),
-  ...(input.enrichRoute ? ["--enrich-route", input.enrichRoute] : []),
-]));
-ipcMain.handle("task:compose-engineering", async (_event, input) => runDesktopTaskProcess([
-  "compose",
-  "--out",
-  input.outDir,
+  ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
 ]));
 
 async function startApiServer(outputDir) {

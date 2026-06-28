@@ -80,9 +80,7 @@ declare global {
         kbPaths?: string[]
         domainPackDir?: string
       }) => Promise<RequirementAtomizerTaskPayload>
-      exportRequirements: (input: { outDir: string; formats: string[] }) => Promise<RequirementAtomizerTaskPayload>
-      assembleSpec: (input: { outDir: string; formats: string[]; enrichRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
-      composeEngineeringRequirements: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
+      aiExtract: (input: { outDir: string; llmRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
     }
   }
 }
