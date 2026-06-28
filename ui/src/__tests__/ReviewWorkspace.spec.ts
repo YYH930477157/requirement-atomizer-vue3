@@ -58,7 +58,7 @@ describe("review workspace shell", () => {
         getApiSession: vi.fn().mockResolvedValue(null),
         getLlmSettings: vi.fn().mockResolvedValue(null),
         openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
-        exportRequirements: vi.fn(),
+        aiExtract: vi.fn(),
       },
     })
     const wrapper = mount(App)
@@ -335,22 +335,12 @@ describe("review workspace shell", () => {
           out_dir: "E:\\out\\abnt",
           summary: { counts: { requirements: 1 } },
         }),
-        exportRequirements: vi.fn().mockResolvedValue({
-          kind: "export",
-          written: ["requirements_export.csv", "requirements_export.md"],
-        }),
-        assembleSpec: vi.fn().mockResolvedValue({
-          kind: "assemble",
-          count: 1,
-          written: ["dlms_cosem_spec_requirements.json"],
-        }),
-        composeEngineeringRequirements: vi.fn().mockResolvedValue({
-          kind: "compose",
+        aiExtract: vi.fn().mockResolvedValue({
+          kind: "ai_extract",
           count: 2,
-          written: [
-            "engineering_requirements/requirement_functions.md",
-            "engineering_requirements/dlms_objects.md",
-          ],
+          merged: { total: 5, ai_behavioral: 2, deterministic_structural: 3 },
+          written: ["merged_spec_requirements.json", "merged_spec.xlsx"],
+          summary: {},
         }),
       },
     })
@@ -396,22 +386,10 @@ describe("review workspace shell", () => {
     })
     expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
 
-    await wrapper.find('[data-testid="action-export"]').trigger("click")
-    expect(window.ratomizerDesktop?.exportRequirements).toHaveBeenCalledWith({
+    await wrapper.find('[data-testid="action-ai-extract"]').trigger("click")
+    expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
       outDir: "E:\\out\\abnt",
-      formats: ["csv", "md"],
-    })
-
-    await wrapper.find('[data-testid="action-assemble"]').trigger("click")
-    expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({
-      outDir: "E:\\out\\abnt",
-      formats: ["xlsx", "docx", "md"],
-      enrichRoute: undefined,
-    })
-
-    await wrapper.find('[data-testid="action-compose-engineering"]').trigger("click")
-    expect(window.ratomizerDesktop?.composeEngineeringRequirements).toHaveBeenCalledWith({
-      outDir: "E:\\out\\abnt",
+      llmRoute: "stub",
     })
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("2")
     expect(fetchMock).toHaveBeenCalled()
@@ -648,7 +626,7 @@ describe("review workspace shell", () => {
           outputDir: "E:\\out\\abnt",
         }),
         runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt" }),
-        assembleSpec: vi.fn().mockResolvedValue({ kind: "assemble", count: 1, written: [] }),
+        aiExtract: vi.fn().mockResolvedValue({ kind: "ai_extract", count: 1, merged: {}, written: [] }),
       },
     })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -664,12 +642,11 @@ describe("review workspace shell", () => {
     })
 
     await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
-    await wrapper.find('[data-testid="action-assemble"]').trigger("click")
+    await wrapper.find('[data-testid="action-ai-extract"]').trigger("click")
 
-    expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({
+    expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
       outDir: "E:\\out\\abnt",
-      formats: ["xlsx", "docx", "md"],
-      enrichRoute: "openai_compatible",
+      llmRoute: "openai_compatible",
     })
   })
 

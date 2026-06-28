@@ -130,20 +130,20 @@ describe("desktop bridge tasks", () => {
     expect(bridge.runPipeline).toHaveBeenCalledWith({ inputPath: "C:\\input.docx", outDir: "E:\\out\\run" })
   })
 
-  it("runs engineering composition through the desktop bridge", async () => {
+  it("runs AI extraction through the desktop bridge", async () => {
     const bridge = {
-      composeEngineeringRequirements: vi.fn().mockResolvedValue({
-        kind: "compose",
+      aiExtract: vi.fn().mockResolvedValue({
+        kind: "ai_extract",
         outDir: "E:\\out\\run",
         count: 2,
       }),
     }
 
-    const payload = await runDesktopTask(bridge, "composeEngineeringRequirements", {
+    const payload = await runDesktopTask(bridge, "aiExtract", {
       outDir: "E:\\out\\run",
     })
 
-    expect(payload.kind).toBe("compose")
-    expect(bridge.composeEngineeringRequirements).toHaveBeenCalledWith({ outDir: "E:\\out\\run" })
+    expect(payload.kind).toBe("ai_extract")
+    expect(bridge.aiExtract).toHaveBeenCalledWith({ outDir: "E:\\out\\run" })
   })
 })

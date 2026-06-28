@@ -34,13 +34,11 @@
             <button class="button" type="button" data-testid="action-test-pipeline" :disabled="isRunning" @click="handleRunPipeline({ llmReviewLimit: TEST_LLM_REVIEW_LIMIT })">测试运行</button>
             <button class="button" type="button" data-testid="action-open-document" @click="handleOpenDocument">导入文档</button>
             <button class="button" type="button" data-testid="action-select-output-dir" @click="handleOpenOutput">选择输出目录</button>
-            <button class="button" type="button" data-testid="action-export" @click="handleExport">导出</button>
             <label class="llm-toggle">
               <input v-model="llmMode" type="checkbox" data-testid="llm-mode-toggle" />
-              <span>LLM 富化</span>
+              <span>LLM</span>
             </label>
-            <button class="button primary" type="button" data-testid="action-assemble" @click="handleAssemble">装配规格</button>
-            <button class="button" type="button" data-testid="action-compose-engineering" @click="handleComposeEngineering">研发需求</button>
+            <button class="button primary" type="button" data-testid="action-ai-extract" :disabled="isRunning" @click="handleAiExtract">AI 抽取（双引擎）</button>
           </div>
         </header>
 
@@ -375,7 +373,7 @@ import { requirements as mockRequirements } from "./mock-data"
 import { applyReviewState, mapBackendRequirement, statusDisplay as displayStatus } from "./requirement-mapper"
 import type { Requirement, ReviewStatus } from "./types"
 
-type PhaseNavId = "review" | "document" | "export" | "settings"
+type PhaseNavId = "review" | "document" | "ai" | "settings"
 type StatFilter = "all" | "accepted" | "expert_pending" | "ambiguous"
 type LlmSettings = {
   enabled: boolean
@@ -391,7 +389,7 @@ type LlmSettings = {
 const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
   { id: "review", label: "审查", icon: "▣" },
   { id: "document", label: "文档", icon: "▤" },
-  { id: "export", label: "导出", icon: "↧" },
+  { id: "ai", label: "AI 抽取", icon: "✨" },
   { id: "settings", label: "设置", icon: "⚙" },
 ]
 
@@ -580,8 +578,8 @@ function handleNavAction(item: PhaseNavId) {
   activeNav.value = item
     if (item === "document") {
     void handleOpenDocument()
-  } else if (item === "export") {
-    void handleExport()
+  } else if (item === "ai") {
+    void handleAiExtract()
   } else if (item === "settings") {
     showSettingsPanel.value = true
     void loadLlmSettings()
@@ -889,42 +887,17 @@ function handleTaskProgress(event: { stage: string; completed?: number; total?: 
   runProgressDetail.value = event.model ? `模型：${event.model}` : "模型正在逐条审查需求"
 }
 
-async function handleExport() {
-  if (!currentOutputDir.value || !window.ratomizerDesktop?.exportRequirements) return
+async function handleAiExtract() {
+  if (!currentOutputDir.value || !window.ratomizerDesktop?.aiExtract) return
   try {
-    const payload = await window.ratomizerDesktop.exportRequirements({ outDir: currentOutputDir.value, formats: ["csv", "md"] })
-    latestTaskSummary.value = objectValue(payload.summary)
-    apiMessage.value = `已导出：${(payload.written || []).join(", ")}`
-  } catch (error) {
-    apiMessage.value = error instanceof Error ? error.message : "导出失败"
-  }
-}
-
-async function handleAssemble() {
-  if (!currentOutputDir.value || !window.ratomizerDesktop?.assembleSpec) return
-  try {
-    const payload = await window.ratomizerDesktop.assembleSpec({
+    const payload = await window.ratomizerDesktop.aiExtract({
       outDir: currentOutputDir.value,
-      formats: ["xlsx", "docx", "md"],
-      enrichRoute: llmMode.value ? "openai_compatible" : undefined,
+      llmRoute: llmMode.value ? "openai_compatible" : "stub",
     })
     latestTaskSummary.value = objectValue(payload.summary)
-    apiMessage.value = `已装配实现规格：${payload.count ?? 0} 条`
+    apiMessage.value = `AI 抽取（双引擎）完成：${payload.count ?? 0} 条行为需求 + 确定性对象目录，已产 merged_spec.xlsx`
   } catch (error) {
-    apiMessage.value = error instanceof Error ? error.message : "装配实现规格失败"
-  }
-}
-
-async function handleComposeEngineering() {
-  if (!currentOutputDir.value || !window.ratomizerDesktop?.composeEngineeringRequirements) return
-  try {
-    const payload = await window.ratomizerDesktop.composeEngineeringRequirements({
-      outDir: currentOutputDir.value,
-    })
-    latestTaskSummary.value = objectValue(payload.summary)
-    apiMessage.value = `已生成研发需求：${payload.count ?? 0} 项`
-  } catch (error) {
-    apiMessage.value = error instanceof Error ? error.message : "研发需求生成失败"
+    apiMessage.value = error instanceof Error ? error.message : "AI 抽取失败"
   }
 }
 
