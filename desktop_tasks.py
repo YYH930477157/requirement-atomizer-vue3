@@ -12,12 +12,29 @@ from atomize import run_atomizer_pipeline
 from engineering_composer import compose_engineering_requirements, write_engineering_requirements
 from export_requirements import export_requirements
 from llm_pipeline import read_jsonl, run_review_pipeline
-from requirement_kb.cli import default_kb_paths
+from requirement_kb.cli import default_kb_paths, package_root
 from spec_export import export_spec
 
 
 ASSEMBLED_JSON = "dlms_cosem_spec_requirements.json"
 PROGRESS_PREFIX = "__RATOMIZER_PROGRESS__"
+
+
+def resolve_kb_paths(kb_paths: list[Path] | None) -> list[Path]:
+    """把显式 --kb 路径解析成可用的绝对路径。
+
+    前端预设送的是相对名（如 "knowledge_bases/energy_metering.json"），dev 下 cwd=仓库根能命中，
+    但打包后后端 cwd=resources/backend 命中不到。这里：绝对路径或 cwd 下已存在的相对路径原样保留
+    （兼容 CLI 习惯）；否则按 package_root() 解析（dev=仓库根 / Electron=resources/，KB 真正所在）。
+    """
+    if kb_paths is None:
+        return default_kb_paths()
+    root = package_root()
+    resolved: list[Path] = []
+    for raw in kb_paths:
+        path = Path(raw)
+        resolved.append(path if path.is_absolute() or path.exists() else root / path)
+    return resolved
 
 
 def run_pipeline_task(
@@ -38,7 +55,7 @@ def run_pipeline_task(
         input_path,
         out_dir,
         chunk_chars=chunk_chars,
-        kb_paths=kb_paths if kb_paths is not None else default_kb_paths(),
+        kb_paths=resolve_kb_paths(kb_paths),
         domain_pack_dir=domain_pack_dir,
     )
     review = None if skip_review else run_review_pipeline(
