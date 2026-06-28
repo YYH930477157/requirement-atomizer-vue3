@@ -13,18 +13,32 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
 relations:
 - relation: instance_of
   target: KB-L3-IC-4-EXTENDED-REGISTER
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-14
 ---
 
 # Cumulative Reactive Demand+ - Register import
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Cumulative Reactive Demand+ - Register import` with OBIS pattern `1-0:1.3.x.255` and interface class 4 (Extended Register).
+Row-level Extended Register object at logical name `1-0:1.3.x.255`. Cumulative Reactive Demand+ - Register import.
 
+## Aliases
+
+- OBIS 1-0:1.3.x.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-4-EXTENDED-REGISTER`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-14`
 ## Structured Data
 
 ```json metadata
@@ -34,35 +48,32 @@ ABNT Appendix 9 row-level COSEM object `Cumulative Reactive Demand+ - Register i
   "likely_interface_class_name": "Extended Register",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "1",
-    "D": "3",
-    "E": "x",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "1 active energy (+A import)",
+    "D": "3 cumulative",
+    "E": "x tariff/rate index (templated)",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 14,
+    "title": "Value group D codes - AC electricity"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000097-R000006, TBL-000097"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 14 Value group D codes - AC electricity"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Cumulative Reactive Demand+ - Register import at 1-0:1.3.x.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000097-R000006",
-    "source_refs": [
-      "BLK-000790",
-      "TBL-000097-R000006",
-      "TBL-000097"
-    ],
-    "source_table_ids": [
-      "TBL-000097"
-    ]
-  }
+    "Use this row when matching requirements about cumulative reactive demand+ - register import.",
+    "ABNT Appendix 9 describes this object as: Cumulative Reactive Demand+ - Register import."
+  ]
 }
 ```
 

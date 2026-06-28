@@ -13,18 +13,32 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
 relations:
 - relation: instance_of
   target: KB-L3-IC-3-REGISTER
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-16
 ---
 
 # Instantaneous voltage L2 - Nth Harmonic (1 to 25)
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Instantaneous voltage L2 - Nth Harmonic (1 to 25)` with OBIS pattern `1-0:52.7.x.255` and interface class 3 (Register).
+Row-level Register object at logical name `1-0:52.7.x.255`. Instantaneous voltage L2 - Nth Harmonic (1 to 25).
 
+## Aliases
+
+- OBIS 1-0:52.7.x.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-3-REGISTER`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-16`
 ## Structured Data
 
 ```json metadata
@@ -34,35 +48,32 @@ ABNT Appendix 9 row-level COSEM object `Instantaneous voltage L2 - Nth Harmonic 
   "likely_interface_class_name": "Register",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "52",
-    "D": "7",
-    "E": "x",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "52 voltage phase L2",
+    "D": "7 instantaneous/Nth harmonic",
+    "E": "x tariff/rate index (templated)",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 16,
+    "title": "Value group E codes - AC electricity - Harmonics"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000109-R000010, TBL-000109"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 16 Value group E codes - AC electricity - Harmonics"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Instantaneous voltage L2 - Nth Harmonic (1 to 25) at 1-0:52.7.x.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000109-R000010",
-    "source_refs": [
-      "BLK-000826",
-      "TBL-000109-R000010",
-      "TBL-000109"
-    ],
-    "source_table_ids": [
-      "TBL-000109"
-    ]
-  }
+    "Use this row when matching requirements about instantaneous voltage l2 - nth harmonic (1 to 25).",
+    "ABNT Appendix 9 describes this object as: Instantaneous voltage L2 - Nth Harmonic (1 to 25)."
+  ]
 }
 ```
 
