@@ -146,5 +146,64 @@ class SpecExportTests(unittest.TestCase):
         self.assertEqual(ws["B4"].fill.fgColor.rgb, "FF00FFFF")
 
 
+class SpecExcelDedupTests(unittest.TestCase):
+    """对象定义型需求只进「COSEM Object Model」sheet，不在领域 sheet 重复出现。"""
+
+    def _doc(self) -> dict:
+        return {
+            "meta": {"source": "t", "extracted_at": "2026-01-01T00:00:00", "meter_type": "electric",
+                     "target_standards": []},
+            "requirements": [
+                {  # 对象定义型（匹配 _is_object_model_requirement）+ 领域标签 时钟
+                    "id": "REQ-001",
+                    "title": "Clock (OBIS 0-0:1.0.0.255 / CL 8)",
+                    "description": "实现 COSEM 对象 Clock",
+                    "type": "functional", "priority": "P1", "status": "confirmed",
+                    "source_section": "Time",
+                    "source_quote": "COSEM object Clock / CL 8 / OBIS 0-0:1.0.0.255",
+                    "threshold_table": {"description": "Clock 属性访问表",
+                                         "columns": ["#", "名称", "类型", "RC", "PC", "SC", "LC", "默认值"],
+                                         "rows": [["1", "logical_name", "octet-string[6]", "R-", "R-", "R-", "R-", "0000010000FF"]]},
+                    "acceptance_criteria": [], "dependencies": [], "parent": None, "children": [],
+                    "labels": ["时钟"], "notes": "",
+                },
+                {  # 同域行为型需求——应留在领域 sheet
+                    "id": "REQ-002",
+                    "title": "时钟同步行为",
+                    "description": "时钟应每日与基准同步",
+                    "type": "functional", "priority": "P1", "status": "confirmed",
+                    "source_section": "Time", "source_quote": "the clock shall synchronise daily",
+                    "threshold_table": None,
+                    "acceptance_criteria": [], "dependencies": [], "parent": None, "children": [],
+                    "labels": ["时钟"], "notes": "",
+                },
+            ],
+            "analysis": {"total_count": 2, "by_type": {}, "by_priority": {}, "by_domain": {},
+                         "gaps": [], "conflicts": []},
+        }
+
+    def test_object_requirement_only_in_object_model_sheet(self) -> None:
+        import spec_excel
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "spec.xlsx"
+            spec_excel.write_xlsx(self._doc(), out)
+            wb = load_workbook(out)
+
+        def sheet_contains(name: str, needle: str) -> bool:
+            ws = wb[name]
+            return any(needle in str(c) for row in ws.iter_rows(values_only=True) for c in row if c is not None)
+
+        self.assertIn("COSEM Object Model", wb.sheetnames)
+        self.assertIn("时钟", wb.sheetnames)
+        # 对象 OBIS 在 Object Model sheet 在、在领域 sheet 不在
+        self.assertTrue(sheet_contains("COSEM Object Model", "0-0:1.0.0.255"))
+        self.assertFalse(sheet_contains("时钟", "0-0:1.0.0.255"))
+        self.assertFalse(sheet_contains("时钟", "REQ-001"))
+        # 行为型需求仍在领域 sheet
+        self.assertTrue(sheet_contains("时钟", "REQ-002"))
+
+
 if __name__ == "__main__":
     unittest.main()
