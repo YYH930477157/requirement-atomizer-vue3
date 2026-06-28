@@ -20937,13 +20937,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of voltage sags in any phase` with OBIS pattern `1-0:12.32.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:12.32.0.255`. Number of voltage sags in any phase.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.32.0.255",
@@ -20951,35 +20955,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "32",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "32 number/count",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000132-R000004, TBL-000132"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of voltage sags in any phase at 1-0:12.32.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000132-R000004",
-        "source_refs": [
-          "BLK-000876",
-          "TBL-000132-R000004",
-          "TBL-000132"
-        ],
-        "source_table_ids": [
-          "TBL-000132"
-        ]
-      }
+        "Use this row when matching requirements about number of voltage sags in any phase.",
+        "ABNT Appendix 9 describes this object as: Number of voltage sags in any phase."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-32-32-0-255-NUMBER-OF-VOLTAGE-SAGS-IN-PHASE-L1",
@@ -20997,13 +20998,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of voltage sags in phase L1` with OBIS pattern `1-0:32.32.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:32.32.0.255`. Number of voltage sags in phase L1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:32.32.0.255",
@@ -21011,35 +21016,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "32",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "32 number/count",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000133-R000003, TBL-000133"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of voltage sags in phase L1 at 1-0:32.32.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000133-R000003",
-        "source_refs": [
-          "BLK-000878",
-          "TBL-000133-R000003",
-          "TBL-000133"
-        ],
-        "source_table_ids": [
-          "TBL-000133"
-        ]
-      }
+        "Use this row when matching requirements about number of voltage sags in phase l1.",
+        "ABNT Appendix 9 describes this object as: Number of voltage sags in phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-32-0-255-NUMBER-OF-VOLTAGE-SAGS-IN-PHASE-L2",
@@ -21057,13 +21059,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of voltage sags in phase L2` with OBIS pattern `1-0:52.32.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:52.32.0.255`. Number of voltage sags in phase L2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:52.32.0.255",
@@ -21071,35 +21077,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "32",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "32 number/count",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000133-R000014, TBL-000133"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of voltage sags in phase L2 at 1-0:52.32.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000133-R000014",
-        "source_refs": [
-          "BLK-000878",
-          "TBL-000133-R000014",
-          "TBL-000133"
-        ],
-        "source_table_ids": [
-          "TBL-000133"
-        ]
-      }
+        "Use this row when matching requirements about number of voltage sags in phase l2.",
+        "ABNT Appendix 9 describes this object as: Number of voltage sags in phase L2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-32-0-255-NUMBER-OF-VOLTAGE-SAGS-IN-PHASE-L3",
@@ -21117,13 +21120,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of voltage sags in phase L3` with OBIS pattern `1-0:72.32.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:72.32.0.255`. Number of voltage sags in phase L3.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:72.32.0.255",
@@ -21131,35 +21138,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "32",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "32 number/count",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000134-R000011, TBL-000134"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of voltage sags in phase L3 at 1-0:72.32.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000134-R000011",
-        "source_refs": [
-          "BLK-000880",
-          "TBL-000134-R000011",
-          "TBL-000134"
-        ],
-        "source_table_ids": [
-          "TBL-000134"
-        ]
-      }
+        "Use this row when matching requirements about number of voltage sags in phase l3.",
+        "ABNT Appendix 9 describes this object as: Number of voltage sags in phase L3."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-94-55-92-255-NUMBER-OF-VOLTAGE-SWELLS-FOR-AVERAGE-VOLTAGE-IN-ALL-3-PHASES",
@@ -21237,13 +21241,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of voltage swells in any phase` with OBIS pattern `1-0:12.36.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:12.36.0.255`. Number of voltage swells in any phase.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.36.0.255",
@@ -21251,35 +21259,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "36",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "36 number/count (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000136-R000010, TBL-000136"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of voltage swells in any phase at 1-0:12.36.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000136-R000010",
-        "source_refs": [
-          "BLK-000884",
-          "TBL-000136-R000010",
-          "TBL-000136"
-        ],
-        "source_table_ids": [
-          "TBL-000136"
-        ]
-      }
+        "Use this row when matching requirements about number of voltage swells in any phase.",
+        "ABNT Appendix 9 describes this object as: Number of voltage swells in any phase."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-32-36-0-255-NUMBER-OF-VOLTAGE-SWELLS-IN-PHASE-L1",
@@ -21297,13 +21302,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of voltage swells in phase L1` with OBIS pattern `1-0:32.36.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:32.36.0.255`. Number of voltage swells in phase L1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:32.36.0.255",
@@ -21311,35 +21320,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "36",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "36 number/count (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000137-R000008, TBL-000137"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of voltage swells in phase L1 at 1-0:32.36.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000137-R000008",
-        "source_refs": [
-          "BLK-000886",
-          "TBL-000137-R000008",
-          "TBL-000137"
-        ],
-        "source_table_ids": [
-          "TBL-000137"
-        ]
-      }
+        "Use this row when matching requirements about number of voltage swells in phase l1.",
+        "ABNT Appendix 9 describes this object as: Number of voltage swells in phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-36-0-255-NUMBER-OF-VOLTAGE-SWELLS-IN-PHASE-L2",
@@ -21357,13 +21363,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of voltage swells in phase L2` with OBIS pattern `1-0:52.36.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:52.36.0.255`. Number of voltage swells in phase L2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:52.36.0.255",
@@ -21371,35 +21381,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "36",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "36 number/count (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000138-R000007, TBL-000138"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of voltage swells in phase L2 at 1-0:52.36.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000138-R000007",
-        "source_refs": [
-          "BLK-000888",
-          "TBL-000138-R000007",
-          "TBL-000138"
-        ],
-        "source_table_ids": [
-          "TBL-000138"
-        ]
-      }
+        "Use this row when matching requirements about number of voltage swells in phase l2.",
+        "ABNT Appendix 9 describes this object as: Number of voltage swells in phase L2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-36-0-255-NUMBER-OF-VOLTAGE-SWELLS-IN-PHASE-L3",
@@ -21417,13 +21424,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of voltage swells in phase L3` with OBIS pattern `1-0:72.36.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:72.36.0.255`. Number of voltage swells in phase L3.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:72.36.0.255",
@@ -21431,35 +21442,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "36",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "36 number/count (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000139-R000006, TBL-000139"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of voltage swells in phase L3 at 1-0:72.36.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000139-R000006",
-        "source_refs": [
-          "BLK-000890",
-          "TBL-000139-R000006",
-          "TBL-000139"
-        ],
-        "source_table_ids": [
-          "TBL-000139"
-        ]
-      }
+        "Use this row when matching requirements about number of voltage swells in phase l3.",
+        "ABNT Appendix 9 describes this object as: Number of voltage swells in phase L3."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-1-94-55-104-255-PHASE-PRESENCE",
@@ -25723,13 +25731,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Average voltage PHASE R - period 1` with OBIS pattern `1-0:32.49.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.49.0.255`. Average voltage PHASE R - period 1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:32.49.0.255",
@@ -25737,35 +25749,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "49",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "49 average - period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000148-R000002, TBL-000148"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Average voltage PHASE R - period 1 at 1-0:32.49.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000148-R000002",
-        "source_refs": [
-          "BLK-000912",
-          "TBL-000148-R000002",
-          "TBL-000148"
-        ],
-        "source_table_ids": [
-          "TBL-000148"
-        ]
-      }
+        "Use this row when matching requirements about average voltage phase r - period 1.",
+        "ABNT Appendix 9 describes this object as: Average voltage PHASE R - period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-32-50-0-255-AVERAGE-VOLTAGE-PHASE-R-PERIOD-2",
@@ -25783,13 +25792,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Average voltage PHASE R - period 2` with OBIS pattern `1-0:32.50.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.50.0.255`. Average voltage PHASE R - period 2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:32.50.0.255",
@@ -25797,35 +25810,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "50",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "50 average - period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000148-R000006, TBL-000148"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Average voltage PHASE R - period 2 at 1-0:32.50.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000148-R000006",
-        "source_refs": [
-          "BLK-000912",
-          "TBL-000148-R000006",
-          "TBL-000148"
-        ],
-        "source_table_ids": [
-          "TBL-000148"
-        ]
-      }
+        "Use this row when matching requirements about average voltage phase r - period 2.",
+        "ABNT Appendix 9 describes this object as: Average voltage PHASE R - period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-49-0-255-AVERAGE-VOLTAGE-PHASE-S-PERIOD-1",
@@ -25843,13 +25853,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Average voltage PHASE S - period 1` with OBIS pattern `1-0:52.49.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.49.0.255`. Average voltage PHASE S - period 1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:52.49.0.255",
@@ -25857,35 +25871,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "49",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "49 average - period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000149-R000002, TBL-000149"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Average voltage PHASE S - period 1 at 1-0:52.49.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000149-R000002",
-        "source_refs": [
-          "BLK-000914",
-          "TBL-000149-R000002",
-          "TBL-000149"
-        ],
-        "source_table_ids": [
-          "TBL-000149"
-        ]
-      }
+        "Use this row when matching requirements about average voltage phase s - period 1.",
+        "ABNT Appendix 9 describes this object as: Average voltage PHASE S - period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-50-0-255-AVERAGE-VOLTAGE-PHASE-S-PERIOD-2",
@@ -25903,13 +25914,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Average voltage PHASE S - period 2` with OBIS pattern `1-0:52.50.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.50.0.255`. Average voltage PHASE S - period 2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:52.50.0.255",
@@ -25917,35 +25932,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "50",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "50 average - period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000149-R000006, TBL-000149"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Average voltage PHASE S - period 2 at 1-0:52.50.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000149-R000006",
-        "source_refs": [
-          "BLK-000914",
-          "TBL-000149-R000006",
-          "TBL-000149"
-        ],
-        "source_table_ids": [
-          "TBL-000149"
-        ]
-      }
+        "Use this row when matching requirements about average voltage phase s - period 2.",
+        "ABNT Appendix 9 describes this object as: Average voltage PHASE S - period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-49-0-255-AVERAGE-VOLTAGE-PHASE-T-PERIOD-1",
@@ -25963,13 +25975,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Average voltage PHASE T - period 1` with OBIS pattern `1-0:72.49.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.49.0.255`. Average voltage PHASE T - period 1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:72.49.0.255",
@@ -25977,35 +25993,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "49",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "49 average - period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000150-R000002, TBL-000150"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Average voltage PHASE T - period 1 at 1-0:72.49.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000150-R000002",
-        "source_refs": [
-          "BLK-000916",
-          "TBL-000150-R000002",
-          "TBL-000150"
-        ],
-        "source_table_ids": [
-          "TBL-000150"
-        ]
-      }
+        "Use this row when matching requirements about average voltage phase t - period 1.",
+        "ABNT Appendix 9 describes this object as: Average voltage PHASE T - period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-50-0-255-AVERAGE-VOLTAGE-PHASE-T-PERIOD-2",
@@ -26023,13 +26036,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Average voltage PHASE T - period 2` with OBIS pattern `1-0:72.50.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.50.0.255`. Average voltage PHASE T - period 2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:72.50.0.255",
@@ -26037,35 +26054,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "50",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "50 average - period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000150-R000006, TBL-000150"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Average voltage PHASE T - period 2 at 1-0:72.50.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000150-R000006",
-        "source_refs": [
-          "BLK-000916",
-          "TBL-000150-R000006",
-          "TBL-000150"
-        ],
-        "source_table_ids": [
-          "TBL-000150"
-        ]
-      }
+        "Use this row when matching requirements about average voltage phase t - period 2.",
+        "ABNT Appendix 9 describes this object as: Average voltage PHASE T - period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-0-9-12-255-BILLING-RESET-LOCKOUT-TIME",
@@ -28755,13 +28769,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current voltage sag in any phase` with OBIS pattern `1-0:12.33.1.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:12.33.1.255`. Duration of current voltage sag in any phase.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.33.1.255",
@@ -28769,35 +28787,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "33",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "33 duration",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000132-R000011, TBL-000132"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current voltage sag in any phase at 1-0:12.33.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000132-R000011",
-        "source_refs": [
-          "BLK-000876",
-          "TBL-000132-R000011",
-          "TBL-000132"
-        ],
-        "source_table_ids": [
-          "TBL-000132"
-        ]
-      }
+        "Use this row when matching requirements about duration of current voltage sag in any phase.",
+        "ABNT Appendix 9 describes this object as: Duration of current voltage sag in any phase."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-32-33-1-255-DURATION-OF-CURRENT-VOLTAGE-SAG-IN-PHASE-L1",
@@ -28815,13 +28830,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current voltage sag in phase L1` with OBIS pattern `1-0:32.33.1.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.33.1.255`. Duration of current voltage sag in phase L1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:32.33.1.255",
@@ -28829,35 +28848,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "33",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "33 duration",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000133-R000010, TBL-000133"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current voltage sag in phase L1 at 1-0:32.33.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000133-R000010",
-        "source_refs": [
-          "BLK-000878",
-          "TBL-000133-R000010",
-          "TBL-000133"
-        ],
-        "source_table_ids": [
-          "TBL-000133"
-        ]
-      }
+        "Use this row when matching requirements about duration of current voltage sag in phase l1.",
+        "ABNT Appendix 9 describes this object as: Duration of current voltage sag in phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-33-1-255-DURATION-OF-CURRENT-VOLTAGE-SAG-IN-PHASE-L2",
@@ -28875,13 +28891,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current voltage sag in phase L2` with OBIS pattern `1-0:52.33.1.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.33.1.255`. Duration of current voltage sag in phase L2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:52.33.1.255",
@@ -28889,35 +28909,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "33",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "33 duration",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000134-R000007, TBL-000134"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current voltage sag in phase L2 at 1-0:52.33.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000134-R000007",
-        "source_refs": [
-          "BLK-000880",
-          "TBL-000134-R000007",
-          "TBL-000134"
-        ],
-        "source_table_ids": [
-          "TBL-000134"
-        ]
-      }
+        "Use this row when matching requirements about duration of current voltage sag in phase l2.",
+        "ABNT Appendix 9 describes this object as: Duration of current voltage sag in phase L2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-33-1-255-DURATION-OF-CURRENT-VOLTAGE-SAG-IN-PHASE-L3",
@@ -28935,13 +28952,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current voltage sag in phase L3` with OBIS pattern `1-0:72.33.1.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.33.1.255`. Duration of current voltage sag in phase L3.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:72.33.1.255",
@@ -28949,35 +28970,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "33",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "33 duration",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000135-R000004, TBL-000135"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current voltage sag in phase L3 at 1-0:72.33.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000135-R000004",
-        "source_refs": [
-          "BLK-000882",
-          "TBL-000135-R000004",
-          "TBL-000135"
-        ],
-        "source_table_ids": [
-          "TBL-000135"
-        ]
-      }
+        "Use this row when matching requirements about duration of current voltage sag in phase l3.",
+        "ABNT Appendix 9 describes this object as: Duration of current voltage sag in phase L3."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-12-37-1-255-DURATION-OF-CURRENT-VOLTAGE-SWELL-IN-ANY-PHASE",
@@ -28995,13 +29013,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current voltage swell in any phase` with OBIS pattern `1-0:12.37.1.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:12.37.1.255`. Duration of current voltage swell in any phase.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.37.1.255",
@@ -29009,35 +29031,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "37",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "37 duration (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000137-R000004, TBL-000137"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current voltage swell in any phase at 1-0:12.37.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000137-R000004",
-        "source_refs": [
-          "BLK-000886",
-          "TBL-000137-R000004",
-          "TBL-000137"
-        ],
-        "source_table_ids": [
-          "TBL-000137"
-        ]
-      }
+        "Use this row when matching requirements about duration of current voltage swell in any phase.",
+        "ABNT Appendix 9 describes this object as: Duration of current voltage swell in any phase."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-32-37-1-255-DURATION-OF-CURRENT-VOLTAGE-SWELL-IN-PHASE-L1",
@@ -29055,13 +29074,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current voltage swell in phase L1` with OBIS pattern `1-0:32.37.1.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.37.1.255`. Duration of current voltage swell in phase L1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:32.37.1.255",
@@ -29069,35 +29092,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "37",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "37 duration (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000138-R000003, TBL-000138"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current voltage swell in phase L1 at 1-0:32.37.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000138-R000003",
-        "source_refs": [
-          "BLK-000888",
-          "TBL-000138-R000003",
-          "TBL-000138"
-        ],
-        "source_table_ids": [
-          "TBL-000138"
-        ]
-      }
+        "Use this row when matching requirements about duration of current voltage swell in phase l1.",
+        "ABNT Appendix 9 describes this object as: Duration of current voltage swell in phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-37-1-255-DURATION-OF-CURRENT-VOLTAGE-SWELL-IN-PHASE-L2",
@@ -29115,13 +29135,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current voltage swell in phase L2` with OBIS pattern `1-0:52.37.1.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.37.1.255`. Duration of current voltage swell in phase L2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:52.37.1.255",
@@ -29129,35 +29153,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "37",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "37 duration (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000139-R000002, TBL-000139"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current voltage swell in phase L2 at 1-0:52.37.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000139-R000002",
-        "source_refs": [
-          "BLK-000890",
-          "TBL-000139-R000002",
-          "TBL-000139"
-        ],
-        "source_table_ids": [
-          "TBL-000139"
-        ]
-      }
+        "Use this row when matching requirements about duration of current voltage swell in phase l2.",
+        "ABNT Appendix 9 describes this object as: Duration of current voltage swell in phase L2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-37-1-255-DURATION-OF-CURRENT-VOLTAGE-SWELL-IN-PHASE-L3",
@@ -29175,13 +29196,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current voltage swell in phase L3` with OBIS pattern `1-0:72.37.1.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.37.1.255`. Duration of current voltage swell in phase L3.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:72.37.1.255",
@@ -29189,35 +29214,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "37",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "37 duration (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000139-R000013, TBL-000139"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current voltage swell in phase L3 at 1-0:72.37.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000139-R000013",
-        "source_refs": [
-          "BLK-000890",
-          "TBL-000139-R000013",
-          "TBL-000139"
-        ],
-        "source_table_ids": [
-          "TBL-000139"
-        ]
-      }
+        "Use this row when matching requirements about duration of current voltage swell in phase l3.",
+        "ABNT Appendix 9 describes this object as: Duration of current voltage swell in phase L3."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-94-55-91-255-DURATION-OF-VOLTAGE-SAGS-FOR-AVERAGE-VOLTAGE-IN-ALL-3-PHASES",
@@ -29295,13 +29317,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of voltage sags in any phase` with OBIS pattern `1-0:12.33.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:12.33.0.255`. Duration of voltage sags in any phase.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.33.0.255",
@@ -29309,35 +29335,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "33",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "33 duration",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000132-R000007, TBL-000132"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of voltage sags in any phase at 1-0:12.33.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000132-R000007",
-        "source_refs": [
-          "BLK-000876",
-          "TBL-000132-R000007",
-          "TBL-000132"
-        ],
-        "source_table_ids": [
-          "TBL-000132"
-        ]
-      }
+        "Use this row when matching requirements about duration of voltage sags in any phase.",
+        "ABNT Appendix 9 describes this object as: Duration of voltage sags in any phase."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-32-33-0-255-DURATION-OF-VOLTAGE-SAGS-IN-PHASE-L1",
@@ -29355,13 +29378,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of voltage sags in phase L1` with OBIS pattern `1-0:32.33.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.33.0.255`. Duration of voltage sags in phase L1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:32.33.0.255",
@@ -29369,35 +29396,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "33",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "33 duration",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000133-R000006, TBL-000133"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of voltage sags in phase L1 at 1-0:32.33.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000133-R000006",
-        "source_refs": [
-          "BLK-000878",
-          "TBL-000133-R000006",
-          "TBL-000133"
-        ],
-        "source_table_ids": [
-          "TBL-000133"
-        ]
-      }
+        "Use this row when matching requirements about duration of voltage sags in phase l1.",
+        "ABNT Appendix 9 describes this object as: Duration of voltage sags in phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-33-0-255-DURATION-OF-VOLTAGE-SAGS-IN-PHASE-L2",
@@ -29415,13 +29439,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of voltage sags in phase L2` with OBIS pattern `1-0:52.33.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.33.0.255`. Duration of voltage sags in phase L2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:52.33.0.255",
@@ -29429,35 +29457,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "33",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "33 duration",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000134-R000003, TBL-000134"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of voltage sags in phase L2 at 1-0:52.33.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000134-R000003",
-        "source_refs": [
-          "BLK-000880",
-          "TBL-000134-R000003",
-          "TBL-000134"
-        ],
-        "source_table_ids": [
-          "TBL-000134"
-        ]
-      }
+        "Use this row when matching requirements about duration of voltage sags in phase l2.",
+        "ABNT Appendix 9 describes this object as: Duration of voltage sags in phase L2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-33-0-255-DURATION-OF-VOLTAGE-SAGS-IN-PHASE-L3",
@@ -29475,13 +29500,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of voltage sags in phase L3` with OBIS pattern `1-0:72.33.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.33.0.255`. Duration of voltage sags in phase L3.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:72.33.0.255",
@@ -29489,35 +29518,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "33",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "33 duration",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000134-R000014, TBL-000134"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of voltage sags in phase L3 at 1-0:72.33.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000134-R000014",
-        "source_refs": [
-          "BLK-000880",
-          "TBL-000134-R000014",
-          "TBL-000134"
-        ],
-        "source_table_ids": [
-          "TBL-000134"
-        ]
-      }
+        "Use this row when matching requirements about duration of voltage sags in phase l3.",
+        "ABNT Appendix 9 describes this object as: Duration of voltage sags in phase L3."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-94-55-93-255-DURATION-OF-VOLTAGE-SWELLS-FOR-AVERAGE-VOLTAGE-IN-ALL-3-PHASES",
@@ -29595,13 +29621,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of voltage swells in any phase` with OBIS pattern `1-0:12.37.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:12.37.0.255`. Duration of voltage swells in any phase.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.37.0.255",
@@ -29609,35 +29639,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "37",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "37 duration (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000136-R000013, TBL-000136"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of voltage swells in any phase at 1-0:12.37.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000136-R000013",
-        "source_refs": [
-          "BLK-000884",
-          "TBL-000136-R000013",
-          "TBL-000136"
-        ],
-        "source_table_ids": [
-          "TBL-000136"
-        ]
-      }
+        "Use this row when matching requirements about duration of voltage swells in any phase.",
+        "ABNT Appendix 9 describes this object as: Duration of voltage swells in any phase."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-32-37-0-255-DURATION-OF-VOLTAGE-SWELLS-IN-PHASE-L1",
@@ -29655,13 +29682,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of voltage swells in phase L1` with OBIS pattern `1-0:32.37.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.37.0.255`. Duration of voltage swells in phase L1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:32.37.0.255",
@@ -29669,35 +29700,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "37",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "37 duration (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000137-R000011, TBL-000137"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of voltage swells in phase L1 at 1-0:32.37.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000137-R000011",
-        "source_refs": [
-          "BLK-000886",
-          "TBL-000137-R000011",
-          "TBL-000137"
-        ],
-        "source_table_ids": [
-          "TBL-000137"
-        ]
-      }
+        "Use this row when matching requirements about duration of voltage swells in phase l1.",
+        "ABNT Appendix 9 describes this object as: Duration of voltage swells in phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-37-0-255-DURATION-OF-VOLTAGE-SWELLS-IN-PHASE-L2",
@@ -29715,13 +29743,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of voltage swells in phase L2` with OBIS pattern `1-0:52.37.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.37.0.255`. Duration of voltage swells in phase L2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:52.37.0.255",
@@ -29729,35 +29761,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "37",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "37 duration (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000138-R000010, TBL-000138"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of voltage swells in phase L2 at 1-0:52.37.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000138-R000010",
-        "source_refs": [
-          "BLK-000888",
-          "TBL-000138-R000010",
-          "TBL-000138"
-        ],
-        "source_table_ids": [
-          "TBL-000138"
-        ]
-      }
+        "Use this row when matching requirements about duration of voltage swells in phase l2.",
+        "ABNT Appendix 9 describes this object as: Duration of voltage swells in phase L2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-37-0-255-DURATION-OF-VOLTAGE-SWELLS-IN-PHASE-L3",
@@ -29775,13 +29804,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of voltage swells in phase L3` with OBIS pattern `1-0:72.37.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.37.0.255`. Duration of voltage swells in phase L3.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:72.37.0.255",
@@ -29789,35 +29822,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "37",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "37 duration (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000139-R000009, TBL-000139"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of voltage swells in phase L3 at 1-0:72.37.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000139-R000009",
-        "source_refs": [
-          "BLK-000890",
-          "TBL-000139-R000009",
-          "TBL-000139"
-        ],
-        "source_table_ids": [
-          "TBL-000139"
-        ]
-      }
+        "Use this row when matching requirements about duration of voltage swells in phase l3.",
+        "ABNT Appendix 9 describes this object as: Duration of voltage swells in phase L3."
+      ]
     },
     {
       "id": "KB-OBIS-7-0-13-7-0-255-GAS-CONVERSION-FACTOR",
@@ -35993,13 +36023,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Maximum voltage PHASE R - period 1` with OBIS pattern `1-0:32.53.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.53.0.255`. Maximum voltage PHASE R - period 1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:32.53.0.255",
@@ -36007,35 +36041,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "53",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "53 maximum - period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000157-R000002, TBL-000157"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Maximum voltage PHASE R - period 1 at 1-0:32.53.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000157-R000002",
-        "source_refs": [
-          "BLK-000934",
-          "TBL-000157-R000002",
-          "TBL-000157"
-        ],
-        "source_table_ids": [
-          "TBL-000157"
-        ]
-      }
+        "Use this row when matching requirements about maximum voltage phase r - period 1.",
+        "ABNT Appendix 9 describes this object as: Maximum voltage PHASE R - period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-32-54-0-255-MAXIMUM-VOLTAGE-PHASE-R-PERIOD-2",
@@ -36053,13 +36084,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Maximum voltage PHASE R - period 2` with OBIS pattern `1-0:32.54.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.54.0.255`. Maximum voltage PHASE R - period 2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:32.54.0.255",
@@ -36067,35 +36102,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "54",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "54 maximum - period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000157-R000006, TBL-000157"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Maximum voltage PHASE R - period 2 at 1-0:32.54.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000157-R000006",
-        "source_refs": [
-          "BLK-000934",
-          "TBL-000157-R000006",
-          "TBL-000157"
-        ],
-        "source_table_ids": [
-          "TBL-000157"
-        ]
-      }
+        "Use this row when matching requirements about maximum voltage phase r - period 2.",
+        "ABNT Appendix 9 describes this object as: Maximum voltage PHASE R - period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-53-0-255-MAXIMUM-VOLTAGE-PHASE-S-PERIOD-1",
@@ -36113,13 +36145,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Maximum voltage PHASE S - period 1` with OBIS pattern `1-0:52.53.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.53.0.255`. Maximum voltage PHASE S - period 1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:52.53.0.255",
@@ -36127,35 +36163,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "53",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "53 maximum - period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000158-R000002, TBL-000158"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Maximum voltage PHASE S - period 1 at 1-0:52.53.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000158-R000002",
-        "source_refs": [
-          "BLK-000936",
-          "TBL-000158-R000002",
-          "TBL-000158"
-        ],
-        "source_table_ids": [
-          "TBL-000158"
-        ]
-      }
+        "Use this row when matching requirements about maximum voltage phase s - period 1.",
+        "ABNT Appendix 9 describes this object as: Maximum voltage PHASE S - period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-54-0-255-MAXIMUM-VOLTAGE-PHASE-S-PERIOD-2",
@@ -36173,13 +36206,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Maximum voltage PHASE S - period 2` with OBIS pattern `1-0:52.54.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.54.0.255`. Maximum voltage PHASE S - period 2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:52.54.0.255",
@@ -36187,35 +36224,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "54",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "54 maximum - period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000158-R000006, TBL-000158"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Maximum voltage PHASE S - period 2 at 1-0:52.54.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000158-R000006",
-        "source_refs": [
-          "BLK-000936",
-          "TBL-000158-R000006",
-          "TBL-000158"
-        ],
-        "source_table_ids": [
-          "TBL-000158"
-        ]
-      }
+        "Use this row when matching requirements about maximum voltage phase s - period 2.",
+        "ABNT Appendix 9 describes this object as: Maximum voltage PHASE S - period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-53-0-255-MAXIMUM-VOLTAGE-PHASE-T-PERIOD-1",
@@ -36233,13 +36267,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Maximum voltage PHASE T - period 1` with OBIS pattern `1-0:72.53.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.53.0.255`. Maximum voltage PHASE T - period 1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:72.53.0.255",
@@ -36247,35 +36285,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "53",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "53 maximum - period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000159-R000002, TBL-000159"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Maximum voltage PHASE T - period 1 at 1-0:72.53.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000159-R000002",
-        "source_refs": [
-          "BLK-000938",
-          "TBL-000159-R000002",
-          "TBL-000159"
-        ],
-        "source_table_ids": [
-          "TBL-000159"
-        ]
-      }
+        "Use this row when matching requirements about maximum voltage phase t - period 1.",
+        "ABNT Appendix 9 describes this object as: Maximum voltage PHASE T - period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-54-0-255-MAXIMUM-VOLTAGE-PHASE-T-PERIOD-2",
@@ -36293,13 +36328,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Maximum voltage PHASE T - period 2` with OBIS pattern `1-0:72.54.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.54.0.255`. Maximum voltage PHASE T - period 2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:72.54.0.255",
@@ -36307,35 +36346,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "54",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "54 maximum - period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000159-R000006, TBL-000159"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Maximum voltage PHASE T - period 2 at 1-0:72.54.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000159-R000006",
-        "source_refs": [
-          "BLK-000938",
-          "TBL-000159-R000006",
-          "TBL-000159"
-        ],
-        "source_table_ids": [
-          "TBL-000159"
-        ]
-      }
+        "Use this row when matching requirements about maximum voltage phase t - period 2.",
+        "ABNT Appendix 9 describes this object as: Maximum voltage PHASE T - period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-31-51-0-255-MINIMUM-CURRENT-PHASE-R-PERIOD-1",
@@ -36713,13 +36749,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Minimum voltage PHASE R - period 1` with OBIS pattern `1-0:32.51.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.51.0.255`. Minimum voltage PHASE R - period 1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:32.51.0.255",
@@ -36727,35 +36767,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "51",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "51 minimum - period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000162-R000002, TBL-000162"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Minimum voltage PHASE R - period 1 at 1-0:32.51.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000162-R000002",
-        "source_refs": [
-          "BLK-000948",
-          "TBL-000162-R000002",
-          "TBL-000162"
-        ],
-        "source_table_ids": [
-          "TBL-000162"
-        ]
-      }
+        "Use this row when matching requirements about minimum voltage phase r - period 1.",
+        "ABNT Appendix 9 describes this object as: Minimum voltage PHASE R - period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-32-52-0-255-MINIMUM-VOLTAGE-PHASE-R-PERIOD-2",
@@ -36773,13 +36810,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Minimum voltage PHASE R - period 2` with OBIS pattern `1-0:32.52.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:32.52.0.255`. Minimum voltage PHASE R - period 2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:32.52.0.255",
@@ -36787,35 +36828,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "32",
-        "D": "52",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "32 voltage phase L1",
+        "D": "52 minimum - period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000162-R000006, TBL-000162"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Minimum voltage PHASE R - period 2 at 1-0:32.52.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000162-R000006",
-        "source_refs": [
-          "BLK-000948",
-          "TBL-000162-R000006",
-          "TBL-000162"
-        ],
-        "source_table_ids": [
-          "TBL-000162"
-        ]
-      }
+        "Use this row when matching requirements about minimum voltage phase r - period 2.",
+        "ABNT Appendix 9 describes this object as: Minimum voltage PHASE R - period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-51-0-255-MINIMUM-VOLTAGE-PHASE-S-PERIOD-1",
@@ -36833,13 +36871,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Minimum voltage PHASE S - period 1` with OBIS pattern `1-0:52.51.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.51.0.255`. Minimum voltage PHASE S - period 1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:52.51.0.255",
@@ -36847,35 +36889,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "51",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "51 minimum - period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000163-R000002, TBL-000163"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Minimum voltage PHASE S - period 1 at 1-0:52.51.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000163-R000002",
-        "source_refs": [
-          "BLK-000950",
-          "TBL-000163-R000002",
-          "TBL-000163"
-        ],
-        "source_table_ids": [
-          "TBL-000163"
-        ]
-      }
+        "Use this row when matching requirements about minimum voltage phase s - period 1.",
+        "ABNT Appendix 9 describes this object as: Minimum voltage PHASE S - period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-52-52-0-255-MINIMUM-VOLTAGE-PHASE-S-PERIOD-2",
@@ -36893,13 +36932,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Minimum voltage PHASE S - period 2` with OBIS pattern `1-0:52.52.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:52.52.0.255`. Minimum voltage PHASE S - period 2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:52.52.0.255",
@@ -36907,35 +36950,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "52",
-        "D": "52",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L2",
+        "D": "52 minimum - period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000163-R000006, TBL-000163"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Minimum voltage PHASE S - period 2 at 1-0:52.52.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000163-R000006",
-        "source_refs": [
-          "BLK-000950",
-          "TBL-000163-R000006",
-          "TBL-000163"
-        ],
-        "source_table_ids": [
-          "TBL-000163"
-        ]
-      }
+        "Use this row when matching requirements about minimum voltage phase s - period 2.",
+        "ABNT Appendix 9 describes this object as: Minimum voltage PHASE S - period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-51-0-255-MINIMUM-VOLTAGE-PHASE-T-PERIOD-1",
@@ -36953,13 +36993,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Minimum voltage PHASE T - period 1` with OBIS pattern `1-0:72.51.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.51.0.255`. Minimum voltage PHASE T - period 1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:72.51.0.255",
@@ -36967,35 +37011,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "51",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "51 minimum - period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000164-R000002, TBL-000164"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Minimum voltage PHASE T - period 1 at 1-0:72.51.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000164-R000002",
-        "source_refs": [
-          "BLK-000952",
-          "TBL-000164-R000002",
-          "TBL-000164"
-        ],
-        "source_table_ids": [
-          "TBL-000164"
-        ]
-      }
+        "Use this row when matching requirements about minimum voltage phase t - period 1.",
+        "ABNT Appendix 9 describes this object as: Minimum voltage PHASE T - period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-72-52-0-255-MINIMUM-VOLTAGE-PHASE-T-PERIOD-2",
@@ -37013,13 +37054,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Minimum voltage PHASE T - period 2` with OBIS pattern `1-0:72.52.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:72.52.0.255`. Minimum voltage PHASE T - period 2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:72.52.0.255",
@@ -37027,35 +37072,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "72",
-        "D": "52",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "52 voltage phase L3",
+        "D": "52 minimum - period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000164-R000006, TBL-000164"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Minimum voltage PHASE T - period 2 at 1-0:72.52.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000164-R000006",
-        "source_refs": [
-          "BLK-000952",
-          "TBL-000164-R000006",
-          "TBL-000164"
-        ],
-        "source_table_ids": [
-          "TBL-000164"
-        ]
-      }
+        "Use this row when matching requirements about minimum voltage phase t - period 2.",
+        "ABNT Appendix 9 describes this object as: Minimum voltage PHASE T - period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-94-55-X-255-MONTHLY-DRC",
@@ -37972,13 +38014,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Phase Angle U1- U3` with OBIS pattern `1-0:81.7.2.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:81.7.2.255`. Phase Angle U1- U3.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
         }
       ],
       "obis_pattern": "1-0:81.7.2.255",
@@ -37986,35 +38032,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "81",
-        "D": "7",
-        "E": "2",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "81 phase angle",
+        "D": "7 instantaneous value",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000128-R000008, TBL-000128"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 Value group E codes - AC electricity - Extended phase angle measurement"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Phase Angle U1- U3 at 1-0:81.7.2.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000128-R000008",
-        "source_refs": [
-          "BLK-000864",
-          "TBL-000128-R000008",
-          "TBL-000128"
-        ],
-        "source_table_ids": [
-          "TBL-000128"
-        ]
-      }
+        "Use this row when matching requirements about phase angle u1- u3.",
+        "ABNT Appendix 9 describes this object as: Phase Angle U1- U3."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-81-7-4-255-PHASE-ANGLE-U1-I1",
@@ -38032,13 +38075,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Phase Angle U1-I1` with OBIS pattern `1-0:81.7.4.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:81.7.4.255`. Phase Angle U1-I1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
         }
       ],
       "obis_pattern": "1-0:81.7.4.255",
@@ -38046,35 +38093,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "81",
-        "D": "7",
-        "E": "4",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "81 phase angle",
+        "D": "7 instantaneous value",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000128-R000012, TBL-000128"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 Value group E codes - AC electricity - Extended phase angle measurement"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Phase Angle U1-I1 at 1-0:81.7.4.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000128-R000012",
-        "source_refs": [
-          "BLK-000864",
-          "TBL-000128-R000012",
-          "TBL-000128"
-        ],
-        "source_table_ids": [
-          "TBL-000128"
-        ]
-      }
+        "Use this row when matching requirements about phase angle u1-i1.",
+        "ABNT Appendix 9 describes this object as: Phase Angle U1-I1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-81-7-5-255-PHASE-ANGLE-U1-I2",
@@ -38092,13 +38136,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Phase Angle U1-I2` with OBIS pattern `1-0:81.7.5.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:81.7.5.255`. Phase Angle U1-I2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
         }
       ],
       "obis_pattern": "1-0:81.7.5.255",
@@ -38106,35 +38154,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "81",
-        "D": "7",
-        "E": "5",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "81 phase angle",
+        "D": "7 instantaneous value",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000128-R000016, TBL-000128"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 Value group E codes - AC electricity - Extended phase angle measurement"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Phase Angle U1-I2 at 1-0:81.7.5.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000128-R000016",
-        "source_refs": [
-          "BLK-000864",
-          "TBL-000128-R000016",
-          "TBL-000128"
-        ],
-        "source_table_ids": [
-          "TBL-000128"
-        ]
-      }
+        "Use this row when matching requirements about phase angle u1-i2.",
+        "ABNT Appendix 9 describes this object as: Phase Angle U1-I2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-81-7-6-255-PHASE-ANGLE-U1-I3",
@@ -38152,13 +38197,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Phase Angle U1-I3` with OBIS pattern `1-0:81.7.6.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:81.7.6.255`. Phase Angle U1-I3.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
         }
       ],
       "obis_pattern": "1-0:81.7.6.255",
@@ -38166,35 +38215,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "81",
-        "D": "7",
-        "E": "6",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "81 phase angle",
+        "D": "7 instantaneous value",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000129-R000004, TBL-000129"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 Value group E codes - AC electricity - Extended phase angle measurement"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Phase Angle U1-I3 at 1-0:81.7.6.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000129-R000004",
-        "source_refs": [
-          "BLK-000866",
-          "TBL-000129-R000004",
-          "TBL-000129"
-        ],
-        "source_table_ids": [
-          "TBL-000129"
-        ]
-      }
+        "Use this row when matching requirements about phase angle u1-i3.",
+        "ABNT Appendix 9 describes this object as: Phase Angle U1-I3."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-81-7-0-255-PHASE-ANGLE-U1-U1",
@@ -38212,13 +38258,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Phase Angle U1-U1` with OBIS pattern `1-0:81.7.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:81.7.0.255`. Phase Angle U1-U1.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
         }
       ],
       "obis_pattern": "1-0:81.7.0.255",
@@ -38226,35 +38276,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "81",
-        "D": "7",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "81 phase angle",
+        "D": "7 instantaneous value",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000127-R000014, TBL-000127"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 Value group E codes - AC electricity - Extended phase angle measurement"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Phase Angle U1-U1 at 1-0:81.7.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000127-R000014",
-        "source_refs": [
-          "BLK-000862",
-          "TBL-000127-R000014",
-          "TBL-000127"
-        ],
-        "source_table_ids": [
-          "TBL-000127"
-        ]
-      }
+        "Use this row when matching requirements about phase angle u1-u1.",
+        "ABNT Appendix 9 describes this object as: Phase Angle U1-U1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-81-7-1-255-PHASE-ANGLE-U1-U2",
@@ -38272,13 +38319,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Phase Angle U1-U2` with OBIS pattern `1-0:81.7.1.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:81.7.1.255`. Phase Angle U1-U2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
         }
       ],
       "obis_pattern": "1-0:81.7.1.255",
@@ -38286,35 +38337,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "81",
-        "D": "7",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "81 phase angle",
+        "D": "7 instantaneous value",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000128-R000004, TBL-000128"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 Value group E codes - AC electricity - Extended phase angle measurement"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Phase Angle U1-U2 at 1-0:81.7.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000128-R000004",
-        "source_refs": [
-          "BLK-000864",
-          "TBL-000128-R000004",
-          "TBL-000128"
-        ],
-        "source_table_ids": [
-          "TBL-000128"
-        ]
-      }
+        "Use this row when matching requirements about phase angle u1-u2.",
+        "ABNT Appendix 9 describes this object as: Phase Angle U1-U2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-81-7-15-255-PHASE-ANGLE-U2-I2",
@@ -38332,13 +38380,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Phase Angle U2-I2` with OBIS pattern `1-0:81.7.15.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:81.7.15.255`. Phase Angle U2-I2.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
         }
       ],
       "obis_pattern": "1-0:81.7.15.255",
@@ -38346,35 +38398,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "81",
-        "D": "7",
-        "E": "15",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "81 phase angle",
+        "D": "7 instantaneous value",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000129-R000008, TBL-000129"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 Value group E codes - AC electricity - Extended phase angle measurement"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Phase Angle U2-I2 at 1-0:81.7.15.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000129-R000008",
-        "source_refs": [
-          "BLK-000866",
-          "TBL-000129-R000008",
-          "TBL-000129"
-        ],
-        "source_table_ids": [
-          "TBL-000129"
-        ]
-      }
+        "Use this row when matching requirements about phase angle u2-i2.",
+        "ABNT Appendix 9 describes this object as: Phase Angle U2-I2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-81-7-26-255-PHASE-ANGLE-U3-I3",
@@ -38392,13 +38441,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Phase Angle U3-I3` with OBIS pattern `1-0:81.7.26.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:81.7.26.255`. Phase Angle U3-I3.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-17"
         }
       ],
       "obis_pattern": "1-0:81.7.26.255",
@@ -38406,35 +38459,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "81",
-        "D": "7",
-        "E": "26",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "81 phase angle",
+        "D": "7 instantaneous value",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 17,
+        "title": "Value group E codes - AC electricity - Extended phase angle measurement"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000129-R000012, TBL-000129"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 17 Value group E codes - AC electricity - Extended phase angle measurement"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Phase Angle U3-I3 at 1-0:81.7.26.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000129-R000012",
-        "source_refs": [
-          "BLK-000866",
-          "TBL-000129-R000012",
-          "TBL-000129"
-        ],
-        "source_table_ids": [
-          "TBL-000129"
-        ]
-      }
+        "Use this row when matching requirements about phase angle u3-i3.",
+        "ABNT Appendix 9 describes this object as: Phase Angle U3-I3."
+      ]
     },
     {
       "id": "KB-OBIS-1-0-13-7-0-255-POWER-FACTOR-INSTANTANEOUS",
@@ -41183,13 +41233,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Threshold for voltage sag` with OBIS pattern `1-0:12.31.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:12.31.0.255`. Threshold for voltage sag.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.31.0.255",
@@ -41197,35 +41251,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "31",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "31 threshold",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000131-R000014, TBL-000131"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Threshold for voltage sag at 1-0:12.31.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000131-R000014",
-        "source_refs": [
-          "BLK-000874",
-          "TBL-000131-R000014",
-          "TBL-000131"
-        ],
-        "source_table_ids": [
-          "TBL-000131"
-        ]
-      }
+        "Use this row when matching requirements about threshold for voltage sag.",
+        "ABNT Appendix 9 describes this object as: Threshold for voltage sag."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-12-35-0-255-THRESHOLD-FOR-VOLTAGE-SWELL",
@@ -41243,13 +41294,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Threshold for voltage swell` with OBIS pattern `1-0:12.35.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:12.35.0.255`. Threshold for voltage swell.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.35.0.255",
@@ -41257,35 +41312,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "35",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "35 threshold (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000136-R000006, TBL-000136"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Threshold for voltage swell at 1-0:12.35.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000136-R000006",
-        "source_refs": [
-          "BLK-000884",
-          "TBL-000136-R000006",
-          "TBL-000136"
-        ],
-        "source_table_ids": [
-          "TBL-000136"
-        ]
-      }
+        "Use this row when matching requirements about threshold for voltage swell.",
+        "ABNT Appendix 9 describes this object as: Threshold for voltage swell."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-7-20-255-TIME-THRESHOLD-FOR-LONG-POWER-FAILURE",
@@ -41424,13 +41476,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Time Threshold for voltage sag` with OBIS pattern `1-0:12.43.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:12.43.0.255`. Time Threshold for voltage sag.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.43.0.255",
@@ -41438,35 +41494,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "43",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "43 time threshold",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000131-R000010, TBL-000131"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Time Threshold for voltage sag at 1-0:12.43.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000131-R000010",
-        "source_refs": [
-          "BLK-000874",
-          "TBL-000131-R000010",
-          "TBL-000131"
-        ],
-        "source_table_ids": [
-          "TBL-000131"
-        ]
-      }
+        "Use this row when matching requirements about time threshold for voltage sag.",
+        "ABNT Appendix 9 describes this object as: Time Threshold for voltage sag."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-12-44-0-255-TIME-THRESHOLD-FOR-VOLTAGE-SWELL",
@@ -41484,13 +41537,17 @@
       "domain_tags": [
         "cosem_object",
         "ac_electricity",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Time Threshold for voltage swell` with OBIS pattern `1-0:12.44.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:12.44.0.255`. Time Threshold for voltage swell.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-19"
         }
       ],
       "obis_pattern": "1-0:12.44.0.255",
@@ -41498,35 +41555,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "12",
-        "D": "44",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "12 voltage sag/swell (any phase)",
+        "D": "44 time threshold (swell)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 19,
+        "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000136-R000002, TBL-000136"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Time Threshold for voltage swell at 1-0:12.44.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000136-R000002",
-        "source_refs": [
-          "BLK-000884",
-          "TBL-000136-R000002",
-          "TBL-000136"
-        ],
-        "source_table_ids": [
-          "TBL-000136"
-        ]
-      }
+        "Use this row when matching requirements about time threshold for voltage swell.",
+        "ABNT Appendix 9 describes this object as: Time Threshold for voltage swell."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-91-44-1-255-TIME-THRESHOLD-NEUTRAL-CURRENT-DIFF-ABSOLUTE",

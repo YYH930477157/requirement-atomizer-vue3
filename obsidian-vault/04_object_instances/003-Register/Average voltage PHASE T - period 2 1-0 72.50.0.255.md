@@ -13,17 +13,34 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
+- power_quality
 relations:
 - relation: instance_of
   target: KB-L3-IC-3-REGISTER
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-14
 ---
 
 # Average voltage PHASE T - period 2
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Average voltage PHASE T - period 2` with OBIS pattern `1-0:72.50.0.255` and interface class 3 (Register).
+Row-level Register object at logical name `1-0:72.50.0.255`. Average voltage PHASE T - period 2.
+
+## Aliases
+
+- OBIS 1-0:72.50.0.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+- `power_quality`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-3-REGISTER`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-14`
 
 ## Structured Data
 
@@ -34,35 +51,32 @@ ABNT Appendix 9 row-level COSEM object `Average voltage PHASE T - period 2` with
   "likely_interface_class_name": "Register",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "72",
-    "D": "50",
-    "E": "0",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "52 voltage phase L3",
+    "D": "50 average - period 2",
+    "E": "0 no tariff/total value",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 14,
+    "title": "Value group D codes - AC electricity"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000150-R000006, TBL-000150"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 14 Value group D codes - AC electricity"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Average voltage PHASE T - period 2 at 1-0:72.50.0.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000150-R000006",
-    "source_refs": [
-      "BLK-000916",
-      "TBL-000150-R000006",
-      "TBL-000150"
-    ],
-    "source_table_ids": [
-      "TBL-000150"
-    ]
-  }
+    "Use this row when matching requirements about average voltage phase t - period 2.",
+    "ABNT Appendix 9 describes this object as: Average voltage PHASE T - period 2."
+  ]
 }
 ```
 

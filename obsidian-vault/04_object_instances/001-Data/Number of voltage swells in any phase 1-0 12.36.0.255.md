@@ -13,17 +13,34 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
+- power_quality
 relations:
 - relation: instance_of
   target: KB-L3-IC-1-DATA
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-19
 ---
 
 # Number of voltage swells in any phase
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Number of voltage swells in any phase` with OBIS pattern `1-0:12.36.0.255` and interface class 1 (Data).
+Row-level Data object at logical name `1-0:12.36.0.255`. Number of voltage swells in any phase.
+
+## Aliases
+
+- OBIS 1-0:12.36.0.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+- `power_quality`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-1-DATA`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-19`
 
 ## Structured Data
 
@@ -34,35 +51,32 @@ ABNT Appendix 9 row-level COSEM object `Number of voltage swells in any phase` w
   "likely_interface_class_name": "Data",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "12",
-    "D": "36",
-    "E": "0",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "12 voltage sag/swell (any phase)",
+    "D": "36 number/count (swell)",
+    "E": "0 no tariff/total value",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 19,
+    "title": "Value group E codes - AC electricity - UNIPEDE voltage dips"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000136-R000010, TBL-000136"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 19 Value group E codes - AC electricity - UNIPEDE voltage dips"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Number of voltage swells in any phase at 1-0:12.36.0.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000136-R000010",
-    "source_refs": [
-      "BLK-000884",
-      "TBL-000136-R000010",
-      "TBL-000136"
-    ],
-    "source_table_ids": [
-      "TBL-000136"
-    ]
-  }
+    "Use this row when matching requirements about number of voltage swells in any phase.",
+    "ABNT Appendix 9 describes this object as: Number of voltage swells in any phase."
+  ]
 }
 ```
 
