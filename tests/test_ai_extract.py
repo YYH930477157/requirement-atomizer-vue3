@@ -183,6 +183,21 @@ class EnsureDomainLabelsTests(unittest.TestCase):
         self.assertEqual(reqs[0]["labels"], ["计量", "AFD"])
 
 
+class MergeRequirementsTests(unittest.TestCase):
+    def test_keeps_structural_drops_template_adds_ai(self) -> None:
+        det = [
+            {"title": "对象X", "threshold_table": {"description": "属性访问表", "columns": ["#"], "rows": [["1"]]}},
+            {"title": "确定性模板行为", "threshold_table": None},  # 纯散文模板 → 丢
+        ]
+        ai = [{"title": "AI行为需求", "threshold_table": None, "extracted_by": "ai_extract"}]
+        merged = ai_extract.merge_requirements(det, ai)
+        titles = [r["title"] for r in merged]
+        self.assertIn("对象X", titles)        # 确定性结构（OBIS 权威）保留
+        self.assertIn("AI行为需求", titles)    # AI 行为加入
+        self.assertNotIn("确定性模板行为", titles)  # 确定性散文模板丢弃（AI 替代）
+        self.assertEqual(merged[0]["extracted_by"], "deterministic")
+
+
 class BuildSkillDocTests(unittest.TestCase):
     def test_builds_skill_format_doc(self) -> None:
         reqs = [

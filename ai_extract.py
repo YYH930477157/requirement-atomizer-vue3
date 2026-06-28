@@ -320,6 +320,44 @@ def build_skill_doc(requirements: list[dict[str, Any]], *, source: str, extracte
     return rs.make_doc(requirements, source=source, extracted_at=extracted_at, meter_type=meter_type)
 
 
+# --- 双引擎合并 -----------------------------------------------------------
+
+def merge_requirements(deterministic: list[dict[str, Any]],
+                       ai_requirements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """双引擎合并：确定性的**结构**需求（有属性/访问表，OBIS 权威）+ AI 的**行为**需求。
+
+    丢掉确定性里纯散文模板需求（无 threshold_table）——这部分由 AI 行为需求替代，避免模板与
+    AI 叙述重复。确定性结构需求逐字保留（OBIS/数字一位不动）。
+    """
+    structural: list[dict[str, Any]] = []
+    for req in deterministic:
+        tt = req.get("threshold_table")
+        if isinstance(tt, dict) and tt.get("rows"):
+            req.setdefault("extracted_by", "deterministic")
+            structural.append(req)
+    return structural + list(ai_requirements)
+
+
+def load_or_build_deterministic(out_dir: Path, *, source: str, extracted_at: str) -> list[dict[str, Any]]:
+    """取确定性装配需求：优先读已有 dlms_cosem_spec_requirements.json，否则现装配。"""
+    doc_path = out_dir / "dlms_cosem_spec_requirements.json"
+    if doc_path.exists():
+        return json.loads(doc_path.read_text(encoding="utf-8")).get("requirements", [])
+    from assemble_spec import assemble
+    reviews = out_dir / "llm_review_results.jsonl"
+    doc, _ = assemble(out_dir, reviews if reviews.exists() else None,
+                      source=source, extracted_at=extracted_at)
+    return doc.get("requirements", [])
+
+
+def build_merged_doc(out_dir: Path, ai_requirements: list[dict[str, Any]],
+                     *, source: str, extracted_at: str) -> dict[str, Any]:
+    """合并 AI 行为需求 + 确定性结构需求 → skill 格式 doc。"""
+    deterministic = load_or_build_deterministic(out_dir, source=source, extracted_at=extracted_at)
+    merged = merge_requirements(deterministic, ai_requirements)
+    return build_skill_doc(merged, source=source, extracted_at=extracted_at)
+
+
 # --- 主入口 ---------------------------------------------------------------
 
 def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_PATH) -> LLMClientConfig | None:
@@ -331,8 +369,9 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
 
 
 def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAULT_MERGE_CHARS,
-                   write_doc: bool = False, pipeline_path: Path = DEFAULT_PIPELINE_PATH) -> dict[str, Any]:
-    """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel）。"""
+                   write_doc: bool = False, merge_deterministic: bool = False,
+                   pipeline_path: Path = DEFAULT_PIPELINE_PATH) -> dict[str, Any]:
+    """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel + 双引擎合并）。"""
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
     sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars)
@@ -377,6 +416,23 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
             LOGGER.warning("AI 需求 Excel 生成失败：%s", exc)
         result["analysis"] = doc.get("analysis", {}).get("by_priority", {})
 
+    if merge_deterministic:
+        merged = build_merged_doc(out_dir, requirements, source=out_dir.name,
+                                  extracted_at=datetime.datetime.now().isoformat(timespec="seconds"))
+        merged_json = out_dir / "merged_spec_requirements.json"
+        merged_json.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+        written.append(merged_json.name)
+        try:
+            from spec_excel import write_xlsx
+            merged_xlsx = out_dir / "merged_spec.xlsx"
+            write_xlsx(merged, merged_xlsx)
+            written.append(merged_xlsx.name)
+        except Exception as exc:
+            LOGGER.warning("合并 Excel 生成失败：%s", exc)
+        result["merged"] = {"total": merged["analysis"]["total_count"],
+                            "ai_behavioral": len(requirements),
+                            "deterministic_structural": merged["analysis"]["total_count"] - len(requirements)}
+
     return result
 
 
@@ -385,13 +441,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", type=Path, required=True, help="Atomizer output directory (含 blocks.jsonl)")
     parser.add_argument("--route", default=None, help="stub | openai_compatible")
     parser.add_argument("--merge-chars", type=int, default=DEFAULT_MERGE_CHARS, help="章节合并目标字数")
-    parser.add_argument("--doc", action="store_true", help="同时产 skill 格式 doc + Excel")
+    parser.add_argument("--doc", action="store_true", help="同时产 skill 格式 doc + Excel（仅 AI 需求）")
+    parser.add_argument("--merge", action="store_true", help="双引擎合并：AI 行为 + 确定性结构 → merged_spec")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    result = run_ai_extract(args.out, route=args.route, merge_chars=args.merge_chars, write_doc=args.doc)
+    result = run_ai_extract(args.out, route=args.route, merge_chars=args.merge_chars,
+                            write_doc=args.doc, merge_deterministic=args.merge)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
