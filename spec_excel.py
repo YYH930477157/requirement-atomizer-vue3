@@ -126,7 +126,7 @@ def _style_priority_cell(cell: Any, priority: str) -> None:
     cell.border = THIN_BORDER
 
 
-def _write_summary_sheet(wb: Workbook, meta: dict, analysis: dict, domain_groups: dict) -> None:
+def _write_summary_sheet(wb: Workbook, meta: dict, analysis: dict, domain_groups: dict, *, object_count: int = 0) -> None:
     ws = wb.active
     ws.title = "总览"
     ws.sheet_properties.tabColor = "2C3E50"
@@ -173,7 +173,10 @@ def _write_summary_sheet(wb: Workbook, meta: dict, analysis: dict, domain_groups
 
     row = 6
     ws.merge_cells(f"A{row}:H{row}")
-    ws.cell(row=row, column=1).value = "领域分布"
+    domain_title = "领域分布（行为/功能需求）"
+    if object_count:
+        domain_title += f"；另有 {object_count} 个 COSEM 对象定义见「COSEM Object Model」sheet（不在此重复计入）"
+    ws.cell(row=row, column=1).value = domain_title
     ws.cell(row=row, column=1).font = Font(name="Microsoft YaHei", size=12, bold=True, color="2C3E50")
     ws.row_dimensions[row].height = 28
 
@@ -426,12 +429,17 @@ def write_xlsx(doc: dict[str, Any], output_path: Path) -> Path:
     analysis = doc.get("analysis", {})
 
     domain_set = set(METERING_DOMAINS)
+    # 对象定义型需求集中在 COSEM Object Model sheet（含属性数据类型 + RC/PC/SC/LC 访问表 + 默认值），
+    # 不在领域 sheet 重复出现——领域 sheet 只放行为/功能型需求，避免同一对象显示两遍。
+    object_reqs = [req for req in requirements if _is_object_model_requirement(req)]
     domain_groups: dict[str, list[dict]] = {}
     for req in requirements:
+        if _is_object_model_requirement(req):
+            continue
         domain_groups.setdefault(_domain(req, domain_set), []).append(req)
 
     wb = Workbook()
-    _write_summary_sheet(wb, meta, analysis, domain_groups)
+    _write_summary_sheet(wb, meta, analysis, domain_groups, object_count=len(object_reqs))
     _write_object_model_sheet(wb, requirements)
     for domain in METERING_DOMAINS:
         if domain in domain_groups:
