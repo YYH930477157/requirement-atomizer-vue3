@@ -25,7 +25,16 @@ DEFAULT_KB_FILES = [
 
 def package_root() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        # 与 resources.package_root() 保持一致：Electron 布局下后端 exe 在 resources/backend/，
+        # 而捆绑数据（knowledge_bases / llm_agents / …）在上一级 resources/；PyInstaller onefile
+        # 则把 --add-data 解压到 _MEIPASS。只取 sys.executable 父目录会两者都找不到（旧 bug）。
+        executable_dir = Path(sys.executable).resolve().parent
+        if executable_dir.name == "backend" and (executable_dir.parent / "llm_agents").exists():
+            return executable_dir.parent
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            return Path(meipass).resolve()
+        return executable_dir
     return Path(__file__).resolve().parents[1]
 
 

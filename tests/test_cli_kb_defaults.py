@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from requirement_kb.cli import package_root
 
 
 class CliKnowledgeBaseDefaultTests(unittest.TestCase):
@@ -67,6 +70,53 @@ class CliKnowledgeBaseDefaultTests(unittest.TestCase):
 
         default_kb_paths.assert_not_called()
         self.assertEqual(atomize.call_args.kwargs["kb_paths"], [explicit])
+
+
+class RequirementKbPackageRootTests(unittest.TestCase):
+    """锁定 requirement_kb.cli.package_root 的 frozen 解析，防再次与 resources.py 分叉。
+
+    历史 bug：旧版只取 sys.executable 父目录，在 Electron 打包（exe 在 resources/backend/，
+    数据在上一级 resources/）下找不到 knowledge_bases/，导致 'No such file: …/backend/
+    knowledge_bases/energy_metering.json'。
+    """
+
+    def test_not_frozen_returns_repo_root(self) -> None:
+        with patch.object(sys, "frozen", False, create=True):
+            self.assertEqual(package_root(), Path(__file__).resolve().parents[1])
+
+    def test_electron_backend_layout_returns_resources_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            resources = Path(tmp) / "resources"
+            (resources / "backend").mkdir(parents=True)
+            (resources / "llm_agents").mkdir()
+            exe = resources / "backend" / "ratomizer-desktop.exe"
+            exe.write_text("")
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "executable", str(exe)),
+            ):
+                self.assertEqual(package_root(), resources.resolve())
+
+    def test_onefile_uses_meipass_when_set(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            meipass = Path(tmp) / "_MEI012345"
+            meipass.mkdir()
+            exe = Path("D:/onefile/ratomizer-desktop.exe")
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "executable", str(exe)),
+                patch.object(sys, "_MEIPASS", str(meipass), create=True),
+            ):
+                self.assertEqual(package_root(), meipass.resolve())
+
+    def test_frozen_falls_back_to_executable_dir(self) -> None:
+        exe = Path("D:/dist/RequirementAtomizer/ratomizer.exe")
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "executable", str(exe)),
+            patch.object(sys, "_MEIPASS", "", create=True),
+        ):
+            self.assertEqual(package_root(), exe.parent)
 
 
 if __name__ == "__main__":
