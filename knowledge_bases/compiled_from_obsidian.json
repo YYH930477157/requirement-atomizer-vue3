@@ -41826,52 +41826,65 @@
       ]
     },
     {
-      "id": "KB-ABNT-OBIS-1-0-132-8-X-255-1-0-94-55-X-255-UFER",
+      "id": "KB-OBIS-1-0-132-8-X-255-UFER",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
       "name": "UFER",
       "aliases": [
-        "OBIS 1-0:132.8.x.255 1-0:94.55.x.255",
+        "OBIS 1-0:132.8.x.255",
         "Value absolute"
       ],
       "keywords": [
-        "1-0:132.8.x.255 1-0:94.55.x.255",
+        "1-0:132.8.x.255",
         "UFER",
-        "Value absolute",
+        "value absolute",
         "TBL-000085"
       ],
       "domain_tags": [
         "cosem_object",
         "ac_electricity"
       ],
-      "definition": "Row-level Register object. ABNT Appendix 9 (NBR 16968:2022) Brazil-specific object `UFER` (Value absolute). The stored OBIS pattern merges two OBIS codes (`1-0:132.8.x.255` and `1-0:94.55.x.255`) into one entry — this is an extraction artifact that needs source re-check before the canonical single OBIS can be confirmed.",
+      "definition": "Row-level Register object holding the Brazil ABNT `UFER` (Value absolute) value per tariff, at logical name `1-0:132.8.x.255`. ABNT Appendix 9 (NBR 16968:2022) registers this object under two equivalent codes: the main code `1-0:132.8.x.255` (this entry) and the country-specific code `1-0:94.55.x.255` (separate entry).",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
-      "obis_pattern": "1-0:132.8.x.255 1-0:94.55.x.255",
+      "obis_pattern": "1-0:132.8.x.255",
       "likely_interface_class_id": 3,
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
         "A": "1 electricity",
         "B": "0 no channel",
-        "C": "132 (first of two merged OBIS) / 94 country-specific",
-        "D": "8 billing / 55 country-specific",
+        "C": "132 Brazil-specific measurement object",
+        "D": "8 billing/total",
         "E": "x tariff/rate index (templated)",
         "F": "255 current value"
       },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
       "source_refs": [
         {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
           "source": "ABNT Appendix 9 extracted table",
-          "section": "UFER at 1-0:132.8.x.255 1-0:94.55.x.255 (TBL-000085)"
+          "section": "UFER at 1-0:132.8.x.255 (TBL-000085-R000008); country-specific equivalent 1-0:94.55.x.255"
         }
       ],
       "applicable_notes": [
-        "Extraction artifact: two OBIS patterns (1-0:132.8.x.255 and 1-0:94.55.x.255) are merged into this single entry. Needs source re-check against ABNT Appendix 9 to determine the canonical single OBIS before this row can be fully curated with a Blue Book table reference.",
-        "ABNT Appendix 9 describes this object as UFER (Value absolute), a Brazil-specific demand/corrected-factor object."
+        "Use this row when matching requirements about the per-tariff UFER (Value absolute) Brazil-specific demand measurement.",
+        "ABNT Appendix 9 (NBR 16968:2022) describes this object as UFER (Value absolute). The Blue Book covers only the value-group structure (D code 8 billing); it does not name this Brazil-specific object."
       ]
     },
     {
@@ -42614,52 +42627,65 @@
       ]
     },
     {
-      "id": "KB-ABNT-OBIS-1-0-128-2-X-255-1-0-94-55-X-255-CUMULATIVE-DMCR-REGISTER-IMPORT",
+      "id": "KB-OBIS-1-0-128-2-X-255-CUMULATIVE-DMCR-REGISTER-IMPORT",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
       "name": "Cumulative DMCR+ - Register import",
       "aliases": [
-        "OBIS 1-0:128.2.x.255 1-0:94.55.x.255",
+        "OBIS 1-0:128.2.x.255",
         "Cumulative registered maximum corrected demand"
       ],
       "keywords": [
-        "1-0:128.2.x.255 1-0:94.55.x.255",
+        "1-0:128.2.x.255",
         "Cumulative DMCR+ - Register import",
-        "Cumulative registered maximum corrected demand",
+        "cumulative registered maximum corrected demand",
         "TBL-000101"
       ],
       "domain_tags": [
         "cosem_object",
         "ac_electricity"
       ],
-      "definition": "Row-level Extended Register object. ABNT Appendix 9 (NBR 16968:2022) Brazil-specific object `Cumulative DMCR+ - Register import` (cumulative registered maximum corrected demand). The stored OBIS pattern merges two OBIS codes (`1-0:128.2.x.255` and `1-0:94.55.x.255`) into one entry — this is an extraction artifact that needs source re-check before the canonical single OBIS can be confirmed.",
+      "definition": "Row-level Extended Register object holding the Brazil ABNT `Cumulative DMCR+` (Cumulative registered maximum corrected demand) per tariff, at logical name `1-0:128.2.x.255`. ABNT Appendix 9 (NBR 16968:2022) registers this object under two equivalent codes: the main code `1-0:128.2.x.255` (this entry) and the country-specific code `1-0:94.55.x.255` (separate entry).",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-4-EXTENDED-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
-      "obis_pattern": "1-0:128.2.x.255 1-0:94.55.x.255",
+      "obis_pattern": "1-0:128.2.x.255",
       "likely_interface_class_id": 4,
       "likely_interface_class_name": "Extended Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
         "A": "1 electricity",
         "B": "0 no channel",
-        "C": "128 (first of two merged OBIS) / 94 country-specific",
-        "D": "2 rate / 55 country-specific",
+        "C": "128 Brazil-specific measurement object",
+        "D": "2 rate",
         "E": "x tariff/rate index (templated)",
         "F": "255 current value"
       },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
       "source_refs": [
         {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
           "source": "ABNT Appendix 9 extracted table",
-          "section": "Cumulative DMCR+ - Register import at 1-0:128.2.x.255 1-0:94.55.x.255 (TBL-000101)"
+          "section": "Cumulative DMCR+ - Register import at 1-0:128.2.x.255 (TBL-000101-R000006); country-specific equivalent 1-0:94.55.x.255"
         }
       ],
       "applicable_notes": [
-        "Extraction artifact: two OBIS patterns (1-0:128.2.x.255 and 1-0:94.55.x.255) are merged into this single entry. Needs source re-check against ABNT Appendix 9 to determine the canonical single OBIS before this row can be fully curated with a Blue Book table reference.",
-        "ABNT Appendix 9 describes this object as the cumulative registered maximum corrected demand (Cumulative DMCR+), a Brazil-specific demand object."
+        "Use this row when matching requirements about the per-tariff Cumulative DMCR+ (cumulative registered maximum corrected demand) Brazil-specific demand measurement.",
+        "ABNT Appendix 9 (NBR 16968:2022) describes this object as Cumulative DMCR+ (Cumulative registered maximum corrected demand). The Blue Book covers only the value-group structure (D code 2 rate); it does not name this Brazil-specific object."
       ]
     },
     {
@@ -43115,52 +43141,65 @@
       ]
     },
     {
-      "id": "KB-ABNT-OBIS-1-0-128-6-X-255-1-0-94-55-X-255-DMCR-REGISTER-IMPORT",
+      "id": "KB-OBIS-1-0-128-6-X-255-DMCR-REGISTER-IMPORT",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
       "name": "DMCR - Register import",
       "aliases": [
-        "OBIS 1-0:128.6.x.255 1-0:94.55.x.255",
+        "OBIS 1-0:128.6.x.255",
         "Recorded corrected maximum demand"
       ],
       "keywords": [
-        "1-0:128.6.x.255 1-0:94.55.x.255",
+        "1-0:128.6.x.255",
         "DMCR - Register import",
-        "Recorded corrected maximum demand",
+        "recorded corrected maximum demand",
         "TBL-000100"
       ],
       "domain_tags": [
         "cosem_object",
         "ac_electricity"
       ],
-      "definition": "Row-level Extended Register object. ABNT Appendix 9 (NBR 16968:2022) Brazil-specific object `DMCR - Register import` (recorded corrected maximum demand). The stored OBIS pattern merges two OBIS codes (`1-0:128.6.x.255` and `1-0:94.55.x.255`) into one entry — this is an extraction artifact that needs source re-check before the canonical single OBIS can be confirmed.",
+      "definition": "Row-level Extended Register object holding the Brazil ABNT `DMCR` (Recorded corrected maximum demand) per tariff, at logical name `1-0:128.6.x.255`. ABNT Appendix 9 (NBR 16968:2022) registers this object under two equivalent codes: the main code `1-0:128.6.x.255` (this entry) and the country-specific code `1-0:94.55.x.255` (separate entry).",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-4-EXTENDED-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
-      "obis_pattern": "1-0:128.6.x.255 1-0:94.55.x.255",
+      "obis_pattern": "1-0:128.6.x.255",
       "likely_interface_class_id": 4,
       "likely_interface_class_name": "Extended Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
         "A": "1 electricity",
         "B": "0 no channel",
-        "C": "128 (first of two merged OBIS) / 94 country-specific",
-        "D": "6 maximum demand / 55 country-specific",
+        "C": "128 Brazil-specific measurement object",
+        "D": "6 maximum demand",
         "E": "x tariff/rate index (templated)",
         "F": "255 current value"
       },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
+      },
       "source_refs": [
         {
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
           "source": "ABNT Appendix 9 extracted table",
-          "section": "DMCR - Register import at 1-0:128.6.x.255 1-0:94.55.x.255 (TBL-000100)"
+          "section": "DMCR - Register import at 1-0:128.6.x.255 (TBL-000100-R000002); country-specific equivalent 1-0:94.55.x.255"
         }
       ],
       "applicable_notes": [
-        "Extraction artifact: two OBIS patterns (1-0:128.6.x.255 and 1-0:94.55.x.255) are merged into this single entry. Needs source re-check against ABNT Appendix 9 to determine the canonical single OBIS before this row can be fully curated with a Blue Book table reference.",
-        "ABNT Appendix 9 describes this object as the recorded corrected maximum demand (DMCR), a Brazil-specific demand object."
+        "Use this row when matching requirements about the per-tariff DMCR (recorded corrected maximum demand) Brazil-specific demand measurement.",
+        "ABNT Appendix 9 (NBR 16968:2022) describes this object as DMCR (Recorded corrected maximum demand). The Blue Book covers only the value-group structure (D code 6 maximum demand); it does not name this Brazil-specific object."
       ]
     },
     {
