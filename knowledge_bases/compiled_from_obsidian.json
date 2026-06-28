@@ -17916,14 +17916,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Active DLMS Firmware identifier` with OBIS pattern `1-0:0.2.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:0.2.0.255`. Active DLMS firmware identifier",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.2.0.255",
@@ -17931,35 +17934,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "2",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "2 rate",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000172-R000011, TBL-000172"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Active DLMS Firmware identifier at 1-0:0.2.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000172-R000011",
-        "source_refs": [
-          "BLK-000977",
-          "TBL-000172-R000011",
-          "TBL-000172"
-        ],
-        "source_table_ids": [
-          "TBL-000172"
-        ]
-      }
+        "Use this row when matching requirements about active dlms firmware identifier.",
+        "ABNT Appendix 9 describes this object as: active DLMS firmware identifier."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-1-94-55-100-255-ACTIVE-QUADRANT",
@@ -18388,7 +18388,7 @@
       "id": "KB-ABNT-OBIS-1-0-0-1-0-255-BILLING-PERIOD-COUNTER-1",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Billing period counter (1)",
+      "name": "Billing period counter",
       "aliases": [
         "OBIS 1-0:0.1.0.255"
       ],
@@ -18399,14 +18399,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Billing period counter (1)` with OBIS pattern `1-0:0.1.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:0.1.0.255`. Billing period counter",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.1.0.255",
@@ -18414,35 +18417,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "1",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "1 billing period/identifier",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000103-R000005, TBL-000103"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Billing period counter at 1-0:0.1.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000103-R000005",
-        "source_refs": [
-          "BLK-000806",
-          "TBL-000103-R000005",
-          "TBL-000103"
-        ],
-        "source_table_ids": [
-          "TBL-000103"
-        ]
-      }
+        "Use this row when matching requirements about billing period counter.",
+        "ABNT Appendix 9 describes this object as: billing period counter."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-94-55-111-255-BILLING-TRIGGER",
@@ -20561,7 +20561,7 @@
       "id": "KB-ABNT-OBIS-1-0-0-1-1-255-NUMBER-OF-AVAILABLE-BILLING-PERIODS-1",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Number of available billing periods (1)",
+      "name": "Number of available billing periods",
       "aliases": [
         "OBIS 1-0:0.1.1.255"
       ],
@@ -20572,14 +20572,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of available billing periods (1)` with OBIS pattern `1-0:0.1.1.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:0.1.1.255`. Number of available billing periods",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.1.1.255",
@@ -20587,35 +20590,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "1",
-        "E": "1",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "1 billing period/identifier",
+        "E": "1 tariff/rate 1",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000103-R000008, TBL-000103"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of available billing periods at 1-0:0.1.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000103-R000008",
-        "source_refs": [
-          "BLK-000806",
-          "TBL-000103-R000008",
-          "TBL-000103"
-        ],
-        "source_table_ids": [
-          "TBL-000103"
-        ]
-      }
+        "Use this row when matching requirements about number of available billing periods.",
+        "ABNT Appendix 9 describes this object as: number of available billing periods."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-7-5-255-NUMBER-OF-LONG-POWER-FAILURES-IN-ALL-PHASES",
@@ -21982,14 +21982,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Time stamp of billing period 1 last reset` with OBIS pattern `1-0:0.1.2.255` and interface class 1 (Data). Date/time of most recent billing period",
+      "definition": "Row-level Data object at logical name `1-0:0.1.2.255`. Date/time of the most recent billing period reset",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.1.2.255",
@@ -21997,35 +22000,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "1",
-        "E": "2",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "1 billing period/identifier",
+        "E": "2 tariff/rate 2",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000103-R000002, TBL-000103"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Time stamp of billing period 1 last reset at 1-0:0.1.2.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000103-R000002",
-        "source_refs": [
-          "BLK-000806",
-          "TBL-000103-R000002",
-          "TBL-000103"
-        ],
-        "source_table_ids": [
-          "TBL-000103"
-        ]
-      }
+        "Use this row when matching requirements about date/time of the most recent billing period reset.",
+        "ABNT Appendix 9 describes this object as: date/time of the most recent billing period reset."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-94-55-173-255-TIME-TRIGGER-FOR-DRP-DRC-CALCULATION",
@@ -22155,7 +22155,7 @@
       "id": "KB-ABNT-OBIS-1-0-0-4-5-255-TRANSFORMER-RATIO-CURRENT-DENOMINATOR",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Transformer ratio - current (denominator)",
+      "name": "Transformer ratio current denominator",
       "aliases": [
         "OBIS 1-0:0.4.5.255"
       ],
@@ -22166,14 +22166,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Transformer ratio - current (denominator)` with OBIS pattern `1-0:0.4.5.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:0.4.5.255`. Transformer ratio - current (denominator)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.4.5.255",
@@ -22181,41 +22184,38 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "4",
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "4 maximum demand",
         "E": "5",
-        "F": "255"
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000171-R000003, TBL-000171"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Transformer ratio current denominator at 1-0:0.4.5.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000171-R000003",
-        "source_refs": [
-          "BLK-000975",
-          "TBL-000171-R000003",
-          "TBL-000171"
-        ],
-        "source_table_ids": [
-          "TBL-000171"
-        ]
-      }
+        "Use this row when matching requirements about transformer ratio - current (denominator).",
+        "ABNT Appendix 9 describes this object as: transformer ratio - current (denominator)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-0-4-2-255-TRANSFORMER-RATIO-CURRENT-NUMERATOR",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Transformer ratio - current (numerator)",
+      "name": "Transformer ratio current numerator",
       "aliases": [
         "OBIS 1-0:0.4.2.255"
       ],
@@ -22226,14 +22226,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Transformer ratio - current (numerator)` with OBIS pattern `1-0:0.4.2.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:0.4.2.255`. Transformer ratio - current (numerator)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.4.2.255",
@@ -22241,41 +22244,38 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "4",
-        "E": "2",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "4 maximum demand",
+        "E": "2 tariff/rate 2",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000170-R000008, TBL-000170"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Transformer ratio current numerator at 1-0:0.4.2.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000170-R000008",
-        "source_refs": [
-          "BLK-000973",
-          "TBL-000170-R000008",
-          "TBL-000170"
-        ],
-        "source_table_ids": [
-          "TBL-000170"
-        ]
-      }
+        "Use this row when matching requirements about transformer ratio - current (numerator).",
+        "ABNT Appendix 9 describes this object as: transformer ratio - current (numerator)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-0-4-6-255-TRANSFORMER-RATIO-VOLTAGE-DENOMINATOR",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Transformer ratio - voltage (denominator)",
+      "name": "Transformer ratio voltage denominator",
       "aliases": [
         "OBIS 1-0:0.4.6.255"
       ],
@@ -22286,14 +22286,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Transformer ratio - voltage (denominator)` with OBIS pattern `1-0:0.4.6.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:0.4.6.255`. Transformer ratio - voltage (denominator)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.4.6.255",
@@ -22301,41 +22304,38 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "4",
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "4 maximum demand",
         "E": "6",
-        "F": "255"
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000171-R000006, TBL-000171"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Transformer ratio voltage denominator at 1-0:0.4.6.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000171-R000006",
-        "source_refs": [
-          "BLK-000975",
-          "TBL-000171-R000006",
-          "TBL-000171"
-        ],
-        "source_table_ids": [
-          "TBL-000171"
-        ]
-      }
+        "Use this row when matching requirements about transformer ratio - voltage (denominator).",
+        "ABNT Appendix 9 describes this object as: transformer ratio - voltage (denominator)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-0-4-3-255-TRANSFORMER-RATIO-VOLTAGE-NUMERATOR",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Transformer ratio - voltage (numerator)",
+      "name": "Transformer ratio voltage numerator",
       "aliases": [
         "OBIS 1-0:0.4.3.255"
       ],
@@ -22346,14 +22346,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Transformer ratio - voltage (numerator)` with OBIS pattern `1-0:0.4.3.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `1-0:0.4.3.255`. Transformer ratio - voltage (numerator)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.4.3.255",
@@ -22361,35 +22364,32 @@
       "likely_interface_class_name": "Data",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "4",
-        "E": "3",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "4 maximum demand",
+        "E": "3 tariff/rate 3",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000170-R000011, TBL-000170"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Transformer ratio voltage numerator at 1-0:0.4.3.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000170-R000011",
-        "source_refs": [
-          "BLK-000973",
-          "TBL-000170-R000011",
-          "TBL-000170"
-        ],
-        "source_table_ids": [
-          "TBL-000170"
-        ]
-      }
+        "Use this row when matching requirements about transformer ratio - voltage (numerator).",
+        "ABNT Appendix 9 describes this object as: transformer ratio - voltage (numerator)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-94-55-165-255-UFER-AND-DMCR-CONFIGURATION",
@@ -22941,7 +22941,7 @@
       "id": "KB-ABNT-OBIS-1-0-2-29-0-255-ACTIVE-ENERGY-EXPORT-A-INCREMENTAL-PERIOD-1",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Active energy export ( - A) incremental - period 1",
+      "name": "Active energy export incremental period 1",
       "aliases": [
         "OBIS 1-0:2.29.0.255",
         "value for the load profile - period 1"
@@ -22954,14 +22954,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Active energy export ( - A) incremental - period 1` with OBIS pattern `1-0:2.29.0.255` and interface class 3 (Register). value for the load profile - period 1",
+      "definition": "Row-level Register object at logical name `1-0:2.29.0.255`. Active energy export (-A) incremental value for the load profile, period 1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:2.29.0.255",
@@ -22969,41 +22972,38 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "2",
-        "D": "29",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "2 active energy (-A export)",
+        "D": "29 incremental period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000079-R000004, TBL-000079"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Active energy export incremental period 1 at 1-0:2.29.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000079-R000004",
-        "source_refs": [
-          "BLK-000750",
-          "TBL-000079-R000004",
-          "TBL-000079"
-        ],
-        "source_table_ids": [
-          "TBL-000079"
-        ]
-      }
+        "Use this row when matching requirements about active energy export (-a) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: active energy export (-A) incremental value for the load profile, period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-2-30-0-255-ACTIVE-ENERGY-EXPORT-A-INCREMENTAL-PERIOD-2",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Active energy export ( - A) incremental - period 2",
+      "name": "Active energy export incremental period 2",
       "aliases": [
         "OBIS 1-0:2.30.0.255",
         "value for the load profile - period 2"
@@ -23016,14 +23016,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Active energy export ( - A) incremental - period 2` with OBIS pattern `1-0:2.30.0.255` and interface class 3 (Register). value for the load profile - period 2",
+      "definition": "Row-level Register object at logical name `1-0:2.30.0.255`. Active energy export (-A) incremental value for the load profile, period 2",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:2.30.0.255",
@@ -23031,35 +23034,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "2",
-        "D": "30",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "2 active energy (-A export)",
+        "D": "30 incremental period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000079-R000008, TBL-000079"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Active energy export incremental period 2 at 1-0:2.30.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000079-R000008",
-        "source_refs": [
-          "BLK-000750",
-          "TBL-000079-R000008",
-          "TBL-000079"
-        ],
-        "source_table_ids": [
-          "TBL-000079"
-        ]
-      }
+        "Use this row when matching requirements about active energy export (-a) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: active energy export (-A) incremental value for the load profile, period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-2-9-X-255-ACTIVE-ENERGY-EXPORT-A-INCREMENTAL",
@@ -23250,7 +23250,7 @@
       "id": "KB-ABNT-OBIS-1-0-1-29-0-255-ACTIVE-ENERGY-IMPORT-A-INCREMENTAL-PERIOD-1",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Active energy import (+A) incremental - period 1",
+      "name": "Active energy import incremental period 1",
       "aliases": [
         "OBIS 1-0:1.29.0.255",
         "value for the load profile - period 1"
@@ -23263,14 +23263,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Active energy import (+A) incremental - period 1` with OBIS pattern `1-0:1.29.0.255` and interface class 3 (Register). value for the load profile - period 1",
+      "definition": "Row-level Register object at logical name `1-0:1.29.0.255`. Active energy import (+A) incremental value for the load profile, period 1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:1.29.0.255",
@@ -23278,41 +23281,38 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "1",
-        "D": "29",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "1 active energy (+A import)",
+        "D": "29 incremental period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000077-R000010, TBL-000077"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Active energy import incremental period 1 at 1-0:1.29.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000077-R000010",
-        "source_refs": [
-          "BLK-000746",
-          "TBL-000077-R000010",
-          "TBL-000077"
-        ],
-        "source_table_ids": [
-          "TBL-000077"
-        ]
-      }
+        "Use this row when matching requirements about active energy import (+a) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: active energy import (+A) incremental value for the load profile, period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-1-30-0-255-ACTIVE-ENERGY-IMPORT-A-INCREMENTAL-PERIOD-2",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Active energy import (+A) incremental - period 2",
+      "name": "Active energy import incremental period 2",
       "aliases": [
         "OBIS 1-0:1.30.0.255",
         "value for the load profile - period 2"
@@ -23325,14 +23325,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Active energy import (+A) incremental - period 2` with OBIS pattern `1-0:1.30.0.255` and interface class 3 (Register). value for the load profile - period 2",
+      "definition": "Row-level Register object at logical name `1-0:1.30.0.255`. Active energy import (+A) incremental value for the load profile, period 2",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:1.30.0.255",
@@ -23340,35 +23343,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "1",
-        "D": "30",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "1 active energy (+A import)",
+        "D": "30 incremental period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000078-R000004, TBL-000078"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Active energy import incremental period 2 at 1-0:1.30.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000078-R000004",
-        "source_refs": [
-          "BLK-000748",
-          "TBL-000078-R000004",
-          "TBL-000078"
-        ],
-        "source_table_ids": [
-          "TBL-000078"
-        ]
-      }
+        "Use this row when matching requirements about active energy import (+a) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: active energy import (+A) incremental value for the load profile, period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-1-9-X-255-ACTIVE-ENERGY-IMPORT-A-INCREMENTAL",
@@ -26082,14 +26082,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Billing reset lockout time` with OBIS pattern `1-0:0.9.12.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:0.9.12.255`. Period from lock to reset after any reset",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.9.12.255",
@@ -26097,35 +26100,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "9",
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "9 instantaneous/status",
         "E": "12",
-        "F": "255"
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000172-R000004, TBL-000172"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Billing reset lockout time at 1-0:0.9.12.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000172-R000004",
-        "source_refs": [
-          "BLK-000977",
-          "TBL-000172-R000004",
-          "TBL-000172"
-        ],
-        "source_table_ids": [
-          "TBL-000172"
-        ]
-      }
+        "Use this row when matching requirements about period from lock to reset after any reset.",
+        "ABNT Appendix 9 describes this object as: period from lock to reset after any reset."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-94-55-X-255-CKD",
@@ -26204,14 +26204,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Clock Time Shift Event Limit` with OBIS pattern `1-0:0.9.11.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:0.9.11.255`. Clock time-shift event limit",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.9.11.255",
@@ -26219,35 +26222,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "9",
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "9 instantaneous/status",
         "E": "11",
-        "F": "255"
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000171-R000009, TBL-000171"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Clock Time Shift Event Limit at 1-0:0.9.11.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000171-R000009",
-        "source_refs": [
-          "BLK-000975",
-          "TBL-000171-R000009",
-          "TBL-000171"
-        ],
-        "source_table_ids": [
-          "TBL-000171"
-        ]
-      }
+        "Use this row when matching requirements about clock time-shift event limit.",
+        "ABNT Appendix 9 describes this object as: clock time-shift event limit."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-1-94-55-1-255-CLOCK-TIME-SHIFT-INVALID-LIMIT",
@@ -31575,7 +31575,7 @@
       "id": "KB-ABNT-OBIS-1-0-5-7-0-255-INSTANT-REACTIVE-POWER-Q1-SUM-OF-ALL-PHASES",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Instant reactive power (Q1) (Sum of all phases)",
+      "name": "Instantaneous reactive power Q1 phase L1",
       "aliases": [
         "OBIS 1-0:5.7.0.255"
       ],
@@ -31586,14 +31586,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Instant reactive power (Q1) (Sum of all phases)` with OBIS pattern `1-0:5.7.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:5.7.0.255`. Instantaneous reactive power (Q1) on phase L1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-13"
         }
       ],
       "obis_pattern": "1-0:5.7.0.255",
@@ -31601,41 +31604,38 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "5",
-        "D": "7",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "5 reactive energy (Q1/+Ri)",
+        "D": "7 instantaneous",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 13,
+        "title": "Value group C codes - AC Electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000122-R000011, TBL-000122"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 13 Value group C codes - AC Electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Instantaneous reactive power Q1 phase L1 at 1-0:5.7.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000122-R000011",
-        "source_refs": [
-          "BLK-000852",
-          "TBL-000122-R000011",
-          "TBL-000122"
-        ],
-        "source_table_ids": [
-          "TBL-000122"
-        ]
-      }
+        "Use this row when matching requirements about instantaneous reactive power (q1) on phase l1.",
+        "ABNT Appendix 9 describes this object as: instantaneous reactive power (Q1) on phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-6-7-0-255-INSTANT-REACTIVE-POWER-Q2-SUM-OF-ALL-PHASES",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Instant reactive power (Q2) (Sum of all phases)",
+      "name": "Instantaneous reactive power Q2 phase L1",
       "aliases": [
         "OBIS 1-0:6.7.0.255"
       ],
@@ -31646,14 +31646,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Instant reactive power (Q2) (Sum of all phases)` with OBIS pattern `1-0:6.7.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:6.7.0.255`. Instantaneous reactive power (Q2) on phase L1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-13"
         }
       ],
       "obis_pattern": "1-0:6.7.0.255",
@@ -31661,41 +31664,38 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "6",
-        "D": "7",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "6 reactive energy (Q2/+Rc)",
+        "D": "7 instantaneous",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 13,
+        "title": "Value group C codes - AC Electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000123-R000002, TBL-000123"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 13 Value group C codes - AC Electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Instantaneous reactive power Q2 phase L1 at 1-0:6.7.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000123-R000002",
-        "source_refs": [
-          "BLK-000854",
-          "TBL-000123-R000002",
-          "TBL-000123"
-        ],
-        "source_table_ids": [
-          "TBL-000123"
-        ]
-      }
+        "Use this row when matching requirements about instantaneous reactive power (q2) on phase l1.",
+        "ABNT Appendix 9 describes this object as: instantaneous reactive power (Q2) on phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-7-7-0-255-INSTANT-REACTIVE-POWER-Q3-SUM-OF-ALL-PHASES",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Instant reactive power (Q3) (Sum of all phases)",
+      "name": "Instantaneous reactive power Q3 phase L1",
       "aliases": [
         "OBIS 1-0:7.7.0.255"
       ],
@@ -31706,14 +31706,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Instant reactive power (Q3) (Sum of all phases)` with OBIS pattern `1-0:7.7.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:7.7.0.255`. Instantaneous reactive power (Q3) on phase L1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-13"
         }
       ],
       "obis_pattern": "1-0:7.7.0.255",
@@ -31721,41 +31724,38 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "7",
-        "D": "7",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "7 reactive energy (Q3/-Ri)",
+        "D": "7 instantaneous",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 13,
+        "title": "Value group C codes - AC Electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000123-R000006, TBL-000123"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 13 Value group C codes - AC Electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Instantaneous reactive power Q3 phase L1 at 1-0:7.7.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000123-R000006",
-        "source_refs": [
-          "BLK-000854",
-          "TBL-000123-R000006",
-          "TBL-000123"
-        ],
-        "source_table_ids": [
-          "TBL-000123"
-        ]
-      }
+        "Use this row when matching requirements about instantaneous reactive power (q3) on phase l1.",
+        "ABNT Appendix 9 describes this object as: instantaneous reactive power (Q3) on phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-8-7-0-255-INSTANT-REACTIVE-POWER-Q4-SUM-OF-ALL-PHASES",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Instant reactive power (Q4) (Sum of all phases)",
+      "name": "Instantaneous reactive power Q4 phase L1",
       "aliases": [
         "OBIS 1-0:8.7.0.255"
       ],
@@ -31766,14 +31766,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Instant reactive power (Q4) (Sum of all phases)` with OBIS pattern `1-0:8.7.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:8.7.0.255`. Instantaneous reactive power (Q4) on phase L1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-13"
         }
       ],
       "obis_pattern": "1-0:8.7.0.255",
@@ -31781,35 +31784,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "8",
-        "D": "7",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "8 reactive energy (Q4/-Rc)",
+        "D": "7 instantaneous",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 13,
+        "title": "Value group C codes - AC Electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000123-R000010, TBL-000123"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 13 Value group C codes - AC Electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Instantaneous reactive power Q4 phase L1 at 1-0:8.7.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000123-R000010",
-        "source_refs": [
-          "BLK-000854",
-          "TBL-000123-R000010",
-          "TBL-000123"
-        ],
-        "source_table_ids": [
-          "TBL-000123"
-        ]
-      }
+        "Use this row when matching requirements about instantaneous reactive power (q4) on phase l1.",
+        "ABNT Appendix 9 describes this object as: instantaneous reactive power (Q4) on phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-23-7-0-255-INSTANT-REACTIVE-POWER-Q-L1-PHASE",
@@ -37556,14 +37556,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Nominal voltage` with OBIS pattern `1-0:0.6.0.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:0.6.0.255`. Nominal voltage",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.6.0.255",
@@ -37571,35 +37574,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "6",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "6 maximum demand (current)",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000131-R000002, TBL-000131"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Nominal voltage at 1-0:0.6.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000131-R000002",
-        "source_refs": [
-          "BLK-000874",
-          "TBL-000131-R000002",
-          "TBL-000131"
-        ],
-        "source_table_ids": [
-          "TBL-000131"
-        ]
-      }
+        "Use this row when matching requirements about nominal voltage.",
+        "ABNT Appendix 9 describes this object as: nominal voltage."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-92-35-0-255-OVER-LIMIT-THRESHOLD-FOR-NEUTRAL",
@@ -38682,7 +38682,7 @@
       "id": "KB-ABNT-OBIS-1-0-5-29-0-255-REACTIVE-ENERGY-IQ-RI-INCREMENTAL-PERIOD-1",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Reactive energy IQ (+Ri) incremental - period 1",
+      "name": "Reactive energy IQ incremental period 1",
       "aliases": [
         "OBIS 1-0:5.29.0.255",
         "value for the load profile - period 1"
@@ -38695,14 +38695,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Reactive energy IQ (+Ri) incremental - period 1` with OBIS pattern `1-0:5.29.0.255` and interface class 3 (Register). value for the load profile - period 1",
+      "definition": "Row-level Register object at logical name `1-0:5.29.0.255`. Reactive energy IQ (+Ri) incremental value for the load profile, period 1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:5.29.0.255",
@@ -38710,41 +38713,38 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "5",
-        "D": "29",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "5 reactive energy (Q1/+Ri)",
+        "D": "29 incremental period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000080-R000008, TBL-000080"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Reactive energy IQ incremental period 1 at 1-0:5.29.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000080-R000008",
-        "source_refs": [
-          "BLK-000752",
-          "TBL-000080-R000008",
-          "TBL-000080"
-        ],
-        "source_table_ids": [
-          "TBL-000080"
-        ]
-      }
+        "Use this row when matching requirements about reactive energy iq (+ri) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: reactive energy IQ (+Ri) incremental value for the load profile, period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-5-30-0-255-REACTIVE-ENERGY-IQ-RI-INCREMENTAL-PERIOD-2",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Reactive energy IQ (+Ri) incremental - period 2",
+      "name": "Reactive energy IQ incremental period 2",
       "aliases": [
         "OBIS 1-0:5.30.0.255",
         "value for the load profile - period 2"
@@ -38757,14 +38757,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Reactive energy IQ (+Ri) incremental - period 2` with OBIS pattern `1-0:5.30.0.255` and interface class 3 (Register). value for the load profile - period 2",
+      "definition": "Row-level Register object at logical name `1-0:5.30.0.255`. Reactive energy IQ (+Ri) incremental value for the load profile, period 2",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:5.30.0.255",
@@ -38772,35 +38775,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "5",
-        "D": "30",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "5 reactive energy (Q1/+Ri)",
+        "D": "30 incremental period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000080-R000012, TBL-000080"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Reactive energy IQ incremental period 2 at 1-0:5.30.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000080-R000012",
-        "source_refs": [
-          "BLK-000752",
-          "TBL-000080-R000012",
-          "TBL-000080"
-        ],
-        "source_table_ids": [
-          "TBL-000080"
-        ]
-      }
+        "Use this row when matching requirements about reactive energy iq (+ri) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: reactive energy IQ (+Ri) incremental value for the load profile, period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-5-9-X-255-REACTIVE-ENERGY-IQ-RI-INCREMENTAL",
@@ -38930,7 +38930,7 @@
       "id": "KB-ABNT-OBIS-1-0-6-29-0-255-REACTIVE-ENERGY-QII-RC-INCREMENTAL-PERIOD-1",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Reactive energy QII (+Rc) incremental - period 1",
+      "name": "Reactive energy QII incremental period 1",
       "aliases": [
         "OBIS 1-0:6.29.0.255",
         "value for the load profile - period 1"
@@ -38943,14 +38943,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Reactive energy QII (+Rc) incremental - period 1` with OBIS pattern `1-0:6.29.0.255` and interface class 3 (Register). value for the load profile - period 1",
+      "definition": "Row-level Register object at logical name `1-0:6.29.0.255`. Reactive energy QII (+Rc) incremental value for the load profile, period 1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:6.29.0.255",
@@ -38958,41 +38961,38 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "6",
-        "D": "29",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "6 reactive energy (Q2/+Rc)",
+        "D": "29 incremental period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000082-R000002, TBL-000082"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Reactive energy QII incremental period 1 at 1-0:6.29.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000082-R000002",
-        "source_refs": [
-          "BLK-000756",
-          "TBL-000082-R000002",
-          "TBL-000082"
-        ],
-        "source_table_ids": [
-          "TBL-000082"
-        ]
-      }
+        "Use this row when matching requirements about reactive energy qii (+rc) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: reactive energy QII (+Rc) incremental value for the load profile, period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-6-30-0-255-REACTIVE-ENERGY-QII-RC-INCREMENTAL-PERIOD-2",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Reactive energy QII (+Rc) incremental - period 2",
+      "name": "Reactive energy QII incremental period 2",
       "aliases": [
         "OBIS 1-0:6.30.0.255",
         "value for the load profile - period 2"
@@ -39005,14 +39005,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Reactive energy QII (+Rc) incremental - period 2` with OBIS pattern `1-0:6.30.0.255` and interface class 3 (Register). value for the load profile - period 2",
+      "definition": "Row-level Register object at logical name `1-0:6.30.0.255`. Reactive energy QII (+Rc) incremental value for the load profile, period 2",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:6.30.0.255",
@@ -39020,35 +39023,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "6",
-        "D": "30",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "6 reactive energy (Q2/+Rc)",
+        "D": "30 incremental period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000082-R000006, TBL-000082"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Reactive energy QII incremental period 2 at 1-0:6.30.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000082-R000006",
-        "source_refs": [
-          "BLK-000756",
-          "TBL-000082-R000006",
-          "TBL-000082"
-        ],
-        "source_table_ids": [
-          "TBL-000082"
-        ]
-      }
+        "Use this row when matching requirements about reactive energy qii (+rc) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: reactive energy QII (+Rc) incremental value for the load profile, period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-6-9-X-255-REACTIVE-ENERGY-QII-RC-INCREMENTAL",
@@ -39178,7 +39178,7 @@
       "id": "KB-ABNT-OBIS-1-0-7-29-0-255-REACTIVE-ENERGY-QIII-RI-INCREMENTAL-PERIOD-1",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Reactive energy QIII (-Ri) incremental - period 1",
+      "name": "Reactive energy QIII incremental period 1",
       "aliases": [
         "OBIS 1-0:7.29.0.255",
         "value for the load profile - period 1"
@@ -39191,14 +39191,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Reactive energy QIII (-Ri) incremental - period 1` with OBIS pattern `1-0:7.29.0.255` and interface class 3 (Register). value for the load profile - period 1",
+      "definition": "Row-level Register object at logical name `1-0:7.29.0.255`. Reactive energy QIII (-Ri) incremental value for the load profile, period 1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:7.29.0.255",
@@ -39206,41 +39209,38 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "7",
-        "D": "29",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "7 reactive energy (Q3/-Ri)",
+        "D": "29 incremental period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000083-R000006, TBL-000083"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Reactive energy QIII incremental period 1 at 1-0:7.29.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000083-R000006",
-        "source_refs": [
-          "BLK-000758",
-          "TBL-000083-R000006",
-          "TBL-000083"
-        ],
-        "source_table_ids": [
-          "TBL-000083"
-        ]
-      }
+        "Use this row when matching requirements about reactive energy qiii (-ri) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: reactive energy QIII (-Ri) incremental value for the load profile, period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-7-30-0-255-REACTIVE-ENERGY-QIII-RI-INCREMENTAL-PERIOD-2",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Reactive energy QIII (-Ri) incremental - period 2",
+      "name": "Reactive energy QIII incremental period 2",
       "aliases": [
         "OBIS 1-0:7.30.0.255",
         "value for the load profile - period 2"
@@ -39253,14 +39253,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Reactive energy QIII (-Ri) incremental - period 2` with OBIS pattern `1-0:7.30.0.255` and interface class 3 (Register). value for the load profile - period 2",
+      "definition": "Row-level Register object at logical name `1-0:7.30.0.255`. Reactive energy QIII (-Ri) incremental value for the load profile, period 2",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:7.30.0.255",
@@ -39268,35 +39271,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "7",
-        "D": "30",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "7 reactive energy (Q3/-Ri)",
+        "D": "30 incremental period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000083-R000010, TBL-000083"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Reactive energy QIII incremental period 2 at 1-0:7.30.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000083-R000010",
-        "source_refs": [
-          "BLK-000758",
-          "TBL-000083-R000010",
-          "TBL-000083"
-        ],
-        "source_table_ids": [
-          "TBL-000083"
-        ]
-      }
+        "Use this row when matching requirements about reactive energy qiii (-ri) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: reactive energy QIII (-Ri) incremental value for the load profile, period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-7-9-X-255-REACTIVE-ENERGY-QIII-RI-INCREMENTAL",
@@ -39426,7 +39426,7 @@
       "id": "KB-ABNT-OBIS-1-0-8-29-0-255-REACTIVE-ENERGY-QIV-RC-INCREMENTAL-PERIOD-1",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Reactive energy QIV (-Rc) incremental - period 1",
+      "name": "Reactive energy QIV incremental period 1",
       "aliases": [
         "OBIS 1-0:8.29.0.255",
         "value for the load profile - period 1"
@@ -39439,14 +39439,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Reactive energy QIV (-Rc) incremental - period 1` with OBIS pattern `1-0:8.29.0.255` and interface class 3 (Register). value for the load profile - period 1",
+      "definition": "Row-level Register object at logical name `1-0:8.29.0.255`. Reactive energy QIV (-Rc) incremental value for the load profile, period 1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:8.29.0.255",
@@ -39454,41 +39457,38 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "8",
-        "D": "29",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "8 reactive energy (Q4/-Rc)",
+        "D": "29 incremental period 1",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000084-R000010, TBL-000084"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Reactive energy QIV incremental period 1 at 1-0:8.29.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000084-R000010",
-        "source_refs": [
-          "BLK-000760",
-          "TBL-000084-R000010",
-          "TBL-000084"
-        ],
-        "source_table_ids": [
-          "TBL-000084"
-        ]
-      }
+        "Use this row when matching requirements about reactive energy qiv (-rc) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: reactive energy QIV (-Rc) incremental value for the load profile, period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-8-30-0-255-REACTIVE-ENERGY-QIV-RC-INCREMENTAL-PERIOD-2",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Reactive energy QIV (-Rc) incremental - period 2",
+      "name": "Reactive energy QIV incremental period 2",
       "aliases": [
         "OBIS 1-0:8.30.0.255",
         "value for the load profile - period 2"
@@ -39501,14 +39501,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Reactive energy QIV (-Rc) incremental - period 2` with OBIS pattern `1-0:8.30.0.255` and interface class 3 (Register). value for the load profile - period 2",
+      "definition": "Row-level Register object at logical name `1-0:8.30.0.255`. Reactive energy QIV (-Rc) incremental value for the load profile, period 2",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-14"
         }
       ],
       "obis_pattern": "1-0:8.30.0.255",
@@ -39516,35 +39519,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "8",
-        "D": "30",
-        "E": "0",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "8 reactive energy (Q4/-Rc)",
+        "D": "30 incremental period 2",
+        "E": "0 no tariff/total value",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 14,
+        "title": "Value group D codes - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000085-R000004, TBL-000085"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 14 Value group D codes - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Reactive energy QIV incremental period 2 at 1-0:8.30.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000085-R000004",
-        "source_refs": [
-          "BLK-000762",
-          "TBL-000085-R000004",
-          "TBL-000085"
-        ],
-        "source_table_ids": [
-          "TBL-000085"
-        ]
-      }
+        "Use this row when matching requirements about reactive energy qiv (-rc) incremental value for the load profile.",
+        "ABNT Appendix 9 describes this object as: reactive energy QIV (-Rc) incremental value for the load profile, period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-8-9-X-255-REACTIVE-ENERGY-QIV-RC-INCREMENTAL",
@@ -39623,14 +39623,17 @@
       ],
       "domain_tags": [
         "cosem_object",
-        "ac_electricity",
-        "abnt_bulk_import"
+        "ac_electricity"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Reference Voltage for power quality measurement` with OBIS pattern `1-0:0.6.4.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `1-0:0.6.4.255`. Reference voltage for power-quality measurement",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-21"
         }
       ],
       "obis_pattern": "1-0:0.6.4.255",
@@ -39638,35 +39641,32 @@
       "likely_interface_class_name": "Register",
       "medium": "ac_electricity",
       "value_group_mapping": {
-        "A": "1",
-        "B": "0",
-        "C": "0",
-        "D": "6",
-        "E": "4",
-        "F": "255"
+        "A": "1 electricity",
+        "B": "0 no channel",
+        "C": "0 general and service-entry object",
+        "D": "6 maximum demand (current)",
+        "E": "4 tariff/rate 4",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 21,
+        "title": "OBIS codes for general and service entry objects - AC electricity"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000131-R000006, TBL-000131"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 21 OBIS codes for general and service entry objects - AC electricity"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Reference Voltage for power quality measurement at 1-0:0.6.4.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000131-R000006",
-        "source_refs": [
-          "BLK-000874",
-          "TBL-000131-R000006",
-          "TBL-000131"
-        ],
-        "source_table_ids": [
-          "TBL-000131"
-        ]
-      }
+        "Use this row when matching requirements about reference voltage for power-quality measurement.",
+        "ABNT Appendix 9 describes this object as: reference voltage for power-quality measurement."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-9-49-0-255-S-AVERAGE-IMPORT-APPARENT-POWER-PERIOD-1",
