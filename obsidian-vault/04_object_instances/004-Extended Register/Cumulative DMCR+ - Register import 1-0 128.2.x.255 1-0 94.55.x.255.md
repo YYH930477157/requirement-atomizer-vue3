@@ -15,7 +15,6 @@ keywords:
 domain_tags:
 - cosem_object
 - ac_electricity
-- abnt_bulk_import
 relations:
 - relation: instance_of
   target: KB-L3-IC-4-EXTENDED-REGISTER
@@ -25,7 +24,20 @@ relations:
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Cumulative DMCR+ - Register import` with OBIS pattern `1-0:128.2.x.255 1-0:94.55.x.255` and interface class 4 (Extended Register). Cumulative registered maximum corrected demand
+Row-level Extended Register object. ABNT Appendix 9 (NBR 16968:2022) Brazil-specific object `Cumulative DMCR+ - Register import` (cumulative registered maximum corrected demand). The stored OBIS pattern merges two OBIS codes (`1-0:128.2.x.255` and `1-0:94.55.x.255`) into one entry — this is an extraction artifact that needs source re-check before the canonical single OBIS can be confirmed.
+
+## Aliases
+
+- OBIS 1-0:128.2.x.255 1-0:94.55.x.255
+
+## Domain Tags
+
+- `cosem_object`
+- `ac_electricity`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-4-EXTENDED-REGISTER`
 
 ## Structured Data
 
@@ -36,36 +48,26 @@ ABNT Appendix 9 row-level COSEM object `Cumulative DMCR+ - Register import` with
   "likely_interface_class_name": "Extended Register",
   "medium": "ac_electricity",
   "value_group_mapping": {
-    "A": "1",
-    "B": "0",
-    "C": "128",
-    "D": "2",
-    "E": "x",
-    "F": "255"
+    "A": "1 electricity",
+    "B": "0 no channel",
+    "C": "128 (first of two merged OBIS) / 94 country-specific",
+    "D": "2 rate / 55 country-specific",
+    "E": "x tariff/rate index (templated)",
+    "F": "255 current value"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000101-R000006, TBL-000101"
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Cumulative DMCR+ - Register import at 1-0:128.2.x.255 1-0:94.55.x.255 (TBL-000101)"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000101-R000006",
-    "source_refs": [
-      "BLK-000798",
-      "TBL-000101-R000006",
-      "TBL-000101"
-    ],
-    "source_table_ids": [
-      "TBL-000101"
-    ]
-  }
+    "Extraction artifact: two OBIS patterns (1-0:128.2.x.255 and 1-0:94.55.x.255) are merged into this single entry. Needs source re-check against ABNT Appendix 9 to determine the canonical single OBIS before this row can be fully curated with a Blue Book table reference.",
+    "ABNT Appendix 9 describes this object as the cumulative registered maximum corrected demand (Cumulative DMCR+), a Brazil-specific demand object."
+  ]
 }
 ```
 
 ## Notes
+
+- FLAGGED: merged two-OBIS extraction artifact; blue_book_table_ref intentionally left unset pending source re-check (per §5.6). obis_pattern is frozen as-is because the exact-OBIS gate depends on it.
