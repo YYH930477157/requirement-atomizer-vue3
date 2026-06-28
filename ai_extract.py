@@ -1,34 +1,35 @@
-"""AI 主导需求抽取（杠杆②，Phase 1 骨架）。
+"""AI 主导需求抽取（杠杆②）。
 
 LLM 逐章节读已解析文本 → 直接产出功能级结构化需求（标题/自包含描述/类型/优先级/标签/
 原文引用/验收）。面向"通用文档解读"：DLMS 结构化与通用标准文档统一一套流程。
 
-防幻觉（数字双引擎）：LLM 只负责"读懂与叙述"。它输出里出现的 OBIS 码 / 数字 / 十六进制 /
-事件号，必须能在所在**章节原文**里找到——找不到即判定编造（漂移），该条降级为 draft 并记
-note，不当作已确认。结构字段最终仍以确定性抽取为准（Phase 2 合并）。
+防幻觉（数字双引擎，分严/松级）：
+- 受保护编码（OBIS / 事件号 / 十六进制，extract_codes）只能来自源文/确定性层。LLM 输出里
+  冒出原文没有的这类编码 → **严格拦**：该条降级 draft + 记 note，不当已确认。
+- 普通整数（extract_ints）漂移 → **软标**：可能是 LLM 合理展开（如"RS-485"），记 note 待核，保留。
 
-可复现（稳定）：温度 0 + **章节内容指纹缓存**（同章节文本 + 同模型 → 同结果，重跑零花费）。
+可复现（稳定）：温度 0 + 章节内容指纹缓存（同文本 + 同模型 → 命中、零再调，重跑逐字一致）。
+成本：相邻小章节合并到目标字数再调（少调用）+ 并发；失败按章节降级、不崩。
 
-route 体系（复用 review_pipeline.yaml）：默认 **stub**（零 LLM，不产 AI 需求）；
-仅 route=openai_compatible 才真调（本地 Ollama / deepseek-v4-flash 等）。
+route（复用 review_pipeline.yaml）：默认 stub（零 LLM）；openai_compatible 才真调
+（DeepSeek / Ollama 等，OpenAI 兼容）。
 
-用法：python -m ai_extract --out <atomizer 输出目录> [--route openai_compatible]
-
-Phase 1 = 章节聚合 + 抽取/归一 + 漂移护栏 + 指纹缓存 + stub + CLI + 单测（不依赖 endpoint）。
-Phase 2 = prompt 调优 + 与确定性结构字段双引擎合并 + 在真实文档上跑通（需 Ollama）。
+用法：python -m ai_extract --out <atomizer 输出目录> [--route openai_compatible] [--doc]
 """
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
 from cosem_behavior_spec import extract_codes, extract_ints
-from llm_client import LLMClientConfig, chat_json
+from llm_client import LLMClientConfig, LLMError, chat_json
 from llm_pipeline import (
     DEFAULT_PIPELINE_PATH,
     llm_config_from_route,
@@ -42,28 +43,30 @@ LOGGER = logging.getLogger("requirement_atomizer")
 AI_EXTRACT_PROMPT_VERSION = "ai-extract-v1"
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
+DEFAULT_MERGE_CHARS = 2800
 
-# chat 抽象：输入 (system_prompt, user_prompt)，输出已解析 JSON dict。
-# 真实 = 包 llm_client.chat_json；stub/单测 = 注入假实现。
 ChatFn = Callable[[str, str], dict[str, Any]]
 
 VALID_TYPES = {"functional", "non_functional", "constraint", "business_rule"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
 
 SYSTEM_PROMPT = (
-    "你是表计行业（电表/水表/气表）需求分析师。读给定的标准/规范章节，抽取其中的"
-    "需求条目。把同一功能的零散语句**合并成一条功能需求**，不要逐句拆。每条需求输出："
-    "title（不超过 80 字）、description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
-    "type（functional/non_functional/constraint/business_rule）、priority（P0/P1/P2）、"
+    "你是表计行业（电表/水表/气表）需求分析师。读给定的标准/规范文本，抽取其中的需求条目。"
+    "把同一功能的零散语句**合并成一条功能需求**，不要逐句拆；表格类规范化为一条带说明的需求。"
+    "每条需求输出：title（不超过 80 字）、description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
+    "type（functional/non_functional/constraint/business_rule）、priority（P0/P1/P2，按重要性区分）、"
     "labels（表计领域标签，至少一个）、source_quote（原文逐字引用，不可改写）、"
+    "source_section（该需求所属的章节号/标题，从文本里的小节标题判断）、"
     "acceptance_criteria（可测试的验收点数组）。"
-    "严禁编造原文没有的 OBIS 码、数字、十六进制、事件号——这些只能原样引用或不出现。"
+    "严禁编造原文没有的 OBIS 码、事件号、十六进制、数字——这些只能原样引用或不出现。"
     "只输出 JSON：{\"requirements\": [ {…}, … ]}。"
 )
 
 
+# --- 章节聚合与合并 -------------------------------------------------------
+
 def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block 列表）。"""
+    """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block）。"""
     groups: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
     for block in blocks:
         section_path = [str(s) for s in (block.get("section_path") or [])]
@@ -90,6 +93,37 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sections
 
 
+def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAULT_MERGE_CHARS) -> list[dict[str, Any]]:
+    """把相邻小章节合并到目标字数，减少 LLM 调用。文本里保留各小节标题供 LLM 归属。"""
+    merged: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    for sec in sections:
+        piece = f"## {sec['heading']}\n{sec['text']}" if sec.get("heading") else sec["text"]
+        if cur is None:
+            cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
+                   "texts": [piece], "block_ids": list(sec.get("block_ids") or []), "len": len(piece)}
+            continue
+        if cur["len"] + len(piece) > target_chars and cur["texts"]:
+            merged.append(_finalize_merged(cur))
+            cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
+                   "texts": [piece], "block_ids": list(sec.get("block_ids") or []), "len": len(piece)}
+        else:
+            cur["texts"].append(piece)
+            cur["block_ids"].extend(sec.get("block_ids") or [])
+            cur["len"] += len(piece)
+    if cur is not None and cur["texts"]:
+        merged.append(_finalize_merged(cur))
+    return merged
+
+
+def _finalize_merged(cur: dict[str, Any]) -> dict[str, Any]:
+    return {"section_id": cur["section_id"], "heading": cur["heading"],
+            "section_path": [cur["heading"]] if cur["heading"] else [],
+            "text": "\n\n".join(cur["texts"]).strip(), "block_ids": cur["block_ids"]}
+
+
+# --- 抽取与防幻觉护栏 -----------------------------------------------------
+
 def section_fingerprint(section: dict[str, Any], model: str) -> str:
     digest = hashlib.sha256(
         f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}".encode("utf-8")
@@ -98,29 +132,35 @@ def section_fingerprint(section: dict[str, Any], model: str) -> str:
 
 
 def build_section_prompt(section: dict[str, Any]) -> str:
-    payload = {
-        "section": section.get("section_id"),
-        "heading": section.get("heading"),
-        "text": section.get("text", "")[:8000],
-    }
+    payload = {"heading": section.get("heading"), "text": section.get("text", "")[:12000]}
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def extract_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
-    """返回漂移项：需求里出现、但章节原文没有的 编码/数字。空 = 通过。"""
-    produced = " ".join([
+def _produced_text(requirement: dict[str, Any]) -> str:
+    return " ".join([
         str(requirement.get("title") or ""),
         str(requirement.get("description") or ""),
         str(requirement.get("source_quote") or ""),
         " ".join(str(a) for a in requirement.get("acceptance_criteria") or []),
     ])
-    base_codes, base_ints = extract_codes(source_text), extract_ints(source_text)
-    drift = (extract_codes(produced) - base_codes) | (extract_ints(produced) - base_ints)
-    return sorted(drift)
+
+
+def code_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
+    """受保护编码漂移：需求里出现、源文没有的 OBIS/事件号/十六进制（严格）。"""
+    return sorted(extract_codes(_produced_text(requirement)) - extract_codes(source_text))
+
+
+def int_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
+    """普通整数漂移：需求里出现、源文没有的数字（软标）。"""
+    return sorted(extract_ints(_produced_text(requirement)) - extract_ints(source_text))
+
+
+def extract_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
+    """编码 + 整数漂移合并（保留以兼容外部调用）。"""
+    return sorted(set(code_drift(requirement, source_text)) | set(int_drift(requirement, source_text)))
 
 
 def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[str, Any]:
-    """把 LLM 产出的单条需求归一为统一字段（id 由后续 make_doc 重编号）。"""
     rtype = str(raw.get("type") or "functional")
     if rtype not in VALID_TYPES:
         rtype = "functional"
@@ -129,15 +169,14 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         priority = "P2"
     labels = [str(x) for x in (raw.get("labels") or []) if str(x).strip()]
     acceptance = [str(x) for x in (raw.get("acceptance_criteria") or []) if str(x).strip()]
-    source_quote = str(raw.get("source_quote") or "").strip()
     return {
         "title": str(raw.get("title") or "").strip()[:80],
         "description": str(raw.get("description") or "").strip(),
         "type": rtype,
         "priority": priority,
         "status": "draft",
-        "source_section": section.get("heading") or section.get("section_id") or "",
-        "source_quote": source_quote,
+        "source_section": str(raw.get("source_section") or section.get("heading") or section.get("section_id") or "").strip(),
+        "source_quote": str(raw.get("source_quote") or "").strip(),
         "threshold_table": raw.get("threshold_table") if isinstance(raw.get("threshold_table"), dict) else None,
         "acceptance_criteria": acceptance,
         "dependencies": [],
@@ -151,11 +190,12 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
 
 
 def extract_section(section: dict[str, Any], chat: ChatFn) -> list[dict[str, Any]]:
-    """对一个章节调 chat 抽取需求，归一 + 过漂移护栏。"""
+    """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。"""
     payload = chat(SYSTEM_PROMPT, build_section_prompt(section))
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
     if not isinstance(raw_reqs, list):
         return []
+    source = section.get("text", "")
     results: list[dict[str, Any]] = []
     for raw in raw_reqs:
         if not isinstance(raw, dict):
@@ -163,15 +203,23 @@ def extract_section(section: dict[str, Any], chat: ChatFn) -> list[dict[str, Any
         req = normalize_requirement(raw, section)
         if not req["description"] and not req["source_quote"]:
             continue
-        drift = extract_drift(req, section.get("text", ""))
-        if drift:
+        codes = code_drift(req, source)
+        ints = int_drift(req, source)
+        notes = []
+        if codes:  # 受保护编码漂移 → 严格：降级 draft 待核
             req["status"] = "draft"
-            req["notes"] = f"结构漂移已拦截（原文未见）：{', '.join(drift[:8])}；需人工/确定性核对"
+            notes.append(f"结构漂移已拦截（编码，原文未见）：{', '.join(codes[:8])}")
+        if ints:  # 普通整数漂移 → 软标：保留，待核
+            notes.append(f"数字漂移（待核）：{', '.join(ints[:8])}")
+        if not codes:
+            # 无编码漂移：若模型给了状态信号则尊重，否则默认 draft（AI 抽取一律待审）
+            req["status"] = "draft"
+        req["notes"] = "；".join(notes)
         results.append(req)
     return results
 
 
-# --- 缓存 ----------------------------------------------------------------
+# --- 缓存 + 批处理 --------------------------------------------------------
 
 def read_cache(path: Path) -> dict[str, list[dict[str, Any]]]:
     cache: dict[str, list[dict[str, Any]]] = {}
@@ -202,28 +250,79 @@ def extract_all(
     *,
     model: str,
     cache_path: Path,
+    concurrency: int = 1,
 ) -> list[dict[str, Any]]:
-    """逐章节抽取（缓存优先）。返回扁平需求列表。可复现：同章节文本 → 命中缓存。"""
+    """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。"""
     cache = read_cache(cache_path)
-    out: list[dict[str, Any]] = []
-    new_rows: list[dict[str, Any]] = []
-    for section in sections:
+    results: list[list[dict[str, Any]] | None] = [None] * len(sections)
+    pending: list[tuple[int, dict[str, Any], str]] = []
+    for i, section in enumerate(sections):
         fp = section_fingerprint(section, model)
         hit = cache.get(fp)
         if hit is not None:
-            out.extend(hit)
-            continue
-        reqs = extract_section(section, chat)
-        out.extend(reqs)
-        new_rows.append({"fingerprint": fp, "model": model,
-                         "prompt_version": AI_EXTRACT_PROMPT_VERSION,
-                         "section_id": section.get("section_id"), "requirements": reqs})
-    append_cache(cache_path, new_rows)
-    return out
+            results[i] = hit
+        else:
+            pending.append((i, section, fp))
 
+    new_rows: list[dict[str, Any]] = []
+
+    def work(item: tuple[int, dict[str, Any], str]) -> tuple[int, str, list[dict[str, Any]], bool]:
+        idx, section, fp = item
+        try:
+            return idx, fp, extract_section(section, chat), True
+        except LLMError as exc:  # 最佳努力：该章节降级、不崩、不缓存（留待重跑）
+            LOGGER.warning("AI 抽取章节失败：%s", exc)
+            return idx, fp, [], False
+
+    if pending:
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
+            futures = [executor.submit(work, item) for item in pending]
+            for future in as_completed(futures):
+                idx, fp, reqs, ok = future.result()
+                results[idx] = reqs
+                if ok:
+                    new_rows.append({"fingerprint": fp, "model": model,
+                                     "prompt_version": AI_EXTRACT_PROMPT_VERSION,
+                                     "requirements": reqs})
+
+    append_cache(cache_path, new_rows)
+    flat: list[dict[str, Any]] = []
+    for reqs in results:
+        flat.extend(reqs or [])
+    return flat
+
+
+# --- skill 格式 doc / Excel ----------------------------------------------
+
+def ensure_domain_labels(requirements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """确定性后处理：保证每条需求至少带一个 21 领域标签（否则按域 Excel 全塌进"未分类"）。
+
+    LLM 的自由标签（AFD/测试/Firmware upgrade…）保留为补充；领域标签由 requirement_schema.map_labels
+    从文本确定性派生并置于前。对缓存结果也生效、不需重调 LLM。
+    """
+    import requirement_schema as rs
+    from spec_excel import METERING_DOMAINS
+    domain_set = set(METERING_DOMAINS)
+    for req in requirements:
+        existing = [str(x) for x in (req.get("labels") or [])]
+        if any(label in domain_set for label in existing):
+            continue
+        text = f"{req.get('title', '')} {req.get('description', '')} {req.get('source_quote', '')}"
+        domains = [d for d in rs.map_labels(text) if d in domain_set]
+        req["labels"] = domains + [label for label in existing if label not in domains]
+    return requirements
+
+
+def build_skill_doc(requirements: list[dict[str, Any]], *, source: str, extracted_at: str,
+                    meter_type: str = "multi") -> dict[str, Any]:
+    """把 AI 抽取的需求装配成公司 skill 格式 doc（REQ-NNN 重编号 + analysis）。"""
+    import requirement_schema as rs
+    return rs.make_doc(requirements, source=source, extracted_at=extracted_at, meter_type=meter_type)
+
+
+# --- 主入口 ---------------------------------------------------------------
 
 def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_PATH) -> LLMClientConfig | None:
-    """stub/未配 → None（不调 LLM）；openai_compatible → LLMClientConfig。"""
     pipeline = load_review_pipeline(pipeline_path)
     route_name = resolve_route_name(pipeline, route)
     if route_name != "openai_compatible":
@@ -231,43 +330,68 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
     return llm_config_from_route(dict(pipeline.model_routes.get("openai_compatible") or {}))
 
 
-def run_ai_extract(out_dir: Path, *, route: str | None,
-                   pipeline_path: Path = DEFAULT_PIPELINE_PATH) -> dict[str, Any]:
-    """主入口：读 blocks → 章节 → AI 抽取 → 写 ai_requirements.jsonl。stub 时零产出。"""
+def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAULT_MERGE_CHARS,
+                   write_doc: bool = False, pipeline_path: Path = DEFAULT_PIPELINE_PATH) -> dict[str, Any]:
+    """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel）。"""
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
-    sections = assemble_sections(blocks)
+    sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars)
 
     config = config_for_route(route, pipeline_path)
     if config is None:
         return {"route": "stub", "sections": len(sections), "requirements": 0,
-                "note": "stub 路由：未调 LLM，未产 AI 需求（配置 --route openai_compatible 启用）"}
+                "note": "stub 路由：未调 LLM（配置 --route openai_compatible 启用）"}
 
     def chat(system: str, user: str) -> dict[str, Any]:
         return chat_json(config, system, user)
 
-    cache_path = out_dir / AI_EXTRACT_CACHE
-    requirements = extract_all(sections, chat, model=config.model, cache_path=cache_path)
-    flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
+    requirements = extract_all(sections, chat, model=config.model,
+                               cache_path=out_dir / AI_EXTRACT_CACHE,
+                               concurrency=4)
+    ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
+    code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
+    int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
 
     target = out_dir / AI_REQUIREMENTS
     with target.open("w", encoding="utf-8", newline="\n") as f:
         for req in requirements:
             f.write(json.dumps(req, ensure_ascii=False) + "\n")
-    return {"route": "openai_compatible", "model": config.model, "sections": len(sections),
-            "requirements": len(requirements), "drift_flagged": flagged, "written": [target.name]}
+    written = [target.name]
+
+    result = {"route": "openai_compatible", "model": config.model, "sections": len(sections),
+              "requirements": len(requirements), "code_drift_flagged": code_flagged,
+              "int_drift_flagged": int_flagged, "written": written}
+
+    if write_doc:
+        doc = build_skill_doc(requirements, source=out_dir.name,
+                              extracted_at=datetime.datetime.now().isoformat(timespec="seconds"))
+        doc_path = out_dir / "ai_requirements_doc.json"
+        doc_path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        written.append(doc_path.name)
+        try:
+            from spec_excel import write_xlsx
+            xlsx_path = out_dir / "ai_requirements.xlsx"
+            write_xlsx(doc, xlsx_path)
+            written.append(xlsx_path.name)
+        except Exception as exc:  # Excel 失败不阻断 JSON 产出
+            LOGGER.warning("AI 需求 Excel 生成失败：%s", exc)
+        result["analysis"] = doc.get("analysis", {}).get("by_priority", {})
+
+    return result
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="AI-first requirement extraction (Phase 1 skeleton).")
+    parser = argparse.ArgumentParser(description="AI-first requirement extraction.")
     parser.add_argument("--out", type=Path, required=True, help="Atomizer output directory (含 blocks.jsonl)")
     parser.add_argument("--route", default=None, help="stub | openai_compatible")
+    parser.add_argument("--merge-chars", type=int, default=DEFAULT_MERGE_CHARS, help="章节合并目标字数")
+    parser.add_argument("--doc", action="store_true", help="同时产 skill 格式 doc + Excel")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    result = run_ai_extract(args.out, route=args.route)
+    result = run_ai_extract(args.out, route=args.route, merge_chars=args.merge_chars, write_doc=args.doc)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
