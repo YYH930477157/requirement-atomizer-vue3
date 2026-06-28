@@ -12918,7 +12918,7 @@
           "attribute_id": 7,
           "name": "adp_broadcast_log_table_entry_TTL",
           "mode": "static",
-          "type": "long- unsigned",
+          "type": "long-unsigned",
           "short_name": "x + 0x30"
         },
         {
@@ -12960,7 +12960,7 @@
           "attribute_id": 13,
           "name": "adp_max_join_wait_time",
           "mode": "static",
-          "type": "long- unsigned",
+          "type": "long-unsigned",
           "short_name": "x + 0x60"
         },
         {
@@ -12988,7 +12988,7 @@
           "attribute_id": 17,
           "name": "adp_coord_short_address",
           "mode": "static",
-          "type": "long- unsigned",
+          "type": "long-unsigned",
           "short_name": "x + 0x80"
         },
         {
@@ -15252,7 +15252,7 @@
           "attribute_id": 6,
           "name": "supply_group_code",
           "mode": "dynamic",
-          "type": "double-long- unsigned",
+          "type": "double-long-unsigned",
           "short_name": "x + 0x28"
         },
         {
@@ -17350,7 +17350,7 @@
           "attribute_id": 6,
           "name": "mac_frame_counter_RF",
           "mode": "dynamic",
-          "type": "double-long- unsigned",
+          "type": "double-long-unsigned",
           "short_name": "x + 0x28"
         },
         {
@@ -17582,7 +17582,7 @@
         {
           "method_id": 1,
           "name": "mac_get_POS_table_entry_RF",
-          "short_name": "x + 0x140"
+          "short_name": "x + 0x130"
         }
       ],
       "access_semantics": [

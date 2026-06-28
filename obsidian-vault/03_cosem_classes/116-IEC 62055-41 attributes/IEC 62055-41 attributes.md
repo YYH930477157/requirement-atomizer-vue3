@@ -71,7 +71,7 @@ COSEM interface class (class_id = 116, version = 0). Presents a selection of IEC
     { "attribute_id": 3, "name": "commodity", "mode": "static", "type": "visible-string", "short_name": "x + 0x10" },
     { "attribute_id": 4, "name": "token_carrier_types", "mode": "static", "type": "array", "short_name": "x + 0x18" },
     { "attribute_id": 5, "name": "encryption_algorithm", "mode": "static", "type": "unsigned", "short_name": "x + 0x20" },
-    { "attribute_id": 6, "name": "supply_group_code", "mode": "dynamic", "type": "double-long- unsigned", "short_name": "x + 0x28" },
+    { "attribute_id": 6, "name": "supply_group_code", "mode": "dynamic", "type": "double-long-unsigned", "short_name": "x + 0x28" },
     { "attribute_id": 7, "name": "tariff_index", "mode": "dynamic", "type": "unsigned", "short_name": "x + 0x30" },
     { "attribute_id": 8, "name": "key_revision_number", "mode": "dynamic", "type": "unsigned", "short_name": "x + 0x38" },
     { "attribute_id": 9, "name": "key_type", "mode": "dynamic", "type": "unsigned", "short_name": "x + 0x40" },

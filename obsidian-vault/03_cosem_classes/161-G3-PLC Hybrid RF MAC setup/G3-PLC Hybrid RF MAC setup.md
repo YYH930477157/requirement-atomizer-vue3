@@ -99,7 +99,7 @@ COSEM interface class (class_id = 161, version = 1). Holds the necessary additio
     { "attribute_id": 3, "name": "mac_max_CSMA_backoffs_RF", "mode": "static", "type": "unsigned", "short_name": "x + 0x10" },
     { "attribute_id": 4, "name": "mac_max_frame_retries_RF", "mode": "static", "type": "unsigned", "short_name": "x + 0x18" },
     { "attribute_id": 5, "name": "mac_min_BE_RF", "mode": "static", "type": "unsigned", "short_name": "x + 0x20" },
-    { "attribute_id": 6, "name": "mac_frame_counter_RF", "mode": "dynamic", "type": "double-long- unsigned", "short_name": "x + 0x28" },
+    { "attribute_id": 6, "name": "mac_frame_counter_RF", "mode": "dynamic", "type": "double-long-unsigned", "short_name": "x + 0x28" },
     { "attribute_id": 7, "name": "mac_duplicate_detection_TTL_RF", "mode": "static", "type": "unsigned", "short_name": "x + 0x30" },
     { "attribute_id": 8, "name": "mac_POS_table_RF", "mode": "dynamic", "type": "array", "short_name": "x + 0x38" },
     { "attribute_id": 9, "name": "mac_operating_mode_RF", "mode": "static", "type": "unsigned", "short_name": "x + 0x40" },
@@ -134,7 +134,7 @@ COSEM interface class (class_id = 161, version = 1). Holds the necessary additio
     { "attribute_id": 38, "name": "mac_max_bcast_resync_wait_unit_RF", "mode": "static", "type": "unsigned", "short_name": "x + 0x128" }
   ],
   "methods": [
-    { "method_id": 1, "name": "mac_get_POS_table_entry_RF", "short_name": "x + 0x140" }
+    { "method_id": 1, "name": "mac_get_POS_table_entry_RF", "short_name": "x + 0x130" }
   ],
   "access_semantics": [
     "Static attributes are configuration parameters set via SET by an authorised management client; dynamic attributes are read (GET) status/diagnostic values.",
