@@ -18697,18 +18697,23 @@
       "keywords": [
         "0-0:42.0.0.255",
         "COSEM logical device name",
+        "cosem logical device name",
         "TBL-000042"
       ],
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "data_model"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `COSEM logical device name` with OBIS pattern `0-0:42.0.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object holding the COSEM logical device name (LDN) at logical name `0-0:42.0.0.255`.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:42.0.0.255",
@@ -18716,35 +18721,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "42",
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "42 COSEM logical device name",
         "D": "0",
         "E": "0",
-        "F": "255"
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000042-R000002, TBL-000042"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "COSEM logical device name at 0-0:42.0.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000042-R000002",
-        "source_refs": [
-          "BLK-000634",
-          "TBL-000042-R000002",
-          "TBL-000042"
-        ],
-        "source_table_ids": [
-          "TBL-000042"
-        ]
-      }
+        "Use this row when matching requirements that identify a physical/logical meter device by its COSEM logical device name.",
+        "ABNT Appendix 9 registers this object as the COSEM logical device name (LDN), the standard Data object identifying the logical device."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-14-0-255-CURRENTLY-ACTIVE-TARIFF",
@@ -21639,24 +21641,29 @@
       "name": "Security-Invocation counter",
       "aliases": [
         "OBIS 0-0:43.1.3.255",
-        "Summon Counter in reception - \" unicast \" key (local)"
+        "Summon Counter in reception - \"unicast\" key (local)"
       ],
       "keywords": [
         "0-0:43.1.3.255",
         "Security-Invocation counter",
-        "Summon Counter in reception - \" unicast \" key (local)",
+        "security invocation counter",
+        "unicast key local",
         "TBL-000038"
       ],
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "security"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Security-Invocation counter` with OBIS pattern `0-0:43.1.3.255` and interface class 1 (Data). Summon Counter in reception - \" unicast \" key (local)",
+      "definition": "Row-level Data object holding the security invocation (summon) counter for the local unicast key at logical name `0-0:43.1.3.255`.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:43.1.3.255",
@@ -21664,35 +21671,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "43",
-        "D": "1",
-        "E": "3",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "43 security management",
+        "D": "1 security setup/invocation",
+        "E": "3 invocation counter (local unicast key, per ABNT)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000038-R000009, TBL-000038"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Security-Invocation counter at 0-0:43.1.3.255 (Summon Counter in reception - unicast key, local)"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000038-R000009",
-        "source_refs": [
-          "BLK-000622",
-          "TBL-000038-R000009",
-          "TBL-000038"
-        ],
-        "source_table_ids": [
-          "TBL-000038"
-        ]
-      }
+        "Use this row when matching requirements about per-key security invocation / replay counters for the local unicast key.",
+        "ABNT Appendix 9 describes this object as the summon counter in reception for the local unicast key."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-43-1-5-255-SECURITY-INVOCATION-COUNTER",
@@ -21701,24 +21705,29 @@
       "name": "Security-Invocation counter",
       "aliases": [
         "OBIS 0-0:43.1.5.255",
-        "Summon Counter in reception - \" unicast \" key (remote)"
+        "Summon Counter in reception - \"unicast\" key (remote)"
       ],
       "keywords": [
         "0-0:43.1.5.255",
         "Security-Invocation counter",
-        "Summon Counter in reception - \" unicast \" key (remote)",
+        "security invocation counter",
+        "unicast key remote",
         "TBL-000036"
       ],
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "security"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Security-Invocation counter` with OBIS pattern `0-0:43.1.5.255` and interface class 1 (Data). Summon Counter in reception - \" unicast \" key (remote)",
+      "definition": "Row-level Data object holding the security invocation (summon) counter for the remote unicast key at logical name `0-0:43.1.5.255`.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:43.1.5.255",
@@ -21726,35 +21735,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "43",
-        "D": "1",
-        "E": "5",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "43 security management",
+        "D": "1 security setup/invocation",
+        "E": "5 invocation counter (remote unicast key, per ABNT)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000036-R000003, TBL-000036"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Security-Invocation counter at 0-0:43.1.5.255 (Summon Counter in reception - unicast key, remote)"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000036-R000003",
-        "source_refs": [
-          "BLK-000618",
-          "TBL-000036-R000003",
-          "TBL-000036"
-        ],
-        "source_table_ids": [
-          "TBL-000036"
-        ]
-      }
+        "Use this row when matching requirements about per-key security invocation / replay counters for the remote unicast key.",
+        "ABNT Appendix 9 describes this object as the summon counter in reception for the remote unicast key."
+      ]
     },
     {
       "id": "KB-OBIS-0-1-94-55-105-255-STANDARD-EVENT-LOG-FILTER",
@@ -46398,18 +46404,23 @@
       "keywords": [
         "0-0:11.0.0.255",
         "Special Days Table",
+        "special days table",
         "TBL-000044"
       ],
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "calendar"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Special Days Table` with OBIS pattern `0-0:11.0.0.255` and interface class 11 (Special Days Table).",
+      "definition": "Row-level Special Days Table object defining special-day date exceptions at logical name `0-0:11.0.0.255`.",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-11-SPECIAL-DAYS-TABLE"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:11.0.0.255",
@@ -46417,35 +46428,32 @@
       "likely_interface_class_name": "Special Days Table",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "11",
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "11 special days table",
         "D": "0",
         "E": "0",
-        "F": "255"
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000044-R000013, TBL-000044"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Special Days Table at 0-0:11.0.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000044-R000013",
-        "source_refs": [
-          "BLK-000646",
-          "TBL-000044-R000013",
-          "TBL-000044"
-        ],
-        "source_table_ids": [
-          "TBL-000044"
-        ]
-      }
+        "Use this row when matching requirements that define holiday/special-day date exceptions overriding the activity calendar.",
+        "ABNT Appendix 9 registers this object as the Special Days Table (interface class 11) for the meter."
+      ]
     },
     {
       "id": "KB-OBIS-0-0-40-0-0-255-ASSOCIATION-LN-CURRENT",
@@ -47961,50 +47969,53 @@
       "keywords": [
         "0-0:44.1.0.255",
         "Key expiration control function",
-        "Controls enabling/disabling of the key check function",
+        "key check function",
+        "key expiration",
         "TBL-000074"
       ],
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "security"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Key expiration control function` with OBIS pattern `0-0:44.1.0.255` and interface class 122 (Key Expiration Control Function). Controls enabling/disabling of the key check function",
-      "relations": [],
+      "definition": "Row-level Key Expiration Control Function object at logical name `0-0:44.1.0.255`, controlling enabling/disabling of the key check function.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
+        }
+      ],
       "obis_pattern": "0-0:44.1.0.255",
       "likely_interface_class_id": 122,
       "likely_interface_class_name": "Key Expiration Control Function",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "44",
-        "D": "1",
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "44 function control",
+        "D": "1 key expiration control",
         "E": "0",
-        "F": "255"
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000074-R000007, TBL-000074"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Key expiration control function at 0-0:44.1.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000074-R000007",
-        "source_refs": [
-          "BLK-000734",
-          "TBL-000074-R000007",
-          "TBL-000074"
-        ],
-        "source_table_ids": [
-          "TBL-000074"
-        ]
-      }
+        "Use this row when matching requirements about enabling/disabling the key check (key expiration) function.",
+        "ABNT Appendix 9 describes this object as controlling enabling/disabling of the key check function."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-25-14-0-255-SCHC-LORAWAN-SETUP",
@@ -48017,49 +48028,52 @@
       "keywords": [
         "0-0:25.14.0.255",
         "SCHC-LoRaWAN setup",
+        "schc lorawan setup",
         "TBL-000075"
       ],
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "communication_profile"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `SCHC-LoRaWAN setup` with OBIS pattern `0-0:25.14.0.255` and interface class 128 (SCHC-LoRaWAN Setup).",
-      "relations": [],
+      "definition": "Row-level SCHC-LoRaWAN Setup object at logical name `0-0:25.14.0.255`, configuring the LPWAN profile for a LoRaWAN lower layer.",
+      "relations": [
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
+        }
+      ],
       "obis_pattern": "0-0:25.14.0.255",
       "likely_interface_class_id": 128,
       "likely_interface_class_name": "SCHC-LoRaWAN Setup",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "25",
-        "D": "14",
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "25 LPWAN/M-Bus port setup",
+        "D": "14 SCHC-LoRaWAN setup",
         "E": "0",
-        "F": "255"
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000075-R000010, TBL-000075"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "SCHC-LoRaWAN setup at 0-0:25.14.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000075-R000010",
-        "source_refs": [
-          "BLK-000736",
-          "TBL-000075-R000010",
-          "TBL-000075"
-        ],
-        "source_table_ids": [
-          "TBL-000075"
-        ]
-      }
+        "Use this row when matching requirements that set up or diagnose the SCHC/LoRaWAN LPWAN communication profile.",
+        "ABNT Appendix 9 registers this object as the SCHC-LoRaWAN setup (interface class 128) for the meter."
+      ]
     }
   ]
 }

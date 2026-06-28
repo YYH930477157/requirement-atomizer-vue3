@@ -33,7 +33,7 @@ class BlueBookCoverageReportTests(unittest.TestCase):
         self.assertEqual(report["object_instances"]["by_medium"]["thermal_energy"], 10)
         self.assertEqual(report["object_instances"]["by_medium"]["water"], 11)
         self.assertEqual(report["object_instances"]["by_table"]["13"], 31)
-        self.assertEqual(report["object_instances"]["by_table"]["8"], 32)
+        self.assertEqual(report["object_instances"]["by_table"]["8"], 38)
         self.assertEqual(report["object_instances"]["by_table"]["9"], 25)
         self.assertEqual(report["object_instances"]["by_table"]["12"], 12)
         self.assertEqual(report["object_instances"]["by_table"]["14"], 31)

@@ -10,20 +10,38 @@ aliases:
 keywords:
 - 0-0:44.1.0.255
 - Key expiration control function
-- Controls enabling/disabling of the key check function
+- key check function
+- key expiration
 - TBL-000074
 domain_tags:
 - cosem_object
 - general
-- abnt_bulk_import
-relations: []
+- security
+relations:
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-8
 ---
 
 # Key expiration control function
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Key expiration control function` with OBIS pattern `0-0:44.1.0.255` and interface class 122 (Key Expiration Control Function). Controls enabling/disabling of the key check function
+Row-level Key Expiration Control Function object at logical name `0-0:44.1.0.255`, controlling enabling/disabling of the key check function.
+
+## Aliases
+
+- OBIS 0-0:44.1.0.255
+- Controls enabling/disabling of the key check function
+
+## Domain Tags
+
+- `cosem_object`
+- `general`
+- `security`
+
+## Relations
+
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-8`
 
 ## Structured Data
 
@@ -34,35 +52,32 @@ ABNT Appendix 9 row-level COSEM object `Key expiration control function` with OB
   "likely_interface_class_name": "Key Expiration Control Function",
   "medium": "general",
   "value_group_mapping": {
-    "A": "0",
-    "B": "0",
-    "C": "44",
-    "D": "1",
+    "A": "0 abstract/general",
+    "B": "0 no channel",
+    "C": "44 function control",
+    "D": "1 key expiration control",
     "E": "0",
-    "F": "255"
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 8,
+    "title": "OBIS codes for general and service entry objects"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000074-R000007, TBL-000074"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 8 general and service entry objects"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Key expiration control function at 0-0:44.1.0.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000074-R000007",
-    "source_refs": [
-      "BLK-000734",
-      "TBL-000074-R000007",
-      "TBL-000074"
-    ],
-    "source_table_ids": [
-      "TBL-000074"
-    ]
-  }
+    "Use this row when matching requirements about enabling/disabling the key check (key expiration) function.",
+    "ABNT Appendix 9 describes this object as controlling enabling/disabling of the key check function."
+  ]
 }
 ```
 
