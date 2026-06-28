@@ -18217,13 +18217,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "general"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Alarm Filter` with OBIS pattern `0-0:97.98.10.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:97.98.10.255`. Alarm filter",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:97.98.10.255",
@@ -18231,35 +18235,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "97",
-        "D": "98",
-        "E": "10",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "97 error/alarm registers",
+        "D": "98 alarm register",
+        "E": "10 alarm filter",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000051-R000010, TBL-000051"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Alarm Filter at 0-0:97.98.10.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000051-R000010",
-        "source_refs": [
-          "BLK-000672",
-          "TBL-000051-R000010",
-          "TBL-000051"
-        ],
-        "source_table_ids": [
-          "TBL-000051"
-        ]
-      }
+        "Use this row when matching requirements about alarm filter.",
+        "ABNT Appendix 9 describes this object as: alarm filter."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-10-7-255-AMR-PROFILE-STATUS-FOR-LOAD-PROFILE-AND-QUALITY-WITH-PERIOD-1",
@@ -18277,13 +18278,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "general"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `AMR profile status for Load profile and quality with period 1` with OBIS pattern `0-0:96.10.7.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.10.7.255`. AMR profile status for load profile and quality, period 1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:96.10.7.255",
@@ -18291,35 +18296,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "10",
-        "E": "7",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "10 status",
+        "E": "7 AMR profile status (load profile, period 1)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000105-R000002, TBL-000105"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 OBIS codes for general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "AMR profile status for Load profile and quality with period 1 at 0-0:96.10.7.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000105-R000002",
-        "source_refs": [
-          "BLK-000814",
-          "TBL-000105-R000002",
-          "TBL-000105"
-        ],
-        "source_table_ids": [
-          "TBL-000105"
-        ]
-      }
+        "Use this row when matching requirements about amr profile status for load profile and quality.",
+        "ABNT Appendix 9 describes this object as: AMR profile status for load profile and quality, period 1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-10-8-255-AMR-PROFILE-STATUS-FOR-LOAD-PROFILE-AND-QUALITY-WITH-PERIOD-2",
@@ -18337,13 +18339,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "general"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `AMR profile status for Load profile and quality with period 2` with OBIS pattern `0-0:96.10.8.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.10.8.255`. AMR profile status for load profile and quality, period 2",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:96.10.8.255",
@@ -18351,35 +18357,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "10",
-        "E": "8",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "10 status",
+        "E": "8 AMR profile status (load profile, period 2)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000106-R000007, TBL-000106"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 OBIS codes for general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "AMR profile status for Load profile and quality with period 2 at 0-0:96.10.8.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000106-R000007",
-        "source_refs": [
-          "BLK-000816",
-          "TBL-000106-R000007",
-          "TBL-000106"
-        ],
-        "source_table_ids": [
-          "TBL-000106"
-        ]
-      }
+        "Use this row when matching requirements about amr profile status for load profile and quality.",
+        "ABNT Appendix 9 describes this object as: AMR profile status for load profile and quality, period 2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-0-1-0-255-BILLING-PERIOD-COUNTER-1",
@@ -18457,13 +18460,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "billing"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Billing Trigger` with OBIS pattern `0-0:94.55.111.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:94.55.111.255`. Billing trigger object for the billing process",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.111.255",
@@ -18471,35 +18478,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "111",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "111 billing trigger",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000072-R000003, TBL-000072"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Billing Trigger at 0-0:94.55.111.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000072-R000003",
-        "source_refs": [
-          "BLK-000730",
-          "TBL-000072-R000003",
-          "TBL-000072"
-        ],
-        "source_table_ids": [
-          "TBL-000072"
-        ]
-      }
+        "Use this row when matching requirements about billing trigger object for the billing process.",
+        "ABNT Appendix 9 describes this object as: billing trigger object for the billing process."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-2-12-255-CLOCK-SYNCHRONIZATION",
@@ -18517,13 +18521,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "general"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Clock Synchronization` with OBIS pattern `0-0:96.2.12.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.2.12.255`. Clock synchronization status",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:96.2.12.255",
@@ -18531,35 +18539,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "2",
-        "E": "12",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "2 configuration",
+        "E": "12 clock synchronization",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000043-R000012, TBL-000043"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 OBIS codes for general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Clock Synchronization at 0-0:96.2.12.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000043-R000012",
-        "source_refs": [
-          "BLK-000640",
-          "TBL-000043-R000012",
-          "TBL-000043"
-        ],
-        "source_table_ids": [
-          "TBL-000043"
-        ]
-      }
+        "Use this row when matching requirements about clock synchronization status.",
+        "ABNT Appendix 9 describes this object as: clock synchronization status."
+      ]
     },
     {
       "id": "KB-OBIS-0-1-94-55-110-255-COMMON-EVENT-LOG-FILTER",
@@ -18764,13 +18769,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "general"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Currently active tariff` with OBIS pattern `0-0:96.14.0.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.14.0.255`. Currently active tariff",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:96.14.0.255",
@@ -18778,35 +18787,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "14",
-        "E": "0",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "14 tariff",
+        "E": "0 currently active tariff",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000044-R000016, TBL-000044"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 OBIS codes for general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Currently active tariff at 0-0:96.14.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000044-R000016",
-        "source_refs": [
-          "BLK-000646",
-          "TBL-000044-R000016",
-          "TBL-000044"
-        ],
-        "source_table_ids": [
-          "TBL-000044"
-        ]
-      }
+        "Use this row when matching requirements about currently active tariff.",
+        "ABNT Appendix 9 describes this object as: currently active tariff."
+      ]
     },
     {
       "id": "KB-OBIS-2-B-98-1-E-255-DC-BILLING-LIST-1",
@@ -19119,7 +19125,7 @@
       "id": "KB-ABNT-OBIS-0-0-94-55-110-255-DISPLAYCONFIGURATION",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "DisplayConfiguration",
+      "name": "Common Event Log Filter",
       "aliases": [
         "OBIS 0-0:94.55.110.255"
       ],
@@ -19131,13 +19137,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "event"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `DisplayConfiguration` with OBIS pattern `0-0:94.55.110.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:94.55.110.255`. Common event log filter containing enabling logging and notification of events",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.110.255",
@@ -19145,35 +19155,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "110",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "110 common event log filter",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000071-R000002, TBL-000071"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Common Event Log Filter at 0-0:94.55.110.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000071-R000002",
-        "source_refs": [
-          "BLK-000728",
-          "TBL-000071-R000002",
-          "TBL-000071"
-        ],
-        "source_table_ids": [
-          "TBL-000071"
-        ]
-      }
+        "Use this row when matching requirements about common event log filter containing enabling logging and notification of events.",
+        "ABNT Appendix 9 describes this object as: common event log filter containing enabling logging and notification of events."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-94-55-120-255-END-OF-BILLING-BY-PUSH-BUTTON-ACTIVATION",
@@ -19253,13 +19260,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "general"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Error Object` with OBIS pattern `0-0:97.97.0.255` and interface class 1 (Data). Register of error",
+      "definition": "Row-level Data object at logical name `0-0:97.97.0.255`. Register of error",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:97.97.0.255",
@@ -19267,41 +19278,38 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "97",
-        "D": "97",
-        "E": "0",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "97 error/alarm registers",
+        "D": "97 error register",
+        "E": "0 error object",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000051-R000002, TBL-000051"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Error Object at 0-0:97.97.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000051-R000002",
-        "source_refs": [
-          "BLK-000672",
-          "TBL-000051-R000002",
-          "TBL-000051"
-        ],
-        "source_table_ids": [
-          "TBL-000051"
-        ]
-      }
+        "Use this row when matching requirements about register of error.",
+        "ABNT Appendix 9 describes this object as: register of error."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-11-10-255-EVENT-OBJECT-EXPORT-POWER-CONTRACT-EVENT-LOG",
       "type": "cosem_object_instance",
       "layer": "cosem_object_instance",
-      "name": "Event Object - Export Power Contract Event Log",
+      "name": "Export Power Contract Event Log",
       "aliases": [
         "OBIS 0-0:96.11.10.255"
       ],
@@ -19313,13 +19321,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "event"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Event Object - Export Power Contract Event Log` with OBIS pattern `0-0:96.11.10.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.11.10.255`. Event object - export power contract event log",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.11.10.255",
@@ -19327,35 +19339,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "11",
-        "E": "10",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "11 event log",
+        "E": "10 export power contract event log",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000055-R000008, TBL-000055"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Export Power Contract Event Log at 0-0:96.11.10.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000055-R000008",
-        "source_refs": [
-          "BLK-000684",
-          "TBL-000055-R000008",
-          "TBL-000055"
-        ],
-        "source_table_ids": [
-          "TBL-000055"
-        ]
-      }
+        "Use this row when matching requirements about event object - export power contract event log.",
+        "ABNT Appendix 9 describes this object as: event object - export power contract event log."
+      ]
     },
     {
       "id": "KB-OBIS-0-0-96-11-7-255-EVENT-OBJECT-COMMON-EVENT-LOG",
@@ -19938,24 +19947,27 @@
       "name": "Export Power Contract Event Log Filter",
       "aliases": [
         "OBIS 0-1:94.55.115.255",
-        "Contract Event Log Filter export of energy it contains enabling logging and enabling notification of event"
+        "Contract Event Log Filter export of energy it contains enabling logging and enabling"
       ],
       "keywords": [
         "0-1:94.55.115.255",
         "Export Power Contract Event Log Filter",
-        "Contract Event Log Filter export of energy it contains enabling logging and enabling notification of event",
-        "TBL-000062"
+        "Contract Event Log Filter export of energy it contains enabling logging and enabling"
       ],
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "event"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Export Power Contract Event Log Filter` with OBIS pattern `0-1:94.55.115.255` and interface class 1 (Data). Contract Event Log Filter export of energy it contains enabling logging and enabling notification of event",
+      "definition": "Row-level Data object at logical name `0-1:94.55.115.255`. Export power contract event log filter",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-1:94.55.115.255",
@@ -19963,35 +19975,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "1",
-        "C": "94",
-        "D": "55",
-        "E": "115",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "1 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "115 export power contract event log filter",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000062-R000003, TBL-000062"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Export Power Contract Event Log Filter at 0-1:94.55.115.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000062-R000003",
-        "source_refs": [
-          "BLK-000698",
-          "TBL-000062-R000003",
-          "TBL-000062"
-        ],
-        "source_table_ids": [
-          "TBL-000062"
-        ]
-      }
+        "Use this row when matching requirements about export power contract event log filter.",
+        "ABNT Appendix 9 describes this object as: export power contract event log filter."
+      ]
     },
     {
       "id": "KB-OBIS-0-1-94-55-117-255-FAILED-SECURITY-OPERATIONS-EVENT-LOG-FILTER",
@@ -20384,13 +20393,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Instantaneous phase sequence` with OBIS pattern `0-0:96.10.1.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.10.1.255`. Instantaneous phase sequence",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:96.10.1.255",
@@ -20398,35 +20411,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "10",
-        "E": "1",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "10 status/phase",
+        "E": "1 phase sequence",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000125-R000002, TBL-000125"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 OBIS codes for general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Instantaneous phase sequence at 0-0:96.10.1.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000125-R000002",
-        "source_refs": [
-          "BLK-000858",
-          "TBL-000125-R000002",
-          "TBL-000125"
-        ],
-        "source_table_ids": [
-          "TBL-000125"
-        ]
-      }
+        "Use this row when matching requirements about instantaneous phase sequence.",
+        "ABNT Appendix 9 describes this object as: instantaneous phase sequence."
+      ]
     },
     {
       "id": "KB-OBIS-0-B-0-9-1-LOCAL-TIME",
@@ -20502,13 +20512,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "general"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Metering point ID` with OBIS pattern `0-0:96.1.10.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.1.10.255`. Metering point identifier",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-8"
         }
       ],
       "obis_pattern": "0-0:96.1.10.255",
@@ -20516,35 +20530,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "1",
-        "E": "10",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "1 identification",
+        "E": "10 metering point ID",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 8,
+        "title": "OBIS codes for general and service entry objects"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000070-R000002, TBL-000070"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 8 OBIS codes for general and service entry objects"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Metering point ID at 0-0:96.1.10.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000070-R000002",
-        "source_refs": [
-          "BLK-000726",
-          "TBL-000070-R000002",
-          "TBL-000070"
-        ],
-        "source_table_ids": [
-          "TBL-000070"
-        ]
-      }
+        "Use this row when matching requirements about metering point identifier.",
+        "ABNT Appendix 9 describes this object as: metering point identifier."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-0-1-1-255-NUMBER-OF-AVAILABLE-BILLING-PERIODS-1",
@@ -20622,13 +20633,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of long power failures in all phases` with OBIS pattern `0-0:96.7.5.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.7.5.255`. Number of long power failures in all phases",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.7.5.255",
@@ -20636,35 +20651,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "7",
-        "E": "5",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "7 power failure counters",
+        "E": "5 long power-failure count (all phases)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000049-R000014, TBL-000049"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of long power failures in all phases at 0-0:96.7.5.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000049-R000014",
-        "source_refs": [
-          "BLK-000664",
-          "TBL-000049-R000014",
-          "TBL-000049"
-        ],
-        "source_table_ids": [
-          "TBL-000049"
-        ]
-      }
+        "Use this row when matching requirements about number of long power failures in all phases.",
+        "ABNT Appendix 9 describes this object as: number of long power failures in all phases."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-7-6-255-NUMBER-OF-LONG-POWER-FAILURES-IN-PHASE-L1",
@@ -20682,13 +20694,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of long power failures in phase L1` with OBIS pattern `0-0:96.7.6.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.7.6.255`. Number of long power failures in phase L1",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.7.6.255",
@@ -20696,35 +20712,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "7",
-        "E": "6",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "7 power failure counters",
+        "E": "6 long power-failure count (phase L1)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000049-R000017, TBL-000049"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of long power failures in phase L1 at 0-0:96.7.6.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000049-R000017",
-        "source_refs": [
-          "BLK-000664",
-          "TBL-000049-R000017",
-          "TBL-000049"
-        ],
-        "source_table_ids": [
-          "TBL-000049"
-        ]
-      }
+        "Use this row when matching requirements about number of long power failures in phase l1.",
+        "ABNT Appendix 9 describes this object as: number of long power failures in phase L1."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-7-7-255-NUMBER-OF-LONG-POWER-FAILURES-IN-PHASE-L2",
@@ -20742,13 +20755,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of long power failures in phase L2` with OBIS pattern `0-0:96.7.7.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.7.7.255`. Number of long power failures in phase L2",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.7.7.255",
@@ -20756,35 +20773,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "7",
-        "E": "7",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "7 power failure counters",
+        "E": "7 long power-failure count (phase L2)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000050-R000002, TBL-000050"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of long power failures in phase L2 at 0-0:96.7.7.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000050-R000002",
-        "source_refs": [
-          "BLK-000666",
-          "TBL-000050-R000002",
-          "TBL-000050"
-        ],
-        "source_table_ids": [
-          "TBL-000050"
-        ]
-      }
+        "Use this row when matching requirements about number of long power failures in phase l2.",
+        "ABNT Appendix 9 describes this object as: number of long power failures in phase L2."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-7-8-255-NUMBER-OF-LONG-POWER-FAILURES-IN-PHASE-L3",
@@ -20802,13 +20816,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Number of long power failures in phase L3` with OBIS pattern `0-0:96.7.8.255` and interface class 1 (Data).",
+      "definition": "Row-level Data object at logical name `0-0:96.7.8.255`. Number of long power failures in phase L3",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-1-DATA"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.7.8.255",
@@ -20816,35 +20834,32 @@
       "likely_interface_class_name": "Data",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "7",
-        "E": "8",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "7 power failure counters",
+        "E": "8 long power-failure count (phase L3)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000050-R000005, TBL-000050"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Number of long power failures in phase L3 at 0-0:96.7.8.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000050-R000005",
-        "source_refs": [
-          "BLK-000666",
-          "TBL-000050-R000005",
-          "TBL-000050"
-        ],
-        "source_table_ids": [
-          "TBL-000050"
-        ]
-      }
+        "Use this row when matching requirements about number of long power failures in phase l3.",
+        "ABNT Appendix 9 describes this object as: number of long power failures in phase L3."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-94-55-90-255-NUMBER-OF-VOLTAGE-SAGS-FOR-AVERAGE-VOLTAGE-IN-ALL-3-PHASES",
@@ -24192,13 +24207,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "general"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Alarm Object` with OBIS pattern `0-0:97.98.0.255` and interface class 3 (Register). Alarm log",
+      "definition": "Row-level Register object at logical name `0-0:97.98.0.255`. Alarm log",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:97.98.0.255",
@@ -24206,35 +24225,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "97",
-        "D": "98",
-        "E": "0",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "97 error/alarm registers",
+        "D": "98 alarm register",
+        "E": "0 alarm object",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000051-R000005, TBL-000051"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Alarm Object at 0-0:97.98.0.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000051-R000005",
-        "source_refs": [
-          "BLK-000672",
-          "TBL-000051-R000005",
-          "TBL-000051"
-        ],
-        "source_table_ids": [
-          "TBL-000051"
-        ]
-      }
+        "Use this row when matching requirements about alarm log.",
+        "ABNT Appendix 9 describes this object as: alarm log."
+      ]
     },
     {
       "id": "KB-OBIS-1-0-10-8-0-255-APPARENT-ENERGY-EXPORT",
@@ -28237,13 +28253,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of all long power failures in all phases` with OBIS pattern `0-0:96.7.15.255` and interface class 3 (Register). time for all long power outages, from the origin, in all phases",
+      "definition": "Row-level Register object at logical name `0-0:96.7.15.255`. Cumulative time for all long power outages, from the origin, in all phases",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.7.15.255",
@@ -28251,35 +28271,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "7",
-        "E": "15",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "7 power failure counters",
+        "E": "15 cumulative long power-failure duration (all phases)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000047-R000010, TBL-000047"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of all long power failures in all phases at 0-0:96.7.15.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000047-R000010",
-        "source_refs": [
-          "BLK-000660",
-          "TBL-000047-R000010",
-          "TBL-000047"
-        ],
-        "source_table_ids": [
-          "TBL-000047"
-        ]
-      }
+        "Use this row when matching requirements about cumulative time for all long power outages.",
+        "ABNT Appendix 9 describes this object as: cumulative time for all long power outages, from the origin, in all phases."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-7-16-255-DURATION-OF-ALL-LONG-POWER-FAILURES-IN-PHASE-L1",
@@ -28299,13 +28316,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of all long power failures in phase L1` with OBIS pattern `0-0:96.7.16.255` and interface class 3 (Register). time for all long power failures, since the origin, in the Phase A",
+      "definition": "Row-level Register object at logical name `0-0:96.7.16.255`. Cumulative time for all long power failures, since the origin, in phase A (L1)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.7.16.255",
@@ -28313,35 +28334,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "7",
-        "E": "16",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "7 power failure counters",
+        "E": "16 cumulative long power-failure duration (phase L1)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000048-R000002, TBL-000048"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of all long power failures in phase L1 at 0-0:96.7.16.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000048-R000002",
-        "source_refs": [
-          "BLK-000662",
-          "TBL-000048-R000002",
-          "TBL-000048"
-        ],
-        "source_table_ids": [
-          "TBL-000048"
-        ]
-      }
+        "Use this row when matching requirements about cumulative time for all long power failures.",
+        "ABNT Appendix 9 describes this object as: cumulative time for all long power failures, since the origin, in phase A (L1)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-7-17-255-DURATION-OF-ALL-LONG-POWER-FAILURES-IN-PHASE-L2",
@@ -28361,13 +28379,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of all long power failures in phase L2` with OBIS pattern `0-0:96.7.17.255` and interface class 3 (Register). time for all long power outages, from the origin, in Phase B",
+      "definition": "Row-level Register object at logical name `0-0:96.7.17.255`. Cumulative time for all long power outages, from the origin, in phase B (L2)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.7.17.255",
@@ -28375,35 +28397,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "7",
-        "E": "17",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "7 power failure counters",
+        "E": "17 cumulative long power-failure duration (phase L2)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000048-R000006, TBL-000048"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of all long power failures in phase L2 at 0-0:96.7.17.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000048-R000006",
-        "source_refs": [
-          "BLK-000662",
-          "TBL-000048-R000006",
-          "TBL-000048"
-        ],
-        "source_table_ids": [
-          "TBL-000048"
-        ]
-      }
+        "Use this row when matching requirements about cumulative time for all long power outages.",
+        "ABNT Appendix 9 describes this object as: cumulative time for all long power outages, from the origin, in phase B (L2)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-96-7-18-255-DURATION-OF-ALL-LONG-POWER-FAILURES-IN-PHASE-L3",
@@ -28423,13 +28442,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of all long power failures in phase L3` with OBIS pattern `0-0:96.7.18.255` and interface class 3 (Register). time for all long power outages, from the origin, in Phase C",
+      "definition": "Row-level Register object at logical name `0-0:96.7.18.255`. Cumulative time for all long power outages, from the origin, in phase C (L3)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.7.18.255",
@@ -28437,35 +28460,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "7",
-        "E": "18",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "7 power failure counters",
+        "E": "18 cumulative long power-failure duration (phase L3)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000048-R000010, TBL-000048"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of all long power failures in phase L3 at 0-0:96.7.18.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000048-R000010",
-        "source_refs": [
-          "BLK-000662",
-          "TBL-000048-R000010",
-          "TBL-000048"
-        ],
-        "source_table_ids": [
-          "TBL-000048"
-        ]
-      }
+        "Use this row when matching requirements about cumulative time for all long power outages.",
+        "ABNT Appendix 9 describes this object as: cumulative time for all long power outages, from the origin, in phase C (L3)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-94-55-100-255-DURATION-OF-CURRENT-LONG-POWER-FAILURES-IN-ANY-PHASES",
@@ -28485,13 +28505,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current long power failures in any phases` with OBIS pattern `0-0:94.55.100.255` and interface class 3 (Register). time to failure of current (open) power in any phase",
+      "definition": "Row-level Register object at logical name `0-0:94.55.100.255`. Time to failure of current (open) power in any phase; duration of the ongoing long power failure across all phases",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.100.255",
@@ -28499,35 +28523,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "100",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "100 current long power-failure duration (all phases)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000048-R000014, TBL-000048"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current long power failures in any phases at 0-0:94.55.100.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000048-R000014",
-        "source_refs": [
-          "BLK-000662",
-          "TBL-000048-R000014",
-          "TBL-000048"
-        ],
-        "source_table_ids": [
-          "TBL-000048"
-        ]
-      }
+        "Use this row when matching requirements about time to failure of current (open) power in any phase.",
+        "ABNT Appendix 9 describes this object as: time to failure of current (open) power in any phase; duration of the ongoing long power failure across all phases."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-94-55-101-255-DURATION-OF-CURRENT-LONG-POWER-FAILURES-IN-PHASE-L1",
@@ -28547,13 +28568,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current long power failures in phase L1` with OBIS pattern `0-0:94.55.101.255` and interface class 3 (Register). time to failure of current (open) energy in the Phase A",
+      "definition": "Row-level Register object at logical name `0-0:94.55.101.255`. Time to failure of current (open) power in phase A (L1)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.101.255",
@@ -28561,35 +28586,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "101",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "101 current long power-failure duration (phase L1)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000049-R000002, TBL-000049"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current long power failures in phase L1 at 0-0:94.55.101.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000049-R000002",
-        "source_refs": [
-          "BLK-000664",
-          "TBL-000049-R000002",
-          "TBL-000049"
-        ],
-        "source_table_ids": [
-          "TBL-000049"
-        ]
-      }
+        "Use this row when matching requirements about time to failure of current (open) power in phase a (l1).",
+        "ABNT Appendix 9 describes this object as: time to failure of current (open) power in phase A (L1)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-94-55-102-255-DURATION-OF-CURRENT-LONG-POWER-FAILURES-IN-PHASE-L2",
@@ -28609,13 +28631,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current long power failures in phase L2` with OBIS pattern `0-0:94.55.102.255` and interface class 3 (Register). time to failure current power (open) in Phase B",
+      "definition": "Row-level Register object at logical name `0-0:94.55.102.255`. Time to failure of current power in phase B (L2)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.102.255",
@@ -28623,35 +28649,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "102",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "102 current long power-failure duration (phase L2)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000049-R000006, TBL-000049"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current long power failures in phase L2 at 0-0:94.55.102.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000049-R000006",
-        "source_refs": [
-          "BLK-000664",
-          "TBL-000049-R000006",
-          "TBL-000049"
-        ],
-        "source_table_ids": [
-          "TBL-000049"
-        ]
-      }
+        "Use this row when matching requirements about time to failure of current power in phase b (l2).",
+        "ABNT Appendix 9 describes this object as: time to failure of current power in phase B (L2)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-94-55-103-255-DURATION-OF-CURRENT-LONG-POWER-FAILURES-IN-PHASE-L3",
@@ -28671,13 +28694,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Duration of current long power failures in phase L3` with OBIS pattern `0-0:94.55.103.255` and interface class 3 (Register). time to failure current power (open) in Phase W",
+      "definition": "Row-level Register object at logical name `0-0:94.55.103.255`. Time to failure of current power in phase C (L3)",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.103.255",
@@ -28685,35 +28712,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "103",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "103 current long power-failure duration (phase L3)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000049-R000010, TBL-000049"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Duration of current long power failures in phase L3 at 0-0:94.55.103.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000049-R000010",
-        "source_refs": [
-          "BLK-000664",
-          "TBL-000049-R000010",
-          "TBL-000049"
-        ],
-        "source_table_ids": [
-          "TBL-000049"
-        ]
-      }
+        "Use this row when matching requirements about time to failure of current power in phase c (l3).",
+        "ABNT Appendix 9 describes this object as: time to failure of current power in phase C (L3)."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-12-33-1-255-DURATION-OF-CURRENT-VOLTAGE-SAG-IN-ANY-PHASE",
@@ -40978,13 +41002,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Threshold for long power failure` with OBIS pattern `0-0:94.55.60.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `0-0:94.55.60.255`. Threshold duration defining a long power failure",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.60.255",
@@ -40992,35 +41020,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "60",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "60 long power-failure threshold",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000047-R000006, TBL-000047"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Threshold for long power failure at 0-0:94.55.60.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000047-R000006",
-        "source_refs": [
-          "BLK-000660",
-          "TBL-000047-R000006",
-          "TBL-000047"
-        ],
-        "source_table_ids": [
-          "TBL-000047"
-        ]
-      }
+        "Use this row when matching requirements about threshold duration defining a long power failure.",
+        "ABNT Appendix 9 describes this object as: threshold duration defining a long power failure."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-91-35-0-255-THRESHOLD-FOR-NEUTRAL-CURRENT-VARIATION-BYPASS-FRAUD",
@@ -41278,13 +41303,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "power_quality"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Time threshold for long power failure` with OBIS pattern `0-0:96.7.20.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `0-0:96.7.20.255`. Time threshold for long power failure",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:96.7.20.255",
@@ -41292,35 +41321,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "96",
-        "D": "7",
-        "E": "20",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "96 abstract general data objects",
+        "D": "7 power failure counters",
+        "E": "20 long power-failure time threshold",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000047-R000002, TBL-000047"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Time threshold for long power failure at 0-0:96.7.20.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000047-R000002",
-        "source_refs": [
-          "BLK-000660",
-          "TBL-000047-R000002",
-          "TBL-000047"
-        ],
-        "source_table_ids": [
-          "TBL-000047"
-        ]
-      }
+        "Use this row when matching requirements about time threshold for long power failure.",
+        "ABNT Appendix 9 describes this object as: time threshold for long power failure."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-92-45-0-255-TIME-THRESHOLD-FOR-NEUTRAL-LOSS",
@@ -41578,13 +41604,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "communication_profile"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Timeout open session for reading client through PLC channel` with OBIS pattern `0-0:94.55.51.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `0-0:94.55.51.255`. Timeout for an open session of a reading client over the PLC channel",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.51.255",
@@ -41592,35 +41622,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "51",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "51 reading-client PLC session timeout",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000072-R000006, TBL-000072"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Timeout open session for reading client through PLC channel at 0-0:94.55.51.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000072-R000006",
-        "source_refs": [
-          "BLK-000730",
-          "TBL-000072-R000006",
-          "TBL-000072"
-        ],
-        "source_table_ids": [
-          "TBL-000072"
-        ]
-      }
+        "Use this row when matching requirements about timeout for an open session of a reading client over the plc channel.",
+        "ABNT Appendix 9 describes this object as: timeout for an open session of a reading client over the PLC channel."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-94-55-54-255-TIMEOUT-OPEN-SESSION-FOR-SECURITY-CLIENT-THROUGH-PLC-CHANNEL",
@@ -41638,13 +41665,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "communication_profile"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Timeout open session for security client through PLC channel` with OBIS pattern `0-0:94.55.54.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `0-0:94.55.54.255`. Timeout for an open session of a security client over the PLC channel",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.54.255",
@@ -41652,35 +41683,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "54",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "54 security-client PLC session timeout",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000073-R000004, TBL-000073"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Timeout open session for security client through PLC channel at 0-0:94.55.54.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000073-R000004",
-        "source_refs": [
-          "BLK-000732",
-          "TBL-000073-R000004",
-          "TBL-000073"
-        ],
-        "source_table_ids": [
-          "TBL-000073"
-        ]
-      }
+        "Use this row when matching requirements about timeout for an open session of a security client over the plc channel.",
+        "ABNT Appendix 9 describes this object as: timeout for an open session of a security client over the PLC channel."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-0-0-94-55-55-255-TIMEOUT-OPEN-SESSION-FOR-SECURITY-CLIENT-THROUGH-PLC-CHANNEL-FOR-CURRENT-ASSOCIATION",
@@ -41698,13 +41726,17 @@
       "domain_tags": [
         "cosem_object",
         "general",
-        "abnt_bulk_import"
+        "communication_profile"
       ],
-      "definition": "ABNT Appendix 9 row-level COSEM object `Timeout open session for security client through PLC channel for current association` with OBIS pattern `0-0:94.55.55.255` and interface class 3 (Register).",
+      "definition": "Row-level Register object at logical name `0-0:94.55.55.255`. Timeout for an open session of a security client over the PLC channel for the current association",
       "relations": [
         {
           "relation": "instance_of",
           "target": "KB-L3-IC-3-REGISTER"
+        },
+        {
+          "relation": "defined_by",
+          "target": "KB-BLUE-BOOK-OBIS-TABLE-9"
         }
       ],
       "obis_pattern": "0-0:94.55.55.255",
@@ -41712,35 +41744,32 @@
       "likely_interface_class_name": "Register",
       "medium": "general",
       "value_group_mapping": {
-        "A": "0",
-        "B": "0",
-        "C": "94",
-        "D": "55",
-        "E": "55",
-        "F": "255"
+        "A": "0 abstract/general",
+        "B": "0 no channel",
+        "C": "94 utility/country-specific data objects",
+        "D": "55 country-specific (Brazil)",
+        "E": "55 security-client PLC session timeout (current association)",
+        "F": "255 current value"
+      },
+      "blue_book_table_ref": {
+        "part": 1,
+        "table_no": 9,
+        "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
       },
       "source_refs": [
         {
-          "source": "ABNT Appendix 9 extracted COSEM object model",
-          "section": "TBL-000073-R000008, TBL-000073"
+          "source": "Blue Book Part 1 Ed. 16",
+          "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+        },
+        {
+          "source": "ABNT Appendix 9 extracted table",
+          "section": "Timeout open session for security client through PLC channel for current association at 0-0:94.55.55.255"
         }
       ],
       "applicable_notes": [
-        "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-        "Review against Blue Book semantics before treating this row as manually curated."
-      ],
-      "bulk_import": {
-        "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-        "source_item_id": "TBL-000073-R000008",
-        "source_refs": [
-          "BLK-000732",
-          "TBL-000073-R000008",
-          "TBL-000073"
-        ],
-        "source_table_ids": [
-          "TBL-000073"
-        ]
-      }
+        "Use this row when matching requirements about timeout for an open session of a security client over the plc channel for the current association.",
+        "ABNT Appendix 9 describes this object as: timeout for an open session of a security client over the PLC channel for the current association."
+      ]
     },
     {
       "id": "KB-ABNT-OBIS-1-0-132-8-X-255-1-0-94-55-X-255-UFER",

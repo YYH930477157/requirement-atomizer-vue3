@@ -13,17 +13,34 @@ keywords:
 domain_tags:
 - cosem_object
 - general
-- abnt_bulk_import
+- general
 relations:
 - relation: instance_of
   target: KB-L3-IC-1-DATA
+- relation: defined_by
+  target: KB-BLUE-BOOK-OBIS-TABLE-9
 ---
 
 # Alarm Filter
 
 ## Definition
 
-ABNT Appendix 9 row-level COSEM object `Alarm Filter` with OBIS pattern `0-0:97.98.10.255` and interface class 1 (Data).
+Row-level Data object at logical name `0-0:97.98.10.255`. Alarm filter
+
+## Aliases
+
+- OBIS 0-0:97.98.10.255
+
+## Domain Tags
+
+- `cosem_object`
+- `general`
+- `general`
+
+## Relations
+
+- `instance_of` -> `KB-L3-IC-1-DATA`
+- `defined_by` -> `KB-BLUE-BOOK-OBIS-TABLE-9`
 
 ## Structured Data
 
@@ -34,35 +51,32 @@ ABNT Appendix 9 row-level COSEM object `Alarm Filter` with OBIS pattern `0-0:97.
   "likely_interface_class_name": "Data",
   "medium": "general",
   "value_group_mapping": {
-    "A": "0",
-    "B": "0",
-    "C": "97",
-    "D": "98",
-    "E": "10",
-    "F": "255"
+    "A": "0 abstract/general",
+    "B": "0 no channel",
+    "C": "97 error/alarm registers",
+    "D": "98 alarm register",
+    "E": "10 alarm filter",
+    "F": "255 current value"
+  },
+  "blue_book_table_ref": {
+    "part": 1,
+    "table_no": 9,
+    "title": "OBIS codes for error registers, alarm registers and alarm filters - Abstract"
   },
   "source_refs": [
     {
-      "source": "ABNT Appendix 9 extracted COSEM object model",
-      "section": "TBL-000051-R000010, TBL-000051"
+      "source": "Blue Book Part 1 Ed. 16",
+      "section": "Table 9 OBIS codes for error registers, alarm registers and alarm filters - Abstract"
+    },
+    {
+      "source": "ABNT Appendix 9 extracted table",
+      "section": "Alarm Filter at 0-0:97.98.10.255"
     }
   ],
   "applicable_notes": [
-    "Bulk-generated from the current ABNT smoke COSEM object model to provide exact OBIS lookup coverage.",
-    "Review against Blue Book semantics before treating this row as manually curated."
-  ],
-  "bulk_import": {
-    "source": "out/abnt_current_kb_smoke/cosem_object_model.json",
-    "source_item_id": "TBL-000051-R000010",
-    "source_refs": [
-      "BLK-000672",
-      "TBL-000051-R000010",
-      "TBL-000051"
-    ],
-    "source_table_ids": [
-      "TBL-000051"
-    ]
-  }
+    "Use this row when matching requirements about alarm filter.",
+    "ABNT Appendix 9 describes this object as: alarm filter."
+  ]
 }
 ```
 
