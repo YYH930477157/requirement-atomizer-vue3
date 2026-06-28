@@ -49,7 +49,7 @@ Row-level Register object at logical name `1-1:94.55.1.255`. Clock Time Shift In
   "medium": "ac_electricity",
   "value_group_mapping": {
     "A": "1 electricity",
-    "B": "1 no channel",
+    "B": "1 channel 1",
     "C": "94 utility/country-specific data objects",
     "D": "55 country-specific (Brazil)",
     "E": "1 country-specific object (per ABNT)",

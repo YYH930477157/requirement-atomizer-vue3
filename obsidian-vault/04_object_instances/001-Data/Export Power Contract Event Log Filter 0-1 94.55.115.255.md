@@ -53,7 +53,7 @@ Row-level Data object at logical name `0-1:94.55.115.255`. Export power contract
   "medium": "general",
   "value_group_mapping": {
     "A": "0 abstract/general",
-    "B": "1 no channel",
+    "B": "1 channel 1",
     "C": "94 utility/country-specific data objects",
     "D": "55 country-specific (Brazil)",
     "E": "115 export power contract event log filter",

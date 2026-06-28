@@ -49,7 +49,7 @@ Row-level Data object at logical name `1-1:94.55.101.255`. Active Quadrant L1.
   "medium": "ac_electricity",
   "value_group_mapping": {
     "A": "1 electricity",
-    "B": "1 no channel",
+    "B": "1 channel 1",
     "C": "94 utility/country-specific data objects",
     "D": "55 country-specific (Brazil)",
     "E": "101 country-specific object (per ABNT)",

@@ -17995,7 +17995,7 @@
       "medium": "ac_electricity",
       "value_group_mapping": {
         "A": "1 electricity",
-        "B": "1 no channel",
+        "B": "1 channel 1",
         "C": "94 utility/country-specific data objects",
         "D": "55 country-specific (Brazil)",
         "E": "100 country-specific object (per ABNT)",
@@ -18055,7 +18055,7 @@
       "medium": "ac_electricity",
       "value_group_mapping": {
         "A": "1 electricity",
-        "B": "1 no channel",
+        "B": "1 channel 1",
         "C": "94 utility/country-specific data objects",
         "D": "55 country-specific (Brazil)",
         "E": "101 country-specific object (per ABNT)",
@@ -18115,7 +18115,7 @@
       "medium": "ac_electricity",
       "value_group_mapping": {
         "A": "1 electricity",
-        "B": "1 no channel",
+        "B": "1 channel 1",
         "C": "94 utility/country-specific data objects",
         "D": "55 country-specific (Brazil)",
         "E": "102 country-specific object (per ABNT)",
@@ -18175,7 +18175,7 @@
       "medium": "ac_electricity",
       "value_group_mapping": {
         "A": "1 electricity",
-        "B": "1 no channel",
+        "B": "1 channel 1",
         "C": "94 utility/country-specific data objects",
         "D": "55 country-specific (Brazil)",
         "E": "103 country-specific object (per ABNT)",
@@ -19976,7 +19976,7 @@
       "medium": "general",
       "value_group_mapping": {
         "A": "0 abstract/general",
-        "B": "1 no channel",
+        "B": "1 channel 1",
         "C": "94 utility/country-specific data objects",
         "D": "55 country-specific (Brazil)",
         "E": "115 export power contract event log filter",
@@ -21503,7 +21503,7 @@
       "medium": "ac_electricity",
       "value_group_mapping": {
         "A": "1 electricity",
-        "B": "1 no channel",
+        "B": "1 channel 1",
         "C": "94 utility/country-specific data objects",
         "D": "55 country-specific (Brazil)",
         "E": "104 country-specific object (per ABNT)",
@@ -26297,7 +26297,7 @@
       "medium": "ac_electricity",
       "value_group_mapping": {
         "A": "1 electricity",
-        "B": "1 no channel",
+        "B": "1 channel 1",
         "C": "94 utility/country-specific data objects",
         "D": "55 country-specific (Brazil)",
         "E": "1 country-specific object (per ABNT)",
