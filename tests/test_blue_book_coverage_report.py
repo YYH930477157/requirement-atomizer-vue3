@@ -32,11 +32,11 @@ class BlueBookCoverageReportTests(unittest.TestCase):
         self.assertEqual(report["object_instances"]["by_medium"]["hca"], 7)
         self.assertEqual(report["object_instances"]["by_medium"]["thermal_energy"], 10)
         self.assertEqual(report["object_instances"]["by_medium"]["water"], 11)
-        self.assertEqual(report["object_instances"]["by_table"]["13"], 35)
+        self.assertEqual(report["object_instances"]["by_table"]["13"], 72)
         self.assertEqual(report["object_instances"]["by_table"]["8"], 44)
         self.assertEqual(report["object_instances"]["by_table"]["9"], 49)
         self.assertEqual(report["object_instances"]["by_table"]["12"], 12)
-        self.assertEqual(report["object_instances"]["by_table"]["14"], 43)
+        self.assertEqual(report["object_instances"]["by_table"]["14"], 85)
         self.assertEqual(report["object_instances"]["by_table"]["21"], 13)
         self.assertEqual(report["object_instances"]["by_table"]["24"], 9)
         for table_no in ("41", "49", "50", "72"):
