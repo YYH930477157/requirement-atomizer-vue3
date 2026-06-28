@@ -11,6 +11,50 @@ from unittest.mock import ANY, patch
 from llm_pipeline import write_jsonl
 
 
+class ResolveKbPathsTests(unittest.TestCase):
+    """锁定 desktop_tasks.resolve_kb_paths：前端预设送相对 --kb 路径，打包后端 cwd=resources/backend
+    命中不到时必须按 package_root() 解析（否则报 'No such file: …/backend/knowledge_bases/…json'）。"""
+
+    def test_none_uses_default_kb_paths(self) -> None:
+        from desktop_tasks import resolve_kb_paths
+
+        sentinel = [Path("X") / "default.json"]
+        with patch("desktop_tasks.default_kb_paths", return_value=sentinel) as default_kb_paths:
+            self.assertEqual(resolve_kb_paths(None), sentinel)
+            default_kb_paths.assert_called_once()
+
+    def test_absolute_paths_pass_through(self) -> None:
+        from desktop_tasks import resolve_kb_paths
+
+        absolute = (Path(tempfile.gettempdir()).resolve() / "abs_kb.json")
+        self.assertEqual(resolve_kb_paths([absolute]), [absolute])
+
+    def test_relative_missing_in_cwd_resolves_against_package_root(self) -> None:
+        from desktop_tasks import resolve_kb_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # 唯一名，保证不在测试 cwd 命中 -> 走 package_root 兜底
+            rel = Path("knowledge_bases") / "__resolve_kb_probe__.json"
+            with patch("desktop_tasks.package_root", return_value=root):
+                self.assertEqual(resolve_kb_paths([rel]), [root / rel])
+
+    def test_resolve_bundled_path_none_returns_none(self) -> None:
+        from desktop_tasks import resolve_bundled_path
+
+        self.assertIsNone(resolve_bundled_path(None))
+
+    def test_resolve_bundled_path_relative_domain_pack_uses_package_root(self) -> None:
+        from desktop_tasks import resolve_bundled_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # domain pack 预设相对路径（cwd 命中不到）-> package_root 兜底（打包后即 resources/）
+            rel = Path("domain_packs") / "__resolve_pack_probe__"
+            with patch("desktop_tasks.package_root", return_value=root):
+                self.assertEqual(resolve_bundled_path(rel), root / rel)
+
+
 class DesktopTaskTests(unittest.TestCase):
     def test_run_pipeline_task_uses_default_kbs_when_not_supplied(self) -> None:
         from desktop_tasks import run_pipeline_task
