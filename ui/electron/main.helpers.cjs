@@ -26,7 +26,7 @@ const DEFAULT_LLM_SETTINGS = {
   model: "qwen2.5:14b",
   apiKeyEnv: "RATOMIZER_LLM_API_KEY",
   temperature: 0,
-  maxTokens: 1024,
+  maxTokens: 4096,
   timeoutS: 60,
   maxRetries: 3,
   concurrency: 4,

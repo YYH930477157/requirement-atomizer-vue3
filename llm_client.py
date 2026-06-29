@@ -27,7 +27,7 @@ class LLMClientConfig:
     model: str
     api_key_env: str = "RATOMIZER_LLM_API_KEY"
     temperature: float = 0.0
-    max_tokens: int = 1024
+    max_tokens: int = 4096
     timeout_s: float = 60.0
     max_retries: int = 3
 
