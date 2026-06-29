@@ -154,6 +154,32 @@ class RouteTests(unittest.TestCase):
         self.assertIsNone(ai_extract.config_for_route("stub"))
         self.assertIsNone(ai_extract.config_for_route(None))
 
+    def test_run_ai_extract_floors_max_tokens_for_reasoning_models(self) -> None:
+        """推理模型 max_tokens 太小会截断 JSON → 整章节失败；run_ai_extract 须把预算抬到下限。"""
+        from llm_client import LLMClientConfig
+        captured: dict = {}
+
+        def fake_chat_json(config, system, user):
+            captured["max_tokens"] = config.max_tokens
+            return {"requirements": []}
+
+        low = LLMClientConfig(base_url="http://x", model="m", max_tokens=1024)
+        orig_cfg = ai_extract.config_for_route
+        orig_chat = ai_extract.chat_json
+        ai_extract.config_for_route = lambda route, pipeline_path=None: low
+        ai_extract.chat_json = fake_chat_json
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                (out / "blocks.jsonl").write_text(
+                    '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                    encoding="utf-8")
+                ai_extract.run_ai_extract(out, route="openai_compatible", merge_deterministic=False)
+            self.assertEqual(captured["max_tokens"], ai_extract.AI_EXTRACT_MIN_MAX_TOKENS)
+        finally:
+            ai_extract.config_for_route = orig_cfg
+            ai_extract.chat_json = orig_chat
+
     def test_resolve_concurrency_explicit_env_default_and_clamp(self) -> None:
         import os
         # 显式参数优先并夹取
@@ -223,6 +249,29 @@ class MergeSectionsTests(unittest.TestCase):
         # 合并文本含各小节标题
         self.assertIn("## A", merged[0]["text"])
         self.assertIn("## B", merged[0]["text"])
+
+    def test_oversized_section_is_split_under_target(self) -> None:
+        """超大源章节须被拆成 ≤target 的多块（防 LLM 输出 JSON 截断）——回归：8987 字整块导致 40/48 失败。"""
+        paras = "\n".join(f"段落{i} " + "字" * 200 for i in range(20))  # ~4200 字，单章节
+        sections = [{"section_id": "S1", "heading": "H", "text": paras, "block_ids": ["b1", "b2"]}]
+        merged = ai_extract.merge_sections(sections, target_chars=2800)
+        self.assertGreater(len(merged), 1)  # 被拆开
+        for m in merged:
+            self.assertLessEqual(len(m["text"]), 2800)  # 每块有界
+            self.assertEqual(m["block_ids"], ["b1", "b2"])  # 同段 block 溯源保留
+
+    def test_split_text_bounds_and_is_lossless(self) -> None:
+        text = "\n".join(f"line{i} " + "a" * 100 for i in range(60))  # ~6500 字
+        chunks = ai_extract._split_text(text, 2800)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(c) <= 2800 for c in chunks))
+        # 去掉拆分边界换行后内容无损
+        self.assertEqual("".join(c.replace("\n", "") for c in chunks), text.replace("\n", ""))
+
+    def test_split_handles_single_overlong_line(self) -> None:
+        chunks = ai_extract._split_text("x" * 9000, 2800)  # 无换行长行须硬切
+        self.assertTrue(all(len(c) <= 2800 for c in chunks))
+        self.assertEqual("".join(chunks), "x" * 9000)
 
 
 class DriftSeverityTests(unittest.TestCase):

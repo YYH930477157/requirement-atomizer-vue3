@@ -26,6 +26,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -49,6 +50,12 @@ DEFAULT_MERGE_CHARS = 2800
 DEFAULT_CONCURRENCY = 4
 MAX_CONCURRENCY = 16
 CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
+# 推理模型（如 deepseek-v4-flash / GLM-5.2）会先花大量 token 在隐藏 reasoning 上，
+# max_tokens 太小会把正文 JSON 截断 → finish_reason=length → 解析失败 → 整章节判失败。
+# 实测 deepseek-v4-flash：1024 必截断；2800 字章节正文最高用到 ~3500 token，6144 留足余量。
+# 注意：仅抬 max_tokens 不够——超大源章节（5k-9k 字）即便 8192 也会截断，必须配合 merge_sections
+# 的拆分（每次 LLM 输入 ≤target_chars），二者缺一不可。
+AI_EXTRACT_MIN_MAX_TOKENS = 6144
 
 ChatFn = Callable[[str, str], dict[str, Any]]
 
@@ -108,26 +115,66 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sections
 
 
+def _split_text(text: str, target_chars: int) -> list[str]:
+    """把超长文本按行贪心切成 ≤target 的块；单行超长则硬切。保证每次 LLM 输入有界。"""
+    if len(text) <= target_chars:
+        return [text]
+    units: list[str] = []
+    for line in text.split("\n"):
+        if len(line) <= target_chars:
+            units.append(line)
+        else:  # 单行超长（如无换行的长表格）：硬切
+            units.extend(line[i:i + target_chars] for i in range(0, len(line), target_chars))
+    chunks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for unit in units:
+        add = len(unit) + 1
+        if cur and cur_len + add > target_chars:
+            chunks.append("\n".join(cur))
+            cur, cur_len = [unit], add
+        else:
+            cur.append(unit)
+            cur_len += add
+    if cur:
+        chunks.append("\n".join(cur))
+    return [c for c in chunks if c.strip()]
+
+
 def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAULT_MERGE_CHARS) -> list[dict[str, Any]]:
-    """把相邻小章节合并到目标字数，减少 LLM 调用。文本里保留各小节标题供 LLM 归属。"""
+    """章节规整到目标字数：小章节合并（减少 LLM 调用），**超大章节拆分**（防 LLM 输出 JSON 截断）。"""
     merged: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
+
+    def flush() -> None:
+        nonlocal cur
+        if cur is not None and cur["texts"]:
+            merged.append(_finalize_merged(cur))
+        cur = None
+
     for sec in sections:
         piece = f"## {sec['heading']}\n{sec['text']}" if sec.get("heading") else sec["text"]
+        block_ids = list(sec.get("block_ids") or [])
+        if len(piece) > target_chars:
+            # 超大源章节：拆成 ≤target 的多块，各自独立成段（同段 block_ids 全量保留以便溯源）
+            flush()
+            for chunk in _split_text(piece, target_chars):
+                merged.append(_finalize_merged({
+                    "section_id": sec["section_id"], "heading": sec.get("heading", ""),
+                    "texts": [chunk], "block_ids": block_ids}))
+            continue
         if cur is None:
             cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": list(sec.get("block_ids") or []), "len": len(piece)}
-            continue
-        if cur["len"] + len(piece) > target_chars and cur["texts"]:
-            merged.append(_finalize_merged(cur))
+                   "texts": [piece], "block_ids": block_ids, "len": len(piece)}
+        elif cur["len"] + len(piece) > target_chars and cur["texts"]:
+            flush()
             cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": list(sec.get("block_ids") or []), "len": len(piece)}
+                   "texts": [piece], "block_ids": block_ids, "len": len(piece)}
         else:
             cur["texts"].append(piece)
-            cur["block_ids"].extend(sec.get("block_ids") or [])
+            cur["block_ids"].extend(block_ids)
             cur["len"] += len(piece)
-    if cur is not None and cur["texts"]:
-        merged.append(_finalize_merged(cur))
+    flush()
     return merged
 
 
@@ -439,6 +486,9 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         requirements: list[dict[str, Any]] = []
         route_label = "stub"
     else:
+        if config.max_tokens < AI_EXTRACT_MIN_MAX_TOKENS:  # 给推理模型留出正文预算，防 JSON 截断
+            config = replace(config, max_tokens=AI_EXTRACT_MIN_MAX_TOKENS)
+
         def chat(system: str, user: str) -> dict[str, Any]:
             return chat_json(config, system, user)
 
