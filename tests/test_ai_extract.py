@@ -120,6 +120,38 @@ class RouteTests(unittest.TestCase):
         self.assertIsNone(ai_extract.config_for_route("stub"))
         self.assertIsNone(ai_extract.config_for_route(None))
 
+    def test_stub_route_still_produces_deterministic_merged_spec(self) -> None:
+        """stub（LLM 关）下确定性引擎仍须照常产出 merged_spec —— 回归：早期 early-return 让 GUI 双引擎按钮零产出。"""
+        original = ai_extract.load_or_build_deterministic
+        # 确定性结构需求须带 threshold_table.rows，否则 merge_requirements 视为散文模板丢弃
+        ai_extract.load_or_build_deterministic = lambda out_dir, *, source, extracted_at: [
+            {"id": "DET-1", "title": "Register value", "description": "OBIS 1-0:1.8.0.255",
+             "type": "数据需求", "priority": "P1", "labels": ["计量"],
+             "source_section": "4 Data model", "source_quote": "", "notes": "",
+             "acceptance_criteria": [], "status": "draft",
+             "dependencies": [], "parent": None, "children": [],
+             "threshold_table": {"columns": ["OBIS", "class_id"],
+                                 "rows": [["1-0:1.8.0.255", "3"]]}},
+        ]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                (out / "blocks.jsonl").write_text(
+                    '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                    encoding="utf-8")
+                result = ai_extract.run_ai_extract(out, route="stub", merge_deterministic=True)
+                self.assertEqual(result["route"], "stub")
+                self.assertEqual(result["requirements"], 0)  # AI 行为引擎为空
+                # 确定性引擎照常落盘
+                self.assertIn("merged_spec_requirements.json", result["written"])
+                self.assertIn("merged_spec.xlsx", result["written"])
+                self.assertTrue((out / "merged_spec_requirements.json").exists())
+                self.assertTrue((out / "merged_spec.xlsx").exists())
+                self.assertEqual(result["merged"]["deterministic_structural"], 1)
+                self.assertEqual(result["merged"]["ai_behavioral"], 0)
+        finally:
+            ai_extract.load_or_build_deterministic = original
+
 
 class MergeSectionsTests(unittest.TestCase):
     def test_small_sections_merged_to_target(self) -> None:

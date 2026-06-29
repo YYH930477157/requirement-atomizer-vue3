@@ -380,29 +380,42 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars)
 
     config = config_for_route(route, pipeline_path)
+    written: list[str] = []
+    code_flagged = 0
+    int_flagged = 0
+    model: str | None = None
+
     if config is None:
-        return {"route": "stub", "sections": len(sections), "requirements": 0,
-                "note": "stub 路由：未调 LLM（配置 --route openai_compatible 启用）"}
+        # stub 路由：不调 LLM，AI 行为需求为空——但确定性引擎（双引擎之一）仍照常
+        # 产出结构规格，所以不在此 early-return，继续走 write_doc / merge_deterministic。
+        requirements: list[dict[str, Any]] = []
+        route_label = "stub"
+    else:
+        def chat(system: str, user: str) -> dict[str, Any]:
+            return chat_json(config, system, user)
 
-    def chat(system: str, user: str) -> dict[str, Any]:
-        return chat_json(config, system, user)
+        requirements = extract_all(sections, chat, model=config.model,
+                                   cache_path=out_dir / AI_EXTRACT_CACHE,
+                                   concurrency=4)
+        ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
+        code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
+        int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
+        model = config.model
+        route_label = "openai_compatible"
 
-    requirements = extract_all(sections, chat, model=config.model,
-                               cache_path=out_dir / AI_EXTRACT_CACHE,
-                               concurrency=4)
-    ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
-    code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
-    int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
+        target = out_dir / AI_REQUIREMENTS
+        with target.open("w", encoding="utf-8", newline="\n") as f:
+            for req in requirements:
+                f.write(json.dumps(req, ensure_ascii=False) + "\n")
+        written.append(target.name)
 
-    target = out_dir / AI_REQUIREMENTS
-    with target.open("w", encoding="utf-8", newline="\n") as f:
-        for req in requirements:
-            f.write(json.dumps(req, ensure_ascii=False) + "\n")
-    written = [target.name]
-
-    result = {"route": "openai_compatible", "model": config.model, "sections": len(sections),
+    result: dict[str, Any] = {"route": route_label, "sections": len(sections),
               "requirements": len(requirements), "code_drift_flagged": code_flagged,
               "int_drift_flagged": int_flagged, "written": written}
+    if model:
+        result["model"] = model
+    if config is None:
+        result["note"] = "stub 路由：未调 LLM（AI 行为需求为空，仅产确定性结构规格）"
 
     if write_doc:
         doc = build_skill_doc(requirements, source=out_dir.name,

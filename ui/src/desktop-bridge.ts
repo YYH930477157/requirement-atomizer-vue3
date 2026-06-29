@@ -10,6 +10,7 @@ export type DesktopTaskPayload = {
   count?: number
   analysis?: unknown
   breakdown?: unknown
+  merged?: unknown
 }
 
 export type PipelineTaskInput = {

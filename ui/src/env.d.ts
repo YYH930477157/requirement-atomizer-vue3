@@ -17,6 +17,7 @@ declare global {
     summary?: unknown
     written?: string[]
     count?: number
+    merged?: unknown
   }
 
   interface Window {

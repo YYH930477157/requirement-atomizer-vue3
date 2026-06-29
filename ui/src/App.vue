@@ -888,16 +888,56 @@ function handleTaskProgress(event: { stage: string; completed?: number; total?: 
 }
 
 async function handleAiExtract() {
-  if (!currentOutputDir.value || !window.ratomizerDesktop?.aiExtract) return
+  if (isRunning.value) return
+  if (!window.ratomizerDesktop?.aiExtract) {
+    apiMessage.value = "当前环境不支持 AI 抽取（仅桌面应用可用）"
+    return
+  }
+  if (!currentOutputDir.value) {
+    runStage.value = "无法 AI 抽取"
+    runProgressDetail.value = "请先「运行」管线生成输出目录，再执行 AI 抽取"
+    apiMessage.value = "请先运行管线生成输出目录，再执行 AI 抽取"
+    return
+  }
+  const usingLlm = llmMode.value
+  isRunning.value = true
+  runStage.value = "AI 抽取（双引擎）"
+  runProgress.value = 20
+  runProgressDetail.value = usingLlm
+    ? "正在调用 LLM 抽取行为需求 + 合并确定性结构…"
+    : "LLM 未启用：仅装配确定性结构规格…"
   try {
     const payload = await window.ratomizerDesktop.aiExtract({
       outDir: currentOutputDir.value,
-      llmRoute: llmMode.value ? "openai_compatible" : "stub",
+      llmRoute: usingLlm ? "openai_compatible" : "stub",
     })
     latestTaskSummary.value = objectValue(payload.summary)
-    apiMessage.value = `AI 抽取（双引擎）完成：${payload.count ?? 0} 条行为需求 + 确定性对象目录，已产 merged_spec.xlsx`
+    const written = Array.isArray(payload.written) ? payload.written : []
+    const merged = objectValue(payload.merged) as
+      | { total?: number; ai_behavioral?: number; deterministic_structural?: number }
+      | null
+    runProgress.value = 100
+    if (written.length === 0) {
+      runStage.value = "AI 抽取未产出文件"
+      runProgressDetail.value = "未写出任何交付物——请确认输出目录已先运行管线"
+      apiMessage.value = "AI 抽取未写出文件：请确认已先运行管线"
+      return
+    }
+    const total = merged?.total ?? payload.count ?? 0
+    const breakdown =
+      merged?.ai_behavioral != null || merged?.deterministic_structural != null
+        ? `（AI 行为 ${merged?.ai_behavioral ?? 0} + 确定性结构 ${merged?.deterministic_structural ?? 0}）`
+        : ""
+    runStage.value = "AI 抽取完成"
+    runProgressDetail.value = `已写出 ${written.length} 个文件：${written.join("、")}`
+    apiMessage.value = `AI 抽取${usingLlm ? "（双引擎）" : "（仅确定性结构）"}完成：共 ${total} 条${breakdown}，已产 ${written.join("、")}`
   } catch (error) {
-    apiMessage.value = error instanceof Error ? error.message : "AI 抽取失败"
+    runStage.value = "AI 抽取失败"
+    const message = error instanceof Error ? error.message : "AI 抽取失败"
+    runProgressDetail.value = message
+    apiMessage.value = message
+  } finally {
+    isRunning.value = false
   }
 }
 
