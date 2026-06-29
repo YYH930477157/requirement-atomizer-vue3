@@ -154,6 +154,26 @@ class RouteTests(unittest.TestCase):
         self.assertIsNone(ai_extract.config_for_route("stub"))
         self.assertIsNone(ai_extract.config_for_route(None))
 
+    def test_resolve_concurrency_explicit_env_default_and_clamp(self) -> None:
+        import os
+        # 显式参数优先并夹取
+        self.assertEqual(ai_extract.resolve_concurrency(2), 2)
+        self.assertEqual(ai_extract.resolve_concurrency(99), ai_extract.MAX_CONCURRENCY)
+        self.assertEqual(ai_extract.resolve_concurrency(0), 1)
+        prior = os.environ.get(ai_extract.CONCURRENCY_ENV)
+        try:
+            os.environ[ai_extract.CONCURRENCY_ENV] = "3"
+            self.assertEqual(ai_extract.resolve_concurrency(None), 3)  # 取环境变量
+            os.environ[ai_extract.CONCURRENCY_ENV] = "bogus"
+            self.assertEqual(ai_extract.resolve_concurrency(None), ai_extract.DEFAULT_CONCURRENCY)
+            os.environ.pop(ai_extract.CONCURRENCY_ENV, None)
+            self.assertEqual(ai_extract.resolve_concurrency(None), ai_extract.DEFAULT_CONCURRENCY)
+        finally:
+            if prior is None:
+                os.environ.pop(ai_extract.CONCURRENCY_ENV, None)
+            else:
+                os.environ[ai_extract.CONCURRENCY_ENV] = prior
+
     def test_stub_route_still_produces_deterministic_merged_spec(self) -> None:
         """stub（LLM 关）下确定性引擎仍须照常产出 merged_spec —— 回归：早期 early-return 让 GUI 双引擎按钮零产出。"""
         original = ai_extract.load_or_build_deterministic

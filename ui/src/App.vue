@@ -313,6 +313,10 @@
                   <span>重试次数</span>
                   <input v-model.number="llmSettings.maxRetries" data-testid="settings-max-retries" type="number" min="0" step="1" />
                 </label>
+                <label class="settings-field">
+                  <span>AI 抽取并发</span>
+                  <input v-model.number="llmSettings.concurrency" data-testid="settings-concurrency" type="number" min="1" max="16" step="1" title="AI 抽取同时调用 LLM 的章节数；端点限流(429)时调低到 1-2" />
+                </label>
               </div>
               <div class="settings-actions">
                 <button class="button primary" type="button" data-testid="settings-save" :disabled="isSavingSettings" @click="handleSaveLlmSettings">
@@ -384,6 +388,7 @@ type LlmSettings = {
   maxTokens: number
   timeoutS: number
   maxRetries: number
+  concurrency: number
 }
 
 const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
@@ -418,6 +423,7 @@ const llmSettings = ref<LlmSettings>({
   maxTokens: 1024,
   timeoutS: 60,
   maxRetries: 3,
+  concurrency: 4,
 })
 const runProgress = ref(0)
 const runStage = ref("待运行")
@@ -658,6 +664,7 @@ function normalizeUiLlmSettings(payload: Partial<LlmSettings>): LlmSettings {
     maxTokens: integerOr(payload.maxTokens, 1024),
     timeoutS: numberOr(payload.timeoutS, 60),
     maxRetries: integerOr(payload.maxRetries, 3),
+    concurrency: Math.max(1, Math.min(16, integerOr(payload.concurrency, 4))),
   }
 }
 

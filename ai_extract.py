@@ -23,6 +23,7 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from pathlib import Path
@@ -45,8 +46,21 @@ AI_EXTRACT_PROMPT_VERSION = "ai-extract-v1"
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
 DEFAULT_MERGE_CHARS = 2800
+DEFAULT_CONCURRENCY = 4
+MAX_CONCURRENCY = 16
+CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
 
 ChatFn = Callable[[str, str], dict[str, Any]]
+
+
+def resolve_concurrency(explicit: int | None = None) -> int:
+    """并发度：显式参数优先，其次环境变量 RATOMIZER_LLM_CONCURRENCY（GUI 设置面板写入），否则默认。夹在 1..MAX。"""
+    raw: Any = explicit if explicit is not None else os.environ.get(CONCURRENCY_ENV)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_CONCURRENCY
+    return max(1, min(MAX_CONCURRENCY, value))
 
 VALID_TYPES = {"functional", "non_functional", "constraint", "business_rule"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
@@ -405,7 +419,8 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
 def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAULT_MERGE_CHARS,
                    write_doc: bool = False, merge_deterministic: bool = False,
                    pipeline_path: Path = DEFAULT_PIPELINE_PATH,
-                   progress_callback: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+                   progress_callback: Callable[[dict[str, Any]], None] | None = None,
+                   concurrency: int | None = None) -> dict[str, Any]:
     """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel + 双引擎合并）。"""
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
@@ -430,7 +445,7 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         extract_stats: dict[str, Any] = {}
         requirements = extract_all(sections, chat, model=config.model,
                                    cache_path=out_dir / AI_EXTRACT_CACHE,
-                                   concurrency=4,
+                                   concurrency=resolve_concurrency(concurrency),
                                    progress_callback=progress_callback,
                                    stats=extract_stats)
         ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
@@ -500,13 +515,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--merge-chars", type=int, default=DEFAULT_MERGE_CHARS, help="章节合并目标字数")
     parser.add_argument("--doc", action="store_true", help="同时产 skill 格式 doc + Excel（仅 AI 需求）")
     parser.add_argument("--merge", action="store_true", help="双引擎合并：AI 行为 + 确定性结构 → merged_spec")
+    parser.add_argument("--concurrency", type=int, default=None,
+                        help=f"LLM 并发章节数（默认 {DEFAULT_CONCURRENCY}，或环境变量 {CONCURRENCY_ENV}；夹在 1..{MAX_CONCURRENCY}）")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     result = run_ai_extract(args.out, route=args.route, merge_chars=args.merge_chars,
-                            write_doc=args.doc, merge_deterministic=args.merge)
+                            write_doc=args.doc, merge_deterministic=args.merge,
+                            concurrency=args.concurrency)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

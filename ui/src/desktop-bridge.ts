@@ -42,6 +42,7 @@ export type LlmSettingsInput = {
   maxTokens: number
   timeoutS: number
   maxRetries: number
+  concurrency: number
 }
 
 export type LlmSettingsPayload = Omit<LlmSettingsInput, "apiKey">
