@@ -258,7 +258,9 @@ class DesktopTaskTests(unittest.TestCase):
                 }
                 payload = desktop_tasks.ai_extract_task(out_dir, route="openai_compatible")
 
-        run_ai.assert_called_once_with(out_dir.resolve(), route="openai_compatible", merge_deterministic=True)
+        run_ai.assert_called_once_with(out_dir.resolve(), route="openai_compatible",
+                                       merge_deterministic=True,
+                                       progress_callback=desktop_tasks.emit_progress)
         self.assertEqual(payload["kind"], "ai_extract")
         self.assertEqual(payload["count"], 3)
         self.assertEqual(payload["merged"]["total"], 10)

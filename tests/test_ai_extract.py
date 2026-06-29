@@ -105,6 +105,40 @@ class CacheReproducibilityTests(unittest.TestCase):
             self.assertEqual(first, second)   # 同输入同输出（稳定）
 
 
+class ExtractAllProgressTests(unittest.TestCase):
+    def test_progress_events_and_failure_count(self) -> None:
+        """每章节回调进度 + 失败章节计入 stats 不崩 —— 回归：AI 抽取零进度时界面像卡死。"""
+        from llm_client import LLMConnectionError
+        sections = [
+            {"section_id": "S1", "heading": "S1", "text": "The meter shall do A.", "block_ids": ["B1"]},
+            {"section_id": "S2", "heading": "S2", "text": "The meter shall do B.", "block_ids": ["B2"]},
+        ]
+
+        def chat(system: str, user: str) -> dict:
+            if "do B" in user:  # 模拟某章节 LLM 调用失败（如 401/超时）
+                raise LLMConnectionError("HTTP 401")
+            return {"requirements": [{"title": "Do A", "description": "做 A", "type": "functional",
+                                      "priority": "P1", "labels": ["计量"],
+                                      "source_quote": "The meter shall do A."}]}
+
+        events: list[dict] = []
+        stats: dict = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "c.jsonl"
+            flat = ai_extract.extract_all(sections, chat, model="m", cache_path=cache,
+                                          progress_callback=events.append, stats=stats)
+        # 初始 1 次 + 每章节完成各 1 次 = 至少 3 次回调，末次满 100%
+        self.assertGreaterEqual(len(events), 3)
+        self.assertEqual(events[-1]["stage"], "ai_extract")
+        self.assertEqual(events[-1]["completed"], 2)
+        self.assertEqual(events[-1]["total"], 2)
+        self.assertEqual(events[-1]["percent"], 100)
+        # 失败章节计入 stats、不抛；成功章节仍产 1 条需求
+        self.assertEqual(stats["failed_sections"], 1)
+        self.assertEqual(stats["total_sections"], 2)
+        self.assertEqual(len(flat), 1)
+
+
 class RouteTests(unittest.TestCase):
     def test_stub_route_produces_no_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -119,6 +153,84 @@ class RouteTests(unittest.TestCase):
     def test_config_for_route_stub_is_none(self) -> None:
         self.assertIsNone(ai_extract.config_for_route("stub"))
         self.assertIsNone(ai_extract.config_for_route(None))
+
+    def test_run_ai_extract_floors_max_tokens_for_reasoning_models(self) -> None:
+        """推理模型 max_tokens 太小会截断 JSON → 整章节失败；run_ai_extract 须把预算抬到下限。"""
+        from llm_client import LLMClientConfig
+        captured: dict = {}
+
+        def fake_chat_json(config, system, user):
+            captured["max_tokens"] = config.max_tokens
+            return {"requirements": []}
+
+        low = LLMClientConfig(base_url="http://x", model="m", max_tokens=1024)
+        orig_cfg = ai_extract.config_for_route
+        orig_chat = ai_extract.chat_json
+        ai_extract.config_for_route = lambda route, pipeline_path=None: low
+        ai_extract.chat_json = fake_chat_json
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                (out / "blocks.jsonl").write_text(
+                    '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                    encoding="utf-8")
+                ai_extract.run_ai_extract(out, route="openai_compatible", merge_deterministic=False)
+            self.assertEqual(captured["max_tokens"], ai_extract.AI_EXTRACT_MIN_MAX_TOKENS)
+        finally:
+            ai_extract.config_for_route = orig_cfg
+            ai_extract.chat_json = orig_chat
+
+    def test_resolve_concurrency_explicit_env_default_and_clamp(self) -> None:
+        import os
+        # 显式参数优先并夹取
+        self.assertEqual(ai_extract.resolve_concurrency(2), 2)
+        self.assertEqual(ai_extract.resolve_concurrency(99), ai_extract.MAX_CONCURRENCY)
+        self.assertEqual(ai_extract.resolve_concurrency(0), 1)
+        prior = os.environ.get(ai_extract.CONCURRENCY_ENV)
+        try:
+            os.environ[ai_extract.CONCURRENCY_ENV] = "3"
+            self.assertEqual(ai_extract.resolve_concurrency(None), 3)  # 取环境变量
+            os.environ[ai_extract.CONCURRENCY_ENV] = "bogus"
+            self.assertEqual(ai_extract.resolve_concurrency(None), ai_extract.DEFAULT_CONCURRENCY)
+            os.environ.pop(ai_extract.CONCURRENCY_ENV, None)
+            self.assertEqual(ai_extract.resolve_concurrency(None), ai_extract.DEFAULT_CONCURRENCY)
+        finally:
+            if prior is None:
+                os.environ.pop(ai_extract.CONCURRENCY_ENV, None)
+            else:
+                os.environ[ai_extract.CONCURRENCY_ENV] = prior
+
+    def test_stub_route_still_produces_deterministic_merged_spec(self) -> None:
+        """stub（LLM 关）下确定性引擎仍须照常产出 merged_spec —— 回归：早期 early-return 让 GUI 双引擎按钮零产出。"""
+        original = ai_extract.load_or_build_deterministic
+        # 确定性结构需求须带 threshold_table.rows，否则 merge_requirements 视为散文模板丢弃
+        ai_extract.load_or_build_deterministic = lambda out_dir, *, source, extracted_at: [
+            {"id": "DET-1", "title": "Register value", "description": "OBIS 1-0:1.8.0.255",
+             "type": "数据需求", "priority": "P1", "labels": ["计量"],
+             "source_section": "4 Data model", "source_quote": "", "notes": "",
+             "acceptance_criteria": [], "status": "draft",
+             "dependencies": [], "parent": None, "children": [],
+             "threshold_table": {"columns": ["OBIS", "class_id"],
+                                 "rows": [["1-0:1.8.0.255", "3"]]}},
+        ]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                (out / "blocks.jsonl").write_text(
+                    '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                    encoding="utf-8")
+                result = ai_extract.run_ai_extract(out, route="stub", merge_deterministic=True)
+                self.assertEqual(result["route"], "stub")
+                self.assertEqual(result["requirements"], 0)  # AI 行为引擎为空
+                # 确定性引擎照常落盘
+                self.assertIn("merged_spec_requirements.json", result["written"])
+                self.assertIn("merged_spec.xlsx", result["written"])
+                self.assertTrue((out / "merged_spec_requirements.json").exists())
+                self.assertTrue((out / "merged_spec.xlsx").exists())
+                self.assertEqual(result["merged"]["deterministic_structural"], 1)
+                self.assertEqual(result["merged"]["ai_behavioral"], 0)
+        finally:
+            ai_extract.load_or_build_deterministic = original
 
 
 class MergeSectionsTests(unittest.TestCase):
@@ -137,6 +249,29 @@ class MergeSectionsTests(unittest.TestCase):
         # 合并文本含各小节标题
         self.assertIn("## A", merged[0]["text"])
         self.assertIn("## B", merged[0]["text"])
+
+    def test_oversized_section_is_split_under_target(self) -> None:
+        """超大源章节须被拆成 ≤target 的多块（防 LLM 输出 JSON 截断）——回归：8987 字整块导致 40/48 失败。"""
+        paras = "\n".join(f"段落{i} " + "字" * 200 for i in range(20))  # ~4200 字，单章节
+        sections = [{"section_id": "S1", "heading": "H", "text": paras, "block_ids": ["b1", "b2"]}]
+        merged = ai_extract.merge_sections(sections, target_chars=2800)
+        self.assertGreater(len(merged), 1)  # 被拆开
+        for m in merged:
+            self.assertLessEqual(len(m["text"]), 2800)  # 每块有界
+            self.assertEqual(m["block_ids"], ["b1", "b2"])  # 同段 block 溯源保留
+
+    def test_split_text_bounds_and_is_lossless(self) -> None:
+        text = "\n".join(f"line{i} " + "a" * 100 for i in range(60))  # ~6500 字
+        chunks = ai_extract._split_text(text, 2800)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(c) <= 2800 for c in chunks))
+        # 去掉拆分边界换行后内容无损
+        self.assertEqual("".join(c.replace("\n", "") for c in chunks), text.replace("\n", ""))
+
+    def test_split_handles_single_overlong_line(self) -> None:
+        chunks = ai_extract._split_text("x" * 9000, 2800)  # 无换行长行须硬切
+        self.assertTrue(all(len(c) <= 2800 for c in chunks))
+        self.assertEqual("".join(chunks), "x" * 9000)
 
 
 class DriftSeverityTests(unittest.TestCase):

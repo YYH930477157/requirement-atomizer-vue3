@@ -29,7 +29,10 @@ const DEFAULT_LLM_SETTINGS = {
   maxTokens: 1024,
   timeoutS: 60,
   maxRetries: 3,
+  concurrency: 4,
 };
+
+const MAX_CONCURRENCY = 16;
 
 const SECRET_PREFIX = "safeStorage:v1:";
 
@@ -43,6 +46,8 @@ function normalizeLlmSettings(input = {}) {
     maxTokens: integerValue(input.maxTokens, DEFAULT_LLM_SETTINGS.maxTokens),
     timeoutS: numberValue(input.timeoutS, DEFAULT_LLM_SETTINGS.timeoutS),
     maxRetries: integerValue(input.maxRetries, DEFAULT_LLM_SETTINGS.maxRetries),
+    concurrency: Math.max(1, Math.min(MAX_CONCURRENCY,
+      integerValue(input.concurrency, DEFAULT_LLM_SETTINGS.concurrency))),
   };
 }
 
@@ -57,6 +62,7 @@ function buildLlmEnvironment(settings, env = process.env) {
     RATOMIZER_LLM_MAX_TOKENS: String(normalized.maxTokens),
     RATOMIZER_LLM_TIMEOUT_S: String(normalized.timeoutS),
     RATOMIZER_LLM_MAX_RETRIES: String(normalized.maxRetries),
+    RATOMIZER_LLM_CONCURRENCY: String(normalized.concurrency),
   };
   const apiKey = typeof settings?.apiKey === "string" ? settings.apiKey.trim() : "";
   if (apiKey) {

@@ -10,6 +10,9 @@ export type DesktopTaskPayload = {
   count?: number
   analysis?: unknown
   breakdown?: unknown
+  merged?: unknown
+  failed_sections?: number
+  note?: string
 }
 
 export type PipelineTaskInput = {
@@ -39,6 +42,7 @@ export type LlmSettingsInput = {
   maxTokens: number
   timeoutS: number
   maxRetries: number
+  concurrency: number
 }
 
 export type LlmSettingsPayload = Omit<LlmSettingsInput, "apiKey">

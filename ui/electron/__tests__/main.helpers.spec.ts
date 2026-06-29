@@ -144,8 +144,17 @@ describe("Electron main helpers", () => {
       RATOMIZER_LLM_MAX_TOKENS: "2048",
       RATOMIZER_LLM_TIMEOUT_S: "15",
       RATOMIZER_LLM_MAX_RETRIES: "0",
+      RATOMIZER_LLM_CONCURRENCY: "4",
       ZHIPU_API_KEY: "sk-secret",
     })
+  })
+
+  it("clamps AI-extract concurrency to 1..16 and exposes it to Python", () => {
+    expect(normalizeLlmSettings({ concurrency: 99 }).concurrency).toBe(16)
+    expect(normalizeLlmSettings({ concurrency: 0 }).concurrency).toBe(1)
+    expect(normalizeLlmSettings({ concurrency: "abc" }).concurrency).toBe(4) // 默认
+    expect(normalizeLlmSettings({ concurrency: 2 }).concurrency).toBe(2)
+    expect(buildLlmEnvironment({ concurrency: 2 })).toMatchObject({ RATOMIZER_LLM_CONCURRENCY: "2" })
   })
 
   it("persists OpenAI-compatible API settings in a config file with an encrypted API key", () => {

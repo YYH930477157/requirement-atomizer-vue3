@@ -23,8 +23,10 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,8 +47,27 @@ AI_EXTRACT_PROMPT_VERSION = "ai-extract-v1"
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
 DEFAULT_MERGE_CHARS = 2800
+DEFAULT_CONCURRENCY = 4
+MAX_CONCURRENCY = 16
+CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
+# 推理模型（如 deepseek-v4-flash / GLM-5.2）会先花大量 token 在隐藏 reasoning 上，
+# max_tokens 太小会把正文 JSON 截断 → finish_reason=length → 解析失败 → 整章节判失败。
+# 实测 deepseek-v4-flash：1024 必截断；2800 字章节正文最高用到 ~3500 token，6144 留足余量。
+# 注意：仅抬 max_tokens 不够——超大源章节（5k-9k 字）即便 8192 也会截断，必须配合 merge_sections
+# 的拆分（每次 LLM 输入 ≤target_chars），二者缺一不可。
+AI_EXTRACT_MIN_MAX_TOKENS = 6144
 
 ChatFn = Callable[[str, str], dict[str, Any]]
+
+
+def resolve_concurrency(explicit: int | None = None) -> int:
+    """并发度：显式参数优先，其次环境变量 RATOMIZER_LLM_CONCURRENCY（GUI 设置面板写入），否则默认。夹在 1..MAX。"""
+    raw: Any = explicit if explicit is not None else os.environ.get(CONCURRENCY_ENV)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_CONCURRENCY
+    return max(1, min(MAX_CONCURRENCY, value))
 
 VALID_TYPES = {"functional", "non_functional", "constraint", "business_rule"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
@@ -94,26 +115,66 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sections
 
 
+def _split_text(text: str, target_chars: int) -> list[str]:
+    """把超长文本按行贪心切成 ≤target 的块；单行超长则硬切。保证每次 LLM 输入有界。"""
+    if len(text) <= target_chars:
+        return [text]
+    units: list[str] = []
+    for line in text.split("\n"):
+        if len(line) <= target_chars:
+            units.append(line)
+        else:  # 单行超长（如无换行的长表格）：硬切
+            units.extend(line[i:i + target_chars] for i in range(0, len(line), target_chars))
+    chunks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for unit in units:
+        add = len(unit) + 1
+        if cur and cur_len + add > target_chars:
+            chunks.append("\n".join(cur))
+            cur, cur_len = [unit], add
+        else:
+            cur.append(unit)
+            cur_len += add
+    if cur:
+        chunks.append("\n".join(cur))
+    return [c for c in chunks if c.strip()]
+
+
 def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAULT_MERGE_CHARS) -> list[dict[str, Any]]:
-    """把相邻小章节合并到目标字数，减少 LLM 调用。文本里保留各小节标题供 LLM 归属。"""
+    """章节规整到目标字数：小章节合并（减少 LLM 调用），**超大章节拆分**（防 LLM 输出 JSON 截断）。"""
     merged: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
+
+    def flush() -> None:
+        nonlocal cur
+        if cur is not None and cur["texts"]:
+            merged.append(_finalize_merged(cur))
+        cur = None
+
     for sec in sections:
         piece = f"## {sec['heading']}\n{sec['text']}" if sec.get("heading") else sec["text"]
+        block_ids = list(sec.get("block_ids") or [])
+        if len(piece) > target_chars:
+            # 超大源章节：拆成 ≤target 的多块，各自独立成段（同段 block_ids 全量保留以便溯源）
+            flush()
+            for chunk in _split_text(piece, target_chars):
+                merged.append(_finalize_merged({
+                    "section_id": sec["section_id"], "heading": sec.get("heading", ""),
+                    "texts": [chunk], "block_ids": block_ids}))
+            continue
         if cur is None:
             cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": list(sec.get("block_ids") or []), "len": len(piece)}
-            continue
-        if cur["len"] + len(piece) > target_chars and cur["texts"]:
-            merged.append(_finalize_merged(cur))
+                   "texts": [piece], "block_ids": block_ids, "len": len(piece)}
+        elif cur["len"] + len(piece) > target_chars and cur["texts"]:
+            flush()
             cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": list(sec.get("block_ids") or []), "len": len(piece)}
+                   "texts": [piece], "block_ids": block_ids, "len": len(piece)}
         else:
             cur["texts"].append(piece)
-            cur["block_ids"].extend(sec.get("block_ids") or [])
+            cur["block_ids"].extend(block_ids)
             cur["len"] += len(piece)
-    if cur is not None and cur["texts"]:
-        merged.append(_finalize_merged(cur))
+    flush()
     return merged
 
 
@@ -252,8 +313,15 @@ def extract_all(
     model: str,
     cache_path: Path,
     concurrency: int = 1,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。"""
+    """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。
+
+    progress_callback：每完成一章节回调一次（GUI 进度条用，否则界面看着像卡死）。
+    逐章节增量写缓存：长跑中途被中断也不丢已完成章节。
+    stats：可选 out-dict，回填 total_sections / cached_sections / failed_sections。
+    """
     cache = read_cache(cache_path)
     results: list[list[dict[str, Any]] | None] = [None] * len(sections)
     pending: list[tuple[int, dict[str, Any], str]] = []
@@ -265,7 +333,22 @@ def extract_all(
         else:
             pending.append((i, section, fp))
 
-    new_rows: list[dict[str, Any]] = []
+    total = len(sections)
+    cached = total - len(pending)
+    completed = cached
+    failed = 0
+
+    def emit() -> None:
+        if progress_callback is not None and total:
+            progress_callback({
+                "stage": "ai_extract",
+                "completed": completed,
+                "total": total,
+                "percent": int(round(completed * 100 / total)),
+                "model": model,
+            })
+
+    emit()  # 初始进度（含缓存命中数），让界面立刻有反馈
 
     def work(item: tuple[int, dict[str, Any], str]) -> tuple[int, str, list[dict[str, Any]], bool]:
         idx, section, fp = item
@@ -282,11 +365,20 @@ def extract_all(
                 idx, fp, reqs, ok = future.result()
                 results[idx] = reqs
                 if ok:
-                    new_rows.append({"fingerprint": fp, "model": model,
-                                     "prompt_version": AI_EXTRACT_PROMPT_VERSION,
-                                     "requirements": reqs})
+                    # 逐章节增量缓存：中途中断不丢已完成章节
+                    append_cache(cache_path, [{"fingerprint": fp, "model": model,
+                                               "prompt_version": AI_EXTRACT_PROMPT_VERSION,
+                                               "requirements": reqs}])
+                else:
+                    failed += 1
+                completed += 1
+                emit()
 
-    append_cache(cache_path, new_rows)
+    if stats is not None:
+        stats["total_sections"] = total
+        stats["cached_sections"] = cached
+        stats["failed_sections"] = failed
+
     flat: list[dict[str, Any]] = []
     for reqs in results:
         flat.extend(reqs or [])
@@ -373,36 +465,63 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
 
 def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAULT_MERGE_CHARS,
                    write_doc: bool = False, merge_deterministic: bool = False,
-                   pipeline_path: Path = DEFAULT_PIPELINE_PATH) -> dict[str, Any]:
+                   pipeline_path: Path = DEFAULT_PIPELINE_PATH,
+                   progress_callback: Callable[[dict[str, Any]], None] | None = None,
+                   concurrency: int | None = None) -> dict[str, Any]:
     """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel + 双引擎合并）。"""
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
     sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars)
 
     config = config_for_route(route, pipeline_path)
+    written: list[str] = []
+    code_flagged = 0
+    int_flagged = 0
+    failed_sections = 0
+    model: str | None = None
+
     if config is None:
-        return {"route": "stub", "sections": len(sections), "requirements": 0,
-                "note": "stub 路由：未调 LLM（配置 --route openai_compatible 启用）"}
+        # stub 路由：不调 LLM，AI 行为需求为空——但确定性引擎（双引擎之一）仍照常
+        # 产出结构规格，所以不在此 early-return，继续走 write_doc / merge_deterministic。
+        requirements: list[dict[str, Any]] = []
+        route_label = "stub"
+    else:
+        if config.max_tokens < AI_EXTRACT_MIN_MAX_TOKENS:  # 给推理模型留出正文预算，防 JSON 截断
+            config = replace(config, max_tokens=AI_EXTRACT_MIN_MAX_TOKENS)
 
-    def chat(system: str, user: str) -> dict[str, Any]:
-        return chat_json(config, system, user)
+        def chat(system: str, user: str) -> dict[str, Any]:
+            return chat_json(config, system, user)
 
-    requirements = extract_all(sections, chat, model=config.model,
-                               cache_path=out_dir / AI_EXTRACT_CACHE,
-                               concurrency=4)
-    ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
-    code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
-    int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
+        extract_stats: dict[str, Any] = {}
+        requirements = extract_all(sections, chat, model=config.model,
+                                   cache_path=out_dir / AI_EXTRACT_CACHE,
+                                   concurrency=resolve_concurrency(concurrency),
+                                   progress_callback=progress_callback,
+                                   stats=extract_stats)
+        ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
+        code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
+        int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
+        failed_sections = int(extract_stats.get("failed_sections", 0))
+        model = config.model
+        route_label = "openai_compatible"
 
-    target = out_dir / AI_REQUIREMENTS
-    with target.open("w", encoding="utf-8", newline="\n") as f:
-        for req in requirements:
-            f.write(json.dumps(req, ensure_ascii=False) + "\n")
-    written = [target.name]
+        target = out_dir / AI_REQUIREMENTS
+        with target.open("w", encoding="utf-8", newline="\n") as f:
+            for req in requirements:
+                f.write(json.dumps(req, ensure_ascii=False) + "\n")
+        written.append(target.name)
 
-    result = {"route": "openai_compatible", "model": config.model, "sections": len(sections),
+    result: dict[str, Any] = {"route": route_label, "sections": len(sections),
               "requirements": len(requirements), "code_drift_flagged": code_flagged,
-              "int_drift_flagged": int_flagged, "written": written}
+              "int_drift_flagged": int_flagged, "failed_sections": failed_sections,
+              "written": written}
+    if model:
+        result["model"] = model
+    if config is None:
+        result["note"] = "stub 路由：未调 LLM（AI 行为需求为空，仅产确定性结构规格）"
+    elif failed_sections:
+        result["note"] = (f"{failed_sections} 个章节 LLM 调用失败（端点/Key/超时）——"
+                          "已按可用结果产出，请用「测试连接」确认配置后重跑")
 
     if write_doc:
         doc = build_skill_doc(requirements, source=out_dir.name,
@@ -446,13 +565,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--merge-chars", type=int, default=DEFAULT_MERGE_CHARS, help="章节合并目标字数")
     parser.add_argument("--doc", action="store_true", help="同时产 skill 格式 doc + Excel（仅 AI 需求）")
     parser.add_argument("--merge", action="store_true", help="双引擎合并：AI 行为 + 确定性结构 → merged_spec")
+    parser.add_argument("--concurrency", type=int, default=None,
+                        help=f"LLM 并发章节数（默认 {DEFAULT_CONCURRENCY}，或环境变量 {CONCURRENCY_ENV}；夹在 1..{MAX_CONCURRENCY}）")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     result = run_ai_extract(args.out, route=args.route, merge_chars=args.merge_chars,
-                            write_doc=args.doc, merge_deterministic=args.merge)
+                            write_doc=args.doc, merge_deterministic=args.merge,
+                            concurrency=args.concurrency)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

@@ -100,6 +100,7 @@ describe("review workspace shell", () => {
           maxTokens: 2048,
           timeoutS: 20,
           maxRetries: 0,
+          concurrency: 2,
         }),
         testLlmConnection: vi.fn().mockResolvedValue({ ok: true, message: "调用成功" }),
       },
@@ -120,6 +121,7 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="settings-max-tokens"]').setValue("2048")
     await wrapper.find('[data-testid="settings-timeout"]').setValue("20")
     await wrapper.find('[data-testid="settings-max-retries"]').setValue("0")
+    await wrapper.find('[data-testid="settings-concurrency"]').setValue("2")
 
     await wrapper.find('[data-testid="settings-save"]').trigger("click")
     expect(window.ratomizerDesktop?.saveLlmSettings).toHaveBeenCalledWith({
@@ -132,6 +134,7 @@ describe("review workspace shell", () => {
       maxTokens: 2048,
       timeoutS: 20,
       maxRetries: 0,
+      concurrency: 2,
     })
 
     await wrapper.find('[data-testid="settings-test"]').trigger("click")
@@ -145,6 +148,7 @@ describe("review workspace shell", () => {
       maxTokens: 2048,
       timeoutS: 20,
       maxRetries: 0,
+      concurrency: 2,
     })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="settings-status"]').text()).toContain("调用成功")

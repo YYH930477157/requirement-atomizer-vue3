@@ -313,6 +313,10 @@
                   <span>重试次数</span>
                   <input v-model.number="llmSettings.maxRetries" data-testid="settings-max-retries" type="number" min="0" step="1" />
                 </label>
+                <label class="settings-field">
+                  <span>AI 抽取并发</span>
+                  <input v-model.number="llmSettings.concurrency" data-testid="settings-concurrency" type="number" min="1" max="16" step="1" title="AI 抽取同时调用 LLM 的章节数；端点限流(429)时调低到 1-2" />
+                </label>
               </div>
               <div class="settings-actions">
                 <button class="button primary" type="button" data-testid="settings-save" :disabled="isSavingSettings" @click="handleSaveLlmSettings">
@@ -384,6 +388,7 @@ type LlmSettings = {
   maxTokens: number
   timeoutS: number
   maxRetries: number
+  concurrency: number
 }
 
 const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
@@ -418,6 +423,7 @@ const llmSettings = ref<LlmSettings>({
   maxTokens: 1024,
   timeoutS: 60,
   maxRetries: 3,
+  concurrency: 4,
 })
 const runProgress = ref(0)
 const runStage = ref("待运行")
@@ -658,6 +664,7 @@ function normalizeUiLlmSettings(payload: Partial<LlmSettings>): LlmSettings {
     maxTokens: integerOr(payload.maxTokens, 1024),
     timeoutS: numberOr(payload.timeoutS, 60),
     maxRetries: integerOr(payload.maxRetries, 3),
+    concurrency: Math.max(1, Math.min(16, integerOr(payload.concurrency, 4))),
   }
 }
 
@@ -878,26 +885,79 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
 }
 
 function handleTaskProgress(event: { stage: string; completed?: number; total?: number; percent?: number; model?: string }) {
-  if (event.stage !== "llm_review") return
   const completed = Math.max(0, Number(event.completed || 0))
   const total = Math.max(0, Number(event.total || 0))
   const percent = Number.isFinite(Number(event.percent)) ? Math.max(0, Math.min(100, Number(event.percent))) : 0
+  if (event.stage === "ai_extract") {
+    runStage.value = total ? `AI 抽取 ${completed}/${total} 章节` : "AI 抽取"
+    runProgress.value = percent
+    runProgressDetail.value = event.model ? `模型：${event.model} · 逐章节调用 LLM` : "逐章节调用 LLM 抽取行为需求"
+    return
+  }
+  if (event.stage !== "llm_review") return
   runStage.value = total ? `AI 审查 ${completed}/${total}` : "AI 审查"
   runProgress.value = percent
   runProgressDetail.value = event.model ? `模型：${event.model}` : "模型正在逐条审查需求"
 }
 
 async function handleAiExtract() {
-  if (!currentOutputDir.value || !window.ratomizerDesktop?.aiExtract) return
+  if (isRunning.value) return
+  if (!window.ratomizerDesktop?.aiExtract) {
+    apiMessage.value = "当前环境不支持 AI 抽取（仅桌面应用可用）"
+    return
+  }
+  if (!currentOutputDir.value) {
+    runStage.value = "无法 AI 抽取"
+    runProgressDetail.value = "请先「运行」管线生成输出目录，再执行 AI 抽取"
+    apiMessage.value = "请先运行管线生成输出目录，再执行 AI 抽取"
+    return
+  }
+  const usingLlm = llmMode.value
+  let stopProgress: (() => void) | undefined
+  isRunning.value = true
+  stopProgress = window.ratomizerDesktop.onTaskProgress?.(handleTaskProgress)
+  runStage.value = "AI 抽取（双引擎）"
+  runProgress.value = usingLlm ? 5 : 40
+  runProgressDetail.value = usingLlm
+    ? "正在调用 LLM 抽取行为需求 + 合并确定性结构…（逐章节进度见上）"
+    : "LLM 未启用：仅装配确定性结构规格…"
   try {
     const payload = await window.ratomizerDesktop.aiExtract({
       outDir: currentOutputDir.value,
-      llmRoute: llmMode.value ? "openai_compatible" : "stub",
+      llmRoute: usingLlm ? "openai_compatible" : "stub",
     })
     latestTaskSummary.value = objectValue(payload.summary)
-    apiMessage.value = `AI 抽取（双引擎）完成：${payload.count ?? 0} 条行为需求 + 确定性对象目录，已产 merged_spec.xlsx`
+    const written = Array.isArray(payload.written) ? payload.written : []
+    const merged = objectValue(payload.merged) as
+      | { total?: number; ai_behavioral?: number; deterministic_structural?: number }
+      | null
+    const failed = Math.max(0, Number(payload.failed_sections || 0))
+    runProgress.value = 100
+    if (written.length === 0) {
+      runStage.value = "AI 抽取未产出文件"
+      runProgressDetail.value = "未写出任何交付物——请确认输出目录已先运行管线"
+      apiMessage.value = "AI 抽取未写出文件：请确认已先运行管线"
+      return
+    }
+    const total = merged?.total ?? payload.count ?? 0
+    const breakdown =
+      merged?.ai_behavioral != null || merged?.deterministic_structural != null
+        ? `（AI 行为 ${merged?.ai_behavioral ?? 0} + 确定性结构 ${merged?.deterministic_structural ?? 0}）`
+        : ""
+    runStage.value = failed > 0 ? "AI 抽取完成（部分章节失败）" : "AI 抽取完成"
+    runProgressDetail.value = `已写出 ${written.length} 个文件：${written.join("、")}`
+    const failedNote = failed > 0
+      ? `；${failed} 个章节 LLM 调用失败（请用「测试连接」确认端点/Key/超时）`
+      : ""
+    apiMessage.value = `AI 抽取${usingLlm ? "（双引擎）" : "（仅确定性结构）"}完成：共 ${total} 条${breakdown}，已产 ${written.join("、")}${failedNote}`
   } catch (error) {
-    apiMessage.value = error instanceof Error ? error.message : "AI 抽取失败"
+    runStage.value = "AI 抽取失败"
+    const message = error instanceof Error ? error.message : "AI 抽取失败"
+    runProgressDetail.value = message
+    apiMessage.value = message
+  } finally {
+    stopProgress?.()
+    isRunning.value = false
   }
 }
 

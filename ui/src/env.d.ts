@@ -17,6 +17,9 @@ declare global {
     summary?: unknown
     written?: string[]
     count?: number
+    merged?: unknown
+    failed_sections?: number
+    note?: string
   }
 
   interface Window {
@@ -36,6 +39,7 @@ declare global {
         maxTokens: number
         timeoutS: number
         maxRetries: number
+        concurrency: number
       } | null>
       saveLlmSettings: (input: {
         enabled: boolean
@@ -47,6 +51,7 @@ declare global {
         maxTokens: number
         timeoutS: number
         maxRetries: number
+        concurrency: number
       }) => Promise<{
         enabled: boolean
         baseUrl: string
@@ -56,6 +61,7 @@ declare global {
         maxTokens: number
         timeoutS: number
         maxRetries: number
+        concurrency: number
       }>
       testLlmConnection: (input: {
         enabled: boolean
@@ -67,6 +73,7 @@ declare global {
         maxTokens: number
         timeoutS: number
         maxRetries: number
+        concurrency: number
       }) => Promise<{ ok: boolean; message: string }>
       onTaskProgress: (handler: (event: { stage: string; completed?: number; total?: number; percent?: number; model?: string }) => void) => () => void
       runPipeline: (input: {
