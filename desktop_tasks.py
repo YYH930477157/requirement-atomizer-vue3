@@ -138,15 +138,19 @@ def compose_task(out_dir: Path) -> dict[str, Any]:
 def ai_extract_task(out_dir: Path, *, route: str | None) -> dict[str, Any]:
     """AI 主抽 + 双引擎合并：AI 行为需求 + 确定性结构需求 → merged_spec.xlsx/json。"""
     out_dir = out_dir.expanduser().resolve()
-    result = ai_extract.run_ai_extract(out_dir, route=route, merge_deterministic=True)
+    result = ai_extract.run_ai_extract(out_dir, route=route, merge_deterministic=True,
+                                       progress_callback=emit_progress)
     return {
         "kind": "ai_extract",
         "out_dir": str(out_dir),
         "route": result.get("route"),
         "count": result.get("requirements", 0),
         "merged": result.get("merged", {}),
+        "sections": result.get("sections", 0),
+        "failed_sections": result.get("failed_sections", 0),
         "code_drift_flagged": result.get("code_drift_flagged", 0),
         "int_drift_flagged": result.get("int_drift_flagged", 0),
+        "note": result.get("note", ""),
         "written": [str(out_dir / name) for name in result.get("written", [])],
         "summary": build_output_summary(out_dir),
     }

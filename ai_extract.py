@@ -252,8 +252,15 @@ def extract_all(
     model: str,
     cache_path: Path,
     concurrency: int = 1,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。"""
+    """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。
+
+    progress_callback：每完成一章节回调一次（GUI 进度条用，否则界面看着像卡死）。
+    逐章节增量写缓存：长跑中途被中断也不丢已完成章节。
+    stats：可选 out-dict，回填 total_sections / cached_sections / failed_sections。
+    """
     cache = read_cache(cache_path)
     results: list[list[dict[str, Any]] | None] = [None] * len(sections)
     pending: list[tuple[int, dict[str, Any], str]] = []
@@ -265,7 +272,22 @@ def extract_all(
         else:
             pending.append((i, section, fp))
 
-    new_rows: list[dict[str, Any]] = []
+    total = len(sections)
+    cached = total - len(pending)
+    completed = cached
+    failed = 0
+
+    def emit() -> None:
+        if progress_callback is not None and total:
+            progress_callback({
+                "stage": "ai_extract",
+                "completed": completed,
+                "total": total,
+                "percent": int(round(completed * 100 / total)),
+                "model": model,
+            })
+
+    emit()  # 初始进度（含缓存命中数），让界面立刻有反馈
 
     def work(item: tuple[int, dict[str, Any], str]) -> tuple[int, str, list[dict[str, Any]], bool]:
         idx, section, fp = item
@@ -282,11 +304,20 @@ def extract_all(
                 idx, fp, reqs, ok = future.result()
                 results[idx] = reqs
                 if ok:
-                    new_rows.append({"fingerprint": fp, "model": model,
-                                     "prompt_version": AI_EXTRACT_PROMPT_VERSION,
-                                     "requirements": reqs})
+                    # 逐章节增量缓存：中途中断不丢已完成章节
+                    append_cache(cache_path, [{"fingerprint": fp, "model": model,
+                                               "prompt_version": AI_EXTRACT_PROMPT_VERSION,
+                                               "requirements": reqs}])
+                else:
+                    failed += 1
+                completed += 1
+                emit()
 
-    append_cache(cache_path, new_rows)
+    if stats is not None:
+        stats["total_sections"] = total
+        stats["cached_sections"] = cached
+        stats["failed_sections"] = failed
+
     flat: list[dict[str, Any]] = []
     for reqs in results:
         flat.extend(reqs or [])
@@ -373,7 +404,8 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
 
 def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAULT_MERGE_CHARS,
                    write_doc: bool = False, merge_deterministic: bool = False,
-                   pipeline_path: Path = DEFAULT_PIPELINE_PATH) -> dict[str, Any]:
+                   pipeline_path: Path = DEFAULT_PIPELINE_PATH,
+                   progress_callback: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel + 双引擎合并）。"""
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
@@ -383,6 +415,7 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     written: list[str] = []
     code_flagged = 0
     int_flagged = 0
+    failed_sections = 0
     model: str | None = None
 
     if config is None:
@@ -394,12 +427,16 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         def chat(system: str, user: str) -> dict[str, Any]:
             return chat_json(config, system, user)
 
+        extract_stats: dict[str, Any] = {}
         requirements = extract_all(sections, chat, model=config.model,
                                    cache_path=out_dir / AI_EXTRACT_CACHE,
-                                   concurrency=4)
+                                   concurrency=4,
+                                   progress_callback=progress_callback,
+                                   stats=extract_stats)
         ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
         code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
         int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
+        failed_sections = int(extract_stats.get("failed_sections", 0))
         model = config.model
         route_label = "openai_compatible"
 
@@ -411,11 +448,15 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
 
     result: dict[str, Any] = {"route": route_label, "sections": len(sections),
               "requirements": len(requirements), "code_drift_flagged": code_flagged,
-              "int_drift_flagged": int_flagged, "written": written}
+              "int_drift_flagged": int_flagged, "failed_sections": failed_sections,
+              "written": written}
     if model:
         result["model"] = model
     if config is None:
         result["note"] = "stub 路由：未调 LLM（AI 行为需求为空，仅产确定性结构规格）"
+    elif failed_sections:
+        result["note"] = (f"{failed_sections} 个章节 LLM 调用失败（端点/Key/超时）——"
+                          "已按可用结果产出，请用「测试连接」确认配置后重跑")
 
     if write_doc:
         doc = build_skill_doc(requirements, source=out_dir.name,

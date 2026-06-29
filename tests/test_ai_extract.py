@@ -105,6 +105,40 @@ class CacheReproducibilityTests(unittest.TestCase):
             self.assertEqual(first, second)   # 同输入同输出（稳定）
 
 
+class ExtractAllProgressTests(unittest.TestCase):
+    def test_progress_events_and_failure_count(self) -> None:
+        """每章节回调进度 + 失败章节计入 stats 不崩 —— 回归：AI 抽取零进度时界面像卡死。"""
+        from llm_client import LLMConnectionError
+        sections = [
+            {"section_id": "S1", "heading": "S1", "text": "The meter shall do A.", "block_ids": ["B1"]},
+            {"section_id": "S2", "heading": "S2", "text": "The meter shall do B.", "block_ids": ["B2"]},
+        ]
+
+        def chat(system: str, user: str) -> dict:
+            if "do B" in user:  # 模拟某章节 LLM 调用失败（如 401/超时）
+                raise LLMConnectionError("HTTP 401")
+            return {"requirements": [{"title": "Do A", "description": "做 A", "type": "functional",
+                                      "priority": "P1", "labels": ["计量"],
+                                      "source_quote": "The meter shall do A."}]}
+
+        events: list[dict] = []
+        stats: dict = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "c.jsonl"
+            flat = ai_extract.extract_all(sections, chat, model="m", cache_path=cache,
+                                          progress_callback=events.append, stats=stats)
+        # 初始 1 次 + 每章节完成各 1 次 = 至少 3 次回调，末次满 100%
+        self.assertGreaterEqual(len(events), 3)
+        self.assertEqual(events[-1]["stage"], "ai_extract")
+        self.assertEqual(events[-1]["completed"], 2)
+        self.assertEqual(events[-1]["total"], 2)
+        self.assertEqual(events[-1]["percent"], 100)
+        # 失败章节计入 stats、不抛；成功章节仍产 1 条需求
+        self.assertEqual(stats["failed_sections"], 1)
+        self.assertEqual(stats["total_sections"], 2)
+        self.assertEqual(len(flat), 1)
+
+
 class RouteTests(unittest.TestCase):
     def test_stub_route_produces_no_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

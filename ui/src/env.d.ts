@@ -18,6 +18,8 @@ declare global {
     written?: string[]
     count?: number
     merged?: unknown
+    failed_sections?: number
+    note?: string
   }
 
   interface Window {

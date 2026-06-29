@@ -11,6 +11,8 @@ export type DesktopTaskPayload = {
   analysis?: unknown
   breakdown?: unknown
   merged?: unknown
+  failed_sections?: number
+  note?: string
 }
 
 export type PipelineTaskInput = {

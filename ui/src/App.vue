@@ -878,10 +878,16 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
 }
 
 function handleTaskProgress(event: { stage: string; completed?: number; total?: number; percent?: number; model?: string }) {
-  if (event.stage !== "llm_review") return
   const completed = Math.max(0, Number(event.completed || 0))
   const total = Math.max(0, Number(event.total || 0))
   const percent = Number.isFinite(Number(event.percent)) ? Math.max(0, Math.min(100, Number(event.percent))) : 0
+  if (event.stage === "ai_extract") {
+    runStage.value = total ? `AI 抽取 ${completed}/${total} 章节` : "AI 抽取"
+    runProgress.value = percent
+    runProgressDetail.value = event.model ? `模型：${event.model} · 逐章节调用 LLM` : "逐章节调用 LLM 抽取行为需求"
+    return
+  }
+  if (event.stage !== "llm_review") return
   runStage.value = total ? `AI 审查 ${completed}/${total}` : "AI 审查"
   runProgress.value = percent
   runProgressDetail.value = event.model ? `模型：${event.model}` : "模型正在逐条审查需求"
@@ -900,11 +906,13 @@ async function handleAiExtract() {
     return
   }
   const usingLlm = llmMode.value
+  let stopProgress: (() => void) | undefined
   isRunning.value = true
+  stopProgress = window.ratomizerDesktop.onTaskProgress?.(handleTaskProgress)
   runStage.value = "AI 抽取（双引擎）"
-  runProgress.value = 20
+  runProgress.value = usingLlm ? 5 : 40
   runProgressDetail.value = usingLlm
-    ? "正在调用 LLM 抽取行为需求 + 合并确定性结构…"
+    ? "正在调用 LLM 抽取行为需求 + 合并确定性结构…（逐章节进度见上）"
     : "LLM 未启用：仅装配确定性结构规格…"
   try {
     const payload = await window.ratomizerDesktop.aiExtract({
@@ -916,6 +924,7 @@ async function handleAiExtract() {
     const merged = objectValue(payload.merged) as
       | { total?: number; ai_behavioral?: number; deterministic_structural?: number }
       | null
+    const failed = Math.max(0, Number(payload.failed_sections || 0))
     runProgress.value = 100
     if (written.length === 0) {
       runStage.value = "AI 抽取未产出文件"
@@ -928,15 +937,19 @@ async function handleAiExtract() {
       merged?.ai_behavioral != null || merged?.deterministic_structural != null
         ? `（AI 行为 ${merged?.ai_behavioral ?? 0} + 确定性结构 ${merged?.deterministic_structural ?? 0}）`
         : ""
-    runStage.value = "AI 抽取完成"
+    runStage.value = failed > 0 ? "AI 抽取完成（部分章节失败）" : "AI 抽取完成"
     runProgressDetail.value = `已写出 ${written.length} 个文件：${written.join("、")}`
-    apiMessage.value = `AI 抽取${usingLlm ? "（双引擎）" : "（仅确定性结构）"}完成：共 ${total} 条${breakdown}，已产 ${written.join("、")}`
+    const failedNote = failed > 0
+      ? `；${failed} 个章节 LLM 调用失败（请用「测试连接」确认端点/Key/超时）`
+      : ""
+    apiMessage.value = `AI 抽取${usingLlm ? "（双引擎）" : "（仅确定性结构）"}完成：共 ${total} 条${breakdown}，已产 ${written.join("、")}${failedNote}`
   } catch (error) {
     runStage.value = "AI 抽取失败"
     const message = error instanceof Error ? error.message : "AI 抽取失败"
     runProgressDetail.value = message
     apiMessage.value = message
   } finally {
+    stopProgress?.()
     isRunning.value = false
   }
 }
