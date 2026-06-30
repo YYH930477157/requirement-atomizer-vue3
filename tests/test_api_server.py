@@ -5,9 +5,13 @@ token 不匹配时拒绝。可独立运行，无网络/LLM 依赖。
 """
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import api_server
+import ai_review_actions
 
 
 class TokenIsValidTests(unittest.TestCase):
@@ -46,6 +50,78 @@ class TokenIsValidTests(unittest.TestCase):
         token = "aaaaaaaaaaaaaaaa"
         headers = {api_server.TOKEN_HEADER: "aaaaaaaaaaaaaaab"}  # 同长度末字节不同
         self.assertFalse(api_server.token_is_valid(token, headers, {}))
+
+
+class AiReviewActionsTests(unittest.TestCase):
+    def _req(self) -> dict:
+        return {"source_section": "3.1.7", "source_quote": "meter shall measure",
+                "title": "计量器具定义", "module": "计量"}
+
+    def test_ai_req_id_stable_and_content_based(self) -> None:
+        a = ai_review_actions.ai_req_id(self._req())
+        b = ai_review_actions.ai_req_id(dict(self._req()))  # 同内容 → 同 ID
+        self.assertEqual(a, b)
+        self.assertTrue(a.startswith("AIR-"))
+        other = ai_review_actions.ai_req_id({**self._req(), "source_quote": "different"})
+        self.assertNotEqual(a, other)  # 内容变 → ID 变
+
+    def test_apply_and_read_latest_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            rid = ai_review_actions.ai_req_id(self._req())
+            ai_review_actions.apply_ai_review_action(out, rid, "needs_discussion", reason="待议")
+            ai_review_actions.apply_ai_review_action(out, rid, "accepted",
+                                                     module_override="计量精度", reason="改归精度")
+            states = ai_review_actions.read_ai_review_states(out)
+            self.assertEqual(states[rid]["status"], "accepted")            # 最近覆盖
+            self.assertEqual(states[rid]["module_override"], "计量精度")
+
+    def test_invalid_status_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                ai_review_actions.apply_ai_review_action(Path(tmp), "AIR-x", "bogus")
+
+
+class AiRequirementsEndpointTests(unittest.TestCase):
+    def _seed(self, out: Path) -> None:
+        (out / "blocks.jsonl").write_text(
+            json.dumps({"block_id": "BLK-2", "order": 2, "text": "B", "section_path": ["4"],
+                        "page_number": 1, "type": "paragraph", "kb_matches": [1, 2, 3]}) + "\n" +
+            json.dumps({"block_id": "BLK-1", "order": 1, "text": "A", "section_path": ["3"],
+                        "page_number": 1, "type": "heading", "kb_matches": []}) + "\n",
+            encoding="utf-8")
+        doc = {"requirements": [
+            {"id": "REQ-001", "title": "T1", "description": "d1", "module": "计量",
+             "source_section": "4", "source_quote": "q1", "source_block_ids": ["BLK-2"],
+             "acceptance_criteria": ["c1"], "labels": ["计量"]},
+        ]}
+        (out / "merged_spec_requirements.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+    def test_document_blocks_sorted_and_trimmed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            result = api_server.build_document_blocks(out)
+            self.assertEqual(result["count"], 2)
+            self.assertEqual([b["block_id"] for b in result["blocks"]], ["BLK-1", "BLK-2"])  # 按 order
+            self.assertNotIn("kb_matches", result["blocks"][0])  # 重负载字段被裁掉
+
+    def test_ai_requirements_carry_id_anchor_and_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            rows = api_server.build_ai_requirements(out)
+            self.assertEqual(len(rows), 1)
+            rid = rows[0]["ai_req_id"]
+            self.assertTrue(rid.startswith("AIR-"))
+            self.assertEqual(rows[0]["source_block_ids"], ["BLK-2"])      # 锚点保留
+            self.assertEqual(rows[0]["module_effective"], "计量")
+            self.assertEqual(rows[0]["status"], "draft")                  # 未裁决
+            # 裁决（改模块）后再读，module_effective 走 override
+            ai_review_actions.apply_ai_review_action(out, rid, "accepted", module_override="计量精度")
+            rows2 = api_server.build_ai_requirements(out)
+            self.assertEqual(rows2[0]["status"], "accepted")
+            self.assertEqual(rows2[0]["module_effective"], "计量精度")
 
 
 if __name__ == "__main__":
