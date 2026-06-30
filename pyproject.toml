@@ -60,6 +60,7 @@ py-modules = [
   "pattern_engine",
   "desktop_backend",
   "ai_review_actions",
+  "doc_annotation_export",
   "requirement_schema",
   "resources",
   "review_actions",

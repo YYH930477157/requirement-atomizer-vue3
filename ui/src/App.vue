@@ -39,6 +39,8 @@
               <span>LLM</span>
             </label>
             <button class="button primary" type="button" data-testid="action-ai-extract" :disabled="isRunning" @click="handleAiExtract">AI 抽取（双引擎）</button>
+            <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-export-html" @click="handleExportAnnotationHtml">导出批注HTML</button>
+            <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-import-decisions" @click="handleImportDecisions">导入裁决</button>
           </div>
         </header>
 
@@ -960,6 +962,38 @@ async function handleAiExtract() {
   } finally {
     stopProgress?.()
     isRunning.value = false
+  }
+}
+
+async function handleExportAnnotationHtml() {
+  if (!currentOutputDir.value || !window.ratomizerDesktop?.exportAnnotationHtml) {
+    apiMessage.value = "请先运行管线 + AI 抽取生成需求，再导出文档批注 HTML"
+    return
+  }
+  try {
+    const payload = await window.ratomizerDesktop.exportAnnotationHtml({ outDir: currentOutputDir.value })
+    if (payload.path) {
+      await window.ratomizerDesktop.openPath?.(payload.path)
+      apiMessage.value = `已生成并打开文档批注 HTML：${payload.path}`
+    } else {
+      apiMessage.value = "文档批注 HTML 已生成"
+    }
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : "导出文档批注 HTML 失败"
+  }
+}
+
+async function handleImportDecisions() {
+  if (!currentOutputDir.value || !window.ratomizerDesktop?.importAiDecisions) {
+    apiMessage.value = "请先选择输出目录"
+    return
+  }
+  try {
+    const payload = await window.ratomizerDesktop.importAiDecisions({ outDir: currentOutputDir.value })
+    if (payload.canceled) return
+    apiMessage.value = `已导入裁决：应用 ${payload.applied ?? 0} 条（跳过 ${payload.skipped ?? 0}）`
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : "导入裁决失败"
   }
 }
 

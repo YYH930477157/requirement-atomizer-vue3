@@ -17,4 +17,6 @@ contextBridge.exposeInMainWorld("ratomizerDesktop", {
   },
   runPipeline: (input) => ipcRenderer.invoke("task:run-pipeline", input),
   aiExtract: (input) => ipcRenderer.invoke("task:ai-extract", input),
+  exportAnnotationHtml: (input) => ipcRenderer.invoke("task:export-annotation-html", input),
+  importAiDecisions: (input) => ipcRenderer.invoke("task:import-ai-decisions", input),
 });
