@@ -123,10 +123,10 @@ class SpecExportTests(unittest.TestCase):
                 "Ver.",
                 "SN",
                 "OBIS Code / Default Value",
-                "Public(16)",
-                "Data Readout(3)",
-                "Remote Management(1)",
-                "Local Management(2)",
+                "RC",
+                "PC",
+                "SC",
+                "LC",
             ],
         )
         self.assertEqual(ws["B2"].value, "Time")
@@ -139,10 +139,11 @@ class SpecExportTests(unittest.TestCase):
         self.assertEqual(ws["B4"].value, "time")
         self.assertEqual(ws["C4"].value, "octet-string")
         self.assertEqual(ws["G4"].value, "00")
-        self.assertEqual(ws["H4"].value, "RW")
-        self.assertEqual(ws["I4"].value, "R-")
-        self.assertEqual(ws["J4"].value, "--")
-        self.assertEqual(ws["K4"].value, "R-")
+        # 访问串 R-/RW/--/R- → RC=R-, PC=RW, SC=--, LC=R-，须落进同名列（H/I/J/K）
+        self.assertEqual(ws["H4"].value, "R-")   # H = RC
+        self.assertEqual(ws["I4"].value, "RW")   # I = PC
+        self.assertEqual(ws["J4"].value, "--")   # J = SC
+        self.assertEqual(ws["K4"].value, "R-")   # K = LC
         self.assertEqual(ws["B4"].fill.fgColor.rgb, "FF00FFFF")
 
 

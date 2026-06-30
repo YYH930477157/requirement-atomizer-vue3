@@ -131,6 +131,44 @@ class SpecDeliverableRegressionTests(unittest.TestCase):
                         live.append((ws.title, c.coordinate, c.value))
         self.assertEqual(live, [], f"发现未中和的活公式单元格: {live}")
 
+    @unittest.skipUnless(HAVE_OPENPYXL, "openpyxl required")
+    def test_object_model_access_matrix_columns_are_aligned(self) -> None:
+        """H4 访问矩阵不错列：表头须 RC/PC/SC/LC，Clock.time 的 R-/RW/--/R- 须落对列。
+
+        回归：旧版表头用 Public/DataReadout/Remote/Local 且 pc/rc/sc 写错列位，
+        导致 PC(RW) 落到 Public 列、RC(R-) 落到 Data Readout 列。修后表头与
+        权威 markdown（cosem_object_model RC|PC|SC|LC）一致，四列按身份顺序对齐。
+        """
+        doc, _ = assemble(self.out, None, source="regression", extracted_at="2026-01-01T00:00:00")
+        xlsx = self.out / "dlms_cosem_spec.xlsx"
+        write_xlsx(doc, xlsx)
+        wb = load_workbook(xlsx)
+
+        # 找到对象模型工作表
+        ws = next(w for w in wb.worksheets if "对象模型" in w.title or "Object" in w.title)
+        # 表头行包含 RC/PC/SC/LC（不再出现 Public/DataReadout/Remote/Local 这类错位别名）
+        header_cells = [c.value for row in ws.iter_rows(min_row=1, max_row=2) for c in row if c.value]
+        for label in ("RC", "PC", "SC", "LC"):
+            self.assertIn(label, header_cells, f"对象模型表头缺 {label}")
+        for stale in ("Public", "Data Readout", "Remote Management", "Local Management"):
+            self.assertNotIn(stale, header_cells, f"对象模型表头残留旧别名 {stale}")
+
+        # Clock.time 的访问 = (RC=R-, PC=RW, SC=--, LC=R-)，须落进同名列。
+        # 属性行（非分组标题）特征：A 列(索引)有值。分组标题行 A 列为空，须跳过。
+        time_row = None
+        for row in ws.iter_rows(values_only=False):
+            index_cell = row[0]   # A 列 = 索引（属性行有，分组标题无）
+            name_cell = row[1]    # B 列 = 属性名
+            if name_cell.value == "time" and index_cell.value not in (None, ""):
+                time_row = row
+                break
+        self.assertIsNotNone(time_row, "未找到 Clock.time 属性行")
+        # 列 8/9/10/11 (H/I/J/K) 须分别是 R- / RW / -- / R-
+        self.assertEqual(time_row[7].value, "R-")   # H = RC
+        self.assertEqual(time_row[8].value, "RW")   # I = PC
+        self.assertEqual(time_row[9].value, "--")   # J = SC
+        self.assertEqual(time_row[10].value, "R-")  # K = LC
+
     def test_deliverable_doc_counts_are_stable(self) -> None:
         # 装配产出的需求文档结构稳定（防 P1 装配回退）
         doc, breakdown = assemble(self.out, None, source="regression", extracted_at="2026-01-01T00:00:00")

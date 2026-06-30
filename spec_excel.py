@@ -52,10 +52,10 @@ OBJECT_MODEL_COLUMNS = [
     ("Ver.", 8),
     ("SN", 10),
     ("OBIS Code / Default Value", 30),
-    ("Public(16)", 14),
-    ("Data Readout(3)", 16),
-    ("Remote Management(1)", 22),
-    ("Local Management(2)", 22),
+    ("RC", 14),
+    ("PC", 16),
+    ("SC", 22),
+    ("LC", 22),
 ]
 
 THIN_BORDER = Border(
@@ -405,8 +405,9 @@ def _write_object_model_sheet(wb: Workbook, requirements: list[dict[str, Any]]) 
             ws.cell(row=row_idx, column=2).value = formula_safe(attr["name"])
             ws.cell(row=row_idx, column=3).value = formula_safe(attr["type"])
             ws.cell(row=row_idx, column=7).value = formula_safe(attr["default"])
-            ws.cell(row=row_idx, column=8).value = formula_safe(attr["pc"])
-            ws.cell(row=row_idx, column=9).value = formula_safe(attr["rc"])
+            # 访问矩阵 RC/PC/SC/LC 与表头一一对齐（之前 pc/rc/sc 错列到 Public/Readout/Remote）
+            ws.cell(row=row_idx, column=8).value = formula_safe(attr["rc"])
+            ws.cell(row=row_idx, column=9).value = formula_safe(attr["pc"])
             ws.cell(row=row_idx, column=10).value = formula_safe(attr["sc"])
             ws.cell(row=row_idx, column=11).value = formula_safe(attr["lc"])
             for col in range(1, len(OBJECT_MODEL_COLUMNS) + 1):

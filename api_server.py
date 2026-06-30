@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -206,7 +207,12 @@ def token_is_valid(expected_token: str, headers: Mapping[str, str], params: dict
     if not expected_token:
         return True
     header_token = headers.get(TOKEN_HEADER, "")
-    return header_token == expected_token
+    # 常量时间比较，避免字符串 == 短路造成的时序侧信道（token 是 server-wide 长期令牌）。
+    # compare_digest 仅接受 ASCII/bytes，统一按 UTF-8 编码。
+    try:
+        return hmac.compare_digest(header_token.encode("utf-8"), expected_token.encode("utf-8"))
+    except (UnicodeEncodeError, TypeError):
+        return False
 
 
 def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict]:
