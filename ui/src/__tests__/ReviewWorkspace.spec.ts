@@ -63,9 +63,8 @@ describe("review workspace shell", () => {
     })
     const wrapper = mount(App)
 
-    await wrapper.find('[data-testid="nav-文档"]').trigger("click")
-    expect(window.ratomizerDesktop?.openDocument).toHaveBeenCalled()
-    expect(wrapper.text()).toContain("当前文档：Appendix 9.docx")
+    await wrapper.find('[data-testid="nav-文档批注"]').trigger("click")
+    expect(wrapper.find('[data-testid="doc-review"]').exists()).toBe(true)  // 文档批注视图
 
     await wrapper.find('[data-testid="nav-设置"]').trigger("click")
     expect(wrapper.find('[data-testid="settings-panel"]').exists()).toBe(true)

@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
 from review_actions import apply_review_action
+from ai_review_actions import ai_req_id, apply_ai_review_action, read_ai_review_states
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
 
@@ -74,6 +76,12 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/review-summary":
             self.send_json(build_review_summary(self.output_dir))
             return
+        if parsed.path == "/document":
+            self.send_json(build_document_blocks(self.output_dir))
+            return
+        if parsed.path == "/ai-requirements":
+            self.send_json(build_ai_requirements(self.output_dir))
+            return
         self.send_error(404, "Unknown endpoint")
 
     def do_POST(self) -> None:
@@ -88,6 +96,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/translations":
             self.handle_translation()
+            return
+        if parsed.path == "/ai-review-actions":
+            self.handle_ai_review_action()
             return
         if parsed.path != "/review-actions":
             self.send_error(404, "Unknown endpoint")
@@ -128,6 +139,26 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=502)
             return
         self.send_json({"requirement_id": requirement_id, "translation": translation})
+
+    def handle_ai_review_action(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        req_id = str(payload.get("ai_req_id") or "").strip()
+        status = str(payload.get("status") or "").strip()
+        module_override = str(payload.get("module_override") or "").strip() or None
+        reason = str(payload.get("reason") or "").strip()
+        actor = str(payload.get("actor") or "").strip() or None
+        if not req_id or not status:
+            self.send_json({"error": "ai_req_id and status are required"}, status=400)
+            return
+        try:
+            state = apply_ai_review_action(self.output_dir, req_id, status,
+                                           module_override=module_override, reason=reason, actor=actor)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=409)
+            return
+        self.send_json(state)
 
     def read_json_body(self) -> dict | None:
         try:
@@ -231,6 +262,84 @@ def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict
                 break
         enriched.append(row)
     return enriched
+
+
+_BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
+                 "page_number", "requirement_like", "noise", "doc_region")
+
+
+def build_document_blocks(output_dir: Path) -> dict:
+    """供文档批注视图：blocks 按 order 排序、只留渲染需要的字段（去掉 kb_matches 等重负载）。"""
+    blocks = read_jsonl(output_dir / "blocks.jsonl")
+    trimmed = [{k: b.get(k) for k in _BLOCK_FIELDS} for b in blocks]
+    trimmed.sort(key=lambda b: b.get("order") or 0)
+    return {"blocks": trimmed, "count": len(trimmed)}
+
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _norm_text(s: object) -> str:
+    return _WS_RE.sub(" ", str(s or "")).strip().lower()
+
+
+def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
+    """需求精确锚点：含其 source_quote 原句的那一小段（段落级），否则回退 source_block_ids 首块。
+
+    批注挂在需求实际所在的小段上（而非整章节段首），符合"一小段一个需求点"。
+    """
+    span = [str(b) for b in (req.get("source_block_ids") or [])]
+    quote = _norm_text(req.get("source_quote"))
+    if quote:
+        for bid in span:
+            if quote in _norm_text(text_by_block.get(bid, "")):
+                return bid
+        prefix = quote[:40]  # LLM 引用偶有尾部偏差，用前缀兜一层
+        if prefix:
+            for bid in span:
+                if prefix in _norm_text(text_by_block.get(bid, "")):
+                    return bid
+    return span[0] if span else ""
+
+
+def build_ai_requirements(output_dir: Path) -> list[dict]:
+    """供文档批注视图：merged_spec 需求 + 内容稳定 ai_req_id + 精确锚点 + 当前裁决态。
+
+    优先读 merged_spec_requirements.json（双引擎交付物），回退 ai_requirements_doc.json /
+    ai_requirements.jsonl。anchor_block_id = 含 source_quote 的具体段落（段落级精确）。
+    """
+    requirements = _load_ai_requirements(output_dir)
+    states = read_ai_review_states(output_dir)
+    text_by_block = {str(b.get("block_id")): (b.get("text") or "")
+                     for b in read_jsonl(output_dir / "blocks.jsonl")}
+    enriched: list[dict] = []
+    for req in requirements:
+        rid = ai_req_id(req)
+        state = states.get(rid)
+        row = dict(req)
+        row["ai_req_id"] = rid
+        row["anchor_block_id"] = anchor_block_id(req, text_by_block)
+        row["review_state"] = state
+        # 专家改过模块则以 override 为准（module 字段保持原值供追溯）
+        if state and state.get("module_override"):
+            row["module_effective"] = state["module_override"]
+        else:
+            row["module_effective"] = req.get("module") or (req.get("labels") or [None])[0]
+        row["status"] = (state or {}).get("status") or "draft"
+        enriched.append(row)
+    return enriched
+
+
+def _load_ai_requirements(output_dir: Path) -> list[dict]:
+    doc_path = output_dir / "merged_spec_requirements.json"
+    if doc_path.exists():
+        data = json.loads(doc_path.read_text(encoding="utf-8"))
+        return list(data.get("requirements") or [])
+    alt = output_dir / "ai_requirements_doc.json"
+    if alt.exists():
+        data = json.loads(alt.read_text(encoding="utf-8"))
+        return list(data.get("requirements") or [])
+    return read_jsonl(output_dir / "ai_requirements.jsonl")
 
 
 def index_by_requirement_identity(rows: list[dict]) -> dict[str, dict]:

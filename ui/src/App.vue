@@ -63,6 +63,7 @@
           </div>
         </section>
 
+        <template v-if="activeNav !== 'document'">
         <section class="stat-strip" data-testid="phase1-stats">
           <button
             v-for="card in phaseStats"
@@ -245,6 +246,8 @@
             </div>
           </aside>
         </section>
+        </template>
+        <DocumentReview v-else :client="apiClient" :active="activeNav === 'document'" />
 
         <footer class="status-bar">
           <span>输出目录：{{ currentOutputDir || "尚未选择输出目录" }}</span>
@@ -373,6 +376,7 @@
 import { computed, onMounted, ref } from "vue"
 import { NConfigProvider } from "naive-ui"
 import { RequirementApiClient } from "./api-client"
+import DocumentReview from "./DocumentReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
 import { applyReviewState, mapBackendRequirement, statusDisplay as displayStatus } from "./requirement-mapper"
 import type { Requirement, ReviewStatus } from "./types"
@@ -393,7 +397,7 @@ type LlmSettings = {
 
 const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
   { id: "review", label: "审查", icon: "▣" },
-  { id: "document", label: "文档", icon: "▤" },
+  { id: "document", label: "文档批注", icon: "▤" },
   { id: "ai", label: "AI 抽取", icon: "✨" },
   { id: "settings", label: "设置", icon: "⚙" },
 ]
@@ -582,9 +586,7 @@ onMounted(() => {
 
 function handleNavAction(item: PhaseNavId) {
   activeNav.value = item
-    if (item === "document") {
-    void handleOpenDocument()
-  } else if (item === "ai") {
+  if (item === "ai") {
     void handleAiExtract()
   } else if (item === "settings") {
     showSettingsPanel.value = true

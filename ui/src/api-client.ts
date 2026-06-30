@@ -28,6 +28,57 @@ export type TranslationPayload = {
   model?: string
 }
 
+export type DocumentBlock = {
+  block_id: string
+  order: number
+  type?: string
+  text?: string
+  section_path?: string[]
+  page_number?: number
+  requirement_like?: boolean
+  noise?: boolean
+  doc_region?: string
+}
+
+export type DocumentPayload = {
+  blocks: DocumentBlock[]
+  count: number
+}
+
+export type AiRequirement = Record<string, unknown> & {
+  ai_req_id: string
+  anchor_block_id?: string
+  title?: string
+  description?: string
+  module?: string
+  module_effective?: string
+  type?: string
+  priority?: string
+  status?: string
+  source_section?: string
+  source_quote?: string
+  source_block_ids?: string[]
+  acceptance_criteria?: string[]
+  labels?: string[]
+  review_state?: { status?: string; module_override?: string | null; reason?: string } | null
+}
+
+export type AiReviewActionInput = {
+  aiReqId: string
+  status: ReviewStatus
+  moduleOverride?: string
+  reason?: string
+  actor?: string
+}
+
+export type AiReviewStatePayload = {
+  ai_req_id: string
+  status: string
+  module_override?: string | null
+  reason?: string
+  actor?: string | null
+}
+
 type FetchLike = typeof fetch
 
 type RequirementApiClientOptions = {
@@ -60,6 +111,28 @@ export class RequirementApiClient {
         status: input.status,
         actor: input.actor,
         reason: input.reason,
+      }),
+    })
+  }
+
+  async loadDocument(): Promise<DocumentPayload> {
+    return this.request<DocumentPayload>("/document")
+  }
+
+  async loadAiRequirements(): Promise<AiRequirement[]> {
+    return this.request<AiRequirement[]>("/ai-requirements")
+  }
+
+  async applyAiReviewAction(input: AiReviewActionInput): Promise<AiReviewStatePayload> {
+    return this.request<AiReviewStatePayload>("/ai-review-actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ai_req_id: input.aiReqId,
+        status: input.status,
+        module_override: input.moduleOverride || "",
+        reason: input.reason || "",
+        actor: input.actor || "",
       }),
     })
   }
