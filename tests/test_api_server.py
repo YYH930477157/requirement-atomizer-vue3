@@ -106,6 +106,26 @@ class AiRequirementsEndpointTests(unittest.TestCase):
             self.assertEqual([b["block_id"] for b in result["blocks"]], ["BLK-1", "BLK-2"])  # 按 order
             self.assertNotIn("kb_matches", result["blocks"][0])  # 重负载字段被裁掉
 
+    def test_anchor_block_id_precise_to_quote_paragraph(self) -> None:
+        text_by_block = {
+            "BLK-1": "Some intro paragraph without the requirement.",
+            "BLK-2": "The meter shall measure volume accurately.",
+            "BLK-3": "Other unrelated text.",
+        }
+        # 精确落到引用句所在的那一小段
+        req = {"source_quote": "the meter shall measure volume",
+               "source_block_ids": ["BLK-1", "BLK-2", "BLK-3"]}
+        self.assertEqual(api_server.anchor_block_id(req, text_by_block), "BLK-2")
+        # 引用跨到下一块（尾部超出本段）→ 前缀兜底仍落本段
+        req2 = {"source_quote": "The meter shall measure volume accurately and store 12 months",
+                "source_block_ids": ["BLK-1", "BLK-2"]}
+        self.assertEqual(api_server.anchor_block_id(req2, text_by_block), "BLK-2")
+        # 无匹配 → 回退 source_block_ids 首块
+        req3 = {"source_quote": "totally nonexistent", "source_block_ids": ["BLK-3", "BLK-1"]}
+        self.assertEqual(api_server.anchor_block_id(req3, text_by_block), "BLK-3")
+        # 无 quote/无 span → 空
+        self.assertEqual(api_server.anchor_block_id({}, text_by_block), "")
+
     def test_ai_requirements_carry_id_anchor_and_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

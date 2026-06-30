@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Mapping
@@ -275,20 +276,49 @@ def build_document_blocks(output_dir: Path) -> dict:
     return {"blocks": trimmed, "count": len(trimmed)}
 
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _norm_text(s: object) -> str:
+    return _WS_RE.sub(" ", str(s or "")).strip().lower()
+
+
+def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
+    """需求精确锚点：含其 source_quote 原句的那一小段（段落级），否则回退 source_block_ids 首块。
+
+    批注挂在需求实际所在的小段上（而非整章节段首），符合"一小段一个需求点"。
+    """
+    span = [str(b) for b in (req.get("source_block_ids") or [])]
+    quote = _norm_text(req.get("source_quote"))
+    if quote:
+        for bid in span:
+            if quote in _norm_text(text_by_block.get(bid, "")):
+                return bid
+        prefix = quote[:40]  # LLM 引用偶有尾部偏差，用前缀兜一层
+        if prefix:
+            for bid in span:
+                if prefix in _norm_text(text_by_block.get(bid, "")):
+                    return bid
+    return span[0] if span else ""
+
+
 def build_ai_requirements(output_dir: Path) -> list[dict]:
-    """供文档批注视图：merged_spec 需求 + 内容稳定 ai_req_id + 当前裁决态（含 module_override）。
+    """供文档批注视图：merged_spec 需求 + 内容稳定 ai_req_id + 精确锚点 + 当前裁决态。
 
     优先读 merged_spec_requirements.json（双引擎交付物），回退 ai_requirements_doc.json /
-    ai_requirements.jsonl。锚点 source_block_ids 用于挂到原文。
+    ai_requirements.jsonl。anchor_block_id = 含 source_quote 的具体段落（段落级精确）。
     """
     requirements = _load_ai_requirements(output_dir)
     states = read_ai_review_states(output_dir)
+    text_by_block = {str(b.get("block_id")): (b.get("text") or "")
+                     for b in read_jsonl(output_dir / "blocks.jsonl")}
     enriched: list[dict] = []
     for req in requirements:
         rid = ai_req_id(req)
         state = states.get(rid)
         row = dict(req)
         row["ai_req_id"] = rid
+        row["anchor_block_id"] = anchor_block_id(req, text_by_block)
         row["review_state"] = state
         # 专家改过模块则以 override 为准（module 字段保持原值供追溯）
         if state and state.get("module_override"):

@@ -47,6 +47,7 @@ export type DocumentPayload = {
 
 export type AiRequirement = Record<string, unknown> & {
   ai_req_id: string
+  anchor_block_id?: string
   title?: string
   description?: string
   module?: string

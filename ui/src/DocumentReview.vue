@@ -52,11 +52,12 @@ async function load() {
 
 watch(() => props.active, (on) => { if (on && (!loadedOnce || !requirements.value.length)) void load() }, { immediate: true })
 
-// 每条需求锚到它 source_block_ids 的首个块（批注挂载点），避免在整段每块都重复打标。
+// 每条需求锚到含其 source_quote 原句的那一小段（后端 anchor_block_id，段落级精确），
+// 回退 source_block_ids 首块。批注钉在需求实际所在的小段，不分散到整章节。
 const anchorByBlock = computed(() => {
   const map = new Map<string, AiRequirement[]>()
   for (const req of requirements.value) {
-    const anchor = (req.source_block_ids || [])[0]
+    const anchor = req.anchor_block_id || (req.source_block_ids || [])[0]
     if (!anchor) continue
     const list = map.get(anchor) || []
     list.push(req)
