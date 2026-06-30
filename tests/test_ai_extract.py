@@ -401,5 +401,47 @@ class BuildSkillDocTests(unittest.TestCase):
         self.assertEqual(doc["analysis"]["total_count"], 1)
 
 
+class ModuleClassificationTests(unittest.TestCase):
+    """LLM 受控模块分类（按域分组的首要领域来源）。"""
+
+    def _section(self) -> dict:
+        return {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}
+
+    def test_normalize_captures_module(self) -> None:
+        r = ai_extract.normalize_requirement(
+            {"title": "X", "description": "d", "module": "计量", "source_quote": "d"}, self._section())
+        self.assertEqual(r["module"], "计量")
+
+    def test_module_vocab_superset_and_prompt(self) -> None:
+        for m in ("附加功能", "机械结构", "计量精度", "数据存储", "测试合规", "其它"):
+            self.assertIn(m, ai_extract.MODULE_VOCAB)
+        self.assertIn("module", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("附加功能", ai_extract.SYSTEM_PROMPT)
+
+    def test_valid_llm_module_becomes_primary_domain(self) -> None:
+        reqs = [{"module": "计量", "labels": ["gas meter", "measurement"],
+                 "title": "", "description": "", "source_quote": ""}]
+        ai_extract.ensure_domain_labels(reqs)
+        self.assertEqual(reqs[0]["labels"][0], "计量")        # LLM 模块作首要领域
+        self.assertIn("gas meter", reqs[0]["labels"])          # 自由标签保留为补充
+
+    def test_other_module_respected_not_remapped(self) -> None:
+        reqs = [{"module": "其它", "labels": ["AFD"],
+                 "title": "mechanical connector", "description": "", "source_quote": ""}]
+        ai_extract.ensure_domain_labels(reqs)
+        self.assertEqual(reqs[0]["labels"][0], "其它")         # 尊重 LLM "无贴切"，不塞通信协议
+
+    def test_invalid_or_missing_module_falls_back_to_map_labels(self) -> None:
+        reqs = [
+            {"module": "乱填XX", "labels": [], "title": "voltage sag threshold",
+             "description": "", "source_quote": ""},
+            {"module": "", "labels": [], "title": "firmware upgrade image",
+             "description": "", "source_quote": ""},
+        ]
+        ai_extract.ensure_domain_labels(reqs)
+        self.assertEqual(reqs[0]["labels"][0], "门限范围")     # map_labels 关键词兜底
+        self.assertEqual(reqs[1]["labels"][0], "升级")
+
+
 if __name__ == "__main__":
     unittest.main()

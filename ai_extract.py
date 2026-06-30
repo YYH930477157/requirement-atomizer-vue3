@@ -40,10 +40,14 @@ from llm_pipeline import (
     read_jsonl,
     resolve_route_name,
 )
+from spec_excel import METERING_DOMAINS  # 受控模块词表（DLMS 域 + 通用补充）
+
+OTHER_MODULE = "其它"  # LLM 判定"无贴切模块"的逃生项（与 spec_export.OTHER_DOMAIN 对齐）
+MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v1"
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v2"  # v2：prompt 新增 module 受控分类（缓存随之失效重抽）
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
 DEFAULT_MERGE_CHARS = 2800
@@ -77,7 +81,9 @@ SYSTEM_PROMPT = (
     "把同一功能的零散语句**合并成一条功能需求**，不要逐句拆；表格类规范化为一条带说明的需求。"
     "每条需求输出：title（不超过 80 字）、description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
     "type（functional/non_functional/constraint/business_rule）、priority（P0/P1/P2，按重要性区分）、"
-    "labels（表计领域标签，至少一个）、source_quote（原文逐字引用，不可改写）、"
+    "module（该需求归属的模块，**必须原样照抄下面清单里的一个词**，按需求实质语义选最贴切的；"
+    "确实都不贴切时才填\"" + OTHER_MODULE + "\"）：" + "、".join(MODULE_VOCAB) + "。"
+    "labels（额外的细分标签，至少一个，可自由）、source_quote（原文逐字引用，不可改写）、"
     "source_section（该需求所属的章节号/标题，从文本里的小节标题判断）、"
     "acceptance_criteria（可测试的验收点数组）。"
     "严禁编造原文没有的 OBIS 码、事件号、十六进制、数字——这些只能原样引用或不出现。"
@@ -236,11 +242,13 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         priority = "P2"
     labels = [str(x) for x in (raw.get("labels") or []) if str(x).strip()]
     acceptance = [str(x) for x in (raw.get("acceptance_criteria") or []) if str(x).strip()]
+    module = str(raw.get("module") or "").strip()  # LLM 受控分类，ensure_domain_labels 据此定首要领域
     return {
         "title": str(raw.get("title") or "").strip()[:80],
         "description": str(raw.get("description") or "").strip(),
         "type": rtype,
         "priority": priority,
+        "module": module,
         "status": "draft",
         "source_section": str(raw.get("source_section") or section.get("heading") or section.get("section_id") or "").strip(),
         "source_quote": str(raw.get("source_quote") or "").strip(),
@@ -393,16 +401,22 @@ def extract_all(
 # --- skill 格式 doc / Excel ----------------------------------------------
 
 def ensure_domain_labels(requirements: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """确定性后处理：保证每条需求至少带一个 21 领域标签（否则按域 Excel 全塌进"未分类"）。
+    """定首要领域（labels[0]，按域分组/出 Excel 都用它），优先级：
 
-    LLM 的自由标签（AFD/测试/Firmware upgrade…）保留为补充；领域标签由 requirement_schema.map_labels
-    从文本确定性派生并置于前。对缓存结果也生效、不需重调 LLM。
+    1. LLM 选的 module 在受控词表内 → 直接作首要领域（LLM 读了整段、最懂上下文）。
+    2. LLM 明确判 "其它" → 尊重其判断，归 OTHER（不再被 map_labels 误塞进通信协议）。
+    3. module 缺失/越界 → 确定性 map_labels 关键词兜底。
+
+    LLM 的自由 labels 始终保留为补充。对缓存结果也生效、不需重调 LLM。
     """
     import requirement_schema as rs
-    from spec_excel import METERING_DOMAINS
     domain_set = set(METERING_DOMAINS)
     for req in requirements:
         existing = [str(x) for x in (req.get("labels") or [])]
+        module = str(req.get("module") or "").strip()
+        if module in domain_set or module == OTHER_MODULE:  # LLM 受控分类优先
+            req["labels"] = [module] + [label for label in existing if label != module]
+            continue
         if any(label in domain_set for label in existing):
             continue
         text = f"{req.get('title', '')} {req.get('description', '')} {req.get('source_quote', '')}"
