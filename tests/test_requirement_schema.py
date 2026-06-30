@@ -29,6 +29,27 @@ class MappersTests(unittest.TestCase):
         self.assertEqual(rs.classify_type("accuracy shall be 0.5 class"), "non_functional")
         self.assertEqual(rs.classify_type("the value shall not exceed 5"), "constraint")
 
+    def test_classify_type_non_functional_capacity_and_performance(self) -> None:
+        """F2 回归：扩 non_functional 触发词——容量约束(至少N条记录)、性能/时序、可靠性。"""
+        # 容量约束正则（须命中带修饰词的真实表述）
+        self.assertEqual(rs.classify_type("There must be at least 12 billing records."), "non_functional")
+        self.assertEqual(rs.classify_type("keep a minimum of 3 entries per profile"), "non_functional")
+        self.assertEqual(rs.classify_type("maximum of 100 days storage"), "non_functional")
+        # 性能/时序/可靠性/环境
+        self.assertEqual(rs.classify_type("response time shall be within 5 seconds"), "non_functional")
+        self.assertEqual(rs.classify_type("the MTBF shall be at least 10 years"), "non_functional")
+        self.assertEqual(rs.classify_type("temperature range -25 to 70 C"), "non_functional")
+        self.assertEqual(rs.classify_type("storage capacity for load profile"), "non_functional")
+
+    def test_classify_type_capacity_terms_do_not_false_positive(self) -> None:
+        """F2 回归：裸 maximum/at least/records 不得误伤功能性逻辑。"""
+        # "maximum of 9s" 是累加器归零逻辑（功能性），不因 maximum 误判
+        self.assertEqual(rs.classify_type("reaches the maximum of 9s"), "functional")
+        # "at least one association" 不匹配『数字+容量名词』（one 非 \d+）
+        self.assertEqual(rs.classify_type("there shall be at least one association"), "functional")
+        # "collect event records" 是功能性动作，不因 records 误判
+        self.assertEqual(rs.classify_type("the meter shall collect event records"), "functional")
+
     def test_classify_priority(self) -> None:
         # 保守优先级：安全标签不再自动 P0；待审/低置信 → P2
         self.assertEqual(rs.classify_priority(["安全"], "accept", 0.9), "P1")

@@ -11,6 +11,7 @@ source_quote 恒非空、type/priority/status 不为 pending —— 满足公司
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -68,9 +69,28 @@ def map_labels(text: str) -> list[str]:
     return result or ["通信协议"]
 
 
+# 非功能触发词：性能/时序/可靠性/环境——泛词易误伤（"maximum"/"at least" 裸用会命中功能性逻辑），
+# 故只取语义明确的整词；"至少 N 条记录"这类容量约束用正则单独匹配（见 _CAPACITY_PATTERN）。
+_NON_FUNCTIONAL_TERMS = (
+    "accuracy", "precision", "reliability", "mtbf", "failure rate",
+    "temperature range", "ip5", "ip6",
+    "response time", "latency", "timeout", "throughput",
+)
+# 容量/保留约束：at least / minimum / maximum 紧跟数字 + 计量名词（records/entries/periods/…）。
+# 裸 "at least" 会误伤（"at least one association"=功能性），故限定为『量词 + 容量名词』模式。
+_CAPACITY_PATTERN = re.compile(
+    r"\b(?:at least|minimum of|max(?:imum)?(?:\s+of)?)\s+\d+\s+"
+    r"(?:\w+\s+){0,3}"  # 容许修饰词：billing/load profile 等（at least 12 billing records）
+    r"(?:records?|entries|periods|days?|intervals?|profiles?|objects?|associations?)\b",
+    re.IGNORECASE,
+)
+# 明确的存储/容量表述（低误伤）
+_CAPACITY_TERMS = ("storage capacity", "record retention", "retention period", "number of records")
+
+
 def classify_type(text: str) -> str:
     lower = str(text or "").lower()
-    if any(w in lower for w in ("accuracy", "precision", "reliability", "mtbf", "temperature range", "ip5", "ip6")):
+    if _CAPACITY_PATTERN.search(text or "") or any(w in lower for w in _NON_FUNCTIONAL_TERMS + _CAPACITY_TERMS):
         return "non_functional"
     if any(w in lower for w in ("shall not", "must not", "only be", "limited to", "reserved")):
         return "constraint"
