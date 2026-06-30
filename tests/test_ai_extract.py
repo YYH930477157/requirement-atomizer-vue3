@@ -273,6 +273,58 @@ class MergeSectionsTests(unittest.TestCase):
         self.assertTrue(all(len(c) <= 2800 for c in chunks))
         self.assertEqual("".join(chunks), "x" * 9000)
 
+    def test_split_carries_full_drift_source(self) -> None:
+        """拆分后漂移 baseline 须用整章原文：同章另一片段里的 OBIS 不算漂移（假阳性误伤）。"""
+        # 前 4000 字无码，末尾段落含真实 OBIS 码 → 被拆到靠后的片段
+        text = ("安全描述文字。" * 600) + "\n该对象对应 OBIS 0-0:96.7.16.255。"
+        merged = ai_extract.merge_sections(
+            [{"section_id": "S", "heading": "安全", "text": text, "block_ids": ["b1"]}],
+            target_chars=2800)
+        self.assertGreater(len(merged), 1)  # 确实被拆分
+        # 早期片段 text 不含该码，但 drift_source 须是整章原文 → 含码
+        early = merged[0]
+        self.assertNotIn("0-0:96.7.16.255", early["text"])
+        self.assertIn("0-0:96.7.16.255", early["drift_source"])
+
+    def test_cross_fragment_code_not_falsely_flagged_as_drift(self) -> None:
+        """回归：LLM 在不含码的片段里引用同章另一片段的 OBIS 码，不得被判结构漂移。"""
+        # 构造一个超大章节：前半段无码，后半段含真实 OBIS，拆分后早期片段不含码
+        real_text = ("安全章节描述文字。" * 400) + "\n事件对象 OBIS 0-0:96.7.16.255。"
+        merged = ai_extract.merge_sections(
+            [{"section_id": "S", "heading": "安全", "text": real_text, "block_ids": ["b1"]}],
+            target_chars=2800)
+        early = merged[0]
+        self.assertNotIn("0-0:96.7.16.255", early["text"])  # 早期片段确不含码
+
+        # LLM 对早期片段抽取时引用了同章另一片段里的真实码 → 不应判漂移
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "事件上报", "description": "采用 OBIS 0-0:96.7.16.255 上报安全事件。",
+                "type": "functional", "priority": "P1", "labels": ["事件记录"],
+                "source_quote": "security event"}]}
+
+        reqs = ai_extract.extract_section(early, chat)
+        self.assertEqual(len(reqs), 1)
+        self.assertNotIn("结构漂移已拦截", reqs[0]["notes"])  # 同章真实码不算漂移
+
+    def test_cross_fragment_fabricated_code_still_flagged(self) -> None:
+        """护栏仍须拦住真正的无中生有：LLM 凭空编的码（整章都没有）仍判结构漂移。"""
+        real_text = ("安全章节描述文字。" * 400)  # 整章不含任何 OBIS 码
+        merged = ai_extract.merge_sections(
+            [{"section_id": "S", "heading": "安全", "text": real_text, "block_ids": ["b1"]}],
+            target_chars=2800)
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "伪造", "description": "走 OBIS 0-0:96.99.99.255（原文并无此码）。",
+                "type": "functional", "priority": "P1", "labels": ["事件记录"],
+                "source_quote": ""}]}
+
+        reqs = ai_extract.extract_section(merged[0], chat)
+        self.assertEqual(len(reqs), 1)
+        self.assertIn("结构漂移已拦截", reqs[0]["notes"])
+        self.assertEqual(reqs[0]["status"], "draft")
+
 
 class DriftSeverityTests(unittest.TestCase):
     def _section(self) -> dict:

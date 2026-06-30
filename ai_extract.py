@@ -156,12 +156,14 @@ def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAUL
         piece = f"## {sec['heading']}\n{sec['text']}" if sec.get("heading") else sec["text"]
         block_ids = list(sec.get("block_ids") or [])
         if len(piece) > target_chars:
-            # 超大源章节：拆成 ≤target 的多块，各自独立成段（同段 block_ids 全量保留以便溯源）
+            # 超大源章节：拆成 ≤target 的多块，各自独立成段（同段 block_ids 全量保留以便溯源）。
+            # drift_source 保留完整原文：漂移护栏须以整章为 baseline，否则 LLM 合理引用同章
+            # 其它片段里的 OBIS/事件码会被误判为"原文未见的结构漂移"（假阳性误伤）。
             flush()
             for chunk in _split_text(piece, target_chars):
                 merged.append(_finalize_merged({
                     "section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                    "texts": [chunk], "block_ids": block_ids}))
+                    "texts": [chunk], "block_ids": block_ids, "drift_source": piece}))
             continue
         if cur is None:
             cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
@@ -179,9 +181,12 @@ def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAUL
 
 
 def _finalize_merged(cur: dict[str, Any]) -> dict[str, Any]:
+    text = "\n\n".join(cur["texts"]).strip()
+    # 漂移护栏 baseline：拆分片段用整章原文，其余默认用自身文本（无跨片段码）
+    drift_source = cur.get("drift_source") or text
     return {"section_id": cur["section_id"], "heading": cur["heading"],
             "section_path": [cur["heading"]] if cur["heading"] else [],
-            "text": "\n\n".join(cur["texts"]).strip(), "block_ids": cur["block_ids"]}
+            "text": text, "block_ids": cur["block_ids"], "drift_source": drift_source}
 
 
 # --- 抽取与防幻觉护栏 -----------------------------------------------------
@@ -257,7 +262,7 @@ def extract_section(section: dict[str, Any], chat: ChatFn) -> list[dict[str, Any
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
     if not isinstance(raw_reqs, list):
         return []
-    source = section.get("text", "")
+    source = section.get("drift_source") or section.get("text", "")
     results: list[dict[str, Any]] = []
     for raw in raw_reqs:
         if not isinstance(raw, dict):
