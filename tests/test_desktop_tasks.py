@@ -281,6 +281,44 @@ class DesktopTaskTests(unittest.TestCase):
         task.assert_called_once_with(out_dir, route="stub")
         self.assertEqual(json.loads(stdout.getvalue())["kind"], "ai_extract")
 
+    def test_export_annotation_html_and_import_round_trip(self) -> None:
+        import desktop_tasks
+        import ai_review_actions
+        from doc_annotation_export import build_ai_requirements
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                json.dumps({"block_id": "B2", "order": 2, "text": "The meter shall measure volume.",
+                            "section_path": ["4"], "requirement_like": True, "noise": False,
+                            "type": "paragraph"}) + "\n", encoding="utf-8")
+            doc = {"requirements": [{"id": "REQ-001", "title": "体积计量", "description": "应计量体积",
+                    "module": "计量", "source_section": "4", "source_quote": "The meter shall measure volume.",
+                    "source_block_ids": ["B2"], "acceptance_criteria": ["按 4.2 测试"], "labels": ["计量"]}]}
+            (out / "merged_spec_requirements.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+            # 导出 HTML
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                rc = desktop_tasks.main(["export-annotation-html", "--out", str(out)])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["kind"], "annotation_html")
+            self.assertTrue((out / "document_annotation.html").exists())
+
+            # 导入裁决回灌
+            rid = build_ai_requirements(out)[0]["ai_req_id"]
+            (out / "dec.json").write_text(json.dumps(
+                {"decisions": [{"ai_req_id": rid, "status": "accepted", "module_override": "计量精度"}]}),
+                encoding="utf-8")
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                rc = desktop_tasks.main(["import-ai-decisions", "--out", str(out), "--file", str(out / "dec.json")])
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["applied"], 1)
+            states = ai_review_actions.read_ai_review_states(out)
+            self.assertEqual(states[rid]["status"], "accepted")
+            self.assertEqual(states[rid]["module_override"], "计量精度")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -116,6 +116,20 @@ ipcMain.handle("task:ai-extract", async (_event, input) => runDesktopTaskProcess
   ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
 ]));
 
+ipcMain.handle("task:export-annotation-html", async (_event, input) =>
+  runDesktopTaskProcess(["export-annotation-html", "--out", input.outDir]));
+
+ipcMain.handle("task:import-ai-decisions", async (_event, input) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: [{ name: "AI 裁决 JSON", extensions: ["json"] }],
+  });
+  if (result.canceled || !result.filePaths.length) {
+    return { kind: "ai_decisions_import", applied: 0, skipped: 0, canceled: true };
+  }
+  return runDesktopTaskProcess(["import-ai-decisions", "--out", input.outDir, "--file", result.filePaths[0]]);
+});
+
 async function startApiServer(outputDir) {
   stopApiServer();
   const token = crypto.randomBytes(24).toString("hex");

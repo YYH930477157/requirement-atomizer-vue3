@@ -156,6 +156,41 @@ def ai_extract_task(out_dir: Path, *, route: str | None) -> dict[str, Any]:
     }
 
 
+def export_annotation_html_task(out_dir: Path) -> dict[str, Any]:
+    """生成自包含文档批注 HTML（独立、可分享、内含 localStorage 裁决 + 导出 JSON）。"""
+    import doc_annotation_export
+    out_dir = out_dir.expanduser().resolve()
+    path = doc_annotation_export.export_annotation_html(out_dir)
+    return {"kind": "annotation_html", "out_dir": str(out_dir),
+            "path": str(path), "written": [str(path)]}
+
+
+def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, Any]:
+    """把 HTML 导出的裁决 JSON 回灌到 ai_review_states.jsonl（合进交付物）。"""
+    import ai_review_actions
+    out_dir = out_dir.expanduser().resolve()
+    data = json.loads(Path(decisions_file).expanduser().read_text(encoding="utf-8"))
+    decisions = data.get("decisions") if isinstance(data, dict) else data
+    applied = 0
+    skipped = 0
+    for d in (decisions or []):
+        rid = str((d or {}).get("ai_req_id") or "").strip()
+        status = str((d or {}).get("status") or "").strip()
+        if not rid or not status:
+            skipped += 1
+            continue
+        try:
+            ai_review_actions.apply_ai_review_action(
+                out_dir, rid, status,
+                module_override=(d.get("module_override") or None),
+                reason=(d.get("reason") or ""), actor="html-import")
+            applied += 1
+        except ValueError:
+            skipped += 1
+    return {"kind": "ai_decisions_import", "out_dir": str(out_dir),
+            "applied": applied, "skipped": skipped}
+
+
 def build_output_summary(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
@@ -223,6 +258,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     summary_parser = subparsers.add_parser("summary")
     summary_parser.add_argument("--out", type=Path, required=True)
+
+    anno_parser = subparsers.add_parser("export-annotation-html")
+    anno_parser.add_argument("--out", type=Path, required=True)
+
+    import_parser = subparsers.add_parser("import-ai-decisions")
+    import_parser.add_argument("--out", type=Path, required=True)
+    import_parser.add_argument("--file", type=Path, required=True, help="HTML 导出的裁决 JSON")
     return parser.parse_args(argv)
 
 
@@ -249,6 +291,10 @@ def main(argv: list[str] | None = None) -> int:
             payload = compose_task(args.out)
         elif args.command == "ai-extract":
             payload = ai_extract_task(args.out, route=args.llm_route)
+        elif args.command == "export-annotation-html":
+            payload = export_annotation_html_task(args.out)
+        elif args.command == "import-ai-decisions":
+            payload = import_ai_decisions_task(args.out, args.file)
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:

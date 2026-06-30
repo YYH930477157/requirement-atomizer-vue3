@@ -20,6 +20,10 @@ declare global {
     merged?: unknown
     failed_sections?: number
     note?: string
+    path?: string
+    applied?: number
+    skipped?: number
+    canceled?: boolean
   }
 
   interface Window {
@@ -88,6 +92,8 @@ declare global {
         domainPackDir?: string
       }) => Promise<RequirementAtomizerTaskPayload>
       aiExtract: (input: { outDir: string; llmRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
+      exportAnnotationHtml: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
+      importAiDecisions: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
     }
   }
 }
