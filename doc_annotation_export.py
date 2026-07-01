@@ -255,17 +255,25 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .layout {{ display: grid; grid-template-columns: 220px 1fr 380px; height: calc(100vh - 48px); }}
 
 /* --- 左：大纲 --- */
+/* --- 左侧大纲：树形可折叠 --- */
 .outline {{ border-right: 1px solid var(--border); overflow-y: auto; padding: 16px 12px;
   background: var(--bg-soft); font-size: 13px; }}
 .outline .outline-title {{ font-size: 11px; text-transform: uppercase; color: var(--text-muted);
   letter-spacing: 0.5px; margin: 0 0 8px 8px; }}
-.outline a {{ display: block; padding: 3px 8px; border-radius: 4px; color: var(--text-muted);
-  text-decoration: none; cursor: pointer; line-height: 1.5; }}
-.outline a:hover {{ background: rgba(0,0,0,0.04); color: var(--text); }}
-.outline a.active {{ background: var(--accent-soft); color: var(--accent); }}
-.outline .h1-link {{ font-weight: 600; padding-left: 8px; }}
-.outline .h2-link {{ padding-left: 20px; }}
-.outline .h3-link {{ padding-left: 32px; font-size: 12px; }}
+.outline .nav-item {{ display: flex; align-items: center; padding: 3px 8px; border-radius: 4px;
+  color: var(--text-muted); cursor: pointer; line-height: 1.5; text-decoration: none; }}
+.outline .nav-item:hover {{ background: rgba(0,0,0,0.04); color: var(--text); }}
+.outline .nav-item.active {{ background: var(--accent-soft); color: var(--accent); }}
+.outline .nav-item .toggle {{ width: 14px; font-size: 10px; color: var(--text-muted); flex-shrink: 0;
+  transition: transform .15s; text-align: center; }}
+.outline .nav-item.collapsed .toggle {{ transform: rotate(-90deg); }}
+.outline .nav-item .label {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.outline .nav-children {{ overflow: hidden; }}
+.outline .nav-children.collapsed {{ display: none; }}
+.outline .h1-item {{ font-weight: 600; }}
+.outline .h2-item {{ padding-left: 28px; font-size: 12px; }}
+.outline .h3-item {{ padding-left: 44px; font-size: 12px; color: #aaa; }}
+.outline .h2-item .toggle, .outline .h3-item .toggle {{ visibility: hidden; }}
 
 /* --- 中：文档 --- */
 .paper {{ overflow-y: auto; padding: 40px 0; }}
@@ -391,25 +399,56 @@ function paintChips() {{
   }});
 }}
 
-/* --- 左侧大纲：从 heading 收集 --- */
+/* --- 左侧大纲：树形可折叠（h1 可展开/收起，h2/h3 嵌套） --- */
 function buildOutline() {{
   const nav = document.getElementById("outline");
-  const headings = document.querySelectorAll(".doc-block.heading");
+  const headings = Array.from(document.querySelectorAll(".doc-block.heading"));
+  if (headings.length === 0) {{ nav.style.display = "none"; return; }}
+
   const frag = document.createDocumentFragment();
-  let count = 0;
+  let currentH1 = null;     // 当前 h1 组的 children 容器
+  let currentH1Item = null; // 当前 h1 的 nav-item（用于 h2 归属）
+
   headings.forEach(h => {{
-    const cls = h.classList.contains("h1") ? "h1-link" : h.classList.contains("h3") ? "h3-link" : "h2-link";
+    const level = h.classList.contains("h1") ? 1 : h.classList.contains("h3") ? 3 : 2;
     const p = h.querySelector(".text"); if (!p) return;
-    const text = p.textContent.trim().slice(0, 36);
-    if (!text) return;
-    const a = document.createElement("a");
-    a.className = cls; a.textContent = text; a.title = text;
-    a.onclick = () => {{ h.scrollIntoView({{behavior:"smooth", block:"start"}}); h.style.background="var(--accent-soft)";
-      setTimeout(()=>h.style.background="", 1500); }};
-    frag.appendChild(a); count++;
+    const text = p.textContent.trim().slice(0, 40); if (!text) return;
+
+    const item = document.createElement("div");
+    item.className = "nav-item " + "h" + level + "-item";
+    item.innerHTML = '<span class="toggle">▼</span><span class="label">' + esc(text) + '</span>';
+    item.title = text;
+
+    // 点击 label 区域：跳转 + 高亮
+    item.querySelector(".label").onclick = (e) => {{
+      e.stopPropagation();
+      nav.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+      item.classList.add("active");
+      h.scrollIntoView({{behavior:"smooth", block:"start"}});
+    }};
+    // 点击 toggle 箭头：折叠/展开（仅 h1 可折叠）
+    item.querySelector(".toggle").onclick = (e) => {{
+      e.stopPropagation();
+      if (level === 1 && currentH1) {{
+        item.classList.toggle("collapsed");
+        currentH1.classList.toggle("collapsed");
+      }}
+    }};
+
+    if (level === 1) {{
+      // h1：新建组（nav-item + children 容器）。默认收起子项（避免大纲过长）
+      currentH1Item = item;
+      item.classList.add("collapsed");  // 默认收起
+      currentH1 = document.createElement("div");
+      currentH1.className = "nav-children collapsed";  // 默认隐藏子项
+      frag.appendChild(item);
+      frag.appendChild(currentH1);
+    }} else {{
+      // h2/h3：归入当前 h1 组（没有 h1 时直接放顶层）
+      (currentH1 || frag).appendChild(item);
+    }}
   }});
-  if (count === 0) nav.style.display = "none";
-  else nav.appendChild(frag);
+  nav.appendChild(frag);
 }}
 
 let selected = null;
