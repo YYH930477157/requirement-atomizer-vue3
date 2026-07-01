@@ -9,16 +9,10 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
 from gui import fluent, i18n
+from io_utils import read_jsonl
 
 
 HEADERS = ["req_id", "type", "object", "requirement", "confidence", "status", "ambiguity"]
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
 
 
 def read_json(path: Path) -> dict[str, Any]:

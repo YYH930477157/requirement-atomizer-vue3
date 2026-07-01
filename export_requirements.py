@@ -7,6 +7,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from io_utils import read_jsonl
+
 
 CSV_COLUMNS = [
     "req_id",
@@ -23,13 +25,6 @@ CSV_COLUMNS = [
     "source_refs",
     "section_path",
 ]
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
 
 
 def export_requirements(out_dir: Path, *, formats: Iterable[str], status: str = "all") -> list[str]:

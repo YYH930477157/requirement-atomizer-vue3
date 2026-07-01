@@ -53,6 +53,7 @@ py-modules = [
   "export_requirements",
   "extract_cosem_instances",
   "extract_terms",
+  "io_utils",
   "llm_client",
   "llm_pipeline",
   "llm_review_schema",

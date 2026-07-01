@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from review_actions import apply_review_action
 from ai_review_actions import ai_req_id, apply_ai_review_action, read_ai_review_states
+from io_utils import read_jsonl
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
 
@@ -205,13 +206,6 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args) -> None:
         return
-
-
-def read_jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
 
 
 def one(params: dict[str, list[str]], name: str) -> str:

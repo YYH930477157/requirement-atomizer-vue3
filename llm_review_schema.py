@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from io_utils import read_jsonl
+
 
 REQUIRED_FIELDS = {"task_id", "source_refs", "decision", "confidence"}
 VALID_DECISIONS = {"accept", "revise", "split", "merge", "reject", "needs_expert"}
@@ -81,12 +83,12 @@ def non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    with path.open(encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
-
-
 def validate_llm_review_file(path: Path) -> list[LLMReviewIssue]:
+    # 显式校验存在：io_utils.read_jsonl 对缺失文件返回 []（通用安全），但校验入口
+    # 须对缺失文件报错而非静默判"0 问题"。
+    path = path.expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"file not found: {path}")
     return validate_llm_review_results(read_jsonl(path))
 
 

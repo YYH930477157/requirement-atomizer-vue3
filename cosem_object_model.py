@@ -20,6 +20,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from io_utils import read_jsonl
 from text_normalize import formula_safe, normalize_numeric
 
 
@@ -137,13 +138,6 @@ CLASS_LEVEL_ATTRIBUTE_NAMES = {
     },
     "Disconnect Control": {"logical_name", "output_state", "control_state", "control_mode", "remote_disconnect", "remote_connect"},
 }
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
 
 
 def build_source_index(table_items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

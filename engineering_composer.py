@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from cosem_object_model import build_object_model, build_source_index, source_order_for_row
+from io_utils import read_jsonl
 from requirement_kb import KnowledgeRepository
 from requirement_kb.cli import default_kb_paths
 
@@ -65,17 +66,6 @@ METHOD_NAMES = {
     "security activate",
     "set_function_status",
 }
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
-        line = line.strip()
-        if line:
-            rows.append(json.loads(line))
-    return rows
 
 
 def compose_engineering_requirements(out_dir: Path) -> dict[str, Any]:

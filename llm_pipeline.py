@@ -12,6 +12,7 @@ from typing import Any, Callable
 import yaml
 
 from domain_pack import load_domain_pack
+from io_utils import read_jsonl
 from llm_client import LLMClientConfig, LLMConnectionError, LLMError, LLMResponseError, chat_json, chat_json_messages
 from llm_review_schema import validate_llm_review_result_payload, validate_llm_review_results
 from resources import package_root
@@ -580,13 +581,6 @@ def assert_valid_review_results(rows: list[dict[str, Any]]) -> None:
     if errors:
         message = "; ".join(f"{issue.path}: {issue.message}" for issue in errors[:5])
         raise ValueError(f"invalid llm review results: {message}")
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> int:

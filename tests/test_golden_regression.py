@@ -8,16 +8,12 @@ from pathlib import Path
 
 import atomize
 from docx import Document
+from io_utils import read_jsonl
 
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "golden_sets" / "abnt_nbr_16968_v5" / "golden_summary.json"
 CURRENT_OUTPUT = ROOT / "out" / "abnt_nbr_16968_atomizer_v5"
-
-
-def read_jsonl(path: Path) -> list[dict]:
-    with path.open(encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
 
 
 class GoldenRegressionTests(unittest.TestCase):

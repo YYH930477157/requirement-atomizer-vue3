@@ -14,18 +14,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pyside6 = importlib.util.find_spec("PySide6")
 
+from io_utils import read_jsonl
+
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def read_jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
 
 
 @unittest.skipIf(pyside6 is None, "PySide6 not installed")
