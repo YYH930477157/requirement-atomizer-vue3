@@ -443,5 +443,69 @@ class ModuleClassificationTests(unittest.TestCase):
         self.assertEqual(reqs[1]["labels"][0], "升级")
 
 
+class ContextEngineeringTests(unittest.TestCase):
+    """上下文工程：文档全局背景（画像/大纲/术语表）注入每次抽取。"""
+
+    def _blocks(self) -> list:
+        return [
+            {"block_id": "B1", "section_path": ["1 Scope"], "text": "The scope."},
+            {"block_id": "B2", "section_path": ["3 Terms and definitions"],
+             "text": "AFD additional functionality device"},
+            {"block_id": "B3", "section_path": ["4 Requirements"],
+             "text": "The meter shall measure gas volume."},
+        ]
+
+    def test_build_doc_context_has_profile_outline_glossary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "manifest.json").write_text(
+                '{"input": "EN 16314 Gas meter.pdf"}', encoding="utf-8")
+            ctx = ai_extract.build_doc_context(out, self._blocks())
+            self.assertIn("gas", ctx)                              # 表计类型（meter_profile）
+            self.assertIn("EN 16314", ctx)                         # 目标标准
+            self.assertIn("Scope", ctx)                            # 章节大纲
+            self.assertIn("additional functionality device", ctx)  # 术语表（Terms 节文本）
+
+    def test_outline_cleans_pdf_framing_garbage(self) -> None:
+        outline = ai_extract._outline_from_blocks(
+            [{"block_id": "B", "section_path": ["2 --`,``,```,`,,---"], "text": "x"}])
+        self.assertNotIn("```", outline)  # 框线乱码被清（该条降为空、不入大纲）
+
+    def test_fingerprint_changes_with_context_key(self) -> None:
+        sec = {"text": "same section text"}
+        a = ai_extract.section_fingerprint(sec, "m", "ctxA")
+        b = ai_extract.section_fingerprint(sec, "m", "ctxB")
+        self.assertNotEqual(a, b)                                  # 背景变 → 指纹变（缓存失效重抽）
+        self.assertEqual(a, ai_extract.section_fingerprint(sec, "m", "ctxA"))  # 同背景稳定
+
+    def test_extract_section_injects_context_into_user_prompt(self) -> None:
+        captured: dict = {}
+
+        def chat(system: str, user: str) -> dict:
+            captured["user"] = user
+            return {"requirements": []}
+
+        sec = {"section_id": "S", "heading": "S", "text": "The meter shall do A.", "block_ids": []}
+        ai_extract.extract_section(sec, chat, doc_context="【文档背景】表计类型：gas。")
+        self.assertIn("表计类型：gas", captured["user"])           # 背景注入
+        self.assertIn("当前章节", captured["user"])                # 分隔标记，防搬运背景
+
+    def test_extract_all_with_context_reproducible(self) -> None:
+        sections = [{"section_id": "S1", "heading": "S1", "text": "The meter shall do A.", "block_ids": ["B1"]}]
+        calls = {"n": 0}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            return {"requirements": [{"title": "A", "description": "做 A", "type": "functional",
+                                      "priority": "P1", "labels": ["计量"], "source_quote": "The meter shall do A."}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "c.jsonl"
+            first = ai_extract.extract_all(sections, chat, model="m", cache_path=cache, doc_context="CTX")
+            second = ai_extract.extract_all(sections, chat, model="m", cache_path=cache, doc_context="CTX")
+            self.assertEqual(calls["n"], 1)   # 含背景仍逐字缓存、第二次命中
+            self.assertEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()
