@@ -507,5 +507,75 @@ class ContextEngineeringTests(unittest.TestCase):
             self.assertEqual(first, second)
 
 
+class SelfCheckTests(unittest.TestCase):
+    """完整性自检 pass：抽完再查漏补缺。"""
+
+    def _section(self) -> dict:
+        return {"section_id": "S", "heading": "S",
+                "text": "The meter shall do A. It shall also do B.", "block_ids": []}
+
+    def _req(self, title: str, quote: str) -> dict:
+        return {"title": title, "description": title + " desc", "type": "functional",
+                "priority": "P1", "labels": ["计量"], "source_quote": quote}
+
+    def test_resolve_self_check_env_and_explicit(self) -> None:
+        import os
+        prior = os.environ.get(ai_extract.SELF_CHECK_ENV)
+        try:
+            os.environ.pop(ai_extract.SELF_CHECK_ENV, None)
+            self.assertTrue(ai_extract.resolve_self_check(None))        # 默认开
+            os.environ[ai_extract.SELF_CHECK_ENV] = "0"
+            self.assertFalse(ai_extract.resolve_self_check(None))
+            os.environ[ai_extract.SELF_CHECK_ENV] = "off"
+            self.assertFalse(ai_extract.resolve_self_check(None))
+            self.assertTrue(ai_extract.resolve_self_check(True))        # 显式优先
+            self.assertFalse(ai_extract.resolve_self_check(False))
+        finally:
+            if prior is None:
+                os.environ.pop(ai_extract.SELF_CHECK_ENV, None)
+            else:
+                os.environ[ai_extract.SELF_CHECK_ENV] = prior
+
+    def test_self_check_appends_missing_deduped(self) -> None:
+        calls = {"n": 0}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            if calls["n"] == 1:  # 初抽：只给 A
+                return {"requirements": [self._req("Do A", "The meter shall do A.")]}
+            return {"requirements": [                       # 自检：A(重复) + B(新)
+                self._req("Do A", "The meter shall do A."),
+                self._req("Do B", "It shall also do B.")]}
+
+        reqs = ai_extract.extract_section(self._section(), chat, self_check=True)
+        self.assertEqual(calls["n"], 2)                     # 抽取 + 自检各一次
+        self.assertEqual(len(reqs), 2)                      # A + B（重复 A 去重）
+        self.assertIn("It shall also do B.", [r["source_quote"] for r in reqs])
+
+    def test_self_check_off_is_single_call(self) -> None:
+        calls = {"n": 0}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            return {"requirements": [self._req("A", "The meter shall do A.")]}
+
+        ai_extract.extract_section(self._section(), chat, self_check=False)
+        self.assertEqual(calls["n"], 1)                     # 关闭 → 仅一次
+
+    def test_self_check_failure_keeps_initial(self) -> None:
+        from llm_client import LLMConnectionError
+        calls = {"n": 0}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"requirements": [self._req("A", "The meter shall do A.")]}
+            raise LLMConnectionError("critique failed")
+
+        reqs = ai_extract.extract_section(self._section(), chat, self_check=True)
+        self.assertEqual(len(reqs), 1)                      # 自检失败不致命，保留初抽
+        self.assertEqual(reqs[0]["title"], "A")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -48,7 +48,8 @@ MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v3"  # v3：上下文工程（文档背景/术语表/大纲注入每次抽取，缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v4"  # v4：完整性自检 pass（缓存失效重抽）
+SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 DOC_CONTEXT_GLOSSARY_MAX = 1800   # 术语表注入上限（控 token 成本）
 DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
 _TERMS_HEADING_RE = re.compile(r"term|definition|abbreviat|glossary|术语|定义|符号", re.IGNORECASE)
@@ -76,6 +77,14 @@ def resolve_concurrency(explicit: int | None = None) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_CONCURRENCY
     return max(1, min(MAX_CONCURRENCY, value))
+
+
+def resolve_self_check(explicit: bool | None = None) -> bool:
+    """完整性自检开关：显式参数优先，否则环境变量 RATOMIZER_AI_SELFCHECK（默认开）。"""
+    if explicit is not None:
+        return bool(explicit)
+    raw = os.environ.get(SELF_CHECK_ENV, "1").strip().lower()
+    return raw not in ("0", "false", "no", "off", "")
 
 VALID_TYPES = {"functional", "non_functional", "constraint", "business_rule"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
@@ -341,15 +350,8 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
     }
 
 
-def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "") -> list[dict[str, Any]]:
-    """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。doc_context 注入文档全局背景。"""
-    user = build_section_prompt(section)
-    if doc_context:
-        user = f"{doc_context}\n\n---\n以下是待抽取的**当前章节**（需求内容与 source_quote 只能来自这段原文）：\n{user}"
-    payload = chat(SYSTEM_PROMPT, user)
-    raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
-    if not isinstance(raw_reqs, list):
-        return []
+def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any]) -> list[dict[str, Any]]:
+    """raw LLM 需求 → 归一 + 分级漂移护栏。抽取与完整性自检共用（补的也过同一套护栏）。"""
     source = section.get("drift_source") or section.get("text", "")
     results: list[dict[str, Any]] = []
     for raw in raw_reqs:
@@ -371,6 +373,64 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
             req["status"] = "draft"
         req["notes"] = "；".join(notes)
         results.append(req)
+    return results
+
+
+def _req_key(req: dict[str, Any]) -> str:
+    """去重键：优先 source_quote（归一），否则 title。"""
+    q = re.sub(r"\s+", " ", str(req.get("source_quote") or "")).strip().lower()
+    return q or str(req.get("title") or "").strip().lower()
+
+
+def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
+                     chat: ChatFn, doc_context: str = "") -> list[dict[str, Any]]:
+    """完整性自检：对着原文找已抽取需求**未覆盖**的遗漏项，补上（去重 + 同一套漂移护栏）。"""
+    titles = "\n".join(f"- {r.get('title', '')}" for r in existing) or "（无）"
+    parts: list[str] = []
+    if doc_context:
+        parts.append(doc_context)
+        parts.append("---")
+    parts.append(
+        "【查漏补缺任务】下面是一个章节的原文 + 已抽取的需求标题。找出章节里**尚未被覆盖**的"
+        "需求/约束/可测语句，只输出这些**遗漏项**（同样的 JSON schema、同样的 module 受控清单）；"
+        "已覆盖的不要重复；原文没有的绝不编造；若无遗漏，输出 {\"requirements\": []}。")
+    parts.append(f"当前章节：\n{build_section_prompt(section)}")
+    parts.append(f"已抽取（勿重复）：\n{titles}")
+    payload = chat(SYSTEM_PROMPT, "\n\n".join(parts))
+    raw = payload.get("requirements") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        return []
+    seen = {_req_key(r) for r in existing}
+    extra: list[dict[str, Any]] = []
+    for req in _process_raw_requirements(raw, section):
+        key = _req_key(req)
+        if key and key not in seen:
+            seen.add(key)
+            extra.append(req)
+    return extra
+
+
+def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "",
+                    self_check: bool = False) -> list[dict[str, Any]]:
+    """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。doc_context 注入文档全局背景。
+
+    self_check：抽完再调一次「查漏补缺」补上遗漏项（直击"不遗漏"，代价 ~2× 调用）。
+    自检调用失败不致命——保留初抽结果。
+    """
+    user = build_section_prompt(section)
+    if doc_context:
+        user = f"{doc_context}\n\n---\n以下是待抽取的**当前章节**（需求内容与 source_quote 只能来自这段原文）：\n{user}"
+    payload = chat(SYSTEM_PROMPT, user)
+    raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
+    results = _process_raw_requirements(raw_reqs, section) if isinstance(raw_reqs, list) else []
+    if self_check:
+        try:
+            extra = critique_section(section, results, chat, doc_context)
+            if extra:
+                LOGGER.info("完整性自检补充 %d 条（章节 %s）", len(extra), section.get("section_id"))
+                results = results + extra
+        except LLMError as exc:  # 自检失败不致命，保留初抽
+            LOGGER.warning("完整性自检失败（保留初抽）：%s", exc)
     return results
 
 
@@ -409,6 +469,7 @@ def extract_all(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     stats: dict[str, Any] | None = None,
     doc_context: str = "",
+    self_check: bool = False,
 ) -> list[dict[str, Any]]:
     """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。
 
@@ -417,7 +478,9 @@ def extract_all(
     stats：可选 out-dict，回填 total_sections / cached_sections / failed_sections。
     doc_context：文档全局上下文，注入每次抽取并计入指纹（背景变→缓存失效重抽）。
     """
-    context_key = hashlib.sha256(doc_context.encode("utf-8")).hexdigest()[:12] if doc_context else ""
+    context_key = (hashlib.sha256(doc_context.encode("utf-8")).hexdigest()[:12] if doc_context else "")
+    if self_check:  # 自检开/关产出不同 → 计入指纹，缓存不串
+        context_key += "|selfcheck"
     cache = read_cache(cache_path)
     results: list[list[dict[str, Any]] | None] = [None] * len(sections)
     pending: list[tuple[int, dict[str, Any], str]] = []
@@ -449,7 +512,7 @@ def extract_all(
     def work(item: tuple[int, dict[str, Any], str]) -> tuple[int, str, list[dict[str, Any]], bool]:
         idx, section, fp = item
         try:
-            return idx, fp, extract_section(section, chat, doc_context), True
+            return idx, fp, extract_section(section, chat, doc_context, self_check), True
         except LLMError as exc:  # 最佳努力：该章节降级、不崩、不缓存（留待重跑）
             LOGGER.warning("AI 抽取章节失败：%s", exc)
             return idx, fp, [], False
@@ -573,7 +636,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                    write_doc: bool = False, merge_deterministic: bool = False,
                    pipeline_path: Path = DEFAULT_PIPELINE_PATH,
                    progress_callback: Callable[[dict[str, Any]], None] | None = None,
-                   concurrency: int | None = None) -> dict[str, Any]:
+                   concurrency: int | None = None,
+                   self_check: bool | None = None) -> dict[str, Any]:
     """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel + 双引擎合并）。"""
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
@@ -605,7 +669,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                                    concurrency=resolve_concurrency(concurrency),
                                    progress_callback=progress_callback,
                                    stats=extract_stats,
-                                   doc_context=doc_context)
+                                   doc_context=doc_context,
+                                   self_check=resolve_self_check(self_check))
         ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
         code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
         int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
