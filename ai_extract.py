@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from dataclasses import replace
@@ -47,7 +48,10 @@ MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v2"  # v2：prompt 新增 module 受控分类（缓存随之失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v3"  # v3：上下文工程（文档背景/术语表/大纲注入每次抽取，缓存失效重抽）
+DOC_CONTEXT_GLOSSARY_MAX = 1800   # 术语表注入上限（控 token 成本）
+DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
+_TERMS_HEADING_RE = re.compile(r"term|definition|abbreviat|glossary|术语|定义|符号", re.IGNORECASE)
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
 DEFAULT_MERGE_CHARS = 2800
@@ -86,6 +90,8 @@ SYSTEM_PROMPT = (
     "labels（额外的细分标签，至少一个，可自由）、source_quote（原文逐字引用，不可改写）、"
     "source_section（该需求所属的章节号/标题，从文本里的小节标题判断）、"
     "acceptance_criteria（可测试的验收点数组）。"
+    "若提供了【文档背景/章节大纲/术语定义】，据此保持术语一致、模块判断准确、解析跨章节引用；"
+    "但这些背景仅供参考——需求内容与 source_quote 必须来自【当前章节】原文，不得从背景里搬运。"
     "严禁编造原文没有的 OBIS 码、事件号、十六进制、数字——这些只能原样引用或不出现。"
     "只输出 JSON：{\"requirements\": [ {…}, … ]}。"
 )
@@ -197,9 +203,9 @@ def _finalize_merged(cur: dict[str, Any]) -> dict[str, Any]:
 
 # --- 抽取与防幻觉护栏 -----------------------------------------------------
 
-def section_fingerprint(section: dict[str, Any], model: str) -> str:
+def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
     digest = hashlib.sha256(
-        f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}".encode("utf-8")
+        f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{context_key}".encode("utf-8")
     ).hexdigest()
     return digest[:24]
 
@@ -207,6 +213,77 @@ def section_fingerprint(section: dict[str, Any], model: str) -> str:
 def build_section_prompt(section: dict[str, Any]) -> str:
     payload = {"heading": section.get("heading"), "text": section.get("text", "")[:12000]}
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+# --- 上下文工程：文档全局背景注入 ---------------------------------------
+
+_CTX_GARBAGE_RE = re.compile(r"(?:\d+\s+)?[,`'=\-*_~|+…]{4,}")  # PDF 框线乱码片段
+
+
+def _clean_ctx_text(text: str) -> str:
+    """上下文文本清洁：剥离框线乱码、折叠空白。"""
+    return re.sub(r"\s+", " ", _CTX_GARBAGE_RE.sub(" ", text or "")).strip()
+
+
+def _outline_from_blocks(blocks: list[dict[str, Any]]) -> str:
+    """章节大纲：去重的章节标题序列（给 LLM 文档结构感，解析跨章节引用）。每条限长、去乱码。"""
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for b in blocks:
+        path = b.get("section_path") or []
+        head = _clean_ctx_text(str(path[-1]))[:70].strip() if path else ""
+        if len(head) > 1 and head not in seen_set:
+            seen_set.add(head)
+            seen.append(head)
+        if len(seen) >= DOC_CONTEXT_OUTLINE_MAX:
+            break
+    return " / ".join(seen)
+
+
+def _glossary_from_blocks(blocks: list[dict[str, Any]]) -> str:
+    """术语表：Terms/Definitions 节的文本（确定性截取 + 去乱码，不做脆弱的 term→def 解析）。"""
+    parts: list[str] = []
+    total = 0
+    for b in blocks:
+        if b.get("noise"):
+            continue
+        path = b.get("section_path") or []
+        if not any(_TERMS_HEADING_RE.search(str(p)) for p in path):
+            continue
+        text = _clean_ctx_text(str(b.get("text") or ""))
+        if not text:
+            continue
+        parts.append(text)
+        total += len(text) + 1
+        if total >= DOC_CONTEXT_GLOSSARY_MAX:
+            break
+    return "\n".join(parts)[:DOC_CONTEXT_GLOSSARY_MAX]
+
+
+def build_doc_context(out_dir: Path, blocks: list[dict[str, Any]]) -> str:
+    """文档全局上下文（表计类型/目标标准/章节大纲/术语表），注入每次章节抽取。确定性、可复现。
+
+    只作术语与模块一致性、跨章节引用解析的**参考**；需求内容与 source_quote 仍须来自当前章节
+    原文，且结构字段仍过双引擎漂移护栏（context 里的编码不会因此被当作源）。
+    """
+    try:
+        from meter_profile import infer_meter_profile
+        profile = infer_meter_profile(out_dir)
+    except Exception as exc:  # pragma: no cover - 兜底，缺 manifest 等
+        LOGGER.warning("文档画像失败，上下文降级：%s", exc)
+        profile = {"meter_type": "", "target_standards": []}
+    meter_type = str(profile.get("meter_type") or "未定")
+    stds = "、".join(profile.get("target_standards") or []) or "未提取到"
+    outline = _outline_from_blocks(blocks)
+    glossary = _glossary_from_blocks(blocks)
+
+    lines = [f"【文档背景】表计类型：{meter_type}；目标标准：{stds}。"]
+    if outline:
+        lines.append(f"【章节大纲】{outline}")
+    if glossary:
+        lines.append("【术语/定义（节选，仅供术语与模块一致性参考，勿据此编造原文没有的编码/数字）】")
+        lines.append(glossary)
+    return "\n".join(lines)
 
 
 def _produced_text(requirement: dict[str, Any]) -> str:
@@ -264,9 +341,12 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
     }
 
 
-def extract_section(section: dict[str, Any], chat: ChatFn) -> list[dict[str, Any]]:
-    """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。"""
-    payload = chat(SYSTEM_PROMPT, build_section_prompt(section))
+def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "") -> list[dict[str, Any]]:
+    """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。doc_context 注入文档全局背景。"""
+    user = build_section_prompt(section)
+    if doc_context:
+        user = f"{doc_context}\n\n---\n以下是待抽取的**当前章节**（需求内容与 source_quote 只能来自这段原文）：\n{user}"
+    payload = chat(SYSTEM_PROMPT, user)
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
     if not isinstance(raw_reqs, list):
         return []
@@ -328,18 +408,21 @@ def extract_all(
     concurrency: int = 1,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     stats: dict[str, Any] | None = None,
+    doc_context: str = "",
 ) -> list[dict[str, Any]]:
     """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。
 
     progress_callback：每完成一章节回调一次（GUI 进度条用，否则界面看着像卡死）。
     逐章节增量写缓存：长跑中途被中断也不丢已完成章节。
     stats：可选 out-dict，回填 total_sections / cached_sections / failed_sections。
+    doc_context：文档全局上下文，注入每次抽取并计入指纹（背景变→缓存失效重抽）。
     """
+    context_key = hashlib.sha256(doc_context.encode("utf-8")).hexdigest()[:12] if doc_context else ""
     cache = read_cache(cache_path)
     results: list[list[dict[str, Any]] | None] = [None] * len(sections)
     pending: list[tuple[int, dict[str, Any], str]] = []
     for i, section in enumerate(sections):
-        fp = section_fingerprint(section, model)
+        fp = section_fingerprint(section, model, context_key)
         hit = cache.get(fp)
         if hit is not None:
             results[i] = hit
@@ -366,7 +449,7 @@ def extract_all(
     def work(item: tuple[int, dict[str, Any], str]) -> tuple[int, str, list[dict[str, Any]], bool]:
         idx, section, fp = item
         try:
-            return idx, fp, extract_section(section, chat), True
+            return idx, fp, extract_section(section, chat, doc_context), True
         except LLMError as exc:  # 最佳努力：该章节降级、不崩、不缓存（留待重跑）
             LOGGER.warning("AI 抽取章节失败：%s", exc)
             return idx, fp, [], False
@@ -515,12 +598,14 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         def chat(system: str, user: str) -> dict[str, Any]:
             return chat_json(config, system, user)
 
+        doc_context = build_doc_context(out_dir, blocks)  # 上下文工程：文档全局背景注入每次抽取
         extract_stats: dict[str, Any] = {}
         requirements = extract_all(sections, chat, model=config.model,
                                    cache_path=out_dir / AI_EXTRACT_CACHE,
                                    concurrency=resolve_concurrency(concurrency),
                                    progress_callback=progress_callback,
-                                   stats=extract_stats)
+                                   stats=extract_stats,
+                                   doc_context=doc_context)
         ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
         code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
         int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
