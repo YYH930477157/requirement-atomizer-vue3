@@ -1,10 +1,13 @@
-"""把"文档批注审核"导出成一个自包含 HTML 文件。
+"""把"文档批注审核"导出成一个自包含 HTML 文件（Notion 清爽文档风）。
 
 完全独立：文档原文 + AI 抽取需求数据直接嵌进 HTML，内联 CSS/JS，任意浏览器双击即开、
 不需 app/服务器。需求像批注挂在原文对应小段上（anchor_block_id 精确锚点），点开看
 模块/需求分析/测试指引/原文引用；裁决（接受/拒绝/讨论/改模块/写意见）静默存浏览器
 localStorage（按 doc 命名空间隔离），一键「导出裁决 JSON」可回灌 app 合进交付物。
 未覆盖的 requirement_like 段标「未覆盖」，顶部给疑似遗漏计数。
+
+排版（Notion 风）：三栏（左大纲 / 中文档窄列居中 / 右批注卡片）；前言/目录/引言默认
+折叠；noise 块灰显；leader-dots 与纯框线乱码在渲染层清洁（不触及抽取层）。
 
 数据组装复用 api_server.build_document_blocks / build_ai_requirements（含锚点）。
 """
@@ -14,6 +17,7 @@ import datetime
 import hashlib
 import html
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +25,18 @@ from api_server import build_ai_requirements, build_document_blocks
 
 ANNOTATION_HTML = "document_annotation.html"
 
-# 镜像 ai_extract.MODULE_VOCAB（改模块下拉用）；惰性取，避免强依赖。
+# 非正文区：折叠显示（不删除，研发可展开核查）
+_COLLAPSIBLE_REGIONS = {"front_matter", "table_of_contents", "preface", "introduction"}
+# leader-dots：目录条目末尾的点连线 + 页码（Foreword .......... 3 → Foreword）
+_LEADER_DOTS_RE = re.compile(r"\s*[.·…]{3,}\s*\d*\s*$")
+# 段内嵌的框线乱码片段：连续符号串（可能含数字/字母前缀如 '2 --,--' 或 '--``,``--'），
+# 至少 6 个符号字符、字母数字占比 <20%。剥离段内嵌入的表格框线噪声。
+# 注意：不含 . （点），让 _LEADER_DOTS_RE 独占处理目录点连线。
+_INLINE_GARBAGE_RE = re.compile(r"(?:\d+\s+)?[,`'=\-*_~|+…]{6,}")
+# 纯符号行：PDF 框线/制表符被误读成符号串
+_SYMBOL_ONLY_RE = re.compile(r"^[,\-`'=*_~|+.…\s]+$")
+
+
 def _module_vocab() -> list[str]:
     try:
         from ai_extract import MODULE_VOCAB
@@ -31,7 +46,6 @@ def _module_vocab() -> list[str]:
 
 
 def _doc_id(out_dir: Path) -> str:
-    """localStorage 命名空间：用输出目录路径指纹，确保不同文档裁决互不串。"""
     return hashlib.sha1(str(out_dir).encode("utf-8")).hexdigest()[:10]
 
 
@@ -43,36 +57,122 @@ def _covered_blocks(requirements: list[dict[str, Any]]) -> set[str]:
     return covered
 
 
+def _clean_block_text(text: str) -> str:
+    """渲染层文本清洁：剥离段内框线乱码片段、去 leader-dots/页码、折叠空白。纯符号行返回空。"""
+    # 剥离段内嵌的框线乱码（正文 + 句末框线噪声，如 'When --``,``-- tested' → 'When tested'）
+    text = _INLINE_GARBAGE_RE.sub(" ", text)
+    text = _LEADER_DOTS_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _is_symbol_only(text: str) -> bool:
+    """True 当文本去掉字母数字后剩余符号占比 >80%（PDF 框线乱码，可能含数字编号如 '2 --,--'）。"""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    alnum = sum(1 for c in stripped if c.isalnum())
+    return alnum / len(stripped) < 0.2
+
+
+def _block_heading_level(block: dict[str, Any]) -> int:
+    """推断标题层级（1-3）。heading_level 优先，否则 section_path 深度，兜底 2。"""
+    hl = block.get("heading_level")
+    if isinstance(hl, int) and 1 <= hl <= 6:
+        return min(hl, 3)
+    path = block.get("section_path") or []
+    if isinstance(path, list) and len(path) >= 1:
+        return min(len(path), 3)
+    return 2
+
+
+def _block_region_label(region: str) -> str:
+    return {"front_matter": "前言", "table_of_contents": "目录",
+            "preface": "前言", "introduction": "引言"}.get(region, region)
+
+
 def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict[str, Any]]],
                    covered: set[str]) -> str:
+    """渲染文档块：正文正常，非正文区折叠，noise 灰显，纯符号行跳过。"""
     parts: list[str] = []
+    collapse_open = False
+    collapse_count = 0
+    collapse_label = ""
+    collapse_buf: list[str] = []
+
+    def flush_collapse() -> None:
+        nonlocal collapse_open, collapse_count, collapse_buf
+        if collapse_open and collapse_buf:
+            parts.append(
+                f'<details class="region-collapse"><summary>'
+                f'📋 {_block_region_label(collapse_label)}（{collapse_count} 段）</summary>'
+                f'<div class="collapse-body">{"".join(collapse_buf)}</div></details>'
+            )
+        collapse_open = False
+        collapse_count = 0
+        collapse_buf = []
+
     for b in blocks:
         bid = str(b.get("block_id") or "")
         text = str(b.get("text") or "")
+        # 清洁 + 跳过纯符号乱码
+        text = _clean_block_text(text)
+        if _is_symbol_only(text):
+            continue
         path = b.get("section_path") or []
-        is_heading = b.get("type") == "heading" or (bool(path) and text == path[-1])
-        is_omission = bool(b.get("requirement_like")) and not b.get("noise") and bid not in covered
+        region = str(b.get("doc_region") or "body")
+        is_heading = b.get("type") == "heading" or (bool(path) and text == str(path[-1]))
+        is_noise = bool(b.get("noise"))
+        is_omission = bool(b.get("requirement_like")) and not is_noise and bid not in covered
         anchored = anchor_map.get(bid) or []
-        cls = ["doc-block"]
-        if is_heading:
-            cls.append("heading")
-        if is_omission:
-            cls.append("omission")
-        if anchored:
-            cls.append("anchored")
-        chips = "".join(
-            f'<button class="chip" data-req="{html.escape(str(r["ai_req_id"]))}" '
-            f'title="{html.escape(str(r.get("module_effective") or ""))} · {html.escape(str(r.get("title") or ""))}">'
-            f'💬 {html.escape(str(r.get("module_effective") or "需求"))}</button>'
-            for r in anchored
-        )
-        omission_tag = '<span class="omission-tag">⚠ 未覆盖</span>' if is_omission else ""
-        parts.append(
-            f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}">'
-            f'<div class="gutter">{chips}{omission_tag}</div>'
-            f'<p class="text" data-block-id="{html.escape(bid)}">{html.escape(text)}</p></div>'
-        )
+
+        # 渲染单个 block 的 HTML
+        block_html = _render_one_block(bid, text, path, region, is_heading, is_noise, is_omission, anchored)
+
+        # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
+        if region in _COLLAPSIBLE_REGIONS:
+            if not collapse_open or collapse_label != region:
+                flush_collapse()
+                collapse_open = True
+                collapse_label = region
+            collapse_count += 1
+            collapse_buf.append(block_html)
+        else:
+            flush_collapse()
+            parts.append(block_html)
+    flush_collapse()
     return "\n".join(parts)
+
+
+def _render_one_block(bid: str, text: str, path: list, region: str,
+                      is_heading: bool, is_noise: bool, is_omission: bool,
+                      anchored: list) -> str:
+    cls = ["doc-block"]
+    if is_heading:
+        cls.append("heading")
+        cls.append(f"h{_block_heading_level({'section_path': path, 'heading_level': None})}")
+    if is_noise:
+        cls.append("noise")
+    if is_omission:
+        cls.append("omission")
+    if anchored:
+        cls.append("anchored")
+    depth = min(len(path), 4) if path else 0
+
+    chips = "".join(
+        f'<button class="chip" data-req="{html.escape(str(r["ai_req_id"]))}" '
+        f'title="{html.escape(str(r.get("module_effective") or ""))} · {html.escape(str(r.get("title") or ""))}">'
+        f'{html.escape(str(r.get("module_effective") or "需求"))}</button>'
+        for r in anchored
+    )
+    omission_tag = '<span class="omission-tag">⚠ 未覆盖</span>' if is_omission else ""
+    return (
+        f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}" style="--depth:{depth}">'
+        f'<div class="block-inner">'
+        f'<div class="chips">{chips}{omission_tag}</div>'
+        f'<p class="text" data-block-id="{html.escape(bid)}">{html.escape(text)}</p>'
+        f'</div></div>'
+    )
 
 
 def render_annotation_html(out_dir: Path) -> str:
@@ -93,7 +193,6 @@ def render_annotation_html(out_dir: Path) -> str:
         if b.get("requirement_like") and not b.get("noise") and str(b.get("block_id")) not in covered
     )
     blocks_html = _render_blocks(blocks, anchor_map, covered)
-    # 嵌入 JS 的数据：防 </script> 截断
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
     vocab_json = json.dumps(_module_vocab(), ensure_ascii=False).replace("</", "<\\/")
     generated_at = datetime.datetime.now().isoformat(timespec="seconds")
@@ -111,86 +210,159 @@ def render_annotation_html(out_dir: Path) -> str:
 
 
 def export_annotation_html(out_dir: Path) -> Path:
-    out_dir = Path(out_dir).expanduser().resolve()
+    out_dir = out_dir.expanduser().resolve()
     target = out_dir / ANNOTATION_HTML
     target.write_text(render_annotation_html(out_dir), encoding="utf-8")
     return target
 
 
-_TEMPLATE = """<!DOCTYPE html>
+_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>文档批注审核 · {source}</title>
 <style>
+:root {{
+  --bg: #ffffff;
+  --bg-soft: #f7f7f5;
+  --border: #e8e8e6;
+  --text: #37352f;
+  --text-muted: #9b9a97;
+  --accent: #2383E2;
+  --accent-soft: #e8f1fc;
+  --st-accepted: #E6F4EA; --st-accepted-tx: #137333;
+  --st-rejected: #FCE8E6; --st-rejected-tx: #C5221F;
+  --st-discussion: #FEF7E0; --st-discussion-tx: #B06000;
+  --omission-bg: #FFF9E6;
+}}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; color: #334155; background: #f1f5f9; }}
-.topbar {{ position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 18px; background: #0f172a; color: #e2e8f0; }}
-.topbar .stats {{ display: flex; gap: 18px; font-size: 13px; }}
-.topbar strong {{ color: #fff; }}
-.topbar .warn strong {{ color: #fbbf24; }}
-.topbar button {{ background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px; }}
-.topbar button:hover {{ background: #1d4ed8; }}
-.layout {{ display: grid; grid-template-columns: 1fr 380px; gap: 0; height: calc(100vh - 52px); }}
-.paper {{ overflow: auto; padding: 22px 26px; background: #fff; }}
-.doc-block {{ display: grid; grid-template-columns: 150px 1fr; gap: 12px; padding: 3px 6px; border-left: 3px solid transparent; transition: background .15s; }}
-.doc-block.anchored {{ cursor: pointer; border-left-color: #3b82f6; }}
-.doc-block.anchored:hover {{ background: #f8fafc; }}
-.doc-block.in-span {{ background: #eff6ff; }}
-.doc-block.omission {{ border-left: 3px dashed #f59e0b; }}
-.doc-block.heading .text {{ font-weight: 700; color: #0f172a; margin-top: 10px; }}
-.gutter {{ display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }}
-.text {{ margin: 0; font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; }}
-.text mark {{ background: #fde68a; padding: 0 1px; border-radius: 2px; }}
-.chip {{ font-size: 11px; border: 1px solid #cbd5e1; border-radius: 11px; padding: 2px 9px; background: #fff; cursor: pointer;
-  max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: transform .12s, box-shadow .12s; }}
-.chip:hover {{ transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,.12); }}
-.chip.sel {{ outline: 2px solid #3b82f6; }}
-.chip.st-accepted {{ border-color: #16a34a; color: #16a34a; }}
-.chip.st-rejected {{ border-color: #dc2626; color: #dc2626; }}
-.chip.st-needs_discussion {{ border-color: #d97706; color: #d97706; }}
-.omission-tag {{ font-size: 10px; color: #b45309; }}
-.detail {{ border-left: 1px solid #e2e8f0; overflow: auto; padding: 16px; background: #fafafa; }}
-.detail .empty {{ color: #94a3b8; text-align: center; padding-top: 48px; font-size: 13px; }}
-.dd-head {{ display: flex; justify-content: space-between; align-items: center; }}
-.dd-module {{ font-weight: 700; color: #1d4ed8; }}
-.badge {{ font-size: 12px; padding: 2px 9px; border-radius: 9px; background: #e2e8f0; }}
-.badge.st-accepted {{ background: #dcfce7; color: #166534; }}
-.badge.st-rejected {{ background: #fee2e2; color: #991b1b; }}
-.badge.st-needs_discussion {{ background: #fef3c7; color: #92400e; }}
-.dd-title {{ margin: 10px 0 2px; font-size: 15px; color: #0f172a; }}
-.dd-meta {{ font-size: 12px; color: #64748b; margin-bottom: 8px; }}
-.dd-label {{ font-size: 11px; color: #94a3b8; text-transform: uppercase; margin: 12px 0 3px; }}
-.dd-body {{ font-size: 13px; line-height: 1.6; }}
-.dd-list {{ margin: 0; padding-left: 18px; font-size: 13px; }}
-.dd-quote {{ font-size: 12px; color: #475569; border-left: 3px solid #cbd5e1; padding-left: 8px; font-style: italic; }}
-select, textarea {{ width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; font-size: 13px; font-family: inherit; }}
-textarea {{ min-height: 56px; margin-top: 8px; resize: vertical; }}
-.actions {{ display: flex; gap: 8px; margin-top: 10px; }}
-.actions button {{ flex: 1; border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 0; background: #fff; cursor: pointer; font-size: 13px; }}
-.actions .accept {{ background: #2563eb; color: #fff; border-color: #2563eb; }}
-.saved-hint {{ font-size: 11px; color: #16a34a; margin-top: 6px; min-height: 14px; }}
+body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: var(--text); background: var(--bg); font-size: 15px; line-height: 1.7; }}
+
+/* --- 顶栏 --- */
+.topbar {{ position: sticky; top: 0; z-index: 10; display: flex; justify-content: space-between; align-items: center;
+  padding: 0 24px; height: 48px; background: var(--bg); border-bottom: 1px solid var(--border); }}
+.topbar .brand {{ font-weight: 600; font-size: 14px; }}
+.topbar .stats {{ display: flex; gap: 20px; font-size: 13px; color: var(--text-muted); }}
+.topbar .stats strong {{ color: var(--text); }}
+.topbar .stats .warn strong {{ color: #B06000; }}
+.topbar button {{ background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+  padding: 6px 14px; cursor: pointer; font-size: 13px; font-weight: 500; }}
+.topbar button:hover {{ opacity: 0.9; }}
+
+/* --- 三栏布局 --- */
+.layout {{ display: grid; grid-template-columns: 220px 1fr 380px; height: calc(100vh - 48px); }}
+
+/* --- 左：大纲 --- */
+.outline {{ border-right: 1px solid var(--border); overflow-y: auto; padding: 16px 12px;
+  background: var(--bg-soft); font-size: 13px; }}
+.outline .outline-title {{ font-size: 11px; text-transform: uppercase; color: var(--text-muted);
+  letter-spacing: 0.5px; margin: 0 0 8px 8px; }}
+.outline a {{ display: block; padding: 3px 8px; border-radius: 4px; color: var(--text-muted);
+  text-decoration: none; cursor: pointer; line-height: 1.5; }}
+.outline a:hover {{ background: rgba(0,0,0,0.04); color: var(--text); }}
+.outline a.active {{ background: var(--accent-soft); color: var(--accent); }}
+.outline .h1-link {{ font-weight: 600; padding-left: 8px; }}
+.outline .h2-link {{ padding-left: 20px; }}
+.outline .h3-link {{ padding-left: 32px; font-size: 12px; }}
+
+/* --- 中：文档 --- */
+.paper {{ overflow-y: auto; padding: 40px 0; }}
+.doc-content {{ max-width: 720px; margin: 0 auto; padding: 0 48px; }}
+
+.doc-block {{ margin-bottom: 4px; }}
+.block-inner {{ position: relative; padding-left: calc(var(--depth, 0) * 16px); }}
+.doc-block .text {{ margin: 0; padding: 2px 0; }}
+.doc-block.heading .text {{ font-weight: 600; margin-top: 20px; }}
+.doc-block.h1 .text {{ font-size: 22px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }}
+.doc-block.h2 .text {{ font-size: 18px; }}
+.doc-block.h2 .block-inner {{ border-left: 3px solid var(--accent); padding-left: 12px; margin-left: -15px; }}
+.doc-block.h3 .text {{ font-size: 16px; color: #555; }}
+.doc-block.noise .text {{ opacity: 0.3; font-size: 13px; }}
+.doc-block.omission {{ background: var(--omission-bg); border-radius: 4px; padding: 4px 8px; margin: 4px 0; }}
+.doc-block.omission .text {{ border-left: 3px dashed #D4A017; padding-left: 8px; }}
+.doc-block.anchored {{ cursor: pointer; border-radius: 4px; }}
+.doc-block.anchored:hover {{ background: var(--accent-soft); }}
+.doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
+.text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
+
+/* chips（inline 段末，Notion 式小标签） */
+.chips {{ display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: middle; }}
+.chip {{ display: inline-flex; align-items: center; font-size: 11px; border: 1px solid var(--border);
+  border-radius: 10px; padding: 1px 8px; background: var(--bg); cursor: pointer; color: var(--text-muted);
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: all .12s; }}
+.chip::before {{ content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 5px; flex-shrink: 0; }}
+.chip:hover {{ border-color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.08); }}
+.chip.sel {{ outline: 2px solid var(--accent); }}
+.chip.st-accepted {{ background: var(--st-accepted); border-color: transparent; color: var(--st-accepted-tx); }}
+.chip.st-accepted::before {{ background: #137333; }}
+.chip.st-rejected {{ background: var(--st-rejected); border-color: transparent; color: var(--st-rejected-tx); }}
+.chip.st-rejected::before {{ background: #C5221F; }}
+.chip.st-needs_discussion {{ background: var(--st-discussion); border-color: transparent; color: var(--st-discussion-tx); }}
+.chip.st-needs_discussion::before {{ background: #B06000; }}
+.omission-tag {{ font-size: 11px; color: #B06000; background: var(--omission-bg);
+  border: 1px solid #E6D8A0; border-radius: 10px; padding: 1px 8px; }}
+
+/* 折叠区 */
+.region-collapse {{ margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-soft); }}
+.region-collapse summary {{ padding: 8px 14px; cursor: pointer; font-size: 13px; color: var(--text-muted); font-weight: 500; }}
+.region-collapse summary:hover {{ background: rgba(0,0,0,0.03); }}
+.collapse-body {{ padding: 4px 14px 10px; }}
+.collapse-body .doc-block.noise .text {{ opacity: 0.25; }}
+
+/* --- 右：批注详情 --- */
+.detail {{ border-left: 1px solid var(--border); overflow-y: auto; padding: 24px 20px; background: var(--bg-soft); }}
+.detail .empty {{ color: var(--text-muted); text-align: center; padding-top: 60px; font-size: 13px; }}
+.detail-card {{ background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 14px; }}
+.dd-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }}
+.dd-module {{ font-size: 12px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.3px; }}
+.badge {{ font-size: 11px; padding: 2px 9px; border-radius: 10px; background: var(--border); }}
+.badge.st-accepted {{ background: var(--st-accepted); color: var(--st-accepted-tx); }}
+.badge.st-rejected {{ background: var(--st-rejected); color: var(--st-rejected-tx); }}
+.badge.st-needs_discussion {{ background: var(--st-discussion); color: var(--st-discussion-tx); }}
+.dd-title {{ margin: 8px 0 2px; font-size: 16px; font-weight: 600; color: var(--text); line-height: 1.4; }}
+.dd-meta {{ font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }}
+.dd-label {{ font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 14px 0 4px; }}
+.dd-body {{ font-size: 14px; line-height: 1.7; }}
+.dd-list {{ margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }}
+.dd-list li {{ margin-bottom: 2px; }}
+.dd-quote {{ font-size: 13px; color: #555; border-left: 3px solid var(--border); padding: 4px 10px;
+  background: var(--bg-soft); border-radius: 0 4px 4px 0; }}
+select, textarea {{ width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px;
+  font-size: 13px; font-family: inherit; background: var(--bg); }}
+textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
+.actions {{ display: flex; gap: 8px; margin-top: 12px; }}
+.actions button {{ flex: 1; border: 1px solid var(--border); border-radius: 6px; padding: 8px 0; background: var(--bg);
+  cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text); }}
+.actions button:hover {{ background: var(--bg-soft); }}
+.actions .accept {{ background: var(--accent); color: #fff; border-color: var(--accent); }}
+.actions .accept:hover {{ opacity: 0.9; }}
+.saved-hint {{ font-size: 12px; color: var(--st-accepted-tx); margin-top: 8px; min-height: 16px; }}
+
+/* 窄屏：隐藏大纲 */
+@media (max-width: 1100px) {{ .layout {{ grid-template-columns: 1fr 340px; }} .outline {{ display: none; }} }}
+@media (max-width: 768px) {{ .layout {{ grid-template-columns: 1fr; }} .detail {{ display: none; }} }}
 </style>
 </head>
 <body>
 <div class="topbar">
+  <div class="brand">{source}</div>
   <div class="stats">
-    <span>文档 <strong>{source}</strong></span>
     <span>需求 <strong>{req_count}</strong></span>
     <span class="warn">疑似遗漏 <strong>{omission_count}</strong></span>
     <span>已裁决 <strong id="decided-count">0</strong></span>
   </div>
-  <div>
-    <button id="export-btn">导出裁决 JSON</button>
-  </div>
+  <button id="export-btn">导出裁决 JSON</button>
 </div>
 <div class="layout">
+  <nav class="outline" id="outline"><div class="outline-title">大纲</div></nav>
   <article class="paper" id="paper">
+    <div class="doc-content">
 {blocks_html}
+    </div>
   </article>
-  <aside class="detail" id="detail"><div class="empty">点左侧 💬 批注查看需求详情</div></aside>
+  <aside class="detail" id="detail"><div class="empty">点击需求标签查看详情</div></aside>
 </div>
 <script>
 const DOC_ID = "{doc_id}";
@@ -201,7 +373,7 @@ const GENERATED_AT = "{generated_at}";
 const byId = {{}}; REQUIREMENTS.forEach(r => byId[r.ai_req_id] = r);
 const STATUS_LABELS = {{ draft:"待审", accepted:"已接受", rejected:"已拒绝", needs_discussion:"待讨论", expert_pending:"专家待定" }};
 
-function loadStore() {{ try {{ return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{{}}"); }} catch (e) {{ return {{}}; }} }}
+function loadStore() {{ try {{ return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{{}}"); }} catch(e) {{ return {{}}; }} }}
 function saveStore(s) {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); refreshDecidedCount(); }}
 function decisionOf(id) {{ return loadStore()[id] || null; }}
 function statusOf(id) {{ const d = decisionOf(id); return (d && d.status) || (byId[id] && byId[id].status) || "draft"; }}
@@ -219,14 +391,33 @@ function paintChips() {{
   }});
 }}
 
+/* --- 左侧大纲：从 heading 收集 --- */
+function buildOutline() {{
+  const nav = document.getElementById("outline");
+  const headings = document.querySelectorAll(".doc-block.heading");
+  const frag = document.createDocumentFragment();
+  let count = 0;
+  headings.forEach(h => {{
+    const cls = h.classList.contains("h1") ? "h1-link" : h.classList.contains("h3") ? "h3-link" : "h2-link";
+    const p = h.querySelector(".text"); if (!p) return;
+    const text = p.textContent.trim().slice(0, 36);
+    if (!text) return;
+    const a = document.createElement("a");
+    a.className = cls; a.textContent = text; a.title = text;
+    a.onclick = () => {{ h.scrollIntoView({{behavior:"smooth", block:"start"}}); h.style.background="var(--accent-soft)";
+      setTimeout(()=>h.style.background="", 1500); }};
+    frag.appendChild(a); count++;
+  }});
+  if (count === 0) nav.style.display = "none";
+  else nav.appendChild(frag);
+}}
+
 let selected = null;
 function highlightQuote() {{
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
-  const r = selected && byId[selected];
-  if (!r || !r.source_quote) return;
+  const r = selected && byId[selected]; if (!r || !r.source_quote) return;
   const anchor = r.anchor_block_id || (r.source_block_ids||[])[0];
-  const p = document.querySelector('.text[data-block-id="' + anchor + '"]');
-  if (!p) return;
+  const p = document.querySelector('.text[data-block-id="' + anchor + '"]'); if (!p) return;
   const t = p.textContent, q = r.source_quote, i = t.indexOf(q);
   if (i >= 0) p.innerHTML = esc(t.slice(0,i)) + "<mark>" + esc(q) + "</mark>" + esc(t.slice(i+q.length));
 }}
@@ -240,9 +431,9 @@ function select(id) {{
   const acc = (r.acceptance_criteria||[]).map(c => "<li>" + esc(c) + "</li>").join("");
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
   document.getElementById("detail").innerHTML =
-    '<div class="dd-head"><span class="dd-module">'+esc(moduleOf(r))+'</span>'+
+    '<div class="detail-card"><div class="dd-head"><span class="dd-module">'+esc(moduleOf(r))+'</span>'+
     '<span class="badge st-'+st+'">'+esc(STATUS_LABELS[st]||st)+'</span></div>'+
-    '<h3 class="dd-title">'+esc(r.title)+'</h3>'+
+    '<div class="dd-title">'+esc(r.title)+'</div>'+
     '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+
     '<div class="dd-label">需求分析</div><div class="dd-body">'+esc(r.description)+'</div>'+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
@@ -251,9 +442,9 @@ function select(id) {{
     '<textarea id="cmt" placeholder="审查意见（可选）">'+esc(d.reason||"")+'</textarea>'+
     '<div class="actions"><button class="accept" data-st="accepted">接受</button>'+
     '<button data-st="rejected">拒绝</button><button data-st="needs_discussion">讨论</button></div>'+
-    '<div class="saved-hint" id="hint"></div>';
+    '<div class="saved-hint" id="hint"></div></div>';
   document.querySelectorAll(".actions button").forEach(b => b.onclick = () => decide(id, b.getAttribute("data-st")));
-  document.querySelectorAll('.doc-block').forEach(el => el.classList.remove("in-span"));
+  document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
   (r.source_block_ids||[]).forEach(bid => {{ const el = document.querySelector('.doc-block[data-block-id="'+bid+'"]'); if (el) el.classList.add("in-span"); }});
   highlightQuote();
 }}
@@ -263,10 +454,9 @@ function decide(id, status) {{
   store[id] = {{ ai_req_id: id, status: status,
     module_override: document.getElementById("mod-sel").value !== (byId[id].module_effective||byId[id].module||"") ? document.getElementById("mod-sel").value : "",
     reason: document.getElementById("cmt").value, ts: GENERATED_AT }};
-  saveStore(store);
-  paintChips();
+  saveStore(store); paintChips();
   const h = document.getElementById("hint"); if (h) h.textContent = "已" + (STATUS_LABELS[status]||status) + "（本地已存）";
-  const r = byId[id]; if (r) {{ const badge = document.querySelector(".badge"); if (badge) {{ badge.className = "badge st-"+status; badge.textContent = STATUS_LABELS[status]||status; }} }}
+  const badge = document.querySelector(".badge"); if (badge) {{ badge.className = "badge st-"+status; badge.textContent = STATUS_LABELS[status]||status; }}
 }}
 
 document.getElementById("paper").addEventListener("click", e => {{
@@ -276,18 +466,14 @@ document.getElementById("paper").addEventListener("click", e => {{
 }});
 
 document.getElementById("export-btn").onclick = () => {{
-  const store = loadStore();
-  const decisions = Object.values(store);
+  const decisions = Object.values(loadStore());
   const payload = {{ doc_id: DOC_ID, source: "{source}", exported_at: new Date().toISOString(), decisions: decisions }};
   const blob = new Blob([JSON.stringify(payload, null, 2)], {{ type: "application/json" }});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "ai_decisions_" + DOC_ID + ".json";
-  a.click();
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = "ai_decisions_" + DOC_ID + ".json"; a.click();
 }};
 
-paintChips();
-refreshDecidedCount();
+paintChips(); buildOutline(); refreshDecidedCount();
 </script>
 </body>
 </html>

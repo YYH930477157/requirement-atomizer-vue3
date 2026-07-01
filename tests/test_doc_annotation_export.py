@@ -72,6 +72,85 @@ class DocAnnotationExportTests(unittest.TestCase):
             self.assertTrue(path.exists())
             self.assertIn("const REQUIREMENTS =", path.read_text(encoding="utf-8"))
 
+    def test_leader_dots_cleaned_in_toc(self) -> None:
+        """目录点连线 + 页码在渲染层清洁：Foreword .... 3 → Foreword。"""
+        cleaned = dae._clean_block_text("Foreword .................................. 3")
+        self.assertEqual(cleaned, "Foreword")
+        # 非目录正文不受影响
+        self.assertIn("measure", dae._clean_block_text("The meter shall measure volume."))
+
+    def test_symbol_only_lines_filtered(self) -> None:
+        """纯框线乱码行（PDF 表格边框误读）在渲染时跳过。"""
+        self.assertTrue(dae._is_symbol_only("--`,``,```,`,,```,,,-`-`,,`,,`,`,,`---"))
+        self.assertTrue(dae._is_symbol_only(".........."))
+        self.assertFalse(dae._is_symbol_only("The meter shall measure volume."))
+        self.assertFalse(dae._is_symbol_only("Gas meter 7-0:1.8.0.255"))
+
+    def test_non_body_regions_collapsed(self) -> None:
+        """前言/目录区的 blocks 折叠进 <details>，正文不折叠。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                json.dumps({"block_id": "F1", "order": 1, "type": "paragraph", "text": "Foreword text here.",
+                            "section_path": [], "requirement_like": False, "noise": False,
+                            "doc_region": "front_matter"}) + "\n" +
+                json.dumps({"block_id": "F2", "order": 2, "type": "paragraph", "text": "TOC line .... 5",
+                            "section_path": [], "requirement_like": False, "noise": False,
+                            "doc_region": "table_of_contents"}) + "\n" +
+                json.dumps({"block_id": "B1", "order": 3, "type": "heading", "text": "4 Requirements",
+                            "section_path": ["4 Requirements"], "requirement_like": False, "noise": False,
+                            "doc_region": "body"}) + "\n" +
+                json.dumps({"block_id": "B2", "order": 4, "type": "paragraph", "text": "Body content.",
+                            "section_path": ["4 Requirements"], "requirement_like": False, "noise": False,
+                            "doc_region": "body"}) + "\n",
+                encoding="utf-8")
+            (out / "merged_spec_requirements.json").write_text(
+                json.dumps({"requirements": []}), encoding="utf-8")
+            rendered = dae.render_annotation_html(out)
+            # 前言/目录折叠
+            self.assertIn("region-collapse", rendered)
+            self.assertIn("前言", rendered)
+            # leader-dots 清洁
+            self.assertIn("TOC line", rendered)
+            self.assertNotIn(".... 5", rendered)
+            # 正文不折叠、正常渲染
+            self.assertIn("Body content.", rendered)
+
+    def test_noise_blocks_greyed(self) -> None:
+        """noise 块渲染时带 noise class（灰显），不删除。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                json.dumps({"block_id": "N1", "order": 1, "type": "paragraph", "text": "EN 16314:2013 (E)",
+                            "section_path": [], "requirement_like": False, "noise": True,
+                            "doc_region": "body"}) + "\n" +
+                json.dumps({"block_id": "B1", "order": 2, "type": "paragraph", "text": "Real content.",
+                            "section_path": [], "requirement_like": False, "noise": False,
+                            "doc_region": "body"}) + "\n",
+                encoding="utf-8")
+            (out / "merged_spec_requirements.json").write_text(
+                json.dumps({"requirements": []}), encoding="utf-8")
+            rendered = dae.render_annotation_html(out)
+            self.assertIn("doc-block noise", rendered)
+
+    def test_heading_levels_rendered(self) -> None:
+        """heading 按 section_path 深度渲染 h1/h2/h3 class。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                json.dumps({"block_id": "H1", "order": 1, "type": "heading", "text": "4 Scope",
+                            "section_path": ["4 Scope"], "requirement_like": False, "noise": False,
+                            "doc_region": "body"}) + "\n" +
+                json.dumps({"block_id": "H2", "order": 2, "type": "heading", "text": "4.1 General",
+                            "section_path": ["4 Scope", "4.1 General"], "requirement_like": False, "noise": False,
+                            "doc_region": "body"}) + "\n",
+                encoding="utf-8")
+            (out / "merged_spec_requirements.json").write_text(
+                json.dumps({"requirements": []}), encoding="utf-8")
+            rendered = dae.render_annotation_html(out)
+            self.assertIn("doc-block heading h1", rendered)
+            self.assertIn("doc-block heading h2", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

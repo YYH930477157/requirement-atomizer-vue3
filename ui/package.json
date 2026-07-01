@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "desktop:dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "backend:build": "powershell -ExecutionPolicy Bypass -File ../packaging/build-electron-backend.ps1",
+    "backend:build": "powershell -ExecutionPolicy Bypass -File ../packaging/build-electron-backend.ps1 -Python ../.venv/Scripts/python.exe",
     "desktop:pack": "npm run backend:build && npm run build && electron-builder --win portable",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",

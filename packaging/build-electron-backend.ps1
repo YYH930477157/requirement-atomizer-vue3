@@ -1,3 +1,7 @@
+param(
+    [string]$Python = "python"
+)
+
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -6,27 +10,14 @@ $BuildDir = Join-Path $RepoRoot "build-electron-backend"
 $Entry = Join-Path $RepoRoot "desktop_backend.py"
 $Exe = Join-Path $DistBackend "ratomizer-desktop.exe"
 
-if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
-    throw "PyInstaller is required. Install with: pip install pyinstaller"
-}
-
 Remove-Item -LiteralPath $DistBackend -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $BuildDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $DistBackend | Out-Null
 
-pyinstaller `
-    --clean `
-    --noconfirm `
-    --onefile `
-    --name ratomizer-desktop `
-    --distpath $DistBackend `
-    --workpath $BuildDir `
-    --specpath $BuildDir `
-    --add-data "$RepoRoot\llm_agents;llm_agents" `
-    --add-data "$RepoRoot\domain_packs;domain_packs" `
-    --add-data "$RepoRoot\knowledge_bases;knowledge_bases" `
-    --add-data "$RepoRoot\schemas;schemas" `
-    $Entry
+# 用 spec 打包（含 hiddenimports：assemble_spec/ai_extract/meter_profile/io_utils 等惰性
+# import 模块，否则 onefile 冻结环境点「装配/AI 抽取」会 ModuleNotFoundError）。
+$BackendSpec = Join-Path $PSScriptRoot "desktop_backend.spec"
+& $Python -m PyInstaller --clean --noconfirm --distpath $DistBackend --workpath $BuildDir $BackendSpec
 
 if (-not (Test-Path $Exe)) {
     throw "Backend executable was not created: $Exe"
