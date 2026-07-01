@@ -65,12 +65,29 @@ class InferTargetStandardsTests(unittest.TestCase):
             standards = infer_target_standards(out)
             self.assertIn("EN 16314", standards)
 
-    def test_extracts_iec_standard(self) -> None:
+    def test_extracts_iec_standard_full_subparts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             _write_atomizer_output(out, input_name="IEC 62056-5-3 application layer.docx")
             standards = infer_target_standards(out)
-            self.assertTrue(any("IEC 62056" in s for s in standards))
+            self.assertIn("IEC 62056-5-3", standards)  # 单位数子段 -5-3 不再被截断成 IEC 62056
+
+    def test_spec_regex_rejects_mid_word_false_positives(self) -> None:
+        # \b 词边界：词内的 en 不再误伤为标准号（GREEN/when/specimen/screen）
+        import meter_profile as mp
+        for text in ("GREEN 16968", "when 12345", "specimen 4064", "screen 16968"):
+            self.assertEqual(mp._SPEC_RE.findall(text), [], f"误伤：{text}")
+        # 真标准号仍命中
+        self.assertEqual(mp._SPEC_RE.findall("EN 16314"), ["EN 16314"])
+        self.assertEqual(mp._SPEC_RE.findall("IEC 62056-5-3"), ["IEC 62056-5-3"])
+
+    def test_dedup_preserves_order_no_dead_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _write_atomizer_output(
+                out, input_name="EN 16314 and EN 16314 and IEC 62056-5-3.pdf")
+            standards = infer_target_standards(out)
+            self.assertEqual(standards, ["EN 16314", "IEC 62056-5-3"])  # 去重保序
 
     def test_empty_when_no_standard_in_filename(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
