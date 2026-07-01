@@ -213,7 +213,7 @@ def make_doc(
             "sections_analyzed": sections,
             "total_sections_in_document": len(sections),
             "meter_type": meter_type,
-            "target_standards": target_standards or ["DLMS/COSEM (IEC 62056)", "ABNT NBR 16968"],
+            "target_standards": target_standards or [],  # 空=未从文档推断出，不再写死电表标准；专家补
         },
         "requirements": requirements,
         "analysis": {

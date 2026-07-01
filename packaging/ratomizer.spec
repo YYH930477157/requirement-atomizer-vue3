@@ -17,9 +17,9 @@ datas = [
     (str(ROOT / "gui" / "theme.qss.template"), "gui"),
 ]
 
-# 装配实现规格生成器：被 GUI 的 AssembleSpecWorker 惰性 import（函数体内），
-# 且这些是仓库根的顶层模块（未注册进 pyproject py-modules）。显式列出，确保打包收集，
-# 否则点「装配实现规格」会在冻结环境里 ModuleNotFoundError。
+# 装配实现规格生成器 + AI 抽取/批注：被 GUI 的 AssembleSpecWorker / desktop_tasks 惰性
+# import（函数体内），且这些是仓库根的顶层模块（未注册进 pyproject py-modules）。显式列出，
+# 确保打包收集，否则点「装配实现规格」/「AI 抽取」会在冻结环境里 ModuleNotFoundError。
 spec_generator_modules = [
     "assemble_spec",
     "spec_export",
@@ -32,6 +32,13 @@ spec_generator_modules = [
     "cosem_external_refs",
     "requirement_schema",
     "text_normalize",
+    "io_utils",
+    "ai_extract",
+    "ai_review_actions",
+    "doc_annotation_export",
+    "desktop_tasks",
+    "desktop_backend",
+    "meter_profile",
 ]
 
 hiddenimports = (

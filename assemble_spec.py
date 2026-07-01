@@ -231,7 +231,11 @@ def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted
     # 故不富化 P1；行为需求是纯散文、码最少、价值最高（真实 GLM 抽样验证：P3 干净、P1 有隐患）。
     from spec_enrich import enrich_requirement_lists
     enrich_summary = enrich_requirement_lists([p3_reqs], out_dir=out_dir, route=enrich_route)
-    doc = rs.make_doc(p1_obj_reqs + p1_cls_reqs + p2_reqs + p3_reqs, source=source, extracted_at=extracted_at)
+    # 推断表计类型 + 目标标准（确定性，从 manifest/正文，取代写死的 electric + DLMS/COSEM/ABNT）
+    from meter_profile import infer_meter_profile
+    profile = infer_meter_profile(out_dir)
+    doc = rs.make_doc(p1_obj_reqs + p1_cls_reqs + p2_reqs + p3_reqs, source=source, extracted_at=extracted_at,
+                      meter_type=profile["meter_type"], target_standards=profile["target_standards"])
     p4 = build_external_refs(out_dir)
     doc["external_references"] = p4
     if p4["counts"]["normative"]:

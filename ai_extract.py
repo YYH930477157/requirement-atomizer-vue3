@@ -426,10 +426,11 @@ def ensure_domain_labels(requirements: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def build_skill_doc(requirements: list[dict[str, Any]], *, source: str, extracted_at: str,
-                    meter_type: str = "multi") -> dict[str, Any]:
+                    meter_type: str = "multi", target_standards: list[str] | None = None) -> dict[str, Any]:
     """把 AI 抽取的需求装配成公司 skill 格式 doc（REQ-NNN 重编号 + analysis）。"""
     import requirement_schema as rs
-    return rs.make_doc(requirements, source=source, extracted_at=extracted_at, meter_type=meter_type)
+    return rs.make_doc(requirements, source=source, extracted_at=extracted_at,
+                       meter_type=meter_type, target_standards=target_standards)
 
 
 # --- 双引擎合并 -----------------------------------------------------------
@@ -467,7 +468,10 @@ def build_merged_doc(out_dir: Path, ai_requirements: list[dict[str, Any]],
     """合并 AI 行为需求 + 确定性结构需求 → skill 格式 doc。"""
     deterministic = load_or_build_deterministic(out_dir, source=source, extracted_at=extracted_at)
     merged = merge_requirements(deterministic, ai_requirements)
-    return build_skill_doc(merged, source=source, extracted_at=extracted_at)
+    from meter_profile import infer_meter_profile
+    profile = infer_meter_profile(out_dir)
+    return build_skill_doc(merged, source=source, extracted_at=extracted_at,
+                           meter_type=profile["meter_type"], target_standards=profile["target_standards"])
 
 
 # --- 主入口 ---------------------------------------------------------------
@@ -543,8 +547,11 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                           "已按可用结果产出，请用「测试连接」确认配置后重跑")
 
     if write_doc:
+        from meter_profile import infer_meter_profile
+        profile = infer_meter_profile(out_dir)
         doc = build_skill_doc(requirements, source=out_dir.name,
-                              extracted_at=datetime.datetime.now().isoformat(timespec="seconds"))
+                              extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
+                              meter_type=profile["meter_type"], target_standards=profile["target_standards"])
         doc_path = out_dir / "ai_requirements_doc.json"
         doc_path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
         written.append(doc_path.name)
