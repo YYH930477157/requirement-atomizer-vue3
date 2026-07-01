@@ -105,7 +105,7 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         if collapse_open and collapse_buf:
             parts.append(
                 f'<details class="region-collapse"><summary>'
-                f'📋 {_block_region_label(collapse_label)}（{collapse_count} 段）</summary>'
+                f'{_block_region_label(collapse_label)}（{collapse_count} 段）</summary>'
                 f'<div class="collapse-body">{"".join(collapse_buf)}</div></details>'
             )
         collapse_open = False
@@ -160,12 +160,13 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
     depth = min(len(path), 4) if path else 0
 
     chips = "".join(
-        f'<button class="chip" data-req="{html.escape(str(r["ai_req_id"]))}" '
-        f'title="{html.escape(str(r.get("module_effective") or ""))} · {html.escape(str(r.get("title") or ""))}">'
-        f'{html.escape(str(r.get("module_effective") or "需求"))}</button>'
-        for r in anchored
+        f'<button class="chip annotation-index" data-req="{html.escape(str(r["ai_req_id"]))}" '
+        f'title="{html.escape(str(r.get("module_effective") or ""))} · {html.escape(str(r.get("title") or ""))}" '
+        f'aria-label="{html.escape(str(r.get("title") or "需求批注"))}">'
+        f'<span class="annotation-dot"></span><span class="annotation-number">{i:02d}</span></button>'
+        for i, r in enumerate(anchored, start=1)
     )
-    omission_tag = '<span class="omission-tag">⚠ 未覆盖</span>' if is_omission else ""
+    omission_tag = '<span class="omission-tag">未覆盖</span>' if is_omission else ""
     return (
         f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}" style="--depth:{depth}">'
         f'<div class="block-inner">'
@@ -224,47 +225,55 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <title>文档批注审核 · {source}</title>
 <style>
 :root {{
-  --bg: #ffffff;
-  --bg-soft: #f7f7f5;
-  --border: #e8e8e6;
-  --text: #37352f;
-  --text-muted: #9b9a97;
-  --accent: #2383E2;
-  --accent-soft: #e8f1fc;
-  --st-accepted: #E6F4EA; --st-accepted-tx: #137333;
-  --st-rejected: #FCE8E6; --st-rejected-tx: #C5221F;
-  --st-discussion: #FEF7E0; --st-discussion-tx: #B06000;
-  --omission-bg: #FFF9E6;
+  --page: #f5f2ec;
+  --paper: #fffdf8;
+  --panel: #fbfaf6;
+  --line: #e7dfd2;
+  --line-strong: #d8cebd;
+  --ink: #24282f;
+  --muted: #858a92;
+  --faint: #b4aaa0;
+  --accent: #315f72;
+  --accent-soft: #e8f0f1;
+  --accent-quiet: #6e8791;
+  --st-accepted: #e6f0e8; --st-accepted-tx: #2f6842;
+  --st-rejected: #f4e7e3; --st-rejected-tx: #9b3b32;
+  --st-discussion: #f6efd8; --st-discussion-tx: #8a6417;
+  --omission-bg: #f8efd9;
 }}
 * {{ box-sizing: border-box; }}
 body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-  color: var(--text); background: var(--bg); font-size: 15px; line-height: 1.7; }}
+  color: var(--ink); background: var(--page); font-size: 15px; line-height: 1.76; }}
+.reader-shell {{ min-height: 100vh; background:
+  linear-gradient(90deg, rgba(255,255,255,.62), rgba(255,255,255,0) 18%, rgba(255,255,255,0) 82%, rgba(255,255,255,.5)),
+  var(--page); }}
 
 /* --- 顶栏 --- */
 .topbar {{ position: sticky; top: 0; z-index: 10; display: flex; justify-content: space-between; align-items: center;
-  padding: 0 24px; height: 48px; background: var(--bg); border-bottom: 1px solid var(--border); }}
-.topbar .brand {{ font-weight: 600; font-size: 14px; }}
-.topbar .stats {{ display: flex; gap: 20px; font-size: 13px; color: var(--text-muted); }}
-.topbar .stats strong {{ color: var(--text); }}
-.topbar .stats .warn strong {{ color: #B06000; }}
-.topbar button {{ background: var(--accent); color: #fff; border: 0; border-radius: 6px;
-  padding: 6px 14px; cursor: pointer; font-size: 13px; font-weight: 500; }}
-.topbar button:hover {{ opacity: 0.9; }}
+  padding: 0 28px; height: 56px; background: rgba(253,251,246,.86); border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(18px); }}
+.topbar .brand {{ font-weight: 600; font-size: 14px; color: var(--ink); letter-spacing: .01em; }}
+.topbar .stats {{ display: flex; gap: 22px; font-size: 12px; color: var(--muted); }}
+.topbar .stats strong {{ color: var(--ink); font-weight: 600; }}
+.topbar .stats .warn strong {{ color: var(--st-discussion-tx); }}
+.topbar button {{ background: transparent; color: var(--accent); border: 1px solid var(--line-strong); border-radius: 999px;
+  padding: 7px 14px; cursor: pointer; font-size: 12px; font-weight: 600; }}
+.topbar button:hover {{ background: var(--accent-soft); border-color: var(--accent-quiet); }}
 
 /* --- 三栏布局 --- */
-.layout {{ display: grid; grid-template-columns: 220px 1fr 380px; height: calc(100vh - 48px); }}
+.layout {{ display: grid; grid-template-columns: 240px minmax(0, 1fr) 390px; height: calc(100vh - 56px); }}
 
 /* --- 左：大纲 --- */
 /* --- 左侧大纲：树形可折叠 --- */
-.outline {{ border-right: 1px solid var(--border); overflow-y: auto; padding: 16px 12px;
-  background: var(--bg-soft); font-size: 13px; }}
-.outline .outline-title {{ font-size: 11px; text-transform: uppercase; color: var(--text-muted);
-  letter-spacing: 0.5px; margin: 0 0 8px 8px; }}
+.outline {{ border-right: 1px solid var(--line); overflow-y: auto; padding: 22px 14px;
+  background: rgba(250,248,242,.62); font-size: 13px; }}
+.outline .outline-title {{ font-size: 11px; text-transform: uppercase; color: var(--faint);
+  letter-spacing: 0.08em; margin: 0 0 12px 8px; }}
 .outline .nav-item {{ display: flex; align-items: center; padding: 3px 8px; border-radius: 4px;
-  color: var(--text-muted); cursor: pointer; line-height: 1.5; text-decoration: none; }}
-.outline .nav-item:hover {{ background: rgba(0,0,0,0.04); color: var(--text); }}
+  color: var(--muted); cursor: pointer; line-height: 1.5; text-decoration: none; }}
+.outline .nav-item:hover {{ background: rgba(49,95,114,.07); color: var(--ink); }}
 .outline .nav-item.active {{ background: var(--accent-soft); color: var(--accent); }}
-.outline .nav-item .toggle {{ width: 14px; font-size: 10px; color: var(--text-muted); flex-shrink: 0;
+.outline .nav-item .toggle {{ width: 14px; font-size: 10px; color: var(--faint); flex-shrink: 0;
   transition: transform .15s; text-align: center; }}
 .outline .nav-item.collapsed .toggle {{ transform: rotate(-90deg); }}
 .outline .nav-item .label {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
@@ -272,78 +281,79 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .outline .nav-children.collapsed {{ display: none; }}
 .outline .h1-item {{ font-weight: 600; }}
 .outline .h2-item {{ padding-left: 28px; font-size: 12px; }}
-.outline .h3-item {{ padding-left: 44px; font-size: 12px; color: #aaa; }}
+.outline .h3-item {{ padding-left: 44px; font-size: 12px; color: var(--faint); }}
 .outline .h2-item .toggle, .outline .h3-item .toggle {{ visibility: hidden; }}
 
 /* --- 中：文档 --- */
-.paper {{ overflow-y: auto; padding: 40px 0; }}
-.doc-content {{ max-width: 720px; margin: 0 auto; padding: 0 48px; }}
+.paper {{ overflow-y: auto; padding: 46px 0 72px; }}
+.doc-content {{ max-width: 760px; margin: 0 auto; padding: 48px 58px 70px; background: var(--paper);
+  border: 1px solid rgba(231,223,210,.72); box-shadow: 0 24px 80px rgba(44,39,31,.08); }}
 
-.doc-block {{ margin-bottom: 4px; }}
+.doc-block {{ margin-bottom: 5px; }}
 .block-inner {{ position: relative; padding-left: calc(var(--depth, 0) * 16px); }}
 .doc-block .text {{ margin: 0; padding: 2px 0; }}
 .doc-block.heading .text {{ font-weight: 600; margin-top: 20px; }}
-.doc-block.h1 .text {{ font-size: 22px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }}
+.doc-block.h1 .text {{ font-size: 22px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }}
 .doc-block.h2 .text {{ font-size: 18px; }}
-.doc-block.h2 .block-inner {{ border-left: 3px solid var(--accent); padding-left: 12px; margin-left: -15px; }}
-.doc-block.h3 .text {{ font-size: 16px; color: #555; }}
+.doc-block.h2 .block-inner {{ border-left: 2px solid var(--accent-quiet); padding-left: 12px; margin-left: -14px; }}
+.doc-block.h3 .text {{ font-size: 16px; color: #515761; }}
 .doc-block.noise .text {{ opacity: 0.3; font-size: 13px; }}
-.doc-block.omission {{ background: var(--omission-bg); border-radius: 4px; padding: 4px 8px; margin: 4px 0; }}
-.doc-block.omission .text {{ border-left: 3px dashed #D4A017; padding-left: 8px; }}
+.doc-block.omission {{ background: linear-gradient(90deg, var(--omission-bg), rgba(248,239,217,.35)); border-radius: 4px; padding: 4px 8px; margin: 5px 0; }}
+.doc-block.omission .text {{ border-left: 2px solid #cda85c; padding-left: 9px; }}
 .doc-block.anchored {{ cursor: pointer; border-radius: 4px; }}
 .doc-block.anchored:hover {{ background: var(--accent-soft); }}
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
 .text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
 
 /* chips（inline 段末，Notion 式小标签） */
-.chips {{ display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: middle; }}
-.chip {{ display: inline-flex; align-items: center; font-size: 11px; border: 1px solid var(--border);
-  border-radius: 10px; padding: 1px 8px; background: var(--bg); cursor: pointer; color: var(--text-muted);
-  max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: all .12s; }}
-.chip::before {{ content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 5px; flex-shrink: 0; }}
-.chip:hover {{ border-color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.08); }}
-.chip.sel {{ outline: 2px solid var(--accent); }}
-.chip.st-accepted {{ background: var(--st-accepted); border-color: transparent; color: var(--st-accepted-tx); }}
-.chip.st-accepted::before {{ background: #137333; }}
-.chip.st-rejected {{ background: var(--st-rejected); border-color: transparent; color: var(--st-rejected-tx); }}
-.chip.st-rejected::before {{ background: #C5221F; }}
-.chip.st-needs_discussion {{ background: var(--st-discussion); border-color: transparent; color: var(--st-discussion-tx); }}
-.chip.st-needs_discussion::before {{ background: #B06000; }}
-.omission-tag {{ font-size: 11px; color: #B06000; background: var(--omission-bg);
-  border: 1px solid #E6D8A0; border-radius: 10px; padding: 1px 8px; }}
+.chips {{ display: inline-flex; gap: 5px; flex-wrap: wrap; margin: 0 0 0 -34px; vertical-align: middle;
+  min-width: 28px; float: left; }}
+.chip {{ display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 10px;
+  border: 0; border-left: 1px solid var(--line-strong); border-radius: 0; padding: 0 0 0 7px;
+  background: transparent; cursor: pointer; color: var(--accent-quiet); height: 20px; transition: color .12s, border-color .12s; }}
+.annotation-dot {{ width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .68; }}
+.annotation-number {{ font-variant-numeric: tabular-nums; letter-spacing: .04em; }}
+.chip:hover {{ color: var(--accent); border-color: var(--accent); }}
+.chip.sel {{ color: var(--accent); border-color: var(--accent); font-weight: 700; }}
+.chip.st-accepted {{ color: var(--st-accepted-tx); }}
+.chip.st-rejected {{ color: var(--st-rejected-tx); }}
+.chip.st-needs_discussion {{ color: var(--st-discussion-tx); }}
+.omission-tag {{ font-size: 11px; color: var(--st-discussion-tx); background: rgba(248,239,217,.74);
+  border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 8px; }}
 
 /* 折叠区 */
-.region-collapse {{ margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-soft); }}
-.region-collapse summary {{ padding: 8px 14px; cursor: pointer; font-size: 13px; color: var(--text-muted); font-weight: 500; }}
-.region-collapse summary:hover {{ background: rgba(0,0,0,0.03); }}
+.region-collapse {{ margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; background: rgba(250,248,242,.62); }}
+.region-collapse summary {{ padding: 9px 14px; cursor: pointer; font-size: 13px; color: var(--muted); font-weight: 500; }}
+.region-collapse summary:hover {{ background: rgba(49,95,114,.05); }}
 .collapse-body {{ padding: 4px 14px 10px; }}
 .collapse-body .doc-block.noise .text {{ opacity: 0.25; }}
 
 /* --- 右：批注详情 --- */
-.detail {{ border-left: 1px solid var(--border); overflow-y: auto; padding: 24px 20px; background: var(--bg-soft); }}
-.detail .empty {{ color: var(--text-muted); text-align: center; padding-top: 60px; font-size: 13px; }}
-.detail-card {{ background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 14px; }}
+.detail {{ border-left: 1px solid var(--line); overflow-y: auto; padding: 28px 22px; background: rgba(250,248,242,.72); }}
+.detail .empty {{ color: var(--muted); text-align: center; padding-top: 64px; font-size: 13px; }}
+.detail-card {{ background: rgba(255,253,248,.82); border: 1px solid var(--line); border-radius: 10px; padding: 20px 20px; margin-bottom: 14px;
+  box-shadow: 0 14px 42px rgba(44,39,31,.06); }}
 .dd-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }}
-.dd-module {{ font-size: 12px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.3px; }}
-.badge {{ font-size: 11px; padding: 2px 9px; border-radius: 10px; background: var(--border); }}
+.dd-module {{ font-size: 12px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; }}
+.badge {{ font-size: 11px; padding: 2px 9px; border-radius: 999px; background: var(--line); }}
 .badge.st-accepted {{ background: var(--st-accepted); color: var(--st-accepted-tx); }}
 .badge.st-rejected {{ background: var(--st-rejected); color: var(--st-rejected-tx); }}
 .badge.st-needs_discussion {{ background: var(--st-discussion); color: var(--st-discussion-tx); }}
-.dd-title {{ margin: 8px 0 2px; font-size: 16px; font-weight: 600; color: var(--text); line-height: 1.4; }}
-.dd-meta {{ font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }}
-.dd-label {{ font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 14px 0 4px; }}
+.dd-title {{ margin: 10px 0 4px; font-size: 16px; font-weight: 650; color: var(--ink); line-height: 1.45; }}
+.dd-meta {{ font-size: 12px; color: var(--muted); margin-bottom: 13px; }}
+.dd-label {{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 15px 0 5px; }}
 .dd-body {{ font-size: 14px; line-height: 1.7; }}
 .dd-list {{ margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }}
 .dd-list li {{ margin-bottom: 2px; }}
-.dd-quote {{ font-size: 13px; color: #555; border-left: 3px solid var(--border); padding: 4px 10px;
-  background: var(--bg-soft); border-radius: 0 4px 4px 0; }}
-select, textarea {{ width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 7px 8px;
-  font-size: 13px; font-family: inherit; background: var(--bg); }}
+.dd-quote {{ font-size: 13px; color: #515761; border-left: 2px solid var(--line-strong); padding: 5px 10px;
+  background: rgba(245,242,236,.7); border-radius: 0 4px 4px 0; }}
+select, textarea {{ width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 8px 9px;
+  font-size: 13px; font-family: inherit; background: var(--paper); color: var(--ink); }}
 textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
 .actions {{ display: flex; gap: 8px; margin-top: 12px; }}
-.actions button {{ flex: 1; border: 1px solid var(--border); border-radius: 6px; padding: 8px 0; background: var(--bg);
-  cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text); }}
-.actions button:hover {{ background: var(--bg-soft); }}
+.actions button {{ flex: 1; border: 1px solid var(--line); border-radius: 7px; padding: 8px 0; background: transparent;
+  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink); }}
+.actions button:hover {{ background: var(--accent-soft); }}
 .actions .accept {{ background: var(--accent); color: #fff; border-color: var(--accent); }}
 .actions .accept:hover {{ opacity: 0.9; }}
 .saved-hint {{ font-size: 12px; color: var(--st-accepted-tx); margin-top: 8px; min-height: 16px; }}
@@ -354,7 +364,8 @@ textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
 </style>
 </head>
 <body>
-<div class="topbar">
+<div class="reader-shell">
+<div class="reader-topbar topbar">
   <div class="brand">{source}</div>
   <div class="stats">
     <span>需求 <strong>{req_count}</strong></span>
@@ -363,14 +374,15 @@ textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
   </div>
   <button id="export-btn">导出裁决 JSON</button>
 </div>
-<div class="layout">
+<div class="reader-layout layout">
   <nav class="outline" id="outline"><div class="outline-title">大纲</div></nav>
   <article class="paper" id="paper">
     <div class="doc-content">
 {blocks_html}
     </div>
   </article>
-  <aside class="detail" id="detail"><div class="empty">点击需求标签查看详情</div></aside>
+  <aside class="annotation-rail detail" id="detail"><div class="empty">点击批注标记查看详情</div></aside>
+</div>
 </div>
 <script>
 const DOC_ID = "{doc_id}";
@@ -470,7 +482,7 @@ function select(id) {{
   const acc = (r.acceptance_criteria||[]).map(c => "<li>" + esc(c) + "</li>").join("");
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
   document.getElementById("detail").innerHTML =
-    '<div class="detail-card"><div class="dd-head"><span class="dd-module">'+esc(moduleOf(r))+'</span>'+
+    '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">'+esc(moduleOf(r))+'</span>'+
     '<span class="badge st-'+st+'">'+esc(STATUS_LABELS[st]||st)+'</span></div>'+
     '<div class="dd-title">'+esc(r.title)+'</div>'+
     '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+

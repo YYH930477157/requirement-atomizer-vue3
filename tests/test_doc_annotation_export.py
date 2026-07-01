@@ -46,6 +46,20 @@ class DocAnnotationExportTests(unittest.TestCase):
             import re
             self.assertEqual(re.findall(r"\{[a-z_]+\}", html), [])
 
+    def test_reader_style_is_quiet_and_premium(self) -> None:
+        """高级阅读器风格：弱化工具按钮和 emoji，批注以细线/编号锚点呈现。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            html = dae.render_annotation_html(out)
+            self.assertIn('class="reader-shell"', html)
+            self.assertIn("annotation-rail", html)
+            self.assertIn("reader-topbar", html)
+            self.assertIn("annotation-card", html)
+            self.assertIn("annotation-index", html)
+            self.assertNotIn("💬", html)
+            self.assertNotIn("📋", html)
+
     def test_html_escapes_block_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
