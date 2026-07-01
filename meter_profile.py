@@ -28,7 +28,9 @@ _METER_KEYWORDS: dict[str, tuple[str, ...]] = {
     "electric": ("electricity meter", "electric meter", "active energy", "reactive energy", "apparent energy"),
 }
 # 标准号提取：EN 16314 / ABNT NBR 16968 / IEC 62056-5-3 / ISO/IEC 8802-2 …
-_SPEC_RE = re.compile(r"((?:ISO/IEC|IEC|ISO|ABNT\s+NBR|EN|ITU-T)\s*[0-9]{3,5}(?:[-:][0-9]{2,4})*)", re.IGNORECASE)
+# 前导 \b 防词内误伤（"GREEN 16968"→EN、"when 12345"→en、"specimen 4064"→en 都不再命中）；
+# 子段 [0-9]{1,4} 容许单位数（IEC 62056-5-3 不再被截成 IEC 62056）。
+_SPEC_RE = re.compile(r"\b((?:ISO/IEC|IEC|ISO|ABNT\s+NBR|EN|ITU-T)\s*[0-9]{3,5}(?:[-:][0-9]{1,4})*)", re.IGNORECASE)
 # manifest.input 里的标准号常带全角冒号/年份，归一化
 _YEAR_RE = re.compile(r"[:：]\s*\d{4}")
 
@@ -91,13 +93,11 @@ def infer_target_standards(out_dir: Path) -> list[str]:
                     if norm not in candidates:
                         candidates.append(norm)
 
-    # 去重 + 去文档自身标准号基（避免自引用，如文档自身是 ABNT NBR 16968）
+    # 去重（保序）。目标标准保留文档自身标准号（研发要知道本规格实现的是哪个标准），不做自引用剔除。
     seen: set[str] = set()
     result: list[str] = []
     for c in candidates:
-        base = re.split(r"[-:]", c)[0].strip()
-        key = f"{base} {re.sub(r'^[A-Z/ ]+', '', c).strip()}".strip()
-        if c not in seen and key not in seen:
+        if c not in seen:
             seen.add(c)
             result.append(c)
     return result[:8]  # 最多 8 个，避免噪声
