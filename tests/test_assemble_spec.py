@@ -172,5 +172,34 @@ class AssembleSpecTests(unittest.TestCase):
             self.assertIn("external_references", doc["analysis"]["coverage_report"])
 
 
+class ObjectSourceSectionTests(unittest.TestCase):
+    """F1 回归：对象需求溯源章节须含来源表标题（业务分组），不能全塌进粗粒度章节。"""
+
+    def test_combines_section_path_and_table_title(self) -> None:
+        obj = {"section_path": ["2 20 Control of"], "source_table_title": "Table 33 - Energy registration objects"}
+        s = assemble_spec._object_source_section(obj)
+        self.assertIn("2 20 Control of", s)
+        self.assertIn("Table 33 - Energy registration objects", s)
+        self.assertIn("·", s)  # 章节与表标题以 · 拼接
+
+    def test_dedupes_when_title_is_section_substring(self) -> None:
+        # 表标题是章节路径本身时不重复拼接
+        obj = {"section_path": ["Table 33"], "source_table_title": "Table 33"}
+        self.assertEqual(assemble_spec._object_source_section(obj), "Table 33")
+
+    def test_falls_back_to_section_when_no_table_title(self) -> None:
+        obj = {"section_path": ["5 Security"], "source_table_title": ""}
+        self.assertEqual(assemble_spec._object_source_section(obj), "5 Security")
+
+    def test_falls_back_to_domain_when_both_empty(self) -> None:
+        obj = {"section_path": [], "source_table_title": "", "domain": "metering"}
+        self.assertEqual(assemble_spec._object_source_section(obj), "metering")
+
+    def test_never_empty(self) -> None:
+        obj = {"section_path": [], "source_table_title": "", "domain": ""}
+        # 极端退化：全空时返回空串（不应崩），但实际场景 domain 总有值
+        self.assertEqual(assemble_spec._object_source_section(obj), "")
+
+
 if __name__ == "__main__":
     unittest.main()

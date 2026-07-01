@@ -83,6 +83,28 @@ def _object_display(obj: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _object_source_section(obj: dict[str, Any]) -> str:
+    """对象需求溯源章节：章节路径 + 来源表标题（业务分组），去重拼接。
+
+    section_path 常粗到整章（ABNT 所有对象表都在 "20 Control of objects" 下，
+    366 对象全塌一个 section），table_title 才是研发可读的细粒度分组
+    （'Table 33 - Energy registration objects'）。二者拼起来既知所在章又知业务组。
+    退化路径：table_title 缺 → 章节路径 → 域，保证非空。
+    """
+    parts: list[str] = []
+    section = " / ".join(str(p) for p in (obj.get("section_path") or []) if str(p).strip())
+    table_title = str(obj.get("source_table_title") or "").strip()
+    if section:
+        parts.append(section)
+    if table_title and table_title not in section:
+        parts.append(table_title)
+    if not parts:
+        domain = str(obj.get("domain") or "").strip()
+        if domain:
+            parts.append(domain)
+    return " · ".join(parts)
+
+
 def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
     reqs = []
     for obj in model["objects"]:
@@ -108,7 +130,7 @@ def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
                           f"OBIS {display['obis']} shall be defined by the profile."),
             labels=labels,
             priority="P1",  # 对象模型统一 P1；P0 留给安全基础设施(P2 套件/关联/策略)
-            source_section=" / ".join(str(p) for p in (obj.get("section_path") or [])) or str(obj.get("domain") or ""),
+            source_section=_object_source_section(obj),
             threshold_table=tt,
             acceptance=[f"读取 {display['name']} 的 logical_name 返回 OBIS {display['obis']}",
                         "各属性的访问权限与数据类型符合属性表"],

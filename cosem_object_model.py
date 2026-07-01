@@ -268,6 +268,7 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
                 "obis": obis,
                 "class_id": class_id,
                 "source_table_ids": table_ids_for_row(row, index),
+                "source_table_title": table_title_for_row(row, index),
                 "source_item_id": first_source_item_id(row, index),
                 "source_order": source_order_for_row(row, index),
                 "meaning": str(fields.get(F_MEANING) or "").strip(),
@@ -416,6 +417,18 @@ def table_ids_for_row(row: dict[str, Any], index: dict[str, dict[str, Any]]) -> 
         if table_id and table_id not in table_ids:
             table_ids.append(table_id)
     return table_ids
+
+
+def table_title_for_row(row: dict[str, Any], index: dict[str, dict[str, Any]]) -> str:
+    """取该对象首个来源表的标题（如 'Table 33 - Energy registration objects'），
+    供装配规格做细粒度溯源——section_path 常粗到整章（ABNT 所有对象表都在
+    "20 Control of objects" 下），table_title 才是研发可读的业务分组。"""
+    for ref in row.get("source_refs", []) or []:
+        item = index.get(str(ref))
+        title = str(item.get("table_title") or "").strip() if item else ""
+        if title:
+            return title
+    return ""
 
 
 def is_class_template_attribute(parent: str) -> bool:

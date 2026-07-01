@@ -902,6 +902,21 @@ class CosemObjectModelTests(unittest.TestCase):
             self.assertIn("OBIS `0-0:1.0.0.255`", md)
             self.assertIn("Ghost", md)  # 孤立分组出现
 
+    def test_object_carries_source_table_title(self) -> None:
+        """F1 回归：对象模型须带 source_table_title，供装配规格做细粒度溯源。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            write_fixture(out)
+            # fixture 的 table_items 默认无 table_title，补上验证能取到
+            (out / "table_items.jsonl").write_text(
+                json.dumps({"item_id": "TBL-1-R1", "table_id": "TBL-1",
+                            "table_title": "Table 8 - Clock objects",
+                            "fields": {"Object/attribute name": "Clock", "CL": "8", "Value": "0-0:1.0.0.255"}},
+                           ensure_ascii=False) + "\n", encoding="utf-8")
+            model = com.build_object_model(out)
+            clock = next(o for o in model["objects"] if o["object"] == "Clock" and o["obis"] == "0-0:1.0.0.255")
+            self.assertEqual(clock["source_table_title"], "Table 8 - Clock objects")
+
     def test_write_creates_missing_output_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source"
