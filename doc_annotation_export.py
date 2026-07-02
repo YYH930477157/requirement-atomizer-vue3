@@ -341,6 +341,7 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .badge.st-needs_discussion {{ background: var(--st-discussion); color: var(--st-discussion-tx); }}
 .dd-title {{ margin: 10px 0 4px; font-size: 16px; font-weight: 650; color: var(--ink); line-height: 1.45; }}
 .dd-meta {{ font-size: 12px; color: var(--muted); margin-bottom: 13px; }}
+.dd-suspicion {{ font-size: 12px; color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 8px; margin-bottom: 10px; }}
 .dd-label {{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 15px 0 5px; }}
 .dd-body {{ font-size: 14px; line-height: 1.7; }}
 .dd-list {{ margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }}
@@ -486,6 +487,7 @@ function select(id) {{
     '<span class="badge st-'+st+'">'+esc(STATUS_LABELS[st]||st)+'</span></div>'+
     '<div class="dd-title">'+esc(r.title)+'</div>'+
     '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+
+    ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
     '<div class="dd-label">需求分析</div><div class="dd-body">'+esc(r.description)+'</div>'+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
     (r.source_quote ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(r.source_quote)+'</div>' : '')+

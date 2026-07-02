@@ -151,6 +151,7 @@ def ai_extract_task(out_dir: Path, *, route: str | None) -> dict[str, Any]:
         "code_drift_flagged": result.get("code_drift_flagged", 0),
         "int_drift_flagged": result.get("int_drift_flagged", 0),
         "note": result.get("note", ""),
+        "quality": result.get("quality", {}),
         "written": [str(out_dir / name) for name in result.get("written", [])],
         "summary": build_output_summary(out_dir),
     }
@@ -187,8 +188,13 @@ def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, A
             applied += 1
         except ValueError:
             skipped += 1
-    return {"kind": "ai_decisions_import", "out_dir": str(out_dir),
-            "applied": applied, "skipped": skipped}
+    payload: dict[str, Any] = {"kind": "ai_decisions_import", "out_dir": str(out_dir),
+                               "applied": applied, "skipped": skipped}
+    # 裁决回流交付物：导入后立即重建 merged_spec（免 LLM）
+    if applied and (out_dir / "ai_requirements.jsonl").exists():
+        rebuilt = ai_extract.rebuild_merged_spec(out_dir)
+        payload["rebuilt"] = rebuilt
+    return payload
 
 
 def build_output_summary(out_dir: Path) -> dict[str, Any]:

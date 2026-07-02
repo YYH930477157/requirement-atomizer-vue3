@@ -1001,7 +1001,8 @@ async function handleImportDecisions() {
   try {
     const payload = await window.ratomizerDesktop.importAiDecisions({ outDir: currentOutputDir.value })
     if (payload.canceled) return
-    apiMessage.value = `已导入裁决：应用 ${payload.applied ?? 0} 条（跳过 ${payload.skipped ?? 0}）`
+    const rebuiltNote = payload.rebuilt ? "，交付物 merged_spec 已重建" : ""
+    apiMessage.value = `已导入裁决：应用 ${payload.applied ?? 0} 条（跳过 ${payload.skipped ?? 0}）${rebuiltNote}`
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "导入裁决失败"
   }

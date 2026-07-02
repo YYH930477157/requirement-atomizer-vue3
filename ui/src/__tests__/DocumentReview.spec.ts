@@ -20,7 +20,8 @@ function makeClient(over: Record<string, unknown> = {}) {
         ai_req_id: "AIR-1", title: "体积计量", description: "应计量体积", module: "计量",
         module_effective: "计量", type: "functional", priority: "P1", status: "draft",
         source_section: "4", source_quote: "The meter shall measure volume.",
-        source_block_ids: ["B2"], acceptance_criteria: ["按 4.2 测试"], labels: ["计量"], review_state: null,
+        source_block_ids: ["B2"], acceptance_criteria: ["按 4.2 测试"], labels: ["计量"],
+        suspicion_reasons: ["数字漂移"], review_state: null,
       },
     ]),
     applyAiReviewAction: vi.fn().mockResolvedValue({ ai_req_id: "AIR-1", status: "accepted", module_override: null }),
@@ -44,6 +45,7 @@ describe("DocumentReview", () => {
     expect(chip.exists()).toBe(true)
     await chip.trigger("click")
     expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
+    expect(wrapper.find('[data-testid="dd-suspicion"]').text()).toContain("数字漂移")  // 可疑度徽标
     expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("应计量体积")  // 需求分析
     expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("按 4.2 测试")  // 测试指引
 

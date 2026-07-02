@@ -159,6 +159,14 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=409)
             return
+        # 裁决即时回流交付物：重建 merged_spec（免 LLM，秒级）。失败不影响裁决本身。
+        if (self.output_dir / "ai_requirements.jsonl").exists():
+            try:
+                from ai_extract import rebuild_merged_spec
+                rebuild_merged_spec(self.output_dir)
+            except Exception as exc:  # pragma: no cover - 重建失败仅记日志
+                import logging
+                logging.getLogger("requirement_atomizer").warning("裁决后重建交付物失败：%s", exc)
         self.send_json(state)
 
     def read_json_body(self) -> dict | None:
@@ -325,6 +333,11 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
 
 
 def _load_ai_requirements(output_dir: Path) -> list[dict]:
+    # 批注视图优先读**原始** ai_requirements.jsonl：merged_spec 现在会剔除 rejected
+    # （裁决回流交付物），若视图读 merged，被拒条目会从视图消失、无法反悔。
+    raw = read_jsonl(output_dir / "ai_requirements.jsonl")
+    if raw:
+        return raw
     doc_path = output_dir / "merged_spec_requirements.json"
     if doc_path.exists():
         data = json.loads(doc_path.read_text(encoding="utf-8"))
@@ -333,7 +346,7 @@ def _load_ai_requirements(output_dir: Path) -> list[dict]:
     if alt.exists():
         data = json.loads(alt.read_text(encoding="utf-8"))
         return list(data.get("requirements") or [])
-    return read_jsonl(output_dir / "ai_requirements.jsonl")
+    return []
 
 
 def index_by_requirement_identity(rows: list[dict]) -> dict[str, dict]:
