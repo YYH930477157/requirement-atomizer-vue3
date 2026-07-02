@@ -80,11 +80,16 @@ def resolve_concurrency(explicit: int | None = None) -> int:
 
 
 def resolve_self_check(explicit: bool | None = None) -> bool:
-    """完整性自检开关：显式参数优先，否则环境变量 RATOMIZER_AI_SELFCHECK（默认开）。"""
+    """完整性自检开关：显式参数优先，否则环境变量 RATOMIZER_AI_SELFCHECK。
+
+    默认开；仅显式的 0/false/no/off 关。未设或空字符串一律回落默认（空串≠关闭）。
+    """
     if explicit is not None:
         return bool(explicit)
-    raw = os.environ.get(SELF_CHECK_ENV, "1").strip().lower()
-    return raw not in ("0", "false", "no", "off", "")
+    raw = os.environ.get(SELF_CHECK_ENV, "").strip().lower()
+    if not raw:
+        return True
+    return raw not in ("0", "false", "no", "off")
 
 VALID_TYPES = {"functional", "non_functional", "constraint", "business_rule"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
@@ -350,8 +355,14 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
     }
 
 
-def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any]) -> list[dict[str, Any]]:
-    """raw LLM 需求 → 归一 + 分级漂移护栏。抽取与完整性自检共用（补的也过同一套护栏）。"""
+def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
+                              context_ints: frozenset[str] | set[str] = frozenset()) -> list[dict[str, Any]]:
+    """raw LLM 需求 → 归一 + 分级漂移护栏。抽取与完整性自检共用（补的也过同一套护栏）。
+
+    context_ints：文档背景（画像/术语表）里出现过的普通整数。LLM 引用背景里的标准号
+    （如"依据 EN 16314"）属合理行为，不软标为数字漂移——否则每条都是假阳性，稀释真漂移信号。
+    受保护编码（OBIS/事件号/十六进制）**不豁免**：仍只认当前章节原文。
+    """
     source = section.get("drift_source") or section.get("text", "")
     results: list[dict[str, Any]] = []
     for raw in raw_reqs:
@@ -361,7 +372,7 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any]) -> l
         if not req["description"] and not req["source_quote"]:
             continue
         codes = code_drift(req, source)
-        ints = int_drift(req, source)
+        ints = [i for i in int_drift(req, source) if i not in context_ints]
         notes = []
         if codes:  # 受保护编码漂移 → 严格：降级 draft 待核
             req["status"] = "draft"
@@ -377,13 +388,23 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any]) -> l
 
 
 def _req_key(req: dict[str, Any]) -> str:
-    """去重键：优先 source_quote（归一），否则 title。"""
+    """去重键：source_quote（归一）→ title → description 前 80 字。
+
+    三级回退保证过了护栏的条目（必有 description 或 quote）键恒非空——否则"有描述但
+    无引用无标题"的自检补充项会因空键被静默丢弃（与初抽路径不对称）。
+    """
     q = re.sub(r"\s+", " ", str(req.get("source_quote") or "")).strip().lower()
-    return q or str(req.get("title") or "").strip().lower()
+    if q:
+        return q
+    title = str(req.get("title") or "").strip().lower()
+    if title:
+        return title
+    return str(req.get("description") or "").strip().lower()[:80]
 
 
 def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
-                     chat: ChatFn, doc_context: str = "") -> list[dict[str, Any]]:
+                     chat: ChatFn, doc_context: str = "",
+                     context_ints: frozenset[str] | set[str] = frozenset()) -> list[dict[str, Any]]:
     """完整性自检：对着原文找已抽取需求**未覆盖**的遗漏项，补上（去重 + 同一套漂移护栏）。"""
     titles = "\n".join(f"- {r.get('title', '')}" for r in existing) or "（无）"
     parts: list[str] = []
@@ -402,7 +423,7 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         return []
     seen = {_req_key(r) for r in existing}
     extra: list[dict[str, Any]] = []
-    for req in _process_raw_requirements(raw, section):
+    for req in _process_raw_requirements(raw, section, context_ints):
         key = _req_key(req)
         if key and key not in seen:
             seen.add(key)
@@ -420,12 +441,13 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
     user = build_section_prompt(section)
     if doc_context:
         user = f"{doc_context}\n\n---\n以下是待抽取的**当前章节**（需求内容与 source_quote 只能来自这段原文）：\n{user}"
+    context_ints = frozenset(extract_ints(doc_context)) if doc_context else frozenset()
     payload = chat(SYSTEM_PROMPT, user)
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
-    results = _process_raw_requirements(raw_reqs, section) if isinstance(raw_reqs, list) else []
+    results = _process_raw_requirements(raw_reqs, section, context_ints) if isinstance(raw_reqs, list) else []
     if self_check:
         try:
-            extra = critique_section(section, results, chat, doc_context)
+            extra = critique_section(section, results, chat, doc_context, context_ints)
             if extra:
                 LOGGER.info("完整性自检补充 %d 条（章节 %s）", len(extra), section.get("section_id"))
                 results = results + extra

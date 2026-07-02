@@ -157,6 +157,13 @@ describe("Electron main helpers", () => {
     expect(buildLlmEnvironment({ concurrency: 2 })).toMatchObject({ RATOMIZER_LLM_CONCURRENCY: "2" })
   })
 
+  it("defaults completeness self-check on and exposes the toggle to Python", () => {
+    expect(normalizeLlmSettings({}).selfCheck).toBe(true)            // 旧配置无此字段 → 默认开
+    expect(normalizeLlmSettings({ selfCheck: false }).selfCheck).toBe(false)
+    expect(buildLlmEnvironment({ selfCheck: false })).toMatchObject({ RATOMIZER_AI_SELFCHECK: "0" })
+    expect(buildLlmEnvironment({})).toMatchObject({ RATOMIZER_AI_SELFCHECK: "1" })
+  })
+
   it("persists OpenAI-compatible API settings in a config file with an encrypted API key", () => {
     const configDir = mkdtempSync(path.join(tmpdir(), "ratomizer-settings-"))
     const configPath = path.join(configDir, "llm-settings.json")

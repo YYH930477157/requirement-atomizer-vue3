@@ -30,6 +30,7 @@ const DEFAULT_LLM_SETTINGS = {
   timeoutS: 60,
   maxRetries: 3,
   concurrency: 4,
+  selfCheck: true,
 };
 
 const MAX_CONCURRENCY = 16;
@@ -48,6 +49,8 @@ function normalizeLlmSettings(input = {}) {
     maxRetries: integerValue(input.maxRetries, DEFAULT_LLM_SETTINGS.maxRetries),
     concurrency: Math.max(1, Math.min(MAX_CONCURRENCY,
       integerValue(input.concurrency, DEFAULT_LLM_SETTINGS.concurrency))),
+    // 缺省（旧配置文件无此字段）回落默认开，显式 false 才关
+    selfCheck: input.selfCheck == null ? DEFAULT_LLM_SETTINGS.selfCheck : Boolean(input.selfCheck),
   };
 }
 
@@ -63,6 +66,7 @@ function buildLlmEnvironment(settings, env = process.env) {
     RATOMIZER_LLM_TIMEOUT_S: String(normalized.timeoutS),
     RATOMIZER_LLM_MAX_RETRIES: String(normalized.maxRetries),
     RATOMIZER_LLM_CONCURRENCY: String(normalized.concurrency),
+    RATOMIZER_AI_SELFCHECK: normalized.selfCheck ? "1" : "0",
   };
   const apiKey = typeof settings?.apiKey === "string" ? settings.apiKey.trim() : "";
   if (apiKey) {

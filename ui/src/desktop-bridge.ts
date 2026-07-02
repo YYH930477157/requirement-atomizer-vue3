@@ -43,6 +43,7 @@ export type LlmSettingsInput = {
   timeoutS: number
   maxRetries: number
   concurrency: number
+  selfCheck: boolean
 }
 
 export type LlmSettingsPayload = Omit<LlmSettingsInput, "apiKey">
