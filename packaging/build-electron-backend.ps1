@@ -4,6 +4,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# 传入的 Python 路径不存在（如这台机器没有 .venv）→ 回退 PATH 上的 python，跨机器可打包
+if ($Python -ne "python" -and -not (Test-Path $Python)) {
+    Write-Host "Python '$Python' not found; falling back to 'python' on PATH"
+    $Python = "python"
+}
+
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $DistBackend = Join-Path $RepoRoot "dist-backend"
 $BuildDir = Join-Path $RepoRoot "build-electron-backend"
