@@ -48,7 +48,7 @@ MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v4"  # v4：完整性自检 pass（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v6"  # v6：新增 dev_guidance 研发落地指引（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 DOC_CONTEXT_GLOSSARY_MAX = 1800   # 术语表注入上限（控 token 成本）
 DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
@@ -103,7 +103,22 @@ SYSTEM_PROMPT = (
     "确实都不贴切时才填\"" + OTHER_MODULE + "\"）：" + "、".join(MODULE_VOCAB) + "。"
     "labels（额外的细分标签，至少一个，可自由）、source_quote（原文逐字引用，不可改写）、"
     "source_section（该需求所属的章节号/标题，从文本里的小节标题判断）、"
-    "acceptance_criteria（可测试的验收点数组）。"
+    "acceptance_criteria（可测试的验收点数组）、"
+    "dev_guidance（**研发落地指引**数组：为满足本需求，研发要实现的具体功能/逻辑/数据结构/接口，"
+    "写\"做什么\"的可执行条目，不复述原文、不写空话）、"
+    "threshold_table（**仅当原文含参数/门限/档位表**时输出 {\"columns\": [...], \"rows\": [[...]]}，"
+    "数字逐格照抄原文，不重排不换算；原文无表格则省略此字段）。"
+    "质量准则：description 必须自包含（研发不回原文即可实现：条件+动作+参数齐全）；"
+    "acceptance_criteria 必须可测（有明确的通过/失败判据，避免\"符合要求\"这类空话）；"
+    "一个需求点不拆散成多条，不同需求点不合并成一条。"
+    "示例：原文 \"The meter shall store at least 12 monthly billing records.\" → "
+    "{\"title\": \"存储至少12个月的月结算记录\", "
+    "\"description\": \"电表须在本地存储不少于12个月的月结算记录，供结算追溯读取。\", "
+    "\"type\": \"non_functional\", \"priority\": \"P1\", \"module\": \"结算\", \"labels\": [\"数据存储\"], "
+    "\"source_quote\": \"The meter shall store at least 12 monthly billing records.\", "
+    "\"dev_guidance\": [\"实现月结算记录存储区，容量不少于12条，写满后新记录覆盖最旧记录\", "
+    "\"提供按月份读取历史结算记录的访问接口\"], "
+    "\"acceptance_criteria\": [\"连续产生12个月结算记录后，最早一个月的记录仍可完整读出\"]}。"
     "若提供了【文档背景/章节大纲/术语定义】，据此保持术语一致、模块判断准确、解析跨章节引用；"
     "但这些背景仅供参考——需求内容与 source_quote 必须来自【当前章节】原文，不得从背景里搬运。"
     "严禁编造原文没有的 OBIS 码、事件号、十六进制、数字——这些只能原样引用或不出现。"
@@ -333,6 +348,7 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         priority = "P2"
     labels = [str(x) for x in (raw.get("labels") or []) if str(x).strip()]
     acceptance = [str(x) for x in (raw.get("acceptance_criteria") or []) if str(x).strip()]
+    dev_guidance = [str(x) for x in (raw.get("dev_guidance") or []) if str(x).strip()]
     module = str(raw.get("module") or "").strip()  # LLM 受控分类，ensure_domain_labels 据此定首要领域
     return {
         "title": str(raw.get("title") or "").strip()[:80],
@@ -345,6 +361,7 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         "source_quote": str(raw.get("source_quote") or "").strip(),
         "threshold_table": raw.get("threshold_table") if isinstance(raw.get("threshold_table"), dict) else None,
         "acceptance_criteria": acceptance,
+        "dev_guidance": dev_guidance,
         "dependencies": [],
         "parent": None,
         "children": [],
@@ -383,6 +400,17 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             # 无编码漂移：若模型给了状态信号则尊重，否则默认 draft（AI 抽取一律待审）
             req["status"] = "draft"
         req["notes"] = "；".join(notes)
+        # 可疑度信号（零 LLM）：给审核视图排优先级——先审最可疑的
+        suspicion: list[str] = []
+        if codes:
+            suspicion.append("编码漂移")
+        if ints:
+            suspicion.append("数字漂移")
+        quote_norm = re.sub(r"\s+", " ", req["source_quote"]).strip().lower()
+        if quote_norm and quote_norm not in re.sub(r"\s+", " ", source).lower():
+            suspicion.append("引用非逐字")
+        if suspicion:
+            req["suspicion_reasons"] = suspicion
         results.append(req)
     return results
 
@@ -404,8 +432,13 @@ def _req_key(req: dict[str, Any]) -> str:
 
 def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
                      chat: ChatFn, doc_context: str = "",
-                     context_ints: frozenset[str] | set[str] = frozenset()) -> list[dict[str, Any]]:
-    """完整性自检：对着原文找已抽取需求**未覆盖**的遗漏项，补上（去重 + 同一套漂移护栏）。"""
+                     context_ints: frozenset[str] | set[str] = frozenset(),
+                     focus_lines: list[str] | None = None) -> list[dict[str, Any]]:
+    """完整性自检：对着原文找已抽取需求**未覆盖**的遗漏项，补上（去重 + 同一套漂移护栏）。
+
+    focus_lines：解析层标记 requirement_like 但未被任何已抽需求覆盖的原文语句——
+    定向查漏的重点核查清单（比盲查更准）。
+    """
     titles = "\n".join(f"- {r.get('title', '')}" for r in existing) or "（无）"
     parts: list[str] = []
     if doc_context:
@@ -417,6 +450,9 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         "已覆盖的不要重复；原文没有的绝不编造；若无遗漏，输出 {\"requirements\": []}。")
     parts.append(f"当前章节：\n{build_section_prompt(section)}")
     parts.append(f"已抽取（勿重复）：\n{titles}")
+    if focus_lines:
+        hints = "\n".join(f"- {line}" for line in focus_lines[:12])
+        parts.append(f"重点核查以下原文语句是否含被遗漏的需求（解析层判定疑似需求但尚无需求覆盖）：\n{hints}")
     payload = chat(SYSTEM_PROMPT, "\n\n".join(parts))
     raw = payload.get("requirements") if isinstance(payload, dict) else None
     if not isinstance(raw, list):
@@ -427,16 +463,51 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         key = _req_key(req)
         if key and key not in seen:
             seen.add(key)
+            req["self_check_added"] = True  # 初抽遗漏、自检补回——审核时优先看
+            req["suspicion_reasons"] = list(req.get("suspicion_reasons") or []) + ["自检补充（初抽遗漏）"]
             extra.append(req)
     return extra
 
 
+def _norm_ws(s: Any) -> str:
+    return re.sub(r"\s+", " ", str(s or "")).strip().lower()
+
+
+def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[str, Any]],
+                                 block_info: dict[str, dict[str, Any]] | None) -> list[str] | None:
+    """本章节内 requirement_like 且未被任何已抽 source_quote 覆盖的原文语句。
+
+    返回 None 表示无块信息（调用方回退全量盲查）。拆分片段只核查落在本片段文本里的语句，
+    防同一遗漏被多个片段重复补。
+    """
+    if not block_info:
+        return None
+    quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in existing) if q]
+    section_text = _norm_ws(section.get("text"))
+    uncovered: list[str] = []
+    seen: set[str] = set()
+    for bid in section.get("block_ids") or []:
+        block = block_info.get(str(bid))
+        if not block or not block.get("requirement_like") or block.get("noise"):
+            continue
+        bt = _norm_ws(block.get("text"))
+        if not bt or bt in seen or bt not in section_text:
+            continue
+        seen.add(bt)
+        if any(q in bt or bt in q for q in quotes):
+            continue
+        uncovered.append(str(block.get("text") or "").strip()[:200])
+    return uncovered
+
+
 def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "",
-                    self_check: bool = False) -> list[dict[str, Any]]:
+                    self_check: bool = False,
+                    block_info: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。doc_context 注入文档全局背景。
 
-    self_check：抽完再调一次「查漏补缺」补上遗漏项（直击"不遗漏"，代价 ~2× 调用）。
-    自检调用失败不致命——保留初抽结果。
+    self_check：抽完再查漏补缺。有 block_info 时**定向**——未覆盖的 requirement_like
+    语句作重点核查清单；本章节全覆盖且已有产出则跳过自检（省一次调用）。
+    无 block_info 回退全量盲查。自检调用失败不致命——保留初抽结果。
     """
     user = build_section_prompt(section)
     if doc_context:
@@ -446,8 +517,13 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
     results = _process_raw_requirements(raw_reqs, section, context_ints) if isinstance(raw_reqs, list) else []
     if self_check:
+        uncovered = _uncovered_requirement_lines(section, results, block_info)
+        if uncovered is not None and not uncovered and results:
+            LOGGER.info("自检跳过（requirement_like 全覆盖，章节 %s）", section.get("section_id"))
+            return results
         try:
-            extra = critique_section(section, results, chat, doc_context, context_ints)
+            extra = critique_section(section, results, chat, doc_context, context_ints,
+                                     focus_lines=uncovered or None)
             if extra:
                 LOGGER.info("完整性自检补充 %d 条（章节 %s）", len(extra), section.get("section_id"))
                 results = results + extra
@@ -492,6 +568,7 @@ def extract_all(
     stats: dict[str, Any] | None = None,
     doc_context: str = "",
     self_check: bool = False,
+    block_info: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。
 
@@ -534,7 +611,7 @@ def extract_all(
     def work(item: tuple[int, dict[str, Any], str]) -> tuple[int, str, list[dict[str, Any]], bool]:
         idx, section, fp = item
         try:
-            return idx, fp, extract_section(section, chat, doc_context, self_check), True
+            return idx, fp, extract_section(section, chat, doc_context, self_check, block_info), True
         except LLMError as exc:  # 最佳努力：该章节降级、不崩、不缓存（留待重跑）
             LOGGER.warning("AI 抽取章节失败：%s", exc)
             return idx, fp, [], False
@@ -631,15 +708,86 @@ def load_or_build_deterministic(out_dir: Path, *, source: str, extracted_at: str
     return doc.get("requirements", [])
 
 
+def apply_ai_decisions(out_dir: Path, ai_requirements: list[dict[str, Any]],
+                       stats: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """把专家裁决（批注视图/HTML 导入 → ai_review_states.jsonl）应用到 AI 需求，回流交付物。
+
+    rejected → 剔除（不进研发规格）；module_override → 生效并重定首要领域；
+    accepted → status=confirmed；reason → 追加"专家意见"到 notes。无裁决原样保留。
+    """
+    from ai_review_actions import ai_req_id, read_ai_review_states
+    states = read_ai_review_states(out_dir)
+    applied = 0
+    dropped = 0
+    kept: list[dict[str, Any]] = []
+    for req in ai_requirements:
+        state = states.get(ai_req_id(req)) if states else None
+        if not state:
+            kept.append(req)
+            continue
+        applied += 1
+        if state.get("status") == "rejected":
+            dropped += 1
+            continue
+        req = dict(req)
+        if state.get("module_override"):
+            req["module"] = state["module_override"]  # ensure_domain_labels 会按 module 重排首要领域
+        if state.get("status") == "accepted":
+            req["status"] = "confirmed"
+        if state.get("reason"):
+            note = f"专家意见：{state['reason']}"
+            req["notes"] = f"{req.get('notes') or ''}；{note}".strip("；")
+        kept.append(req)
+    if applied:
+        ensure_domain_labels(kept)  # module（含 override）重新驱动首要领域
+    if stats is not None:
+        stats["decisions_applied"] = applied
+        stats["rejected_dropped"] = dropped
+    return kept
+
+
 def build_merged_doc(out_dir: Path, ai_requirements: list[dict[str, Any]],
-                     *, source: str, extracted_at: str) -> dict[str, Any]:
-    """合并 AI 行为需求 + 确定性结构需求 → skill 格式 doc。"""
+                     *, source: str, extracted_at: str,
+                     stats: dict[str, Any] | None = None) -> dict[str, Any]:
+    """合并 AI 行为需求（先应用专家裁决）+ 确定性结构需求 → skill 格式 doc。"""
+    ai_requirements = apply_ai_decisions(out_dir, ai_requirements, stats)
     deterministic = load_or_build_deterministic(out_dir, source=source, extracted_at=extracted_at)
     merged = merge_requirements(deterministic, ai_requirements)
     from meter_profile import infer_meter_profile
     profile = infer_meter_profile(out_dir)
     return build_skill_doc(merged, source=source, extracted_at=extracted_at,
                            meter_type=profile["meter_type"], target_standards=profile["target_standards"])
+
+
+def _write_merged_outputs(out_dir: Path, merged: dict[str, Any]) -> list[str]:
+    """写 merged_spec_requirements.json + merged_spec.xlsx，返回写出的文件名。"""
+    written: list[str] = []
+    merged_json = out_dir / "merged_spec_requirements.json"
+    merged_json.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    written.append(merged_json.name)
+    try:
+        from spec_excel import write_xlsx
+        merged_xlsx = out_dir / "merged_spec.xlsx"
+        write_xlsx(merged, merged_xlsx)
+        written.append(merged_xlsx.name)
+    except Exception as exc:  # Excel 失败不阻断 JSON 产出
+        LOGGER.warning("合并 Excel 生成失败：%s", exc)
+    return written
+
+
+def rebuild_merged_spec(out_dir: Path) -> dict[str, Any]:
+    """免 LLM 重建交付物：读已抽 ai_requirements.jsonl + 最新裁决，重合并重写 json/xlsx。
+
+    批注视图裁决、导入裁决 JSON 后调用——专家的接受/拒绝/改模块即时反映到 merged_spec。
+    """
+    out_dir = Path(out_dir).expanduser().resolve()
+    ai_requirements = read_jsonl(out_dir / AI_REQUIREMENTS)
+    stats: dict[str, Any] = {}
+    merged = build_merged_doc(out_dir, ai_requirements, source=out_dir.name,
+                              extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
+                              stats=stats)
+    written = _write_merged_outputs(out_dir, merged)
+    return {"written": written, "total": merged["analysis"]["total_count"], **stats}
 
 
 # --- 主入口 ---------------------------------------------------------------
@@ -671,6 +819,7 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     int_flagged = 0
     failed_sections = 0
     model: str | None = None
+    result_quality: dict[str, Any] | None = None
 
     if config is None:
         # stub 路由：不调 LLM，AI 行为需求为空——但确定性引擎（双引擎之一）仍照常
@@ -685,6 +834,7 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
             return chat_json(config, system, user)
 
         doc_context = build_doc_context(out_dir, blocks)  # 上下文工程：文档全局背景注入每次抽取
+        block_info = {str(b.get("block_id")): b for b in blocks if b.get("block_id")}  # 定向自检/覆盖率用
         extract_stats: dict[str, Any] = {}
         requirements = extract_all(sections, chat, model=config.model,
                                    cache_path=out_dir / AI_EXTRACT_CACHE,
@@ -692,7 +842,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                                    progress_callback=progress_callback,
                                    stats=extract_stats,
                                    doc_context=doc_context,
-                                   self_check=resolve_self_check(self_check))
+                                   self_check=resolve_self_check(self_check),
+                                   block_info=block_info)
         ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
         code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
         int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
@@ -706,6 +857,35 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                 f.write(json.dumps(req, ensure_ascii=False) + "\n")
         written.append(target.name)
 
+        # 质量报表：这轮抽取的可核指标（覆盖率/漂移/自检补充/模块分布），落盘供追溯
+        req_like = [b for b in block_info.values() if b.get("requirement_like") and not b.get("noise")]
+        quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in requirements) if q]
+        covered = sum(
+            1 for b in req_like
+            if (lambda bt: bt and any(q in bt or bt in q for q in quotes))(_norm_ws(b.get("text")))
+        )
+        by_module: dict[str, int] = {}
+        for r in requirements:
+            m = str((r.get("labels") or ["未分模块"])[0])
+            by_module[m] = by_module.get(m, 0) + 1
+        quality = {
+            "sections": len(sections),
+            "requirements": len(requirements),
+            "failed_sections": int(extract_stats.get("failed_sections", 0)),
+            "cached_sections": int(extract_stats.get("cached_sections", 0)),
+            "self_check_added": sum(1 for r in requirements if r.get("self_check_added")),
+            "code_drift_flagged": code_flagged,
+            "int_drift_flagged": int_flagged,
+            "requirement_like_blocks": len(req_like),
+            "covered_blocks": covered,
+            "coverage_pct": round(covered * 100 / len(req_like), 1) if req_like else None,
+            "by_module": dict(sorted(by_module.items(), key=lambda x: -x[1])),
+        }
+        quality_path = out_dir / "ai_extract_quality.json"
+        quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
+        written.append(quality_path.name)
+        result_quality = quality
+
     result: dict[str, Any] = {"route": route_label, "sections": len(sections),
               "requirements": len(requirements), "code_drift_flagged": code_flagged,
               "int_drift_flagged": int_flagged, "failed_sections": failed_sections,
@@ -717,6 +897,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     elif failed_sections:
         result["note"] = (f"{failed_sections} 个章节 LLM 调用失败（端点/Key/超时）——"
                           "已按可用结果产出，请用「测试连接」确认配置后重跑")
+    if result_quality is not None:
+        result["quality"] = result_quality
 
     if write_doc:
         from meter_profile import infer_meter_profile
@@ -737,21 +919,16 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         result["analysis"] = doc.get("analysis", {}).get("by_priority", {})
 
     if merge_deterministic:
+        merge_stats: dict[str, Any] = {}
         merged = build_merged_doc(out_dir, requirements, source=out_dir.name,
-                                  extracted_at=datetime.datetime.now().isoformat(timespec="seconds"))
-        merged_json = out_dir / "merged_spec_requirements.json"
-        merged_json.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
-        written.append(merged_json.name)
-        try:
-            from spec_excel import write_xlsx
-            merged_xlsx = out_dir / "merged_spec.xlsx"
-            write_xlsx(merged, merged_xlsx)
-            written.append(merged_xlsx.name)
-        except Exception as exc:
-            LOGGER.warning("合并 Excel 生成失败：%s", exc)
+                                  extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
+                                  stats=merge_stats)
+        written.extend(_write_merged_outputs(out_dir, merged))
+        ai_in_merged = len(requirements) - int(merge_stats.get("rejected_dropped", 0))
         result["merged"] = {"total": merged["analysis"]["total_count"],
-                            "ai_behavioral": len(requirements),
-                            "deterministic_structural": merged["analysis"]["total_count"] - len(requirements)}
+                            "ai_behavioral": ai_in_merged,
+                            "deterministic_structural": merged["analysis"]["total_count"] - ai_in_merged,
+                            **merge_stats}
 
     return result
 

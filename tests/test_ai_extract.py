@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -631,6 +632,185 @@ class ContextIntExemptionTests(unittest.TestCase):
                                           doc_context=ctx)
         self.assertIn("结构漂移已拦截", reqs[0]["notes"])     # 编码严格：仍只认章节原文
         self.assertEqual(reqs[0]["status"], "draft")
+
+
+class DecisionBackflowTests(unittest.TestCase):
+    """P0：专家裁决（ai_review_states）回流交付物。"""
+
+    def _req(self, title: str, quote: str) -> dict:
+        return {"title": title, "description": f"{title} 描述", "type": "functional",
+                "priority": "P1", "module": "计量", "labels": ["计量", "gas"],
+                "source_section": "4", "source_quote": quote, "notes": "",
+                "acceptance_criteria": [], "status": "draft",
+                "dependencies": [], "parent": None, "children": []}
+
+    def test_rejected_dropped_override_and_confirm_applied(self) -> None:
+        import ai_review_actions
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            reqs = [self._req("A", "quote A"), self._req("B", "quote B"), self._req("C", "quote C")]
+            rid_a = ai_review_actions.ai_req_id(reqs[0])
+            rid_b = ai_review_actions.ai_req_id(reqs[1])
+            ai_review_actions.apply_ai_review_action(out, rid_a, "rejected", reason="不是需求")
+            ai_review_actions.apply_ai_review_action(out, rid_b, "accepted",
+                                                     module_override="计量精度", reason="归精度")
+            stats: dict = {}
+            kept = ai_extract.apply_ai_decisions(out, reqs, stats)
+            self.assertEqual([r["title"] for r in kept], ["B", "C"])   # rejected 剔除
+            self.assertEqual(kept[0]["status"], "confirmed")            # accepted → confirmed
+            self.assertEqual(kept[0]["labels"][0], "计量精度")          # override 定首要领域
+            self.assertIn("gas", kept[0]["labels"])                     # 自由标签保留
+            self.assertIn("专家意见：归精度", kept[0]["notes"])
+            self.assertEqual(kept[1]["status"], "draft")                # 未裁决原样
+            self.assertEqual(stats["decisions_applied"], 2)
+            self.assertEqual(stats["rejected_dropped"], 1)
+
+    def test_rebuild_merged_spec_applies_latest_decisions(self) -> None:
+        import ai_review_actions
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            reqs = [self._req("A", "quote A"), self._req("B", "quote B")]
+            with (out / "ai_requirements.jsonl").open("w", encoding="utf-8") as f:
+                for r in reqs:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            (out / "dlms_cosem_spec_requirements.json").write_text('{"requirements": []}', encoding="utf-8")
+            ai_review_actions.apply_ai_review_action(out, ai_review_actions.ai_req_id(reqs[0]), "rejected")
+            result = ai_extract.rebuild_merged_spec(out)
+            self.assertEqual(result["total"], 1)                       # A 被剔除
+            self.assertEqual(result["rejected_dropped"], 1)
+            self.assertIn("merged_spec_requirements.json", result["written"])
+            merged = json.loads((out / "merged_spec_requirements.json").read_text(encoding="utf-8"))
+            self.assertEqual([r["title"] for r in merged["requirements"]], ["B"])
+
+
+class TargetedSelfCheckTests(unittest.TestCase):
+    """P1：自检定向查漏——未覆盖 requirement_like 语句作焦点；全覆盖则跳过省调用。"""
+
+    def _section(self) -> dict:
+        return {"section_id": "S", "heading": "S",
+                "text": "The meter shall do A.\nThe meter shall also do B.",
+                "block_ids": ["B1", "B2"]}
+
+    def _block_info(self) -> dict:
+        return {
+            "B1": {"block_id": "B1", "text": "The meter shall do A.", "requirement_like": True, "noise": False},
+            "B2": {"block_id": "B2", "text": "The meter shall also do B.", "requirement_like": True, "noise": False},
+        }
+
+    def _req_a(self) -> dict:
+        return {"title": "Do A", "description": "做 A", "type": "functional", "priority": "P1",
+                "labels": ["计量"], "source_quote": "The meter shall do A."}
+
+    def test_skips_critique_when_all_requirement_like_covered(self) -> None:
+        calls = {"n": 0}
+        block_info = self._block_info()
+        block_info["B2"]["requirement_like"] = False  # 只有 B1 是需求语句，且被覆盖
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            return {"requirements": [self._req_a()]}
+
+        reqs = ai_extract.extract_section(self._section(), chat, self_check=True, block_info=block_info)
+        self.assertEqual(calls["n"], 1)     # 全覆盖 → 自检跳过，只调 1 次
+        self.assertEqual(len(reqs), 1)
+
+    def test_uncovered_line_becomes_critique_focus(self) -> None:
+        calls = {"n": 0}
+        captured: dict = {}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                captured["user"] = user
+                return {"requirements": []}
+            return {"requirements": [self._req_a()]}
+
+        ai_extract.extract_section(self._section(), chat, self_check=True, block_info=self._block_info())
+        self.assertEqual(calls["n"], 2)                                # B2 未覆盖 → 自检执行
+        self.assertIn("重点核查", captured["user"])                    # 定向焦点注入
+        self.assertIn("The meter shall also do B.", captured["user"])
+        self.assertNotIn("- The meter shall do A.", captured["user"].split("重点核查")[-1])  # 已覆盖不在焦点
+
+    def test_self_check_added_items_carry_flag_and_suspicion(self) -> None:
+        calls = {"n": 0}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"requirements": [self._req_a()]}
+            return {"requirements": [{"title": "Do B", "description": "做 B", "type": "functional",
+                                      "priority": "P1", "labels": ["计量"],
+                                      "source_quote": "The meter shall also do B."}]}
+
+        reqs = ai_extract.extract_section(self._section(), chat, self_check=True, block_info=self._block_info())
+        added = [r for r in reqs if r.get("self_check_added")]
+        self.assertEqual(len(added), 1)
+        self.assertIn("自检补充（初抽遗漏）", added[0]["suspicion_reasons"])
+
+
+class PromptV5Tests(unittest.TestCase):
+    def test_prompt_has_threshold_table_quality_rules_and_example(self) -> None:
+        self.assertIn("threshold_table", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("质量准则", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("示例", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("dev_guidance", ai_extract.SYSTEM_PROMPT)      # 研发落地指引
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v6")
+
+    def test_normalize_captures_dev_guidance(self) -> None:
+        sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}
+        r = ai_extract.normalize_requirement(
+            {"title": "X", "description": "d", "source_quote": "t",
+             "dev_guidance": ["实现环形存储", "  ", "提供读取接口"]}, sec)
+        self.assertEqual(r["dev_guidance"], ["实现环形存储", "提供读取接口"])  # 去空白项
+
+    def test_quote_not_verbatim_flags_suspicion(self) -> None:
+        sec = {"section_id": "S", "heading": "S", "text": "The meter shall do A.", "block_ids": []}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{"title": "X", "description": "做 X", "type": "functional",
+                                      "priority": "P1", "labels": ["计量"],
+                                      "source_quote": "a paraphrased quote not in source"}]}
+
+        reqs = ai_extract.extract_section(sec, chat)
+        self.assertIn("引用非逐字", reqs[0].get("suspicion_reasons") or [])
+
+
+class QualityReportTests(unittest.TestCase):
+    def test_run_ai_extract_writes_quality_report_with_coverage(self) -> None:
+        from llm_client import LLMClientConfig
+        cfg = LLMClientConfig(base_url="http://x", model="m", max_tokens=8192)
+
+        def fake_chat_json(config, system, user):
+            return {"requirements": [{"title": "Do A", "description": "做 A", "type": "functional",
+                                      "priority": "P1", "labels": ["计量"],
+                                      "source_quote": "The meter shall do A."}]}
+
+        orig_cfg = ai_extract.config_for_route
+        orig_chat = ai_extract.chat_json
+        ai_extract.config_for_route = lambda route, pipeline_path=None: cfg
+        ai_extract.chat_json = fake_chat_json
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                (out / "blocks.jsonl").write_text(
+                    json.dumps({"block_id": "B1", "section_path": ["4"],
+                                "text": "The meter shall do A.", "requirement_like": True,
+                                "noise": False}) + "\n" +
+                    json.dumps({"block_id": "B2", "section_path": ["4"],
+                                "text": "Uncovered requirement line.", "requirement_like": True,
+                                "noise": False}) + "\n",
+                    encoding="utf-8")
+                result = ai_extract.run_ai_extract(out, route="openai_compatible", self_check=False)
+                quality = json.loads((out / "ai_extract_quality.json").read_text(encoding="utf-8"))
+                self.assertEqual(quality["requirement_like_blocks"], 2)
+                self.assertEqual(quality["covered_blocks"], 1)          # B1 被引用覆盖，B2 未覆盖
+                self.assertEqual(quality["coverage_pct"], 50.0)
+                self.assertIn("计量", quality["by_module"])
+                self.assertEqual(result["quality"]["requirements"], 1)
+                self.assertIn("ai_extract_quality.json", result["written"])
+        finally:
+            ai_extract.config_for_route = orig_cfg
+            ai_extract.chat_json = orig_chat
 
 
 if __name__ == "__main__":

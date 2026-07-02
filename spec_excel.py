@@ -85,7 +85,7 @@ ATTRIBUTE_NAME_FILL = PatternFill(start_color="FF00FFFF", end_color="FF00FFFF", 
 
 TABLE_COLUMNS = [
     ("ID", 12), ("标题", 30), ("类型", 12), ("优先级", 10), ("状态", 10),
-    ("来源章节", 16), ("需求描述", 45), ("原文引用", 45), ("验收标准", 35),
+    ("来源章节", 16), ("需求描述", 45), ("研发指引", 40), ("原文引用", 45), ("验收标准", 35),
     ("参数表", 30), ("依赖", 14), ("备注", 25),
 ]
 
@@ -267,6 +267,8 @@ def _write_domain_sheet(wb: Workbook, domain: str, reqs: list[dict]) -> None:
         r = header_row + 1 + row_idx
         criteria = req.get("acceptance_criteria", [])
         criteria_text = "\n".join(f"- {c}" for c in criteria) if criteria else ""
+        guidance = req.get("dev_guidance", [])
+        guidance_text = "\n".join(f"- {g}" for g in guidance) if guidance else ""
         deps = req.get("dependencies", [])
         deps_text = ", ".join(deps) if deps else ""
         values = [
@@ -277,6 +279,7 @@ def _write_domain_sheet(wb: Workbook, domain: str, reqs: list[dict]) -> None:
             STATUS_LABELS.get(req.get("status", ""), req.get("status", "")),
             req.get("source_section", ""),
             req.get("description", ""),
+            guidance_text,
             req.get("source_quote", ""),
             criteria_text,
             _format_threshold_table(req.get("threshold_table")),

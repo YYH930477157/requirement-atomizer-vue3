@@ -126,6 +126,23 @@ class AiRequirementsEndpointTests(unittest.TestCase):
         # 无 quote/无 span → 空
         self.assertEqual(api_server.anchor_block_id({}, text_by_block), "")
 
+    def test_view_prefers_raw_ai_requirements_over_merged(self) -> None:
+        """merged 会剔除 rejected（裁决回流交付物），批注视图须读原始文件——被拒条目仍可见、可反悔。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)  # merged 里 1 条
+            raw = [
+                {"title": "T1", "description": "d1", "module": "计量", "source_section": "4",
+                 "source_quote": "q1", "source_block_ids": ["BLK-2"], "labels": ["计量"]},
+                {"title": "T2", "description": "d2", "module": "显示", "source_section": "5",
+                 "source_quote": "q2", "source_block_ids": ["BLK-1"], "labels": ["显示"]},
+            ]
+            with (out / "ai_requirements.jsonl").open("w", encoding="utf-8") as f:
+                for r in raw:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            rows = api_server.build_ai_requirements(out)
+            self.assertEqual(len(rows), 2)  # 读 raw（2 条），而非 merged（1 条）
+
     def test_ai_requirements_carry_id_anchor_and_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

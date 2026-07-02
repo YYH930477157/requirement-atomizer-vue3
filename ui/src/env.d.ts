@@ -24,6 +24,8 @@ declare global {
     applied?: number
     skipped?: number
     canceled?: boolean
+    rebuilt?: unknown
+    quality?: unknown
   }
 
   interface Window {

@@ -59,7 +59,10 @@ export type AiRequirement = Record<string, unknown> & {
   source_quote?: string
   source_block_ids?: string[]
   acceptance_criteria?: string[]
+  dev_guidance?: string[]
   labels?: string[]
+  suspicion_reasons?: string[]
+  self_check_added?: boolean
   review_state?: { status?: string; module_override?: string | null; reason?: string } | null
 }
 

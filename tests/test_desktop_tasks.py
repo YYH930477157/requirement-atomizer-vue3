@@ -319,6 +319,35 @@ class DesktopTaskTests(unittest.TestCase):
             self.assertEqual(states[rid]["status"], "accepted")
             self.assertEqual(states[rid]["module_override"], "计量精度")
 
+    def test_import_decisions_rebuilds_merged_spec(self) -> None:
+        """P0 裁决回流：导入裁决后交付物自动重建，rejected 不再出现在 merged_spec。"""
+        import desktop_tasks
+        import ai_review_actions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            req = {"title": "体积计量", "description": "应计量体积", "type": "functional",
+                   "priority": "P1", "module": "计量", "labels": ["计量"],
+                   "source_section": "4", "source_quote": "The meter shall measure volume.",
+                   "source_block_ids": ["B2"], "acceptance_criteria": [], "notes": "",
+                   "status": "draft", "dependencies": [], "parent": None, "children": []}
+            (out / "ai_requirements.jsonl").write_text(
+                json.dumps(req, ensure_ascii=False) + "\n", encoding="utf-8")
+            (out / "dlms_cosem_spec_requirements.json").write_text('{"requirements": []}', encoding="utf-8")
+            rid = ai_review_actions.ai_req_id(req)
+            (out / "dec.json").write_text(
+                json.dumps({"decisions": [{"ai_req_id": rid, "status": "rejected"}]}), encoding="utf-8")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                rc = desktop_tasks.main(["import-ai-decisions", "--out", str(out), "--file", str(out / "dec.json")])
+            self.assertEqual(rc, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["applied"], 1)
+            self.assertIn("rebuilt", payload)                          # 交付物已重建
+            merged = json.loads((out / "merged_spec_requirements.json").read_text(encoding="utf-8"))
+            self.assertEqual(merged["requirements"], [])               # rejected 已从交付物剔除
+
 
 if __name__ == "__main__":
     unittest.main()
