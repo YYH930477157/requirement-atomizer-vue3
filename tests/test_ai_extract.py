@@ -528,6 +528,8 @@ class SelfCheckTests(unittest.TestCase):
             self.assertFalse(ai_extract.resolve_self_check(None))
             os.environ[ai_extract.SELF_CHECK_ENV] = "off"
             self.assertFalse(ai_extract.resolve_self_check(None))
+            os.environ[ai_extract.SELF_CHECK_ENV] = ""
+            self.assertTrue(ai_extract.resolve_self_check(None))        # 空串≠关闭，回落默认
             self.assertTrue(ai_extract.resolve_self_check(True))        # 显式优先
             self.assertFalse(ai_extract.resolve_self_check(False))
         finally:
@@ -575,6 +577,60 @@ class SelfCheckTests(unittest.TestCase):
         reqs = ai_extract.extract_section(self._section(), chat, self_check=True)
         self.assertEqual(len(reqs), 1)                      # 自检失败不致命，保留初抽
         self.assertEqual(reqs[0]["title"], "A")
+
+    def test_self_check_keeps_description_only_item(self) -> None:
+        """自检补充项无引用无标题但有描述 → 键回退到描述，不再被静默丢弃。"""
+        calls = {"n": 0}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"requirements": []}
+            return {"requirements": [{"title": "", "description": "仅描述的补充项",
+                                      "type": "functional", "priority": "P2",
+                                      "labels": ["计量"], "source_quote": ""}]}
+
+        reqs = ai_extract.extract_section(self._section(), chat, self_check=True)
+        self.assertEqual(len(reqs), 1)
+        self.assertEqual(reqs[0]["description"], "仅描述的补充项")
+
+
+class ContextIntExemptionTests(unittest.TestCase):
+    """背景里的普通整数（如标准号）不软标为数字漂移；受保护编码不豁免。"""
+
+    def _section(self) -> dict:
+        return {"section_id": "S", "heading": "S",
+                "text": "The meter shall do A.", "block_ids": []}
+
+    def _chat_with(self, description: str):
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{"title": "T", "description": description,
+                                      "type": "functional", "priority": "P1",
+                                      "labels": ["计量"], "source_quote": "The meter shall do A."}]}
+        return chat
+
+    def test_standard_number_from_context_not_flagged(self) -> None:
+        ctx = "【文档背景】表计类型：gas；目标标准：EN 16314。"
+        reqs = ai_extract.extract_section(self._section(), self._chat_with("依据 EN 16314 做 A"),
+                                          doc_context=ctx)
+        self.assertNotIn("数字漂移", reqs[0]["notes"])       # 背景数字豁免
+        # 对照：无背景时同一数字仍软标
+        reqs2 = ai_extract.extract_section(self._section(), self._chat_with("依据 EN 16314 做 A"))
+        self.assertIn("数字漂移", reqs2[0]["notes"])
+
+    def test_context_number_not_in_context_still_flagged(self) -> None:
+        ctx = "【文档背景】表计类型：gas；目标标准：EN 16314。"
+        reqs = ai_extract.extract_section(self._section(), self._chat_with("保存 12345 条记录"),
+                                          doc_context=ctx)
+        self.assertIn("数字漂移", reqs[0]["notes"])          # 背景没有的数字照常软标
+
+    def test_protected_codes_not_exempted_by_context(self) -> None:
+        ctx = "【术语/定义】total register OBIS 1-0:1.8.0.255"   # 背景里出现的 OBIS
+        reqs = ai_extract.extract_section(self._section(),
+                                          self._chat_with("读取 OBIS 1-0:1.8.0.255"),
+                                          doc_context=ctx)
+        self.assertIn("结构漂移已拦截", reqs[0]["notes"])     # 编码严格：仍只认章节原文
+        self.assertEqual(reqs[0]["status"], "draft")
 
 
 if __name__ == "__main__":

@@ -323,6 +323,13 @@
                   <input v-model.number="llmSettings.concurrency" data-testid="settings-concurrency" type="number" min="1" max="16" step="1" title="AI 抽取同时调用 LLM 的章节数；端点限流(429)时调低到 1-2" />
                 </label>
               </div>
+              <label class="settings-toggle">
+                <input v-model="llmSettings.selfCheck" type="checkbox" data-testid="settings-self-check" />
+                <span>
+                  <strong>完整性自检</strong>
+                  <small>AI 抽取每章节后再查漏补缺一次，直击"不遗漏"；约 2× 调用成本，关闭可省。</small>
+                </span>
+              </label>
               <div class="settings-actions">
                 <button class="button primary" type="button" data-testid="settings-save" :disabled="isSavingSettings" @click="handleSaveLlmSettings">
                   {{ isSavingSettings ? "保存中" : "保存配置" }}
@@ -395,6 +402,7 @@ type LlmSettings = {
   timeoutS: number
   maxRetries: number
   concurrency: number
+  selfCheck: boolean
 }
 
 const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
@@ -430,6 +438,7 @@ const llmSettings = ref<LlmSettings>({
   timeoutS: 60,
   maxRetries: 3,
   concurrency: 4,
+  selfCheck: true,
 })
 const runProgress = ref(0)
 const runStage = ref("待运行")
@@ -669,6 +678,7 @@ function normalizeUiLlmSettings(payload: Partial<LlmSettings>): LlmSettings {
     timeoutS: numberOr(payload.timeoutS, 60),
     maxRetries: integerOr(payload.maxRetries, 3),
     concurrency: Math.max(1, Math.min(16, integerOr(payload.concurrency, 4))),
+    selfCheck: payload.selfCheck == null ? true : Boolean(payload.selfCheck),
   }
 }
 

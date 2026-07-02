@@ -44,6 +44,7 @@ declare global {
         timeoutS: number
         maxRetries: number
         concurrency: number
+        selfCheck: boolean
       } | null>
       saveLlmSettings: (input: {
         enabled: boolean
@@ -56,6 +57,7 @@ declare global {
         timeoutS: number
         maxRetries: number
         concurrency: number
+        selfCheck: boolean
       }) => Promise<{
         enabled: boolean
         baseUrl: string
@@ -66,6 +68,7 @@ declare global {
         timeoutS: number
         maxRetries: number
         concurrency: number
+        selfCheck: boolean
       }>
       testLlmConnection: (input: {
         enabled: boolean
@@ -78,6 +81,7 @@ declare global {
         timeoutS: number
         maxRetries: number
         concurrency: number
+        selfCheck: boolean
       }) => Promise<{ ok: boolean; message: string }>
       onTaskProgress: (handler: (event: { stage: string; completed?: number; total?: number; percent?: number; model?: string }) => void) => () => void
       runPipeline: (input: {

@@ -134,6 +134,7 @@ describe("review workspace shell", () => {
       timeoutS: 20,
       maxRetries: 0,
       concurrency: 2,
+      selfCheck: true,
     })
 
     await wrapper.find('[data-testid="settings-test"]').trigger("click")
@@ -148,6 +149,7 @@ describe("review workspace shell", () => {
       timeoutS: 20,
       maxRetries: 0,
       concurrency: 2,
+      selfCheck: true,
     })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="settings-status"]').text()).toContain("调用成功")
