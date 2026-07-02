@@ -753,7 +753,15 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("threshold_table", ai_extract.SYSTEM_PROMPT)
         self.assertIn("质量准则", ai_extract.SYSTEM_PROMPT)
         self.assertIn("示例", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v5")
+        self.assertIn("dev_guidance", ai_extract.SYSTEM_PROMPT)      # 研发落地指引
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v6")
+
+    def test_normalize_captures_dev_guidance(self) -> None:
+        sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}
+        r = ai_extract.normalize_requirement(
+            {"title": "X", "description": "d", "source_quote": "t",
+             "dev_guidance": ["实现环形存储", "  ", "提供读取接口"]}, sec)
+        self.assertEqual(r["dev_guidance"], ["实现环形存储", "提供读取接口"])  # 去空白项
 
     def test_quote_not_verbatim_flags_suspicion(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "The meter shall do A.", "block_ids": []}

@@ -48,7 +48,7 @@ MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v5"  # v5：threshold_table + 质量准则 + 少样本（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v6"  # v6：新增 dev_guidance 研发落地指引（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 DOC_CONTEXT_GLOSSARY_MAX = 1800   # 术语表注入上限（控 token 成本）
 DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
@@ -104,6 +104,8 @@ SYSTEM_PROMPT = (
     "labels（额外的细分标签，至少一个，可自由）、source_quote（原文逐字引用，不可改写）、"
     "source_section（该需求所属的章节号/标题，从文本里的小节标题判断）、"
     "acceptance_criteria（可测试的验收点数组）、"
+    "dev_guidance（**研发落地指引**数组：为满足本需求，研发要实现的具体功能/逻辑/数据结构/接口，"
+    "写\"做什么\"的可执行条目，不复述原文、不写空话）、"
     "threshold_table（**仅当原文含参数/门限/档位表**时输出 {\"columns\": [...], \"rows\": [[...]]}，"
     "数字逐格照抄原文，不重排不换算；原文无表格则省略此字段）。"
     "质量准则：description 必须自包含（研发不回原文即可实现：条件+动作+参数齐全）；"
@@ -114,6 +116,8 @@ SYSTEM_PROMPT = (
     "\"description\": \"电表须在本地存储不少于12个月的月结算记录，供结算追溯读取。\", "
     "\"type\": \"non_functional\", \"priority\": \"P1\", \"module\": \"结算\", \"labels\": [\"数据存储\"], "
     "\"source_quote\": \"The meter shall store at least 12 monthly billing records.\", "
+    "\"dev_guidance\": [\"实现月结算记录存储区，容量不少于12条，写满后新记录覆盖最旧记录\", "
+    "\"提供按月份读取历史结算记录的访问接口\"], "
     "\"acceptance_criteria\": [\"连续产生12个月结算记录后，最早一个月的记录仍可完整读出\"]}。"
     "若提供了【文档背景/章节大纲/术语定义】，据此保持术语一致、模块判断准确、解析跨章节引用；"
     "但这些背景仅供参考——需求内容与 source_quote 必须来自【当前章节】原文，不得从背景里搬运。"
@@ -344,6 +348,7 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         priority = "P2"
     labels = [str(x) for x in (raw.get("labels") or []) if str(x).strip()]
     acceptance = [str(x) for x in (raw.get("acceptance_criteria") or []) if str(x).strip()]
+    dev_guidance = [str(x) for x in (raw.get("dev_guidance") or []) if str(x).strip()]
     module = str(raw.get("module") or "").strip()  # LLM 受控分类，ensure_domain_labels 据此定首要领域
     return {
         "title": str(raw.get("title") or "").strip()[:80],
@@ -356,6 +361,7 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         "source_quote": str(raw.get("source_quote") or "").strip(),
         "threshold_table": raw.get("threshold_table") if isinstance(raw.get("threshold_table"), dict) else None,
         "acceptance_criteria": acceptance,
+        "dev_guidance": dev_guidance,
         "dependencies": [],
         "parent": None,
         "children": [],

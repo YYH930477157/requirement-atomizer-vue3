@@ -202,6 +202,10 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
 
           <div class="dd-section"><div class="dd-label">需求分析</div><div class="dd-body">{{ selectedReq.description }}</div></div>
+          <div class="dd-section" v-if="(selectedReq.dev_guidance || []).length">
+            <div class="dd-label">研发指引 / 落地实现</div>
+            <ul class="dd-list"><li v-for="(g, i) in selectedReq.dev_guidance" :key="i">{{ g }}</li></ul>
+          </div>
           <div class="dd-section" v-if="(selectedReq.acceptance_criteria || []).length">
             <div class="dd-label">测试指引 / 验收</div>
             <ul class="dd-list"><li v-for="(c, i) in selectedReq.acceptance_criteria" :key="i">{{ c }}</li></ul>

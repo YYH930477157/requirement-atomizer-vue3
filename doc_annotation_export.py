@@ -166,11 +166,13 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         f'<span class="annotation-dot"></span><span class="annotation-number">{i:02d}</span></button>'
         for i, r in enumerate(anchored, start=1)
     )
-    omission_tag = '<span class="omission-tag">未覆盖</span>' if is_omission else ""
+    chips_html = f'<div class="chips">{chips}</div>' if chips else ""
+    omission_html = ('<div class="omission-flag"><span class="omission-tag">未覆盖</span></div>'
+                     if is_omission else "")
     return (
         f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}" style="--depth:{depth}">'
         f'<div class="block-inner">'
-        f'<div class="chips">{chips}{omission_tag}</div>'
+        f'{chips_html}{omission_html}'
         f'<p class="text" data-block-id="{html.escape(bid)}">{html.escape(text)}</p>'
         f'</div></div>'
     )
@@ -305,12 +307,13 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
 .text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
 
-/* chips（inline 段末，Notion 式小标签） */
-.chips {{ display: inline-flex; gap: 5px; flex-wrap: wrap; margin: 0 0 0 -34px; vertical-align: middle;
-  min-width: 28px; float: left; }}
-.chip {{ display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 10px;
-  border: 0; border-left: 1px solid var(--line-strong); border-radius: 0; padding: 0 0 0 7px;
-  background: transparent; cursor: pointer; color: var(--accent-quiet); height: 20px; transition: color .12s, border-color .12s; }}
+/* chips（左侧留白垂直堆叠，Word 批注式编号，不侵入正文） */
+.chips {{ position: absolute; right: calc(100% + 12px); top: 4px; display: flex; flex-direction: column;
+  gap: 3px; align-items: flex-end; }}
+.chip {{ display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; font-size: 10px;
+  border: 0; border-right: 2px solid var(--line-strong); border-radius: 0; padding: 0 7px 0 0;
+  background: transparent; cursor: pointer; color: var(--accent-quiet); height: 18px;
+  transition: color .12s, border-color .12s; white-space: nowrap; }}
 .annotation-dot {{ width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .68; }}
 .annotation-number {{ font-variant-numeric: tabular-nums; letter-spacing: .04em; }}
 .chip:hover {{ color: var(--accent); border-color: var(--accent); }}
@@ -318,6 +321,7 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .chip.st-accepted {{ color: var(--st-accepted-tx); }}
 .chip.st-rejected {{ color: var(--st-rejected-tx); }}
 .chip.st-needs_discussion {{ color: var(--st-discussion-tx); }}
+.omission-flag {{ margin: 1px 0 2px; }}
 .omission-tag {{ font-size: 11px; color: var(--st-discussion-tx); background: rgba(248,239,217,.74);
   border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 8px; }}
 
@@ -481,6 +485,7 @@ function select(id) {{
   const d = decisionOf(id) || {{}};
   const st = statusOf(id);
   const acc = (r.acceptance_criteria||[]).map(c => "<li>" + esc(c) + "</li>").join("");
+  const dev = (r.dev_guidance||[]).map(c => "<li>" + esc(c) + "</li>").join("");
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
   document.getElementById("detail").innerHTML =
     '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">'+esc(moduleOf(r))+'</span>'+
@@ -489,6 +494,7 @@ function select(id) {{
     '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
     '<div class="dd-label">需求分析</div><div class="dd-body">'+esc(r.description)+'</div>'+
+    (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
     (r.source_quote ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(r.source_quote)+'</div>' : '')+
     '<div class="dd-label">模块（可改）</div><select id="mod-sel">'+opts+'</select>'+
