@@ -478,7 +478,16 @@ function highlightQuote() {{
   if (i >= 0) p.innerHTML = esc(t.slice(0,i)) + "<mark>" + esc(q) + "</mark>" + esc(t.slice(i+q.length));
 }}
 
+function deselect() {{
+  selected = null;
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
+  document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
+  document.getElementById("detail").innerHTML = '<div class="empty">点击批注标记查看详情</div>';
+}}
+
 function select(id) {{
+  if (selected === id) {{ deselect(); return; }}  // 再点一下 → 取消选中
   selected = id;
   document.querySelectorAll(".chip").forEach(c => c.classList.toggle("sel", c.getAttribute("data-req") === id));
   const r = byId[id]; if (!r) return;
@@ -504,7 +513,10 @@ function select(id) {{
     '<div class="saved-hint" id="hint"></div></div>';
   document.querySelectorAll(".actions button").forEach(b => b.onclick = () => decide(id, b.getAttribute("data-st")));
   document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
-  (r.source_block_ids||[]).forEach(bid => {{ const el = document.querySelector('.doc-block[data-block-id="'+bid+'"]'); if (el) el.classList.add("in-span"); }});
+  // 只高亮选中的片段（锚点小段变蓝，引用句在其中变黄）——不再把整个章节跨度刷蓝
+  const anchorBid = r.anchor_block_id || (r.source_block_ids||[])[0];
+  const anchorEl = anchorBid ? document.querySelector('.doc-block[data-block-id="'+anchorBid+'"]') : null;
+  if (anchorEl) anchorEl.classList.add("in-span");
   highlightQuote();
 }}
 
