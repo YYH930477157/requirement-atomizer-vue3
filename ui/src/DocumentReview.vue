@@ -74,7 +74,12 @@ const coveredBlocks = computed(() => {
 })
 
 const selectedReq = computed(() => requirements.value.find((r) => r.ai_req_id === selectedId.value) || null)
-const selectedSpan = computed(() => new Set(selectedReq.value?.source_block_ids || []))
+// 只高亮选中的片段（锚点小段），不把整个章节跨度刷蓝
+const selectedSpan = computed(() => {
+  const r = selectedReq.value
+  const anchor = r?.anchor_block_id || (r?.source_block_ids || [])[0]
+  return new Set(anchor ? [anchor] : [])
+})
 
 const omissionCount = computed(
   () => blocks.value.filter((b) => b.requirement_like && !b.noise && !coveredBlocks.value.has(b.block_id)).length,
@@ -100,6 +105,10 @@ function statusOf(r: AiRequirement): string {
 }
 
 function select(req: AiRequirement) {
+  if (selectedId.value === req.ai_req_id) {  // 再点一下 → 取消选中
+    selectedId.value = ""
+    return
+  }
   selectedId.value = req.ai_req_id
   comment.value = String(req.review_state?.reason || "")
   moduleEdit.value = moduleOf(req)

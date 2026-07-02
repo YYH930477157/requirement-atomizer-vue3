@@ -72,6 +72,40 @@ describe("DocumentReview", () => {
     )
   })
 
+  it("highlights only the anchor block and toggles deselect on second click", async () => {
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 3,
+        blocks: [
+          { block_id: "B1", order: 1, type: "paragraph", text: "The meter shall measure volume.",
+            section_path: ["4"], requirement_like: true, noise: false },
+          { block_id: "B2", order: 2, type: "paragraph", text: "Same section other paragraph.",
+            section_path: ["4"], requirement_like: false, noise: false },
+        ],
+      }),
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        { ai_req_id: "AIR-9", title: "T", description: "d", module: "计量", module_effective: "计量",
+          type: "functional", priority: "P1", status: "draft", source_section: "4",
+          source_quote: "The meter shall measure volume.",
+          source_block_ids: ["B1", "B2"], anchor_block_id: "B1",   // 跨度两块，锚点 B1
+          acceptance_criteria: [], labels: ["计量"], review_state: null },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="anno-AIR-9"]').trigger("click")
+    // 仅锚点块 in-span，跨度里的其它块不刷蓝
+    const inSpan = wrapper.findAll(".doc-block.in-span")
+    expect(inSpan.length).toBe(1)
+    expect(inSpan[0].text()).toContain("measure volume")
+
+    // 再点一下 → 取消选中：详情回空态、无 in-span
+    await wrapper.find('[data-testid="anno-AIR-9"]').trigger("click")
+    expect(wrapper.findAll(".doc-block.in-span").length).toBe(0)
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("点左侧")
+  })
+
   it("guides the user when not connected to an output dir", async () => {
     const wrapper = mount(DocumentReview, { props: { client: null, active: true } })
     await flushPromises()
