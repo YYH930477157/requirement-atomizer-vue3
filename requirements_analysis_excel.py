@@ -110,15 +110,17 @@ def _safe_sheet_title(value: str) -> str:
 
 def _unique_sheet_title(value: str, used_titles: set[str]) -> str:
     base = _safe_sheet_title(value)
-    if base not in used_titles:
-        used_titles.add(base)
+    title_key = base.casefold()
+    if title_key not in used_titles:
+        used_titles.add(title_key)
         return base
 
     index = 2
     while True:
         suffix = f"~{index}"
         title = f"{base[:31 - len(suffix)]}{suffix}"
-        if title not in used_titles:
-            used_titles.add(title)
+        title_key = title.casefold()
+        if title_key not in used_titles:
+            used_titles.add(title_key)
             return title
         index += 1
