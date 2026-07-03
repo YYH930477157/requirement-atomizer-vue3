@@ -52,7 +52,7 @@ def apply_ownership_override(item: dict[str, Any], state: Any) -> dict[str, Any]
     updated["ownership_source"] = "reviewer_override"
     updated["ownership_confidence"] = 1.0
 
-    if original_ownership != override_ownership:
+    if original_ownership and original_ownership != override_ownership:
         notes = updated.setdefault("notes", [])
         reason = _state_value(state, "reason")
         message = "规则或 LLM 判断被人工归属覆盖"

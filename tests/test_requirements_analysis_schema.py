@@ -50,6 +50,16 @@ def test_apply_ownership_override_accepts_attribute_state():
     assert updated["ownership_confidence"] == 1.0
 
 
+def test_apply_ownership_override_without_previous_ownership_does_not_add_override_note():
+    item = {"notes": []}
+    state = {"ownership_override": "software", "reason": "人工补充归属"}
+
+    updated = apply_ownership_override(item, state)
+
+    assert updated["ownership"] == "software"
+    assert updated["notes"] == []
+
+
 def test_build_analysis_id_is_stable_and_prefixed():
     assert build_analysis_id(1) == "ANREQ-000001"
     assert build_analysis_id(42) == "ANREQ-000042"
