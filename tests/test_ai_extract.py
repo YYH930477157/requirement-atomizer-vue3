@@ -682,6 +682,24 @@ class DecisionBackflowTests(unittest.TestCase):
             merged = json.loads((out / "merged_spec_requirements.json").read_text(encoding="utf-8"))
             self.assertEqual([r["title"] for r in merged["requirements"]], ["B"])
 
+    def test_rebuild_merged_spec_applies_decision_for_explicit_ai_req_id(self) -> None:
+        import ai_review_actions
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            reqs = [{**self._req("A", "quote A"), "ai_req_id": "AI-1"}, self._req("B", "quote B")]
+            with (out / "ai_requirements.jsonl").open("w", encoding="utf-8") as f:
+                for r in reqs:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            (out / "dlms_cosem_spec_requirements.json").write_text('{"requirements": []}', encoding="utf-8")
+            ai_review_actions.apply_ai_review_action(out, "AI-1", "rejected")
+
+            result = ai_extract.rebuild_merged_spec(out)
+
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["rejected_dropped"], 1)
+            merged = json.loads((out / "merged_spec_requirements.json").read_text(encoding="utf-8"))
+            self.assertEqual([r["title"] for r in merged["requirements"]], ["B"])
+
 
 class TargetedSelfCheckTests(unittest.TestCase):
     """P1：自检定向查漏——未覆盖 requirement_like 语句作焦点；全覆盖则跳过省调用。"""

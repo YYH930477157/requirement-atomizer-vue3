@@ -721,7 +721,7 @@ def apply_ai_decisions(out_dir: Path, ai_requirements: list[dict[str, Any]],
     dropped = 0
     kept: list[dict[str, Any]] = []
     for req in ai_requirements:
-        state = states.get(ai_req_id(req)) if states else None
+        state = states.get(_source_ai_requirement_id(req, ai_req_id)) if states else None
         if not state:
             kept.append(req)
             continue
@@ -744,6 +744,14 @@ def apply_ai_decisions(out_dir: Path, ai_requirements: list[dict[str, Any]],
         stats["decisions_applied"] = applied
         stats["rejected_dropped"] = dropped
     return kept
+
+
+def _source_ai_requirement_id(req: dict[str, Any], fallback_ai_req_id: Callable[[dict[str, Any]], str]) -> str:
+    for key in ("ai_req_id", "stable_req_id", "req_id"):
+        explicit_id = str(req.get(key) or "").strip()
+        if explicit_id:
+            return explicit_id
+    return fallback_ai_req_id(req)
 
 
 def build_merged_doc(out_dir: Path, ai_requirements: list[dict[str, Any]],
