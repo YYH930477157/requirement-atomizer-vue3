@@ -319,6 +319,29 @@ class DesktopTaskTests(unittest.TestCase):
             self.assertEqual(states[rid]["status"], "accepted")
             self.assertEqual(states[rid]["module_override"], "计量精度")
 
+    def test_import_ai_decisions_preserves_ownership_override(self) -> None:
+        import desktop_tasks
+        import ai_review_actions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            decisions_file = out / "decisions.json"
+            decisions_file.write_text(json.dumps({
+                "decisions": [{
+                    "ai_req_id": "AI-1",
+                    "status": "accepted",
+                    "module_override": "时钟需求",
+                    "ownership_override": "co_design",
+                    "reason": "硬件 RTC 依赖",
+                }]
+            }, ensure_ascii=False), encoding="utf-8")
+
+            result = desktop_tasks.import_ai_decisions_task(out, decisions_file)
+            states = ai_review_actions.read_ai_review_states(out)
+
+        self.assertEqual(result["applied"], 1)
+        self.assertEqual(states["AI-1"]["ownership_override"], "co_design")
+
     def test_import_decisions_rebuilds_merged_spec(self) -> None:
         """P0 裁决回流：导入裁决后交付物自动重建，rejected 不再出现在 merged_spec。"""
         import desktop_tasks

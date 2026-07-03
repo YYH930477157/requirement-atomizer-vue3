@@ -15,3 +15,12 @@ def test_ai_review_action_persists_ownership_override(tmp_path):
     assert state["ownership_override"] == "co_design"
     states = read_ai_review_states(tmp_path)
     assert states["AI-1"]["ownership_override"] == "co_design"
+
+
+def test_ai_review_action_rejects_invalid_ownership_override(tmp_path):
+    try:
+        apply_ai_review_action(tmp_path, "AI-1", "accepted", ownership_override="firmware")
+    except ValueError as exc:
+        assert "unknown ownership" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

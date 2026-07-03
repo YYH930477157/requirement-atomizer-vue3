@@ -184,6 +184,7 @@ def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, A
             ai_review_actions.apply_ai_review_action(
                 out_dir, rid, status,
                 module_override=(d.get("module_override") or None),
+                ownership_override=(d.get("ownership_override") or None),
                 reason=(d.get("reason") or ""), actor="html-import")
             applied += 1
         except ValueError:

@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from requirements_analysis_schema import normalize_ownership
+
 AI_REVIEW_STATES = "ai_review_states.jsonl"
 VALID_AI_STATUS = {"accepted", "rejected", "needs_discussion", "expert_pending", "draft"}
 
@@ -67,7 +69,8 @@ def apply_ai_review_action(
     if status not in VALID_AI_STATUS:
         raise ValueError(f"invalid status: {status}")
     module = str(module_override or "").strip() or None
-    ownership = str(ownership_override or "").strip() or None
+    ownership_text = str(ownership_override or "").strip()
+    ownership = normalize_ownership(ownership_text) if ownership_text else None
     state = {
         "ai_req_id": ai_req_id_value,
         "status": status,
