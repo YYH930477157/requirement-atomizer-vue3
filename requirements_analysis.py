@@ -77,20 +77,23 @@ def run_requirements_analysis(
 
 def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> dict[str, Any]:
     module = _module_or_unmapped(req, vocabulary)
-    ai_req_id = str(req.get("ai_req_id") or "").strip()
+    source_id = str(
+        req.get("ai_req_id") or req.get("stable_req_id") or req.get("req_id") or f"REQ-{index}"
+    ).strip()
     description = str(req.get("title") or req.get("description") or req.get("requirement") or "").strip()
     requirement_text = str(req.get("description") or req.get("requirement") or "").strip()
 
     return {
         "analysis_id": build_analysis_id(index),
-        "source_requirement_ids": [ai_req_id] if ai_req_id else [],
-        "source_block_ids": _as_list(req.get("source_block_ids")),
+        "source_kind": "ai_requirement",
+        "source_requirement_ids": [source_id],
+        "source_block_ids": [str(value) for value in _as_list(req.get("source_block_ids"))],
         "module": module,
         "submodule": str(req.get("module") or module),
         "template_match": "matched" if module in vocabulary.get("modules", []) else "unmapped",
         "description": description,
         "requirement": requirement_text,
-        "software_requirement_text": requirement_text,
+        "software_requirement_text": "",
         "developer_guidance": [],
         "hardware_dependency": "",
         "acceptance_criteria": [],
@@ -142,16 +145,16 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run requirements analysis agent.")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--route", default="stub")
+    parser.add_argument("--route", default="stub", choices=["stub", "openai_compatible"])
     parser.add_argument("--template", type=Path, default=None)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     result = run_requirements_analysis(args.out, route=args.route, template_path=args.template)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

@@ -41,3 +41,33 @@ def test_run_requirements_analysis_writes_json_and_reports(tmp_path: Path):
     by_id = {row["source_requirement_ids"][0]: row for row in payload["items"]}
     assert by_id["AI-2"]["ownership"] == "co_design"
     assert by_id["AI-2"]["ownership_source"] == "reviewer_override"
+
+
+def test_run_requirements_analysis_fills_base_item_contract(tmp_path: Path):
+    write_jsonl(tmp_path / "ai_requirements.jsonl", [
+        {
+            "stable_req_id": "STABLE-1",
+            "description": "The meter shall support this feature.",
+            "source_block_ids": [101],
+        }
+    ])
+
+    run_requirements_analysis(tmp_path, route="stub", template_path=None)
+
+    payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+    item = payload["items"][0]
+    assert item["source_kind"] == "ai_requirement"
+    assert item["source_requirement_ids"] == ["STABLE-1"]
+    assert item["source_block_ids"] == ["101"]
+    assert item["software_requirement_text"] == ""
+
+
+def test_parse_args_rejects_unknown_route():
+    from requirements_analysis import parse_args
+
+    try:
+        parse_args(["--out", ".", "--route", "bad"])
+    except SystemExit as exc:
+        assert exc.code != 0
+    else:
+        raise AssertionError("expected SystemExit")
