@@ -15,6 +15,7 @@ from export_requirements import export_requirements
 from llm_pipeline import read_jsonl, run_review_pipeline
 from requirement_kb.cli import default_kb_paths, package_root
 from requirements_analysis import run_requirements_analysis
+from requirements_analysis_schema import normalize_ownership
 from spec_export import export_spec
 
 
@@ -154,11 +155,14 @@ def requirements_analysis_task(
         route=route,
         template_path=resolve_template_path(template_path),
     )
+    # 只上报真实存在的产物（此前无条件列出 4 个文件，失败时载荷撒谎）
+    names = analysis.get("written") or REQUIREMENTS_ANALYSIS_OUTPUTS
+    written = [str(out_dir / name) for name in names if (out_dir / name).exists()]
     return {
         "kind": "requirements_analysis",
         "out_dir": str(out_dir),
         "analysis": analysis,
-        "written": [str(out_dir / name) for name in REQUIREMENTS_ANALYSIS_OUTPUTS],
+        "written": written,
         "summary": build_output_summary(out_dir),
     }
 
@@ -213,23 +217,34 @@ def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, A
     decisions = data.get("decisions") if isinstance(data, dict) else data
     applied = 0
     skipped = 0
+    ownership_skipped = 0
     for d in (decisions or []):
         rid = str((d or {}).get("ai_req_id") or "").strip()
         status = str((d or {}).get("status") or "").strip()
         if not rid or not status:
             skipped += 1
             continue
+        # 归属值单独校验：仅归属非法时丢归属、保留整行裁决（status/模块/意见不陪葬）
+        ownership = str(d.get("ownership_override") or "").strip() or None
+        if ownership:
+            try:
+                normalize_ownership(ownership)
+            except ValueError:
+                ownership = None
+                ownership_skipped += 1
         try:
             ai_review_actions.apply_ai_review_action(
                 out_dir, rid, status,
                 module_override=(d.get("module_override") or None),
-                ownership_override=(d.get("ownership_override") or None),
+                ownership_override=ownership,
                 reason=(d.get("reason") or ""), actor="html-import")
             applied += 1
         except ValueError:
             skipped += 1
     payload: dict[str, Any] = {"kind": "ai_decisions_import", "out_dir": str(out_dir),
                                "applied": applied, "skipped": skipped}
+    if ownership_skipped:
+        payload["ownership_skipped"] = ownership_skipped
     # 裁决回流交付物：导入后立即重建 merged_spec（免 LLM）
     if applied and (out_dir / "ai_requirements.jsonl").exists():
         rebuilt = ai_extract.rebuild_merged_spec(out_dir)

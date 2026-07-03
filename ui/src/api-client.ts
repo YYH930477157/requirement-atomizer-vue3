@@ -63,13 +63,16 @@ export type AiRequirement = Record<string, unknown> & {
   labels?: string[]
   suspicion_reasons?: string[]
   self_check_added?: boolean
-  review_state?: { status?: string; module_override?: string | null; reason?: string } | null
+  ownership?: string
+  ownership_effective?: string
+  review_state?: { status?: string; module_override?: string | null; ownership_override?: string | null; reason?: string } | null
 }
 
 export type AiReviewActionInput = {
   aiReqId: string
   status: ReviewStatus
   moduleOverride?: string
+  ownershipOverride?: string
   reason?: string
   actor?: string
 }
@@ -78,6 +81,7 @@ export type AiReviewStatePayload = {
   ai_req_id: string
   status: string
   module_override?: string | null
+  ownership_override?: string | null
   reason?: string
   actor?: string | null
 }
@@ -134,6 +138,7 @@ export class RequirementApiClient {
         ai_req_id: input.aiReqId,
         status: input.status,
         module_override: input.moduleOverride || "",
+        ownership_override: input.ownershipOverride || "",
         reason: input.reason || "",
         actor: input.actor || "",
       }),

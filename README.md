@@ -74,7 +74,7 @@ The desktop task bridge exposes the same step:
 python -m desktop_tasks requirements-analysis --out ".\out\run-001" --llm-route stub
 ```
 
-The accepted `--llm-route` values are `stub` and `openai_compatible`; the default is `stub`. The current analysis is primarily driven by rules, optional template vocabulary, and human review decisions, with `openai_compatible` available only when configured. Use `--quiet` or `--verbose` to adjust CLI logging. The generated files are written directly under `out`:
+The accepted `--llm-route` values are `stub` and `openai_compatible`; the default is `stub`. The current analysis is driven by rules, optional template vocabulary, and human review decisions. `openai_compatible` is **reserved**: the LLM analysis layer is not implemented yet, so requesting it degrades to the deterministic path and the output records `route: "stub"` together with `route_requested` (provenance is never falsified). Use `--quiet` or `--verbose` to adjust CLI logging. The generated files are written directly under `out`:
 
 ```text
 engineering_analysis.json

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
-from ai_review_actions import ai_req_id as stable_ai_req_id
+from ai_review_actions import read_ai_review_states, source_ai_requirement_id
 from io_utils import read_jsonl
 from requirements_analysis_excel import write_software_requirements_xlsx
 from requirements_analysis_rules import classify_ownership
@@ -19,7 +20,19 @@ from requirements_analysis_schema import (
 from requirements_analysis_template import extract_template_vocabulary
 
 
+LOGGER = logging.getLogger("requirement_atomizer")
+
 SCHEMA_VERSION = "requirements-analysis/v1"
+# 目前只有确定性分析层（规则+模板+裁决）；openai_compatible 是预留路由，请求它时
+# 如实降级运行并在输出里记录 route_requested——绝不把没跑过的 LLM 写成已跑（出处诚实）。
+EXECUTED_ROUTE = "stub"
+NOT_IMPLEMENTED_NOTE = "openai_compatible 尚未实现（LLM 分析层缺失），本次按规则/模板/裁决确定性运行"
+OUTPUT_FILES = [
+    "software_requirements.xlsx",
+    "engineering_analysis.json",
+    "hardware_items.md",
+    "co_design_items.md",
+]
 
 
 def run_requirements_analysis(
@@ -29,21 +42,39 @@ def run_requirements_analysis(
     template_path: Path | None = None,
 ) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
-    requirements = read_jsonl(out_dir / "ai_requirements.jsonl")
-    states = _states_by_ai_req_id(read_jsonl(out_dir / "ai_review_states.jsonl"))
+    source_path = out_dir / "ai_requirements.jsonl"
+    if not source_path.exists():
+        # 缺输入必须响亮失败：静默产出"0 条 0 问题"的空交付物会掩盖打错目录（仓库纪律）
+        raise FileNotFoundError(
+            f"ai_requirements.jsonl not found in {out_dir} — 请先运行「AI 抽取」再做需求分析")
+    requirements = read_jsonl(source_path)
+    # 容错读（坏行跳过）+ 最新覆盖，与裁决回流同一读取器——单条撕裂写不弄死整跑
+    states = read_ai_review_states(out_dir)
     vocabulary = extract_template_vocabulary(template_path)
+
+    note = ""
+    if route != EXECUTED_ROUTE:
+        note = NOT_IMPLEMENTED_NOTE
+        LOGGER.warning(note)
 
     items: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
     for req in requirements:
-        source_id = _source_requirement_id(len(items) + 1, req)
+        source_id = _source_requirement_id(req)
         state = states.get(source_id)
         if _is_rejected(state):
             continue
         reviewed_req = _apply_module_override(req, state)
         item = _base_item(len(items) + 1, reviewed_req, vocabulary)
         item.update(classify_ownership(reviewed_req))
-        item = apply_ownership_override(item, state)
+        try:
+            item = apply_ownership_override(item, state)
+        except ValueError as exc:  # 非法归属覆盖：单条降级记 issue，不整跑死（设计文档要求逐条继续）
+            issues.append({
+                "analysis_id": item.get("analysis_id"),
+                "source_requirement_ids": item.get("source_requirement_ids") or [],
+                "issues": [f"ownership_override 非法，已忽略: {exc}"],
+            })
 
         item_issues = validate_analysis_item(item)
         if item_issues:
@@ -56,10 +87,15 @@ def run_requirements_analysis(
 
     payload = {
         "schema_version": SCHEMA_VERSION,
-        "route": route,
+        "route": EXECUTED_ROUTE,        # 实际执行的路由（出处诚实）
+        "route_requested": route,
         "items": items,
         "issues": issues,
     }
+    if note:
+        payload["note"] = note
+    # xlsx 最先写（openpyxl 是最可能失败的一步）：失败时 JSON/MD 未动，不留半套新旧混杂的交付物
+    write_software_requirements_xlsx(items, out_dir / "software_requirements.xlsx")
     (out_dir / "engineering_analysis.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -74,18 +110,23 @@ def run_requirements_analysis(
         [item for item in items if item.get("ownership") == OWNERSHIP_CO_DESIGN],
         "Co-design Items",
     )
-    write_software_requirements_xlsx(items, out_dir / "software_requirements.xlsx")
 
-    return {
+    result = {
         "kind": "requirements_analysis",
         "analysis_count": len(items),
         "issues": len(issues),
+        "route": EXECUTED_ROUTE,
+        "route_requested": route,
+        "written": list(OUTPUT_FILES),
     }
+    if note:
+        result["note"] = note
+    return result
 
 
 def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> dict[str, Any]:
     module = _module_or_unmapped(req, vocabulary)
-    source_id = _source_requirement_id(index, req)
+    source_id = _source_requirement_id(req)
     description = str(req.get("title") or req.get("description") or req.get("requirement") or "").strip()
     requirement_text = str(req.get("description") or req.get("requirement") or "").strip()
 
@@ -110,12 +151,10 @@ def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> d
     }
 
 
-def _source_requirement_id(index: int, req: dict[str, Any]) -> str:
-    explicit_id = str(req.get("ai_req_id") or req.get("stable_req_id") or req.get("req_id") or "").strip()
-    if explicit_id:
-        return explicit_id
-    computed_id = str(stable_ai_req_id(req) or "").strip()
-    return computed_id or f"REQ-{index}"
+def _source_requirement_id(req: dict[str, Any]) -> str:
+    # 与裁决回流/批注视图共用同一主键函数（ai_review_actions.source_ai_requirement_id），
+    # 三处各写一份迟早分叉——这正是 io_utils 去重要防的问题。
+    return source_ai_requirement_id(req)
 
 
 def _is_rejected(state: dict[str, Any] | None) -> bool:
@@ -136,15 +175,6 @@ def _module_or_unmapped(req: dict[str, Any], vocabulary: dict[str, Any]) -> str:
     if module in vocabulary.get("modules", []):
         return module
     return module or "unmapped"
-
-
-def _states_by_ai_req_id(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    states: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        ai_req_id = str(row.get("ai_req_id") or "").strip()
-        if ai_req_id:
-            states[ai_req_id] = row
-    return states
 
 
 def _write_report(path: Path, rows: list[dict[str, Any]], title: str) -> None:
