@@ -35,11 +35,15 @@ def run_requirements_analysis(
 
     items: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
-    for index, req in enumerate(requirements, start=1):
-        source_id = _source_requirement_id(index, req)
-        item = _base_item(index, req, vocabulary)
-        item.update(classify_ownership(req))
-        item = apply_ownership_override(item, states.get(source_id))
+    for req in requirements:
+        source_id = _source_requirement_id(len(items) + 1, req)
+        state = states.get(source_id)
+        if _is_rejected(state):
+            continue
+        reviewed_req = _apply_module_override(req, state)
+        item = _base_item(len(items) + 1, reviewed_req, vocabulary)
+        item.update(classify_ownership(reviewed_req))
+        item = apply_ownership_override(item, state)
 
         item_issues = validate_analysis_item(item)
         if item_issues:
@@ -112,6 +116,19 @@ def _source_requirement_id(index: int, req: dict[str, Any]) -> str:
         return explicit_id
     computed_id = str(stable_ai_req_id(req) or "").strip()
     return computed_id or f"REQ-{index}"
+
+
+def _is_rejected(state: dict[str, Any] | None) -> bool:
+    return str((state or {}).get("status") or "").strip() == "rejected"
+
+
+def _apply_module_override(req: dict[str, Any], state: dict[str, Any] | None) -> dict[str, Any]:
+    module_override = str((state or {}).get("module_override") or "").strip()
+    if not module_override:
+        return req
+    reviewed_req = dict(req)
+    reviewed_req["module"] = module_override
+    return reviewed_req
 
 
 def _module_or_unmapped(req: dict[str, Any], vocabulary: dict[str, Any]) -> str:

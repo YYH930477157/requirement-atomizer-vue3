@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from openpyxl import Workbook
 from openpyxl import load_workbook
 
 import api_server
@@ -122,6 +123,81 @@ def test_api_review_id_matches_analysis_id_for_explicit_raw_ai_requirement(tmp_p
     assert item["source_requirement_ids"] == ["AI-1"]
     assert item["ownership"] == "hardware"
     assert item["ownership_source"] == "reviewer_override"
+
+
+def test_run_requirements_analysis_skips_rejected_review_states(tmp_path: Path):
+    write_jsonl(tmp_path / "ai_requirements.jsonl", [
+        {
+            "ai_req_id": "AI-1",
+            "description": "The meter shall support push notification.",
+            "source_quote": "support push notification",
+            "source_block_ids": ["B-1"],
+            "module": "push requirements",
+        },
+        {
+            "ai_req_id": "AI-2",
+            "description": "The meter shall support tariff display.",
+            "source_quote": "support tariff display",
+            "source_block_ids": ["B-2"],
+            "module": "display requirements",
+        },
+    ])
+    write_jsonl(tmp_path / "ai_review_states.jsonl", [
+        {"ai_req_id": "AI-1", "status": "rejected", "reason": "not a product requirement"}
+    ])
+
+    result = run_requirements_analysis(tmp_path, route="stub", template_path=None)
+
+    assert result["analysis_count"] == 1
+    payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+    source_ids = [row["source_requirement_ids"][0] for row in payload["items"]]
+    assert source_ids == ["AI-2"]
+
+    wb = load_workbook(tmp_path / "software_requirements.xlsx", data_only=True)
+    descriptions = [
+        str(row[3] or "")
+        for ws in wb.worksheets
+        for row in ws.iter_rows(min_row=2, values_only=True)
+        if any(row)
+    ]
+    assert not any("push notification" in value for value in descriptions)
+    assert any("tariff display" in value for value in descriptions)
+
+
+def test_run_requirements_analysis_applies_module_override_before_template_match(tmp_path: Path):
+    template = tmp_path / "template.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reviewed Module"
+    ws.append(["unused", "Submodule"])
+    ws.append(["", "Reviewed Module"])
+    wb.save(template)
+
+    write_jsonl(tmp_path / "ai_requirements.jsonl", [
+        {
+            "ai_req_id": "AI-1",
+            "description": "The meter shall support push notification.",
+            "source_quote": "support push notification",
+            "source_block_ids": ["B-1"],
+            "module": "Original Module",
+        }
+    ])
+    write_jsonl(tmp_path / "ai_review_states.jsonl", [
+        {"ai_req_id": "AI-1", "status": "accepted", "module_override": "Reviewed Module"}
+    ])
+
+    run_requirements_analysis(tmp_path, route="stub", template_path=template)
+
+    payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+    item = payload["items"][0]
+    assert item["module"] == "Reviewed Module"
+    assert item["submodule"] == "Reviewed Module"
+    assert item["template_match"] == "matched"
+
+    workbook = load_workbook(tmp_path / "software_requirements.xlsx", data_only=True)
+    assert "Reviewed Module" in workbook.sheetnames
+    rows = list(workbook["Reviewed Module"].iter_rows(min_row=2, values_only=True))
+    assert rows[0][2] == "Reviewed Module"
 
 
 def test_software_workbook_excludes_hardware_and_includes_codesign(tmp_path: Path):
