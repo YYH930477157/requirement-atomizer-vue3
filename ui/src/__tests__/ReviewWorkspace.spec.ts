@@ -1,11 +1,18 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import App from "../App.vue"
 
+const ALL_STAGES_OFF = JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false })
+
 describe("review workspace shell", () => {
+  beforeEach(() => {
+    // 默认「运行」只跑基础解析+审查，不追加交付物链——各测试按需在 mount 前开启对应阶段
+    localStorage.setItem("ratomizer.runStages", ALL_STAGES_OFF)
+  })
   afterEach(() => {
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, "ratomizerDesktop")
+    localStorage.clear()
   })
 
   it("renders the Phase 1 Chinese dashboard structure", () => {
@@ -321,7 +328,10 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="detail-title"]').text()).toContain("未选择需求")
   })
 
-  it("runs pipeline, exports requirements, and assembles spec through the desktop bridge", async () => {
+  it("runs pipeline then the enabled AI-extract stage as one chain from the Run button", async () => {
+    // 开启 AI 抽取阶段：点一次「运行」应先跑 runPipeline 再自动接 aiExtract
+    localStorage.setItem("ratomizer.runStages",
+      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
@@ -386,107 +396,110 @@ describe("review workspace shell", () => {
         domainPackDir: "domain_packs/dlms_cosem",
       })
     })
+    // 单次 Run 自动接上 AI 抽取阶段（LLM 关 → stub）
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt",
+        llmRoute: "stub",
+      })
+    })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="row-SREQ-RUN-1"]').exists()).toBe(true)
     })
     expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
-
-    await wrapper.find('[data-testid="action-ai-extract"]').trigger("click")
-    expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
-      outDir: "E:\\out\\abnt",
-      llmRoute: "stub",
-    })
-    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("2")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("AI 抽取")
     expect(fetchMock).toHaveBeenCalled()
   })
 
-  it("runs the three terminal deliverables from their toolbar buttons", async () => {
-    Object.defineProperty(window, "ratomizerDesktop", {
-      configurable: true,
-      value: {
-        getApiSession: vi.fn().mockResolvedValue(null),
-        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
-        openOutput: vi.fn(),
-        openPath: vi.fn(),
-        assembleSpec: vi.fn().mockResolvedValue({
-          kind: "assemble", count: 42,
-          written: ["assembled_spec.json", "dlms_cosem_spec.xlsx"], summary: {},
-        }),
-        runRequirementsAnalysis: vi.fn().mockResolvedValue({
-          kind: "requirements_analysis",
-          analysis: { analysis_count: 30, route: "stub", enriched: 0, enrich_degraded: 0 },
-          written: ["software_requirements.xlsx", "engineering_analysis.json"], summary: {},
-        }),
-        composeEngineering: vi.fn().mockResolvedValue({
-          kind: "compose", count: 12,
-          written: ["engineering_requirements/engineering_requirements.json"], summary: {},
-        }),
-      },
-    })
+  function deliverableBridge(overrides: Record<string, unknown> = {}) {
+    return {
+      getApiSession: vi.fn().mockResolvedValue(null),
+      openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+      selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+      openOutput: vi.fn(),
+      openPath: vi.fn(),
+      startApiSession: vi.fn().mockResolvedValue({
+        baseUrl: "http://127.0.0.1:8770", token: "local-token", outputDir: "E:\\out\\abnt",
+      }),
+      runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt", summary: {} }),
+      aiExtract: vi.fn().mockResolvedValue({ kind: "ai_extract", count: 2, merged: {}, written: ["merged_spec.xlsx"], summary: {} }),
+      assembleSpec: vi.fn().mockResolvedValue({
+        kind: "assemble", count: 42, written: ["assembled_spec.json", "dlms_cosem_spec.xlsx"], summary: {},
+      }),
+      runRequirementsAnalysis: vi.fn().mockResolvedValue({
+        kind: "requirements_analysis",
+        analysis: { analysis_count: 30, route: "stub", enriched: 0, enrich_degraded: 0 },
+        written: ["software_requirements.xlsx", "engineering_analysis.json"], summary: {},
+      }),
+      composeEngineering: vi.fn().mockResolvedValue({
+        kind: "compose", count: 12, written: ["engineering_requirements/engineering_requirements.json"], summary: {},
+      }),
+      ...overrides,
+    }
+  }
+
+  it("runs all four enabled deliverable stages as one Run chain", async () => {
+    localStorage.setItem("ratomizer.runStages",
+      JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: true }))
+    Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
 
     const wrapper = mount(App)
-    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
-    await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.selectOutputDir).toHaveBeenCalled())
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
-    // 装配：LLM 关 → enrichRoute 空；打开主产物 xlsx
-    await wrapper.find('[data-testid="action-assemble"]').trigger("click")
+    // 一次 Run 依次接上四个阶段（LLM 关 → stub / 空富化）
     await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({
-        outDir: "E:\\out\\abnt", enrichRoute: "",
-      }))
-    expect(window.ratomizerDesktop?.openPath).toHaveBeenCalledWith("dlms_cosem_spec.xlsx")
-
-    // 软件需求分析：LLM 关 → llmRoute stub
-    await wrapper.find('[data-testid="action-analyze"]').trigger("click")
+      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", llmRoute: "stub" }))
+    expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", enrichRoute: "" })
+    expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", llmRoute: "stub" })
+    expect(window.ratomizerDesktop?.composeEngineering).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt" })
     await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({
-        outDir: "E:\\out\\abnt", llmRoute: "stub",
-      }))
-    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("30")
-
-    // 组装工程需求：无 LLM 参数
-    await wrapper.find('[data-testid="action-compose"]').trigger("click")
-    await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.composeEngineering).toHaveBeenCalledWith({
-        outDir: "E:\\out\\abnt",
-      }))
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
   })
 
-  it("switches deliverable LLM routes when the LLM toggle is on", async () => {
+  it("disabled stages are skipped in the Run chain", async () => {
+    localStorage.setItem("ratomizer.runStages",
+      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false }))
+    Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+
+    await vi.waitFor(() => expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalled())
+    expect(window.ratomizerDesktop?.assembleSpec).not.toHaveBeenCalled()
+    expect(window.ratomizerDesktop?.runRequirementsAnalysis).not.toHaveBeenCalled()
+    expect(window.ratomizerDesktop?.composeEngineering).not.toHaveBeenCalled()
+  })
+
+  it("chain stages use openai_compatible routes when the LLM toggle is on", async () => {
+    localStorage.setItem("ratomizer.runStages",
+      JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
-      value: {
-        getApiSession: vi.fn().mockResolvedValue(null),
-        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
-        openOutput: vi.fn(),
-        openPath: vi.fn(),
-        assembleSpec: vi.fn().mockResolvedValue({ kind: "assemble", count: 1, written: ["a.xlsx"], summary: {} }),
+      value: deliverableBridge({
         runRequirementsAnalysis: vi.fn().mockResolvedValue({
           kind: "requirements_analysis",
           analysis: { analysis_count: 1, route: "openai_compatible", enriched: 1, enrich_degraded: 0 },
           written: ["software_requirements.xlsx"], summary: {},
         }),
-      },
+      }),
     })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
 
     const wrapper = mount(App)
-    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
-    await vi.waitFor(() => expect(window.ratomizerDesktop?.selectOutputDir).toHaveBeenCalled())
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
     await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
-    await wrapper.find('[data-testid="action-assemble"]').trigger("click")
     await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({
-        outDir: "E:\\out\\abnt", enrichRoute: "openai_compatible",
-      }))
-
-    await wrapper.find('[data-testid="action-analyze"]').trigger("click")
+      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", llmRoute: "openai_compatible" }))
+    expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", enrichRoute: "openai_compatible" })
+    expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", llmRoute: "openai_compatible" })
     await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({
-        outDir: "E:\\out\\abnt", llmRoute: "openai_compatible",
-      }))
-    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("富化")
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
   })
 
   it("runs a limited LLM test pass from the test button", async () => {
@@ -706,7 +719,9 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="api-message"]').text()).not.toContain("抽取与审查完成")
   })
 
-  it("passes the LLM enrichment route when assembling with LLM mode enabled", async () => {
+  it("passes the LLM enrichment route to the AI-extract stage when LLM mode is on", async () => {
+    localStorage.setItem("ratomizer.runStages",
+      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
@@ -730,17 +745,14 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
-    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
-    await vi.waitFor(() => {
-      expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalled()
-    })
-
     await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
-    await wrapper.find('[data-testid="action-ai-extract"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
-    expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
-      outDir: "E:\\out\\abnt",
-      llmRoute: "openai_compatible",
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt",
+        llmRoute: "openai_compatible",
+      })
     })
   })
 
