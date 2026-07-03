@@ -116,6 +116,23 @@ ipcMain.handle("task:ai-extract", async (_event, input) => runDesktopTaskProcess
   ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
 ]));
 
+ipcMain.handle("task:assemble", async (_event, input) => runDesktopTaskProcess([
+  "assemble",
+  "--out",
+  input.outDir,
+  ...(input.enrichRoute ? ["--enrich-route", input.enrichRoute] : []),
+]));
+
+ipcMain.handle("task:compose", async (_event, input) =>
+  runDesktopTaskProcess(["compose", "--out", input.outDir]));
+
+ipcMain.handle("task:requirements-analysis", async (_event, input) => runDesktopTaskProcess([
+  "requirements-analysis",
+  "--out",
+  input.outDir,
+  ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
+]));
+
 ipcMain.handle("task:export-annotation-html", async (_event, input) =>
   runDesktopTaskProcess(["export-annotation-html", "--out", input.outDir]));
 

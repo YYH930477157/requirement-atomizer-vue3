@@ -39,6 +39,9 @@
               <span>LLM</span>
             </label>
             <button class="button primary" type="button" data-testid="action-ai-extract" :disabled="isRunning" @click="handleAiExtract">AI 抽取（双引擎）</button>
+            <button class="button" type="button" data-testid="action-assemble" :disabled="isRunning" @click="handleAssemble">装配实现规格</button>
+            <button class="button" type="button" data-testid="action-analyze" :disabled="isRunning" @click="handleRequirementsAnalysis">软件需求分析</button>
+            <button class="button" type="button" data-testid="action-compose" :disabled="isRunning" @click="handleCompose">组装工程需求</button>
             <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-export-html" @click="handleExportAnnotationHtml">导出批注HTML</button>
             <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-import-decisions" @click="handleImportDecisions">导入裁决</button>
           </div>
@@ -973,6 +976,109 @@ async function handleAiExtract() {
     stopProgress?.()
     isRunning.value = false
   }
+}
+
+// 三个终点交付物（装配/需求分析/组装）共用的运行外壳：守卫 + 进度 + 结果消息 + 打开产物。
+async function runDeliverable(opts: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 三个 bridge 各有具体入参形状，此处统一收口
+  bridge?: (input: any) => Promise<RequirementAtomizerTaskPayload>
+  input: Record<string, unknown>
+  stage: string
+  startDetail: string
+  notSupported: string
+  buildMessage: (payload: RequirementAtomizerTaskPayload, written: string[]) => string
+}) {
+  if (isRunning.value) return
+  if (!opts.bridge) {
+    apiMessage.value = opts.notSupported
+    return
+  }
+  if (!currentOutputDir.value) {
+    runStage.value = `无法${opts.stage}`
+    runProgressDetail.value = "请先「运行」管线 + AI 抽取生成输出目录"
+    apiMessage.value = "请先运行管线 + AI 抽取生成输出目录，再执行此操作"
+    return
+  }
+  isRunning.value = true
+  runStage.value = opts.stage
+  runProgress.value = 30
+  runProgressDetail.value = opts.startDetail
+  try {
+    const payload = await opts.bridge({ outDir: currentOutputDir.value, ...opts.input })
+    latestTaskSummary.value = objectValue(payload.summary)
+    const written = Array.isArray(payload.written) ? (payload.written as string[]) : []
+    runProgress.value = 100
+    if (written.length === 0) {
+      runStage.value = `${opts.stage}未产出文件`
+      runProgressDetail.value = "未写出任何交付物——请确认输出目录已先运行管线 + AI 抽取"
+      apiMessage.value = `${opts.stage}未写出文件：请确认已先运行管线 + AI 抽取`
+      return
+    }
+    runStage.value = `${opts.stage}完成`
+    runProgressDetail.value = `已写出 ${written.length} 个文件：${written.join("、")}`
+    apiMessage.value = opts.buildMessage(payload, written)
+    // 打开主产物（优先 xlsx），方便直接查看交付物
+    const primary = written.find((path) => path.toLowerCase().endsWith(".xlsx")) || written[0]
+    if (primary) await window.ratomizerDesktop?.openPath?.(primary)
+  } catch (error) {
+    runStage.value = `${opts.stage}失败`
+    const message = error instanceof Error ? error.message : `${opts.stage}失败`
+    runProgressDetail.value = message
+    apiMessage.value = message
+  } finally {
+    isRunning.value = false
+  }
+}
+
+async function handleAssemble() {
+  await runDeliverable({
+    bridge: window.ratomizerDesktop?.assembleSpec,
+    input: { enrichRoute: llmMode.value ? "openai_compatible" : "" },
+    stage: "装配实现规格",
+    startDetail: llmMode.value
+      ? "装配 DLMS/COSEM 实现规格 + LLM 富化描述（结构字段冻结）…"
+      : "装配确定性实现规格（未启用 LLM 富化）…",
+    notSupported: "当前环境不支持装配（仅桌面应用可用）",
+    buildMessage: (payload, written) =>
+      `装配实现规格完成：共 ${Number(payload.count ?? 0)} 条需求，已产 ${written.join("、")}`,
+  })
+}
+
+async function handleRequirementsAnalysis() {
+  await runDeliverable({
+    bridge: window.ratomizerDesktop?.runRequirementsAnalysis,
+    input: { llmRoute: llmMode.value ? "openai_compatible" : "stub" },
+    stage: "软件需求分析",
+    startDetail: llmMode.value
+      ? "归属分类 + LLM 推导可研发软件需求（编造结构编码即拒绝）…"
+      : "归属分类（未启用 LLM 富化，软件需求正文留空）…",
+    notSupported: "当前环境不支持需求分析（仅桌面应用可用）",
+    buildMessage: (payload, written) => {
+      const analysis = objectValue(payload.analysis) as
+        | { analysis_count?: number; route?: string; enriched?: number; enrich_degraded?: number }
+        | null
+      const count = Number(analysis?.analysis_count ?? 0)
+      const enriched = Number(analysis?.enriched ?? 0)
+      const degraded = Number(analysis?.enrich_degraded ?? 0)
+      const note =
+        analysis?.route === "openai_compatible"
+          ? `，LLM 富化 ${enriched} 条${degraded ? `（降级 ${degraded}）` : ""}`
+          : "（确定性归属，未富化）"
+      return `软件需求分析完成：${count} 条${note}，已产 ${written.join("、")}`
+    },
+  })
+}
+
+async function handleCompose() {
+  await runDeliverable({
+    bridge: window.ratomizerDesktop?.composeEngineering,
+    input: {},
+    stage: "组装工程需求",
+    startDetail: "把原子需求重组为需求功能 + DLMS 对象两段…",
+    notSupported: "当前环境不支持组装（仅桌面应用可用）",
+    buildMessage: (payload, written) =>
+      `组装工程需求完成：${Number(payload.count ?? 0)} 条需求功能，已产 ${written.join("、")}`,
+  })
 }
 
 async function handleExportAnnotationHtml() {
