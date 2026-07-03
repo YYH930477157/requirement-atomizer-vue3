@@ -12,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from openpyxl import Workbook
+
 from tests.docx_fixtures import write_minimal_docx
 
 
@@ -173,6 +175,9 @@ class CliContractTests(unittest.TestCase):
             out_dir = tmp_path / "out"
             out_dir.mkdir()
             template_path = tmp_path / "template.xlsx"
+            wb = Workbook()
+            wb.active.title = "push requirements"
+            wb.save(template_path)
             row = {
                 "ai_req_id": "AI-1",
                 "description": "The meter shall support push notifications.",
@@ -205,6 +210,36 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(envelope["analysis"]["analysis_count"], 1)
         self.assertTrue(engineering_exists)
         self.assertTrue(workbook_exists)
+
+    def test_analyze_rejects_missing_explicit_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            missing_template = tmp_path / "missing-template.xlsx"
+            (out_dir / "ai_requirements.jsonl").write_text(
+                json.dumps({
+                    "ai_req_id": "AI-1",
+                    "description": "The meter shall support push notifications.",
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            result = self.run_cli(
+                "analyze",
+                "--out",
+                str(out_dir),
+                "--template",
+                str(missing_template),
+                "--quiet",
+            )
+
+        self.assertEqual(result.returncode, 2)
+        envelope = json.loads(result.stdout)
+        self.assertFalse(envelope["ok"])
+        self.assertEqual(envelope["error"]["type"], "input_error")
+        self.assertIn("Template file does not exist", envelope["error"]["message"])
+        self.assertFalse((out_dir / "engineering_analysis.json").exists())
 
     def test_run_full_pipeline_works_from_non_repo_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

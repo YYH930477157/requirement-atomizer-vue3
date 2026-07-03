@@ -149,7 +149,11 @@ def requirements_analysis_task(
     template_path: Path | None = None,
 ) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
-    analysis = run_requirements_analysis(out_dir, route=route, template_path=template_path)
+    analysis = run_requirements_analysis(
+        out_dir,
+        route=route,
+        template_path=resolve_template_path(template_path),
+    )
     return {
         "kind": "requirements_analysis",
         "out_dir": str(out_dir),
@@ -157,6 +161,17 @@ def requirements_analysis_task(
         "written": [str(out_dir / name) for name in REQUIREMENTS_ANALYSIS_OUTPUTS],
         "summary": build_output_summary(out_dir),
     }
+
+
+def resolve_template_path(template_path: Path | None) -> Path | None:
+    if template_path is None:
+        return None
+    path = Path(template_path).expanduser()
+    if not path.is_absolute() and not path.exists():
+        path = resolve_bundled_path(path) or path
+    if not path.exists():
+        raise FileNotFoundError(f"Template file does not exist: {path}")
+    return path.resolve()
 
 
 def ai_extract_task(out_dir: Path, *, route: str | None) -> dict[str, Any]:

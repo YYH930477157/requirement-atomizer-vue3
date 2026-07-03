@@ -251,6 +251,7 @@ class DesktopTaskTests(unittest.TestCase):
             out_dir = Path(tmp) / "out"
             template = Path(tmp) / "template.xlsx"
             out_dir.mkdir()
+            template.write_bytes(b"placeholder")
             with patch("desktop_tasks.run_requirements_analysis") as run_analysis:
                 run_analysis.return_value = {"kind": "requirements_analysis", "analysis_count": 1, "issues": 0}
 
@@ -269,6 +270,19 @@ class DesktopTaskTests(unittest.TestCase):
             ],
         )
         self.assertEqual(payload["summary"]["counts"]["requirements"], 0)
+
+    def test_requirements_analysis_task_rejects_missing_explicit_template(self) -> None:
+        from desktop_tasks import requirements_analysis_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            out_dir.mkdir()
+            missing_template = Path(tmp) / "missing-template.xlsx"
+
+            with self.assertRaises(FileNotFoundError) as ctx:
+                requirements_analysis_task(out_dir, route="stub", template_path=missing_template)
+
+        self.assertIn("Template file does not exist", str(ctx.exception))
 
     def test_main_requirements_analysis_command_dispatches(self) -> None:
         import desktop_tasks

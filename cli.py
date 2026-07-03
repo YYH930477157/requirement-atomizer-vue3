@@ -245,12 +245,25 @@ def command_compose(args: argparse.Namespace, started: float, timing_ms: dict[st
 
 
 def command_analyze(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
-    analysis = run_requirements_analysis(args.out, route=args.llm_route, template_path=args.template)
+    analysis = run_requirements_analysis(
+        args.out,
+        route=args.llm_route,
+        template_path=resolve_explicit_template_path(args.template),
+    )
     timing_ms["analyze"] = elapsed_ms(started)
     timing_ms["total"] = timing_ms["analyze"]
     envelope = success_envelope("analyze", args.out, timing_ms=timing_ms)
     envelope["analysis"] = analysis
     return envelope
+
+
+def resolve_explicit_template_path(template_path: Path | None) -> Path | None:
+    if template_path is None:
+        return None
+    path = template_path.expanduser()
+    if not path.exists():
+        raise AtomizerInputError(f"Template file does not exist: {path}")
+    return path.resolve()
 
 
 def success_envelope(
