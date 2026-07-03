@@ -403,6 +403,10 @@ function saveStore(s) {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); r
 function decisionOf(id) {{ return loadStore()[id] || null; }}
 function statusOf(id) {{ const d = decisionOf(id); return (d && d.status) || (byId[id] && byId[id].status) || "draft"; }}
 function moduleOf(r) {{ const d = decisionOf(r.ai_req_id); return (d && d.module_override) || r.module_effective || r.module || (r.labels||[])[0] || "未分模块"; }}
+function ownershipOf(r) {{
+  const d = decisionOf(r.ai_req_id);
+  return (d && d.ownership_override) || r.ownership_effective || r.ownership || "software";
+}}
 
 function refreshDecidedCount() {{ document.getElementById("decided-count").textContent = String(Object.keys(loadStore()).length); }}
 function esc(s) {{ const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }}
@@ -496,6 +500,11 @@ function select(id) {{
   const acc = (r.acceptance_criteria||[]).map(c => "<li>" + esc(c) + "</li>").join("");
   const dev = (r.dev_guidance||[]).map(c => "<li>" + esc(c) + "</li>").join("");
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
+  const ownershipOptions = [
+    ["software", "软件"],
+    ["hardware", "硬件"],
+    ["co_design", "软硬件协同"],
+  ].map(([value, label]) => '<option value="'+value+'"'+(value===ownershipOf(r)?' selected':'')+'>'+label+'</option>').join("");
   document.getElementById("detail").innerHTML =
     '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">'+esc(moduleOf(r))+'</span>'+
     '<span class="badge st-'+st+'">'+esc(STATUS_LABELS[st]||st)+'</span></div>'+
@@ -507,6 +516,7 @@ function select(id) {{
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
     (r.source_quote ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(r.source_quote)+'</div>' : '')+
     '<div class="dd-label">模块（可改）</div><select id="mod-sel">'+opts+'</select>'+
+    '<div class="dd-section"><div class="dd-label">归属（可改）</div><select id="own-sel" class="dd-select">'+ownershipOptions+'</select></div>'+
     '<textarea id="cmt" placeholder="审查意见（可选）">'+esc(d.reason||"")+'</textarea>'+
     '<div class="actions"><button class="accept" data-st="accepted">接受</button>'+
     '<button data-st="rejected">拒绝</button><button data-st="needs_discussion">讨论</button></div>'+
@@ -524,6 +534,7 @@ function decide(id, status) {{
   const store = loadStore();
   store[id] = {{ ai_req_id: id, status: status,
     module_override: document.getElementById("mod-sel").value !== (byId[id].module_effective||byId[id].module||"") ? document.getElementById("mod-sel").value : "",
+    ownership_override: document.getElementById("own-sel").value,
     reason: document.getElementById("cmt").value, ts: GENERATED_AT }};
   saveStore(store); paintChips();
   const h = document.getElementById("hint"); if (h) h.textContent = "已" + (STATUS_LABELS[status]||status) + "（本地已存）";

@@ -160,6 +160,26 @@ class AiRequirementsEndpointTests(unittest.TestCase):
             self.assertEqual(rows2[0]["status"], "accepted")
             self.assertEqual(rows2[0]["module_effective"], "计量精度")
 
+    def test_ai_requirements_use_ownership_override_as_effective_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            rows = api_server.build_ai_requirements(out)
+            rid = rows[0]["ai_req_id"]
+            with (out / "ai_review_states.jsonl").open("w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ai_req_id": rid,
+                    "status": "accepted",
+                    "module_override": None,
+                    "ownership_override": "hardware",
+                    "reason": "",
+                    "actor": "tester",
+                }, ensure_ascii=False) + "\n")
+
+            rows2 = api_server.build_ai_requirements(out)
+
+            self.assertEqual(rows2[0]["ownership_effective"], "hardware")
+
 
 if __name__ == "__main__":
     unittest.main()

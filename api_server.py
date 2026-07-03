@@ -148,6 +148,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         req_id = str(payload.get("ai_req_id") or "").strip()
         status = str(payload.get("status") or "").strip()
         module_override = str(payload.get("module_override") or "").strip() or None
+        ownership_override = str(payload.get("ownership_override") or "").strip() or None
         reason = str(payload.get("reason") or "").strip()
         actor = str(payload.get("actor") or "").strip() or None
         if not req_id or not status:
@@ -155,7 +156,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         try:
             state = apply_ai_review_action(self.output_dir, req_id, status,
-                                           module_override=module_override, reason=reason, actor=actor)
+                                           module_override=module_override,
+                                           ownership_override=ownership_override,
+                                           reason=reason, actor=actor)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=409)
             return
@@ -327,6 +330,8 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
             row["module_effective"] = state["module_override"]
         else:
             row["module_effective"] = req.get("module") or (req.get("labels") or [None])[0]
+        if state and state.get("ownership_override"):
+            row["ownership_effective"] = state["ownership_override"]
         row["status"] = (state or {}).get("status") or "draft"
         enriched.append(row)
     return enriched

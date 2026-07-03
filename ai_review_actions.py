@@ -55,6 +55,7 @@ def apply_ai_review_action(
     status: str,
     *,
     module_override: str | None = None,
+    ownership_override: str | None = None,
     reason: str = "",
     actor: str | None = None,
 ) -> dict[str, Any]:
@@ -66,10 +67,12 @@ def apply_ai_review_action(
     if status not in VALID_AI_STATUS:
         raise ValueError(f"invalid status: {status}")
     module = str(module_override or "").strip() or None
+    ownership = str(ownership_override or "").strip() or None
     state = {
         "ai_req_id": ai_req_id_value,
         "status": status,
         "module_override": module,
+        "ownership_override": ownership,
         "reason": str(reason or ""),
         "actor": actor,
     }

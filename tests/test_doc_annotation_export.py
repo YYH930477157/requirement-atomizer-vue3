@@ -165,6 +165,16 @@ class DocAnnotationExportTests(unittest.TestCase):
             self.assertIn("doc-block heading h1", rendered)
             self.assertIn("doc-block heading h2", rendered)
 
+    def test_annotation_html_includes_ownership_review_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn("function ownershipOf", rendered)
+            self.assertIn('id="own-sel"', rendered)
+            self.assertIn("ownership_override", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
