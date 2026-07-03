@@ -29,10 +29,11 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any]) -> list[str]
         str(item.get(field, ""))
         for field in ("requirement", "software_requirement_text", "hardware_dependency", "ownership_reason")
     )
+    analysis_numbers = set(_numbers(analysis_text))
 
     issues = []
     for number in _numbers(source_text):
-        if number not in analysis_text:
+        if number not in analysis_numbers:
             issues.append(f"source number {number} missing from analysis text")
     return issues
 
