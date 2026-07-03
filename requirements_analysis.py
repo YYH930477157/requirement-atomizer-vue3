@@ -7,6 +7,7 @@ from typing import Any
 
 from ai_review_actions import ai_req_id as stable_ai_req_id
 from io_utils import read_jsonl
+from requirements_analysis_excel import write_software_requirements_xlsx
 from requirements_analysis_rules import classify_ownership
 from requirements_analysis_schema import (
     OWNERSHIP_CO_DESIGN,
@@ -69,6 +70,7 @@ def run_requirements_analysis(
         [item for item in items if item.get("ownership") == OWNERSHIP_CO_DESIGN],
         "Co-design Items",
     )
+    write_software_requirements_xlsx(items, out_dir / "software_requirements.xlsx")
 
     return {
         "kind": "requirements_analysis",
