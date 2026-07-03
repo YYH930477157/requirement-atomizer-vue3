@@ -411,8 +411,33 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert item["software_requirement_text"] == ""      # 未被污染
             assert item["developer_guidance"] == []
             assert item["analysis_source"] == "deterministic"
-            assert any("编造结构数据" in msg
+            assert any("编造结构编码" in msg
                        for row in payload["issues"] for msg in row["issues"])
+
+    def test_fabricated_plain_integer_is_soft_not_rejected(self) -> None:
+        """散文里的序号/步骤数（如"1. 2. 3."）非结构编码 → 软标记、保留富化（与 ai_extract 同纪律）。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            self._seed(tmp_path)
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{
+                    "source_requirement_ids": ["AI-1"],
+                    # 用步骤编号 1/2/3（源文没有），但不碰 OBIS 编码——应保留、只软标记
+                    "software_requirement_text": "步骤：1. 监听掉电；2. 写入 0-0:96.1.0；3. 保留 100 条。",
+                    "developer_guidance": ["1. 订阅中断", "2. 环形缓冲"],
+                }]}
+
+            result = run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+
+            assert result["enriched"] == 1        # 保留富化，不因整数降级
+            assert result["enrich_degraded"] == 0
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            assert item["software_requirement_text"].startswith("步骤")
+            assert item["analysis_source"] == "llm"
+            # 数字漂移作为软提示被记录，供审查对照 source_quote
+            assert any("软提示" in msg for row in payload["issues"] for msg in row["issues"])
 
     def test_enrichment_cache_is_idempotent_across_runs(self) -> None:
         """内容不变时二次运行不再调 LLM（命中 analyze_enrich_cache.json）。"""

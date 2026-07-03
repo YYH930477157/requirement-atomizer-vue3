@@ -30,7 +30,7 @@ ChatFn = Callable[[str, str], dict[str, Any]]
 
 SCHEMA_VERSION = "requirements-analysis/v1"
 ANALYZE_PROMPT_VERSION = "analyze-llm-v1"
-ANALYZE_MIN_MAX_TOKENS = 2048  # 给推理模型留正文预算，防 JSON 截断（与 ai_extract 同理）
+ANALYZE_MIN_MAX_TOKENS = 6144  # 与 ai_extract 同：推理模型（如 mimo-v2.5-pro）会输出思维链，2048 会截断 JSON
 ANALYZE_ENRICH_CACHE = "analyze_enrich_cache.json"
 # 确定性分析层（规则+模板+裁决）恒在；openai_compatible 追加 LLM 富化层，只填叙述字段、
 # 结构/归属/路由字段全冻结。请求 LLM 但端点未配置时如实降级并记 route_requested（出处诚实）。
@@ -276,10 +276,12 @@ def _llm_enrich_item(
         cache[key] = llm_item
 
     drift = validate_llm_item(llm_item, source_req)
-    fabricated = [d for d in drift if d.startswith("fabricated")]
-    if fabricated:
-        # 编造了原文没有的结构数据——拒绝整条富化（宁缺毋滥，OBIS 错一位即严重）
-        return False, [f"LLM 富化编造结构数据，已拒绝并降级: {'; '.join(fabricated)}"]
+    # 与 ai_extract 双引擎同一分级纪律：**编码漂移**（OBIS/hex/事件号）严格拒绝——"错一位即
+    # 严重"；**普通整数漂移**（散文里的步骤序号"1.2.3."、复述计数等）只软标记不阻断——结构字段
+    # 已确定性冻结、source_quote 随交付物同行可核，把整数当硬拒会误伤合格富化（真实 A/B 验证）。
+    fabricated_codes = [d for d in drift if d.startswith("fabricated code")]
+    if fabricated_codes:
+        return False, [f"LLM 富化编造结构编码，已拒绝并降级: {'; '.join(fabricated_codes)}"]
 
     for field in _ENRICH_FIELDS_TEXT:
         value = str(llm_item.get(field) or "").strip()
@@ -294,8 +296,9 @@ def _llm_enrich_item(
         item["ownership_reason"] = reason
     item["analysis_source"] = "llm"
 
-    missing = [d for d in drift if not d.startswith("fabricated")]
-    return True, ([f"完整性提示（未阻断富化）: {'; '.join(missing)}"] if missing else [])
+    soft = [d for d in drift if not d.startswith("fabricated code")]
+    return True, ([f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"]
+                  if soft else [])
 
 
 def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> dict[str, Any]:
