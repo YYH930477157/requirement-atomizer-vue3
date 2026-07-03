@@ -316,20 +316,136 @@ class PipelineHardeningTests(unittest.TestCase):
             assert any("ownership_override 非法" in issue
                        for row in payload["issues"] for issue in row["issues"])
 
-    def test_route_provenance_is_honest(self) -> None:
-        """openai_compatible 未实现：请求它须降级运行并如实记录（不能把没跑过的 LLM 写成已跑）。"""
+    def test_route_provenance_is_honest_when_endpoint_unusable(self) -> None:
+        """请求 openai_compatible 但端点不可用（无 API key）→ 如实降级并记录，不谎称跑过 LLM。"""
+        import os
         with tempfile.TemporaryDirectory() as td:
             tmp_path = Path(td)
             self._seed_one(tmp_path)
-
-            result = run_requirements_analysis(tmp_path, route="openai_compatible", template_path=None)
+            saved = os.environ.pop("RATOMIZER_LLM_API_KEY", None)
+            try:
+                result = run_requirements_analysis(tmp_path, route="openai_compatible", template_path=None)
+            finally:
+                if saved is not None:
+                    os.environ["RATOMIZER_LLM_API_KEY"] = saved
 
             assert result["route"] == "stub"                     # 实际执行的
             assert result["route_requested"] == "openai_compatible"
-            assert "尚未实现" in result.get("note", "")
+            assert result["enriched"] == 0
+            assert result.get("note")
             payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
             assert payload["route"] == "stub"
             assert payload["route_requested"] == "openai_compatible"
+
+
+class LlmEnrichmentTests(unittest.TestCase):
+    """LLM 分析层（注入 fake chat，零网络）：填叙述字段、冻结结构字段、编造即拒绝、幂等缓存。"""
+
+    def _seed(self, tmp_path: Path) -> None:
+        write_jsonl(tmp_path / "ai_requirements.jsonl", [
+            {
+                "ai_req_id": "AI-1",
+                "description": "The meter shall log power-down events to OBIS 0-0:96.1.0.",
+                "source_quote": "log power-down events at 0-0:96.1.0, keep 100 entries",
+                "source_block_ids": ["B-1"],
+                "module": "事件记录",
+            }
+        ])
+
+    def test_enrichment_fills_narrative_and_freezes_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            self._seed(tmp_path)
+            calls: list[str] = []
+
+            def fake_chat(system: str, user: str) -> dict:
+                calls.append(user)
+                return {"items": [{
+                    "source_requirement_ids": ["AI-1"],
+                    "ownership": "hardware",  # 越权字段：必须被忽略，归属仍走规则
+                    "software_requirement_text": "监听掉电中断，将事件写入 0-0:96.1.0 日志，保留最近 100 条。",
+                    "developer_guidance": ["订阅掉电中断", "环形缓冲 100 条"],
+                    "acceptance_criteria": ["掉电后事件出现在 0-0:96.1.0，且不超过 100 条"],
+                    "hardware_dependency": "",
+                    "open_questions": [],
+                    "ownership_reason": "纯软件事件记录逻辑",
+                }]}
+
+            result = run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+
+            assert result["route"] == "openai_compatible"   # 注入 chat 即真实执行
+            assert result["enriched"] == 1
+            assert result["enrich_degraded"] == 0
+            assert len(calls) == 1
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            assert item["software_requirement_text"].startswith("监听掉电中断")
+            assert item["developer_guidance"] == ["订阅掉电中断", "环形缓冲 100 条"]
+            assert item["acceptance_criteria"]
+            assert item["analysis_source"] == "llm"
+            # 结构/归属字段冻结：LLM 给的 ownership=hardware 不得生效（规则判 software）
+            assert item["ownership"] == "software"
+            assert item["ownership_source"] == "rule"
+            assert item["source_requirement_ids"] == ["AI-1"]
+
+    def test_fabricated_code_rejects_enrichment_and_degrades(self) -> None:
+        """LLM 编造原文没有的 OBIS（换位）→ 整条富化拒绝、item 保持确定性空值、记 issue。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            self._seed(tmp_path)
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{
+                    "source_requirement_ids": ["AI-1"],
+                    # 源文是 0-0:96.1.0；这里换成 0-0:96.1.7（错一位）——必须被拦
+                    "software_requirement_text": "将事件写入 0-0:96.1.7 日志。",
+                    "developer_guidance": ["写 0-0:96.1.7"],
+                }]}
+
+            result = run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+
+            assert result["enriched"] == 0
+            assert result["enrich_degraded"] == 1
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            assert item["software_requirement_text"] == ""      # 未被污染
+            assert item["developer_guidance"] == []
+            assert item["analysis_source"] == "deterministic"
+            assert any("编造结构数据" in msg
+                       for row in payload["issues"] for msg in row["issues"])
+
+    def test_enrichment_cache_is_idempotent_across_runs(self) -> None:
+        """内容不变时二次运行不再调 LLM（命中 analyze_enrich_cache.json）。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            self._seed(tmp_path)
+            count = {"n": 0}
+
+            def fake_chat(system: str, user: str) -> dict:
+                count["n"] += 1
+                return {"items": [{"source_requirement_ids": ["AI-1"],
+                                   "software_requirement_text": "缓存测试正文。"}]}
+
+            run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+            run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+
+            assert count["n"] == 1                              # 第二次命中缓存，零新增调用
+            assert (tmp_path / "analyze_enrich_cache.json").exists()
+
+    def test_malformed_llm_response_degrades_non_fatally(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            self._seed(tmp_path)
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"garbage": True}       # 无 items、非法形状
+
+            result = run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+
+            assert result["analysis_count"] == 1               # 不整跑死
+            assert result["enrich_degraded"] == 1
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            assert payload["items"][0]["analysis_source"] == "deterministic"
 
 
 if __name__ == "__main__":

@@ -14,7 +14,9 @@ ratomizer analyze --out DIR [--template FILE.xlsx] [--llm-route stub|openai_comp
 ratomizer --version
 ```
 
-`analyze` runs the requirements analysis agent over a reviewed output directory (requires `ai_requirements.jsonl` produced by AI extraction; missing input is an input error, exit 2 semantics via error envelope). It writes `software_requirements.xlsx`, `engineering_analysis.json`, `hardware_items.md`, and `co_design_items.md`. An explicit `--template` path must exist. `--llm-route openai_compatible` is reserved: the LLM analysis layer is not implemented yet, so the run degrades to the deterministic path and records `route: "stub"` plus `route_requested` in its output (provenance is never falsified).
+`analyze` runs the requirements analysis agent over a reviewed output directory (requires `ai_requirements.jsonl` produced by AI extraction; missing input is an input error, exit 2 semantics via error envelope). It writes `software_requirements.xlsx`, `engineering_analysis.json`, `hardware_items.md`, and `co_design_items.md`. An explicit `--template` path must exist.
+
+Ownership classification, module mapping, review decisions, and all structural fields are deterministic. `--llm-route openai_compatible` additionally enables an **LLM enrichment layer** that fills the narrative fields only — `software_requirement_text`, `developer_guidance`, `acceptance_criteria`, `hardware_dependency`, `open_questions`. Structural and routing fields (ownership, module, OBIS/class/access, ids) are never overwritten by the model. Each enrichment is drift-checked: if the model fabricates a code or number not in the source, that item's enrichment is rejected and it stays deterministic (recorded as an issue). When the endpoint is unusable (no `RATOMIZER_LLM_API_KEY` set), the run degrades to the deterministic path and records `route: "stub"` plus `route_requested` (provenance is never falsified). Output adds `enriched` / `enrich_degraded` counts. Enrichment results are cached per source-content fingerprint in `analyze_enrich_cache.json` (idempotent re-runs).
 
 Existing entry points remain compatible:
 
