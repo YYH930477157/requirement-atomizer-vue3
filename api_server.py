@@ -10,7 +10,7 @@ from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
 from review_actions import apply_review_action
-from ai_review_actions import ai_req_id, apply_ai_review_action, read_ai_review_states
+from ai_review_actions import apply_ai_review_action, read_ai_review_states, source_ai_requirement_id
 from io_utils import read_jsonl
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
@@ -317,9 +317,11 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
     states = read_ai_review_states(output_dir)
     text_by_block = {str(b.get("block_id")): (b.get("text") or "")
                      for b in read_jsonl(output_dir / "blocks.jsonl")}
+    from requirements_analysis_rules import classify_ownership  # 规则初判（确定性、零 LLM）
+
     enriched: list[dict] = []
     for req in requirements:
-        rid = _source_ai_requirement_id(req)
+        rid = source_ai_requirement_id(req)
         state = states.get(rid)
         row = dict(req)
         row["ai_req_id"] = rid
@@ -330,19 +332,16 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
             row["module_effective"] = state["module_override"]
         else:
             row["module_effective"] = req.get("module") or (req.get("labels") or [None])[0]
+        # 归属：规则初判回填（专家在批注里能看到规则怎么判的），override 优先生效
+        if not row.get("ownership"):
+            row["ownership"] = classify_ownership(req)["ownership"]
         if state and state.get("ownership_override"):
             row["ownership_effective"] = state["ownership_override"]
+        else:
+            row["ownership_effective"] = row["ownership"]
         row["status"] = (state or {}).get("status") or "draft"
         enriched.append(row)
     return enriched
-
-
-def _source_ai_requirement_id(req: dict) -> str:
-    for key in ("ai_req_id", "stable_req_id", "req_id"):
-        explicit_id = str(req.get(key) or "").strip()
-        if explicit_id:
-            return explicit_id
-    return ai_req_id(req)
 
 
 def _load_ai_requirements(output_dir: Path) -> list[dict]:

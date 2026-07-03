@@ -10,8 +10,11 @@ ratomizer atomize <input.docx|input.xlsx|input.pdf> --out DIR [--kb FILE]... [--
 ratomizer review --out DIR [--review-pipeline FILE] [--domain-pack FILE] [--limit N] [--llm-route stub|openai_compatible] [--review-scope targeted|all] [--quiet | --verbose]
 ratomizer export --out DIR --format md|csv [--status all|accepted|expert_pending|candidate]
 ratomizer compose --out DIR [--quiet | --verbose]
+ratomizer analyze --out DIR [--template FILE.xlsx] [--llm-route stub|openai_compatible] [--quiet | --verbose]
 ratomizer --version
 ```
+
+`analyze` runs the requirements analysis agent over a reviewed output directory (requires `ai_requirements.jsonl` produced by AI extraction; missing input is an input error, exit 2 semantics via error envelope). It writes `software_requirements.xlsx`, `engineering_analysis.json`, `hardware_items.md`, and `co_design_items.md`. An explicit `--template` path must exist. `--llm-route openai_compatible` is reserved: the LLM analysis layer is not implemented yet, so the run degrades to the deterministic path and records `route: "stub"` plus `route_requested` in its output (provenance is never falsified).
 
 Existing entry points remain compatible:
 

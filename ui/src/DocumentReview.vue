@@ -26,6 +26,14 @@ const selectedId = ref("")
 const isSaving = ref(false)
 const comment = ref("")
 const moduleEdit = ref("")
+const ownershipEdit = ref("")
+
+// 与后端 requirements_analysis_schema 的三值归属一致
+const OWNERSHIP_OPTIONS = [
+  { value: "software", label: "软件" },
+  { value: "hardware", label: "硬件" },
+  { value: "co_design", label: "软硬件协同" },
+]
 let loadedOnce = false
 
 async function load() {
@@ -103,6 +111,9 @@ function moduleOf(r: AiRequirement): string {
 function statusOf(r: AiRequirement): string {
   return String(r.status || "draft")
 }
+function ownershipOf(r: AiRequirement): string {
+  return String(r.ownership_effective || r.ownership || "software")
+}
 
 function select(req: AiRequirement) {
   if (selectedId.value === req.ai_req_id) {  // 再点一下 → 取消选中
@@ -112,6 +123,7 @@ function select(req: AiRequirement) {
   selectedId.value = req.ai_req_id
   comment.value = String(req.review_state?.reason || "")
   moduleEdit.value = moduleOf(req)
+  ownershipEdit.value = ownershipOf(req)
 }
 
 // 选中需求时，在锚段内的块里高亮 source_quote 原句。
@@ -135,11 +147,14 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
     const state = await props.client.applyAiReviewAction({
       aiReqId: req.ai_req_id, status,
       moduleOverride: moduleEdit.value !== moduleOf(req) ? moduleEdit.value : "",
+      // 选回规则初判值 → 发空串清除覆盖，归属回落规则判定
+      ownershipOverride: ownershipEdit.value !== (req.ownership || "") ? ownershipEdit.value : "",
       reason: comment.value, actor: "reviewer",
     })
     req.review_state = state
     req.status = state.status
     if (state.module_override) req.module_effective = state.module_override
+    req.ownership_effective = state.ownership_override || req.ownership
     message.value = `已${STATUS_LABELS[status] || status}：${req.title || req.ai_req_id}`
   } catch (error) {
     message.value = error instanceof Error ? error.message : "裁决写入失败"
@@ -227,6 +242,12 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             <div class="dd-label">模块（可改）</div>
             <select v-model="moduleEdit" class="dd-select" data-testid="dd-module-select">
               <option v-for="m in MODULE_VOCAB" :key="m" :value="m">{{ m }}</option>
+            </select>
+          </div>
+          <div class="dd-section">
+            <div class="dd-label">归属（可改，规则初判：{{ OWNERSHIP_OPTIONS.find(o => o.value === selectedReq?.ownership)?.label || "软件" }}）</div>
+            <select v-model="ownershipEdit" class="dd-select" data-testid="dd-ownership-select">
+              <option v-for="o in OWNERSHIP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
           </div>
           <textarea v-model="comment" class="dd-comment" data-testid="dd-comment" placeholder="审查意见（可选）" />

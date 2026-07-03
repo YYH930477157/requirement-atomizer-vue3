@@ -31,6 +31,19 @@ def ai_req_id(req: dict[str, Any]) -> str:
     return "AIR-" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
 
 
+def source_ai_requirement_id(req: dict[str, Any]) -> str:
+    """裁决/批注/分析统一的需求主键：行内显式 id 优先，否则内容指纹 ai_req_id。
+
+    唯一权威实现——api_server / ai_extract / requirements_analysis 都用它，三份复制迟早分叉。
+    警告：绝不能把位置型编号（make_doc 的 REQ-NNN）写进这些字段，否则复跑后裁决静默失配。
+    """
+    for key in ("ai_req_id", "stable_req_id", "req_id"):
+        explicit = str(req.get(key) or "").strip()
+        if explicit:
+            return explicit
+    return ai_req_id(req)
+
+
 def read_ai_review_states(out_dir: Path) -> dict[str, dict[str, Any]]:
     """取每个 ai_req_id 的最新裁决（最近一行覆盖）。"""
     path = Path(out_dir) / AI_REVIEW_STATES

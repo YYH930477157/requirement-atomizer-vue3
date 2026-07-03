@@ -252,6 +252,9 @@ class DesktopTaskTests(unittest.TestCase):
             template = Path(tmp) / "template.xlsx"
             out_dir.mkdir()
             template.write_bytes(b"placeholder")
+            # written 只报真实存在的产物：只落盘其中 2 个，xlsx/co_design 缺席
+            (out_dir / "engineering_analysis.json").write_text("{}", encoding="utf-8")
+            (out_dir / "hardware_items.md").write_text("# Hardware Items\n", encoding="utf-8")
             with patch("desktop_tasks.run_requirements_analysis") as run_analysis:
                 run_analysis.return_value = {"kind": "requirements_analysis", "analysis_count": 1, "issues": 0}
 
@@ -261,13 +264,11 @@ class DesktopTaskTests(unittest.TestCase):
         self.assertEqual(payload["kind"], "requirements_analysis")
         self.assertEqual(payload["analysis"]["analysis_count"], 1)
         self.assertEqual(
-            payload["written"],
-            [
+            sorted(payload["written"]),
+            sorted([
                 str(out_dir.resolve() / "engineering_analysis.json"),
                 str(out_dir.resolve() / "hardware_items.md"),
-                str(out_dir.resolve() / "co_design_items.md"),
-                str(out_dir.resolve() / "software_requirements.xlsx"),
-            ],
+            ]),
         )
         self.assertEqual(payload["summary"]["counts"]["requirements"], 0)
 

@@ -15,7 +15,8 @@ VALID_OWNERSHIPS = {
 
 
 def normalize_ownership(value: Any) -> str:
-    text = str(value or "").strip()
+    # 大小写/连字符不敏感（"Software"/"CO-DESIGN" 手改状态行不该弄死整跑）；未知值仍严格拒绝
+    text = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
     aliases = {
         "软件": OWNERSHIP_SOFTWARE,
         "硬件": OWNERSHIP_HARDWARE,

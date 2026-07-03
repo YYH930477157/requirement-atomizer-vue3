@@ -715,13 +715,13 @@ def apply_ai_decisions(out_dir: Path, ai_requirements: list[dict[str, Any]],
     rejected → 剔除（不进研发规格）；module_override → 生效并重定首要领域；
     accepted → status=confirmed；reason → 追加"专家意见"到 notes。无裁决原样保留。
     """
-    from ai_review_actions import ai_req_id, read_ai_review_states
+    from ai_review_actions import read_ai_review_states, source_ai_requirement_id
     states = read_ai_review_states(out_dir)
     applied = 0
     dropped = 0
     kept: list[dict[str, Any]] = []
     for req in ai_requirements:
-        state = states.get(_source_ai_requirement_id(req, ai_req_id)) if states else None
+        state = states.get(source_ai_requirement_id(req)) if states else None
         if not state:
             kept.append(req)
             continue
@@ -744,14 +744,6 @@ def apply_ai_decisions(out_dir: Path, ai_requirements: list[dict[str, Any]],
         stats["decisions_applied"] = applied
         stats["rejected_dropped"] = dropped
     return kept
-
-
-def _source_ai_requirement_id(req: dict[str, Any], fallback_ai_req_id: Callable[[dict[str, Any]], str]) -> str:
-    for key in ("ai_req_id", "stable_req_id", "req_id"):
-        explicit_id = str(req.get(key) or "").strip()
-        if explicit_id:
-            return explicit_id
-    return fallback_ai_req_id(req)
 
 
 def build_merged_doc(out_dir: Path, ai_requirements: list[dict[str, Any]],

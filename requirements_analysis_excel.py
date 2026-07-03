@@ -8,6 +8,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
 from requirements_analysis_schema import OWNERSHIP_CO_DESIGN, OWNERSHIP_SOFTWARE
+from text_normalize import formula_safe
 
 
 HEADERS = [
@@ -31,6 +32,19 @@ HEADERS = [
 
 _SOFTWARE_OWNERSHIPS = {OWNERSHIP_SOFTWARE, OWNERSHIP_CO_DESIGN}
 _INVALID_SHEET_TITLE_CHARS = re.compile(r"[\[\]:*?/\\]")
+# openpyxl 会对控制字符抛 IllegalCharacterError（PDF 文本层常带 \x0b 等）——写入前剥离
+_ILLEGAL_XLSX_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _safe_cell(value: Any) -> Any:
+    """单元格防护：控制字符剥离 + 公式注入中和（formula_safe，与 spec_excel 同一纪律）。
+
+    没有这层，'=HYPERLINK(...)' 开头的抽取文本会以活公式落进交付给研发的工作簿——
+    这是 spec-data-integrity 阶段修掉的同类漏洞，此处必须同样设防。
+    """
+    if isinstance(value, str):
+        value = _ILLEGAL_XLSX_CHARS.sub("", value)
+    return formula_safe(value)
 
 
 def write_software_requirements_xlsx(items: list[dict[str, Any]], output_path: Path) -> Path:
@@ -55,7 +69,7 @@ def write_software_requirements_xlsx(items: list[dict[str, Any]], output_path: P
         _style_header(ws)
         ws.freeze_panes = "A2"
         for index, item in enumerate(rows, start=1):
-            ws.append(_excel_row(index, item))
+            ws.append([_safe_cell(value) for value in _excel_row(index, item)])
 
     wb.save(output_path)
     return output_path

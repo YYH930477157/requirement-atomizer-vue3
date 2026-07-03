@@ -1,5 +1,4 @@
 import json
-import re
 from typing import Any
 
 
@@ -24,25 +23,35 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
 
 
 def validate_llm_item(item: dict[str, Any], source: dict[str, Any]) -> list[str]:
-    source_text = str(source.get("source_quote") or source.get("description") or source.get("requirement") or "")
+    """LLM 分析产物防幻觉校验（方向与 ai_extract 双引擎护栏一致）。
+
+    - 硬伤（编造）：分析文本里出现源文没有的受保护编码（OBIS/事件号/hex，原子匹配——
+      换位 OBIS 也逃不掉）或数字。基线取 quote/description/requirement **并集**：
+      任何源字段出现过的都算有据，防误伤。这是"OBIS 错一位即严重"纪律的主检查方向。
+    - 软项（遗漏）：**优先源文**（quote 优先，其次 description/requirement，取首个非空）
+      的数字在分析文本缺失——完整性提示，保留原有优先级语义（并集会把 fallback 字段
+      的数字都变成噪声）。
+    """
+    from cosem_behavior_spec import extract_codes, extract_ints
+
+    union_text = " ".join(
+        str(source.get(field) or "") for field in ("source_quote", "description", "requirement")
+    )
+    priority_text = next(
+        (str(source.get(field) or "") for field in ("source_quote", "description", "requirement")
+         if str(source.get(field) or "").strip()),
+        "",
+    )
     analysis_text = " ".join(
         str(item.get(field, ""))
         for field in ("requirement", "software_requirement_text", "hardware_dependency", "ownership_reason")
     )
-    analysis_numbers = set(_numbers(analysis_text))
 
     issues = []
-    for number in _numbers(source_text):
-        if number not in analysis_numbers:
-            issues.append(f"source number {number} missing from analysis text")
+    for code in sorted(extract_codes(analysis_text) - extract_codes(union_text)):
+        issues.append(f"fabricated code not in source: {code}")
+    for number in sorted(extract_ints(analysis_text) - extract_ints(union_text)):
+        issues.append(f"fabricated number not in source: {number}")
+    for number in sorted(extract_ints(priority_text) - extract_ints(analysis_text)):
+        issues.append(f"source number {number} missing from analysis text")
     return issues
-
-
-def _numbers(text: str) -> list[str]:
-    seen = set()
-    numbers = []
-    for match in re.findall(r"\b\d+(?:\.\d+)?\b", text):
-        if match not in seen:
-            seen.add(match)
-            numbers.append(match)
-    return numbers
