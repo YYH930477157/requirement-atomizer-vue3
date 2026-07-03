@@ -60,6 +60,39 @@ This writes `engineering_requirements/` with two sections:
 
 Function outputs include deterministic acceptance criteria derived from source atom metadata. DLMS object outputs include implementation and access summaries for handoff to development.
 
+## Requirements Analysis Agent
+
+After AI extraction, HTML expert review, and adjudication/import have produced a reviewed output directory, run the requirements analysis agent on that same directory:
+
+```powershell
+ratomizer analyze --out ".\out\run-001" --llm-route stub
+```
+
+The desktop task bridge exposes the same step:
+
+```powershell
+python -m desktop_tasks requirements-analysis --out ".\out\run-001" --llm-route stub
+```
+
+The accepted `--llm-route` values are `stub` and `openai_compatible`; the default is `stub`. The current analysis is primarily driven by rules, optional template vocabulary, and human review decisions, with `openai_compatible` available only when configured. Use `--quiet` or `--verbose` to adjust CLI logging. The generated files are written directly under `out`:
+
+```text
+engineering_analysis.json
+hardware_items.md
+co_design_items.md
+software_requirements.xlsx
+```
+
+Hardware-only items are summarized lightly in `hardware_items.md`. Software and co-design items are written into the software-side workbook, with co-design rows marked as hardware-related and also summarized in `co_design_items.md`. Ownership overrides made on the HTML annotation page (`software`, `hardware`, or `co_design`) are honored during analysis.
+
+To use an internal software development standard requirements template as a software vocabulary reference:
+
+```powershell
+ratomizer analyze --out ".\out\run-001" --template ".\templates\software-standard.xlsx"
+```
+
+An explicit `--template` path must exist. The template is used only for software classification and module vocabulary; hardware summaries do not use the software template.
+
 ## Desktop App
 
 > The official desktop product is the **Vue3 + Electron** UI below. The older
