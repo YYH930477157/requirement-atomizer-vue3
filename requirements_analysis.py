@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import os
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ai_review_actions import read_ai_review_states, source_ai_requirement_id
 from io_utils import read_jsonl
+from requirements_analysis_agent import build_analysis_prompt, validate_llm_item
 from requirements_analysis_excel import write_software_requirements_xlsx
 from requirements_analysis_rules import classify_ownership
 from requirements_analysis_schema import (
@@ -22,11 +26,19 @@ from requirements_analysis_template import extract_template_vocabulary
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
+ChatFn = Callable[[str, str], dict[str, Any]]
+
 SCHEMA_VERSION = "requirements-analysis/v1"
-# 目前只有确定性分析层（规则+模板+裁决）；openai_compatible 是预留路由，请求它时
-# 如实降级运行并在输出里记录 route_requested——绝不把没跑过的 LLM 写成已跑（出处诚实）。
-EXECUTED_ROUTE = "stub"
-NOT_IMPLEMENTED_NOTE = "openai_compatible 尚未实现（LLM 分析层缺失），本次按规则/模板/裁决确定性运行"
+ANALYZE_PROMPT_VERSION = "analyze-llm-v1"
+ANALYZE_MIN_MAX_TOKENS = 6144  # 与 ai_extract 同：推理模型（如 mimo-v2.5-pro）会输出思维链，2048 会截断 JSON
+ANALYZE_ENRICH_CACHE = "analyze_enrich_cache.json"
+# 确定性分析层（规则+模板+裁决）恒在；openai_compatible 追加 LLM 富化层，只填叙述字段、
+# 结构/归属/路由字段全冻结。请求 LLM 但端点未配置时如实降级并记 route_requested（出处诚实）。
+STUB_ROUTE = "stub"
+DEGRADE_NOTE = "openai_compatible 端点未配置，本次按规则/模板/裁决确定性运行（未做 LLM 富化）"
+# LLM 只允许填这些叙述字段；OBIS/class/访问位/归属/id 等结构字段永不被 LLM 覆盖（防幻觉红线）
+_ENRICH_FIELDS_TEXT = ("software_requirement_text", "hardware_dependency")
+_ENRICH_FIELDS_LIST = ("developer_guidance", "acceptance_criteria", "open_questions")
 OUTPUT_FILES = [
     "software_requirements.xlsx",
     "engineering_analysis.json",
@@ -40,6 +52,8 @@ def run_requirements_analysis(
     *,
     route: str = "stub",
     template_path: Path | None = None,
+    chat: ChatFn | None = None,
+    pipeline_path: Path | None = None,
 ) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
     source_path = out_dir / "ai_requirements.jsonl"
@@ -52,10 +66,17 @@ def run_requirements_analysis(
     states = read_ai_review_states(out_dir)
     vocabulary = extract_template_vocabulary(template_path)
 
+    # LLM 富化层：注入的 chat 优先（测试/嵌入）；否则请求 LLM 路由时按 pipeline 解析端点，
+    # 端点缺失则降级为纯确定性（executed_route=stub），出处如实记录。
+    active_chat, model = _resolve_chat(route, chat, pipeline_path)
+    executed_route = "openai_compatible" if active_chat is not None else STUB_ROUTE
     note = ""
-    if route != EXECUTED_ROUTE:
-        note = NOT_IMPLEMENTED_NOTE
+    if route != STUB_ROUTE and active_chat is None:
+        note = DEGRADE_NOTE
         LOGGER.warning(note)
+    enrich_cache = _load_enrich_cache(out_dir, model) if active_chat is not None else {}
+    enriched_count = 0
+    degraded_count = 0
 
     items: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
@@ -76,6 +97,18 @@ def run_requirements_analysis(
                 "issues": [f"ownership_override 非法，已忽略: {exc}"],
             })
 
+        if active_chat is not None:
+            enriched, enrich_issues = _llm_enrich_item(
+                item, reviewed_req, vocabulary, active_chat, enrich_cache, model)
+            enriched_count += 1 if enriched else 0
+            degraded_count += 0 if enriched else 1
+            if enrich_issues:
+                issues.append({
+                    "analysis_id": item.get("analysis_id"),
+                    "source_requirement_ids": item.get("source_requirement_ids") or [],
+                    "issues": enrich_issues,
+                })
+
         item_issues = validate_analysis_item(item)
         if item_issues:
             issues.append({
@@ -85,10 +118,15 @@ def run_requirements_analysis(
             })
         items.append(item)
 
+    if active_chat is not None:
+        _save_enrich_cache(out_dir, model, enrich_cache)
+
     payload = {
         "schema_version": SCHEMA_VERSION,
-        "route": EXECUTED_ROUTE,        # 实际执行的路由（出处诚实）
+        "route": executed_route,        # 实际执行的路由（出处诚实）
         "route_requested": route,
+        "enriched": enriched_count,
+        "enrich_degraded": degraded_count,
         "items": items,
         "issues": issues,
     }
@@ -115,13 +153,152 @@ def run_requirements_analysis(
         "kind": "requirements_analysis",
         "analysis_count": len(items),
         "issues": len(issues),
-        "route": EXECUTED_ROUTE,
+        "route": executed_route,
         "route_requested": route,
+        "enriched": enriched_count,
+        "enrich_degraded": degraded_count,
         "written": list(OUTPUT_FILES),
     }
     if note:
         result["note"] = note
     return result
+
+
+def _resolve_chat(route: str, chat: ChatFn | None, pipeline_path: Path | None) -> tuple[ChatFn | None, str]:
+    """决定本次是否有可用 LLM，返回 (chat, model)。
+
+    注入的 chat 优先（测试/嵌入调用），model 记 "injected"。否则仅当请求非 stub 路由时按
+    pipeline 解析端点：解析出 openai_compatible 配置才启用，否则返回 (None, "") 触发降级。
+    与 ai_extract 复用同一 config_for_route，不另起一套端点解析。
+    """
+    if chat is not None:
+        return chat, "injected"
+    if route == STUB_ROUTE:
+        return None, ""
+    try:
+        from ai_extract import DEFAULT_PIPELINE_PATH, config_for_route
+        from llm_client import chat_json
+        config = config_for_route(route, pipeline_path or DEFAULT_PIPELINE_PATH)
+    except Exception as exc:  # pragma: no cover - 端点/pipeline 解析异常一律降级
+        LOGGER.warning("LLM 路由解析失败，降级为确定性: %s", exc)
+        return None, ""
+    if config is None:
+        return None, ""
+    # 密钥缺失即视为端点不可用：无 key 调用必 401，不如如实降级（也让离线测试免打网）。
+    # 密钥只走环境变量，绝不落盘（仓库红线）。
+    if not os.environ.get(config.api_key_env):
+        LOGGER.warning("LLM 路由 %s 已解析但环境变量 %s 未设置，降级为确定性", route, config.api_key_env)
+        return None, ""
+    if config.max_tokens < ANALYZE_MIN_MAX_TOKENS:
+        config = replace(config, max_tokens=ANALYZE_MIN_MAX_TOKENS)
+    return (lambda system, user: chat_json(config, system, user)), config.model
+
+
+def _enrich_key(req: dict[str, Any], model: str) -> str:
+    """内容指纹缓存键：源内容 + prompt 版本 + 模型。源不变则重跑免调用（幂等、省钱）。"""
+    basis = "\n".join([
+        str(req.get("source_quote") or ""),
+        str(req.get("description") or ""),
+        str(req.get("requirement") or ""),
+        str(req.get("module") or ""),
+        ANALYZE_PROMPT_VERSION,
+        model,
+    ])
+    return hashlib.sha1(basis.encode("utf-8")).hexdigest()
+
+
+def _load_enrich_cache(out_dir: Path, model: str) -> dict[str, Any]:
+    path = out_dir / ANALYZE_ENRICH_CACHE
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # prompt 版本/模型漂移则弃用旧缓存（防复用不同模型/prompt 的产物）
+    meta = data.get("_meta") or {}
+    if meta.get("prompt") != ANALYZE_PROMPT_VERSION or meta.get("model") != model:
+        return {}
+    items = data.get("items")
+    return items if isinstance(items, dict) else {}
+
+
+def _save_enrich_cache(out_dir: Path, model: str, cache: dict[str, Any]) -> None:
+    path = out_dir / ANALYZE_ENRICH_CACHE
+    payload = {"_meta": {"prompt": ANALYZE_PROMPT_VERSION, "model": model}, "items": cache}
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - 缓存写失败不致命
+        LOGGER.warning("富化缓存写入失败（忽略）: %s", exc)
+
+
+def _first_item(payload: Any) -> dict[str, Any] | None:
+    """从 LLM 返回里取单条分析产物，容忍 {items:[...]} / 裸对象 / 裸数组 三种形状。"""
+    if isinstance(payload, dict):
+        items = payload.get("items")
+        if isinstance(items, list) and items and isinstance(items[0], dict):
+            return items[0]
+        if "software_requirement_text" in payload or "ownership" in payload:
+            return payload
+        return None
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return payload[0]
+    return None
+
+
+def _llm_enrich_item(
+    item: dict[str, Any],
+    source_req: dict[str, Any],
+    vocabulary: dict[str, Any],
+    chat: ChatFn,
+    cache: dict[str, Any],
+    model: str,
+) -> tuple[bool, list[str]]:
+    """用 LLM 填充叙述字段（software_requirement_text 等），结构字段一律不动。
+
+    防幻觉红线：validate_llm_item 检出**编造**的 OBIS/编码/数字（换位 OBIS 也逃不掉）→ 整条
+    富化拒绝、item 保持确定性空值、记 issue；**遗漏**类是软提示，不阻断富化。任何调用/解析失败
+    都非致命：该条降级为确定性，返回 (False, [原因])。
+    """
+    key = _enrich_key(source_req, model)
+    llm_item = cache.get(key)
+    if llm_item is None:
+        prompt = build_analysis_prompt([source_req], vocabulary)
+        try:
+            payload = chat(prompt["system"], prompt["user"])
+        except Exception as exc:  # 调用失败非致命
+            return False, [f"LLM 富化调用失败，已降级为确定性: {exc}"]
+        llm_item = _first_item(payload)
+        if llm_item is None:
+            return False, ["LLM 富化返回空或格式非法，已降级为确定性"]
+        cache[key] = llm_item
+
+    drift = validate_llm_item(llm_item, source_req)
+    # 与 ai_extract 双引擎同一分级纪律：**编码漂移**（OBIS/hex/事件号）严格拒绝——"错一位即
+    # 严重"；**普通整数漂移**（散文里的步骤序号"1.2.3."、复述计数等）只软标记不阻断——结构字段
+    # 已确定性冻结、source_quote 随交付物同行可核，把整数当硬拒会误伤合格富化（真实 A/B 验证）。
+    fabricated_codes = [d for d in drift if d.startswith("fabricated code")]
+    if fabricated_codes:
+        return False, [f"LLM 富化编造结构编码，已拒绝并降级: {'; '.join(fabricated_codes)}"]
+
+    for field in _ENRICH_FIELDS_TEXT:
+        value = str(llm_item.get(field) or "").strip()
+        if value:
+            item[field] = value
+    for field in _ENRICH_FIELDS_LIST:
+        values = [str(x).strip() for x in _as_list(llm_item.get(field)) if str(x).strip()]
+        if values:
+            item[field] = values
+    reason = str(llm_item.get("ownership_reason") or "").strip()
+    if reason and not item.get("ownership_reason"):
+        item["ownership_reason"] = reason
+    item["analysis_source"] = "llm"
+
+    soft = [d for d in drift if not d.startswith("fabricated code")]
+    return True, ([f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"]
+                  if soft else [])
 
 
 def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> dict[str, Any]:
@@ -146,6 +323,7 @@ def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> d
         "acceptance_criteria": [],
         "open_questions": [],
         "notes": [],
+        "analysis_source": "deterministic",  # LLM 富化成功则改写为 "llm"（叙述字段来源追溯）
         "source_quote": str(req.get("source_quote") or ""),
         "source_section": str(req.get("source_section") or ""),
     }

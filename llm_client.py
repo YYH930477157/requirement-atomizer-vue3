@@ -88,7 +88,10 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     api_key = os.environ.get(config.api_key_env, "") if config.api_key_env else ""
     if api_key:
+        # 同时发标准 Bearer 与 x-api-key：多数 OpenAI 兼容端点认前者、部分代理（如小米 MiMo
+        # token-plan）只认后者；同发对标准端点无害（未知头被忽略），扩大端点兼容面。
         headers["Authorization"] = f"Bearer {api_key}"
+        headers["x-api-key"] = api_key
 
     max_attempts = max(0, int(config.max_retries)) + 1
     for attempt in range(max_attempts):
