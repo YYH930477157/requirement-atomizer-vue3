@@ -765,6 +765,81 @@ class TargetedSelfCheckTests(unittest.TestCase):
         self.assertEqual(len(added), 1)
         self.assertIn("自检补充（初抽遗漏）", added[0]["suspicion_reasons"])
 
+    # --- P1 自检收敛循环：多轮直到覆盖清单穷尽 ---
+    def _section3(self) -> dict:
+        return {"section_id": "S3", "heading": "S3",
+                "text": "The meter shall do A.\nThe meter shall do B.\nThe meter shall do C.",
+                "block_ids": ["B1", "B2", "B3"]}
+
+    def _block_info3(self) -> dict:
+        return {
+            "B1": {"block_id": "B1", "text": "The meter shall do A.", "requirement_like": True, "noise": False},
+            "B2": {"block_id": "B2", "text": "The meter shall do B.", "requirement_like": True, "noise": False},
+            "B3": {"block_id": "B3", "text": "The meter shall do C.", "requirement_like": True, "noise": False},
+        }
+
+    def _r(self, title: str, quote: str) -> dict:
+        return {"title": title, "description": title, "type": "functional", "priority": "P1",
+                "labels": ["计量"], "source_quote": quote}
+
+    def test_convergence_catches_cascading_omission(self) -> None:
+        """收敛循环的价值：C 只有在 A、B 补进去、未覆盖清单缩小后才被查漏抓到——单趟拿不到。"""
+        calls = {"n": 0}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            n = calls["n"]
+            if n == 1:
+                return {"requirements": [self._r("Do A", "The meter shall do A.")]}
+            if n == 2:                                   # 第 1 轮查漏：只补 B
+                return {"requirements": [self._r("Do B", "The meter shall do B.")]}
+            if n == 3:                                   # 第 2 轮查漏：清单缩到 C，才补 C
+                return {"requirements": [self._r("Do C", "The meter shall do C.")]}
+            return {"requirements": []}
+
+        reqs = ai_extract.extract_section(self._section3(), chat, self_check=True,
+                                          block_info=self._block_info3())
+        quotes = {r["source_quote"] for r in reqs}
+        self.assertEqual(len(reqs), 3)                   # A + B + C 全抓到
+        self.assertIn("The meter shall do C.", quotes)   # 级联遗漏被收敛循环补回
+        self.assertEqual(calls["n"], 3)                  # 抽取 + 2 轮查漏（第 3 轮全覆盖，提前停）
+
+    def test_round_cap_bounds_iterations(self) -> None:
+        """轮数上限守住：rounds=1 只查漏一轮，级联的 C 不会被抓（防发散优先于穷尽）。"""
+        calls = {"n": 0}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            n = calls["n"]
+            if n == 1:
+                return {"requirements": [self._r("Do A", "The meter shall do A.")]}
+            if n == 2:
+                return {"requirements": [self._r("Do B", "The meter shall do B.")]}
+            return {"requirements": [self._r("Do C", "The meter shall do C.")]}
+
+        reqs = ai_extract.extract_section(self._section3(), chat, self_check=True,
+                                          block_info=self._block_info3(), self_check_rounds=1)
+        quotes = {r["source_quote"] for r in reqs}
+        self.assertEqual(calls["n"], 2)                  # 抽取 + 仅 1 轮查漏
+        self.assertNotIn("The meter shall do C.", quotes)  # 触顶即停，C 未补
+
+    def test_resolve_self_check_rounds_env_and_bounds(self) -> None:
+        import os
+        prior = os.environ.get(ai_extract.SELF_CHECK_ROUNDS_ENV)
+        try:
+            self.assertEqual(ai_extract.resolve_self_check_rounds(None), 3)     # 默认
+            self.assertEqual(ai_extract.resolve_self_check_rounds(2), 2)        # 显式优先
+            self.assertEqual(ai_extract.resolve_self_check_rounds(99),
+                             ai_extract.MAX_SELF_CHECK_ROUNDS)                  # 夹到硬上限
+            self.assertEqual(ai_extract.resolve_self_check_rounds(0), 1)        # 夹到 ≥1
+            os.environ[ai_extract.SELF_CHECK_ROUNDS_ENV] = "4"
+            self.assertEqual(ai_extract.resolve_self_check_rounds(None), 4)     # env 生效
+        finally:
+            if prior is None:
+                os.environ.pop(ai_extract.SELF_CHECK_ROUNDS_ENV, None)
+            else:
+                os.environ[ai_extract.SELF_CHECK_ROUNDS_ENV] = prior
+
 
 class PromptV5Tests(unittest.TestCase):
     def test_prompt_has_threshold_table_quality_rules_and_example(self) -> None:
