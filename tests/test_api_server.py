@@ -180,6 +180,32 @@ class AiRequirementsEndpointTests(unittest.TestCase):
 
             self.assertEqual(rows2[0]["ownership_effective"], "hardware")
 
+    def test_raw_ai_requirements_preserve_explicit_ai_req_id_for_review_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            with (out / "ai_requirements.jsonl").open("w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ai_req_id": "AI-1",
+                    "title": "Clock",
+                    "description": "The meter shall support Clock object daylight saving time.",
+                    "source_section": "4",
+                    "source_quote": "support Clock object daylight saving time",
+                    "source_block_ids": ["BLK-2"],
+                }, ensure_ascii=False) + "\n")
+            with (out / "ai_review_states.jsonl").open("w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ai_req_id": "AI-1",
+                    "status": "accepted",
+                    "ownership_override": "hardware",
+                }, ensure_ascii=False) + "\n")
+
+            rows = api_server.build_ai_requirements(out)
+
+            self.assertEqual(rows[0]["ai_req_id"], "AI-1")
+            self.assertEqual(rows[0]["status"], "accepted")
+            self.assertEqual(rows[0]["ownership_effective"], "hardware")
+
 
 if __name__ == "__main__":
     unittest.main()

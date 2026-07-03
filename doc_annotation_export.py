@@ -403,9 +403,27 @@ function saveStore(s) {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); r
 function decisionOf(id) {{ return loadStore()[id] || null; }}
 function statusOf(id) {{ const d = decisionOf(id); return (d && d.status) || (byId[id] && byId[id].status) || "draft"; }}
 function moduleOf(r) {{ const d = decisionOf(r.ai_req_id); return (d && d.module_override) || r.module_effective || r.module || (r.labels||[])[0] || "未分模块"; }}
-function ownershipOf(r) {{
+function currentOwnershipOverride(r) {{
   const d = decisionOf(r.ai_req_id);
-  return (d && d.ownership_override) || r.ownership_effective || r.ownership || "software";
+  if (d && Object.prototype.hasOwnProperty.call(d, "ownership_override")) return d.ownership_override || "";
+  return (r.review_state && r.review_state.ownership_override) || "";
+}}
+function baseOwnership(r) {{
+  const serverOverride = (r.review_state && r.review_state.ownership_override) || "";
+  if (serverOverride && r.ownership_effective === serverOverride) return r.ownership || "";
+  return r.ownership_effective || r.ownership || "";
+}}
+function ownershipOf(r) {{
+  return currentOwnershipOverride(r) || baseOwnership(r);
+}}
+function ownershipOverrideForSave(id) {{
+  const r = byId[id] || {{}};
+  const selected = document.getElementById("own-sel").value;
+  if (!selected) return "";
+  const current = currentOwnershipOverride(r);
+  if (current && selected === current) return current;
+  const base = baseOwnership(r);
+  return selected !== base ? selected : "";
 }}
 
 function refreshDecidedCount() {{ document.getElementById("decided-count").textContent = String(Object.keys(loadStore()).length); }}
@@ -501,10 +519,11 @@ function select(id) {{
   const dev = (r.dev_guidance||[]).map(c => "<li>" + esc(c) + "</li>").join("");
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
   const ownershipOptions = [
+    ["", "自动/不覆盖"],
     ["software", "软件"],
     ["hardware", "硬件"],
     ["co_design", "软硬件协同"],
-  ].map(([value, label]) => '<option value="'+value+'"'+(value===ownershipOf(r)?' selected':'')+'>'+label+'</option>').join("");
+  ].map(([value, label]) => '<option value="'+esc(value)+'"'+(value===ownershipOf(r)?' selected':'')+'>'+esc(label)+'</option>').join("");
   document.getElementById("detail").innerHTML =
     '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">'+esc(moduleOf(r))+'</span>'+
     '<span class="badge st-'+st+'">'+esc(STATUS_LABELS[st]||st)+'</span></div>'+
@@ -532,9 +551,10 @@ function select(id) {{
 
 function decide(id, status) {{
   const store = loadStore();
+  const ownershipOverride = ownershipOverrideForSave(id);
   store[id] = {{ ai_req_id: id, status: status,
     module_override: document.getElementById("mod-sel").value !== (byId[id].module_effective||byId[id].module||"") ? document.getElementById("mod-sel").value : "",
-    ownership_override: document.getElementById("own-sel").value,
+    ownership_override: ownershipOverride,
     reason: document.getElementById("cmt").value, ts: GENERATED_AT }};
   saveStore(store); paintChips();
   const h = document.getElementById("hint"); if (h) h.textContent = "已" + (STATUS_LABELS[status]||status) + "（本地已存）";

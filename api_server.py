@@ -319,7 +319,7 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
                      for b in read_jsonl(output_dir / "blocks.jsonl")}
     enriched: list[dict] = []
     for req in requirements:
-        rid = ai_req_id(req)
+        rid = _source_ai_requirement_id(req)
         state = states.get(rid)
         row = dict(req)
         row["ai_req_id"] = rid
@@ -335,6 +335,14 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
         row["status"] = (state or {}).get("status") or "draft"
         enriched.append(row)
     return enriched
+
+
+def _source_ai_requirement_id(req: dict) -> str:
+    for key in ("ai_req_id", "stable_req_id", "req_id"):
+        explicit_id = str(req.get(key) or "").strip()
+        if explicit_id:
+            return explicit_id
+    return ai_req_id(req)
 
 
 def _load_ai_requirements(output_dir: Path) -> list[dict]:

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+import api_server
 from requirements_analysis import run_requirements_analysis
 
 
@@ -85,6 +86,41 @@ def test_run_requirements_analysis_applies_review_state_for_raw_ai_requirement(t
     item = payload["items"][0]
     assert item["source_requirement_ids"] == [computed_id]
     assert item["ownership"] == "co_design"
+    assert item["ownership_source"] == "reviewer_override"
+
+
+def test_api_review_id_matches_analysis_id_for_explicit_raw_ai_requirement(tmp_path: Path):
+    write_jsonl(tmp_path / "blocks.jsonl", [
+        {
+            "block_id": "B-1",
+            "order": 1,
+            "type": "paragraph",
+            "text": "The meter shall support Clock object daylight saving time.",
+            "section_path": ["4"],
+        }
+    ])
+    write_jsonl(tmp_path / "ai_requirements.jsonl", [
+        {
+            "ai_req_id": "AI-1",
+            "description": "The meter shall support Clock object daylight saving time.",
+            "source_quote": "support Clock object daylight saving time",
+            "source_block_ids": ["B-1"],
+            "module": "clock requirements",
+        }
+    ])
+    rows = api_server.build_ai_requirements(tmp_path)
+    review_id = rows[0]["ai_req_id"]
+    write_jsonl(tmp_path / "ai_review_states.jsonl", [
+        {"ai_req_id": review_id, "ownership_override": "hardware", "reason": "reviewed as hardware"}
+    ])
+
+    run_requirements_analysis(tmp_path, route="stub", template_path=None)
+
+    payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+    item = payload["items"][0]
+    assert review_id == "AI-1"
+    assert item["source_requirement_ids"] == ["AI-1"]
+    assert item["ownership"] == "hardware"
     assert item["ownership_source"] == "reviewer_override"
 
 

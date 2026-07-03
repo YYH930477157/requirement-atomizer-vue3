@@ -175,6 +175,24 @@ class DocAnnotationExportTests(unittest.TestCase):
             self.assertIn('id="own-sel"', rendered)
             self.assertIn("ownership_override", rendered)
 
+    def test_annotation_html_ownership_override_has_auto_no_override_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn('["", "自动/不覆盖"]', rendered)
+            self.assertIn("function baseOwnership", rendered)
+            self.assertIn("function currentOwnershipOverride", rendered)
+            self.assertIn("function ownershipOverrideForSave", rendered)
+            self.assertNotIn('|| "software"', rendered)
+            self.assertNotIn("|| 'software'", rendered)
+            self.assertIn('if (!selected) return "";', rendered)
+            self.assertIn("if (current && selected === current) return current;", rendered)
+            self.assertIn('return selected !== base ? selected : "";', rendered)
+            self.assertIn("const ownershipOverride = ownershipOverrideForSave(id);", rendered)
+            self.assertIn("ownership_override: ownershipOverride", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
