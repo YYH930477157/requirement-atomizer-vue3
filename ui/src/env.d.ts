@@ -17,6 +17,8 @@ declare global {
     summary?: unknown
     written?: string[]
     count?: number
+    analysis?: unknown
+    breakdown?: unknown
     merged?: unknown
     failed_sections?: number
     note?: string
@@ -100,6 +102,9 @@ declare global {
       aiExtract: (input: { outDir: string; llmRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
       exportAnnotationHtml: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       importAiDecisions: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
+      assembleSpec: (input: { outDir: string; enrichRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
+      composeEngineering: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
+      runRequirementsAnalysis: (input: { outDir: string; llmRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
     }
   }
 }

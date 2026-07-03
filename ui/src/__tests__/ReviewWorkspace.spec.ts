@@ -400,6 +400,95 @@ describe("review workspace shell", () => {
     expect(fetchMock).toHaveBeenCalled()
   })
 
+  it("runs the three terminal deliverables from their toolbar buttons", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        assembleSpec: vi.fn().mockResolvedValue({
+          kind: "assemble", count: 42,
+          written: ["assembled_spec.json", "dlms_cosem_spec.xlsx"], summary: {},
+        }),
+        runRequirementsAnalysis: vi.fn().mockResolvedValue({
+          kind: "requirements_analysis",
+          analysis: { analysis_count: 30, route: "stub", enriched: 0, enrich_degraded: 0 },
+          written: ["software_requirements.xlsx", "engineering_analysis.json"], summary: {},
+        }),
+        composeEngineering: vi.fn().mockResolvedValue({
+          kind: "compose", count: 12,
+          written: ["engineering_requirements/engineering_requirements.json"], summary: {},
+        }),
+      },
+    })
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.selectOutputDir).toHaveBeenCalled())
+
+    // 装配：LLM 关 → enrichRoute 空；打开主产物 xlsx
+    await wrapper.find('[data-testid="action-assemble"]').trigger("click")
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt", enrichRoute: "",
+      }))
+    expect(window.ratomizerDesktop?.openPath).toHaveBeenCalledWith("dlms_cosem_spec.xlsx")
+
+    // 软件需求分析：LLM 关 → llmRoute stub
+    await wrapper.find('[data-testid="action-analyze"]').trigger("click")
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt", llmRoute: "stub",
+      }))
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("30")
+
+    // 组装工程需求：无 LLM 参数
+    await wrapper.find('[data-testid="action-compose"]').trigger("click")
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.composeEngineering).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt",
+      }))
+  })
+
+  it("switches deliverable LLM routes when the LLM toggle is on", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        assembleSpec: vi.fn().mockResolvedValue({ kind: "assemble", count: 1, written: ["a.xlsx"], summary: {} }),
+        runRequirementsAnalysis: vi.fn().mockResolvedValue({
+          kind: "requirements_analysis",
+          analysis: { analysis_count: 1, route: "openai_compatible", enriched: 1, enrich_degraded: 0 },
+          written: ["software_requirements.xlsx"], summary: {},
+        }),
+      },
+    })
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await vi.waitFor(() => expect(window.ratomizerDesktop?.selectOutputDir).toHaveBeenCalled())
+    await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
+
+    await wrapper.find('[data-testid="action-assemble"]').trigger("click")
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt", enrichRoute: "openai_compatible",
+      }))
+
+    await wrapper.find('[data-testid="action-analyze"]').trigger("click")
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt", llmRoute: "openai_compatible",
+      }))
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("富化")
+  })
+
   it("runs a limited LLM test pass from the test button", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
