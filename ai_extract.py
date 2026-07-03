@@ -50,6 +50,9 @@ LOGGER = logging.getLogger("requirement_atomizer")
 
 AI_EXTRACT_PROMPT_VERSION = "ai-extract-v6"  # v6：新增 dev_guidance 研发落地指引（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
+SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
+DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
+MAX_SELF_CHECK_ROUNDS = 6  # 硬上限：再多也几乎无新增，纯烧 token
 DOC_CONTEXT_GLOSSARY_MAX = 1800   # 术语表注入上限（控 token 成本）
 DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
 _TERMS_HEADING_RE = re.compile(r"term|definition|abbreviat|glossary|术语|定义|符号", re.IGNORECASE)
@@ -90,6 +93,19 @@ def resolve_self_check(explicit: bool | None = None) -> bool:
     if not raw:
         return True
     return raw not in ("0", "false", "no", "off")
+
+
+def resolve_self_check_rounds(explicit: int | None = None) -> int:
+    """自检收敛轮数上限：显式参数优先，其次环境变量 RATOMIZER_AI_SELFCHECK_ROUNDS，否则默认 3。
+
+    夹在 1..MAX_SELF_CHECK_ROUNDS。收敛循环通常 1-2 轮就 dry（零新增）提前停，上限只是防发散兜底。
+    """
+    raw: Any = explicit if explicit is not None else os.environ.get(SELF_CHECK_ROUNDS_ENV)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_SELF_CHECK_MAX_ROUNDS
+    return max(1, min(MAX_SELF_CHECK_ROUNDS, value))
 
 VALID_TYPES = {"functional", "non_functional", "constraint", "business_rule"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
@@ -502,12 +518,14 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
 
 def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "",
                     self_check: bool = False,
-                    block_info: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+                    block_info: dict[str, dict[str, Any]] | None = None,
+                    self_check_rounds: int | None = None) -> list[dict[str, Any]]:
     """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。doc_context 注入文档全局背景。
 
-    self_check：抽完再查漏补缺。有 block_info 时**定向**——未覆盖的 requirement_like
-    语句作重点核查清单；本章节全覆盖且已有产出则跳过自检（省一次调用）。
-    无 block_info 回退全量盲查。自检调用失败不致命——保留初抽结果。
+    self_check：抽完**收敛式**查漏补缺——每轮对着当前已抽集重算未覆盖清单再补，直到某轮零新增
+    /全覆盖/触顶为止。单趟只能补"第一层可见"的遗漏；有些遗漏要等前几条补进去、覆盖清单缩小后才
+    暴露，收敛循环才抓得到。有 block_info 时**定向**（未覆盖 requirement_like 语句作重点核查
+    清单）；全覆盖则提前停。无 block_info 回退全量盲查，靠"零新增"收敛。自检失败不致命——保留已抽。
     """
     user = build_section_prompt(section)
     if doc_context:
@@ -516,19 +534,37 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
     payload = chat(SYSTEM_PROMPT, user)
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
     results = _process_raw_requirements(raw_reqs, section, context_ints) if isinstance(raw_reqs, list) else []
-    if self_check:
+    if not self_check:
+        return results
+
+    # 收敛循环只在**定向模式**（有 block_info，确定性覆盖信号）多轮：每轮针对仍未覆盖的
+    # requirement_like 语句补，覆盖清单随之缩小，直到全覆盖/零新增/触顶。有些遗漏要等前几条
+    # 补进去、清单缩小后才暴露，单趟抓不到。盲查（无 block_info）保持单趟——无覆盖锚点时反复
+    # 追问会诱发过度生成（幻觉压力），得不偿失。
+    max_rounds = resolve_self_check_rounds(self_check_rounds) if block_info else 1
+    added_total = 0
+    for round_no in range(1, max_rounds + 1):
         uncovered = _uncovered_requirement_lines(section, results, block_info)
+        # 定向模式下 requirement_like 全覆盖即收敛（无可查项，省一次调用）
         if uncovered is not None and not uncovered and results:
-            LOGGER.info("自检跳过（requirement_like 全覆盖，章节 %s）", section.get("section_id"))
-            return results
+            LOGGER.info("自检收敛（requirement_like 全覆盖，章节 %s，第 %d 轮）",
+                        section.get("section_id"), round_no)
+            break
         try:
             extra = critique_section(section, results, chat, doc_context, context_ints,
                                      focus_lines=uncovered or None)
-            if extra:
-                LOGGER.info("完整性自检补充 %d 条（章节 %s）", len(extra), section.get("section_id"))
-                results = results + extra
-        except LLMError as exc:  # 自检失败不致命，保留初抽
-            LOGGER.warning("完整性自检失败（保留初抽）：%s", exc)
+        except LLMError as exc:  # 自检失败不致命，保留已抽（含前几轮成果）
+            LOGGER.warning("完整性自检第 %d 轮失败（保留已抽）：%s", round_no, exc)
+            break
+        if not extra:  # 零新增 → 已收敛，无需再问
+            LOGGER.info("自检收敛（零新增，章节 %s，第 %d 轮）", section.get("section_id"), round_no)
+            break
+        results = results + extra
+        added_total += len(extra)
+        LOGGER.info("完整性自检第 %d 轮补充 %d 条（章节 %s）", round_no, len(extra), section.get("section_id"))
+        if round_no == max_rounds:  # 触顶仍有新增：记一笔，未必已穷尽（防发散优先）
+            LOGGER.info("自检触顶 %d 轮仍有新增（章节 %s，累计补 %d 条）",
+                        max_rounds, section.get("section_id"), added_total)
     return results
 
 
@@ -568,6 +604,7 @@ def extract_all(
     stats: dict[str, Any] | None = None,
     doc_context: str = "",
     self_check: bool = False,
+    self_check_rounds: int | None = None,
     block_info: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。
@@ -576,10 +613,12 @@ def extract_all(
     逐章节增量写缓存：长跑中途被中断也不丢已完成章节。
     stats：可选 out-dict，回填 total_sections / cached_sections / failed_sections。
     doc_context：文档全局上下文，注入每次抽取并计入指纹（背景变→缓存失效重抽）。
+    self_check_rounds：自检收敛轮数上限（None 走默认/env）；计入指纹，改轮数→缓存失效重抽。
     """
+    rounds = resolve_self_check_rounds(self_check_rounds) if self_check else 0
     context_key = (hashlib.sha256(doc_context.encode("utf-8")).hexdigest()[:12] if doc_context else "")
-    if self_check:  # 自检开/关产出不同 → 计入指纹，缓存不串
-        context_key += "|selfcheck"
+    if self_check:  # 自检开/关 + 轮数不同 → 产出不同，计入指纹，缓存不串
+        context_key += f"|selfcheck{rounds}"
     cache = read_cache(cache_path)
     results: list[list[dict[str, Any]] | None] = [None] * len(sections)
     pending: list[tuple[int, dict[str, Any], str]] = []
@@ -611,7 +650,8 @@ def extract_all(
     def work(item: tuple[int, dict[str, Any], str]) -> tuple[int, str, list[dict[str, Any]], bool]:
         idx, section, fp = item
         try:
-            return idx, fp, extract_section(section, chat, doc_context, self_check, block_info), True
+            return idx, fp, extract_section(section, chat, doc_context, self_check, block_info,
+                                            self_check_rounds=rounds or None), True
         except LLMError as exc:  # 最佳努力：该章节降级、不崩、不缓存（留待重跑）
             LOGGER.warning("AI 抽取章节失败：%s", exc)
             return idx, fp, [], False
@@ -772,7 +812,26 @@ def _write_merged_outputs(out_dir: Path, merged: dict[str, Any]) -> list[str]:
         written.append(merged_xlsx.name)
     except Exception as exc:  # Excel 失败不阻断 JSON 产出
         LOGGER.warning("合并 Excel 生成失败：%s", exc)
+    try:
+        written.append(_write_consistency_report(out_dir, merged).name)
+    except Exception as exc:  # 一致性报表失败不阻断交付物产出
+        LOGGER.warning("全局一致性报表生成失败：%s", exc)
     return written
+
+
+def _write_consistency_report(out_dir: Path, merged: dict[str, Any]) -> Path:
+    """P1 全局一致性 critic：跨章去重 + OBIS 共引 + 覆盖缺口（确定性，非破坏，只标记）。"""
+    import merged_consistency
+    blocks = read_jsonl(out_dir / "blocks.jsonl")
+    req_like = [b for b in blocks if b.get("requirement_like") and not b.get("noise")] if blocks else None
+    report = merged_consistency.analyze_consistency(merged.get("requirements") or [], req_like)
+    path = out_dir / "consistency_report.json"
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    dg = report["summary"]["duplicate_groups"]
+    vd = report["summary"]["obis_values_differ"]
+    if dg or vd:
+        LOGGER.info("全局一致性：疑似跨章重复 %d 组、OBIS 数值待核 %d 组（详见 consistency_report.json）", dg, vd)
+    return path
 
 
 def rebuild_merged_spec(out_dir: Path) -> dict[str, Any]:

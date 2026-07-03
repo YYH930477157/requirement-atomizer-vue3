@@ -37,6 +37,7 @@ ratomizer-gui = "gui.app:main"
 [tool.setuptools]
 py-modules = [
   "ai_extract",
+  "merged_consistency",
   "api_server",
   "assemble_spec",
   "atomic_requirement_schema",

@@ -34,6 +34,7 @@ spec_generator_modules = [
     "text_normalize",
     "io_utils",
     "ai_extract",
+    "merged_consistency",
     "ai_review_actions",
     "doc_annotation_export",
     "desktop_tasks",
