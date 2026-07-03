@@ -24,7 +24,7 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
 
 
 def validate_llm_item(item: dict[str, Any], source: dict[str, Any]) -> list[str]:
-    source_text = " ".join(str(source.get(field, "")) for field in ("source_quote", "description", "requirement"))
+    source_text = str(source.get("source_quote") or source.get("description") or source.get("requirement") or "")
     analysis_text = " ".join(
         str(item.get(field, ""))
         for field in ("requirement", "software_requirement_text", "hardware_dependency", "ownership_reason")

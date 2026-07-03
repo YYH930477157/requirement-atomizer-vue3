@@ -23,3 +23,15 @@ def test_validate_llm_item_rejects_number_drift():
     issues = validate_llm_item(item, source)
 
     assert "source number 900 missing from analysis text" in issues
+
+
+def test_validate_llm_item_uses_source_quote_before_description():
+    source = {
+        "source_quote": "capture period shall be 900 seconds",
+        "description": "fallback text mentions 600 seconds",
+    }
+    item = {"software_requirement_text": "系统应支持 900 seconds 捕获周期。"}
+
+    issues = validate_llm_item(item, source)
+
+    assert issues == []
