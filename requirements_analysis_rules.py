@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from requirements_analysis_schema import (
@@ -117,9 +118,21 @@ def _search_text(requirement: dict[str, Any]) -> str:
 
 def _first_match(text: str, terms: tuple[str, ...]) -> str | None:
     for term in terms:
-        if term.casefold() in text:
+        normalized_term = term.casefold()
+        if _contains_cjk(normalized_term) and normalized_term in text:
+            return term
+        if not _contains_cjk(normalized_term) and _matches_ascii_term(text, normalized_term):
             return term
     return None
+
+
+def _contains_cjk(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+def _matches_ascii_term(text: str, term: str) -> bool:
+    pattern = rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])"
+    return re.search(pattern, text) is not None
 
 
 def _decision(ownership: str, confidence: float, term: str) -> dict[str, Any]:

@@ -47,3 +47,23 @@ def test_low_signal_defaults_to_software_with_low_confidence():
 
     assert decision["ownership"] == "software"
     assert decision["ownership_confidence"] < 0.7
+
+
+def test_does_not_treat_english_keyword_substrings_as_software_signal():
+    req = {
+        "description": "The mechanical transaction counter is part of the enclosure.",
+        "module": "enclosure",
+    }
+
+    decision = classify_ownership(req)
+
+    assert decision["ownership"] == "hardware"
+    assert "mechanical" in decision["ownership_reason"]
+
+
+def test_p1_rule_does_not_match_p10():
+    req = {"description": "P10 port is a mechanical interface on this variant."}
+
+    decision = classify_ownership(req)
+
+    assert decision["ownership"] == "hardware"
