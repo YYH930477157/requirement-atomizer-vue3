@@ -22,7 +22,8 @@ function makeClient(over: Record<string, unknown> = {}) {
         source_section: "4", source_quote: "The meter shall measure volume.",
         source_block_ids: ["B2"], acceptance_criteria: ["按 4.2 测试"],
         dev_guidance: ["实现体积累计计量与本地存储"], labels: ["计量"],
-        suspicion_reasons: ["数字漂移"], review_state: null,
+        suspicion_reasons: ["数字漂移"], ownership: "software", ownership_effective: "software",
+        review_state: null,
       },
     ]),
     applyAiReviewAction: vi.fn().mockResolvedValue({ ai_req_id: "AIR-1", status: "accepted", module_override: null }),
@@ -69,6 +70,20 @@ describe("DocumentReview", () => {
     await flushPromises()
     expect(client.applyAiReviewAction).toHaveBeenCalledWith(
       expect.objectContaining({ aiReqId: "AIR-1", status: "rejected", moduleOverride: "计量精度" }),
+    )
+  })
+
+  it("changing the ownership dropdown sends ownership_override on decide", async () => {
+    const client = makeClient()
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    // 规则初判 software → 专家改判 硬件
+    await wrapper.find('[data-testid="dd-ownership-select"]').setValue("hardware")
+    await wrapper.find('[data-testid="dd-accept"]').trigger("click")
+    await flushPromises()
+    expect(client.applyAiReviewAction).toHaveBeenCalledWith(
+      expect.objectContaining({ aiReqId: "AIR-1", status: "accepted", ownershipOverride: "hardware" }),
     )
   })
 
