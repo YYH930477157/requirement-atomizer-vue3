@@ -112,5 +112,40 @@ class DocTests(unittest.TestCase):
         self.assertEqual(len(gaps), len(rs.COVERAGE_CHECKLIST) - 2)
 
 
+class MakeDocRobustnessTests(unittest.TestCase):
+    def _req(self, **kw) -> dict:
+        base = {"type": "functional", "priority": "P1", "labels": ["安全"],
+                "notes": "", "source_section": "4"}
+        base.update(kw)
+        return base
+
+    def test_tolerates_missing_source_section(self) -> None:
+        """裁决回流读原始 ai_requirements 时可能缺 source_section——不能 KeyError 崩整个装配。"""
+        reqs = [self._req(source_section="4"), self._req()]
+        del reqs[1]["source_section"]  # 第二条完全没有该字段
+
+        doc = rs.make_doc(reqs, source="s", extracted_at="t")
+
+        # 不抛异常，且缺该字段的条目不进 sections（只收有值的）
+        self.assertEqual(doc["meta"]["sections_analyzed"], ["4"])
+        self.assertEqual(doc["analysis"]["total_count"], 2)
+
+    def test_empty_source_section_excluded(self) -> None:
+        reqs = [self._req(source_section="4"), self._req(source_section="")]
+        doc = rs.make_doc(reqs, source="s", extracted_at="t")
+        self.assertEqual(doc["meta"]["sections_analyzed"], ["4"])
+
+    def test_tolerates_bare_requirement_missing_all_stat_fields(self) -> None:
+        """无裁决的 rebuild 跳过 ensure_domain_labels → 条目可缺 type/priority/labels/source_section。
+        make_doc 必须整体不崩，缺失字段回落 normalize 默认（functional/P2）。"""
+        doc = rs.make_doc([{}, {}], source="s", extracted_at="t")  # 两条空需求
+
+        self.assertEqual(doc["analysis"]["total_count"], 2)
+        self.assertEqual(doc["analysis"]["by_type"], {"functional": 2})
+        self.assertEqual(doc["analysis"]["by_priority"], {"P2": 2})
+        self.assertEqual(doc["analysis"]["by_domain"], {})
+        self.assertEqual(doc["meta"]["sections_analyzed"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

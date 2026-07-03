@@ -190,21 +190,27 @@ def make_doc(
     for i, req in enumerate(requirements, 1):
         req["id"] = f"REQ-{i:03d}"
 
+    # 全部用 .get() 兜底：裸下标会在缺字段时 KeyError 崩掉整个 make_doc（进而整个 rebuild/装配
+    # 任务，且只报 {"error": "'labels'"} 这类不透明信息）。裁决回流读原始 ai_requirements、或
+    # 无裁决时跳过 ensure_domain_labels，都可能缺 labels/source_section；用户也可能手改该文件。
+    # 默认值取 normalize_requirement 的同款默认（functional/P2），字段齐全时行为完全不变。
     by_type: dict[str, int] = {}
     by_priority: dict[str, int] = {}
     by_domain: dict[str, int] = {}
     for req in requirements:
-        by_type[req["type"]] = by_type.get(req["type"], 0) + 1
-        by_priority[req["priority"]] = by_priority.get(req["priority"], 0) + 1
-        for label in req["labels"]:
+        rtype = req.get("type") or "functional"
+        priority = req.get("priority") or "P2"
+        by_type[rtype] = by_type.get(rtype, 0) + 1
+        by_priority[priority] = by_priority.get(priority, 0) + 1
+        for label in req.get("labels") or []:
             by_domain[label] = by_domain.get(label, 0) + 1
 
     conflicts = [
-        {"requirement_ids": [req["id"]], "description": req["notes"]}
+        {"requirement_ids": [req["id"]], "description": req.get("notes", "")}
         for req in requirements if "编码漂移" in req.get("notes", "")
     ]
     gaps, passed = coverage_gaps(requirements)
-    sections = sorted({req["source_section"] for req in requirements if req["source_section"]})
+    sections = sorted({s for req in requirements if (s := req.get("source_section"))})
 
     return {
         "meta": {
