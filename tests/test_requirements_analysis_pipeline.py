@@ -62,6 +62,30 @@ def test_run_requirements_analysis_fills_base_item_contract(tmp_path: Path):
     assert item["software_requirement_text"] == ""
 
 
+def test_run_requirements_analysis_applies_review_state_for_raw_ai_requirement(tmp_path: Path):
+    from ai_review_actions import ai_req_id
+
+    req = {
+        "description": "The meter shall support Clock object daylight saving time.",
+        "source_quote": "support Clock object daylight saving time",
+        "source_block_ids": ["B-1"],
+        "module": "时钟需求",
+    }
+    computed_id = ai_req_id(req)
+    write_jsonl(tmp_path / "ai_requirements.jsonl", [req])
+    write_jsonl(tmp_path / "ai_review_states.jsonl", [
+        {"ai_req_id": computed_id, "ownership_override": "co_design", "reason": "人工改为协同"}
+    ])
+
+    run_requirements_analysis(tmp_path, route="stub", template_path=None)
+
+    payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+    item = payload["items"][0]
+    assert item["source_requirement_ids"] == [computed_id]
+    assert item["ownership"] == "co_design"
+    assert item["ownership_source"] == "reviewer_override"
+
+
 def test_parse_args_rejects_unknown_route():
     from requirements_analysis import parse_args
 
