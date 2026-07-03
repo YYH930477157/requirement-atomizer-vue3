@@ -48,8 +48,9 @@ def write_software_requirements_xlsx(items: list[dict[str, Any]], output_path: P
     if not grouped:
         grouped["软件需求"] = []
 
+    used_titles: set[str] = set()
     for module, rows in grouped.items():
-        ws = wb.create_sheet(_safe_sheet_title(module))
+        ws = wb.create_sheet(_unique_sheet_title(module, used_titles))
         ws.append(HEADERS)
         _style_header(ws)
         ws.freeze_panes = "A2"
@@ -105,3 +106,19 @@ def _style_header(ws: Any) -> None:
 def _safe_sheet_title(value: str) -> str:
     title = _INVALID_SHEET_TITLE_CHARS.sub("", value).strip()[:31]
     return title or "软件需求"
+
+
+def _unique_sheet_title(value: str, used_titles: set[str]) -> str:
+    base = _safe_sheet_title(value)
+    if base not in used_titles:
+        used_titles.add(base)
+        return base
+
+    index = 2
+    while True:
+        suffix = f"~{index}"
+        title = f"{base[:31 - len(suffix)]}{suffix}"
+        if title not in used_titles:
+            used_titles.add(title)
+            return title
+        index += 1
