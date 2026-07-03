@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from requirements_analysis_schema import (
     apply_ownership_override,
     build_analysis_id,
@@ -35,6 +37,17 @@ def test_apply_ownership_override_wins_over_existing_decision():
     assert updated["ownership"] == "software"
     assert updated["ownership_source"] == "reviewer_override"
     assert "规则或 LLM 判断被人工归属覆盖" in updated["notes"][0]
+
+
+def test_apply_ownership_override_accepts_attribute_state():
+    item = {"ownership": "hardware", "ownership_source": "rule", "notes": []}
+    state = SimpleNamespace(ownership_override="software", reason="软件侧实现")
+
+    updated = apply_ownership_override(item, state)
+
+    assert updated["ownership"] == "software"
+    assert updated["ownership_source"] == "reviewer_override"
+    assert updated["ownership_confidence"] == 1.0
 
 
 def test_build_analysis_id_is_stable_and_prefixed():

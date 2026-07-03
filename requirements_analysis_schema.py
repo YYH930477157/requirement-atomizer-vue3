@@ -34,20 +34,27 @@ def build_analysis_id(index: int) -> str:
     return f"ANREQ-{index:06d}"
 
 
-def apply_ownership_override(item: dict[str, Any], state: dict[str, Any] | None) -> dict[str, Any]:
+def _state_value(state: Any, key: str) -> Any:
+    if isinstance(state, dict):
+        return state.get(key)
+    return getattr(state, key, None)
+
+
+def apply_ownership_override(item: dict[str, Any], state: Any) -> dict[str, Any]:
     updated = deepcopy(item)
-    if not state or not state.get("ownership_override"):
+    ownership_override = _state_value(state, "ownership_override")
+    if not state or not ownership_override:
         return updated
 
     original_ownership = updated.get("ownership")
-    override_ownership = normalize_ownership(state["ownership_override"])
+    override_ownership = normalize_ownership(ownership_override)
     updated["ownership"] = override_ownership
     updated["ownership_source"] = "reviewer_override"
     updated["ownership_confidence"] = 1.0
 
     if original_ownership != override_ownership:
         notes = updated.setdefault("notes", [])
-        reason = state.get("reason")
+        reason = _state_value(state, "reason")
         message = "规则或 LLM 判断被人工归属覆盖"
         if reason:
             message = f"{message}: {reason}"
