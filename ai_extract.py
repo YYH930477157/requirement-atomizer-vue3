@@ -812,7 +812,26 @@ def _write_merged_outputs(out_dir: Path, merged: dict[str, Any]) -> list[str]:
         written.append(merged_xlsx.name)
     except Exception as exc:  # Excel 失败不阻断 JSON 产出
         LOGGER.warning("合并 Excel 生成失败：%s", exc)
+    try:
+        written.append(_write_consistency_report(out_dir, merged).name)
+    except Exception as exc:  # 一致性报表失败不阻断交付物产出
+        LOGGER.warning("全局一致性报表生成失败：%s", exc)
     return written
+
+
+def _write_consistency_report(out_dir: Path, merged: dict[str, Any]) -> Path:
+    """P1 全局一致性 critic：跨章去重 + OBIS 共引 + 覆盖缺口（确定性，非破坏，只标记）。"""
+    import merged_consistency
+    blocks = read_jsonl(out_dir / "blocks.jsonl")
+    req_like = [b for b in blocks if b.get("requirement_like") and not b.get("noise")] if blocks else None
+    report = merged_consistency.analyze_consistency(merged.get("requirements") or [], req_like)
+    path = out_dir / "consistency_report.json"
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    dg = report["summary"]["duplicate_groups"]
+    vd = report["summary"]["obis_values_differ"]
+    if dg or vd:
+        LOGGER.info("全局一致性：疑似跨章重复 %d 组、OBIS 数值待核 %d 组（详见 consistency_report.json）", dg, vd)
+    return path
 
 
 def rebuild_merged_spec(out_dir: Path) -> dict[str, Any]:
