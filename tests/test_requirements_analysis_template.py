@@ -16,6 +16,7 @@ def test_extracts_sheet_modules_and_submodules(tmp_path: Path):
     ws.append(["关闭", "序号", "子模块", "描述", "需求"])
     ws.append(["", 1, "时钟", "夏令时：", "支持"])
     ws.append(["", 2, "时钟同步", "时区：", "东八区"])
+    ws.append(["", 3, "时钟", "重复：", "忽略"])
     ws2 = wb.create_sheet("协议栈需求")
     ws2.append(["关闭", "序号", "子模块", "描述", "需求"])
     ws2.append(["", 1, "通信口1", "通信方式：", "Optical"])
