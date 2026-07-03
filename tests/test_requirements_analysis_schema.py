@@ -60,6 +60,25 @@ def test_apply_ownership_override_without_previous_ownership_does_not_add_overri
     assert updated["notes"] == []
 
 
+def test_apply_ownership_override_normalizes_existing_notes_before_append():
+    item = {"ownership": "hardware", "notes": None}
+    state = {"ownership_override": "software"}
+
+    updated = apply_ownership_override(item, state)
+
+    assert updated["notes"] == ["规则或 LLM 判断被人工归属覆盖"]
+
+
+def test_apply_ownership_override_compares_normalized_previous_ownership():
+    item = {"ownership": "软件", "notes": []}
+    state = {"ownership_override": "software"}
+
+    updated = apply_ownership_override(item, state)
+
+    assert updated["ownership"] == "software"
+    assert updated["notes"] == []
+
+
 def test_build_analysis_id_is_stable_and_prefixed():
     assert build_analysis_id(1) == "ANREQ-000001"
     assert build_analysis_id(42) == "ANREQ-000042"
@@ -76,3 +95,18 @@ def test_validate_analysis_item_requires_source_ids():
     issues = validate_analysis_item(item)
 
     assert issues == ["source_requirement_ids is required"]
+
+
+def test_validate_analysis_item_rejects_malformed_shapes():
+    item = {
+        "analysis_id": "ANREQ-x",
+        "ownership": "software",
+        "source_requirement_ids": "AI-1",
+        "source_block_ids": 123,
+    }
+
+    issues = validate_analysis_item(item)
+
+    assert "analysis_id must match ANREQ-000000" in issues
+    assert "source_requirement_ids must be a list" in issues
+    assert "source_block_ids must be a list" in issues
