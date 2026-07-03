@@ -34,6 +34,12 @@ spec_generator_modules = [
     "doc_annotation_export",
     "desktop_tasks",
     "meter_profile",
+    "requirements_analysis",
+    "requirements_analysis_agent",
+    "requirements_analysis_excel",
+    "requirements_analysis_rules",
+    "requirements_analysis_schema",
+    "requirements_analysis_template",
 ]
 
 hiddenimports = (

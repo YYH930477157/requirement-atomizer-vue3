@@ -14,11 +14,18 @@ from engineering_composer import compose_engineering_requirements, write_enginee
 from export_requirements import export_requirements
 from llm_pipeline import read_jsonl, run_review_pipeline
 from requirement_kb.cli import default_kb_paths, package_root
+from requirements_analysis import run_requirements_analysis
 from spec_export import export_spec
 
 
 ASSEMBLED_JSON = "dlms_cosem_spec_requirements.json"
 PROGRESS_PREFIX = "__RATOMIZER_PROGRESS__"
+REQUIREMENTS_ANALYSIS_OUTPUTS = [
+    "engineering_analysis.json",
+    "hardware_items.md",
+    "co_design_items.md",
+    "software_requirements.xlsx",
+]
 
 
 def resolve_bundled_path(path: Path | None) -> Path | None:
@@ -131,6 +138,23 @@ def compose_task(out_dir: Path) -> dict[str, Any]:
         "count": int(analysis.get("requirement_functions") or len(model.get("requirement_functions", []))),
         "analysis": analysis,
         "written": written,
+        "summary": build_output_summary(out_dir),
+    }
+
+
+def requirements_analysis_task(
+    out_dir: Path,
+    *,
+    route: str = "stub",
+    template_path: Path | None = None,
+) -> dict[str, Any]:
+    out_dir = out_dir.expanduser().resolve()
+    analysis = run_requirements_analysis(out_dir, route=route, template_path=template_path)
+    return {
+        "kind": "requirements_analysis",
+        "out_dir": str(out_dir),
+        "analysis": analysis,
+        "written": [str(out_dir / name) for name in REQUIREMENTS_ANALYSIS_OUTPUTS],
         "summary": build_output_summary(out_dir),
     }
 
@@ -259,6 +283,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     compose_parser = subparsers.add_parser("compose")
     compose_parser.add_argument("--out", type=Path, required=True)
 
+    requirements_analysis_parser = subparsers.add_parser("requirements-analysis")
+    requirements_analysis_parser.add_argument("--out", type=Path, required=True)
+    requirements_analysis_parser.add_argument("--template", type=Path, default=None)
+    requirements_analysis_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="stub")
+
     ai_extract_parser = subparsers.add_parser("ai-extract")
     ai_extract_parser.add_argument("--out", type=Path, required=True)
     ai_extract_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="openai_compatible")
@@ -296,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = assemble_task(args.out, formats=split_formats(args.formats), enrich_route=args.enrich_route or None)
         elif args.command == "compose":
             payload = compose_task(args.out)
+        elif args.command == "requirements-analysis":
+            payload = requirements_analysis_task(args.out, route=args.llm_route, template_path=args.template)
         elif args.command == "ai-extract":
             payload = ai_extract_task(args.out, route=args.llm_route)
         elif args.command == "export-annotation-html":

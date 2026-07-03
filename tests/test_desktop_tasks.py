@@ -244,6 +244,62 @@ class DesktopTaskTests(unittest.TestCase):
         compose.assert_called_once_with(out_dir)
         self.assertEqual(json.loads(stdout.getvalue())["kind"], "compose")
 
+    def test_requirements_analysis_task_wraps_run_requirements_analysis(self) -> None:
+        from desktop_tasks import requirements_analysis_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            template = Path(tmp) / "template.xlsx"
+            out_dir.mkdir()
+            with patch("desktop_tasks.run_requirements_analysis") as run_analysis:
+                run_analysis.return_value = {"kind": "requirements_analysis", "analysis_count": 1, "issues": 0}
+
+                payload = requirements_analysis_task(out_dir, route="stub", template_path=template)
+
+        run_analysis.assert_called_once_with(out_dir.resolve(), route="stub", template_path=template)
+        self.assertEqual(payload["kind"], "requirements_analysis")
+        self.assertEqual(payload["analysis"]["analysis_count"], 1)
+        self.assertEqual(
+            payload["written"],
+            [
+                str(out_dir.resolve() / "engineering_analysis.json"),
+                str(out_dir.resolve() / "hardware_items.md"),
+                str(out_dir.resolve() / "co_design_items.md"),
+                str(out_dir.resolve() / "software_requirements.xlsx"),
+            ],
+        )
+        self.assertEqual(payload["summary"]["counts"]["requirements"], 0)
+
+    def test_main_requirements_analysis_command_dispatches(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            template = Path(tmp) / "template.xlsx"
+            with patch("desktop_tasks.requirements_analysis_task") as task:
+                task.return_value = {
+                    "kind": "requirements_analysis",
+                    "out_dir": str(out_dir),
+                    "analysis": {"analysis_count": 1},
+                    "written": [],
+                    "summary": {},
+                }
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = desktop_tasks.main([
+                        "requirements-analysis",
+                        "--out",
+                        str(out_dir),
+                        "--llm-route",
+                        "stub",
+                        "--template",
+                        str(template),
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        task.assert_called_once_with(out_dir, route="stub", template_path=template)
+        self.assertEqual(json.loads(stdout.getvalue())["kind"], "requirements_analysis")
+
     def test_ai_extract_task_wraps_run_ai_extract(self) -> None:
         import desktop_tasks
 

@@ -167,6 +167,45 @@ class CliContractTests(unittest.TestCase):
         self.assertTrue(json.loads(result.stdout)["ok"])
         self.assertEqual(result.stderr, "")
 
+    def test_analyze_writes_requirements_analysis_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            template_path = tmp_path / "template.xlsx"
+            row = {
+                "ai_req_id": "AI-1",
+                "description": "The meter shall support push notifications.",
+                "source_quote": "support push notifications",
+                "source_block_ids": ["B-1"],
+                "module": "push requirements",
+            }
+            (out_dir / "ai_requirements.jsonl").write_text(
+                json.dumps(row, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            result = self.run_cli(
+                "analyze",
+                "--out",
+                str(out_dir),
+                "--template",
+                str(template_path),
+                "--llm-route",
+                "stub",
+                "--quiet",
+            )
+            engineering_exists = (out_dir / "engineering_analysis.json").exists()
+            workbook_exists = (out_dir / "software_requirements.xlsx").exists()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads(result.stdout)
+        self.assertEqual(envelope["command"], "analyze")
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(envelope["analysis"]["analysis_count"], 1)
+        self.assertTrue(engineering_exists)
+        self.assertTrue(workbook_exists)
+
     def test_run_full_pipeline_works_from_non_repo_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

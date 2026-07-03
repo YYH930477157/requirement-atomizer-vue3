@@ -39,6 +39,14 @@ from table_pattern_engine import load_table_patterns, match_table_pattern
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REQUIREMENTS_ANALYSIS_MODULES = [
+    "requirements_analysis",
+    "requirements_analysis_agent",
+    "requirements_analysis_excel",
+    "requirements_analysis_rules",
+    "requirements_analysis_schema",
+    "requirements_analysis_template",
+]
 
 
 class TestAPIServer:
@@ -927,6 +935,8 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertIn("engineering_composer", py_modules)
         self.assertIn("desktop_backend", py_modules)
         self.assertIn("llm_client", py_modules)
+        for module in REQUIREMENTS_ANALYSIS_MODULES:
+            self.assertIn(module, py_modules)
         self.assertNotIn("kb_api", py_modules)
         self.assertNotIn("kb_matching", py_modules)
         self.assertNotIn("kb_query", py_modules)
@@ -948,6 +958,12 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertEqual(payload["project"]["optional-dependencies"]["package"], ["pyinstaller>=6.0"])
         self.assertEqual(payload["project"]["gui-scripts"]["ratomizer-gui"], "gui.app:main")
         self.assertEqual(payload["tool"]["setuptools"]["package-data"]["gui"], ["theme.qss.template"])
+
+    def test_desktop_backend_spec_includes_requirements_analysis_modules(self) -> None:
+        spec_text = (ROOT / "packaging" / "desktop_backend.spec").read_text(encoding="utf-8")
+
+        for module in REQUIREMENTS_ANALYSIS_MODULES:
+            self.assertIn(f'"{module}"', spec_text)
 
     def test_write_jsonl_writes_utf8_lines(self) -> None:
         path = ROOT / ".tmp_test_review_results.jsonl"

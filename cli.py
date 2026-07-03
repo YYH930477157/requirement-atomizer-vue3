@@ -15,6 +15,7 @@ from export_requirements import export_requirements
 from llm_client import LLMConnectionError
 from llm_pipeline import run_review_pipeline
 from requirement_kb.cli import default_kb_paths
+from requirements_analysis import run_requirements_analysis
 from version import __version__
 
 
@@ -89,6 +90,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     compose.add_argument("--out", type=Path, required=True)
     add_verbosity_arguments(compose)
 
+    analyze = subparsers.add_parser("analyze", help="Run requirements analysis agent.")
+    analyze.add_argument("--out", type=Path, required=True)
+    analyze.add_argument("--template", type=Path, default=None)
+    analyze.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="stub")
+    add_verbosity_arguments(analyze)
+
     args = parser.parse_args(argv)
     if args.version:
         return args
@@ -137,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
             envelope = command_export(args, started, timing_ms)
         elif args.command == "compose":
             envelope = command_compose(args, started, timing_ms)
+        elif args.command == "analyze":
+            envelope = command_analyze(args, started, timing_ms)
         else:
             raise AtomizerInputError(f"Unknown command: {args.command}")
     except AtomizerInputError as exc:
@@ -232,6 +241,15 @@ def command_compose(args: argparse.Namespace, started: float, timing_ms: dict[st
     timing_ms["total"] = timing_ms["compose"]
     envelope = success_envelope("compose", args.out, exports=exports, timing_ms=timing_ms)
     envelope["engineering"] = model.get("analysis", {})
+    return envelope
+
+
+def command_analyze(args: argparse.Namespace, started: float, timing_ms: dict[str, int]) -> dict[str, Any]:
+    analysis = run_requirements_analysis(args.out, route=args.llm_route, template_path=args.template)
+    timing_ms["analyze"] = elapsed_ms(started)
+    timing_ms["total"] = timing_ms["analyze"]
+    envelope = success_envelope("analyze", args.out, timing_ms=timing_ms)
+    envelope["analysis"] = analysis
     return envelope
 
 
