@@ -55,6 +55,43 @@ class ResolveKbPathsTests(unittest.TestCase):
                 self.assertEqual(resolve_bundled_path(rel), root / rel)
 
 
+class RunLoggingTests(unittest.TestCase):
+    """GUI 路径日志：run.log 跟着输出目录走；任务结束关句柄（不锁目录）；幂等不重复挂 handler。"""
+
+    def tearDown(self) -> None:
+        import desktop_tasks
+        desktop_tasks.teardown_run_logging()
+
+    def test_setup_writes_run_log_and_is_idempotent(self) -> None:
+        import logging
+        from desktop_tasks import setup_run_logging, teardown_run_logging
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            setup_run_logging(out)
+            setup_run_logging(out)   # 幂等：不重复挂 handler
+            logger = logging.getLogger("requirement_atomizer")
+            tags = [getattr(h, "_ratomizer_tag", None) for h in logger.handlers]
+            self.assertEqual(tags.count("runlog"), 1)
+            logger.info("marker-line-123")
+            teardown_run_logging()   # 关句柄，tmp 目录才能删（Windows）
+            content = (out / "run.log").read_text(encoding="utf-8")
+        self.assertIn("marker-line-123", content)
+
+    def test_main_produces_run_log_for_summary_command(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "o"
+            out.mkdir()
+            write_jsonl(out / "atomic_requirements.jsonl", [])
+            with redirect_stdout(io.StringIO()):
+                exit_code = desktop_tasks.main(["summary", "--out", str(out)])
+            self.assertEqual(exit_code, 0)
+            log_text = (out / "run.log").read_text(encoding="utf-8")
+        self.assertIn("desktop task 开始：summary", log_text)
+
+
 class DesktopTaskTests(unittest.TestCase):
     def test_run_pipeline_task_uses_default_kbs_when_not_supplied(self) -> None:
         from desktop_tasks import run_pipeline_task

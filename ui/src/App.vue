@@ -356,6 +356,7 @@
                 <button class="button" type="button" data-testid="settings-test" :disabled="isTestingSettings" @click="handleTestLlmConnection">
                   {{ isTestingSettings ? "测试中" : "测试连接" }}
                 </button>
+                <button class="button" type="button" data-testid="settings-open-logs" @click="handleOpenLogs">打开日志目录</button>
                 <span class="settings-status" data-testid="settings-status">{{ settingsStatus }}</span>
               </div>
             </section>
@@ -673,6 +674,12 @@ async function handleSaveLlmSettings() {
   } finally {
     isSavingSettings.value = false
   }
+}
+
+async function handleOpenLogs() {
+  // 后端 stderr（LLM 调用时长/降级/被拒原因）按日落在这里；每次运行还有 <输出目录>/run.log
+  const result = await window.ratomizerDesktop?.openLogsDir?.()
+  settingsStatus.value = result?.dir ? `日志目录已打开：${result.dir}` : "当前环境不支持（仅桌面应用可用）"
 }
 
 async function handleTestLlmConnection() {

@@ -385,6 +385,9 @@ def apply_llm_environment_overrides(payload: dict[str, Any]) -> dict[str, Any]:
         "max_tokens": "RATOMIZER_LLM_MAX_TOKENS",
         "timeout_s": "RATOMIZER_LLM_TIMEOUT_S",
         "max_retries": "RATOMIZER_LLM_MAX_RETRIES",
+        # 并发此前不在覆盖表——GUI「AI 抽取并发」只影响 ai_extract/analyze（各自读
+        # RATOMIZER_LLM_CONCURRENCY），审查管线与装配富化被 yaml 锁死在 4、设置传不进去
+        "concurrency": "RATOMIZER_LLM_CONCURRENCY",
     }
     for key, env_name in env_map.items():
         value = os.environ.get(env_name)

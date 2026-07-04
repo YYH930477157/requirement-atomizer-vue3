@@ -1,12 +1,41 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+LOGGER = logging.getLogger("requirement_atomizer")
+
+# LLM 消息级追踪：set_trace_path() 启用后，每次 HTTP 调用（含 JSON 修复回路）在
+# llm_trace.jsonl 追加一行完整收发——messages 原文 + 响应全文（含 usage token 用量、
+# 推理模型的 reasoning_content）。排查"为什么被拒/为什么 0 条/为什么慢"看这里。
+# 写入线程安全（并发富化/抽取共用），失败绝不影响调用本身。
+_TRACE_PATH: Path | None = None
+_TRACE_LOCK = threading.Lock()
+
+
+def set_trace_path(path: Path | None) -> None:
+    global _TRACE_PATH
+    _TRACE_PATH = Path(path) if path is not None else None
+
+
+def _write_trace(record: dict[str, Any]) -> None:
+    if _TRACE_PATH is None:
+        return
+    try:
+        line = json.dumps(record, ensure_ascii=False)
+        with _TRACE_LOCK:
+            with _TRACE_PATH.open("a", encoding="utf-8", newline="\n") as f:
+                f.write(line + "\n")
+    except Exception:  # pragma: no cover - 追踪写失败不影响任务
+        pass
 
 
 class LLMError(Exception):
@@ -96,12 +125,28 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
     max_attempts = max(0, int(config.max_retries)) + 1
     for attempt in range(max_attempts):
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
                 raw = response.read().decode("utf-8")
-                return _loads_response_json(raw)
+                duration = time.monotonic() - started
+                # 每次 LLM 调用记时长（慢的可见性：推理模型单次可达 50-130s，没有这行
+                # 用户只能感觉"卡"）。所有 LLM 环节（抽取/审查/富化/分析/翻译）共此一处。
+                LOGGER.info("LLM 调用 model=%s dur=%.1fs attempt=%d bytes=%d",
+                            config.model, duration, attempt + 1, len(raw))
+                parsed = _loads_response_json(raw)
+                _write_trace({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "model": config.model,
+                              "dur_s": round(duration, 1), "attempt": attempt + 1,
+                              "messages": payload.get("messages"), "response": parsed})
+                return parsed
         except urllib.error.HTTPError as exc:
             raw = _read_error_body(exc)
+            LOGGER.warning("LLM 调用失败 model=%s dur=%.1fs attempt=%d http=%s",
+                           config.model, time.monotonic() - started, attempt + 1, exc.code)
+            _write_trace({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "model": config.model,
+                          "dur_s": round(time.monotonic() - started, 1), "attempt": attempt + 1,
+                          "messages": payload.get("messages"),
+                          "error": {"http": exc.code, "body": raw[:2000]}})
             if exc.code in {401, 403}:
                 raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
             if _is_retryable_status(exc.code):
@@ -111,6 +156,9 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                 raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
             raise LLMResponseError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            LOGGER.warning("LLM 连接异常 model=%s dur=%.1fs attempt=%d err=%s",
+                           config.model, time.monotonic() - started, attempt + 1,
+                           str(exc)[:120])
             if attempt + 1 < max_attempts:
                 time.sleep(_retry_delay(attempt, None))
                 continue

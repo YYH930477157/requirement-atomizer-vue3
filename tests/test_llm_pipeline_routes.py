@@ -90,6 +90,22 @@ class EnvironmentRouteOverrideTests(unittest.TestCase):
         self.assertEqual(config.timeout_s, 15.0)
         self.assertEqual(config.max_retries, 0)
 
+    def test_concurrency_env_override_reaches_route_payload(self) -> None:
+        """GUI「AI 抽取并发」此前只影响 ai_extract/analyze——审查管线与装配富化被 yaml 锁死在 4。
+        concurrency 进覆盖表后，同一设置对全部 LLM 环节生效。"""
+        from llm_pipeline import apply_llm_environment_overrides
+
+        payload = {"base_url": "http://x/v1", "model": "m", "concurrency": 4}
+        with patch.dict("os.environ", {"RATOMIZER_LLM_CONCURRENCY": "8"}, clear=False):
+            merged = apply_llm_environment_overrides(payload)
+        self.assertEqual(int(merged["concurrency"]), 8)   # 消费方 int() 转换
+
+        with patch.dict("os.environ", {}, clear=False):
+            import os as _os
+            _os.environ.pop("RATOMIZER_LLM_CONCURRENCY", None)
+            merged = apply_llm_environment_overrides(payload)
+        self.assertEqual(int(merged["concurrency"]), 4)   # 未设 env 保持 yaml 值
+
 
 def openai_review(decision: str = "accept", confidence: float = 0.88) -> dict[str, Any]:
     payload = {

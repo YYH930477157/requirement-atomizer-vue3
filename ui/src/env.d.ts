@@ -106,6 +106,7 @@ declare global {
       assembleSpec: (input: { outDir: string; enrichRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
       composeEngineering: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       runRequirementsAnalysis: (input: { outDir: string; llmRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
+      openLogsDir: () => Promise<{ dir: string }>
     }
   }
 }
