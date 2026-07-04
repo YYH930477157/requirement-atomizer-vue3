@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import assemble_spec
 
@@ -170,6 +171,56 @@ class AssembleSpecTests(unittest.TestCase):
             ids = {e["spec_id"] for e in doc["external_references"]["references"]}
             self.assertIn("IEC 62056-5-3", ids)
             self.assertIn("external_references", doc["analysis"]["coverage_report"])
+
+    def test_blue_book_index_path_passed_to_p3_enrichment_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            reviews = write_fixture(out)
+            index_path = out / "blue_book_index.json"
+            index_path.write_text('{"interface_classes": {}}', encoding="utf-8")
+
+            with patch("spec_enrich.enrich_requirement_lists") as enrich:
+                enrich.return_value = {"enriched": 0, "rejected": 0, "failed": 0, "route": "stub"}
+                assemble_spec.assemble(
+                    out,
+                    reviews,
+                    source="t",
+                    extracted_at="2026-06-14T10:00:00",
+                    enrich_route="openai_compatible",
+                    blue_book_index_path=index_path,
+                )
+
+        enrich.assert_called_once()
+        args, kwargs = enrich.call_args
+        self.assertEqual(len(args[0]), 1)
+        self.assertEqual(kwargs["blue_book_index_path"], index_path)
+
+    def test_blue_book_class_id_context_does_not_leak_to_final_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            write_jsonl(out / "atomic_requirements.jsonl", [
+                {"stable_req_id": "F-REG", "requirement_type": "functional", "object": "Register.value",
+                 "requirement": "The Register value shall be readable.", "source_refs": ["BLK-1"],
+                 "class_id": "3", "confidence": 0.9},
+            ])
+            write_jsonl(out / "table_items.jsonl", [])
+            reviews = out / "reviews.jsonl"
+            write_jsonl(reviews, [
+                {"stable_req_id": "F-REG", "decision": "accept",
+                 "revised_requirement": "The Register value shall be readable."},
+            ])
+            index_path = out / "blue_book_index.json"
+            index_path.write_text('{"interface_classes": {"3": {"name": "Register", "section": "4.3.2", "text": "Register value"}}}', encoding="utf-8")
+
+            doc, _ = assemble_spec.assemble(
+                out,
+                reviews,
+                source="t",
+                extracted_at="2026-06-14T10:00:00",
+                blue_book_index_path=index_path,
+            )
+
+        self.assertNotIn("class_id", doc["requirements"][0])
 
 
 class ObjectSourceSectionTests(unittest.TestCase):

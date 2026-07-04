@@ -59,6 +59,19 @@ def extract_ints(text: str) -> set[str]:
     return set(re.findall(r"\d+", str(text or "")))
 
 
+def _class_id_from_row(row: dict[str, Any]) -> str:
+    direct = str(row.get("class_id") or row.get("interface_class") or "").strip()
+    if direct:
+        return direct
+    params = row.get("parameters")
+    if isinstance(params, dict):
+        for key in ("class_id", "CL", "cl"):
+            value = str(params.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def derive_item(row: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
     rid = next((str(row.get(k)) for k in ("stable_req_id", "req_id") if row.get(k)), "")
     original = normalize_event_id(str(row.get("requirement") or ""))
@@ -89,6 +102,7 @@ def derive_item(row: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
     return {
         "stable_req_id": rid,
         "type": row.get("requirement_type"),
+        "class_id": _class_id_from_row(row),
         "object": normalize_event_id(str(row.get("object") or "")),
         "original": original,
         "behavior": revised if derived else original,

@@ -83,8 +83,9 @@ class AssembleSpecWorkerTests(unittest.TestCase):
 
         seen: dict[str, Any] = {}
 
-        def spy(requirement_lists, *, out_dir, route, pipeline_path=None):  # noqa: ANN001
+        def spy(requirement_lists, *, out_dir, route, pipeline_path=None, blue_book_index_path=None):  # noqa: ANN001
             seen["route"] = route
+            seen["blue_book_index_path"] = blue_book_index_path
             return {"enriched": 2, "rejected": 1, "failed": 0, "route": "openai_compatible"}
 
         orig = spec_enrich.enrich_requirement_lists
@@ -102,6 +103,7 @@ class AssembleSpecWorkerTests(unittest.TestCase):
             spec_enrich.enrich_requirement_lists = orig
 
         self.assertEqual(seen.get("route"), "openai_compatible")        # 透传到富化层
+        self.assertIsNone(seen.get("blue_book_index_path"))             # GUI 面板本期不接 Blue Book 索引
         self.assertTrue(finished)
         self.assertEqual(finished[0]["breakdown"]["enrich"]["route"], "openai_compatible")
 

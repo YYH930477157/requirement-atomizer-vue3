@@ -199,6 +199,52 @@ class DesktopTaskTests(unittest.TestCase):
         self.assertIn(str(out_dir / "dlms_cosem_spec_requirements.md"), payload["written"])
         export_spec.assert_called_once()
 
+    def test_assemble_task_passes_blue_book_index_to_assemble(self) -> None:
+        from desktop_tasks import assemble_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            index_path = out_dir / "blue_book_index.json"
+            index_path.write_text("{}", encoding="utf-8")
+            with patch("desktop_tasks.assemble") as assemble:
+                assemble.return_value = ({"requirements": [], "analysis": {}}, {"total": 0})
+
+                assemble_task(out_dir, formats=[], enrich_route="openai_compatible", blue_book_index_path=index_path)
+
+        assemble.assert_called_once()
+        self.assertEqual(assemble.call_args.kwargs["blue_book_index_path"], index_path)
+
+    def test_main_assemble_accepts_blue_book_index_argument(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            index_path = Path(tmp) / "blue_book_index.json"
+            index_path.write_text("{}", encoding="utf-8")
+            with patch("desktop_tasks.assemble_task") as assemble:
+                assemble.return_value = {"kind": "assemble", "out_dir": str(out_dir), "written": []}
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = desktop_tasks.main([
+                        "assemble",
+                        "--out",
+                        str(out_dir),
+                        "--formats",
+                        "",
+                        "--enrich-route",
+                        "openai_compatible",
+                        "--blue-book-index",
+                        str(index_path),
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        assemble.assert_called_once_with(
+            out_dir,
+            formats=[],
+            enrich_route="openai_compatible",
+            blue_book_index_path=index_path,
+        )
+
     def test_compose_task_writes_engineering_requirement_outputs(self) -> None:
         from desktop_tasks import compose_task
 

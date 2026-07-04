@@ -216,8 +216,28 @@ def p2_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
     return reqs
 
 
+def _attach_behavior_class_ids(requirements: list[dict[str, Any]], behavior_model: dict[str, Any]) -> None:
+    """把行为 item 的 class_id 与接口类名临时挂到 P3 需求上（只供富化查蓝皮书，随后剥离）。
+
+    真实 P3 行为 atom 的 class_id 恒空（行为 atom 不带结构字段），接口类名（object）才是
+    真实存在的连接键——spec_enrich 按 class_id 优先、名称回退查蓝皮书。"""
+    for req, item in zip(requirements, behavior_model.get("items", [])):
+        class_id = str(item.get("class_id") or "").strip()
+        if class_id:
+            req["class_id"] = class_id
+        name = str(item.get("object") or "").strip()
+        if name:
+            req["interface_class_name"] = name
+
+
+def _strip_behavior_class_ids(requirements: list[dict[str, Any]]) -> None:
+    for req in requirements:
+        req.pop("class_id", None)
+        req.pop("interface_class_name", None)
+
+
 def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted_at: str,
-             enrich_route: str | None = None) -> tuple[dict, dict]:
+             enrich_route: str | None = None, blue_book_index_path: Path | None = None) -> tuple[dict, dict]:
     out_dir = out_dir.expanduser().resolve()
     p1 = build_object_model(out_dir)
     p2 = build_access_security(out_dir)
@@ -226,11 +246,18 @@ def assemble(out_dir: Path, reviews_path: Path | None, *, source: str, extracted
     p1_cls_reqs = p1_class_template_requirements(p1)
     p2_reqs = p2_requirements(p2)
     p3_reqs = rs.build_requirements_doc(p3, source=source, extracted_at=extracted_at)["requirements"]
+    _attach_behavior_class_ids(p3_reqs, p3)
     # 描述 LLM 富化（仅 P3 行为；默认 stub 不动）。在 make_doc 重编号前原地改写。
     # P1 对象散文是样板、真内容在 threshold_table，让 LLM 重述表码有"已有码错位"风险（护栏只挡新增码），
     # 故不富化 P1；行为需求是纯散文、码最少、价值最高（真实 GLM 抽样验证：P3 干净、P1 有隐患）。
     from spec_enrich import enrich_requirement_lists
-    enrich_summary = enrich_requirement_lists([p3_reqs], out_dir=out_dir, route=enrich_route)
+    enrich_summary = enrich_requirement_lists(
+        [p3_reqs],
+        out_dir=out_dir,
+        route=enrich_route,
+        blue_book_index_path=blue_book_index_path,
+    )
+    _strip_behavior_class_ids(p3_reqs)
     # 推断表计类型 + 目标标准（确定性，从 manifest/正文，取代写死的 electric + DLMS/COSEM/ABNT）
     from meter_profile import infer_meter_profile
     profile = infer_meter_profile(out_dir)
@@ -258,6 +285,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--export", default="", help="Optional human-readable export formats: md,docx")
     parser.add_argument("--enrich", default=None,
                         help="描述 LLM 富化路由：stub(默认不富化) | openai_compatible")
+    parser.add_argument("--blue-book-index", type=Path, default=None, help="Optional Blue Book index JSON")
     return parser.parse_args()
 
 
@@ -266,7 +294,8 @@ def main() -> int:
     out_dir = args.out.expanduser().resolve()
     doc, breakdown = assemble(args.out, args.reviews, source=out_dir.name,
                               extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
-                              enrich_route=args.enrich)
+                              enrich_route=args.enrich,
+                              blue_book_index_path=args.blue_book_index)
     target = out_dir / "dlms_cosem_spec_requirements.json"
     target.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
     written = [target.name]
