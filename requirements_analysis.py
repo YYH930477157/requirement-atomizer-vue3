@@ -54,6 +54,8 @@ def run_requirements_analysis(
     template_path: Path | None = None,
     chat: ChatFn | None = None,
     pipeline_path: Path | None = None,
+    concurrency: int | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
     source_path = out_dir / "ai_requirements.jsonl"
@@ -77,6 +79,7 @@ def run_requirements_analysis(
     enrich_cache = _load_enrich_cache(out_dir, model) if active_chat is not None else {}
     enriched_count = 0
     degraded_count = 0
+    enrich_jobs: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
     items: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
@@ -97,17 +100,10 @@ def run_requirements_analysis(
                 "issues": [f"ownership_override 非法，已忽略: {exc}"],
             })
 
-        if active_chat is not None:
-            enriched, enrich_issues = _llm_enrich_item(
-                item, reviewed_req, vocabulary, active_chat, enrich_cache, model)
-            enriched_count += 1 if enriched else 0
-            degraded_count += 0 if enriched else 1
-            if enrich_issues:
-                issues.append({
-                    "analysis_id": item.get("analysis_id"),
-                    "source_requirement_ids": item.get("source_requirement_ids") or [],
-                    "issues": enrich_issues,
-                })
+        # 富化只做软件/协同（硬件按 GLM prompt 只需简要说明，硬件项走 ownership_reason/引用，
+        # 不产 software_requirement_text——跳过省真实调用）；先收集、循环后并发执行
+        if active_chat is not None and item.get("ownership") != OWNERSHIP_HARDWARE:
+            enrich_jobs.append((item, reviewed_req))
 
         item_issues = validate_analysis_item(item)
         if item_issues:
@@ -118,7 +114,10 @@ def run_requirements_analysis(
             })
         items.append(item)
 
-    if active_chat is not None:
+    if active_chat is not None and enrich_jobs:
+        enriched_count, degraded_count = _run_enrichment(
+            out_dir, enrich_jobs, vocabulary, active_chat, enrich_cache, model,
+            issues=issues, concurrency=concurrency, progress_callback=progress_callback)
         _save_enrich_cache(out_dir, model, enrich_cache)
 
     payload = {
@@ -255,15 +254,20 @@ def _llm_enrich_item(
     chat: ChatFn,
     cache: dict[str, Any],
     model: str,
+    lock: Any = None,
 ) -> tuple[bool, list[str]]:
     """用 LLM 填充叙述字段（software_requirement_text 等），结构字段一律不动。
 
     防幻觉红线：validate_llm_item 检出**编造**的 OBIS/编码/数字（换位 OBIS 也逃不掉）→ 整条
     富化拒绝、item 保持确定性空值、记 issue；**遗漏**类是软提示，不阻断富化。任何调用/解析失败
-    都非致命：该条降级为确定性，返回 (False, [原因])。
+    都非致命：该条降级为确定性，返回 (False, [原因])。lock：并发跑时保护共享 cache 的读写。
     """
+    from contextlib import nullcontext
+    guard = lock if lock is not None else nullcontext()
+
     key = _enrich_key(source_req, model)
-    llm_item = cache.get(key)
+    with guard:
+        llm_item = cache.get(key)
     if llm_item is None:
         prompt = build_analysis_prompt([source_req], vocabulary)
         try:
@@ -273,7 +277,8 @@ def _llm_enrich_item(
         llm_item = _first_item(payload)
         if llm_item is None:
             return False, ["LLM 富化返回空或格式非法，已降级为确定性"]
-        cache[key] = llm_item
+        with guard:
+            cache[key] = llm_item
 
     drift = validate_llm_item(llm_item, source_req)
     # 与 ai_extract 双引擎同一分级纪律：**编码漂移**（OBIS/hex/事件号）严格拒绝——"错一位即
@@ -299,6 +304,70 @@ def _llm_enrich_item(
     soft = [d for d in drift if not d.startswith("fabricated code")]
     return True, ([f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"]
                   if soft else [])
+
+
+def _run_enrichment(
+    out_dir: Path,
+    jobs: list[tuple[dict[str, Any], dict[str, Any]]],
+    vocabulary: dict[str, Any],
+    chat: ChatFn,
+    cache: dict[str, Any],
+    model: str,
+    *,
+    issues: list[dict[str, Any]],
+    concurrency: int | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[int, int]:
+    """并发跑 LLM 富化（真实规模的关键）。返回 (enriched, degraded)。
+
+    288 条 × 推理模型逐条串行 ≈ 数小时且全程零落盘/零进度——真实 ABNT 跑挂过。三个对策：
+    - **并发**：线程池，并发度与 AI 抽取同一来源（GUI 设置 → RATOMIZER_LLM_CONCURRENCY）。
+    - **增量缓存**：每完成 10 条落一次 analyze_enrich_cache.json——中途被杀/断网不丢已完成的调用。
+    - **进度回调**：每完成一条上报（GUI 显示 n/total，不再像卡死）。
+    每条相互独立：各线程只写自己的 item dict；cache/计数由锁保护。单条失败不影响其余。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from threading import Lock
+
+    from ai_extract import resolve_concurrency
+
+    lock = Lock()
+    enriched = 0
+    degraded = 0
+    completed = 0
+    total = len(jobs)
+
+    def emit(done: int) -> None:
+        if progress_callback is not None and total:
+            progress_callback({"stage": "analyze", "completed": done, "total": total,
+                               "percent": int(round(done * 100 / total)), "model": model})
+
+    def work(job: tuple[dict[str, Any], dict[str, Any]]) -> tuple[dict[str, Any], bool, list[str]]:
+        item, reviewed_req = job
+        ok, item_issues = _llm_enrich_item(item, reviewed_req, vocabulary, chat, cache, model, lock=lock)
+        return item, ok, item_issues
+
+    emit(0)
+    with ThreadPoolExecutor(max_workers=resolve_concurrency(concurrency)) as executor:
+        futures = [executor.submit(work, job) for job in jobs]
+        for future in as_completed(futures):
+            item, ok, item_issues = future.result()
+            with lock:
+                enriched += 1 if ok else 0
+                degraded += 0 if ok else 1
+                completed += 1
+                done = completed
+                if item_issues:
+                    issues.append({
+                        "analysis_id": item.get("analysis_id"),
+                        "source_requirement_ids": item.get("source_requirement_ids") or [],
+                        "issues": item_issues,
+                    })
+                cache_snapshot = dict(cache) if completed % 10 == 0 else None
+            if cache_snapshot is not None:  # 增量落盘：中途被杀不丢已完成的真实调用
+                _save_enrich_cache(out_dir, model, cache_snapshot)
+            emit(done)
+    return enriched, degraded
 
 
 def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> dict[str, Any]:
