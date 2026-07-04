@@ -13,6 +13,10 @@ from typing import Any
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
+# 429 限流的独立重试预算下限（与普通 max_retries 解耦）：退避 2,4,8,16,32,32… 秒，
+# 8 次 ≈ 两分钟耐心——限流风暴通常几十秒内过去，比丢整章便宜得多
+RATE_LIMIT_MIN_ATTEMPTS = 8
+
 # LLM 消息级追踪：set_trace_path() 启用后，每次 HTTP 调用（含 JSON 修复回路）在
 # llm_trace.jsonl 追加一行完整收发——messages 原文 + 响应全文（含 usage token 用量、
 # 推理模型的 reasoning_content）。排查"为什么被拒/为什么 0 条/为什么慢"看这里。
@@ -123,7 +127,12 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
         headers["x-api-key"] = api_key
 
     max_attempts = max(0, int(config.max_retries)) + 1
-    for attempt in range(max_attempts):
+    # 429 限流单独预算：并发跑时限流是常态（test7 实测 140 次 429、3 次重试打光 → 10 个
+    # 章节整体失败=文档 17% 内容丢失）。限流≠服务坏了，值得更耐心：独立预算 + 更长退避。
+    rate_limit_budget = max(RATE_LIMIT_MIN_ATTEMPTS, max_attempts * 2)
+    attempt = 0
+    rate_hits = 0
+    while attempt < max_attempts:
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         started = time.monotonic()
         try:
@@ -149,9 +158,17 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                           "error": {"http": exc.code, "body": raw[:2000]}})
             if exc.code in {401, 403}:
                 raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
+            if exc.code == 429:
+                rate_hits += 1
+                if rate_hits < rate_limit_budget:
+                    # 尊重 Retry-After；没有就按限流命中次数指数退避（封顶 30s）——不占普通重试预算
+                    time.sleep(_retry_delay(min(rate_hits, 5), exc.headers.get("Retry-After")))
+                    continue
+                raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
             if _is_retryable_status(exc.code):
-                if attempt + 1 < max_attempts:
-                    time.sleep(_retry_delay(attempt, exc.headers.get("Retry-After")))
+                attempt += 1
+                if attempt < max_attempts:
+                    time.sleep(_retry_delay(attempt - 1, exc.headers.get("Retry-After")))
                     continue
                 raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
             raise LLMResponseError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
@@ -159,8 +176,9 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
             LOGGER.warning("LLM 连接异常 model=%s dur=%.1fs attempt=%d err=%s",
                            config.model, time.monotonic() - started, attempt + 1,
                            str(exc)[:120])
-            if attempt + 1 < max_attempts:
-                time.sleep(_retry_delay(attempt, None))
+            attempt += 1
+            if attempt < max_attempts:
+                time.sleep(_retry_delay(attempt - 1, None))
                 continue
             raise LLMConnectionError(f"LLM service is unavailable: {exc}") from exc
     raise LLMConnectionError("LLM service is unavailable")

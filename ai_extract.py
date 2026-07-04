@@ -48,7 +48,7 @@ MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v6"  # v6：新增 dev_guidance 研发落地指引（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v7"  # v7：目录/引用/范围声明不作需求（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -138,11 +138,35 @@ SYSTEM_PROMPT = (
     "若提供了【文档背景/章节大纲/术语定义】，据此保持术语一致、模块判断准确、解析跨章节引用；"
     "但这些背景仅供参考——需求内容与 source_quote 必须来自【当前章节】原文，不得从背景里搬运。"
     "严禁编造原文没有的 OBIS 码、事件号、十六进制、数字——这些只能原样引用或不出现。"
+    "**不要输出**：目录/标题行、参考文献条目、范围声明（This standard specifies/applies to…）、"
+    "仅引用其他标准编号而无本设备行为要求的语句——这些不是需求。"
     "只输出 JSON：{\"requirements\": [ {…}, … ]}。"
 )
 
 
 # --- 章节聚合与合并 -------------------------------------------------------
+
+# 目录点线行（"4.15 Resistance to storage temperature ..... 23"）不是内容：LLM 会把目录
+# 标题当需求抽出、与正文抽取成对重复且成批堆在目录段锚点上（test7 实测：16 条堆一段），
+# 还污染覆盖率分母与自检焦点。PDF 解析的 doc_region 检测不总生效，此处兜底行级清洗。
+# 两种形态（test7 实测）：① 行尾点线 + 页码（页码可能空格断裂"3 3"或掉行）；
+# ② PDF 把整页目录挤成一行——几十个"标题.....页码"内联，用点线段密度识别（≥3 段）
+_TOC_LINE_END_RE = re.compile(r"\.{5,}[\s\d]*$")
+_TOC_LEADER_RUN_RE = re.compile(r"\.{5,}")
+
+
+def _is_toc_line(line: str) -> bool:
+    if _TOC_LINE_END_RE.search(line):
+        return True
+    return len(_TOC_LEADER_RUN_RE.findall(line)) >= 3
+
+
+def clean_block_text(block: dict[str, Any]) -> str:
+    """block 文本去目录点线行；清完为空 = 纯目录块，各消费处按无内容处理。"""
+    text = str(block.get("text") or "")
+    lines = [line for line in text.splitlines() if not _is_toc_line(line)]
+    return "\n".join(lines).strip()
+
 
 def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block）。"""
@@ -156,7 +180,7 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "heading": section_path[-1] if section_path else "",
                     "texts": [], "block_ids": []}
             groups[key] = unit
-        text = str(block.get("text") or "").strip()
+        text = clean_block_text(block)
         if text:
             unit["texts"].append(text)
         if block.get("block_id"):
@@ -388,6 +412,24 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
     }
 
 
+# 纯引用/范围声明剔除（确定性、保守）：只杀两类明确无行为要求的条目——
+# ① source_quote 本身就是标准号（"EN 16314:2013 (E)"）；② 范围声明（"This (European)
+# Standard specifies/applies to ..."）。提及标准号但带设备行为的（"按 EN 1359 的方法测试
+# 后应…"）不受影响。test7 实测 9 条此类条目混进交付物。
+_CITATION_ONLY_RE = re.compile(r"^[\s]*(?:pr)?(?:EN|ISO|IEC|OIML|NBR|ABNT)[\s\d:.,/()\-+A-Z]*$")
+_SCOPE_STMT_RE = re.compile(
+    r"^\s*this\s+(?:european\s+|international\s+)?standard\s+(?:specifies|applies|is\s+applicable|covers|defines)",
+    re.IGNORECASE)
+
+
+def _is_reference_stub(req: dict[str, Any]) -> bool:
+    quote = str(req.get("source_quote") or "").strip()
+    if quote and _CITATION_ONLY_RE.match(quote):
+        return True
+    basis = quote or str(req.get("description") or "")
+    return bool(_SCOPE_STMT_RE.match(basis))
+
+
 def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
                               context_ints: frozenset[str] | set[str] = frozenset()) -> list[dict[str, Any]]:
     """raw LLM 需求 → 归一 + 分级漂移护栏。抽取与完整性自检共用（补的也过同一套护栏）。
@@ -403,6 +445,11 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             continue
         req = normalize_requirement(raw, section)
         if not req["description"] and not req["source_quote"]:
+            continue
+        if _is_reference_stub(req):
+            # 纯标准引用/范围声明不是设备需求（用户裁定当前阶段忽略）：剔除并留痕
+            LOGGER.info("剔除引用/范围声明条目：%s | quote=%s",
+                        req.get("title", "")[:40], req.get("source_quote", "")[:60])
             continue
         codes = code_drift(req, source)
         ints = [i for i in int_drift(req, source) if i not in context_ints]
@@ -506,13 +553,14 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
         block = block_info.get(str(bid))
         if not block or not block.get("requirement_like") or block.get("noise"):
             continue
-        bt = _norm_ws(block.get("text"))
+        cleaned = clean_block_text(block)   # 目录点线行不进自检焦点（追着目录行查漏纯烧调用）
+        bt = _norm_ws(cleaned)
         if not bt or bt in seen or bt not in section_text:
             continue
         seen.add(bt)
         if any(q in bt or bt in q for q in quotes):
             continue
-        uncovered.append(str(block.get("text") or "").strip()[:200])
+        uncovered.append(cleaned[:200])
     return uncovered
 
 
@@ -823,7 +871,8 @@ def _write_consistency_report(out_dir: Path, merged: dict[str, Any]) -> Path:
     """P1 全局一致性 critic：跨章去重 + OBIS 共引 + 覆盖缺口（确定性，非破坏，只标记）。"""
     import merged_consistency
     blocks = read_jsonl(out_dir / "blocks.jsonl")
-    req_like = [b for b in blocks if b.get("requirement_like") and not b.get("noise")] if blocks else None
+    req_like = ([b for b in blocks if b.get("requirement_like") and not b.get("noise") and clean_block_text(b)]
+                if blocks else None)  # 纯目录块不进覆盖分母
     report = merged_consistency.analyze_consistency(merged.get("requirements") or [], req_like)
     path = out_dir / "consistency_report.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -924,7 +973,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         written.append(target.name)
 
         # 质量报表：这轮抽取的可核指标（覆盖率/漂移/自检补充/模块分布），落盘供追溯
-        req_like = [b for b in block_info.values() if b.get("requirement_like") and not b.get("noise")]
+        req_like = [b for b in block_info.values()
+                    if b.get("requirement_like") and not b.get("noise") and clean_block_text(b)]
         quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in requirements) if q]
         covered = sum(
             1 for b in req_like
