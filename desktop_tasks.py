@@ -154,6 +154,7 @@ def requirements_analysis_task(
         out_dir,
         route=route,
         template_path=resolve_template_path(template_path),
+        progress_callback=emit_progress,  # 富化逐条上报（GUI n/total，并发度走 RATOMIZER_LLM_CONCURRENCY）
     )
     # 只上报真实存在的产物（此前无条件列出 4 个文件，失败时载荷撒谎）
     names = analysis.get("written") or REQUIREMENTS_ANALYSIS_OUTPUTS

@@ -260,7 +260,9 @@ class DesktopTaskTests(unittest.TestCase):
 
                 payload = requirements_analysis_task(out_dir, route="stub", template_path=template)
 
-        run_analysis.assert_called_once_with(out_dir.resolve(), route="stub", template_path=template)
+        from desktop_tasks import emit_progress
+        run_analysis.assert_called_once_with(out_dir.resolve(), route="stub", template_path=template,
+                                             progress_callback=emit_progress)
         self.assertEqual(payload["kind"], "requirements_analysis")
         self.assertEqual(payload["analysis"]["analysis_count"], 1)
         self.assertEqual(

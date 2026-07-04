@@ -457,6 +457,86 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert count["n"] == 1                              # 第二次命中缓存，零新增调用
             assert (tmp_path / "analyze_enrich_cache.json").exists()
 
+    def test_hardware_items_skip_enrichment_calls(self) -> None:
+        """硬件项只需简要说明（不产 software_requirement_text）——不该为它烧真实 LLM 调用。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [
+                {"ai_req_id": "AI-HW", "description": "计量芯片型号为 Att7022e。",
+                 "source_quote": "计量芯片型号为 Att7022e", "source_block_ids": ["B-1"], "module": "计量"},
+            ])
+            calls = {"n": 0}
+
+            def fake_chat(system: str, user: str) -> dict:
+                calls["n"] += 1
+                return {"items": [{"software_requirement_text": "不该出现"}]}
+
+            result = run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+
+            assert calls["n"] == 0                     # 硬件项零调用
+            assert result["enriched"] == 0
+            assert result["enrich_degraded"] == 0      # 跳过≠降级
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            assert payload["items"][0]["ownership"] == "hardware"
+            assert payload["items"][0]["software_requirement_text"] == ""
+
+    def test_concurrent_enrichment_is_correct_and_reports_progress(self) -> None:
+        """并发富化（288 条规模的关键）：多条并发跑、每条落对自己的 item、逐条进度上报。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            n = 12
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [
+                {"ai_req_id": f"AI-{i}", "description": f"The meter shall do task {i}.",
+                 "source_quote": f"shall do task {i}", "source_block_ids": [f"B-{i}"],
+                 "module": "事件记录"} for i in range(n)
+            ])
+
+            def fake_chat(system: str, user: str) -> dict:
+                # 从 prompt 里回读该条的任务号，验证并发下富化不串条
+                import re as _re
+                m = _re.search(r"shall do task (\d+)", user)
+                idx = m.group(1) if m else "?"
+                return {"items": [{"software_requirement_text": f"实现任务 {idx} 的处理逻辑。"}]}
+
+            events: list[dict] = []
+            result = run_requirements_analysis(
+                tmp_path, route="openai_compatible", chat=fake_chat,
+                concurrency=4, progress_callback=events.append)
+
+            assert result["enriched"] == n
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            for item in payload["items"]:
+                idx = item["source_requirement_ids"][0].split("-")[1]
+                assert item["software_requirement_text"] == f"实现任务 {idx} 的处理逻辑。"  # 并发不串条
+            # 进度：初始 0 + 每条一次，末次 100%
+            assert len(events) == n + 1
+            assert events[-1]["stage"] == "analyze"
+            assert events[-1]["completed"] == n
+            assert events[-1]["percent"] == 100
+
+    def test_enrich_cache_flushes_incrementally(self) -> None:
+        """增量缓存：跑够 10 条就落盘一次——中途被杀不丢已完成的真实调用（288 条跑挂的教训）。"""
+        from unittest.mock import patch
+        import requirements_analysis as ra
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            n = 12
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [
+                {"ai_req_id": f"AI-{i}", "description": f"The meter shall do task {i}.",
+                 "source_quote": f"shall do task {i}", "source_block_ids": [f"B-{i}"],
+                 "module": "事件记录"} for i in range(n)
+            ])
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{"software_requirement_text": "正文。"}]}
+
+            with patch.object(ra, "_save_enrich_cache", wraps=ra._save_enrich_cache) as save:
+                run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat, concurrency=2)
+
+            # 12 条 → 第 10 条时增量一次 + 收尾一次 ≥ 2 次落盘
+            assert save.call_count >= 2
+
     def test_malformed_llm_response_degrades_non_fatally(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp_path = Path(td)

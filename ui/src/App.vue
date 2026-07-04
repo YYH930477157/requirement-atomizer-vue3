@@ -986,6 +986,14 @@ function handleTaskProgress(event: { stage: string; completed?: number; total?: 
     runProgressDetail.value = event.model ? `模型：${event.model} · 逐章节调用 LLM` : "逐章节调用 LLM 抽取行为需求"
     return
   }
+  if (event.stage === "analyze") {
+    runStage.value = total ? `软件需求分析 富化 ${completed}/${total}` : "软件需求分析"
+    runProgress.value = percent
+    runProgressDetail.value = event.model
+      ? `模型：${event.model} · 并发推导可研发软件需求（增量缓存，中断可续跑）`
+      : "并发推导可研发软件需求"
+    return
+  }
   if (event.stage !== "llm_review") return
   runStage.value = total ? `AI 审查 ${completed}/${total}` : "AI 审查"
   runProgress.value = percent
