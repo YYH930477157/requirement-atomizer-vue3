@@ -214,11 +214,17 @@ def resolve_template_path(template_path: Path | None) -> Path | None:
     return path.resolve()
 
 
-def ai_extract_task(out_dir: Path, *, route: str | None) -> dict[str, Any]:
-    """AI 主抽 + 双引擎合并：AI 行为需求 + 确定性结构需求 → merged_spec.xlsx/json。"""
+def ai_extract_task(out_dir: Path, *, route: str | None, limit_sections: int | None = None,
+                    sample_ratio: float | None = None) -> dict[str, Any]:
+    """AI 主抽 + 双引擎合并：AI 行为需求 + 确定性结构需求 → merged_spec.xlsx/json。
+
+    试抽模式（「测试运行」用）：sample_ratio 按比例抽样（0.2=全文 1/5，随文档自适应）；
+    limit_sections 固定 N 章（CLI 用）。"""
     out_dir = out_dir.expanduser().resolve()
     result = ai_extract.run_ai_extract(out_dir, route=route, merge_deterministic=True,
-                                       progress_callback=emit_progress)
+                                       progress_callback=emit_progress,
+                                       limit_sections=limit_sections,
+                                       sample_ratio=sample_ratio)
     return {
         "kind": "ai_extract",
         "out_dir": str(out_dir),
@@ -231,6 +237,7 @@ def ai_extract_task(out_dir: Path, *, route: str | None) -> dict[str, Any]:
         "int_drift_flagged": result.get("int_drift_flagged", 0),
         "note": result.get("note", ""),
         "quality": result.get("quality", {}),
+        "sampled": result.get("sampled"),
         "consistency": result.get("consistency", {}),
         "written": [str(out_dir / name) for name in result.get("written", [])],
         "summary": build_output_summary(out_dir),
@@ -359,6 +366,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ai_extract_parser = subparsers.add_parser("ai-extract")
     ai_extract_parser.add_argument("--out", type=Path, required=True)
     ai_extract_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="openai_compatible")
+    ai_extract_parser.add_argument("--limit-sections", type=int, default=0)
+    ai_extract_parser.add_argument("--sample-ratio", type=float, default=0.0)
 
     summary_parser = subparsers.add_parser("summary")
     summary_parser.add_argument("--out", type=Path, required=True)
@@ -447,7 +456,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "requirements-analysis":
             payload = requirements_analysis_task(args.out, route=args.llm_route, template_path=args.template)
         elif args.command == "ai-extract":
-            payload = ai_extract_task(args.out, route=args.llm_route)
+            payload = ai_extract_task(args.out, route=args.llm_route,
+                                      limit_sections=args.limit_sections or None,
+                                      sample_ratio=args.sample_ratio or None)
         elif args.command == "export-annotation-html":
             payload = export_annotation_html_task(args.out)
         elif args.command == "import-ai-decisions":

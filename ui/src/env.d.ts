@@ -21,6 +21,8 @@ declare global {
     breakdown?: unknown
     merged?: unknown
     consistency?: unknown
+    sampled?: unknown
+    quality?: unknown
     failed_sections?: number
     note?: string
     path?: string
@@ -100,7 +102,7 @@ declare global {
         kbPaths?: string[]
         domainPackDir?: string
       }) => Promise<RequirementAtomizerTaskPayload>
-      aiExtract: (input: { outDir: string; llmRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
+      aiExtract: (input: { outDir: string; llmRoute?: string; limitSections?: number; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
       exportAnnotationHtml: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       importAiDecisions: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       assembleSpec: (input: { outDir: string; enrichRoute?: string }) => Promise<RequirementAtomizerTaskPayload>

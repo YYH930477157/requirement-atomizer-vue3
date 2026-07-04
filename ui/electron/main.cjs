@@ -115,6 +115,8 @@ ipcMain.handle("task:ai-extract", async (_event, input) => runDesktopTaskProcess
   "--out",
   input.outDir,
   ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
+  ...(input.limitSections ? ["--limit-sections", String(input.limitSections)] : []),
+  ...(input.sampleRatio ? ["--sample-ratio", String(input.sampleRatio)] : []),
 ]));
 
 ipcMain.handle("logs:open", async () => {

@@ -261,6 +261,36 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(result["decision"], "accept")
         self.assertEqual(sleeps, [0.0])
 
+    def test_429_storm_survives_beyond_normal_retry_budget(self) -> None:
+        """429 独立预算（test7 教训：140 次限流、3 次重试打光 → 10 章整体失败=17% 内容丢）。
+        max_retries=0 时连吃 5 个 429 仍坚持到成功——限流不占普通重试预算。"""
+        responses = [{"status": 429, "headers": {"Retry-After": "0"}, "body": {"error": "rate limit"}}] * 5
+        responses.append({"body": openai_response({"ok": True})})
+        with MockOpenAIService(responses) as service:
+            sleeps: list[float] = []
+            with patch("llm_client.time.sleep", side_effect=lambda value: sleeps.append(value)):
+                result = chat_json(
+                    LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="",
+                                    timeout_s=2, max_retries=0),
+                    "system", "user")
+
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(len(service.requests), 6)          # 5 次限流 + 1 次成功
+        self.assertEqual(len(sleeps), 5)                    # 每次限流都退避（Retry-After=0）
+
+    def test_429_budget_exhaustion_still_raises(self) -> None:
+        from llm_client import RATE_LIMIT_MIN_ATTEMPTS
+
+        responses = [{"status": 429, "headers": {"Retry-After": "0"},
+                      "body": {"error": "rate limit"}}] * (RATE_LIMIT_MIN_ATTEMPTS + 1)
+        with MockOpenAIService(responses) as service:
+            with patch("llm_client.time.sleep", side_effect=lambda value: None):
+                with self.assertRaisesRegex(LLMConnectionError, "429"):
+                    chat_json(
+                        LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="",
+                                        timeout_s=2, max_retries=0),
+                        "system", "user")
+
     def test_401_auth_error_is_connection_error_for_fast_fail(self) -> None:
         with MockOpenAIService([{"status": 401, "body": {"error": "invalid api key"}}]) as service:
             with self.assertRaisesRegex(LLMConnectionError, "invalid api key"):

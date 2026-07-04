@@ -8,6 +8,108 @@ from pathlib import Path
 import ai_extract
 
 
+class TocAndReferenceNoiseTests(unittest.TestCase):
+    """test7 实测的两类噪声：目录点线行被当需求抽出（16 条堆一个锚点、与正文成对重复）；
+    纯标准引用/范围声明混进交付物（用户裁定当前阶段忽略）。"""
+
+    def test_toc_dot_leader_lines_stripped_from_sections(self) -> None:
+        blocks = [
+            {"block_id": "B1", "section_path": [], "text":
+                "Foreword ........................................ 5\n"
+                "4.15 Resistance to storage temperature ......... 23\n"
+                "4.16 Ageing test ................................ 24"},
+            {"block_id": "B2", "section_path": ["4.15"], "text": "The meter shall resist storage temperature."},
+        ]
+        sections = ai_extract.assemble_sections(blocks)
+        # 纯目录块清空后不成节；正文照常
+        self.assertEqual(len(sections), 1)
+        self.assertEqual(sections[0]["section_id"], "4.15")
+        self.assertNotIn("....", sections[0]["text"])
+
+    def test_mixed_block_keeps_prose_drops_toc_lines(self) -> None:
+        block = {"text": "Real requirement text here.\n7.9 Time interval accuracy .......... 31"}
+        cleaned = ai_extract.clean_block_text(block)
+        self.assertEqual(cleaned, "Real requirement text here.")
+
+    def test_citation_only_and_scope_requirements_dropped(self) -> None:
+        section = {"section_id": "1", "heading": "1 Scope", "block_ids": ["B1"],
+                   "text": "EN 16314:2013 (E)\nThis European Standard specifies additional requirements. "
+                           "The meter shall log events."}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [
+                {"title": "符合EN 16314:2013标准", "description": "符合标准",
+                 "type": "functional", "priority": "P1", "labels": ["测试合规"],
+                 "source_quote": "EN 16314:2013 (E)"},                             # 纯引用 → 剔
+                {"title": "标准适用范围", "description": "本标准适用于……",
+                 "type": "functional", "priority": "P2", "labels": ["其它"],
+                 "source_quote": "This European Standard specifies additional requirements."},  # 范围声明 → 剔
+                {"title": "事件记录", "description": "电表须记录事件。",
+                 "type": "functional", "priority": "P1", "labels": ["事件记录"],
+                 "source_quote": "The meter shall log events."},                   # 真需求 → 留
+            ]}
+
+        reqs = ai_extract.extract_section(section, chat)
+        self.assertEqual(len(reqs), 1)
+        self.assertEqual(reqs[0]["title"], "事件记录")
+
+    def test_behavior_mentioning_standard_is_kept(self) -> None:
+        """提及标准号但带设备行为的不受影响（"按 EN 1359 方法测试后应…"是真需求）。"""
+        req = {"source_quote": "After the test according to EN 1359 the meter shall remain within limits.",
+               "description": "按 EN 1359 测试后仍须在限值内。"}
+        self.assertFalse(ai_extract._is_reference_stub(req))
+
+
+class SampleSectionsTests(unittest.TestCase):
+    """试抽模式：均匀抽样 N 章（「测试运行」分钟级质量样本）。"""
+
+    def _secs(self, n: int) -> list[dict]:
+        return [{"section_id": f"S{i}", "heading": f"S{i}", "text": f"body {i}", "block_ids": [f"B{i}"]}
+                for i in range(n)]
+
+    def test_uniform_stride_sampling_deterministic(self) -> None:
+        picked, sampled = ai_extract.sample_sections(self._secs(20), 4)
+        self.assertTrue(sampled)
+        self.assertEqual([s["section_id"] for s in picked], ["S0", "S5", "S10", "S15"])  # 均匀非前 N
+        picked2, _ = ai_extract.sample_sections(self._secs(20), 4)
+        self.assertEqual(picked, picked2)                                                # 确定性
+
+    def test_no_limit_or_oversized_returns_all(self) -> None:
+        secs = self._secs(5)
+        self.assertEqual(ai_extract.sample_sections(secs, None), (secs, False))
+        self.assertEqual(ai_extract.sample_sections(secs, 0), (secs, False))
+        self.assertEqual(ai_extract.sample_sections(secs, 9), (secs, False))
+
+    def test_sample_ratio_scales_with_document(self) -> None:
+        """测试运行按 1/5 比例抽样——随文档规模自适应，不写死条数（用户裁定）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            lines = [{"block_id": f"B{i}", "section_path": [f"{i} Sec"],
+                      "text": f"The meter shall do thing {i}."} for i in range(10)]
+            with (out / "blocks.jsonl").open("w", encoding="utf-8") as f:
+                for row in lines:
+                    f.write(json.dumps(row) + "\n")
+            total = len(ai_extract.merge_sections(ai_extract.assemble_sections(lines), target_chars=30))
+            result = ai_extract.run_ai_extract(out, route="stub", sample_ratio=0.2, merge_chars=30)
+        expected = max(1, round(total * 0.2))
+        self.assertEqual(result["sampled"], {"sections": expected, "total_sections": total})
+
+    def test_run_ai_extract_limit_reports_sampled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            lines = [{"block_id": f"B{i}", "section_path": [f"{i} Sec"],
+                      "text": f"The meter shall do thing {i}."} for i in range(8)]
+            with (out / "blocks.jsonl").open("w", encoding="utf-8") as f:
+                for row in lines:
+                    f.write(json.dumps(row) + "\n")
+            expected_total = len(ai_extract.merge_sections(
+                ai_extract.assemble_sections(lines), target_chars=30))
+            result = ai_extract.run_ai_extract(out, route="stub", limit_sections=3, merge_chars=30)
+        self.assertGreater(expected_total, 3)               # 前提：单元数确实超过样本数
+        self.assertEqual(result["sampled"], {"sections": 3, "total_sections": expected_total})
+        self.assertEqual(result["sections"], 3)
+
+
 class AssembleSectionsTests(unittest.TestCase):
     def test_groups_blocks_by_section_path(self) -> None:
         blocks = [
@@ -847,7 +949,8 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("质量准则", ai_extract.SYSTEM_PROMPT)
         self.assertIn("示例", ai_extract.SYSTEM_PROMPT)
         self.assertIn("dev_guidance", ai_extract.SYSTEM_PROMPT)      # 研发落地指引
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v6")
+        self.assertIn("不要输出", ai_extract.SYSTEM_PROMPT)               # v7：目录/引用/范围声明剔除规则
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v7")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}
