@@ -214,6 +214,83 @@ class DesktopTaskTests(unittest.TestCase):
         assemble.assert_called_once()
         self.assertEqual(assemble.call_args.kwargs["blue_book_index_path"], index_path)
 
+    def test_assemble_task_autodetects_index_in_out_dir(self) -> None:
+        """桌面「运行」链没有索引输入口——out_dir 下有编译好的索引就自动带上（零配置）。"""
+        from desktop_tasks import assemble_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            index_path = out_dir / "blue_book_index.json"
+            index_path.write_text("{}", encoding="utf-8")
+            with patch("desktop_tasks.assemble") as assemble:
+                assemble.return_value = ({"requirements": [], "analysis": {}}, {"total": 0})
+
+                payload = assemble_task(out_dir, formats=[], enrich_route="openai_compatible")
+
+        self.assertEqual(assemble.call_args.kwargs["blue_book_index_path"], index_path)
+        self.assertEqual(payload["blue_book_index"], str(index_path))   # 载荷追溯用了哪个索引
+
+    def test_assemble_task_autodetect_falls_back_to_package_root(self) -> None:
+        """dev 仓库编译位置 out/bluebook/ 作最后候选（打包后 resources/ 无 out/，自然探测不到）。"""
+        from desktop_tasks import assemble_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            out_dir = Path(tmp) / "out"
+            out_dir.mkdir()
+            index_path = root / "out" / "bluebook" / "blue_book_index.json"
+            index_path.parent.mkdir(parents=True)
+            index_path.write_text("{}", encoding="utf-8")
+            with (
+                patch("desktop_tasks.assemble") as assemble,
+                patch("desktop_tasks.package_root", return_value=root),
+            ):
+                assemble.return_value = ({"requirements": [], "analysis": {}}, {"total": 0})
+
+                assemble_task(out_dir, formats=[], enrich_route="openai_compatible")
+
+        self.assertEqual(assemble.call_args.kwargs["blue_book_index_path"], index_path)
+
+    def test_assemble_task_env_var_overrides_autodetect(self) -> None:
+        import os
+        from desktop_tasks import BLUE_BOOK_INDEX_ENV, assemble_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            (out_dir / "blue_book_index.json").write_text("{}", encoding="utf-8")  # 候选存在
+            env_path = out_dir / "elsewhere.json"
+            prior = os.environ.get(BLUE_BOOK_INDEX_ENV)
+            os.environ[BLUE_BOOK_INDEX_ENV] = str(env_path)
+            try:
+                with patch("desktop_tasks.assemble") as assemble:
+                    assemble.return_value = ({"requirements": [], "analysis": {}}, {"total": 0})
+                    assemble_task(out_dir, formats=[], enrich_route="openai_compatible")
+            finally:
+                if prior is None:
+                    os.environ.pop(BLUE_BOOK_INDEX_ENV, None)
+                else:
+                    os.environ[BLUE_BOOK_INDEX_ENV] = prior
+
+        self.assertEqual(assemble.call_args.kwargs["blue_book_index_path"], env_path)   # env 优先于探测
+
+    def test_assemble_task_no_index_anywhere_passes_none(self) -> None:
+        """哪都没有索引 → None，行为与 P2 之前完全一致（默认零变化）。"""
+        from desktop_tasks import assemble_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            out_dir.mkdir()
+            with (
+                patch("desktop_tasks.assemble") as assemble,
+                patch("desktop_tasks.package_root", return_value=Path(tmp) / "repo"),
+            ):
+                assemble.return_value = ({"requirements": [], "analysis": {}}, {"total": 0})
+
+                payload = assemble_task(out_dir, formats=[], enrich_route="openai_compatible")
+
+        self.assertIsNone(assemble.call_args.kwargs["blue_book_index_path"])
+        self.assertIsNone(payload["blue_book_index"])
+
     def test_main_assemble_accepts_blue_book_index_argument(self) -> None:
         import desktop_tasks
 

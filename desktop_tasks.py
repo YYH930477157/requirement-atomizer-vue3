@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from spec_export import export_spec
 
 ASSEMBLED_JSON = "dlms_cosem_spec_requirements.json"
 PROGRESS_PREFIX = "__RATOMIZER_PROGRESS__"
+BLUE_BOOK_INDEX_ENV = "RATOMIZER_BLUE_BOOK_INDEX"
 REQUIREMENTS_ANALYSIS_OUTPUTS = [
     "engineering_analysis.json",
     "hardware_items.md",
@@ -101,6 +103,28 @@ def export_task(out_dir: Path, formats: list[str]) -> dict[str, Any]:
     }
 
 
+def resolve_blue_book_index(explicit: Path | None, out_dir: Path) -> Path | None:
+    """蓝皮书索引路径：显式参数 > 环境变量 > 约定位置自动探测；都没有 → None（与无索引一致）。
+
+    桌面「运行」链没有索引输入口（GUI 面板本期不做）——自动探测让桌面用户零配置享受 P2 行为
+    富化：把编译好的 blue_book_index.json 放在输出目录（或 dev 仓库 out/bluebook/）即可。
+    """
+    if explicit is not None:
+        return explicit
+    env_value = os.environ.get(BLUE_BOOK_INDEX_ENV, "").strip()
+    if env_value:
+        return Path(env_value)
+    candidates = (
+        out_dir / "blue_book_index.json",
+        out_dir / "bluebook" / "blue_book_index.json",
+        package_root() / "out" / "bluebook" / "blue_book_index.json",  # dev 仓库编译位置
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def assemble_task(
     out_dir: Path,
     *,
@@ -111,6 +135,7 @@ def assemble_task(
     out_dir = out_dir.expanduser().resolve()
     reviews = out_dir / "llm_review_results.jsonl"
     reviews_path = reviews if reviews.exists() else None
+    blue_book_index_path = resolve_blue_book_index(blue_book_index_path, out_dir)
     doc, breakdown = assemble(
         out_dir,
         reviews_path,
@@ -130,6 +155,8 @@ def assemble_task(
         "count": len(doc.get("requirements", [])),
         "analysis": doc.get("analysis", {}),
         "breakdown": breakdown,
+        # 出处追溯：本次装配用了哪个蓝皮书索引（None=未注入，行为与 P2 之前一致）
+        "blue_book_index": str(blue_book_index_path) if blue_book_index_path else None,
         "written": written,
         "summary": build_output_summary(out_dir),
     }
