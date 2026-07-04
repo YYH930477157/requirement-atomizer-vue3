@@ -207,5 +207,59 @@ class AiRequirementsEndpointTests(unittest.TestCase):
             self.assertEqual(rows[0]["ownership_effective"], "hardware")
 
 
+class ConsistencyFlagsTests(unittest.TestCase):
+    """一致性闭环：P1b critic 的报表标记挂到批注视图行上（此前只写不读）。"""
+
+    def _seed(self, out: Path) -> None:
+        (out / "blocks.jsonl").write_text("", encoding="utf-8")
+        rows = [
+            {"ai_req_id": "AI-1", "title": "能量寄存器", "description": "记录 1-0:1.8.0.255",
+             "source_quote": "total active energy import shall be recorded", "module": "计量",
+             "source_section": "4", "source_block_ids": ["B1"], "labels": ["计量"]},
+            {"ai_req_id": "AI-2", "title": "重复章", "description": "restated elsewhere",
+             "source_quote": "total active energy import shall be recorded", "module": "计量",
+             "source_section": "7", "source_block_ids": ["B2"], "labels": ["计量"]},
+            {"ai_req_id": "AI-3", "title": "无关", "description": "unrelated",
+             "source_quote": "something completely different here", "module": "显示",
+             "source_section": "5", "source_block_ids": ["B3"], "labels": ["显示"]},
+        ]
+        with (out / "ai_requirements.jsonl").open("w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    def test_rows_carry_duplicate_and_obis_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            report = {
+                "summary": {},
+                "duplicate_groups": [{"source_quote": "total active energy import shall be recorded",
+                                       "members": ["REQ-001", "REQ-050"], "count": 2}],
+                "obis_coreference": [{"obis": "1-0:1.8.0.255", "values_differ": True, "count": 2},
+                                      {"obis": "0-0:96.1.0.255", "values_differ": False, "count": 3}],
+            }
+            (out / "consistency_report.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+
+            rows = {r["ai_req_id"]: r for r in api_server.build_ai_requirements(out)}
+
+        self.assertIn("跨章重复×2", rows["AI-1"].get("consistency_flags", []))
+        self.assertIn("跨章重复×2", rows["AI-2"].get("consistency_flags", []))
+        # AI-1 描述里含数值待核的 OBIS → 也带 OBIS 标记；values_differ=False 的码不标
+        self.assertTrue(any("1-0:1.8.0.255" in f for f in rows["AI-1"]["consistency_flags"]))
+        self.assertFalse(any("96.1.0" in f for f in rows["AI-1"]["consistency_flags"]))
+        self.assertNotIn("consistency_flags", rows["AI-3"])   # 无关行零标记
+
+    def test_missing_or_broken_report_yields_no_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            rows = api_server.build_ai_requirements(out)          # 无报表
+            self.assertTrue(all("consistency_flags" not in r for r in rows))
+
+            (out / "consistency_report.json").write_text("{broken", encoding="utf-8")
+            rows = api_server.build_ai_requirements(out)          # 损坏报表 → 不抛、零标记
+            self.assertTrue(all("consistency_flags" not in r for r in rows))
+
+
 if __name__ == "__main__":
     unittest.main()

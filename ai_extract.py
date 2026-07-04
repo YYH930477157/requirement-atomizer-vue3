@@ -846,6 +846,13 @@ def rebuild_merged_spec(out_dir: Path) -> dict[str, Any]:
                               extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
                               stats=stats)
     written = _write_merged_outputs(out_dir, merged)
+    try:
+        # 裁决学习回路：每次裁决回流后刷新 override 复盘报告（确定性，失败不阻断交付物）
+        import review_insights
+        review_insights.write_insights(out_dir)
+        written.append(review_insights.INSIGHTS_JSON)
+    except Exception as exc:  # pragma: no cover - 复盘失败不影响交付物
+        LOGGER.warning("裁决复盘报告生成失败（忽略）：%s", exc)
     return {"written": written, "total": merged["analysis"]["total_count"], **stats}
 
 
@@ -988,6 +995,12 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                             "ai_behavioral": ai_in_merged,
                             "deterministic_structural": merged["analysis"]["total_count"] - ai_in_merged,
                             **merge_stats}
+        # 一致性闭环：报表摘要随任务载荷透出（GUI 跑完消息 + 批注视图标记都吃它，不再只写不读）
+        try:
+            report = json.loads((out_dir / "consistency_report.json").read_text(encoding="utf-8"))
+            result["consistency"] = report.get("summary", {})
+        except (OSError, json.JSONDecodeError):
+            pass
 
     return result
 

@@ -318,6 +318,7 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
     text_by_block = {str(b.get("block_id")): (b.get("text") or "")
                      for b in read_jsonl(output_dir / "blocks.jsonl")}
     from requirements_analysis_rules import classify_ownership  # 规则初判（确定性、零 LLM）
+    dup_quotes, differ_codes = _consistency_markers(output_dir)
 
     enriched: list[dict] = []
     for req in requirements:
@@ -340,8 +341,49 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
         else:
             row["ownership_effective"] = row["ownership"]
         row["status"] = (state or {}).get("status") or "draft"
+        flags = _row_consistency_flags(row, dup_quotes, differ_codes)
+        if flags:
+            row["consistency_flags"] = flags
         enriched.append(row)
     return enriched
+
+
+def _consistency_markers(output_dir: Path) -> tuple[dict[str, int], set[str]]:
+    """一致性闭环：读 consistency_report.json（P1b critic 产物），供批注视图标记。
+
+    返回 (归一 source_quote → 重复组大小, 数值待核的 OBIS 集合)。报表缺失/损坏 → 空标记
+    （视图与此前完全一致）。按 quote/OBIS 内容连接——报表成员是 merged REQ-id、视图行是
+    AIR-id，内容键是两者天然共有的。
+    """
+    import re as _re
+    path = output_dir / "consistency_report.json"
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, set()
+
+    def norm(s: object) -> str:
+        return _re.sub(r"\s+", " ", str(s or "")).strip().lower()
+
+    dup_quotes = {norm(g.get("source_quote")): int(g.get("count") or 0)
+                  for g in report.get("duplicate_groups") or [] if g.get("source_quote")}
+    differ_codes = {str(g.get("obis") or "") for g in report.get("obis_coreference") or []
+                    if g.get("values_differ") and g.get("obis")}
+    return dup_quotes, differ_codes
+
+
+def _row_consistency_flags(row: dict, dup_quotes: dict[str, int], differ_codes: set[str]) -> list[str]:
+    import re as _re
+    flags: list[str] = []
+    quote = _re.sub(r"\s+", " ", str(row.get("source_quote") or "")).strip().lower()
+    if quote and quote in dup_quotes:
+        flags.append(f"跨章重复×{dup_quotes[quote]}")
+    if differ_codes:
+        text = " ".join(str(row.get(k) or "") for k in ("title", "description", "source_quote"))
+        hits = sorted(code for code in differ_codes if code in text)
+        if hits:
+            flags.append(f"OBIS 数值待核：{'、'.join(hits[:3])}")
+    return flags
 
 
 def _load_ai_requirements(output_dir: Path) -> list[dict]:

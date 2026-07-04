@@ -224,6 +224,9 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           <div v-if="(selectedReq.suspicion_reasons || []).length" class="dd-suspicion" data-testid="dd-suspicion">
             ⚠ 建议优先复核：{{ (selectedReq.suspicion_reasons || []).join("、") }}
           </div>
+          <div v-if="(selectedReq.consistency_flags || []).length" class="dd-consistency" data-testid="dd-consistency">
+            ⇄ 全文档一致性：{{ (selectedReq.consistency_flags || []).join("；") }}
+          </div>
 
           <div class="dd-section"><div class="dd-label">需求分析</div><div class="dd-body">{{ selectedReq.description }}</div></div>
           <div class="dd-section" v-if="(selectedReq.dev_guidance || []).length">
@@ -295,6 +298,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .dd-title { margin: 8px 0 2px; font-size: 15px; }
 .dd-meta { font-size: 12px; color: #64748b; margin-bottom: 8px; }
 .dd-suspicion { font-size: 12px; color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
+.dd-consistency { font-size: 12px; color: #1e40af; background: #dbeafe; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
 .dd-section { margin: 10px 0; }
 .dd-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 3px; }
 .dd-body { font-size: 13px; line-height: 1.55; color: #334155; }

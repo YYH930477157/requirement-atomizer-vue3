@@ -71,6 +71,7 @@ py-modules = [
   "review_actions",
   "review_state",
   "requirements_analysis",
+  "review_insights",
   "requirements_analysis_agent",
   "requirements_analysis_excel",
   "requirements_analysis_rules",

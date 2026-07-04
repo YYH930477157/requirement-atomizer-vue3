@@ -1,7 +1,7 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
-> 状态快照截至 2026-06-27，里程碑推进后请同步更新本文件。
+> 状态快照截至 2026-07-04，里程碑推进后请同步更新本文件。
 
 ## 项目是什么
 
@@ -25,7 +25,9 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - `golden_sets/abnt_nbr_16968_v5/golden_summary.json` 是冻结基线；动它必须逐项写明原因
 - 真实测试文档：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.docx`（机器相关路径，换机器需调整）
 - 真实测试 PDF：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.pdf`（同目录文字层 PDF；旧 `D:\Codex\abnt_converted.pdf` 已失效）
-- 测试命令：`python -m unittest discover -s tests`（venv 在 `.venv/`，Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时 GUI 测试 skip）
+- **Blue Book Ed.16 两 PDF**（P2 行为 RAG 语料，版权文件不进仓）：同目录 `Blue-Book-Ed-16-part-{1,2}-V1.0.pdf`；索引编译 `python -m blue_book_ingest --pdf <p1> --pdf <p2> --out out/bluebook`（约 2 分钟，产物 gitignored）
+- 测试命令：`python -m unittest discover -s tests`（2026-07-04：**651 tests 0 skip**；venv 在 `.venv/`，Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时 GUI 测试 skip）
+- golden 基线输出 `out/abnt_nbr_16968_atomizer_v5/` 已于 2026-07-04 重新生成（真实 ABNT docx + **三个 --kb + domain-pack**，缺 KB 会假漂移）；测试用例只做 unittest.TestCase（**pytest 未装**，模块级 `def test_*` 会被静默跳过）
 
 ## 重大更新（2026-06-27）
 
@@ -46,7 +48,20 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
   - 验收：**Python 420 tests + ui vitest 39 + vue-tsc** 全绿。
 - **测试规模**：196 → **420 tests**（`python -m unittest discover -s tests`）+ ui `vitest 39`。
 
-## 当前状态（2026-06-16）
+## 重大更新（2026-07-04）——AI 抽取轨 + agent 化四方向全部落地
+
+- **AI 主抽双引擎轨（`ai_extract.py`，2026-07 上旬）**：LLM 逐章节抽行为需求 + 确定性结构需求合并 → `ai_requirements.jsonl` / `merged_spec_requirements.json` / `merged_spec.xlsx`。上下文工程（`build_doc_context`：表计画像+术语表+大纲注入每章，折进缓存指纹）；**自检收敛循环**（定向模式 loop-until-dry，默认 3 轮硬顶 6，env `RATOMIZER_AI_SELFCHECK_ROUNDS`；盲查单趟防过度生成）；防幻觉分级护栏（code_drift 严拦 / int_drift 软标，基线=章节原文）；prompt v6（dev_guidance 研发指引）。
+- **文档批注闭环**：批注视图（Vue `DocumentReview` + 可分享自包含 HTML）——段落级锚点、归属/模块下拉、suspicion 徽章；裁决写 `ai_review_states.jsonl`（内容稳定 AIR-sha1 id）→ `rebuild_merged_spec` 免 LLM 重建交付物（rejected 剔除、override 生效）。
+- **软件需求分析轨（`requirements_analysis.py`，GLM 实现 + 多轮复查修复）**：软/硬/协同归属分类（规则初判+专家改判）→ `software_requirements.xlsx`（公司模板版式）+ hardware/co_design 清单；**LLM 富化层**（openai_compatible）推导可研发正文——结构/归属/id 冻结、编码硬拒/整数软标、无 key 如实降级 stub、内容指纹缓存、**并发+增量落盘+逐条进度**（288 条真实规模跑挂的教训：串行数小时+零落盘）。
+- **全局一致性 critic（`merged_consistency.py`，确定性零 LLM）**：合并后产 `consistency_report.json`（跨章重复/OBIS 共引数值待核/覆盖缺口）；**已闭环**——摘要进跑完消息、批注视图行带 `consistency_flags` 标记。
+- **裁决学习回路（`review_insights.py`，确定性零 LLM）**：从 module/ownership override 模式提炼规则改进建议（≥3 次成建议，人审采纳），裁决回流自动刷新 `review_insights.json/md`。
+- **P2 行为层 RAG（Blue Book，GLM 实现 + 验收修复）**：`blue_book_ingest`（两 PDF 确定性编译 98 接口类+70 OBIS 节，逐字节可复现）→ `blue_book_lookup`（class_id/类名**精确**查找，不猜）→ `spec_enrich` P3 富化注入条款（出处程序校验+补写、drift 基线扩至条款、指纹折条款 hash）。桌面**自动探测**（`resolve_blue_book_index`：显式>env `RATOMIZER_BLUE_BOOK_INDEX`>out_dir>仓库 out/bluebook）。真实验收：ABNT 端到端注入出处逐条核对全过。**检索是确定性查找而非向量语义（刻意）**：宁漏勿错；语义回退留作将来升级路径。
+- **GUI「运行」= 可配置整链**：4 个交付物按钮合并——设置面板「运行阶段」勾选（AI抽取/装配/分析/组装，localStorage 持久化），点「运行」按依赖顺序跑完；顶栏「LLM」勾选统一控 openai_compatible 路由；逐阶段进度（analyze 富化 n/total）。
+- **LLM 端点（本机）**：小米 MiMo `https://token-plan-cn.xiaomimimo.com/v1`（`mimo-v2.5`/`mimo-v2.5-pro`，推理模型）；**该端点只认 `x-api-key` 头**——`llm_client` 已双头同发兼容。密钥经 GUI 设置面板 safeStorage 加密存、内存解密注入 env，绝不落盘。
+- **双轨行为需求分工（建议已记录，终局待用户拍板）**：`assemble`（A 轨：atoms+llm_review，P1-P5）= **DLMS profile 类文档**的结构规格主交付物（蓝皮书行为富化挂此轨）；`merged_spec`+`analyze`（B 轨：AI 抽取+批注裁决）= **通用标准文档**（如 AFD/SM-CG）的行为/软件需求主交付物。两轨并存各司其职，交付时按文档类型选主件。
+- **有据缓建（实测量化为零收益，勿投机重启）**：① analyze 接蓝皮书——B 轨需求无接口类名可匹配（test5 多词类名 0/288）；② OBIS→class 连接提升蓝皮书覆盖——ABNT 行为 atom 正文 0 个 OBIS 形码（码全在表格→P1）；③ 类名归一化/别名——ABNT 未命中全是抽取噪声或 Green Book 领域引用，归一化救回 0 条；④ Part1 OBIS 节（70 节已摄入）——留给将来 OBIS 语义富化，暂无消费者。重启任一项前先在新语料上重跑探针。
+
+## 历史状态（2026-06-16，已被上文覆盖）
 
 - **已合入 main**：M1a CLI 契约、M1b GUI 审查工作台、M2 LLM 审查路由、M3 document_profile + PyInstaller 双 exe、M4a Excel 接入、M4b PDF 文字层、A1-PDF-1（`first_field_value` 去空格 fallback + `pdf_parser` 段落切分透传 document_profile，0.7.1）、GUI Phase 1 仪表盘重构 + 复查修订（`5f9e059`）
 - **需求文档生成轨道 P1-P5 全部落地（2026-06-15）**：P1 数据字典 `cosem_object_model.py`、P2 访问/安全矩阵 `cosem_access_security.py`、P3 功能/行为派生 `cosem_behavior_spec.py`（已对齐公司格式 + 13 质量规则）、**P4 外部规范交叉引用索引 `cosem_external_refs.py`（`9f4e3be`，确定性零 LLM）**、P5 装配 `assemble_spec.py` + **人读导出 `spec_export.py`**（JSON 喂公司工具链 + Word/MD 人读规格：按功能域分组、带溯源、外部规范附录）；均有单测
@@ -69,16 +84,12 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **阶段（状态截至 2026-06-15，P1-P5 全完成）**：P1 数据字典 ✅ / P2 访问安全矩阵 ✅ / P3 功能行为派生 ✅（已对齐公司格式 + 13 质量规则）/ **P4 协议交叉引用 ✅**（C 折中：确定性引用索引，零 LLM；按 manifest 源文件名排除文档自身号；Green/Blue Book 俗称仅附 5-3/6-1/6-2 并标公开常识）/ **P5 装配 + 人读导出 ✅**（JSON + Word/MD/**Excel**，按功能域分组、带溯源、外部规范附录）。**已接入 GUI（2026-06-16，`e5815d1`）**：装配按钮 + 整段需求视图 + Excel 导出（对齐公司 skill `generate_excel` 版式）；标签精化使分段准确（通信协议 388→77）。
 - **策略已定：装配优先**（契合"OBIS 码错一位是严重缺陷 / 数字双引擎"防幻觉纪律）。与 M4c OCR 正交。
 
-## 下一步行动（优先级排序，2026-06-16 更新）
+## 下一步行动（2026-07-04 更新）
 
-> 远程 main = `e5815d1`（已推送，196 tests 全绿）。「生成器接入 GUI」与「标签精化」已完成（本轮 `e5815d1`）；下面是剩余项。
-
-1. ~~生成器接入 GUI~~ ✅ 已完成（装配按钮 + 整段需求视图 + Excel 导出，`e5815d1`）
-2. ~~标签精化~~ ✅ 已完成（通信协议 388→77，`map_labels` 按对象名分类、特定域优先）
-3. ~~描述 LLM 富化~~ ✅ 已完成（`spec_enrich.py`，**仅 P3 行为**；默认 stub 零 LLM；内容指纹缓存 + 编码/数字漂移护栏；结构字段全程冻结）。真实 GLM-5.2 验证：P3 6/6 富化、0 漂移；P1 对象剔除（护栏挡不住"已有码错位"）；GLM-5.2 是推理模型，`ENRICH_MIN_MAX_TOKENS=2048`。**已接入 GUI**：装配应用栏「LLM 富化描述」勾选框（默认关，与 M2 审查解耦；`AssembleSpecWorker(enrich_route=…)`；结果对话框显示富化/拒绝/失败计数）；端点配置走设置面板
-4. ~~打包完整性~~ ✅ 已完成（`8ac4f2b`：spec_enrich 补进 ratomizer.spec、36 个根模块全注册进 pyproject py-modules、build.ps1 加 `--smoke-assemble` 防"生成器未收全即崩"回归）
-5. **pyproject py-modules 统一注册** ~~（已并入第 4 项）~~——P1-P5 + requirement_schema / text_normalize / spec_export / spec_excel 都没注册进 `[tool.setuptools] py-modules`（独立小清理，便于 pip 安装；打包已靠 `ratomizer.spec` 的 hiddenimports 兜住）。
-5. **M4c 扫描件 OCR**——等英文扫描件语料攒够再立项（选型见下「关键产品决策」）。
+1. **专家实战反馈迭代**——用户/团队用新 exe 跑真实文档，review_insights 的建议累积后回改 map_labels/classify_ownership 规则；批注视图一致性标记的实用性验证。
+2. **Green Book 引入**（行为/协议层第二本书）——散文语料无 class_id 键，需与蓝皮书不同的检索策略（术语倒排 or 受约束语义），先做小样探针再立项。
+3. **GUI 富化结果展示**（可选）——analyze 的 software_requirement_text / 研发指引目前只在导出 xlsx，可加应用内视图。
+4. **M4c 扫描件 OCR**——等英文扫描件语料攒够再立项（选型见下「关键产品决策」）。
 
 ## 关键产品决策（已拍板，勿重新讨论）
 

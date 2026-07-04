@@ -62,6 +62,7 @@ export type AiRequirement = Record<string, unknown> & {
   dev_guidance?: string[]
   labels?: string[]
   suspicion_reasons?: string[]
+  consistency_flags?: string[]
   self_check_added?: boolean
   ownership?: string
   ownership_effective?: string

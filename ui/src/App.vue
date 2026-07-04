@@ -925,7 +925,9 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     await refreshAfterDesktopTask(finalOutDir)
 
     // 追加交付物链：按「运行阶段」配置依次执行（测试运行只跑基础解析+限量审查，不追加）
+    type ConsistencySummary = { duplicate_groups?: number; obis_values_differ?: number; uncovered_requirement_like?: number }
     const ranStages: string[] = []
+    let consistency: ConsistencySummary | null = null
     const bridge = window.ratomizerDesktop
     if (!options.llmReviewLimit && bridge) {
       const useLlm = llmMode.value
@@ -946,11 +948,14 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         runProgress.value = stage.progress
         runProgressDetail.value = `正在执行：${stage.label}…`
         await nextUiTick()
+        let stagePayload: RequirementAtomizerTaskPayload
         try {
-          await stage.run()
+          stagePayload = await stage.run()
         } catch (stageError) {
           throw new Error(`${stage.label}阶段失败：${stageError instanceof Error ? stageError.message : stageError}`)
         }
+        const stageConsistency = objectValue(stagePayload?.consistency)
+        if (stageConsistency) consistency = stageConsistency as ConsistencySummary
         ranStages.push(stage.label)
       }
       if (ranStages.length) await refreshAfterDesktopTask(finalOutDir)
@@ -963,8 +968,15 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       apiMessage.value = "测试运行完成"
     } else {
       const tail = ranStages.length ? `，随后 ${ranStages.join(" → ")}` : ""
+      // 一致性闭环：跨章重复/OBIS 待核/覆盖缺口直接进跑完消息（详情看批注视图标记）
+      const dup = Number(consistency?.duplicate_groups || 0)
+      const differ = Number(consistency?.obis_values_differ || 0)
+      const uncovered = Number(consistency?.uncovered_requirement_like || 0)
+      const warn = dup || differ || uncovered
+        ? `；一致性：疑似跨章重复 ${dup} 组、OBIS 数值待核 ${differ}、覆盖缺口 ${uncovered}（批注视图已标记）`
+        : ""
       runProgressDetail.value = `全部阶段完成：抽取与审查${tail}`
-      apiMessage.value = `运行完成：抽取与审查${tail}`
+      apiMessage.value = `运行完成：抽取与审查${tail}${warn}`
     }
   } catch (error) {
     runStage.value = "运行失败"
