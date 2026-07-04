@@ -60,6 +60,56 @@ class TocAndReferenceNoiseTests(unittest.TestCase):
         self.assertFalse(ai_extract._is_reference_stub(req))
 
 
+class SampleSectionsTests(unittest.TestCase):
+    """试抽模式：均匀抽样 N 章（「测试运行」分钟级质量样本）。"""
+
+    def _secs(self, n: int) -> list[dict]:
+        return [{"section_id": f"S{i}", "heading": f"S{i}", "text": f"body {i}", "block_ids": [f"B{i}"]}
+                for i in range(n)]
+
+    def test_uniform_stride_sampling_deterministic(self) -> None:
+        picked, sampled = ai_extract.sample_sections(self._secs(20), 4)
+        self.assertTrue(sampled)
+        self.assertEqual([s["section_id"] for s in picked], ["S0", "S5", "S10", "S15"])  # 均匀非前 N
+        picked2, _ = ai_extract.sample_sections(self._secs(20), 4)
+        self.assertEqual(picked, picked2)                                                # 确定性
+
+    def test_no_limit_or_oversized_returns_all(self) -> None:
+        secs = self._secs(5)
+        self.assertEqual(ai_extract.sample_sections(secs, None), (secs, False))
+        self.assertEqual(ai_extract.sample_sections(secs, 0), (secs, False))
+        self.assertEqual(ai_extract.sample_sections(secs, 9), (secs, False))
+
+    def test_sample_ratio_scales_with_document(self) -> None:
+        """测试运行按 1/5 比例抽样——随文档规模自适应，不写死条数（用户裁定）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            lines = [{"block_id": f"B{i}", "section_path": [f"{i} Sec"],
+                      "text": f"The meter shall do thing {i}."} for i in range(10)]
+            with (out / "blocks.jsonl").open("w", encoding="utf-8") as f:
+                for row in lines:
+                    f.write(json.dumps(row) + "\n")
+            total = len(ai_extract.merge_sections(ai_extract.assemble_sections(lines), target_chars=30))
+            result = ai_extract.run_ai_extract(out, route="stub", sample_ratio=0.2, merge_chars=30)
+        expected = max(1, round(total * 0.2))
+        self.assertEqual(result["sampled"], {"sections": expected, "total_sections": total})
+
+    def test_run_ai_extract_limit_reports_sampled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            lines = [{"block_id": f"B{i}", "section_path": [f"{i} Sec"],
+                      "text": f"The meter shall do thing {i}."} for i in range(8)]
+            with (out / "blocks.jsonl").open("w", encoding="utf-8") as f:
+                for row in lines:
+                    f.write(json.dumps(row) + "\n")
+            expected_total = len(ai_extract.merge_sections(
+                ai_extract.assemble_sections(lines), target_chars=30))
+            result = ai_extract.run_ai_extract(out, route="stub", limit_sections=3, merge_chars=30)
+        self.assertGreater(expected_total, 3)               # 前提：单元数确实超过样本数
+        self.assertEqual(result["sampled"], {"sections": 3, "total_sections": expected_total})
+        self.assertEqual(result["sections"], 3)
+
+
 class AssembleSectionsTests(unittest.TestCase):
     def test_groups_blocks_by_section_path(self) -> None:
         blocks = [

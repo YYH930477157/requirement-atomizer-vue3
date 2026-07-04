@@ -562,6 +562,46 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="run-progress-detail"]').text()).toContain("50")
   })
 
+  it("test run appends a sampled AI extraction and reports sample stats", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770", token: "local-token", outputDir: "E:\\out\\abnt",
+        }),
+        runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt", summary: {} }),
+        aiExtract: vi.fn().mockResolvedValue({
+          kind: "ai_extract", count: 12,
+          sampled: { sections: 10, total_sections: 54 },
+          quality: { coverage_pct: 78.5 },
+          written: ["ai_requirements.jsonl"], summary: {},
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-test-pipeline"]').trigger("click")
+
+    // 测试运行自动追加试抽样本（按全文 1/5 比例、强制 openai_compatible）
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt", llmRoute: "openai_compatible", sampleRatio: 0.2,
+      }))
+    await vi.waitFor(() => {
+      const message = wrapper.find('[data-testid="api-message"]').text()
+      expect(message).toContain("试抽样本 10/54 章")
+      expect(message).toContain("12 条")
+      expect(message).toContain("78.5%")
+    })
+  })
+
   it("shows module and precise backend classification for ABNT extracted rows", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,

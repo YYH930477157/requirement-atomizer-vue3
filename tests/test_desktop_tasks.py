@@ -493,7 +493,8 @@ class DesktopTaskTests(unittest.TestCase):
 
         run_ai.assert_called_once_with(out_dir.resolve(), route="openai_compatible",
                                        merge_deterministic=True,
-                                       progress_callback=desktop_tasks.emit_progress)
+                                       progress_callback=desktop_tasks.emit_progress,
+                                       limit_sections=None, sample_ratio=None)
         self.assertEqual(payload["kind"], "ai_extract")
         self.assertEqual(payload["count"], 3)
         self.assertEqual(payload["merged"]["total"], 10)
@@ -511,7 +512,7 @@ class DesktopTaskTests(unittest.TestCase):
                     exit_code = desktop_tasks.main(["ai-extract", "--out", str(out_dir), "--llm-route", "stub"])
 
         self.assertEqual(exit_code, 0)
-        task.assert_called_once_with(out_dir, route="stub")
+        task.assert_called_once_with(out_dir, route="stub", limit_sections=None, sample_ratio=None)
         self.assertEqual(json.loads(stdout.getvalue())["kind"], "ai_extract")
 
     def test_export_annotation_html_and_import_round_trip(self) -> None:

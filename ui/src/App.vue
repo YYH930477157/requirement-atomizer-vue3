@@ -497,6 +497,7 @@ const abntPreset = {
   domainPackDir: "domain_packs/dlms_cosem",
 }
 const TEST_LLM_REVIEW_LIMIT = 50
+const TEST_AI_EXTRACT_SAMPLE_RATIO = 0.2  // 测试运行：均匀抽样全文 1/5 章节（随文档规模自适应，不写死条数）
 
 const emptyRequirement: Requirement = {
   id: "未选择需求",
@@ -968,11 +969,34 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       if (ranStages.length) await refreshAfterDesktopTask(finalOutDir)
     }
 
+    // 测试运行追加：AI 抽取试抽样本（均匀 10 章，分钟级看 pro/模型质量，不等全量）
+    let sampleNote = ""
+    if (options.llmReviewLimit && bridge?.aiExtract) {
+      runStage.value = "AI 抽取试抽样本"
+      runProgress.value = 90
+      runProgressDetail.value = `均匀抽样全文 ${Math.round(TEST_AI_EXTRACT_SAMPLE_RATIO * 100)}% 章节试抽…`
+      await nextUiTick()
+      try {
+        const sample = await bridge.aiExtract({
+          outDir: finalOutDir, llmRoute: "openai_compatible",
+          sampleRatio: TEST_AI_EXTRACT_SAMPLE_RATIO,
+        })
+        const info = objectValue(sample.sampled) as { sections?: number; total_sections?: number } | null
+        const quality = objectValue(sample.quality) as { coverage_pct?: number; self_check_added?: number } | null
+        sampleNote = `；试抽样本 ${info?.sections ?? "?"}/${info?.total_sections ?? "?"} 章：` +
+          `${Number(sample.count ?? 0)} 条` +
+          (quality?.coverage_pct != null ? `、样本覆盖率 ${quality.coverage_pct}%` : "")
+        await refreshAfterDesktopTask(finalOutDir)
+      } catch (sampleError) {
+        sampleNote = `；试抽失败：${sampleError instanceof Error ? sampleError.message : sampleError}`
+      }
+    }
+
     runProgress.value = 100
     runStage.value = "运行完成"
     if (options.llmReviewLimit) {
-      runProgressDetail.value = `测试运行完成：最多 AI 审查 ${options.llmReviewLimit} 条`
-      apiMessage.value = "测试运行完成"
+      runProgressDetail.value = `测试运行完成：最多 AI 审查 ${options.llmReviewLimit} 条${sampleNote}`
+      apiMessage.value = `测试运行完成${sampleNote}`
     } else {
       const tail = ranStages.length ? `，随后 ${ranStages.join(" → ")}` : ""
       // 一致性闭环：跨章重复/OBIS 待核/覆盖缺口直接进跑完消息（详情看批注视图标记）

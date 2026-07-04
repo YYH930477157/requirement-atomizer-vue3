@@ -917,16 +917,38 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
     return llm_config_from_route(payload)
 
 
+def sample_sections(sections: list[dict[str, Any]], limit: int | None) -> tuple[list[dict[str, Any]], bool]:
+    """试抽样本：均匀取 N 章（确定性步长，非"前 N 章"——文档开头是范围/术语，需求密度最低，
+    前 N 章会给出误导性的质量样本）。缓存指纹按章节内容算，样本章节的缓存全量跑时原样复用。"""
+    if not limit or limit <= 0 or limit >= len(sections):
+        return sections, False
+    stride = len(sections) / limit
+    picked = [sections[min(int(i * stride), len(sections) - 1)] for i in range(limit)]
+    return picked, True
+
+
 def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAULT_MERGE_CHARS,
                    write_doc: bool = False, merge_deterministic: bool = False,
                    pipeline_path: Path = DEFAULT_PIPELINE_PATH,
                    progress_callback: Callable[[dict[str, Any]], None] | None = None,
                    concurrency: int | None = None,
-                   self_check: bool | None = None) -> dict[str, Any]:
-    """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel + 双引擎合并）。"""
+                   self_check: bool | None = None,
+                   limit_sections: int | None = None,
+                   sample_ratio: float | None = None) -> dict[str, Any]:
+    """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel + 双引擎合并）。
+
+    试抽模式（分钟级出质量样本，不等全量）：limit_sections=固定 N 章；sample_ratio=按比例
+    （如 0.2 = 全文 1/5，随文档规模自适应——「测试运行」用这个，不写死条数）。两者都给时固定数优先。
+    """
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
-    sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars)
+    all_sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars)
+    if not limit_sections and sample_ratio and 0 < sample_ratio < 1:
+        limit_sections = max(1, round(len(all_sections) * sample_ratio))
+    sections, sampled = sample_sections(all_sections, limit_sections)
+    if sampled:
+        LOGGER.info("试抽模式：全文 %d 章均匀抽样 %d 章（质量指标只对样本计算）",
+                    len(all_sections), len(sections))
 
     config = config_for_route(route, pipeline_path)
     written: list[str] = []
@@ -975,6 +997,9 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         # 质量报表：这轮抽取的可核指标（覆盖率/漂移/自检补充/模块分布），落盘供追溯
         req_like = [b for b in block_info.values()
                     if b.get("requirement_like") and not b.get("noise") and clean_block_text(b)]
+        if sampled:  # 试抽模式：覆盖率分母只算样本章节的块，否则数字必然假低
+            sampled_ids = {str(bid) for s in sections for bid in (s.get("block_ids") or [])}
+            req_like = [b for b in req_like if str(b.get("block_id")) in sampled_ids]
         quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in requirements) if q]
         covered = sum(
             1 for b in req_like
@@ -1006,6 +1031,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
               "requirements": len(requirements), "code_drift_flagged": code_flagged,
               "int_drift_flagged": int_flagged, "failed_sections": failed_sections,
               "written": written}
+    if sampled:
+        result["sampled"] = {"sections": len(sections), "total_sections": len(all_sections)}
     if model:
         result["model"] = model
     if config is None:
@@ -1059,6 +1086,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AI-first requirement extraction.")
     parser.add_argument("--out", type=Path, required=True, help="Atomizer output directory (含 blocks.jsonl)")
     parser.add_argument("--route", default=None, help="stub | openai_compatible")
+    parser.add_argument("--limit-sections", type=int, default=0,
+                        help="试抽模式：均匀抽样 N 章快速看质量（0=全量）")
     parser.add_argument("--merge-chars", type=int, default=DEFAULT_MERGE_CHARS, help="章节合并目标字数")
     parser.add_argument("--doc", action="store_true", help="同时产 skill 格式 doc + Excel（仅 AI 需求）")
     parser.add_argument("--merge", action="store_true", help="双引擎合并：AI 行为 + 确定性结构 → merged_spec")
@@ -1071,7 +1100,8 @@ def main() -> int:
     args = parse_args()
     result = run_ai_extract(args.out, route=args.route, merge_chars=args.merge_chars,
                             write_doc=args.doc, merge_deterministic=args.merge,
-                            concurrency=args.concurrency)
+                            concurrency=args.concurrency,
+                            limit_sections=args.limit_sections or None)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
