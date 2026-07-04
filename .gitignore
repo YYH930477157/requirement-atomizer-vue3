@@ -18,4 +18,5 @@ venv/
 .claude/settings.local.json
 node_modules/
 .worktrees/
+blue_book_index.json
 

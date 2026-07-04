@@ -42,6 +42,8 @@ py-modules = [
   "assemble_spec",
   "atomic_requirement_schema",
   "atomize",
+  "blue_book_ingest",
+  "blue_book_lookup",
   "cli",
   "cosem_access_security",
   "cosem_behavior_spec",

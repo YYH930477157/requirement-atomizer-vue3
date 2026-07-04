@@ -101,7 +101,13 @@ def export_task(out_dir: Path, formats: list[str]) -> dict[str, Any]:
     }
 
 
-def assemble_task(out_dir: Path, *, formats: list[str] | None = None, enrich_route: str | None = None) -> dict[str, Any]:
+def assemble_task(
+    out_dir: Path,
+    *,
+    formats: list[str] | None = None,
+    enrich_route: str | None = None,
+    blue_book_index_path: Path | None = None,
+) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     reviews = out_dir / "llm_review_results.jsonl"
     reviews_path = reviews if reviews.exists() else None
@@ -111,6 +117,7 @@ def assemble_task(out_dir: Path, *, formats: list[str] | None = None, enrich_rou
         source=out_dir.name,
         extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
         enrich_route=enrich_route,
+        blue_book_index_path=blue_book_index_path,
     )
     target = out_dir / ASSEMBLED_JSON
     target.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -310,6 +317,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     assemble_parser.add_argument("--out", type=Path, required=True)
     assemble_parser.add_argument("--formats", default="xlsx,docx,md")
     assemble_parser.add_argument("--enrich-route", default="")
+    assemble_parser.add_argument("--blue-book-index", type=Path, default=None)
 
     compose_parser = subparsers.add_parser("compose")
     compose_parser.add_argument("--out", type=Path, required=True)
@@ -353,7 +361,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "export":
             payload = export_task(args.out, split_formats(args.formats))
         elif args.command == "assemble":
-            payload = assemble_task(args.out, formats=split_formats(args.formats), enrich_route=args.enrich_route or None)
+            payload = assemble_task(
+                args.out,
+                formats=split_formats(args.formats),
+                enrich_route=args.enrich_route or None,
+                blue_book_index_path=args.blue_book_index,
+            )
         elif args.command == "compose":
             payload = compose_task(args.out)
         elif args.command == "requirements-analysis":

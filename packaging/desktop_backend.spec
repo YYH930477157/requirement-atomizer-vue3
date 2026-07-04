@@ -18,6 +18,8 @@ datas = [
 
 spec_generator_modules = [
     "assemble_spec",
+    "blue_book_ingest",
+    "blue_book_lookup",
     "spec_export",
     "spec_excel",
     "spec_enrich",

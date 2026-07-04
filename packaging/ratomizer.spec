@@ -22,6 +22,8 @@ datas = [
 # 确保打包收集，否则点「装配实现规格」/「AI 抽取」会在冻结环境里 ModuleNotFoundError。
 spec_generator_modules = [
     "assemble_spec",
+    "blue_book_ingest",
+    "blue_book_lookup",
     "spec_export",
     "spec_excel",
     "spec_enrich",

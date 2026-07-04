@@ -6,6 +6,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 import spec_enrich
 from llm_client import LLMClientConfig
@@ -134,6 +135,186 @@ class SpecEnrichTests(unittest.TestCase):
             summary = spec_enrich.enrich_requirement_lists([[req]], out_dir=Path(tmp), route=None)
             self.assertEqual(summary["route"], "stub")
             self.assertEqual(req["description"], template)              # 默认 stub 不动
+
+    def test_blue_book_hit_injects_clause_and_accepts_matching_citation(self) -> None:
+        req = obj_req()
+        req["class_id"] = "3"
+        index = {
+            "interface_classes": {
+                "3": {
+                    "name": "Register",
+                    "section": "4.3.2",
+                    "text": "Register value scaler_unit 77 selective access",
+                }
+            }
+        }
+        prompts: list[str] = []
+
+        def fake_chat(config, system, user):
+            prompts.append(user)
+            return {
+                "description": (
+                    "Register 的 value 与 scaler_unit 行为按条款 77 实现；"
+                    "依据 DLMS Blue Book Ed.16 §4.3.2。"
+                )
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.chat_json", side_effect=fake_chat):
+            index_path = Path(tmp) / "blue_book_index.json"
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                [req],
+                config=make_config(1),
+                cache_path=Path(tmp) / "c.jsonl",
+                blue_book_index_path=index_path,
+            )
+
+        self.assertEqual((enriched, rejected, failed), (1, 0, 0))
+        self.assertIn("条款 77", req["description"])
+        self.assertIn("DLMS Blue Book Ed.16 §4.3.2", req["description"])
+        self.assertIn("Register value scaler_unit 77 selective access", prompts[0])
+        self.assertIn("§4.3.2", prompts[0])
+
+    def test_blue_book_citation_mismatch_rejected_and_template_kept(self) -> None:
+        req = obj_req()
+        req["class_id"] = "3"
+        index = {
+            "interface_classes": {
+                "3": {"name": "Register", "section": "4.3.2", "text": "Register clause text"}
+            }
+        }
+
+        def fake_chat(config, system, user):
+            return {"description": "引用了错误出处，依据 DLMS Blue Book Ed.16 §4.4.4。"}
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.chat_json", side_effect=fake_chat):
+            index_path = Path(tmp) / "blue_book_index.json"
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            original = req["description"]
+
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                [req],
+                config=make_config(1),
+                cache_path=Path(tmp) / "c.jsonl",
+                blue_book_index_path=index_path,
+            )
+
+        self.assertEqual((enriched, rejected, failed), (0, 1, 0))
+        self.assertEqual(req["description"], original)
+        self.assertIn("出处", req["notes"])
+
+    def test_blue_book_name_fallback_resolves_entry(self) -> None:
+        """真实 P3 行为 atom 没有 class_id、只有接口类名（object）——名称回退是真实数据的
+        唯一命中路径（验收实测 class_id 0/180、名称 27/180）。大小写不敏感。"""
+        req = obj_req()
+        req.pop("class_id", None)
+        req["interface_class_name"] = "extended REGISTER"   # casefold 匹配
+        index = {
+            "interface_classes": {
+                "4": {"name": "Extended register", "section": "4.3.4",
+                       "text": "Extended register value scaler_unit status capture_time"}
+            }
+        }
+        prompts: list[str] = []
+
+        def fake_chat(config, system, user):
+            prompts.append(user)
+            return {"description": "行为叙述。依据 DLMS Blue Book Ed.16 §4.3.4。"}
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.chat_json", side_effect=fake_chat):
+            index_path = Path(tmp) / "blue_book_index.json"
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                [req], config=make_config(1), cache_path=Path(tmp) / "c.jsonl",
+                blue_book_index_path=index_path)
+
+        self.assertEqual((enriched, rejected, failed), (1, 0, 0))
+        self.assertIn("Extended register value scaler_unit", prompts[0])   # 条款注入了
+
+    def test_blue_book_missing_citation_auto_appended(self) -> None:
+        """出处必带（红线 4）：模型漏写出处时程序化补写正确节号——注入节号我们确知，
+        比信任模型可靠。错误节号仍由 citation_mismatch 拒绝。"""
+        req = obj_req()
+        req["class_id"] = "3"
+        index = {
+            "interface_classes": {
+                "3": {"name": "Register", "section": "4.3.2", "text": "Register clause text"}
+            }
+        }
+
+        def fake_chat(config, system, user):
+            return {"description": "行为叙述但模型忘了写出处。"}
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.chat_json", side_effect=fake_chat):
+            index_path = Path(tmp) / "blue_book_index.json"
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                [req], config=make_config(1), cache_path=Path(tmp) / "c.jsonl",
+                blue_book_index_path=index_path)
+
+        self.assertEqual((enriched, rejected, failed), (1, 0, 0))
+        self.assertIn("依据 DLMS Blue Book Ed.16 §4.3.2", req["description"])   # 程序化补写
+
+    def test_blue_book_clause_numbers_extend_drift_baseline_but_unrelated_obis_is_rejected(self) -> None:
+        req = obj_req()
+        req["class_id"] = "3"
+        index = {
+            "interface_classes": {
+                "3": {
+                    "name": "Register",
+                    "section": "4.3.2",
+                    "text": "Register clause permits value 77 and scaler_unit. No OBIS appears here.",
+                }
+            }
+        }
+
+        replies = iter([
+            {"description": "Register 行为允许条款中的 77；依据 DLMS Blue Book Ed.16 §4.3.2。"},
+            {"description": "Register 行为新增 OBIS 1-1:99.9.9.255；依据 DLMS Blue Book Ed.16 §4.3.2。"},
+        ])
+
+        def fake_chat(config, system, user):
+            return next(replies)
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.chat_json", side_effect=fake_chat):
+            index_path = Path(tmp) / "blue_book_index.json"
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            first = dict(req)
+            second = dict(req)
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                [first, second],
+                config=make_config(1),
+                cache_path=Path(tmp) / "c.jsonl",
+                blue_book_index_path=index_path,
+            )
+
+        self.assertEqual((enriched, rejected, failed), (1, 1, 0))
+        self.assertIn("77", first["description"])
+        self.assertEqual(second["description"], req["description"])
+        self.assertIn("漂移", second["notes"])
+
+    def test_blue_book_path_absent_does_not_load_or_change_fingerprint(self) -> None:
+        req = obj_req()
+        req["class_id"] = "3"
+        fp_without = spec_enrich.fingerprint(req, "mock")
+        fp_missing = spec_enrich.fingerprint(req, "mock", blue_book_entry=None)
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.blue_book_lookup.lookup_class") as lookup:
+            server, port = start_server()
+            try:
+                spec_enrich.enrich_descriptions(
+                    [req],
+                    config=make_config(port),
+                    cache_path=Path(tmp) / "c.jsonl",
+                    blue_book_index_path=None,
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+
+        self.assertEqual(fp_without, fp_missing)
+        lookup.assert_not_called()
 
 
 if __name__ == "__main__":
