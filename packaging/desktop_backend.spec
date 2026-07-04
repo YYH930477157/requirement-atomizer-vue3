@@ -33,6 +33,7 @@ spec_generator_modules = [
     "io_utils",
     "ai_extract",
     "merged_consistency",
+    "review_insights",
     "ai_review_actions",
     "doc_annotation_export",
     "desktop_tasks",

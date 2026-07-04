@@ -422,7 +422,10 @@ describe("review workspace shell", () => {
         baseUrl: "http://127.0.0.1:8770", token: "local-token", outputDir: "E:\\out\\abnt",
       }),
       runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt", summary: {} }),
-      aiExtract: vi.fn().mockResolvedValue({ kind: "ai_extract", count: 2, merged: {}, written: ["merged_spec.xlsx"], summary: {} }),
+      aiExtract: vi.fn().mockResolvedValue({
+        kind: "ai_extract", count: 2, merged: {}, written: ["merged_spec.xlsx"], summary: {},
+        consistency: { duplicate_groups: 3, obis_values_differ: 1, uncovered_requirement_like: 5 },
+      }),
       assembleSpec: vi.fn().mockResolvedValue({
         kind: "assemble", count: 42, written: ["assembled_spec.json", "dlms_cosem_spec.xlsx"], summary: {},
       }),
@@ -456,6 +459,9 @@ describe("review workspace shell", () => {
     expect(window.ratomizerDesktop?.composeEngineering).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt" })
     await vi.waitFor(() =>
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
+    // 一致性闭环：AI 抽取阶段的报表摘要透出到跑完消息
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("疑似跨章重复 3 组")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("OBIS 数值待核 1")
   })
 
   it("disabled stages are skipped in the Run chain", async () => {

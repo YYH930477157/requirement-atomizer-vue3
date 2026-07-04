@@ -230,6 +230,7 @@ def ai_extract_task(out_dir: Path, *, route: str | None) -> dict[str, Any]:
         "int_drift_flagged": result.get("int_drift_flagged", 0),
         "note": result.get("note", ""),
         "quality": result.get("quality", {}),
+        "consistency": result.get("consistency", {}),
         "written": [str(out_dir / name) for name in result.get("written", [])],
         "summary": build_output_summary(out_dir),
     }

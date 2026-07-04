@@ -20,6 +20,7 @@ declare global {
     analysis?: unknown
     breakdown?: unknown
     merged?: unknown
+    consistency?: unknown
     failed_sections?: number
     note?: string
     path?: string

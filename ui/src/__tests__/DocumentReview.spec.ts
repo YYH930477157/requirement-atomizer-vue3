@@ -23,6 +23,7 @@ function makeClient(over: Record<string, unknown> = {}) {
         source_block_ids: ["B2"], acceptance_criteria: ["按 4.2 测试"],
         dev_guidance: ["实现体积累计计量与本地存储"], labels: ["计量"],
         suspicion_reasons: ["数字漂移"], ownership: "software", ownership_effective: "software",
+        consistency_flags: ["跨章重复×2"],
         review_state: null,
       },
     ]),
@@ -48,6 +49,7 @@ describe("DocumentReview", () => {
     await chip.trigger("click")
     expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
     expect(wrapper.find('[data-testid="dd-suspicion"]').text()).toContain("数字漂移")  // 可疑度徽标
+    expect(wrapper.find('[data-testid="dd-consistency"]').text()).toContain("跨章重复×2")  // 一致性闭环标记
     expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("应计量体积")  // 需求分析
     expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("实现体积累计计量与本地存储")  // 研发指引
     expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("按 4.2 测试")  // 测试指引
