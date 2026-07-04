@@ -398,6 +398,11 @@ def setup_run_logging(out_dir: Path | None) -> None:
             logger.addHandler(file_handler)
         except OSError:  # 日志落盘失败不阻断任务
             pass
+    # LLM 消息级追踪：完整收发落 <out>/llm_trace.jsonl（含 prompt/响应全文/token 用量）。
+    # 默认开（体量 ~几 MB/次运行，与 blocks.jsonl 同量级）；设 RATOMIZER_LLM_TRACE=0 可关。
+    if out_dir is not None and os.environ.get("RATOMIZER_LLM_TRACE", "").strip() != "0":
+        import llm_client
+        llm_client.set_trace_path(Path(out_dir) / "llm_trace.jsonl")
 
 
 def teardown_run_logging() -> None:
@@ -407,6 +412,8 @@ def teardown_run_logging() -> None:
         if getattr(handler, "_ratomizer_tag", None) == "runlog":
             handler.close()
             logger.removeHandler(handler)
+    import llm_client
+    llm_client.set_trace_path(None)
 
 
 def main(argv: list[str] | None = None) -> int:

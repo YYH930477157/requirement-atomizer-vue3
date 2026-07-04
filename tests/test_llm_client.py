@@ -116,6 +116,55 @@ class LLMClientTests(unittest.TestCase):
         self.assertIn("dur=", line)
         self.assertIn("attempt=1", line)
 
+    def test_trace_records_full_messages_and_response(self) -> None:
+        """消息级追踪：启用后每次调用在 llm_trace.jsonl 落一行完整收发（prompt+响应全文）。"""
+        import tempfile
+        from pathlib import Path
+        import llm_client
+
+        os.environ["RATOMIZER_TEST_KEY"] = "secret-token"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                trace = Path(tmp) / "llm_trace.jsonl"
+                llm_client.set_trace_path(trace)
+                try:
+                    with MockOpenAIService([{"body": openai_response({"answer": 42})}]) as service:
+                        chat_json(
+                            LLMClientConfig(base_url=service.base_url, model="mock-model",
+                                            api_key_env="RATOMIZER_TEST_KEY", timeout_s=2, max_retries=0),
+                            "system-prompt-marker", "user-prompt-marker")
+                finally:
+                    llm_client.set_trace_path(None)
+                rows = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines()]
+        finally:
+            os.environ.pop("RATOMIZER_TEST_KEY", None)
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["model"], "mock-model")
+        self.assertEqual(row["messages"][0]["content"], "system-prompt-marker")
+        self.assertEqual(row["messages"][1]["content"], "user-prompt-marker")
+        self.assertIn("choices", row["response"])            # 响应全文（含 usage/reasoning 若有）
+        self.assertIn("dur_s", row)
+
+    def test_trace_disabled_writes_nothing(self) -> None:
+        import tempfile
+        from pathlib import Path
+        import llm_client
+
+        llm_client.set_trace_path(None)
+        os.environ["RATOMIZER_TEST_KEY"] = "secret-token"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                with MockOpenAIService([{"body": openai_response({"ok": True})}]) as service:
+                    chat_json(
+                        LLMClientConfig(base_url=service.base_url, model="mock-model",
+                                        api_key_env="RATOMIZER_TEST_KEY", timeout_s=2, max_retries=0),
+                        "s", "u")
+                self.assertEqual(list(Path(tmp).glob("*.jsonl")), [])
+        finally:
+            os.environ.pop("RATOMIZER_TEST_KEY", None)
+
     def test_chat_json_strips_markdown_fences(self) -> None:
         fenced = "```json\n{\"decision\":\"accept\",\"confidence\":0.9}\n```"
         with MockOpenAIService([{"body": openai_response(fenced)}]) as service:
