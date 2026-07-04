@@ -226,3 +226,31 @@ describe("Electron main helpers", () => {
     expect(`${first.output}${second.output}${second.remaining}`.trim()).toBe('{\n  "kind": "pipeline",\n  "out_dir": "E:\\\\out"\n}')
   })
 })
+
+describe("appendBackendLog", () => {
+  const { appendBackendLog, backendLogPath } = require("../main.helpers.cjs")
+
+  it("writes date-rolled file with timestamped label prefix", () => {
+    const writes: Array<{ file: string; data: string }> = []
+    const fakeFs = {
+      mkdirSync: () => undefined,
+      appendFileSync: (file: string, data: string) => writes.push({ file, data }),
+    }
+    const now = new Date("2026-07-04T10:20:30Z")
+    appendBackendLog("/logs", "task", "line-a\r\nline-b\n", { fs: fakeFs, now })
+
+    expect(writes).toHaveLength(1)
+    expect(writes[0].file.replace(/\\/g, "/")).toBe("/logs/backend-2026-07-04.log")
+    expect(writes[0].data).toContain("[task] line-a")
+    expect(writes[0].data).toContain("[task] line-b")
+    expect(writes[0].data).not.toContain("\r")
+  })
+
+  it("skips empty chunks and never throws on fs errors", () => {
+    const boomFs = { mkdirSync: () => { throw new Error("boom") }, appendFileSync: () => undefined }
+    expect(() => appendBackendLog("/logs", "api", "  \n", { fs: boomFs })).not.toThrow()
+    expect(() => appendBackendLog("/logs", "api", "text", { fs: boomFs })).not.toThrow()
+    expect(backendLogPath("/logs", new Date("2026-01-02T00:00:00Z")).replace(/\\/g, "/"))
+      .toBe("/logs/backend-2026-01-02.log")
+  })
+})

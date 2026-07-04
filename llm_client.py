@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+
+LOGGER = logging.getLogger("requirement_atomizer")
 
 
 class LLMError(Exception):
@@ -96,12 +99,19 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
     max_attempts = max(0, int(config.max_retries)) + 1
     for attempt in range(max_attempts):
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
                 raw = response.read().decode("utf-8")
+                # 每次 LLM 调用记时长（慢的可见性：推理模型单次可达 50-130s，没有这行
+                # 用户只能感觉"卡"）。所有 LLM 环节（抽取/审查/富化/分析/翻译）共此一处。
+                LOGGER.info("LLM 调用 model=%s dur=%.1fs attempt=%d bytes=%d",
+                            config.model, time.monotonic() - started, attempt + 1, len(raw))
                 return _loads_response_json(raw)
         except urllib.error.HTTPError as exc:
             raw = _read_error_body(exc)
+            LOGGER.warning("LLM 调用失败 model=%s dur=%.1fs attempt=%d http=%s",
+                           config.model, time.monotonic() - started, attempt + 1, exc.code)
             if exc.code in {401, 403}:
                 raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
             if _is_retryable_status(exc.code):
@@ -111,6 +121,9 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                 raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
             raise LLMResponseError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            LOGGER.warning("LLM 连接异常 model=%s dur=%.1fs attempt=%d err=%s",
+                           config.model, time.monotonic() - started, attempt + 1,
+                           str(exc)[:120])
             if attempt + 1 < max_attempts:
                 time.sleep(_retry_delay(attempt, None))
                 continue

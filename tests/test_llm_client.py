@@ -98,6 +98,24 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(service.requests[0]["messages"][0]["role"], "system")
         self.assertEqual(service.headers[0]["Authorization"], "Bearer secret-token")
 
+    def test_chat_json_logs_call_duration(self) -> None:
+        """慢的可见性：每次 LLM 调用记 model/时长/attempt（mimo-pro 单次 50-130s，无日志只能感觉卡）。"""
+        os.environ["RATOMIZER_TEST_KEY"] = "secret-token"
+        try:
+            with MockOpenAIService([{"body": openai_response({"ok": True})}]) as service:
+                with self.assertLogs("requirement_atomizer", level="INFO") as captured:
+                    chat_json(
+                        LLMClientConfig(base_url=service.base_url, model="mock-model",
+                                        api_key_env="RATOMIZER_TEST_KEY", timeout_s=2, max_retries=0),
+                        "s", "u")
+        finally:
+            os.environ.pop("RATOMIZER_TEST_KEY", None)
+
+        line = next(m for m in captured.output if "LLM 调用" in m)
+        self.assertIn("model=mock-model", line)
+        self.assertIn("dur=", line)
+        self.assertIn("attempt=1", line)
+
     def test_chat_json_strips_markdown_fences(self) -> None:
         fenced = "```json\n{\"decision\":\"accept\",\"confidence\":0.9}\n```"
         with MockOpenAIService([{"body": openai_response(fenced)}]) as service:

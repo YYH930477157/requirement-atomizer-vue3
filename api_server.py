@@ -502,6 +502,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    from desktop_tasks import setup_run_logging
+    setup_run_logging(args.out)  # 长驻 API 的裁决回流/重建告警同样落 run.log + stderr
     RequirementAPIHandler.output_dir = args.out.expanduser().resolve()
     RequirementAPIHandler.allowed_origins = build_allowed_origins(args.host, args.port, args.allow_origin)
     RequirementAPIHandler.local_token = args.token

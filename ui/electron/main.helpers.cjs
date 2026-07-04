@@ -207,9 +207,33 @@ function integerValue(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+// 后端子进程 stderr 持久化（按日滚动）。此前 stderr 只攒内存：失败拼弹窗、成功整段丢弃——
+// 排查"为什么慢/为什么降级"无迹可循。日志目录：<userData>/logs/backend-YYYY-MM-DD.log。
+function backendLogPath(logsDir, now = new Date()) {
+  const stamp = now.toISOString().slice(0, 10);
+  return path.join(logsDir, `backend-${stamp}.log`);
+}
+
+function appendBackendLog(logsDir, label, chunk, deps = {}) {
+  const fsImpl = deps.fs || fs;
+  const now = deps.now || new Date();
+  try {
+    fsImpl.mkdirSync(logsDir, { recursive: true });
+    const text = String(chunk || "").replace(/\r\n/g, "\n");
+    if (!text.trim()) return;
+    const stamp = now.toISOString().replace("T", " ").slice(0, 19);
+    const prefixed = text.split("\n").filter(Boolean).map((line) => `${stamp} [${label}] ${line}`).join("\n");
+    fsImpl.appendFileSync(backendLogPath(logsDir, now), prefixed + "\n", "utf8");
+  } catch {
+    /* 日志写失败绝不影响任务本身 */
+  }
+}
+
 module.exports = {
   DEFAULT_LLM_SETTINGS,
   PROGRESS_PREFIX,
+  appendBackendLog,
+  backendLogPath,
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,

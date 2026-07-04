@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -371,8 +372,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def setup_run_logging(out_dir: Path | None) -> None:
+    """后端任务日志：stderr（Electron 收集持久化）+ <输出目录>/run.log（跟着交付物走）。
+
+    此前 GUI 路径全链路零日志：LOGGER.info（LLM 调用时长/自检轮次/富化被拒原因/降级）被
+    Python 兜底 handler 丢弃，Electron 只在任务失败时把 stderr 拼进弹窗。排查"为什么慢/
+    为什么产物长这样"无从下手——本函数让每次运行在输出目录留下完整可追溯日志。幂等可重入。
+    """
+    logger = logging.getLogger("requirement_atomizer")
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    have = {getattr(h, "_ratomizer_tag", None) for h in logger.handlers}
+    if "stderr" not in have:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(fmt)
+        handler._ratomizer_tag = "stderr"  # type: ignore[attr-defined]
+        logger.addHandler(handler)
+    if out_dir is not None and "runlog" not in have:
+        try:
+            out_dir = Path(out_dir).expanduser().resolve()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(out_dir / "run.log", encoding="utf-8")
+            file_handler.setFormatter(fmt)
+            file_handler._ratomizer_tag = "runlog"  # type: ignore[attr-defined]
+            logger.addHandler(file_handler)
+        except OSError:  # 日志落盘失败不阻断任务
+            pass
+
+
+def teardown_run_logging() -> None:
+    """关闭并摘除 run.log 的 FileHandler（任务进程一次性；不关会锁住输出目录文件句柄）。"""
+    logger = logging.getLogger("requirement_atomizer")
+    for handler in list(logger.handlers):
+        if getattr(handler, "_ratomizer_tag", None) == "runlog":
+            handler.close()
+            logger.removeHandler(handler)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    setup_run_logging(getattr(args, "out", None))
+    logging.getLogger("requirement_atomizer").info("desktop task 开始：%s", args.command)
     try:
         if args.command == "run":
             payload = run_pipeline_task(
@@ -408,8 +448,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:
+        logging.getLogger("requirement_atomizer").exception("desktop task 失败：%s", args.command)
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
+    finally:
+        teardown_run_logging()
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 

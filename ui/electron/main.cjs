@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   DEFAULT_LLM_SETTINGS,
+  appendBackendLog,
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
@@ -116,6 +117,13 @@ ipcMain.handle("task:ai-extract", async (_event, input) => runDesktopTaskProcess
   ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
 ]));
 
+ipcMain.handle("logs:open", async () => {
+  const dir = logsDirPath();
+  fs.mkdirSync(dir, { recursive: true });
+  await shell.openPath(dir);
+  return { dir };
+});
+
 ipcMain.handle("task:assemble", async (_event, input) => runDesktopTaskProcess([
   "assemble",
   "--out",
@@ -218,7 +226,9 @@ function waitForApiReady(child, port, token, outputDir) {
       }
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      stderr += text;
+      appendBackendLog(logsDirPath(), "api", text);
     });
     child.once("error", (error) => {
       finish(reject, error);
@@ -263,7 +273,9 @@ function runDesktopTaskProcess(args) {
       }
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      stderr += text;
+      appendBackendLog(logsDirPath(), "task", text);
     });
     child.once("error", reject);
     child.once("exit", (code) => {
@@ -342,6 +354,10 @@ async function testLlmConnection(input) {
 
 function buildCurrentLlmEnvironment() {
   return buildLlmEnvironment({ ...loadLlmSettings(), apiKey: sessionApiKey }, process.env);
+}
+
+function logsDirPath() {
+  return path.join(app.getPath("userData"), "logs");
 }
 
 function llmSettingsPath() {
