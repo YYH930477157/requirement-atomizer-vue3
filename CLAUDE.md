@@ -58,7 +58,7 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **P2 行为层 RAG（Blue Book，GLM 实现 + 验收修复）**：`blue_book_ingest`（两 PDF 确定性编译 98 接口类+70 OBIS 节，逐字节可复现）→ `blue_book_lookup`（class_id/类名**精确**查找，不猜）→ `spec_enrich` P3 富化注入条款（出处程序校验+补写、drift 基线扩至条款、指纹折条款 hash）。桌面**自动探测**（`resolve_blue_book_index`：显式>env `RATOMIZER_BLUE_BOOK_INDEX`>out_dir>仓库 out/bluebook）。真实验收：ABNT 端到端注入出处逐条核对全过。**检索是确定性查找而非向量语义（刻意）**：宁漏勿错；语义回退留作将来升级路径。
 - **GUI「运行」= 可配置整链**：4 个交付物按钮合并——设置面板「运行阶段」勾选（AI抽取/装配/分析/组装，localStorage 持久化），点「运行」按依赖顺序跑完；顶栏「LLM」勾选统一控 openai_compatible 路由；逐阶段进度（analyze 富化 n/total）。
 - **LLM 端点（本机）**：小米 MiMo `https://token-plan-cn.xiaomimimo.com/v1`（`mimo-v2.5`/`mimo-v2.5-pro`，推理模型）；**该端点只认 `x-api-key` 头**——`llm_client` 已双头同发兼容。密钥经 GUI 设置面板 safeStorage 加密存、内存解密注入 env，绝不落盘。
-- **双轨行为需求分工（建议已记录，终局待用户拍板）**：`assemble`（A 轨：atoms+llm_review，P1-P5）= **DLMS profile 类文档**的结构规格主交付物（蓝皮书行为富化挂此轨）；`merged_spec`+`analyze`（B 轨：AI 抽取+批注裁决）= **通用标准文档**（如 AFD/SM-CG）的行为/软件需求主交付物。两轨并存各司其职，交付时按文档类型选主件。
+- **双轨行为需求分工（建议已记录，终局待用户拍板）**：`assemble`（A 轨：atoms+llm_review，P1-P5）= **DLMS profile 类文档**的结构规格主交付物（蓝皮书行为富化挂此轨）；`merged_spec`+`analyze`（B 轨：AI 抽取+批注裁决）= **非 DLMS 剖面类文档**（散文型标准，无 COSEM 对象表，如 AFD/SM-CG 附加功能标准）的行为/软件需求主交付物。两轨并存各司其职，交付时按文档类型选主件。
 - **有据缓建（实测量化为零收益，勿投机重启）**：① analyze 接蓝皮书——B 轨需求无接口类名可匹配（test5 多词类名 0/288）；② OBIS→class 连接提升蓝皮书覆盖——ABNT 行为 atom 正文 0 个 OBIS 形码（码全在表格→P1）；③ 类名归一化/别名——ABNT 未命中全是抽取噪声或 Green Book 领域引用，归一化救回 0 条；④ Part1 OBIS 节（70 节已摄入）——留给将来 OBIS 语义富化，暂无消费者。重启任一项前先在新语料上重跑探针。
 
 ## 历史状态（2026-06-16，已被上文覆盖）
