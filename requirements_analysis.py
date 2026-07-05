@@ -392,6 +392,7 @@ def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> d
         "acceptance_criteria": [],
         "open_questions": [],
         "notes": [],
+        "threshold_table": req.get("threshold_table") if isinstance(req.get("threshold_table"), dict) else None,
         "analysis_source": "deterministic",  # LLM 富化成功则改写为 "llm"（叙述字段来源追溯）
         "source_quote": str(req.get("source_quote") or ""),
         "source_section": str(req.get("source_section") or ""),

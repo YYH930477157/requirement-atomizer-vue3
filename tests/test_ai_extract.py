@@ -60,6 +60,74 @@ class TocAndReferenceNoiseTests(unittest.TestCase):
         self.assertFalse(ai_extract._is_reference_stub(req))
 
 
+class CrossRefAndValueGuardTests(unittest.TestCase):
+    """真实反馈两案：①"limits given in 7.13.4.5.1"——限值在别的单元，抽取看不见；
+    ②粉尘粒径/成分清单被"规定的范围"指代吞掉（threshold_table=None，数值没落地）。"""
+
+    def _sections(self) -> list[dict]:
+        return [
+            {"section_id": "A", "heading": "A", "block_ids": ["B1"],
+             "text": "7.13.4.5.1 Leakage limits\nThe leak rate shall not exceed 25 cm3/h at 500 mbar."},
+            {"section_id": "B", "heading": "B", "block_ids": ["B2"],
+             "text": "Close the valve and confirm that the leak rate does not exceed the values given in 7.13.4.5.1."},
+        ]
+
+    def test_cross_section_ref_injected_and_drift_extended(self) -> None:
+        sections = ai_extract.resolve_section_refs(self._sections())
+        ref_sec = sections[1]
+        self.assertEqual(len(ref_sec["ref_texts"]), 1)
+        self.assertEqual(ref_sec["ref_texts"][0]["clause"], "7.13.4.5.1")
+        self.assertIn("25 cm3/h", ref_sec["ref_texts"][0]["text"])          # 被引限值进摘录
+        self.assertIn("25 cm3/h", ref_sec["drift_source"])                  # 引用其数值=有据
+        prompt = ai_extract.build_section_prompt(ref_sec)
+        self.assertIn("被引用条款 7.13.4.5.1", prompt)                       # 注入 prompt
+        self.assertNotIn("ref_texts", sections[0])                          # 被引方自身不受影响
+
+    def test_ref_to_clause_in_same_unit_not_injected(self) -> None:
+        sections = [{"section_id": "A", "heading": "A", "block_ids": ["B1"],
+                     "text": "7.9 Accuracy\nSee 7.9 for details. The limit is 5."}]
+        ai_extract.resolve_section_refs(sections)
+        self.assertNotIn("ref_texts", sections[0])
+
+    def test_ref_changes_fingerprint(self) -> None:
+        sections = self._sections()
+        before = ai_extract.section_fingerprint(sections[1], "m")
+        ai_extract.resolve_section_refs(sections)
+        after = ai_extract.section_fingerprint(sections[1], "m")
+        self.assertNotEqual(before, after)                                  # 注入条款变 → 缓存失效
+
+    def test_values_left_behind_flagged(self) -> None:
+        """粉尘案：引句后紧跟的粒径/成分数值清单没进需求 → 可疑度标记（只标不拦）。"""
+        section = {"section_id": "D", "heading": "D", "block_ids": ["B1"],
+                   "text": ("Four separate batches of dust shall be used with 95 % of the particles. "
+                            "1) 0 um to 100 um Average size (50 ± 10) um; 2) 100 um to 200 um Average "
+                            "size (150 ± 10) um. Composition: Black iron oxide 79 %, Red iron oxide 12 %, "
+                            "silica flour 8 %, paint flake 1 %.")}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "尘埃测试用尘规格", "description": "必须使用四批规定粒径与成分的尘埃。",
+                "type": "constraint", "priority": "P1", "labels": ["环境可靠性"],
+                "source_quote": "Four separate batches of dust shall be used with 95 % of the particles."}]}
+
+        reqs = ai_extract.extract_section(section, chat)
+        self.assertIn("原文数值未带全", reqs[0].get("suspicion_reasons") or [])
+        self.assertIn("原文数值未带全", reqs[0]["notes"])
+
+    def test_values_captured_not_flagged(self) -> None:
+        section = {"section_id": "D", "heading": "D", "block_ids": ["B1"],
+                   "text": "The meter shall store at least 12 monthly records within 30 days."}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "存储", "description": "存储不少于 12 个月记录，30 天内。",
+                "type": "non_functional", "priority": "P1", "labels": ["数据存储"],
+                "source_quote": "The meter shall store at least 12 monthly records within 30 days."}]}
+
+        reqs = ai_extract.extract_section(section, chat)
+        self.assertNotIn("原文数值未带全", reqs[0].get("suspicion_reasons") or [])
+
+
 class SampleSectionsTests(unittest.TestCase):
     """试抽模式：均匀抽样 N 章（「测试运行」分钟级质量样本）。"""
 
@@ -950,7 +1018,8 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("示例", ai_extract.SYSTEM_PROMPT)
         self.assertIn("dev_guidance", ai_extract.SYSTEM_PROMPT)      # 研发落地指引
         self.assertIn("不要输出", ai_extract.SYSTEM_PROMPT)               # v7：目录/引用/范围声明剔除规则
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v7")
+        self.assertIn("数值必须落地", ai_extract.SYSTEM_PROMPT)            # v8：数值清单完整落地 + 被引条款整合
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v8")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}

@@ -49,6 +49,26 @@ class SheetTitleTests(unittest.TestCase):
             assert all(len(name) <= 31 for name in wb.sheetnames)
 
 
+class ThresholdTableTests(unittest.TestCase):
+    def test_threshold_table_rendered_into_notes_column(self) -> None:
+        """真实反馈：粉尘粒径/成分数值清单必须出现在最终交付物——不能只留在中间产物。"""
+        items = [{
+            "ownership": "software", "module": "环境可靠性", "description": "尘埃测试用尘规格",
+            "threshold_table": {"columns": ["批次", "粒径范围", "平均粒径"],
+                                 "rows": [["1", "0-100 um", "(50 ± 10) um"],
+                                          ["2", "100-200 um", "(150 ± 10) um"]]},
+        }]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "software.xlsx"
+            write_software_requirements_xlsx(items, path)
+            wb = load_workbook(path, data_only=True)
+            texts = [str(c.value) for ws in wb.worksheets for row in ws.iter_rows() for c in row if c.value]
+        joined = "\n".join(texts)
+        self.assertIn("参数表：批次 | 粒径范围 | 平均粒径", joined)
+        self.assertIn("(50 ± 10) um", joined)
+        self.assertIn("(150 ± 10) um", joined)
+
+
 class CellSafetyTests(unittest.TestCase):
     def test_formula_injection_is_neutralized(self) -> None:
         """交付研发的工作簿零活公式（spec-data-integrity 同一红线；此前缺 formula_safe 被复引入）。"""

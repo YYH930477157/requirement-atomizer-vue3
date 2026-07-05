@@ -84,9 +84,12 @@ const coveredBlocks = computed(() => {
 const selectedReq = computed(() => requirements.value.find((r) => r.ai_req_id === selectedId.value) || null)
 // 只高亮选中的片段（锚点小段），不把整个章节跨度刷蓝
 const selectedSpan = computed(() => {
+  // 整个被分析的跨度都亮淡底（source_block_ids），引句黄标只在锚点段内——
+  // 只黄一句会让"分析了一整段"的需求看起来像没选中（真实反馈）
   const r = selectedReq.value
   const anchor = r?.anchor_block_id || (r?.source_block_ids || [])[0]
-  return new Set(anchor ? [anchor] : [])
+  const ids = [...(r?.source_block_ids || []), anchor].filter(Boolean) as string[]
+  return new Set(ids)
 })
 
 const omissionCount = computed(
@@ -229,6 +232,19 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
 
           <div class="dd-section"><div class="dd-label">需求分析</div><div class="dd-body">{{ selectedReq.description }}</div></div>
+          <div class="dd-section" v-if="selectedReq.threshold_table && (selectedReq.threshold_table.rows || []).length">
+            <div class="dd-label">参数表（数值原样照抄原文）</div>
+            <table class="dd-table" data-testid="dd-threshold">
+              <thead v-if="(selectedReq.threshold_table.columns || []).length">
+                <tr><th v-for="(c, i) in selectedReq.threshold_table.columns" :key="i">{{ c }}</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, ri) in selectedReq.threshold_table.rows" :key="ri">
+                  <td v-for="(cell, ci) in (Array.isArray(row) ? row : [row])" :key="ci">{{ cell }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <div class="dd-section" v-if="(selectedReq.dev_guidance || []).length">
             <div class="dd-label">研发指引 / 落地实现</div>
             <ul class="dd-list"><li v-for="(g, i) in selectedReq.dev_guidance" :key="i">{{ g }}</li></ul>
@@ -299,6 +315,9 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .dd-meta { font-size: 12px; color: #64748b; margin-bottom: 8px; }
 .dd-suspicion { font-size: 12px; color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
 .dd-consistency { font-size: 12px; color: #1e40af; background: #dbeafe; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
+.dd-table { border-collapse: collapse; font-size: 12px; width: 100%; }
+.dd-table th, .dd-table td { border: 1px solid #e2e8f0; padding: 3px 8px; text-align: left; }
+.dd-table th { background: #f8fafc; font-weight: 600; }
 .dd-section { margin: 10px 0; }
 .dd-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 3px; }
 .dd-body { font-size: 13px; line-height: 1.55; color: #334155; }

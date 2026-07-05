@@ -112,10 +112,12 @@ describe("DocumentReview", () => {
     await flushPromises()
 
     await wrapper.find('[data-testid="anno-AIR-9"]').trigger("click")
-    // 仅锚点块 in-span，跨度里的其它块不刷蓝
+    // 整个被分析跨度（source_block_ids）亮淡底——只黄一句会让"分析了一整段"看着像没选中（真实反馈）
     const inSpan = wrapper.findAll(".doc-block.in-span")
-    expect(inSpan.length).toBe(1)
-    expect(inSpan[0].text()).toContain("measure volume")
+    expect(inSpan.length).toBe(2)
+    // 引句黄标只在锚点段内
+    expect(wrapper.findAll(".doc-text mark").length).toBe(1)
+    expect(wrapper.find(".doc-text mark").text()).toContain("measure volume")
 
     // 再点一下 → 取消选中：详情回空态、无 in-span
     await wrapper.find('[data-testid="anno-AIR-9"]').trigger("click")
