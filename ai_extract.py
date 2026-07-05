@@ -48,7 +48,7 @@ MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v7"  # v7：目录/引用/范围声明不作需求（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v8"  # v8：数值清单必须完整落地 + 被引条款数值整合（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -140,6 +140,10 @@ SYSTEM_PROMPT = (
     "严禁编造原文没有的 OBIS 码、事件号、十六进制、数字——这些只能原样引用或不出现。"
     "**不要输出**：目录/标题行、参考文献条目、范围声明（This standard specifies/applies to…）、"
     "仅引用其他标准编号而无本设备行为要求的语句——这些不是需求。"
+    "**数值必须落地**：原文列出的数值清单（粒径/成分百分比/档位/限值/容差）必须**逐项完整**"
+    "进入 threshold_table 或 description，绝不许用\"规定的范围\"\"指定成分\"这类指代替代——"
+    "研发拿不到数值等于没写。若给出【被引用条款】，把其中的具体数值整合进描述（引用视为有据），"
+    "不要只写\"见 X.X 节\"。"
     "只输出 JSON：{\"requirements\": [ {…}, … ]}。"
 )
 
@@ -273,15 +277,65 @@ def _finalize_merged(cur: dict[str, Any]) -> dict[str, Any]:
 # --- 抽取与防幻觉护栏 -----------------------------------------------------
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
+    refs = section.get("ref_texts") or []
+    refs_key = hashlib.sha256(json.dumps(refs, ensure_ascii=False).encode("utf-8")).hexdigest()[:12] if refs else ""
     digest = hashlib.sha256(
-        f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{context_key}".encode("utf-8")
+        f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{context_key}\n{refs_key}".encode("utf-8")
     ).hexdigest()
     return digest[:24]
 
 
 def build_section_prompt(section: dict[str, Any]) -> str:
     payload = {"heading": section.get("heading"), "text": section.get("text", "")[:12000]}
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    base = json.dumps(payload, ensure_ascii=False, indent=2)
+    refs = section.get("ref_texts") or []
+    if not refs:
+        return base
+    ref_block = "\n\n".join(
+        f"【被引用条款 {r['clause']}——本章节文字引用了它。请把其中的具体数值/限值整合进需求描述，"
+        f"引用这些数值视为有据】\n{r['text']}" for r in refs)
+    return f"{base}\n\n{ref_block}"
+
+
+# --- 跨章节引用解析 -------------------------------------------------------
+# "the leak rate does not exceed the values given in 7.13.4.5.1"——限值正文在别的单元，
+# 抽取时看不见 → 描述只能写"不得超过 7.13.4.5.1 规定的限值"（不自包含，研发还得回原文）。
+# 检测内部条款引用，把被引条款的正文摘录注入 prompt（并入漂移基线：引用其数值=有据）。
+_CLAUSE_REF_RE = re.compile(
+    r"\b(?:given in|specified in|according to|defined in|listed in|in accordance with|see)\s+"
+    r"(\d+(?:\.\d+){1,5})\b", re.IGNORECASE)
+_CLAUSE_HEADING_RE = re.compile(r"(?m)^(\d+(?:\.\d+){1,5})\b")
+MAX_REFS_PER_SECTION = 2      # 控 token 成本
+REF_EXCERPT_CHARS = 1200
+
+
+def resolve_section_refs(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """就地给含内部引用的 section 挂 ref_texts + drift_source。必须对**全文**单元表跑
+    （试抽采样前），被引条款可能在未被抽样的单元里。确定性、零 LLM。"""
+    clause_pos: dict[str, tuple[int, int]] = {}
+    for idx, s in enumerate(sections):
+        for m in _CLAUSE_HEADING_RE.finditer(s["text"]):
+            clause_pos.setdefault(m.group(1), (idx, m.start()))
+    for idx, s in enumerate(sections):
+        refs: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for m in _CLAUSE_REF_RE.finditer(s["text"]):
+            clause = m.group(1)
+            if clause in seen:
+                continue
+            seen.add(clause)
+            target = clause_pos.get(clause)
+            if not target or target[0] == idx:   # 找不到 or 就在本单元 → 无需注入
+                continue
+            t_idx, start = target
+            refs.append({"clause": clause,
+                         "text": sections[t_idx]["text"][start:start + REF_EXCERPT_CHARS]})
+            if len(refs) >= MAX_REFS_PER_SECTION:
+                break
+        if refs:
+            s["ref_texts"] = refs
+            s["drift_source"] = s["text"] + "\n" + "\n".join(r["text"] for r in refs)
+    return sections
 
 
 # --- 上下文工程：文档全局背景注入 ---------------------------------------
@@ -472,10 +526,36 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
         quote_norm = re.sub(r"\s+", " ", req["source_quote"]).strip().lower()
         if quote_norm and quote_norm not in re.sub(r"\s+", " ", source).lower():
             suspicion.append("引用非逐字")
+        left_behind = _values_left_behind(req, source)
+        if left_behind:
+            suspicion.append("原文数值未带全")
+            note = f"原文数值未带全（引句附近 {left_behind} 个数值未进需求，请核对参数清单）"
+            req["notes"] = f"{req['notes']}；{note}" if req["notes"] else note
         if suspicion:
             req["suspicion_reasons"] = suspicion
         results.append(req)
     return results
+
+
+_LEFT_BEHIND_MIN = 4      # 引句附近 ≥N 个数值没被带走才标（避免零星页码/序号误报）
+_LEFT_BEHIND_WINDOW = 800  # 引句起往后看的窗口（枚举清单/成分表通常紧跟引句）
+
+
+def _values_left_behind(req: dict[str, Any], source: str) -> int:
+    """确定性漏值检测：引句附近的数值清单没进需求（真实案例：粉尘粒径/成分百分比全被
+    "规定的范围"指代吞掉，threshold_table=None——研发拿不到数值等于没写）。只标记不拦截。"""
+    quote = str(req.get("source_quote") or "")
+    if not quote:
+        return 0
+    pos = source.find(quote)
+    if pos < 0:
+        return 0
+    window = source[pos:pos + max(len(quote), _LEFT_BEHIND_WINDOW)]
+    captured = extract_ints(" ".join([
+        _produced_text(req), json.dumps(req.get("threshold_table") or {}),
+    ]))
+    left = extract_ints(window) - captured
+    return len(left) if len(left) >= _LEFT_BEHIND_MIN else 0
 
 
 def _req_key(req: dict[str, Any]) -> str:
@@ -943,6 +1023,7 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
     all_sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars)
+    resolve_section_refs(all_sections)  # 跨章节引用注入（须在采样前，被引条款可能不在样本里）
     if not limit_sections and sample_ratio and 0 < sample_ratio < 1:
         limit_sections = max(1, round(len(all_sections) * sample_ratio))
     sections, sampled = sample_sections(all_sections, limit_sections)

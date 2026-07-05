@@ -102,6 +102,14 @@ def _excel_row(index: int, item: dict[str, Any]) -> list[Any]:
 
 def _notes_text(item: dict[str, Any]) -> str:
     notes: list[str] = []
+    # 参数表优先（数值是研发的命根子：粒径/成分/限值清单必须出现在交付物里，不能只留在中间产物）
+    table = item.get("threshold_table")
+    if isinstance(table, dict) and table.get("rows"):
+        columns = [str(c) for c in table.get("columns") or []]
+        if columns:
+            notes.append("参数表：" + " | ".join(columns))
+        for row in table.get("rows") or []:
+            notes.append("  " + " | ".join(str(cell) for cell in (row if isinstance(row, list) else [row])))
     notes.extend(str(value) for value in item.get("developer_guidance") or [])
     source_quote = str(item.get("source_quote") or "").strip()
     if source_quote:

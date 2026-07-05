@@ -306,6 +306,10 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .doc-block.anchored:hover {{ background: var(--accent-soft); }}
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
 .text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
+.doc-block.in-span {{ background: #eef4ff; border-radius: 6px; }}
+.dd-table {{ border-collapse: collapse; font-size: 12px; width: 100%; margin-bottom: 8px; }}
+.dd-table th, .dd-table td {{ border: 1px solid #e3e0d8; padding: 3px 8px; text-align: left; }}
+.dd-table th {{ background: #f6f3ec; font-weight: 600; }}
 
 /* chips（左侧留白垂直堆叠，Word 批注式编号，不侵入正文） */
 .chips {{ position: absolute; right: calc(100% + 12px); top: 4px; display: flex; flex-direction: column;
@@ -491,6 +495,24 @@ function buildOutline() {{
 }}
 
 let selected = null;
+function markSpan() {{
+  document.querySelectorAll(".doc-block.in-span").forEach(el => el.classList.remove("in-span"));
+  const r = selected && byId[selected]; if (!r) return;
+  const ids = (r.source_block_ids || []).concat([r.anchor_block_id]).filter(Boolean);
+  ids.forEach(bid => {{
+    const el = document.querySelector('.doc-block[data-block-id="' + bid + '"]');
+    if (el) el.classList.add("in-span");
+  }});
+}}
+
+function thresholdHtml(r) {{
+  const t = r.threshold_table;
+  if (!t || !(t.rows||[]).length) return "";
+  const head = (t.columns||[]).length ? "<tr>" + t.columns.map(c => "<th>"+esc(c)+"</th>").join("") + "</tr>" : "";
+  const body = t.rows.map(row => "<tr>" + (Array.isArray(row)?row:[row]).map(c => "<td>"+esc(String(c))+"</td>").join("") + "</tr>").join("");
+  return '<div class="dd-label">参数表（数值原样照抄原文）</div><table class="dd-table">'+head+body+'</table>';
+}}
+
 function highlightQuote() {{
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   const r = selected && byId[selected]; if (!r || !r.source_quote) return;
@@ -531,6 +553,7 @@ function select(id) {{
     '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
     '<div class="dd-label">需求分析</div><div class="dd-body">'+esc(r.description)+'</div>'+
+    thresholdHtml(r)+
     (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
     (r.source_quote ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(r.source_quote)+'</div>' : '')+
@@ -541,11 +564,8 @@ function select(id) {{
     '<button data-st="rejected">拒绝</button><button data-st="needs_discussion">讨论</button></div>'+
     '<div class="saved-hint" id="hint"></div></div>';
   document.querySelectorAll(".actions button").forEach(b => b.onclick = () => decide(id, b.getAttribute("data-st")));
-  document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
-  // 只高亮选中的片段（锚点小段变蓝，引用句在其中变黄）——不再把整个章节跨度刷蓝
-  const anchorBid = r.anchor_block_id || (r.source_block_ids||[])[0];
-  const anchorEl = anchorBid ? document.querySelector('.doc-block[data-block-id="'+anchorBid+'"]') : null;
-  if (anchorEl) anchorEl.classList.add("in-span");
+  // 整个被分析跨度亮淡底 + 引句黄标（markSpan 内部先清后加，含锚点块）
+  markSpan();
   highlightQuote();
 }}
 
