@@ -73,6 +73,7 @@ py-modules = [
   "requirements_analysis",
   "review_insights",
   "template_writer",
+  "corpus_eval",
   "requirements_analysis_agent",
   "requirements_analysis_excel",
   "requirements_analysis_rules",

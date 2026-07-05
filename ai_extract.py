@@ -246,18 +246,27 @@ def clause_key(section: dict[str, Any]) -> str | None:
 
 # 条款族允许比普通目标更大（保住"要求+测试"同单元）；超过后仍在成员/行边界拆（防 JSON 截断）
 CLAUSE_FAMILY_MAX_FACTOR = 2
+# 整章阅读模式（架构 A/B：少过程工程、多模型自由+结果验证）：按顶层章号分组（"4.14.1"→"4"），
+# 模型一次通读整章——跨条款引用天然可见、无需自检环轮轮追打。上限防超上下文/输出截断。
+UNIT_MODE_ENV = "RATOMIZER_AI_UNIT_MODE"   # clause(默认) | chapter
+CHAPTER_MAX_CHARS = 24000
+CHAPTER_MIN_MAX_TOKENS = 16384  # 整章几十条需求的 JSON 输出预算（推理模型思维链之外）
 
 
-def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAULT_MERGE_CHARS) -> list[dict[str, Any]]:
+def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAULT_MERGE_CHARS,
+                   unit_mode: str = "clause") -> list[dict[str, Any]]:
     """章节 → LLM 输入单元：**先按条款族分组（语义边界），族内再按字数规整（经济边界）**。
 
     同族（如 4.6.1/4.6.2）保持同单元、上限放宽到 2×target；**不同条款族绝不合并**——此前的
     纯字数贪心会把 4.5 尾巴和 4.6 开头拼在一起（真实反馈"分段乱乱的"的根源）。无编号章节沿用
     旧贪心合并（向后兼容散文/标题乱码文档）。
     """
+    chapter_mode = unit_mode == "chapter"
     groups: list[tuple[str | None, list[dict[str, Any]]]] = []
     for sec in sections:
         key = clause_key(sec)
+        if chapter_mode and key is not None:
+            key = key.split(".")[0]   # 整章：4.14.1 → "4"（同章条款全部同单元）
         if groups and groups[-1][0] == key and key is not None:
             groups[-1][1].append(sec)      # 同条款族 → 同组
         elif groups and groups[-1][0] is None and key is None:
@@ -267,8 +276,13 @@ def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAUL
 
     units: list[dict[str, Any]] = []
     for key, group in groups:
-        limit = target_chars * CLAUSE_FAMILY_MAX_FACTOR if key is not None else target_chars
-        units.extend(_pack_sections(group, target_chars=limit, split_chars=target_chars))
+        if chapter_mode:
+            limit = CHAPTER_MAX_CHARS if key is not None else target_chars
+            split = CHAPTER_MAX_CHARS if key is not None else target_chars
+        else:
+            limit = target_chars * CLAUSE_FAMILY_MAX_FACTOR if key is not None else target_chars
+            split = target_chars
+        units.extend(_pack_sections(group, target_chars=limit, split_chars=split))
     return units
 
 
@@ -1097,7 +1111,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                    concurrency: int | None = None,
                    self_check: bool | None = None,
                    limit_sections: int | None = None,
-                   sample_ratio: float | None = None) -> dict[str, Any]:
+                   sample_ratio: float | None = None,
+                   unit_mode: str | None = None) -> dict[str, Any]:
     """读 blocks → 章节合并 → AI 抽取 → 写 ai_requirements.jsonl（可选 skill doc + Excel + 双引擎合并）。
 
     试抽模式（分钟级出质量样本，不等全量）：limit_sections=固定 N 章；sample_ratio=按比例
@@ -1105,7 +1120,11 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     """
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
-    all_sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars)
+    resolved_mode = (unit_mode or os.environ.get(UNIT_MODE_ENV) or "clause").strip().lower()
+    if resolved_mode not in ("clause", "chapter"):
+        resolved_mode = "clause"
+    all_sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars,
+                                  unit_mode=resolved_mode)
     resolve_section_refs(all_sections)  # 跨章节引用注入（须在采样前，被引条款可能不在样本里）
     if not limit_sections and sample_ratio and 0 < sample_ratio < 1:
         limit_sections = max(1, round(len(all_sections) * sample_ratio))
@@ -1128,8 +1147,9 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         requirements: list[dict[str, Any]] = []
         route_label = "stub"
     else:
-        if config.max_tokens < AI_EXTRACT_MIN_MAX_TOKENS:  # 给推理模型留出正文预算，防 JSON 截断
-            config = replace(config, max_tokens=AI_EXTRACT_MIN_MAX_TOKENS)
+        min_tokens = CHAPTER_MIN_MAX_TOKENS if resolved_mode == "chapter" else AI_EXTRACT_MIN_MAX_TOKENS
+        if config.max_tokens < min_tokens:  # 给推理模型留出正文预算，防 JSON 截断（整章输出更长）
+            config = replace(config, max_tokens=min_tokens)
 
         def chat(system: str, user: str) -> dict[str, Any]:
             return chat_json(config, system, user)
