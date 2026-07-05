@@ -109,6 +109,82 @@ class ClauseFamilyGroupingTests(unittest.TestCase):
                                           {"label": "", "text": "无标签也保留"}])
 
 
+class SelfCheckClauseAlignmentTests(unittest.TestCase):
+    """真实案例（EN 16314 §4.14）：初抽按条款族正确合成一条（子项 a-e），自检只见标题→
+    把 a-e 判遗漏又拆回 4 条碎片（含引句为前缀子串的重复），一个条款 18 个批注点。
+    修复三处：自检看结构摘要、引句包含式去重、行覆盖记账认 sub_items 标签。"""
+
+    def _existing(self) -> list[dict]:
+        return [{
+            "title": "AFD抗不当处理（跌落）测试要求",
+            "description": "d", "source_quote":
+                "The AFD shall withstand the handling required during its transport and installation. "
+                "Before testing in accordance with 4.14.2, the meter under test shall conform.",
+            "sub_items": [{"label": c, "text": f"子项{c}"} for c in "abcde"],
+            "acceptance_criteria": ["按 4.14.2 跌落后功能正常"],
+        }]
+
+    def test_critique_prompt_shows_structure_and_coverage_rule(self) -> None:
+        captured: list[str] = []
+
+        def chat(system: str, user: str) -> dict:
+            captured.append(user)
+            return {"requirements": []}
+
+        section = {"section_id": "4.14", "heading": "4.14", "block_ids": [],
+                   "text": "The AFD shall withstand the handling required."}
+        ai_extract.critique_section(section, self._existing(), chat)
+        self.assertIn("子项:a,b,c,d,e", captured[0])            # 结构摘要可见
+        self.assertIn("验收 1 条", captured[0])
+        self.assertIn("不要**把它们拆成新需求".replace("**", ""),
+                      captured[0].replace("**", ""))            # 覆盖判定规则在场
+
+    def test_prefix_substring_duplicate_dropped(self) -> None:
+        """自检补的"新"条目引句是已抽引句前缀（真实 #2）→ 包含式去重拦下。"""
+        section = {"section_id": "4.14", "heading": "4.14", "block_ids": [],
+                   "text": ("The AFD shall withstand the handling required during its transport "
+                            "and installation. Before testing in accordance with 4.14.2, "
+                            "the meter under test shall conform.")}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "AFD应能承受运输和安装中的正常处理", "description": "重复碎片",
+                "type": "functional", "priority": "P1", "labels": ["附加功能"],
+                "source_quote": "The AFD shall withstand the handling required during "
+                                "its transport and installation."}]}
+
+        extra = ai_extract.critique_section(section, self._existing(), chat)
+        self.assertEqual(extra, [])                              # 同源重复被弃
+
+    def test_genuinely_new_requirement_still_accepted(self) -> None:
+        section = {"section_id": "4.14", "heading": "4.14", "block_ids": [],
+                   "text": ("The AFD shall withstand handling. "
+                            "The display shall remain readable after the drop test.")}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "跌落后显示仍可读", "description": "d",
+                "type": "functional", "priority": "P1", "labels": ["显示"],
+                "source_quote": "The display shall remain readable after the drop test."}]}
+
+        extra = ai_extract.critique_section(section, self._existing(), chat)
+        self.assertEqual(len(extra), 1)                          # 真遗漏不受影响
+
+    def test_uncovered_lines_credit_sub_item_labels(self) -> None:
+        """a)/b) 枚举行已在某需求 sub_items 里 → 不再进"未覆盖"清单（定向自检不再追打）。"""
+        blocks = {
+            "B1": {"block_id": "B1", "requirement_like": True, "noise": False,
+                   "text": "a) the AFD shall function as specified by the manufacturer;"},
+            "B2": {"block_id": "B2", "requirement_like": True, "noise": False,
+                   "text": "f) some other uncovered requirement line entirely."},
+        }
+        section = {"section_id": "4.14", "heading": "4.14", "block_ids": ["B1", "B2"],
+                   "text": blocks["B1"]["text"] + "\n" + blocks["B2"]["text"]}
+        uncovered = ai_extract._uncovered_requirement_lines(section, self._existing(), blocks)
+        self.assertEqual(len(uncovered), 1)
+        self.assertTrue(uncovered[0].startswith("f)"))           # a) 已被子项覆盖，f) 才是真未覆盖
+
+
 class CrossRefAndValueGuardTests(unittest.TestCase):
     """真实反馈两案：①"limits given in 7.13.4.5.1"——限值在别的单元，抽取看不见；
     ②粉尘粒径/成分清单被"规定的范围"指代吞掉（threshold_table=None，数值没落地）。"""
@@ -1070,7 +1146,7 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("数值必须落地", ai_extract.SYSTEM_PROMPT)            # v8：数值清单完整落地 + 被引条款整合
         self.assertIn("条款族=一条需求", ai_extract.SYSTEM_PROMPT)          # v9：条款族 + sub_items + Test→验收
         self.assertIn("sub_items", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v9")
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v10")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}

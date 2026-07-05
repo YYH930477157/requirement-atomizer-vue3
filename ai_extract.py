@@ -48,7 +48,7 @@ MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v9"  # v9：条款族=一条需求 + sub_items 二级子项 + Test→验收（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v10"  # v10：自检对齐条款族（结构摘要+子项覆盖记账+包含去重），防拆碎（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -634,17 +634,30 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
     focus_lines：解析层标记 requirement_like 但未被任何已抽需求覆盖的原文语句——
     定向查漏的重点核查清单（比盲查更准）。
     """
-    titles = "\n".join(f"- {r.get('title', '')}" for r in existing) or "（无）"
+    # 给模型看**结构摘要**而非裸标题：真实案例（4.14）——初抽按条款族正确合成一条（子项
+    # a-e + 验收），自检只见标题、看不见 a-e 已在 sub_items 里 → 判"遗漏"又拆回 4 条碎片，
+    # 一个条款 18 个批注点。摘要必须暴露子项与验收，让"已覆盖"判断有据。
+    summaries = "\n".join(
+        f"- {r.get('title', '')}"
+        + (f"｜子项:{','.join(str(s.get('label') or '·') for s in r.get('sub_items') or [])}"
+           if r.get("sub_items") else "")
+        + (f"｜验收 {len(r.get('acceptance_criteria') or [])} 条"
+           if r.get("acceptance_criteria") else "")
+        for r in existing) or "（无）"
     parts: list[str] = []
     if doc_context:
         parts.append(doc_context)
         parts.append("---")
     parts.append(
-        "【查漏补缺任务】下面是一个章节的原文 + 已抽取的需求标题。找出章节里**尚未被覆盖**的"
+        "【查漏补缺任务】下面是一个章节的原文 + 已抽取的需求结构摘要。找出章节里**尚未被覆盖**的"
         "需求/约束/可测语句，只输出这些**遗漏项**（同样的 JSON schema、同样的 module 受控清单）；"
-        "已覆盖的不要重复；原文没有的绝不编造；若无遗漏，输出 {\"requirements\": []}。")
+        "已覆盖的不要重复；原文没有的绝不编造；若无遗漏，输出 {\"requirements\": []}。"
+        "**覆盖判定**：已抽需求的 sub_items（枚举子项 a/b/c…）与 acceptance_criteria 覆盖的语句"
+        "算已覆盖——条款的枚举项、测试前/后判据、测试方法是该条款需求的组成部分，"
+        "**不要**把它们拆成新需求，也不要输出与已抽需求同源的重复表述"
+        "（条款族=一条需求的原则对遗漏项同样适用）。")
     parts.append(f"当前章节：\n{build_section_prompt(section)}")
-    parts.append(f"已抽取（勿重复）：\n{titles}")
+    parts.append(f"已抽取（勿重复）：\n{summaries}")
     if focus_lines:
         hints = "\n".join(f"- {line}" for line in focus_lines[:12])
         parts.append(f"重点核查以下原文语句是否含被遗漏的需求（解析层判定疑似需求但尚无需求覆盖）：\n{hints}")
@@ -653,14 +666,22 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
     if not isinstance(raw, list):
         return []
     seen = {_req_key(r) for r in existing}
+    # 包含式去重基底：真实案例里自检补的"新"条目引句是已抽引句的**前缀子串**（精确匹配拦不住）
+    existing_quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in existing) if len(q) >= 20]
     extra: list[dict[str, Any]] = []
     for req in _process_raw_requirements(raw, section, context_ints):
         key = _req_key(req)
-        if key and key not in seen:
-            seen.add(key)
-            req["self_check_added"] = True  # 初抽遗漏、自检补回——审核时优先看
-            req["suspicion_reasons"] = list(req.get("suspicion_reasons") or []) + ["自检补充（初抽遗漏）"]
-            extra.append(req)
+        if not key or key in seen:
+            continue
+        quote = _norm_ws(req.get("source_quote"))
+        if len(quote) >= 20 and any(quote in q or q in quote for q in existing_quotes):
+            continue   # 与已抽需求同源（引句互为包含）→ 重复，弃
+        seen.add(key)
+        if len(quote) >= 20:
+            existing_quotes.append(quote)
+        req["self_check_added"] = True  # 初抽遗漏、自检补回——审核时优先看
+        req["suspicion_reasons"] = list(req.get("suspicion_reasons") or []) + ["自检补充（初抽遗漏）"]
+        extra.append(req)
     return extra
 
 
@@ -678,6 +699,11 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
     if not block_info:
         return None
     quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in existing) if q]
+    # 子项覆盖记账：条款族合并后 a)b)c) 各行活在 sub_items 里而非 source_quote 里——
+    # 不认子项标签会把它们永远判"未覆盖"，定向自检轮轮追打、拆碎条款（真实案例 4.14）
+    sub_labels = {str(s.get("label") or "").strip().lower()
+                  for r in existing for s in (r.get("sub_items") or [])}
+    sub_labels.discard("")
     section_text = _norm_ws(section.get("text"))
     uncovered: list[str] = []
     seen: set[str] = set()
@@ -685,6 +711,8 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
         block = block_info.get(str(bid))
         if not block or not block.get("requirement_like") or block.get("noise"):
             continue
+        if block.get("type") == "heading":
+            continue   # 标题被关键词误标 requirement_like（如 "4.14.1 Requirement"）——不是内容
         cleaned = clean_block_text(block)   # 目录点线行不进自检焦点（追着目录行查漏纯烧调用）
         bt = _norm_ws(cleaned)
         if not bt or bt in seen or bt not in section_text:
@@ -692,6 +720,9 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
         seen.add(bt)
         if any(q in bt or bt in q for q in quotes):
             continue
+        m = re.match(r"^\(?([a-z])\)", bt)
+        if m and m.group(1) in sub_labels:
+            continue   # 该枚举项已被某条需求的 sub_items 覆盖
         uncovered.append(cleaned[:200])
     return uncovered
 
