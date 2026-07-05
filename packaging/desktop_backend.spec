@@ -36,6 +36,7 @@ spec_generator_modules = [
     "review_insights",
     "template_writer",
     "corpus_eval",
+    "clarification_report",
     "ai_review_actions",
     "doc_annotation_export",
     "desktop_tasks",

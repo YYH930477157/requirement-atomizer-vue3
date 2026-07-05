@@ -111,6 +111,7 @@ def _notes_text(item: dict[str, Any]) -> str:
         for row in table.get("rows") or []:
             notes.append("  " + " | ".join(str(cell) for cell in (row if isinstance(row, list) else [row])))
     notes.extend(str(value) for value in item.get("developer_guidance") or [])
+    notes.extend(f"假设：{value}" for value in item.get("assumptions") or [])
     source_quote = str(item.get("source_quote") or "").strip()
     if source_quote:
         notes.append(f"原文：{source_quote}")

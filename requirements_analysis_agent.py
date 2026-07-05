@@ -20,6 +20,7 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         "  - acceptance_criteria: 可测的验收标准数组",
         "  - hardware_dependency: 硬件依赖简述（software 类留空字符串）",
         "  - open_questions: 需澄清的问题数组（无则空数组）",
+        "  - assumptions: 推导中不得不假设的、原文没有的前提数组——**一律记录在此，绝不无声编入正文**（无则空数组）",
         "  - ownership_reason: 归属判断的一句话理由",
         "模板词表 JSON:",
         json.dumps(vocabulary, ensure_ascii=False),
