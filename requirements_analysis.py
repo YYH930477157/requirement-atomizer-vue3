@@ -34,7 +34,7 @@ LOGGER = logging.getLogger("requirement_atomizer")
 ChatFn = Callable[[str, str], dict[str, Any]]
 
 SCHEMA_VERSION = "requirements-analysis/v1"
-ANALYZE_PROMPT_VERSION = "analyze-llm-v2"  # v2：注入公司标准做法参考（模板行样本，缓存失效重富化）
+ANALYZE_PROMPT_VERSION = "analyze-llm-v3"  # v3：assumptions 契约——推导前提必须显性记录（缓存失效重富化）
 ANALYZE_MIN_MAX_TOKENS = 6144  # 与 ai_extract 同：推理模型（如 mimo-v2.5-pro）会输出思维链，2048 会截断 JSON
 ANALYZE_ENRICH_CACHE = "analyze_enrich_cache.json"
 # 确定性分析层（规则+模板+裁决）恒在；openai_compatible 追加 LLM 富化层，只填叙述字段、
@@ -43,7 +43,7 @@ STUB_ROUTE = "stub"
 DEGRADE_NOTE = "openai_compatible 端点未配置，本次按规则/模板/裁决确定性运行（未做 LLM 富化）"
 # LLM 只允许填这些叙述字段；OBIS/class/访问位/归属/id 等结构字段永不被 LLM 覆盖（防幻觉红线）
 _ENRICH_FIELDS_TEXT = ("software_requirement_text", "hardware_dependency")
-_ENRICH_FIELDS_LIST = ("developer_guidance", "acceptance_criteria", "open_questions")
+_ENRICH_FIELDS_LIST = ("developer_guidance", "acceptance_criteria", "open_questions", "assumptions")
 OUTPUT_FILES = [
     "software_requirements.xlsx",
     "engineering_analysis.json",
@@ -402,6 +402,7 @@ def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> d
         "hardware_dependency": "",
         "acceptance_criteria": [],
         "open_questions": [],
+        "assumptions": [],
         "notes": [],
         "threshold_table": req.get("threshold_table") if isinstance(req.get("threshold_table"), dict) else None,
         "analysis_source": "deterministic",  # LLM 富化成功则改写为 "llm"（叙述字段来源追溯）

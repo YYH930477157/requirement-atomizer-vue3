@@ -214,6 +214,24 @@ def resolve_template_path(template_path: Path | None) -> Path | None:
     return path.resolve()
 
 
+def clarification_report_task(out_dir: Path) -> dict[str, Any]:
+    """澄清问题清单 + 就绪判定（确定性零 LLM）：全链疑问信号聚合成评审会可用的问客户清单。"""
+    from clarification_report import run_report
+
+    out_dir = out_dir.expanduser().resolve()
+    report = run_report(out_dir)
+    return {
+        "kind": "clarification_report",
+        "out_dir": str(out_dir),
+        "questions": report["questions"],
+        "by_category": report["by_category"],
+        "readiness": report["readiness"],
+        "written": [str(out_dir / name) for name in report.get("written") or []
+                    if (out_dir / name).exists()],
+        "summary": build_output_summary(out_dir),
+    }
+
+
 def template_write_task(out_dir: Path, template_path: Path) -> dict[str, Any]:
     """成文：analyze 结果按公司标准化需求列表 V2.3.x 格式追加进对应模块 sheet（确定性零 LLM）。"""
     from template_writer import run_writer
@@ -374,6 +392,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     compose_parser = subparsers.add_parser("compose")
     compose_parser.add_argument("--out", type=Path, required=True)
 
+    clarification_parser = subparsers.add_parser("clarification-report")
+    clarification_parser.add_argument("--out", type=Path, required=True)
+
     template_write_parser = subparsers.add_parser("template-write")
     template_write_parser.add_argument("--out", type=Path, required=True)
     template_write_parser.add_argument("--template", type=Path, required=True)
@@ -473,6 +494,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "compose":
             payload = compose_task(args.out)
+        elif args.command == "clarification-report":
+            payload = clarification_report_task(args.out)
         elif args.command == "template-write":
             payload = template_write_task(args.out, args.template)
         elif args.command == "requirements-analysis":

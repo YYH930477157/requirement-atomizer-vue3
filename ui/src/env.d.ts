@@ -32,6 +32,8 @@ declare global {
     rebuilt?: unknown
     quality?: unknown
     report?: unknown
+    questions?: number
+    readiness?: unknown
   }
 
   interface Window {
@@ -110,6 +112,7 @@ declare global {
       composeEngineering: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       runRequirementsAnalysis: (input: { outDir: string; llmRoute?: string; templatePath?: string }) => Promise<RequirementAtomizerTaskPayload>
       writeTemplate: (input: { outDir: string; templatePath: string }) => Promise<RequirementAtomizerTaskPayload>
+      clarificationReport: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       selectTemplate: () => Promise<string>
       openLogsDir: () => Promise<{ dir: string }>
     }

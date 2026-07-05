@@ -406,6 +406,38 @@ class TemplateKnowledgeInjectionTests(unittest.TestCase):
             self.assertNotIn("公司标准做法参考", captured[0])       # 不设模板 → 行为如旧
 
 
+class AssumptionsContractTests(unittest.TestCase):
+    """BMAD headless 契约：推导前提必须显性记录进 assumptions，透传到条目与说明列。"""
+
+    def test_assumptions_passthrough_and_prompt_mentions_contract(self) -> None:
+        from requirements_analysis_agent import build_analysis_prompt
+        prompt = build_analysis_prompt([{"ai_req_id": "AI-1"}], {"modules": []})
+        assert "assumptions" in prompt["user"]
+        assert "绝不无声编入正文" in prompt["user"]
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [{
+                "ai_req_id": "AI-1", "description": "The meter shall store records.",
+                "source_quote": "store records", "source_block_ids": ["B-1"], "module": "数据存储",
+            }])
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{"source_requirement_ids": ["AI-1"],
+                                   "software_requirement_text": "存储记录。",
+                                   "developer_guidance": [], "acceptance_criteria": [],
+                                   "hardware_dependency": "", "open_questions": [],
+                                   "assumptions": ["假定存储介质为 Dataflash"],
+                                   "ownership_reason": "软件"}]}
+
+            run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            assert item["assumptions"] == ["假定存储介质为 Dataflash"]
+        from requirements_analysis_excel import _notes_text
+        assert "假设：假定存储介质为 Dataflash" in _notes_text(item)
+
+
 class LlmEnrichmentTests(unittest.TestCase):
     """LLM 分析层（注入 fake chat，零网络）：填叙述字段、冻结结构字段、编造即拒绝、幂等缓存。"""
 

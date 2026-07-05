@@ -967,6 +967,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     type ConsistencySummary = { duplicate_groups?: number; obis_values_differ?: number; uncovered_requirement_like?: number }
     const ranStages: string[] = []
     let consistency: ConsistencySummary | null = null
+    let readinessNote = ""
     const bridge = window.ratomizerDesktop
     if (!options.llmReviewLimit && bridge) {
       const useLlm = llmMode.value
@@ -982,6 +983,9 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         { on: runStages.value.analyze && Boolean(templatePath.value) && Boolean(bridge.writeTemplate),
           label: "成文需求列表", progress: 97,
           run: () => bridge.writeTemplate({ outDir: finalOutDir, templatePath: templatePath.value }) },
+        { on: runStages.value.analyze && Boolean(bridge.clarificationReport),
+          label: "澄清问题清单", progress: 98,
+          run: () => bridge.clarificationReport({ outDir: finalOutDir }) },
         { on: runStages.value.compose, label: "组装工程需求", progress: 98,
           run: () => bridge.composeEngineering({ outDir: finalOutDir }) },
       ]
@@ -999,6 +1003,12 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         }
         const stageConsistency = objectValue(stagePayload?.consistency)
         if (stageConsistency) consistency = stageConsistency as ConsistencySummary
+        const stageReadiness = objectValue(stagePayload?.readiness) as { verdict?: string; reasons?: string[] } | null
+        if (stageReadiness?.verdict) {
+          readinessNote = `；就绪判定：${stageReadiness.verdict}` +
+            ((stageReadiness.reasons || []).length ? `（${(stageReadiness.reasons || []).join("、")}）` : "") +
+            `，待澄清 ${Number(stagePayload?.questions ?? 0)} 条 → clarification_questions.xlsx`
+        }
         ranStages.push(stage.label)
       }
       if (ranStages.length) await refreshAfterDesktopTask(finalOutDir)
@@ -1072,7 +1082,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         ? `；一致性：疑似跨章重复 ${dup} 组、OBIS 数值待核 ${differ}、覆盖缺口 ${uncovered}（批注视图已标记）`
         : ""
       runProgressDetail.value = `全部阶段完成：抽取与审查${tail}`
-      apiMessage.value = `运行完成：抽取与审查${tail}${warn}`
+      apiMessage.value = `运行完成：抽取与审查${tail}${warn}${readinessNote}`
     }
   } catch (error) {
     runStage.value = "运行失败"

@@ -109,6 +109,37 @@ class ClauseFamilyGroupingTests(unittest.TestCase):
                                           {"label": "", "text": "无标签也保留"}])
 
 
+class VagueAcceptanceTests(unittest.TestCase):
+    """模糊验收检测（BMAD Done-ness clarity）：空话验收标"验收不可测"，有判据则豁免。"""
+
+    def _extract(self, acceptance: list[str]) -> dict:
+        section = {"section_id": "S", "heading": "S", "block_ids": [],
+                   "text": "The meter shall record events."}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "事件记录", "description": "d", "type": "functional",
+                "priority": "P1", "labels": ["事件记录"],
+                "source_quote": "The meter shall record events.",
+                "acceptance_criteria": acceptance}]}
+
+        return ai_extract.extract_section(section, chat)[0]
+
+    def test_vague_phrase_without_criteria_flagged(self) -> None:
+        req = self._extract(["事件记录功能符合要求", "断电后恢复正常工作"])
+        self.assertIn("验收不可测", req.get("suspicion_reasons") or [])
+        self.assertIn("验收不可测", req["notes"])
+
+    def test_numeric_or_comparison_criteria_exempt(self) -> None:
+        req = self._extract(["连续记录 100 条事件后最早记录仍可读出",
+                             "恢复时间不超过 5 s，工作正常"])
+        self.assertNotIn("验收不可测", req.get("suspicion_reasons") or [])
+
+    def test_clean_acceptance_not_flagged(self) -> None:
+        req = self._extract(["断电事件出现在事件日志中且带时间戳"])
+        self.assertNotIn("验收不可测", req.get("suspicion_reasons") or [])
+
+
 class ChapterUnitModeTests(unittest.TestCase):
     """整章阅读模式（架构 A/B）：按顶层章号分组，同章条款全同单元；默认 clause 行为不变。"""
 

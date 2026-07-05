@@ -597,10 +597,35 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             suspicion.append("原文数值未带全")
             note = f"原文数值未带全（引句附近 {left_behind} 个数值未进需求，请核对参数清单）"
             req["notes"] = f"{req['notes']}；{note}" if req["notes"] else note
+        vague = _vague_acceptance(req)
+        if vague:
+            suspicion.append("验收不可测")
+            note = f"验收不可测（空话验收 {len(vague)} 条，如「{vague[0][:40]}」，请给出可判定条件）"
+            req["notes"] = f"{req['notes']}；{note}" if req["notes"] else note
         if suspicion:
             req["suspicion_reasons"] = suspicion
         results.append(req)
     return results
+
+
+# 模糊验收检测（BMAD "Done-ness clarity" 模式）：封杀"符合要求/正常工作"式空话验收——
+# 研发看不出"完成"长什么样。命中空话短语且不含任何数字/编码/比较判据的验收条 → 标记待澄清。
+_VAGUE_PHRASES = ("符合要求", "满足要求", "正常工作", "工作正常", "运行正常", "表现良好",
+                  "适当", "合理", "正确处理", "妥善处理", "gracefully", "properly",
+                  "reasonable", "as expected", "correctly", "appropriately")
+_TESTABLE_HINT_RE = re.compile(r"[0-9０-９]|≥|≤|>|<|＝|=|不超过|不少于|不小于|不大于|之内|以内|以上|以下")
+
+
+def _vague_acceptance(req: dict[str, Any]) -> list[str]:
+    """返回不可测的验收条目（命中空话且无任何可判定判据）。只标不拦。"""
+    vague: list[str] = []
+    for item in (req.get("acceptance_criteria") or []):
+        text = str(item)
+        low = text.lower()
+        if any(p in low for p in _VAGUE_PHRASES) and not _TESTABLE_HINT_RE.search(text) \
+                and not extract_codes(text):
+            vague.append(text[:80])
+    return vague
 
 
 _LEFT_BEHIND_MIN = 4      # 引句附近 ≥N 个数值没被带走才标（避免零星页码/序号误报）

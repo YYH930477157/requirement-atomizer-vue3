@@ -144,6 +144,10 @@ ipcMain.handle("task:requirements-analysis", async (_event, input) => runDesktop
   ...(input.templatePath ? ["--template", input.templatePath] : []),
 ]));
 
+// 澄清清单：全链疑问信号聚合 + 就绪判定（确定性零 LLM）
+ipcMain.handle("task:clarification-report", async (_event, input) =>
+  runDesktopTaskProcess(["clarification-report", "--out", input.outDir]));
+
 // 成文：analyze 结果按公司标准化需求列表格式追加进对应模块 sheet（确定性零 LLM）
 ipcMain.handle("task:template-write", async (_event, input) => runDesktopTaskProcess([
   "template-write",

@@ -58,6 +58,8 @@ def evaluate(out_dir: Path) -> dict[str, Any]:
     # 漏值/可疑度（漏值=数值清单没带进交付物的确定性信号）
     left_behind = sum(1 for r in reqs
                       if "原文数值未带全" in (r.get("suspicion_reasons") or []))
+    vague_acceptance = sum(1 for r in reqs
+                           if "验收不可测" in (r.get("suspicion_reasons") or []))
     suspicious = sum(1 for r in reqs if r.get("suspicion_reasons"))
 
     with_subs = sum(1 for r in reqs if r.get("sub_items"))
@@ -72,6 +74,7 @@ def evaluate(out_dir: Path) -> dict[str, Any]:
         "toc_noise": toc_noise,
         "reference_noise": ref_noise,
         "values_left_behind": left_behind,
+        "vague_acceptance": vague_acceptance,
         "suspicious": suspicious,
         "with_sub_items": with_subs,
         "with_threshold_table": with_thresholds,
@@ -92,6 +95,7 @@ METRIC_ORDER = [
     ("toc_noise", "目录噪声"),
     ("reference_noise", "引用桩噪声"),
     ("values_left_behind", "漏值标记"),
+    ("vague_acceptance", "验收不可测"),
     ("suspicious", "可疑标记总数"),
     ("with_sub_items", "带子项"),
     ("with_threshold_table", "带参数表"),
