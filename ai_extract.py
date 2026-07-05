@@ -48,7 +48,7 @@ MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v8"  # v8：数值清单必须完整落地 + 被引条款数值整合（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v9"  # v9：条款族=一条需求 + sub_items 二级子项 + Test→验收（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -120,6 +120,8 @@ SYSTEM_PROMPT = (
     "labels（额外的细分标签，至少一个，可自由）、source_quote（原文逐字引用，不可改写）、"
     "source_section（该需求所属的章节号/标题，从文本里的小节标题判断）、"
     "acceptance_criteria（可测试的验收点数组）、"
+    "sub_items（**可选**：条款枚举子项数组，每项 {\"label\": \"a\", \"text\": \"该子项的自包含中文要求\"}——"
+    "原文以 a) b) c) 枚举多个要求时逐项填写，作为需求的二级结构）、"
     "dev_guidance（**研发落地指引**数组：为满足本需求，研发要实现的具体功能/逻辑/数据结构/接口，"
     "写\"做什么\"的可执行条目，不复述原文、不写空话）、"
     "threshold_table（**仅当原文含参数/门限/档位表**时输出 {\"columns\": [...], \"rows\": [[...]]}，"
@@ -140,6 +142,9 @@ SYSTEM_PROMPT = (
     "严禁编造原文没有的 OBIS 码、事件号、十六进制、数字——这些只能原样引用或不出现。"
     "**不要输出**：目录/标题行、参考文献条目、范围声明（This standard specifies/applies to…）、"
     "仅引用其他标准编号而无本设备行为要求的语句——这些不是需求。"
+    "**条款族=一条需求**：输入单元若是条款族（如 4.6 AFD2 含 4.6.1 Requirements 与 4.6.2 Test）："
+    "以条款为单位产出**一条**需求——Requirements 的枚举项 a)b)c)d) 逐项写进 sub_items，"
+    "对应的 Test 项按 a↔a、b↔b 对应写进 acceptance_criteria；**Test/测试方法不单独抽成需求**。"
     "**数值必须落地**：原文列出的数值清单（粒径/成分百分比/档位/限值/容差）必须**逐项完整**"
     "进入 threshold_table 或 description，绝不许用\"规定的范围\"\"指定成分\"这类指代替代——"
     "研发拿不到数值等于没写。若给出【被引用条款】，把其中的具体数值整合进描述（引用视为有据），"
@@ -226,8 +231,50 @@ def _split_text(text: str, target_chars: int) -> list[str]:
     return [c for c in chunks if c.strip()]
 
 
+def clause_key(section: dict[str, Any]) -> str | None:
+    """两级条款族键：4.6.1 Requirements / 4.6.2 Test → "4.6"；4.15 → "4.15"；无编号 → None。
+
+    标准文档的天然语义单元是条款族——X.Y 是一个需求整体，X.Y.1 是要求、X.Y.2 是对应测试
+    （a↔a、b↔b 对应）。按字数贪心切分会把要求和测试拆进不同 LLM 单元（真实反馈："分段乱乱的"）。
+    """
+    m = re.match(r"^(\d+(?:\.\d+)*)", str(section.get("heading") or section.get("section_id") or "").strip())
+    if not m:
+        return None
+    parts = m.group(1).split(".")
+    return ".".join(parts[:2])
+
+
+# 条款族允许比普通目标更大（保住"要求+测试"同单元）；超过后仍在成员/行边界拆（防 JSON 截断）
+CLAUSE_FAMILY_MAX_FACTOR = 2
+
+
 def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAULT_MERGE_CHARS) -> list[dict[str, Any]]:
-    """章节规整到目标字数：小章节合并（减少 LLM 调用），**超大章节拆分**（防 LLM 输出 JSON 截断）。"""
+    """章节 → LLM 输入单元：**先按条款族分组（语义边界），族内再按字数规整（经济边界）**。
+
+    同族（如 4.6.1/4.6.2）保持同单元、上限放宽到 2×target；**不同条款族绝不合并**——此前的
+    纯字数贪心会把 4.5 尾巴和 4.6 开头拼在一起（真实反馈"分段乱乱的"的根源）。无编号章节沿用
+    旧贪心合并（向后兼容散文/标题乱码文档）。
+    """
+    groups: list[tuple[str | None, list[dict[str, Any]]]] = []
+    for sec in sections:
+        key = clause_key(sec)
+        if groups and groups[-1][0] == key and key is not None:
+            groups[-1][1].append(sec)      # 同条款族 → 同组
+        elif groups and groups[-1][0] is None and key is None:
+            groups[-1][1].append(sec)      # 连续无编号 → 同组（旧贪心处理）
+        else:
+            groups.append((key, [sec]))
+
+    units: list[dict[str, Any]] = []
+    for key, group in groups:
+        limit = target_chars * CLAUSE_FAMILY_MAX_FACTOR if key is not None else target_chars
+        units.extend(_pack_sections(group, target_chars=limit, split_chars=target_chars))
+    return units
+
+
+def _pack_sections(sections: list[dict[str, Any]], *, target_chars: int,
+                   split_chars: int) -> list[dict[str, Any]]:
+    """组内按字数规整（原贪心逻辑）：小节拼接 ≤target；超大单节按 split_chars 拆。"""
     merged: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
 
@@ -241,11 +288,11 @@ def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAUL
         piece = f"## {sec['heading']}\n{sec['text']}" if sec.get("heading") else sec["text"]
         block_ids = list(sec.get("block_ids") or [])
         if len(piece) > target_chars:
-            # 超大源章节：拆成 ≤target 的多块，各自独立成段（同段 block_ids 全量保留以便溯源）。
+            # 超大源章节：拆成 ≤split 的多块，各自独立成段（同段 block_ids 全量保留以便溯源）。
             # drift_source 保留完整原文：漂移护栏须以整章为 baseline，否则 LLM 合理引用同章
             # 其它片段里的 OBIS/事件码会被误判为"原文未见的结构漂移"（假阳性误伤）。
             flush()
-            for chunk in _split_text(piece, target_chars):
+            for chunk in _split_text(piece, split_chars):
                 merged.append(_finalize_merged({
                     "section_id": sec["section_id"], "heading": sec.get("heading", ""),
                     "texts": [chunk], "block_ids": block_ids, "drift_source": piece}))
@@ -442,6 +489,10 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         priority = "P2"
     labels = [str(x) for x in (raw.get("labels") or []) if str(x).strip()]
     acceptance = [str(x) for x in (raw.get("acceptance_criteria") or []) if str(x).strip()]
+    sub_items = [{"label": str(item.get("label") or "").strip()[:8],
+                  "text": str(item.get("text") or "").strip()}
+                 for item in (raw.get("sub_items") or [])
+                 if isinstance(item, dict) and str(item.get("text") or "").strip()]
     dev_guidance = [str(x) for x in (raw.get("dev_guidance") or []) if str(x).strip()]
     module = str(raw.get("module") or "").strip()  # LLM 受控分类，ensure_domain_labels 据此定首要领域
     return {
@@ -454,6 +505,7 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         "source_section": str(raw.get("source_section") or section.get("heading") or section.get("section_id") or "").strip(),
         "source_quote": str(raw.get("source_quote") or "").strip(),
         "threshold_table": raw.get("threshold_table") if isinstance(raw.get("threshold_table"), dict) else None,
+        "sub_items": sub_items,
         "acceptance_criteria": acceptance,
         "dev_guidance": dev_guidance,
         "dependencies": [],

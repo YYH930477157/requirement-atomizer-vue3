@@ -64,6 +64,7 @@ export type AiRequirement = Record<string, unknown> & {
   suspicion_reasons?: string[]
   consistency_flags?: string[]
   threshold_table?: { columns?: string[]; rows?: unknown[][] } | null
+  sub_items?: Array<{ label?: string; text?: string }>
   self_check_added?: boolean
   ownership?: string
   ownership_effective?: string
