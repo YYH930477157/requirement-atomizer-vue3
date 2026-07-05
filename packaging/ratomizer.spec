@@ -39,6 +39,7 @@ spec_generator_modules = [
     "merged_consistency",
     "review_insights",
     "template_writer",
+    "corpus_eval",
     "ai_review_actions",
     "doc_annotation_export",
     "desktop_tasks",

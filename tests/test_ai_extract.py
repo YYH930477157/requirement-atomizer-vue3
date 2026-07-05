@@ -109,6 +109,40 @@ class ClauseFamilyGroupingTests(unittest.TestCase):
                                           {"label": "", "text": "无标签也保留"}])
 
 
+class ChapterUnitModeTests(unittest.TestCase):
+    """整章阅读模式（架构 A/B）：按顶层章号分组，同章条款全同单元；默认 clause 行为不变。"""
+
+    def _sec(self, heading: str, text: str) -> dict:
+        return {"section_id": heading, "heading": heading, "text": text, "block_ids": [heading]}
+
+    def test_chapter_mode_groups_whole_chapter(self) -> None:
+        sections = [
+            self._sec("4.6.1 Requirements", "a) req." * 40),
+            self._sec("4.6.2 Test", "a) test." * 40),
+            self._sec("4.14.1 Requirement", "The AFD shall withstand." * 20),
+            self._sec("5.1 Marking", "Marking text." * 10),
+        ]
+        units = ai_extract.merge_sections(sections, unit_mode="chapter")
+        self.assertEqual(len(units), 2)                          # 第4章合一、第5章独立
+        self.assertIn("4.6.1", units[0]["text"])
+        self.assertIn("4.14.1", units[0]["text"])                # 跨条款族同章合并
+        self.assertIn("5.1", units[1]["text"])
+
+    def test_clause_mode_unchanged_by_default(self) -> None:
+        sections = [self._sec("4.6.1 R", "x" * 50), self._sec("4.14.1 R", "y" * 50)]
+        default_units = ai_extract.merge_sections(sections)
+        self.assertEqual(len(default_units), 2)                  # 默认仍条款族分组
+
+    def test_oversize_chapter_splits_at_member_boundary(self) -> None:
+        big = ai_extract.CHAPTER_MAX_CHARS // 2 + 100
+        sections = [self._sec("7.1 A", "a" * big), self._sec("7.2 B", "b" * big),
+                    self._sec("7.3 C", "c" * big)]
+        units = ai_extract.merge_sections(sections, unit_mode="chapter")
+        self.assertGreater(len(units), 1)                        # 超帽在成员边界拆
+        for u in units:
+            self.assertLessEqual(len(u["text"]), ai_extract.CHAPTER_MAX_CHARS + 200)
+
+
 class SelfCheckClauseAlignmentTests(unittest.TestCase):
     """真实案例（EN 16314 §4.14）：初抽按条款族正确合成一条（子项 a-e），自检只见标题→
     把 a-e 判遗漏又拆回 4 条碎片（含引句为前缀子串的重复），一个条款 18 个批注点。
