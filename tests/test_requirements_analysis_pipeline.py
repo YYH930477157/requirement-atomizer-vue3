@@ -338,6 +338,74 @@ class PipelineHardeningTests(unittest.TestCase):
             assert payload["route_requested"] == "openai_compatible"
 
 
+class TemplateKnowledgeInjectionTests(unittest.TestCase):
+    """模板知识注入端到端：设置模板 → 富化 prompt 带该模块的公司标准做法参考。"""
+
+    def _seed(self, tmp_path: Path) -> Path:
+        write_jsonl(tmp_path / "ai_requirements.jsonl", [{
+            "ai_req_id": "AI-1",
+            "title": "时钟精度要求",
+            "description": "时钟精度须优于每天 5 秒",
+            "source_quote": "clock accuracy shall be within 5 s per day",
+            "source_block_ids": ["B-1"],
+            "module": "时钟",
+        }])
+        from openpyxl import Workbook
+        template = tmp_path / "template.xlsx"
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "时钟需求"
+        ws.append(["关闭", "序号", "子模块", "描述", "需求模版", "需求", "说明、示例、注意事项"])
+        ws.append(["", 1, "时钟", "时钟精度：", "±0.5s/天", "±0.5s/天", "对应程序中 RTC_CAL 宏定义"])
+        wb.save(template)
+        return template
+
+    def test_prompt_receives_company_reference_and_key_depends_on_refs(self) -> None:
+        from requirements_analysis import _enrich_key
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            template = self._seed(tmp_path)
+            captured: list[str] = []
+
+            def fake_chat(system: str, user: str) -> dict:
+                captured.append(user)
+                return {"items": [{"source_requirement_ids": ["AI-1"],
+                                   "software_requirement_text": "维持时钟精度在每天 5 秒内。",
+                                   "developer_guidance": ["公司通用做法：校准对应 RTC_CAL 宏定义"],
+                                   "acceptance_criteria": [], "hardware_dependency": "",
+                                   "open_questions": [], "ownership_reason": "软件时钟逻辑"}]}
+
+            result = run_requirements_analysis(
+                tmp_path, route="openai_compatible", chat=fake_chat, template_path=template)
+
+            self.assertEqual(result["enriched"], 1)
+            self.assertIn("公司标准做法参考", captured[0])          # 注入进了真实 prompt
+            self.assertIn("RTC_CAL", captured[0])                    # 说明列（宏名）随之注入
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            self.assertIn("公司通用做法：", payload["items"][0]["developer_guidance"][0])
+
+        req = {"source_quote": "q", "description": "d", "requirement": "r", "module": "时钟"}
+        self.assertNotEqual(_enrich_key(req, "m"), _enrich_key(req, "m", "参考行内容"))  # 模板行变→缓存失效
+
+    def test_without_template_no_reference_block(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            self._seed(tmp_path)
+            captured: list[str] = []
+
+            def fake_chat(system: str, user: str) -> dict:
+                captured.append(user)
+                return {"items": [{"source_requirement_ids": ["AI-1"],
+                                   "software_requirement_text": "维持时钟精度。",
+                                   "developer_guidance": [], "acceptance_criteria": [],
+                                   "hardware_dependency": "", "open_questions": [],
+                                   "ownership_reason": "软件"}]}
+
+            run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat,
+                                      template_path=None)
+            self.assertNotIn("公司标准做法参考", captured[0])       # 不设模板 → 行为如旧
+
+
 class LlmEnrichmentTests(unittest.TestCase):
     """LLM 分析层（注入 fake chat，零网络）：填叙述字段、冻结结构字段、编造即拒绝、幂等缓存。"""
 

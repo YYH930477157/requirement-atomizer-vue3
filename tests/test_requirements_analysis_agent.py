@@ -18,6 +18,24 @@ class BuildAnalysisPromptTests(unittest.TestCase):
         assert "时钟需求" in prompt["user"]
 
 
+class TemplateRefsPromptTests(unittest.TestCase):
+    """公司标准做法参考注入：有 refs 才出区块+防搬运指令；无 refs 与旧结构等价。"""
+
+    def test_refs_injected_with_anti_copy_rules(self) -> None:
+        prompt = build_analysis_prompt(
+            [{"ai_req_id": "AI-1"}], {"modules": []},
+            template_refs="时钟 | 历法： | 默认:公历 | 说明:①公历②波斯历法")
+        self.assertIn("公司标准做法参考", prompt["user"])
+        self.assertIn("①公历②波斯历法", prompt["user"])
+        self.assertIn("样本里的默认值绝不写入需求正文", prompt["user"])
+        self.assertIn("公司通用做法：", prompt["user"])
+
+    def test_no_refs_no_block(self) -> None:
+        prompt = build_analysis_prompt([{"ai_req_id": "AI-1"}], {"modules": []})
+        self.assertNotIn("公司标准做法参考", prompt["user"])
+        self.assertTrue(prompt["user"].rstrip().endswith("]"))   # 仍以需求 JSON 收尾
+
+
 class ValidateLlmItemTests(unittest.TestCase):
     def test_rejects_number_drift(self) -> None:
         source = {"source_quote": "capture period shall be 900 seconds"}
