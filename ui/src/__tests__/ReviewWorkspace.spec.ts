@@ -581,6 +581,11 @@ describe("review workspace shell", () => {
           quality: { coverage_pct: 78.5 },
           written: ["ai_requirements.jsonl"], summary: {},
         }),
+        runRequirementsAnalysis: vi.fn().mockResolvedValue({
+          kind: "requirements_analysis",
+          analysis: { analysis_count: 11, enriched: 9, route: "openai_compatible" },
+          written: ["software_requirements.xlsx"], summary: {},
+        }),
       },
     })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
@@ -594,12 +599,47 @@ describe("review workspace shell", () => {
       expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt", llmRoute: "openai_compatible", sampleRatio: 0.2,
       }))
+    // 试抽后自动做样本软件需求分析（终点交付物可评估）
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt", llmRoute: "openai_compatible",
+      }))
     await vi.waitFor(() => {
       const message = wrapper.find('[data-testid="api-message"]').text()
       expect(message).toContain("试抽样本 10/54 章")
       expect(message).toContain("12 条")
       expect(message).toContain("78.5%")
+      expect(message).toContain("软件需求 11 条")
+      expect(message).toContain("software_requirements.xlsx")
     })
+  })
+
+  it("disabling the rule-candidate LLM review skips review in both run modes", async () => {
+    localStorage.setItem("ratomizer.runStages",
+      JSON.stringify({ llmReview: false, aiExtract: false, assemble: false, analyze: false, compose: false }))
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770", token: "local-token", outputDir: "E:\\out\\abnt",
+        }),
+        runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt", summary: {} }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalledWith(
+        expect.objectContaining({ skipReview: true, llmRoute: undefined })))
   })
 
   it("shows module and precise backend classification for ABNT extracted rows", async () => {

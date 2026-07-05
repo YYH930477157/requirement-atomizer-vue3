@@ -278,6 +278,10 @@
             <section class="settings-section">
               <div class="settings-section-title">运行阶段（点「运行」后按依赖顺序依次执行）</div>
               <label class="settings-toggle">
+                <input v-model="runStages.llmReview" type="checkbox" data-testid="stage-llm-review" />
+                <span><strong>LLM 审查（规则候选复核）</strong><small>逐条复核规则切出的原子候选。DLMS profile 类文档（对象表密集）建议开；散文类标准可关——交付物主要来自 AI 抽取轨，可省大量审查调用。</small></span>
+              </label>
+              <label class="settings-toggle">
                 <input v-model="runStages.aiExtract" type="checkbox" data-testid="stage-ai-extract" />
                 <span><strong>AI 抽取（双引擎）</strong><small>LLM 行为需求 + 确定性结构合并，产 merged_spec 与一致性报表。</small></span>
               </label>
@@ -460,10 +464,10 @@ const llmSettings = ref<LlmSettings>({
   selfCheck: true,
 })
 // 「运行」时依次执行的阶段（基础解析+审查后追加）。可选配置、localStorage 持久化。
-type RunStages = { aiExtract: boolean; assemble: boolean; analyze: boolean; compose: boolean }
+type RunStages = { llmReview: boolean; aiExtract: boolean; assemble: boolean; analyze: boolean; compose: boolean }
 const RUN_STAGES_KEY = "ratomizer.runStages"
 function loadRunStages(): RunStages {
-  const fallback: RunStages = { aiExtract: true, assemble: true, analyze: true, compose: false }
+  const fallback: RunStages = { llmReview: true, aiExtract: true, assemble: true, analyze: true, compose: false }
   try {
     const raw = typeof localStorage !== "undefined" ? localStorage.getItem(RUN_STAGES_KEY) : null
     if (raw) return { ...fallback, ...JSON.parse(raw) }
@@ -914,14 +918,17 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     runProgress.value = 18
     runStage.value = "运行后端解析"
     runProgressDetail.value = "正在抽取原子化需求"
-    const useLlmReview = llmMode.value || Boolean(options.llmReviewLimit)
+    // 「LLM 审查（规则候选复核）」可选：散文类标准的交付物主要来自 AI 抽取轨，
+    // 关掉可省大量审查调用（DLMS profile 建议开）。测试运行同样尊重该开关。
+    const reviewEnabled = runStages.value.llmReview
+    const useLlmReview = reviewEnabled && (llmMode.value || Boolean(options.llmReviewLimit))
     const payload = await window.ratomizerDesktop.runPipeline({
       inputPath: currentInputPath.value,
       outDir,
-      skipReview: false,
+      skipReview: !reviewEnabled,
       llmRoute: useLlmReview ? "openai_compatible" : undefined,
       reviewScope: useLlmReview ? "targeted" : undefined,
-      ...(options.llmReviewLimit ? { llmReviewLimit: options.llmReviewLimit } : {}),
+      ...(options.llmReviewLimit && reviewEnabled ? { llmReviewLimit: options.llmReviewLimit } : {}),
       ...abntPreset,
     })
     runProgress.value = 82
@@ -986,6 +993,22 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         sampleNote = `；试抽样本 ${info?.sections ?? "?"}/${info?.total_sections ?? "?"} 章：` +
           `${Number(sample.count ?? 0)} 条` +
           (quality?.coverage_pct != null ? `、样本覆盖率 ${quality.coverage_pct}%` : "")
+        // 样本软件需求分析：试抽完顺手出样本 software_requirements.xlsx——质量评估看得到终点交付物
+        if (bridge.runRequirementsAnalysis) {
+          runStage.value = "样本软件需求分析"
+          runProgress.value = 96
+          runProgressDetail.value = "对试抽样本做软/硬/协同分类 + LLM 富化…"
+          await nextUiTick()
+          try {
+            const analysis = await bridge.runRequirementsAnalysis({
+              outDir: finalOutDir, llmRoute: "openai_compatible",
+            })
+            const a = objectValue(analysis.analysis) as { analysis_count?: number; enriched?: number } | null
+            sampleNote += `；软件需求 ${Number(a?.analysis_count ?? 0)} 条（富化 ${Number(a?.enriched ?? 0)}）→ software_requirements.xlsx`
+          } catch (analysisError) {
+            sampleNote += `；样本分析失败：${analysisError instanceof Error ? analysisError.message : analysisError}`
+          }
+        }
         await refreshAfterDesktopTask(finalOutDir)
       } catch (sampleError) {
         sampleNote = `；试抽失败：${sampleError instanceof Error ? sampleError.message : sampleError}`
