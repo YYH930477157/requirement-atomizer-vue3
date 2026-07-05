@@ -31,6 +31,7 @@ declare global {
     canceled?: boolean
     rebuilt?: unknown
     quality?: unknown
+    report?: unknown
   }
 
   interface Window {
@@ -107,7 +108,9 @@ declare global {
       importAiDecisions: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       assembleSpec: (input: { outDir: string; enrichRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
       composeEngineering: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
-      runRequirementsAnalysis: (input: { outDir: string; llmRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
+      runRequirementsAnalysis: (input: { outDir: string; llmRoute?: string; templatePath?: string }) => Promise<RequirementAtomizerTaskPayload>
+      writeTemplate: (input: { outDir: string; templatePath: string }) => Promise<RequirementAtomizerTaskPayload>
+      selectTemplate: () => Promise<string>
       openLogsDir: () => Promise<{ dir: string }>
     }
   }

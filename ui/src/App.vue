@@ -297,6 +297,12 @@
                 <input v-model="runStages.compose" type="checkbox" data-testid="stage-compose" />
                 <span><strong>组装工程需求</strong><small>原子需求重组为需求功能 + DLMS 对象两段。</small></span>
               </label>
+              <div class="template-row">
+                <span class="field-label">需求列表模板（xlsx，选填）</span>
+                <input :value="templatePath" readonly placeholder="未设置——设置后分析结果按公司模板格式成文" data-testid="template-path" />
+                <button class="button" type="button" data-testid="template-pick" @click="handleSelectTemplate">选择</button>
+                <button class="button" type="button" :disabled="!templatePath" @click="templatePath = ''">清除</button>
+              </div>
               <p class="settings-hint">LLM 富化跟随上方「LLM 富化」开关：开→AI 抽取/装配/分析走 openai_compatible，关→纯确定性。</p>
             </section>
             <section class="settings-section">
@@ -484,6 +490,21 @@ watch(runStages, (value) => {
     /* 持久化失败忽略，不影响本次运行 */
   }
 }, { deep: true })
+
+// 公司标准化需求列表模板（V2.3.x）：设置后 analyze 用其词表，且分析结果按模板格式成文
+const TEMPLATE_PATH_KEY = "ratomizer.templatePath"
+const templatePath = ref<string>((() => {
+  try { return localStorage?.getItem(TEMPLATE_PATH_KEY) || "" } catch { return "" }
+})())
+watch(templatePath, (value) => {
+  try { localStorage?.setItem(TEMPLATE_PATH_KEY, value || "") } catch { /* 忽略 */ }
+})
+async function handleSelectTemplate() {
+  const bridge = window.ratomizerDesktop
+  if (!bridge?.selectTemplate) return
+  const picked = await bridge.selectTemplate()
+  if (picked) templatePath.value = picked
+}
 
 const runProgress = ref(0)
 const runStage = ref("待运行")
@@ -952,8 +973,12 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           run: () => bridge.aiExtract({ outDir: finalOutDir, llmRoute }) },
         { on: runStages.value.assemble, label: "装配实现规格", progress: 91,
           run: () => bridge.assembleSpec({ outDir: finalOutDir, enrichRoute: useLlm ? "openai_compatible" : "" }) },
-        { on: runStages.value.analyze, label: "软件需求分析", progress: 96,
-          run: () => bridge.runRequirementsAnalysis({ outDir: finalOutDir, llmRoute }) },
+        { on: runStages.value.analyze, label: "软件需求分析", progress: 95,
+          run: () => bridge.runRequirementsAnalysis({ outDir: finalOutDir, llmRoute,
+            templatePath: templatePath.value || undefined }) },
+        { on: runStages.value.analyze && Boolean(templatePath.value) && Boolean(bridge.writeTemplate),
+          label: "成文需求列表", progress: 97,
+          run: () => bridge.writeTemplate({ outDir: finalOutDir, templatePath: templatePath.value }) },
         { on: runStages.value.compose, label: "组装工程需求", progress: 98,
           run: () => bridge.composeEngineering({ outDir: finalOutDir }) },
       ]
@@ -1002,9 +1027,23 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           try {
             const analysis = await bridge.runRequirementsAnalysis({
               outDir: finalOutDir, llmRoute: "openai_compatible",
+              templatePath: templatePath.value || undefined,
             })
             const a = objectValue(analysis.analysis) as { analysis_count?: number; enriched?: number } | null
             sampleNote += `；软件需求 ${Number(a?.analysis_count ?? 0)} 条（富化 ${Number(a?.enriched ?? 0)}）→ software_requirements.xlsx`
+            // 设置了模板 → 样本也成文：终点交付物（公司模板格式）在测试运行就看得到
+            if (templatePath.value && bridge.writeTemplate) {
+              runStage.value = "样本成文需求列表"
+              runProgressDetail.value = "分析结果按公司模板格式写入对应模块 sheet…"
+              await nextUiTick()
+              try {
+                const written = await bridge.writeTemplate({ outDir: finalOutDir, templatePath: templatePath.value })
+                const w = objectValue(written.report) as { appended_total?: number } | null
+                sampleNote += `；成文 ${Number(w?.appended_total ?? 0)} 行 → 软件需求列表-成文.xlsx`
+              } catch (writeError) {
+                sampleNote += `；成文失败：${writeError instanceof Error ? writeError.message : writeError}`
+              }
+            }
           } catch (analysisError) {
             sampleNote += `；样本分析失败：${analysisError instanceof Error ? analysisError.message : analysisError}`
           }
@@ -2781,6 +2820,10 @@ tbody tr:hover td {
   font-size: 14px;
   font-weight: 900;
 }
+
+.template-row { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.template-row .field-label { font-size: 12px; color: #64748b; white-space: nowrap; }
+.template-row input { flex: 1; font-size: 12px; padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; color: #334155; }
 
 .settings-toggle {
   min-height: 58px;
