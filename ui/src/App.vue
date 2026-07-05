@@ -43,6 +43,9 @@
           </div>
         </header>
 
+        <div v-if="apiMessage && activeNav !== 'review'" class="global-message" data-testid="global-message"
+             role="status" @click="apiMessage = ''">{{ apiMessage }}<span class="global-message-close">✕</span></div>
+
         <section class="selection-bar">
           <div class="selection-item">
             <span>导入文档</span>
@@ -2820,6 +2823,11 @@ tbody tr:hover td {
   font-size: 14px;
   font-weight: 900;
 }
+
+.global-message { display: flex; align-items: center; gap: 8px; margin: 8px 16px 0; padding: 8px 12px;
+  background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; font-size: 13px; color: #1e40af;
+  cursor: pointer; white-space: pre-wrap; word-break: break-all; }
+.global-message-close { margin-left: auto; color: #93c5fd; font-size: 12px; }
 
 .template-row { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
 .template-row .field-label { font-size: 12px; color: #64748b; white-space: nowrap; }
