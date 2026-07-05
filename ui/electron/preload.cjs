@@ -22,5 +22,7 @@ contextBridge.exposeInMainWorld("ratomizerDesktop", {
   assembleSpec: (input) => ipcRenderer.invoke("task:assemble", input),
   composeEngineering: (input) => ipcRenderer.invoke("task:compose", input),
   runRequirementsAnalysis: (input) => ipcRenderer.invoke("task:requirements-analysis", input),
+  writeTemplate: (input) => ipcRenderer.invoke("task:template-write", input),
+  selectTemplate: () => ipcRenderer.invoke("dialog:open-template"),
   openLogsDir: () => ipcRenderer.invoke("logs:open"),
 });

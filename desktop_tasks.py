@@ -214,6 +214,22 @@ def resolve_template_path(template_path: Path | None) -> Path | None:
     return path.resolve()
 
 
+def template_write_task(out_dir: Path, template_path: Path) -> dict[str, Any]:
+    """成文：analyze 结果按公司标准化需求列表 V2.3.x 格式追加进对应模块 sheet（确定性零 LLM）。"""
+    from template_writer import run_writer
+
+    out_dir = out_dir.expanduser().resolve()
+    report = run_writer(out_dir, template_path.expanduser().resolve())
+    return {
+        "kind": "template_write",
+        "out_dir": str(out_dir),
+        "report": report,
+        "written": [str(out_dir / name) for name in report.get("written") or []
+                    if (out_dir / name).exists()],
+        "summary": build_output_summary(out_dir),
+    }
+
+
 def ai_extract_task(out_dir: Path, *, route: str | None, limit_sections: int | None = None,
                     sample_ratio: float | None = None) -> dict[str, Any]:
     """AI 主抽 + 双引擎合并：AI 行为需求 + 确定性结构需求 → merged_spec.xlsx/json。
@@ -358,6 +374,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     compose_parser = subparsers.add_parser("compose")
     compose_parser.add_argument("--out", type=Path, required=True)
 
+    template_write_parser = subparsers.add_parser("template-write")
+    template_write_parser.add_argument("--out", type=Path, required=True)
+    template_write_parser.add_argument("--template", type=Path, required=True)
+
     requirements_analysis_parser = subparsers.add_parser("requirements-analysis")
     requirements_analysis_parser.add_argument("--out", type=Path, required=True)
     requirements_analysis_parser.add_argument("--template", type=Path, default=None)
@@ -453,6 +473,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "compose":
             payload = compose_task(args.out)
+        elif args.command == "template-write":
+            payload = template_write_task(args.out, args.template)
         elif args.command == "requirements-analysis":
             payload = requirements_analysis_task(args.out, route=args.llm_route, template_path=args.template)
         elif args.command == "ai-extract":

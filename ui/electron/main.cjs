@@ -141,7 +141,25 @@ ipcMain.handle("task:requirements-analysis", async (_event, input) => runDesktop
   "--out",
   input.outDir,
   ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
+  ...(input.templatePath ? ["--template", input.templatePath] : []),
 ]));
+
+// 成文：analyze 结果按公司标准化需求列表格式追加进对应模块 sheet（确定性零 LLM）
+ipcMain.handle("task:template-write", async (_event, input) => runDesktopTaskProcess([
+  "template-write",
+  "--out",
+  input.outDir,
+  "--template",
+  input.templatePath,
+]));
+
+ipcMain.handle("dialog:open-template", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: [{ name: "需求列表模板", extensions: ["xlsx"] }],
+  });
+  return result.canceled ? "" : result.filePaths[0];
+});
 
 ipcMain.handle("task:export-annotation-html", async (_event, input) =>
   runDesktopTaskProcess(["export-annotation-html", "--out", input.outDir]));
