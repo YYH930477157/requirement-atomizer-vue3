@@ -83,6 +83,12 @@ const coveredBlocks = computed(() => {
 
 const selectedReq = computed(() => requirements.value.find((r) => r.ai_req_id === selectedId.value) || null)
 // 只高亮选中的片段（锚点小段），不把整个章节跨度刷蓝
+const evidenceBlocks = computed(() => {
+  // 证据块（蓝填充）= 引用所在锚点段；其余跨度块仅左侧细条 = 分析上下文（模型通读范围）
+  const r = selectedReq.value
+  const anchor = r?.anchor_block_id || (r?.source_block_ids || [])[0]
+  return new Set(anchor ? [anchor as string] : [])
+})
 const selectedSpan = computed(() => {
   // 整个被分析的跨度都亮淡底（source_block_ids），引句黄标只在锚点段内——
   // 只黄一句会让"分析了一整段"的需求看起来像没选中（真实反馈）
@@ -205,7 +211,8 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             :class="['doc-block',
                      { heading: isHeading(b), omission: isOmission(b),
                        anchored: anchorByBlock.get(b.block_id)?.length,
-                       'in-span': selectedSpan.has(b.block_id) }]"
+                       'in-span': selectedSpan.has(b.block_id),
+                       evidence: evidenceBlocks.has(b.block_id) }]"
             :data-testid="isOmission(b) ? 'omission-block' : undefined"
             @click="anchorByBlock.get(b.block_id)?.length && select(anchorByBlock.get(b.block_id)![0])"
           >
@@ -245,6 +252,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             ⇄ 全文档一致性：{{ (selectedReq.consistency_flags || []).join("；") }}
           </div>
 
+          <div class="dd-legend">正文标记：<span style="background:#fde68a;padding:0 4px">黄=引用依据</span> · <span style="background:#eff6ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文</div>
           <div class="dd-section"><div class="dd-label">需求分析</div><div class="dd-body">{{ selectedReq.description }}</div></div>
           <div class="dd-section" v-if="(selectedReq.sub_items || []).length">
             <div class="dd-label">子项要求（二级）</div>
@@ -313,7 +321,9 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .doc-block { display: grid; grid-template-columns: 130px 1fr; gap: 10px; padding: 3px 6px; border-left: 3px solid transparent; cursor: default; }
 .doc-block.heading .doc-text { font-weight: 700; color: #0f172a; margin-top: 8px; }
 .doc-block.anchored { cursor: pointer; border-left-color: #3b82f6; background: #f8fafc; }
-.doc-block.in-span { background: #eff6ff; }
+.doc-block.in-span { box-shadow: inset 3px 0 0 #a8c3ee; }
+.doc-block.in-span.evidence { background: #eff6ff; box-shadow: none; }
+.dd-legend { font-size: 11px; color: #94a3b8; margin: 4px 0 8px; }
 .doc-block.omission { border-left-color: #f59e0b; border-left-style: dashed; }
 .doc-gutter { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
 .doc-text { margin: 0; font-size: 13px; line-height: 1.55; color: #334155; white-space: pre-wrap; }

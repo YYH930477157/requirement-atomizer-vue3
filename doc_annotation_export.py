@@ -342,7 +342,9 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .doc-block.anchored:hover {{ background: var(--accent-soft); }}
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
 .text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
-.doc-block.in-span {{ background: #eef4ff; border-radius: 6px; }}
+.doc-block.in-span {{ box-shadow: inset 3px 0 0 #a8c3ee; }}
+.doc-block.in-span.evidence {{ background: #eef4ff; border-radius: 6px; box-shadow: none; }}
+.dd-legend {{ font-size: 11px; color: #8a8f98; margin: 4px 0 8px; }}
 .chip.sub .annotation-number {{ font-size: 10px; opacity: .75; }}
 .dd-subitems li {{ margin-bottom: 4px; }}
 .dd-table {{ border-collapse: collapse; font-size: 12px; width: 100%; margin-bottom: 8px; }}
@@ -534,12 +536,20 @@ function buildOutline() {{
 
 let selected = null;
 function markSpan() {{
-  document.querySelectorAll(".doc-block.in-span").forEach(el => el.classList.remove("in-span"));
+  document.querySelectorAll(".doc-block.in-span").forEach(el => el.classList.remove("in-span", "evidence"));
   const r = selected && byId[selected]; if (!r) return;
   const ids = (r.source_block_ids || []).concat([r.anchor_block_id]).filter(Boolean);
   ids.forEach(bid => {{
     const el = document.querySelector('.doc-block[data-block-id="' + bid + '"]');
     if (el) el.classList.add("in-span");
+  }});
+  // 证据块（蓝填充）：引用所在锚点段 + 子项批注所在段；其余仅左侧细条=分析上下文
+  const anchor = r.anchor_block_id || (r.source_block_ids||[])[0];
+  const anchorEl = anchor ? document.querySelector('.doc-block[data-block-id="' + anchor + '"]') : null;
+  if (anchorEl) anchorEl.classList.add("evidence");
+  document.querySelectorAll('.chip.sub[data-req="' + selected + '"]').forEach(chip => {{
+    const blk = chip.closest(".doc-block");
+    if (blk) blk.classList.add("evidence");
   }});
 }}
 
@@ -596,6 +606,7 @@ function select(id) {{
     '<span class="badge st-'+st+'">'+esc(STATUS_LABELS[st]||st)+'</span></div>'+
     '<div class="dd-title">'+esc(r.title)+'</div>'+
     '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+
+    '<div class="dd-legend">正文标记：<span style="background:#ffe89a;padding:0 4px">黄=引用依据</span> · <span style="background:#eef4ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文（模型通读范围）</div>'+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
     '<div class="dd-label">需求分析</div><div class="dd-body">'+esc(r.description)+'</div>'+
     subItemsHtml(r)+
