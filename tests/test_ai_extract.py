@@ -60,6 +60,55 @@ class TocAndReferenceNoiseTests(unittest.TestCase):
         self.assertFalse(ai_extract._is_reference_stub(req))
 
 
+class ClauseFamilyGroupingTests(unittest.TestCase):
+    """真实反馈"分段乱乱的"：4.6 是一个需求整体（4.6.1 要求 + 4.6.2 测试，a↔a 对应）——
+    切分须跟条款结构走：同族同单元、异族绝不合并；无编号沿用旧贪心（散文/乱码文档兼容）。"""
+
+    def _sec(self, heading: str, text: str) -> dict:
+        return {"section_id": heading, "heading": heading, "text": text, "block_ids": [heading]}
+
+    def test_requirements_and_test_subclauses_stay_together(self) -> None:
+        # 两节各 ~120 字，target=150 时纯贪心会拆开（120+120>150）；
+        # 条款族上限放宽到 2×target=300 → 保持同单元
+        sections = [
+            self._sec("4.6.1 Requirements", "a) The AFD shall have no influence." * 3),
+            self._sec("4.6.2 Test", "a) Fit the AFD and undertake tests." * 3),
+        ]
+        units = ai_extract.merge_sections(sections, target_chars=150)
+        self.assertEqual(len(units), 1)                                # 同族合一
+        self.assertIn("4.6.1", units[0]["text"])
+        self.assertIn("4.6.2", units[0]["text"])
+
+    def test_different_clauses_never_merged(self) -> None:
+        sections = [self._sec("4.5 AFD1", "short a."), self._sec("4.6 AFD2", "short b.")]
+        units = ai_extract.merge_sections(sections, target_chars=2800)
+        self.assertEqual(len(units), 2)                                # 4.5 与 4.6 异族不拼
+
+    def test_numberless_sections_use_legacy_greedy_merge(self) -> None:
+        sections = [self._sec("Alpha", "x" * 40), self._sec("Beta", "y" * 40)]
+        units = ai_extract.merge_sections(sections, target_chars=2800)
+        self.assertEqual(len(units), 1)                                # 无编号沿用贪心
+
+    def test_oversize_family_splits_at_member_boundary(self) -> None:
+        sections = [
+            self._sec("7.13.1 Req", "r" * 300),
+            self._sec("7.13.2 Test", "t" * 300),
+        ]
+        units = ai_extract.merge_sections(sections, target_chars=200)  # 族上限 400 < 600
+        self.assertEqual(len(units), 2)                                # 在成员边界拆，不腰斩
+        self.assertTrue(units[0]["text"].startswith("## 7.13.1"))
+        self.assertTrue(units[1]["text"].startswith("## 7.13.2"))
+
+    def test_sub_items_normalized(self) -> None:
+        sec = {"section_id": "4.6", "heading": "4.6", "text": "t", "block_ids": []}
+        r = ai_extract.normalize_requirement(
+            {"title": "X", "description": "d", "source_quote": "t",
+             "sub_items": [{"label": "a", "text": "子项甲"}, {"label": "b", "text": "  "},
+                            "garbage", {"text": "无标签也保留"}]}, sec)
+        self.assertEqual(r["sub_items"], [{"label": "a", "text": "子项甲"},
+                                          {"label": "", "text": "无标签也保留"}])
+
+
 class CrossRefAndValueGuardTests(unittest.TestCase):
     """真实反馈两案：①"limits given in 7.13.4.5.1"——限值在别的单元，抽取看不见；
     ②粉尘粒径/成分清单被"规定的范围"指代吞掉（threshold_table=None，数值没落地）。"""
@@ -1019,7 +1068,9 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("dev_guidance", ai_extract.SYSTEM_PROMPT)      # 研发落地指引
         self.assertIn("不要输出", ai_extract.SYSTEM_PROMPT)               # v7：目录/引用/范围声明剔除规则
         self.assertIn("数值必须落地", ai_extract.SYSTEM_PROMPT)            # v8：数值清单完整落地 + 被引条款整合
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v8")
+        self.assertIn("条款族=一条需求", ai_extract.SYSTEM_PROMPT)          # v9：条款族 + sub_items + Test→验收
+        self.assertIn("sub_items", ai_extract.SYSTEM_PROMPT)
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v9")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}

@@ -92,6 +92,20 @@ const selectedSpan = computed(() => {
   return new Set(ids)
 })
 
+// 全文连续编号（按锚点块在文档中的顺序）——与分享 HTML 的 01/02 编号一致
+const reqNumbers = computed(() => {
+  const order = new Map(blocks.value.map((b, i) => [b.block_id, i]))
+  const anchored = requirements.value.filter((r) => r.anchor_block_id || (r.source_block_ids || [])[0])
+  const sorted = [...anchored].sort((a, b) =>
+    (order.get(String(a.anchor_block_id || (a.source_block_ids || [])[0])) ?? 1e9) -
+    (order.get(String(b.anchor_block_id || (b.source_block_ids || [])[0])) ?? 1e9))
+  return new Map(sorted.map((r, i) => [r.ai_req_id, i + 1]))
+})
+function reqNumber(r: AiRequirement): string {
+  const n = reqNumbers.value.get(r.ai_req_id)
+  return n ? String(n).padStart(2, "0") : "--"
+}
+
 const omissionCount = computed(
   () => blocks.value.filter((b) => b.requirement_like && !b.noise && !coveredBlocks.value.has(b.block_id)).length,
 )
@@ -205,7 +219,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                 :data-testid="`anno-${r.ai_req_id}`"
                 :title="`${moduleOf(r)} · ${r.title}`"
                 @click.stop="select(r)"
-              >💬 {{ moduleOf(r) }}</button>
+              >{{ reqNumber(r) }} · {{ moduleOf(r) }}</button>
               <span v-if="isOmission(b)" class="omission-tag">⚠ 未覆盖</span>
             </div>
             <p class="doc-text">
@@ -232,6 +246,12 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
 
           <div class="dd-section"><div class="dd-label">需求分析</div><div class="dd-body">{{ selectedReq.description }}</div></div>
+          <div class="dd-section" v-if="(selectedReq.sub_items || []).length">
+            <div class="dd-label">子项要求（二级）</div>
+            <ul class="dd-list" data-testid="dd-subitems">
+              <li v-for="(it, i) in selectedReq.sub_items" :key="i"><strong>{{ it.label || "·" }})</strong> {{ it.text }}</li>
+            </ul>
+          </div>
           <div class="dd-section" v-if="selectedReq.threshold_table && (selectedReq.threshold_table.rows || []).length">
             <div class="dd-label">参数表（数值原样照抄原文）</div>
             <table class="dd-table" data-testid="dd-threshold">

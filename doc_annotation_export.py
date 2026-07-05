@@ -92,7 +92,9 @@ def _block_region_label(region: str) -> str:
 
 
 def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict[str, Any]]],
-                   covered: set[str]) -> str:
+                   covered: set[str],
+                   req_numbers: dict[str, int] | None = None,
+                   sub_anchor_map: dict[str, list] | None = None) -> str:
     """渲染文档块：正文正常，非正文区折叠，noise 灰显，纯符号行跳过。"""
     parts: list[str] = []
     collapse_open = False
@@ -127,7 +129,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         anchored = anchor_map.get(bid) or []
 
         # 渲染单个 block 的 HTML
-        block_html = _render_one_block(bid, text, path, region, is_heading, is_noise, is_omission, anchored)
+        block_html = _render_one_block(bid, text, path, region, is_heading, is_noise, is_omission, anchored,
+                                       req_numbers or {}, (sub_anchor_map or {}).get(bid) or [])
 
         # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
         if region in _COLLAPSIBLE_REGIONS:
@@ -146,7 +149,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
 
 def _render_one_block(bid: str, text: str, path: list, region: str,
                       is_heading: bool, is_noise: bool, is_omission: bool,
-                      anchored: list) -> str:
+                      anchored: list, req_numbers: dict[str, int] | None = None,
+                      sub_anchors: list | None = None) -> str:
     cls = ["doc-block"]
     if is_heading:
         cls.append("heading")
@@ -159,12 +163,22 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         cls.append("anchored")
     depth = min(len(path), 4) if path else 0
 
+    numbers = req_numbers or {}
     chips = "".join(
         f'<button class="chip annotation-index" data-req="{html.escape(str(r["ai_req_id"]))}" '
         f'title="{html.escape(str(r.get("module_effective") or ""))} · {html.escape(str(r.get("title") or ""))}" '
         f'aria-label="{html.escape(str(r.get("title") or "需求批注"))}">'
-        f'<span class="annotation-dot"></span><span class="annotation-number">{i:02d}</span></button>'
+        f'<span class="annotation-dot"></span>'
+        f'<span class="annotation-number">{numbers.get(str(r["ai_req_id"]), i):02d}</span></button>'
         for i, r in enumerate(anchored, start=1)
+    )
+    # 二级子项批注（01.a / 01.b…）：挂在枚举项各自段落上，点击选中所属条款需求
+    chips += "".join(
+        f'<button class="chip annotation-index sub" data-req="{html.escape(str(r["ai_req_id"]))}" '
+        f'title="{html.escape(str(r.get("title") or ""))} · 子项 {html.escape(label)}" '
+        f'aria-label="子项 {html.escape(label)}">'
+        f'<span class="annotation-number">{numbers.get(str(r["ai_req_id"]), 0):02d}.{html.escape(label)}</span></button>'
+        for r, label in (sub_anchors or [])
     )
     chips_html = f'<div class="chips">{chips}</div>' if chips else ""
     omission_html = ('<div class="omission-flag"><span class="omission-tag">未覆盖</span></div>'
@@ -191,11 +205,33 @@ def render_annotation_html(out_dir: Path) -> str:
         if anchor:
             anchor_map.setdefault(anchor, []).append(req)
 
+    # 全文连续编号（按锚点块在文档中的出现顺序）——此前每块内部从 01 重数，满屏"01"无层级感。
+    # 子项锚：需求带 sub_items 时，把各子项挂到其 source_block_ids 里以 "a)" 开头的段落
+    # （二级批注 01.a/01.b…，与一级条款需求同色同点击目标）。
+    block_order = {str(b.get("block_id") or ""): i for i, b in enumerate(blocks)}
+    ordered = sorted(
+        (req for req in requirements
+         if str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")),
+        key=lambda r: block_order.get(
+            str(r.get("anchor_block_id") or (r.get("source_block_ids") or [""])[0] or ""), 1 << 30))
+    req_numbers = {str(r.get("ai_req_id")): i for i, r in enumerate(ordered, start=1)}
+    sub_anchor_map: dict[str, list[tuple[dict[str, Any], str]]] = {}
+    text_by_block = {str(b.get("block_id") or ""): str(b.get("text") or "") for b in blocks}
+    for req in requirements:
+        labels = {str(item.get("label") or "").strip().lower()
+                  for item in (req.get("sub_items") or []) if item.get("label")}
+        if not labels:
+            continue
+        for bid in (req.get("source_block_ids") or []):
+            m = re.match(r"^\s*([a-z])\)", text_by_block.get(str(bid), ""))
+            if m and m.group(1) in labels:
+                sub_anchor_map.setdefault(str(bid), []).append((req, m.group(1)))
+
     omissions = sum(
         1 for b in blocks
         if b.get("requirement_like") and not b.get("noise") and str(b.get("block_id")) not in covered
     )
-    blocks_html = _render_blocks(blocks, anchor_map, covered)
+    blocks_html = _render_blocks(blocks, anchor_map, covered, req_numbers, sub_anchor_map)
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
     vocab_json = json.dumps(_module_vocab(), ensure_ascii=False).replace("</", "<\\/")
     generated_at = datetime.datetime.now().isoformat(timespec="seconds")
@@ -307,6 +343,8 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
 .text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
 .doc-block.in-span {{ background: #eef4ff; border-radius: 6px; }}
+.chip.sub .annotation-number {{ font-size: 10px; opacity: .75; }}
+.dd-subitems li {{ margin-bottom: 4px; }}
 .dd-table {{ border-collapse: collapse; font-size: 12px; width: 100%; margin-bottom: 8px; }}
 .dd-table th, .dd-table td {{ border: 1px solid #e3e0d8; padding: 3px 8px; text-align: left; }}
 .dd-table th {{ background: #f6f3ec; font-weight: 600; }}
@@ -505,6 +543,13 @@ function markSpan() {{
   }});
 }}
 
+function subItemsHtml(r) {{
+  const items = r.sub_items || [];
+  if (!items.length) return "";
+  const rows = items.map(it => '<li><strong>' + esc(it.label || "·") + ')</strong> ' + esc(it.text || "") + '</li>').join("");
+  return '<div class="dd-label">子项要求（二级）</div><ul class="dd-list dd-subitems">' + rows + '</ul>';
+}}
+
 function thresholdHtml(r) {{
   const t = r.threshold_table;
   if (!t || !(t.rows||[]).length) return "";
@@ -553,6 +598,7 @@ function select(id) {{
     '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
     '<div class="dd-label">需求分析</div><div class="dd-body">'+esc(r.description)+'</div>'+
+    subItemsHtml(r)+
     thresholdHtml(r)+
     (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
