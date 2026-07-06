@@ -71,7 +71,8 @@ def write_software_requirements_xlsx(items: list[dict[str, Any]], output_path: P
         for index, item in enumerate(rows, start=1):
             ws.append([_safe_cell(value) for value in _excel_row(index, item)])
 
-    wb.save(output_path)
+    from xlsx_io import safe_save_workbook
+    return safe_save_workbook(wb, output_path)
     return output_path
 
 

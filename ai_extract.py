@@ -46,19 +46,31 @@ from spec_excel import METERING_DOMAINS  # 受控模块词表（DLMS 域 + 通�
 OTHER_MODULE = "其它"  # LLM 判定"无贴切模块"的逃生项（与 spec_export.OTHER_DOMAIN 对齐）
 MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
 
+from extract_units import (  # noqa: F401 —— F3 拆分门面：旧名保持可用
+    CHAPTER_MAX_CHARS, CHAPTER_MIN_MAX_TOKENS, CLAUSE_FAMILY_MAX_FACTOR,
+    MAX_REFS_PER_SECTION, REF_EXCERPT_CHARS, TERM_DEFS_MAX, TERM_DEF_CHARS, UNIT_MODE_ENV,
+    _CLAUSE_HEADING_RE, _CLAUSE_REF_RE, _TERMS_HEADING_RE, _TERM_NAME_RE,
+    _TOC_LEADER_RUN_RE, _TOC_LINE_END_RE, _finalize_merged, _is_toc_line,
+    DEFAULT_MERGE_CHARS, _normalize_clause_ref, _pack_sections, _split_text, assemble_sections,
+    attach_term_definitions, clause_key, clean_block_text, collect_term_entries,
+    merge_sections, resolve_section_refs, sample_sections,
+)
+from extract_guards import (  # noqa: F401
+    _LEFT_BEHIND_MIN, _LEFT_BEHIND_WINDOW, _TESTABLE_HINT_RE, _VAGUE_PHRASES,
+    _norm_ws, _produced_text, _req_key, _vague_acceptance, _values_left_behind,
+)
+
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v10"  # v10：自检对齐条款族（结构摘要+子项覆盖记账+包含去重），防拆碎（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v11"  # v11：Annex 引用解析 + 术语定向注入（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
 MAX_SELF_CHECK_ROUNDS = 6  # 硬上限：再多也几乎无新增，纯烧 token
 DOC_CONTEXT_GLOSSARY_MAX = 1800   # 术语表注入上限（控 token 成本）
 DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
-_TERMS_HEADING_RE = re.compile(r"term|definition|abbreviat|glossary|术语|定义|符号", re.IGNORECASE)
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
-DEFAULT_MERGE_CHARS = 2800
 DEFAULT_CONCURRENCY = 4
 MAX_CONCURRENCY = 16
 CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
@@ -153,192 +165,15 @@ SYSTEM_PROMPT = (
 )
 
 
-# --- 章节聚合与合并 -------------------------------------------------------
-
-# 目录点线行（"4.15 Resistance to storage temperature ..... 23"）不是内容：LLM 会把目录
-# 标题当需求抽出、与正文抽取成对重复且成批堆在目录段锚点上（test7 实测：16 条堆一段），
-# 还污染覆盖率分母与自检焦点。PDF 解析的 doc_region 检测不总生效，此处兜底行级清洗。
-# 两种形态（test7 实测）：① 行尾点线 + 页码（页码可能空格断裂"3 3"或掉行）；
-# ② PDF 把整页目录挤成一行——几十个"标题.....页码"内联，用点线段密度识别（≥3 段）
-_TOC_LINE_END_RE = re.compile(r"\.{5,}[\s\d]*$")
-_TOC_LEADER_RUN_RE = re.compile(r"\.{5,}")
+# --- 章节聚合与合并：见 extract_units（F3 拆分） ---------------------------
 
 
-def _is_toc_line(line: str) -> bool:
-    if _TOC_LINE_END_RE.search(line):
-        return True
-    return len(_TOC_LEADER_RUN_RE.findall(line)) >= 3
-
-
-def clean_block_text(block: dict[str, Any]) -> str:
-    """block 文本去目录点线行；清完为空 = 纯目录块，各消费处按无内容处理。"""
-    text = str(block.get("text") or "")
-    lines = [line for line in text.splitlines() if not _is_toc_line(line)]
-    return "\n".join(lines).strip()
-
-
-def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block）。"""
-    groups: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
-    for block in blocks:
-        section_path = [str(s) for s in (block.get("section_path") or [])]
-        key = " / ".join(section_path) or "(root)"
-        unit = groups.get(key)
-        if unit is None:
-            unit = {"section_id": key, "section_path": section_path,
-                    "heading": section_path[-1] if section_path else "",
-                    "texts": [], "block_ids": []}
-            groups[key] = unit
-        text = clean_block_text(block)
-        if text:
-            unit["texts"].append(text)
-        if block.get("block_id"):
-            unit["block_ids"].append(block["block_id"])
-
-    sections: list[dict[str, Any]] = []
-    for unit in groups.values():
-        body = "\n".join(unit["texts"]).strip()
-        if not body:
-            continue
-        sections.append({"section_id": unit["section_id"], "section_path": unit["section_path"],
-                         "heading": unit["heading"], "text": body, "block_ids": unit["block_ids"]})
-    return sections
-
-
-def _split_text(text: str, target_chars: int) -> list[str]:
-    """把超长文本按行贪心切成 ≤target 的块；单行超长则硬切。保证每次 LLM 输入有界。"""
-    if len(text) <= target_chars:
-        return [text]
-    units: list[str] = []
-    for line in text.split("\n"):
-        if len(line) <= target_chars:
-            units.append(line)
-        else:  # 单行超长（如无换行的长表格）：硬切
-            units.extend(line[i:i + target_chars] for i in range(0, len(line), target_chars))
-    chunks: list[str] = []
-    cur: list[str] = []
-    cur_len = 0
-    for unit in units:
-        add = len(unit) + 1
-        if cur and cur_len + add > target_chars:
-            chunks.append("\n".join(cur))
-            cur, cur_len = [unit], add
-        else:
-            cur.append(unit)
-            cur_len += add
-    if cur:
-        chunks.append("\n".join(cur))
-    return [c for c in chunks if c.strip()]
-
-
-def clause_key(section: dict[str, Any]) -> str | None:
-    """两级条款族键：4.6.1 Requirements / 4.6.2 Test → "4.6"；4.15 → "4.15"；无编号 → None。
-
-    标准文档的天然语义单元是条款族——X.Y 是一个需求整体，X.Y.1 是要求、X.Y.2 是对应测试
-    （a↔a、b↔b 对应）。按字数贪心切分会把要求和测试拆进不同 LLM 单元（真实反馈："分段乱乱的"）。
-    """
-    m = re.match(r"^(\d+(?:\.\d+)*)", str(section.get("heading") or section.get("section_id") or "").strip())
-    if not m:
-        return None
-    parts = m.group(1).split(".")
-    return ".".join(parts[:2])
-
-
-# 条款族允许比普通目标更大（保住"要求+测试"同单元）；超过后仍在成员/行边界拆（防 JSON 截断）
-CLAUSE_FAMILY_MAX_FACTOR = 2
-# 整章阅读模式（架构 A/B：少过程工程、多模型自由+结果验证）：按顶层章号分组（"4.14.1"→"4"），
-# 模型一次通读整章——跨条款引用天然可见、无需自检环轮轮追打。上限防超上下文/输出截断。
-UNIT_MODE_ENV = "RATOMIZER_AI_UNIT_MODE"   # clause(默认) | chapter
-CHAPTER_MAX_CHARS = 24000
-CHAPTER_MIN_MAX_TOKENS = 16384  # 整章几十条需求的 JSON 输出预算（推理模型思维链之外）
-
-
-def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAULT_MERGE_CHARS,
-                   unit_mode: str = "clause") -> list[dict[str, Any]]:
-    """章节 → LLM 输入单元：**先按条款族分组（语义边界），族内再按字数规整（经济边界）**。
-
-    同族（如 4.6.1/4.6.2）保持同单元、上限放宽到 2×target；**不同条款族绝不合并**——此前的
-    纯字数贪心会把 4.5 尾巴和 4.6 开头拼在一起（真实反馈"分段乱乱的"的根源）。无编号章节沿用
-    旧贪心合并（向后兼容散文/标题乱码文档）。
-    """
-    chapter_mode = unit_mode == "chapter"
-    groups: list[tuple[str | None, list[dict[str, Any]]]] = []
-    for sec in sections:
-        key = clause_key(sec)
-        if chapter_mode and key is not None:
-            key = key.split(".")[0]   # 整章：4.14.1 → "4"（同章条款全部同单元）
-        if groups and groups[-1][0] == key and key is not None:
-            groups[-1][1].append(sec)      # 同条款族 → 同组
-        elif groups and groups[-1][0] is None and key is None:
-            groups[-1][1].append(sec)      # 连续无编号 → 同组（旧贪心处理）
-        else:
-            groups.append((key, [sec]))
-
-    units: list[dict[str, Any]] = []
-    for key, group in groups:
-        if chapter_mode:
-            limit = CHAPTER_MAX_CHARS if key is not None else target_chars
-            split = CHAPTER_MAX_CHARS if key is not None else target_chars
-        else:
-            limit = target_chars * CLAUSE_FAMILY_MAX_FACTOR if key is not None else target_chars
-            split = target_chars
-        units.extend(_pack_sections(group, target_chars=limit, split_chars=split))
-    return units
-
-
-def _pack_sections(sections: list[dict[str, Any]], *, target_chars: int,
-                   split_chars: int) -> list[dict[str, Any]]:
-    """组内按字数规整（原贪心逻辑）：小节拼接 ≤target；超大单节按 split_chars 拆。"""
-    merged: list[dict[str, Any]] = []
-    cur: dict[str, Any] | None = None
-
-    def flush() -> None:
-        nonlocal cur
-        if cur is not None and cur["texts"]:
-            merged.append(_finalize_merged(cur))
-        cur = None
-
-    for sec in sections:
-        piece = f"## {sec['heading']}\n{sec['text']}" if sec.get("heading") else sec["text"]
-        block_ids = list(sec.get("block_ids") or [])
-        if len(piece) > target_chars:
-            # 超大源章节：拆成 ≤split 的多块，各自独立成段（同段 block_ids 全量保留以便溯源）。
-            # drift_source 保留完整原文：漂移护栏须以整章为 baseline，否则 LLM 合理引用同章
-            # 其它片段里的 OBIS/事件码会被误判为"原文未见的结构漂移"（假阳性误伤）。
-            flush()
-            for chunk in _split_text(piece, split_chars):
-                merged.append(_finalize_merged({
-                    "section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                    "texts": [chunk], "block_ids": block_ids, "drift_source": piece}))
-            continue
-        if cur is None:
-            cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": block_ids, "len": len(piece)}
-        elif cur["len"] + len(piece) > target_chars and cur["texts"]:
-            flush()
-            cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": block_ids, "len": len(piece)}
-        else:
-            cur["texts"].append(piece)
-            cur["block_ids"].extend(block_ids)
-            cur["len"] += len(piece)
-    flush()
-    return merged
-
-
-def _finalize_merged(cur: dict[str, Any]) -> dict[str, Any]:
-    text = "\n\n".join(cur["texts"]).strip()
-    # 漂移护栏 baseline：拆分片段用整章原文，其余默认用自身文本（无跨片段码）
-    drift_source = cur.get("drift_source") or text
-    return {"section_id": cur["section_id"], "heading": cur["heading"],
-            "section_path": [cur["heading"]] if cur["heading"] else [],
-            "text": text, "block_ids": cur["block_ids"], "drift_source": drift_source}
 
 
 # --- 抽取与防幻觉护栏 -----------------------------------------------------
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
-    refs = section.get("ref_texts") or []
+    refs = (section.get("ref_texts") or []) + (section.get("term_defs") or [])
     refs_key = hashlib.sha256(json.dumps(refs, ensure_ascii=False).encode("utf-8")).hexdigest()[:12] if refs else ""
     digest = hashlib.sha256(
         f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{context_key}\n{refs_key}".encode("utf-8")
@@ -350,53 +185,72 @@ def build_section_prompt(section: dict[str, Any]) -> str:
     payload = {"heading": section.get("heading"), "text": section.get("text", "")[:12000]}
     base = json.dumps(payload, ensure_ascii=False, indent=2)
     refs = section.get("ref_texts") or []
+    terms = section.get("term_defs") or []
+    term_block = ""
+    if terms:
+        joined = "\n".join(f"- {t['term']}: {t['text']}" for t in terms)
+        term_block = f"\n\n【本章节用到的术语定义（引用其内容视为有据）】\n{joined}"
     if not refs:
-        return base
+        return base + term_block
     ref_block = "\n\n".join(
         f"【被引用条款 {r['clause']}——本章节文字引用了它。请把其中的具体数值/限值整合进需求描述，"
         f"引用这些数值视为有据】\n{r['text']}" for r in refs)
-    return f"{base}\n\n{ref_block}"
+    return f"{base}{term_block}\n\n{ref_block}"
 
 
 # --- 跨章节引用解析 -------------------------------------------------------
 # "the leak rate does not exceed the values given in 7.13.4.5.1"——限值正文在别的单元，
 # 抽取时看不见 → 描述只能写"不得超过 7.13.4.5.1 规定的限值"（不自包含，研发还得回原文）。
 # 检测内部条款引用，把被引条款的正文摘录注入 prompt（并入漂移基线：引用其数值=有据）。
-_CLAUSE_REF_RE = re.compile(
-    r"\b(?:given in|specified in|according to|defined in|listed in|in accordance with|see)\s+"
-    r"(\d+(?:\.\d+){1,5})\b", re.IGNORECASE)
-_CLAUSE_HEADING_RE = re.compile(r"(?m)^(\d+(?:\.\d+){1,5})\b")
-MAX_REFS_PER_SECTION = 2      # 控 token 成本
-REF_EXCERPT_CHARS = 1200
+# 条款/附录标题索引：数字条款（7.13.4.5.1）、附录节（A.1.4.6）、附录整章（Annex A）
 
 
-def resolve_section_refs(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """就地给含内部引用的 section 挂 ref_texts + drift_source。必须对**全文**单元表跑
-    （试抽采样前），被引条款可能在未被抽样的单元里。确定性、零 LLM。"""
-    clause_pos: dict[str, tuple[int, int]] = {}
-    for idx, s in enumerate(sections):
-        for m in _CLAUSE_HEADING_RE.finditer(s["text"]):
-            clause_pos.setdefault(m.group(1), (idx, m.start()))
-    for idx, s in enumerate(sections):
-        refs: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for m in _CLAUSE_REF_RE.finditer(s["text"]):
-            clause = m.group(1)
-            if clause in seen:
-                continue
-            seen.add(clause)
-            target = clause_pos.get(clause)
-            if not target or target[0] == idx:   # 找不到 or 就在本单元 → 无需注入
-                continue
-            t_idx, start = target
-            refs.append({"clause": clause,
-                         "text": sections[t_idx]["text"][start:start + REF_EXCERPT_CHARS]})
-            if len(refs) >= MAX_REFS_PER_SECTION:
-                break
-        if refs:
-            s["ref_texts"] = refs
-            s["drift_source"] = s["text"] + "\n" + "\n".join(r["text"] for r in refs)
-    return sections
+# --- 中英术语对照（每文档一次 LLM，缓存复用） ------------------------------
+# 交付物是中文：同一英文术语（pressure absorption 等）在上百条需求里译法漂移，研发读起来
+# 像多份文档。对照表注入 doc_context（折进缓存指纹），全文统一译法。失败静默跳过（可选增强）。
+TERM_MAP_FILE = "term_map.json"
+TERM_MAP_MAX = 40
+
+
+def ensure_term_map(out_dir: Path, chat: ChatFn, entries: list[tuple[str, str]]) -> str:
+    """返回注入 doc_context 的对照表文本（空=无术语/生成失败）。缓存按术语清单哈希复用。"""
+    if not entries:
+        return ""
+    names = [term for term, _ in entries][:TERM_MAP_MAX]
+    basis = hashlib.sha256(json.dumps(names, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    cache_path = out_dir / TERM_MAP_FILE
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached.get("hash") == basis and cached.get("terms"):
+                return _render_term_map(cached["terms"])
+        except (json.JSONDecodeError, OSError):
+            pass
+    try:
+        payload = chat(
+            "你是表计行业术语翻译员。给出每个英文术语的**统一中文译法**（简洁、行业惯用）。"
+            "只输出 JSON：{\"terms\": [{\"en\": \"...\", \"zh\": \"...\"}]}。",
+            json.dumps({"terms": names}, ensure_ascii=False))
+        terms = [t for t in (payload.get("terms") or [])
+                 if isinstance(t, dict) and t.get("en") and t.get("zh")]
+    except Exception as exc:  # 可选增强：失败不影响抽取
+        LOGGER.warning("术语对照生成失败（跳过）：%s", str(exc)[:120])
+        return ""
+    if not terms:
+        return ""
+    cache_path.write_text(json.dumps({"hash": basis, "terms": terms}, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+    return _render_term_map(terms)
+
+
+def _render_term_map(terms: list[dict[str, str]]) -> str:
+    lines = "\n".join(f"- {t['en']} → {t['zh']}" for t in terms[:TERM_MAP_MAX])
+    return f"【术语译法对照（全文统一使用这些中文译法）】\n{lines}"
+
+
+# --- 术语定向注入 ---------------------------------------------------------
+# 术语表整体注入只带头 1800 字（后面的术语被截断）。改为按单元定向：本单元文本里出现的
+# 已定义术语，注入其**定义原文**（出自 Terms and definitions 小节的对应子节）。
 
 
 # --- 上下文工程：文档全局背景注入 ---------------------------------------
@@ -468,15 +322,6 @@ def build_doc_context(out_dir: Path, blocks: list[dict[str, Any]]) -> str:
         lines.append("【术语/定义（节选，仅供术语与模块一致性参考，勿据此编造原文没有的编码/数字）】")
         lines.append(glossary)
     return "\n".join(lines)
-
-
-def _produced_text(requirement: dict[str, Any]) -> str:
-    return " ".join([
-        str(requirement.get("title") or ""),
-        str(requirement.get("description") or ""),
-        str(requirement.get("source_quote") or ""),
-        " ".join(str(a) for a in requirement.get("acceptance_criteria") or []),
-    ])
 
 
 def code_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
@@ -610,58 +455,6 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
 
 # 模糊验收检测（BMAD "Done-ness clarity" 模式）：封杀"符合要求/正常工作"式空话验收——
 # 研发看不出"完成"长什么样。命中空话短语且不含任何数字/编码/比较判据的验收条 → 标记待澄清。
-_VAGUE_PHRASES = ("符合要求", "满足要求", "正常工作", "工作正常", "运行正常", "表现良好",
-                  "适当", "合理", "正确处理", "妥善处理", "gracefully", "properly",
-                  "reasonable", "as expected", "correctly", "appropriately")
-_TESTABLE_HINT_RE = re.compile(r"[0-9０-９]|≥|≤|>|<|＝|=|不超过|不少于|不小于|不大于|之内|以内|以上|以下")
-
-
-def _vague_acceptance(req: dict[str, Any]) -> list[str]:
-    """返回不可测的验收条目（命中空话且无任何可判定判据）。只标不拦。"""
-    vague: list[str] = []
-    for item in (req.get("acceptance_criteria") or []):
-        text = str(item)
-        low = text.lower()
-        if any(p in low for p in _VAGUE_PHRASES) and not _TESTABLE_HINT_RE.search(text) \
-                and not extract_codes(text):
-            vague.append(text[:80])
-    return vague
-
-
-_LEFT_BEHIND_MIN = 4      # 引句附近 ≥N 个数值没被带走才标（避免零星页码/序号误报）
-_LEFT_BEHIND_WINDOW = 800  # 引句起往后看的窗口（枚举清单/成分表通常紧跟引句）
-
-
-def _values_left_behind(req: dict[str, Any], source: str) -> int:
-    """确定性漏值检测：引句附近的数值清单没进需求（真实案例：粉尘粒径/成分百分比全被
-    "规定的范围"指代吞掉，threshold_table=None——研发拿不到数值等于没写）。只标记不拦截。"""
-    quote = str(req.get("source_quote") or "")
-    if not quote:
-        return 0
-    pos = source.find(quote)
-    if pos < 0:
-        return 0
-    window = source[pos:pos + max(len(quote), _LEFT_BEHIND_WINDOW)]
-    captured = extract_ints(" ".join([
-        _produced_text(req), json.dumps(req.get("threshold_table") or {}),
-    ]))
-    left = extract_ints(window) - captured
-    return len(left) if len(left) >= _LEFT_BEHIND_MIN else 0
-
-
-def _req_key(req: dict[str, Any]) -> str:
-    """去重键：source_quote（归一）→ title → description 前 80 字。
-
-    三级回退保证过了护栏的条目（必有 description 或 quote）键恒非空——否则"有描述但
-    无引用无标题"的自检补充项会因空键被静默丢弃（与初抽路径不对称）。
-    """
-    q = re.sub(r"\s+", " ", str(req.get("source_quote") or "")).strip().lower()
-    if q:
-        return q
-    title = str(req.get("title") or "").strip().lower()
-    if title:
-        return title
-    return str(req.get("description") or "").strip().lower()[:80]
 
 
 def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
@@ -722,10 +515,6 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         req["suspicion_reasons"] = list(req.get("suspicion_reasons") or []) + ["自检补充（初抽遗漏）"]
         extra.append(req)
     return extra
-
-
-def _norm_ws(s: Any) -> str:
-    return re.sub(r"\s+", " ", str(s or "")).strip().lower()
 
 
 def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[str, Any]],
@@ -1119,16 +908,6 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
     return llm_config_from_route(payload)
 
 
-def sample_sections(sections: list[dict[str, Any]], limit: int | None) -> tuple[list[dict[str, Any]], bool]:
-    """试抽样本：均匀取 N 章（确定性步长，非"前 N 章"——文档开头是范围/术语，需求密度最低，
-    前 N 章会给出误导性的质量样本）。缓存指纹按章节内容算，样本章节的缓存全量跑时原样复用。"""
-    if not limit or limit <= 0 or limit >= len(sections):
-        return sections, False
-    stride = len(sections) / limit
-    picked = [sections[min(int(i * stride), len(sections) - 1)] for i in range(limit)]
-    return picked, True
-
-
 def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAULT_MERGE_CHARS,
                    write_doc: bool = False, merge_deterministic: bool = False,
                    pipeline_path: Path = DEFAULT_PIPELINE_PATH,
@@ -1151,6 +930,7 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     all_sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars,
                                   unit_mode=resolved_mode)
     resolve_section_refs(all_sections)  # 跨章节引用注入（须在采样前，被引条款可能不在样本里）
+    attach_term_definitions(all_sections, collect_term_entries(all_sections))  # 术语定向注入
     if not limit_sections and sample_ratio and 0 < sample_ratio < 1:
         limit_sections = max(1, round(len(all_sections) * sample_ratio))
     sections, sampled = sample_sections(all_sections, limit_sections)
@@ -1172,14 +952,16 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         requirements: list[dict[str, Any]] = []
         route_label = "stub"
     else:
-        min_tokens = CHAPTER_MIN_MAX_TOKENS if resolved_mode == "chapter" else AI_EXTRACT_MIN_MAX_TOKENS
-        if config.max_tokens < min_tokens:  # 给推理模型留出正文预算，防 JSON 截断（整章输出更长）
-            config = replace(config, max_tokens=min_tokens)
+        from llm_client import apply_min_tokens
+        config = apply_min_tokens(config, "extract-chapter" if resolved_mode == "chapter" else "extract")
 
         def chat(system: str, user: str) -> dict[str, Any]:
             return chat_json(config, system, user)
 
         doc_context = build_doc_context(out_dir, blocks)  # 上下文工程：文档全局背景注入每次抽取
+        term_map = ensure_term_map(out_dir, chat, collect_term_entries(all_sections))
+        if term_map:   # 中英术语对照：全文统一译法（折进 context_key → 指纹自动失效）
+            doc_context = f"{doc_context}\n{term_map}" if doc_context else term_map
         block_info = {str(b.get("block_id")): b for b in blocks if b.get("block_id")}  # 定向自检/覆盖率用
         extract_stats: dict[str, Any] = {}
         requirements = extract_all(sections, chat, model=config.model,
@@ -1197,6 +979,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         model = config.model
         route_label = "openai_compatible"
 
+        from requirement_record import validate_rows
+        validate_rows(requirements, where=AI_REQUIREMENTS)  # 行契约告警（F2，不拦截）
         target = out_dir / AI_REQUIREMENTS
         with target.open("w", encoding="utf-8", newline="\n") as f:
             for req in requirements:
@@ -1231,6 +1015,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
             "coverage_pct": round(covered * 100 / len(req_like), 1) if req_like else None,
             "by_module": dict(sorted(by_module.items(), key=lambda x: -x[1])),
         }
+        from requirement_record import provenance
+        quality["provenance"] = provenance("ai_extract", AI_EXTRACT_PROMPT_VERSION)
         quality_path = out_dir / "ai_extract_quality.json"
         quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
         written.append(quality_path.name)

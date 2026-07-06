@@ -26,6 +26,7 @@ from text_normalize import formula_safe
 REPORT_JSON = "clarification_report.json"
 REPORT_MD = "clarification_questions.md"
 REPORT_XLSX = "clarification_questions.xlsx"
+ANSWERS_FILE = "clarification_answers.jsonl"   # 评审会答复回灌（answer 列填写后 import 回来）
 
 CAT_AMBIGUOUS = "模糊"
 CAT_MISSING = "缺失"
@@ -189,7 +190,7 @@ def write_xlsx(entries: list[dict[str, Any]], readiness: dict[str, Any], path: P
     wb = Workbook()
     ws = wb.active
     ws.title = "必答"
-    header = ["序号", "分类", "问题", "出处章节", "原文引用", "来源需求", "信号"]
+    header = ["序号", "分类", "问题", "出处章节", "原文引用", "来源需求", "信号", "答复", "采纳(是/否)"]
     ws.append(header)
     hard = [e for e in entries if e.get("tier") != TIER_SOFT]
     soft = [e for e in entries if e.get("tier") == TIER_SOFT]
@@ -208,7 +209,63 @@ def write_xlsx(entries: list[dict[str, Any]], readiness: dict[str, Any], path: P
     ws2.append(["待澄清条数", readiness["questions"]])
     ws2.append(["覆盖率%", readiness.get("coverage_pct")])
     ws2.append(["失败单元", readiness.get("failed_sections")])
-    wb.save(path)
+    from xlsx_io import safe_save_workbook
+    safe_save_workbook(wb, path)
+
+
+def load_answers(out_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    """已回灌答复：(来源需求id, 问题) → 答复条目。容错读，坏行跳过。"""
+    path = Path(out_dir) / ANSWERS_FILE
+    answers: dict[tuple[str, str], dict[str, Any]] = {}
+    if not path.exists():
+        return answers
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        key = (str(row.get("source_id") or ""), str(row.get("question") or ""))
+        answers[key] = row
+    return answers
+
+
+def import_answers(out_dir: Path, xlsx_path: Path) -> dict[str, Any]:
+    """从填好的 clarification_questions.xlsx「必答」sheet 读回答复列 → 落 ANSWERS_FILE。
+
+    闭环的另一半：评审会带走清单，答复填回同一文件，导入后 analyze 把答复当权威客户输入
+    （注入富化 prompt + 数值有据基线），澄清报告把已采纳答复的问题消解出必答区。
+    """
+    from openpyxl import load_workbook
+    out_dir = Path(out_dir).expanduser().resolve()
+    wb = load_workbook(Path(xlsx_path).expanduser(), data_only=True, read_only=True)
+    try:
+        if "必答" not in wb.sheetnames:
+            raise ValueError("工作簿缺少「必答」sheet——请用本工具导出的澄清清单填写答复")
+        ws = wb["必答"]
+        merged = load_answers(out_dir)
+        imported = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row or len(row) < 8:
+                continue
+            answer = str(row[7] or "").strip()
+            if not answer:
+                continue
+            entry = {
+                "source_id": str(row[5] or "").strip(),
+                "category": str(row[1] or "").strip(),
+                "question": str(row[2] or "").strip(),
+                "answer": answer,
+                "adopted": str(row[8] if len(row) > 8 else "").strip() not in ("否", "no", "N", "n"),
+            }
+            merged[(entry["source_id"], entry["question"])] = entry
+            imported += 1
+    finally:
+        wb.close()
+    with (out_dir / ANSWERS_FILE).open("w", encoding="utf-8", newline="\n") as f:
+        for entry in merged.values():
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return {"imported": imported, "total_answers": len(merged),
+            "written": [ANSWERS_FILE]}
 
 
 def run_report(out_dir: Path) -> dict[str, Any]:
@@ -218,6 +275,17 @@ def run_report(out_dir: Path) -> dict[str, Any]:
         raise FileNotFoundError(
             f"ai_requirements.jsonl not found in {out_dir} — 先跑「AI 抽取」再生成澄清清单")
     entries = collect_questions(out_dir)
+    answers = load_answers(out_dir)
+    resolved = 0
+    if answers:
+        kept: list[dict[str, Any]] = []
+        for e in entries:
+            hit = answers.get((e.get("source_id") or "", e.get("question") or ""))
+            if hit and hit.get("adopted", True):
+                resolved += 1            # 已答复采纳 → 消解，不再出现在清单
+                continue
+            kept.append(e)
+        entries = kept
     hard_count = sum(1 for e in entries if e.get("tier") != TIER_SOFT)
     readiness = readiness_verdict(out_dir, hard_count)
     (out_dir / REPORT_MD).write_text(render_markdown(entries, readiness), encoding="utf-8")
@@ -225,9 +293,25 @@ def run_report(out_dir: Path) -> dict[str, Any]:
     by_cat: dict[str, int] = {}
     for e in entries:
         by_cat[e["category"]] = by_cat.get(e["category"], 0) + 1
+    from requirement_record import check_provenance, provenance
+    warnings: list[str] = []
+    ana_path = out_dir / "engineering_analysis.json"
+    if ana_path.exists():
+        try:
+            from requirements_analysis import ANALYZE_PROMPT_VERSION
+            warn = check_provenance(json.loads(ana_path.read_text(encoding="utf-8")),
+                                    expect_producer="requirements_analysis",
+                                    current_version=ANALYZE_PROMPT_VERSION)
+            if warn:
+                warnings.append(warn)
+        except Exception:  # 血统校验永不阻断出报告
+            pass
     report = {"questions": hard_count,        # 必答数（就绪门口径；GUI 消息同源）
+              "provenance": provenance("clarification_report", "clarification/v2-tiered"),
+              "upstream_warnings": warnings,
               "questions_total": len(entries),
               "soft_questions": len(entries) - hard_count,
+              "resolved_by_answers": resolved,
               "by_category": by_cat,
               "readiness": readiness, "entries": entries,
               "written": [REPORT_MD, REPORT_XLSX, REPORT_JSON]}

@@ -40,6 +40,7 @@
             </label>
             <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-export-html" @click="handleExportAnnotationHtml">导出批注HTML</button>
             <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-import-decisions" @click="handleImportDecisions">导入裁决</button>
+            <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-import-answers" @click="handleImportAnswers">导入澄清答复</button>
           </div>
         </header>
 
@@ -1119,6 +1120,20 @@ async function handleExportAnnotationHtml() {
     }
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "导出文档批注 HTML 失败"
+  }
+}
+
+async function handleImportAnswers() {
+  if (!currentOutputDir.value || !window.ratomizerDesktop?.importClarificationAnswers) {
+    apiMessage.value = "请先选择输出目录"
+    return
+  }
+  try {
+    const payload = await window.ratomizerDesktop.importClarificationAnswers({ outDir: currentOutputDir.value })
+    if (payload.canceled) return
+    apiMessage.value = `已导入澄清答复 ${Number(payload.imported ?? 0)} 条——重跑「软件需求分析」后答复将作为权威输入生效`
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : "导入澄清答复失败"
   }
 }
 

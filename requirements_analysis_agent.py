@@ -3,7 +3,8 @@ from typing import Any
 
 
 def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[str, Any],
-                          template_refs: str = "") -> dict[str, str]:
+                          template_refs: str = "", *, exemplars: str = "",
+                          answers: str = "") -> dict[str, str]:
     system = "你是电表软件需求分析工程师。你的任务不是翻译原文，而是基于可追溯的抽取结果推导软件研发需求。"
     lines = [
         "请基于需求 JSON 和模板词表 JSON 输出 JSON 对象 {\"items\": [ ... ]}，items 与输入需求一一对应。",
@@ -25,6 +26,16 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         "模板词表 JSON:",
         json.dumps(vocabulary, ensure_ascii=False),
     ]
+    if exemplars:
+        lines += [
+            "【专家已验收的同模块范例——粒度/写法基准，内容不得搬运进本需求】",
+            exemplars,
+        ]
+    if answers:
+        lines += [
+            "【客户澄清答复——权威输入：其中的数值/结论视为有据，应吸收进软件需求正文】",
+            answers,
+        ]
     if template_refs:
         lines += [
             "【公司标准做法参考——该模块的标准化需求样本，仅供对齐粒度/术语/通用做法】",
@@ -53,8 +64,9 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any]) -> list[str]
     from cosem_behavior_spec import extract_codes, extract_ints
 
     union_text = " ".join(
-        str(source.get(field) or "") for field in ("source_quote", "description", "requirement")
-    )
+        str(source.get(field) or "")
+        for field in ("source_quote", "description", "requirement", "clarification_answers_text")
+    )   # 澄清答复=权威客户输入，其中数值视为有据（答复回灌闭环）
     priority_text = next(
         (str(source.get(field) or "") for field in ("source_quote", "description", "requirement")
          if str(source.get(field) or "").strip()),

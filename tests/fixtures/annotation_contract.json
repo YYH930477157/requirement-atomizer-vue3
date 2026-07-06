@@ -1,0 +1,113 @@
+{
+  "blocks": [
+    {
+      "block_id": "H",
+      "order": 0,
+      "type": "heading",
+      "text": "4.6 AFD2",
+      "section_path": [
+        "4.6 AFD2"
+      ],
+      "requirement_like": false,
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "B1",
+      "order": 1,
+      "type": "paragraph",
+      "text": "a) When tested the AFD shall have no influence.",
+      "section_path": [
+        "4.6 AFD2"
+      ],
+      "requirement_like": true,
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "B2",
+      "order": 2,
+      "type": "paragraph",
+      "text": "b) Results shall be identical.",
+      "section_path": [
+        "4.6 AFD2"
+      ],
+      "requirement_like": true,
+      "noise": false,
+      "doc_region": "body"
+    },
+    {
+      "block_id": "B3",
+      "order": 3,
+      "type": "paragraph",
+      "text": "Second requirement lives here.",
+      "section_path": [
+        "4.7"
+      ],
+      "requirement_like": true,
+      "noise": false,
+      "doc_region": "body"
+    }
+  ],
+  "requirements": [
+    {
+      "ai_req_id": "AIR-1",
+      "title": "AFD2 要求",
+      "description": "d1",
+      "module": "附加功能",
+      "type": "functional",
+      "priority": "P1",
+      "source_section": "4.6",
+      "source_quote": "a) When tested the AFD shall have no influence.",
+      "source_block_ids": [
+        "B1",
+        "B2"
+      ],
+      "anchor_block_id": "B1",
+      "labels": [
+        "附加功能"
+      ],
+      "acceptance_criteria": [],
+      "sub_items": [
+        {
+          "label": "a",
+          "text": "无计量影响"
+        },
+        {
+          "label": "b",
+          "text": "结果一致"
+        }
+      ]
+    },
+    {
+      "ai_req_id": "AIR-2",
+      "title": "第二条",
+      "description": "d2",
+      "module": "附加功能",
+      "type": "functional",
+      "priority": "P1",
+      "source_section": "4.7",
+      "source_quote": "Second requirement lives here.",
+      "source_block_ids": [
+        "B3"
+      ],
+      "anchor_block_id": "B3",
+      "labels": [
+        "附加功能"
+      ],
+      "acceptance_criteria": []
+    }
+  ],
+  "expect": {
+    "parent_numbers": [
+      "01",
+      "02"
+    ],
+    "sub_chip_labels": [
+      "01.a",
+      "01.b"
+    ],
+    "select_air1_span_blocks": 2,
+    "select_air1_evidence_blocks": 1
+  }
+}

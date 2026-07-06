@@ -396,6 +396,13 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         emit_progress({"stage": "chain", "step": stage, "completed": index,
                        "total": len(ordered), "percent": int(index * 100 / len(ordered))})
 
+    from adjudication_bank import resolve_bank_path, update_bank
+    bank_path = resolve_bank_path()
+    if bank_path and "requirements-analysis" in ordered:
+        try:   # 收割失败不影响链结果
+            payload["adjudication_bank"] = update_bank(bank_path, out_dir)
+        except Exception as exc:  # pragma: no cover
+            LOGGER.warning("裁决样本库收割失败（忽略）：%s", exc)
     payload["results"] = results
     payload["summary"] = build_output_summary(out_dir)
     return payload
@@ -515,6 +522,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     compose_parser = subparsers.add_parser("compose")
     compose_parser.add_argument("--out", type=Path, required=True)
 
+    bank_parser = subparsers.add_parser("adjudication-bank")
+    bank_parser.add_argument("--out", type=Path, required=True)
+    bank_parser.add_argument("--bank", type=Path, required=True)
+
+    answers_parser = subparsers.add_parser("import-clarification-answers")
+    answers_parser.add_argument("--out", type=Path, required=True)
+    answers_parser.add_argument("--file", type=Path, required=True)
+
     chain_parser = subparsers.add_parser("chain")
     chain_parser.add_argument("--out", type=Path, required=True)
     chain_parser.add_argument("--stages", required=True, help="逗号分隔的阶段清单（按依赖自动排序）")
@@ -625,6 +640,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "compose":
             payload = compose_task(args.out)
+        elif args.command == "adjudication-bank":
+            from adjudication_bank import update_bank
+            payload = {"kind": "adjudication_bank", **update_bank(args.bank, args.out)}
+        elif args.command == "import-clarification-answers":
+            from clarification_report import import_answers
+            payload = {"kind": "clarification_answers", "out_dir": str(args.out),
+                       **import_answers(args.out, args.file)}
         elif args.command == "chain":
             payload = chain_task(args.out, stages=[x.strip() for x in args.stages.split(",") if x.strip()],
                                  route=args.llm_route, template_path=args.template,
