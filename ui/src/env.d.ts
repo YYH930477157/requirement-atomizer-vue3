@@ -33,6 +33,7 @@ declare global {
     quality?: unknown
     report?: unknown
     questions?: number
+    imported?: number
     readiness?: unknown
     results?: unknown
     analysis?: unknown
@@ -117,6 +118,7 @@ declare global {
       writeTemplate: (input: { outDir: string; templatePath: string }) => Promise<RequirementAtomizerTaskPayload>
       clarificationReport: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       runChain: (input: { outDir: string; stages: string[]; llmRoute?: string; templatePath?: string; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
+      importClarificationAnswers: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       selectTemplate: () => Promise<string>
       openLogsDir: () => Promise<{ dir: string }>
     }

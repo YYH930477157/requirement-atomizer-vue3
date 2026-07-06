@@ -191,6 +191,18 @@ ipcMain.handle("task:import-ai-decisions", async (_event, input) => {
   return runDesktopTaskProcess(["import-ai-decisions", "--out", input.outDir, "--file", result.filePaths[0]]);
 });
 
+// 澄清答复回灌：评审会填好的 clarification_questions.xlsx 导回（闭环另一半）
+ipcMain.handle("task:import-clarification-answers", async (_event, input) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: [{ name: "澄清清单(已填答复)", extensions: ["xlsx"] }],
+  });
+  if (result.canceled || !result.filePaths.length) {
+    return { kind: "clarification_answers", imported: 0, canceled: true };
+  }
+  return runDesktopTaskProcess(["import-clarification-answers", "--out", input.outDir, "--file", result.filePaths[0]]);
+});
+
 async function startApiServer(outputDir) {
   stopApiServer();
   const token = crypto.randomBytes(24).toString("hex");

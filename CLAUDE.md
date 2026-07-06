@@ -61,6 +61,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **双轨行为需求分工（建议已记录，终局待用户拍板）**：`assemble`（A 轨：atoms+llm_review，P1-P5）= **DLMS profile 类文档**的结构规格主交付物（蓝皮书行为富化挂此轨）；`merged_spec`+`analyze`（B 轨：AI 抽取+批注裁决）= **非 DLMS 剖面类文档**（散文型标准，无 COSEM 对象表，如 AFD/SM-CG 附加功能标准）的行为/软件需求主交付物。两轨并存各司其职，交付时按文档类型选主件。
 - **有据缓建（实测量化为零收益，勿投机重启）**：① analyze 接蓝皮书——B 轨需求无接口类名可匹配（test5 多词类名 0/288）；② OBIS→class 连接提升蓝皮书覆盖——ABNT 行为 atom 正文 0 个 OBIS 形码（码全在表格→P1）；③ 类名归一化/别名——ABNT 未命中全是抽取噪声或 Green Book 领域引用，归一化救回 0 条；④ Part1 OBIS 节（70 节已摄入）——留给将来 OBIS 语义富化，暂无消费者。重启任一项前先在新语料上重跑探针。
 
+## 重大更新（2026-07-06）——TODO 全量清扫（架构债+组件增强）与深测裁决
+
+- **架构债 F1-F8 全清**：chain 单命令编排+run_manifest（F1/F7，前日）；requirement_record 行契约+provenance 血统戳（F2）；xlsx 安全保存（F8）；llm_client 用途 floors 收口（F4）；config.ENV_REGISTRY 配置单源+强制核对测试（F5）；ai_extract 拆分 extract_units/extract_guards 门面保旧名（F3）；双渲染器共享契约夹具测试（F6）。系统地图见 `ARCHITECTURE.md`，待办勾选状态见 `TODO.md`。
+- **组件增强落地**：裁决样本库 `adjudication_bank.py`（env RATOMIZER_ADJUDICATION_BANK，accepted→few-shot 注入富化，chain 尾自动收割）；**澄清答复回灌闭环**（必答 sheet 答复列→导入（GUI「导入澄清答复」）→富化注入+有据基线扩展→报告消解；真实往返验证：2 答复 46s 重跑仅重富化关联条）；Annex 引用解析 + 术语定向注入（prompt v11）；中英术语对照（每文档一次缓存）；JSON 模式开关（mimo 双模型探针支持 json_object）。
+- **模型 A/B 裁决（勿重启）**：mimo-v2.5 vs pro 全量双跑——fast 覆盖率略高但漏值/重复/空话验收全劣，且并发限流下墙钟无优势（716s vs 741s，调用反翻倍）。**pro 保持默认**；数据 ab_arch/deep_test_result.json。
+- v11 回归零倒退（覆盖率 65.8、失败 0、自检占比 14.1%）；测试规模 **744 unittest + 55 vitest**。
+
 ## 重大更新（2026-07-05）——B 轨终局架构：理解→分析→按公司模板成文
 
 - **架构三轮裁定（用户）**：公司《电表软件标准化需求列表》V2.3.x 是**交付格式与知识源，不是问题库**——否决"问题库检索作答"（带着答案找问题）；终局链条：**理解**（AI 抽取按文档逻辑，地区无关）→ **分析**（analyze 轨：软/硬/协同+可研发正文）→ **成文**（`template_writer.py` 确定性零 LLM：分析结果按模板格式追加进对应模块 sheet，模板行原样保留、硬件跳过、无对应 sheet 落「其他需求(新增)」页）。桌面端设置面板可选模板路径（localStorage），运行链/测试运行自动接成文，产 `软件需求列表-成文.xlsx`。

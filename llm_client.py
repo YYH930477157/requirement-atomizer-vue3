@@ -15,6 +15,25 @@ LOGGER = logging.getLogger("requirement_atomizer")
 
 # 429 限流的独立重试预算下限（与普通 max_retries 解耦）：退避 2,4,8,16,32,32… 秒，
 # 8 次 ≈ 两分钟耐心——限流风暴通常几十秒内过去，比丢整章便宜得多
+# 按用途的 max_tokens 下限（F4 收口：此前散在 3 个模块各写一遍，第 4 个环节必再忘一次）。
+# 推理模型思维链会挤占输出预算，低于下限 → JSON 截断 → 整环节失败。
+PURPOSE_MIN_TOKENS = {
+    "extract": 6144,          # 逐条款抽取
+    "extract-chapter": 16384,  # 整章模式（实验）：几十条需求的输出
+    "analyze": 6144,          # 软件需求富化
+    "enrich": 6144,           # 装配描述富化（蓝皮书）
+}
+
+
+def apply_min_tokens(config, purpose: str):
+    """按用途抬高 config.max_tokens 到下限（不降低用户显式设置的更高值）。"""
+    from dataclasses import replace
+    floor = PURPOSE_MIN_TOKENS.get(purpose, 0)
+    if floor and config.max_tokens < floor:
+        return replace(config, max_tokens=floor)
+    return config
+
+
 RATE_LIMIT_MIN_ATTEMPTS = 8
 
 # LLM 消息级追踪：set_trace_path() 启用后，每次 HTTP 调用（含 JSON 修复回路）在
@@ -98,6 +117,13 @@ def chat_json_messages(config: LLMClientConfig, messages: list[dict[str, str]]) 
             raise LLMResponseError(f"LLM response is not a JSON object after repair: {second_error}") from second_error
 
 
+JSON_MODE_ENV = "RATOMIZER_LLM_JSON_SCHEMA"   # =1 请求 response_format=json_object（端点须支持）
+
+
+def _json_mode_enabled() -> bool:
+    return os.environ.get(JSON_MODE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> str:
     payload = {
         "model": config.model,
@@ -105,7 +131,17 @@ def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> st
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
     }
-    response = _post_json(config, payload)
+    if _json_mode_enabled():
+        # JSON 强制模式：端点支持时基本消灭"解析失败重修"（每轮 1-2 个失败单元的来源）。
+        # 端点不支持会 4xx——失败一次即去掉该字段重发（探针式降级，不影响本次调用结果）。
+        payload["response_format"] = {"type": "json_object"}
+        try:
+            response = _post_json(config, payload)
+        except LLMError:
+            payload.pop("response_format", None)
+            response = _post_json(config, payload)
+    else:
+        response = _post_json(config, payload)
     try:
         content = response["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:

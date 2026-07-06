@@ -125,10 +125,12 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
             row_idx += 1
         appended[sheet] = len(sheet_items)
 
-    wb.save(out_path)
+    from xlsx_io import safe_save_workbook
+    out_path = safe_save_workbook(wb, out_path)
     return {"appended_by_sheet": dict(sorted(appended.items(), key=lambda x: -x[1])),
             "appended_total": sum(appended.values()),
-            "skipped_hardware": skipped_hardware}
+            "skipped_hardware": skipped_hardware,
+            "workbook": out_path.name}
 
 
 def run_writer(out_dir: Path, template_path: Path) -> dict[str, Any]:
@@ -141,8 +143,10 @@ def run_writer(out_dir: Path, template_path: Path) -> dict[str, Any]:
     items = payload.get("items") or []
     out_path = out_dir / WRITTEN_WORKBOOK
     report = append_analysis_to_template(template_path, items, out_path)
+    from requirement_record import provenance as _prov
+    report["provenance"] = _prov("template_writer", "template_writer/v1")
     report.update({"items": len(items), "analysis_route": payload.get("route"),
-                   "written": [WRITTEN_WORKBOOK, WRITER_REPORT]})
+                   "written": [report.get("workbook") or WRITTEN_WORKBOOK, WRITER_REPORT]})
     (out_dir / WRITER_REPORT).write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report

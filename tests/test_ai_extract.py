@@ -250,6 +250,49 @@ class SelfCheckClauseAlignmentTests(unittest.TestCase):
         self.assertTrue(uncovered[0].startswith("f)"))           # a) 已被子项覆盖，f) 才是真未覆盖
 
 
+class AnnexRefAndTermDefsTests(unittest.TestCase):
+    """v11：Annex 引用解析（EN 系测试程序全在附录，此前是瞎的）+ 术语定向注入。"""
+
+    def test_annex_reference_resolved(self) -> None:
+        sections = [
+            {"section_id": "A", "heading": "Annex A", "block_ids": ["B1"],
+             "text": "Annex A\nA.1.4.6 Test mixture\nUse 30 % toluene and 70 % iso-octane."},
+            {"section_id": "B", "heading": "7.1", "block_ids": ["B2"],
+             "text": "Condition the meter in accordance with Annex A before testing."},
+            {"section_id": "C", "heading": "7.2", "block_ids": ["B3"],
+             "text": "Prepare the mixture, see A.1.4.6 for composition."},
+        ]
+        ai_extract.resolve_section_refs(sections)
+        self.assertEqual(sections[1]["ref_texts"][0]["clause"], "A")        # Annex A → 键 A
+        self.assertIn("toluene", sections[1]["drift_source"])
+        self.assertEqual(sections[2]["ref_texts"][0]["clause"], "A.1.4.6")  # 附录小节
+        self.assertIn("iso-octane", sections[2]["ref_texts"][0]["text"])
+
+    def test_term_definitions_attached_and_in_prompt(self) -> None:
+        sections = [
+            {"section_id": "T", "heading": "3.1.4 additional functionality device Type 1",
+             "section_path": ["3 Terms, definitions and abbreviated terms"],
+             "block_ids": ["B1"],
+             "text": "3.1.4 additional functionality device Type 1\nfactory fitted device attached to the meter"},
+            {"section_id": "R", "heading": "4.4", "section_path": ["4 General requirements"],
+             "block_ids": ["B2"],
+             "text": "The additional functionality device Type 1 shall not affect metrology."},
+            {"section_id": "S", "heading": "4.5", "section_path": ["4 General requirements"],
+             "block_ids": ["B3"], "text": "Unrelated clause about marking."},
+        ]
+        entries = ai_extract.collect_term_entries(sections)
+        self.assertEqual(len(entries), 1)
+        ai_extract.attach_term_definitions(sections, entries)
+        self.assertIn("term_defs", sections[1])                             # 用到术语的单元
+        self.assertNotIn("term_defs", sections[2])                          # 没用到不注入
+        self.assertIn("factory fitted", sections[1]["drift_source"])        # 定义并入漂移基线
+        prompt = ai_extract.build_section_prompt(sections[1])
+        self.assertIn("术语定义", prompt)
+        fp_with = ai_extract.section_fingerprint(sections[1], "m")
+        del sections[1]["term_defs"]
+        self.assertNotEqual(fp_with, ai_extract.section_fingerprint(sections[1], "m"))  # 指纹折入
+
+
 class CrossRefAndValueGuardTests(unittest.TestCase):
     """真实反馈两案：①"limits given in 7.13.4.5.1"——限值在别的单元，抽取看不见；
     ②粉尘粒径/成分清单被"规定的范围"指代吞掉（threshold_table=None，数值没落地）。"""
@@ -1211,7 +1254,7 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("数值必须落地", ai_extract.SYSTEM_PROMPT)            # v8：数值清单完整落地 + 被引条款整合
         self.assertIn("条款族=一条需求", ai_extract.SYSTEM_PROMPT)          # v9：条款族 + sub_items + Test→验收
         self.assertIn("sub_items", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v10")
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v11")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}

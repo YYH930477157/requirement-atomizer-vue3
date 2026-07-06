@@ -114,6 +114,61 @@ class TierTests(unittest.TestCase):
         self.assertLess(md.find("硬问题"), md.find("软问题"))   # 必答在前
 
 
+class AnswersRoundtripTests(unittest.TestCase):
+    """答复回灌闭环：xlsx 填答复 → import → 报告消解 + 富化可见（analyze 侧另有注入测试）。"""
+
+    def test_import_and_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            seed(tmp,
+                 reqs=[{"title": "泄漏率", "source_section": "7.13", "source_quote": "q1",
+                        "suspicion_reasons": ["原文数值未带全"]}],
+                 quality={"failed_sections": 0, "coverage_pct": 80.0})
+            first = cr.run_report(tmp)
+            self.assertEqual(first["questions"], 1)
+
+            # 模拟评审会：打开 xlsx 在「必答」sheet 填答复
+            from openpyxl import load_workbook
+            wb = load_workbook(tmp / cr.REPORT_XLSX)
+            ws = wb["必答"]
+            self.assertEqual(ws.cell(row=1, column=8).value, "答复")
+            ws.cell(row=2, column=8, value="限值为 25 cm3/h")
+            ws.cell(row=2, column=9, value="是")
+            filled = tmp / "filled.xlsx"
+            wb.save(filled)
+
+            result = cr.import_answers(tmp, filled)
+            self.assertEqual(result["imported"], 1)
+            answers = cr.load_answers(tmp)
+            self.assertEqual(len(answers), 1)
+            entry = next(iter(answers.values()))
+            self.assertEqual(entry["answer"], "限值为 25 cm3/h")
+            self.assertTrue(entry["adopted"])
+
+            second = cr.run_report(tmp)
+            self.assertEqual(second["questions"], 0)               # 已答复采纳 → 消解
+            self.assertEqual(second["resolved_by_answers"], 1)
+            self.assertEqual(second["readiness"]["verdict"], "READY")
+
+    def test_not_adopted_answer_keeps_question(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            seed(tmp,
+                 reqs=[{"title": "T", "source_section": "4", "source_quote": "q",
+                        "suspicion_reasons": ["原文数值未带全"]}],
+                 quality={"failed_sections": 0, "coverage_pct": 80.0})
+            first = cr.run_report(tmp)
+            entry = first["entries"][0]
+            with (tmp / cr.ANSWERS_FILE).open("w", encoding="utf-8") as f:
+                import json as _json
+                f.write(_json.dumps({"source_id": entry["source_id"],
+                                     "question": entry["question"],
+                                     "answer": "待定", "adopted": False},
+                                    ensure_ascii=False) + chr(10))
+            second = cr.run_report(tmp)
+            self.assertEqual(second["questions"], 1)               # 未采纳不消解
+
+
 class RunReportTests(unittest.TestCase):
     def test_end_to_end_writes_three_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as td:

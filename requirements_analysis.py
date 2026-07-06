@@ -74,6 +74,14 @@ def run_requirements_analysis(
     vocabulary = extract_template_vocabulary(template_path)
     # 公司标准做法知识：从模板现读（不进仓不落索引），富化时按模块+词面相关注入
     knowledge = extract_template_knowledge(template_path)
+    # 裁决样本库（env 指路，未配置=空库零注入）+ 澄清答复（评审会回灌，权威客户输入）
+    from adjudication_bank import load_bank, render_exemplars, resolve_bank_path, select_exemplars
+    from clarification_report import load_answers
+    bank = load_bank(resolve_bank_path())
+    answers_by_source: dict[str, list[dict[str, Any]]] = {}
+    for (sid, _q), row in load_answers(out_dir).items():
+        if row.get("adopted", True) and sid:
+            answers_by_source.setdefault(sid, []).append(row)
 
     # LLM 富化层：注入的 chat 优先（测试/嵌入）；否则请求 LLM 路由时按 pipeline 解析端点，
     # 端点缺失则降级为纯确定性（executed_route=stub），出处如实记录。
@@ -86,7 +94,7 @@ def run_requirements_analysis(
     enrich_cache = _load_enrich_cache(out_dir, model) if active_chat is not None else {}
     enriched_count = 0
     degraded_count = 0
-    enrich_jobs: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+    enrich_jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, str]]] = []
 
     items: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
@@ -109,9 +117,20 @@ def run_requirements_analysis(
 
         # 富化只做软件/协同（硬件按 GLM prompt 只需简要说明，硬件项走 ownership_reason/引用，
         # 不产 software_requirement_text——跳过省真实调用）；先收集、循环后并发执行
+        ans_rows = answers_by_source.get(source_id) or []
+        if ans_rows:
+            answers_text = "；".join(f"问：{r.get('question')} 答：{r.get('answer')}" for r in ans_rows)
+            reviewed_req = dict(reviewed_req)
+            reviewed_req["clarification_answers_text"] = answers_text   # 进有据基线（validate 读它）
+            item["notes"] = list(item.get("notes") or []) + [f"客户答复：{r.get('answer')}" for r in ans_rows]
         if active_chat is not None and item.get("ownership") != OWNERSHIP_HARDWARE:
             refs = select_template_references(knowledge, reviewed_req)
-            enrich_jobs.append((item, reviewed_req, render_template_references(refs)))
+            req_text = " ".join(str(reviewed_req.get(k) or "") for k in ("title", "description", "source_quote"))
+            exemplars = render_exemplars(select_exemplars(bank, str(reviewed_req.get("module") or ""), req_text))
+            ctx = {"template_refs": render_template_references(refs),
+                   "exemplars": exemplars,
+                   "answers": reviewed_req.get("clarification_answers_text") or ""}
+            enrich_jobs.append((item, reviewed_req, ctx))
 
         item_issues = validate_analysis_item(item)
         if item_issues:
@@ -128,8 +147,10 @@ def run_requirements_analysis(
             issues=issues, concurrency=concurrency, progress_callback=progress_callback)
         _save_enrich_cache(out_dir, model, enrich_cache)
 
+    from requirement_record import provenance
     payload = {
         "schema_version": SCHEMA_VERSION,
+        "provenance": provenance("requirements_analysis", ANALYZE_PROMPT_VERSION),
         "route": executed_route,        # 实际执行的路由（出处诚实）
         "route_requested": route,
         "enriched": enriched_count,
@@ -140,7 +161,7 @@ def run_requirements_analysis(
     if note:
         payload["note"] = note
     # xlsx 最先写（openpyxl 是最可能失败的一步）：失败时 JSON/MD 未动，不留半套新旧混杂的交付物
-    write_software_requirements_xlsx(items, out_dir / "software_requirements.xlsx")
+    xlsx_path = write_software_requirements_xlsx(items, out_dir / "software_requirements.xlsx")
     (out_dir / "engineering_analysis.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -164,8 +185,10 @@ def run_requirements_analysis(
         "route_requested": route,
         "enriched": enriched_count,
         "enrich_degraded": degraded_count,
-        "written": list(OUTPUT_FILES),
+        "written": [xlsx_path.name] + [n for n in OUTPUT_FILES if n != "software_requirements.xlsx"],
     }
+    if xlsx_path.name != "software_requirements.xlsx":
+        result["note_xlsx"] = f"目标被占用，已另存 {xlsx_path.name}"
     if note:
         result["note"] = note
     return result
@@ -196,8 +219,8 @@ def _resolve_chat(route: str, chat: ChatFn | None, pipeline_path: Path | None) -
     if not os.environ.get(config.api_key_env):
         LOGGER.warning("LLM 路由 %s 已解析但环境变量 %s 未设置，降级为确定性", route, config.api_key_env)
         return None, ""
-    if config.max_tokens < ANALYZE_MIN_MAX_TOKENS:
-        config = replace(config, max_tokens=ANALYZE_MIN_MAX_TOKENS)
+    from llm_client import apply_min_tokens
+    config = apply_min_tokens(config, "analyze")
     return (lambda system, user: chat_json(config, system, user)), config.model
 
 
@@ -264,7 +287,7 @@ def _llm_enrich_item(
     cache: dict[str, Any],
     model: str,
     lock: Any = None,
-    template_refs: str = "",
+    context: dict[str, str] | None = None,
 ) -> tuple[bool, list[str]]:
     """用 LLM 填充叙述字段（software_requirement_text 等），结构字段一律不动。
 
@@ -275,11 +298,15 @@ def _llm_enrich_item(
     from contextlib import nullcontext
     guard = lock if lock is not None else nullcontext()
 
-    key = _enrich_key(source_req, model, template_refs)
+    ctx = context or {}
+    context_basis = "".join(ctx.get(k, "") for k in ("template_refs", "exemplars", "answers"))
+    key = _enrich_key(source_req, model, context_basis)
     with guard:
         llm_item = cache.get(key)
     if llm_item is None:
-        prompt = build_analysis_prompt([source_req], vocabulary, template_refs)
+        prompt = build_analysis_prompt([source_req], vocabulary, ctx.get("template_refs", ""),
+                                       exemplars=ctx.get("exemplars", ""),
+                                       answers=ctx.get("answers", ""))
         try:
             payload = chat(prompt["system"], prompt["user"])
         except Exception as exc:  # 调用失败非致命
@@ -318,7 +345,7 @@ def _llm_enrich_item(
 
 def _run_enrichment(
     out_dir: Path,
-    jobs: list[tuple[dict[str, Any], dict[str, Any], str]],
+    jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, str]]],
     vocabulary: dict[str, Any],
     chat: ChatFn,
     cache: dict[str, Any],
@@ -352,10 +379,10 @@ def _run_enrichment(
             progress_callback({"stage": "analyze", "completed": done, "total": total,
                                "percent": int(round(done * 100 / total)), "model": model})
 
-    def work(job: tuple[dict[str, Any], dict[str, Any], str]) -> tuple[dict[str, Any], bool, list[str]]:
-        item, reviewed_req, template_refs = job
+    def work(job: tuple[dict[str, Any], dict[str, Any], dict[str, str]]) -> tuple[dict[str, Any], bool, list[str]]:
+        item, reviewed_req, ctx = job
         ok, item_issues = _llm_enrich_item(item, reviewed_req, vocabulary, chat, cache, model,
-                                           lock=lock, template_refs=template_refs)
+                                           lock=lock, context=ctx)
         return item, ok, item_issues
 
     emit(0)

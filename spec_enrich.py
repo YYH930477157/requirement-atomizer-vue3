@@ -361,8 +361,8 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
         return None, 1, 10
     payload = dict(pipeline.model_routes.get("openai_compatible") or {})
     config = llm_config_from_route(payload)
-    if config.max_tokens < ENRICH_MIN_MAX_TOKENS:  # 给推理模型留出正文预算
-        config = replace(config, max_tokens=ENRICH_MIN_MAX_TOKENS)
+    from llm_client import apply_min_tokens
+    config = apply_min_tokens(config, "enrich")
     return config, int(payload.get("concurrency", 1) or 1), int(payload.get("connection_failure_abort", 10) or 10)
 
 

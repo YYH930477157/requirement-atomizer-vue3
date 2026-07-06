@@ -454,5 +454,6 @@ def write_xlsx(doc: dict[str, Any], output_path: Path) -> Path:
         _write_domain_sheet(wb, "未分类", domain_groups["未分类"])
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(str(output_path))
+    from xlsx_io import safe_save_workbook
+    safe_save_workbook(wb, output_path)
     return output_path
