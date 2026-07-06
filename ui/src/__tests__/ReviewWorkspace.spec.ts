@@ -350,11 +350,10 @@ describe("review workspace shell", () => {
           out_dir: "E:\\out\\abnt",
           summary: { counts: { requirements: 1 } },
         }),
-        aiExtract: vi.fn().mockResolvedValue({
-          kind: "ai_extract",
+        runChain: vi.fn().mockResolvedValue({
+          kind: "chain",
           count: 2,
-          merged: { total: 5, ai_behavioral: 2, deterministic_structural: 3 },
-          written: ["merged_spec_requirements.json", "merged_spec.xlsx"],
+          results: {},
           summary: {},
         }),
       },
@@ -396,11 +395,13 @@ describe("review workspace shell", () => {
         domainPackDir: "domain_packs/dlms_cosem",
       })
     })
-    // 单次 Run 自动接上 AI 抽取阶段（LLM 关 → stub）
+    // 单次 Run 自动接上后端 chain（LLM 关 → stub）
     await vi.waitFor(() => {
-      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
+      expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
+        stages: ["ai-extract"],
         llmRoute: "stub",
+        templatePath: undefined,
       })
     })
     await vi.waitFor(() => {
@@ -437,6 +438,13 @@ describe("review workspace shell", () => {
       composeEngineering: vi.fn().mockResolvedValue({
         kind: "compose", count: 12, written: ["engineering_requirements/engineering_requirements.json"], summary: {},
       }),
+      runChain: vi.fn().mockResolvedValue({
+        kind: "chain", count: 2,
+        consistency: { duplicate_groups: 3, obis_values_differ: 1, uncovered_requirement_like: 5 },
+        analysis: { analysis_count: 30, route: "stub", enriched: 0, enrich_degraded: 0 },
+        readiness: { verdict: "READY", reasons: [] }, questions: 0,
+        results: {}, summary: {},
+      }),
       ...overrides,
     }
   }
@@ -451,12 +459,13 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
-    // 一次 Run 依次接上四个阶段（LLM 关 → stub / 空富化）
+    // 一次 Run 发一条后端 chain 命令（编排在后端；LLM 关 → stub）
     await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", llmRoute: "stub" }))
-    expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", enrichRoute: "" })
-    expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", llmRoute: "stub" })
-    expect(window.ratomizerDesktop?.composeEngineering).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt" })
+      expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt",
+        stages: ["ai-extract", "assemble", "requirements-analysis", "clarification-report", "compose"],
+        llmRoute: "stub", templatePath: undefined,
+      }))
     await vi.waitFor(() =>
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
     // 一致性闭环：AI 抽取阶段的报表摘要透出到跑完消息
@@ -474,10 +483,9 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
-    await vi.waitFor(() => expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalled())
-    expect(window.ratomizerDesktop?.assembleSpec).not.toHaveBeenCalled()
-    expect(window.ratomizerDesktop?.runRequirementsAnalysis).not.toHaveBeenCalled()
-    expect(window.ratomizerDesktop?.composeEngineering).not.toHaveBeenCalled()
+    await vi.waitFor(() =>
+      expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
+        expect.objectContaining({ stages: ["ai-extract"] })))
   })
 
   it("chain stages use openai_compatible routes when the LLM toggle is on", async () => {
@@ -501,9 +509,11 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
     await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", llmRoute: "openai_compatible" }))
-    expect(window.ratomizerDesktop?.assembleSpec).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", enrichRoute: "openai_compatible" })
-    expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({ outDir: "E:\\out\\abnt", llmRoute: "openai_compatible" })
+      expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stages: ["ai-extract", "assemble", "requirements-analysis", "clarification-report"],
+          llmRoute: "openai_compatible",
+        })))
     await vi.waitFor(() =>
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
   })
@@ -575,16 +585,13 @@ describe("review workspace shell", () => {
           baseUrl: "http://127.0.0.1:8770", token: "local-token", outputDir: "E:\\out\\abnt",
         }),
         runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt", summary: {} }),
-        aiExtract: vi.fn().mockResolvedValue({
-          kind: "ai_extract", count: 12,
+        runChain: vi.fn().mockResolvedValue({
+          kind: "chain", count: 12,
           sampled: { sections: 10, total_sections: 54 },
           quality: { coverage_pct: 78.5 },
-          written: ["ai_requirements.jsonl"], summary: {},
-        }),
-        runRequirementsAnalysis: vi.fn().mockResolvedValue({
-          kind: "requirements_analysis",
           analysis: { analysis_count: 11, enriched: 9, route: "openai_compatible" },
-          written: ["software_requirements.xlsx"], summary: {},
+          readiness: { verdict: "READY", reasons: [] }, questions: 3,
+          results: {}, summary: {},
         }),
       },
     })
@@ -594,15 +601,12 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
     await wrapper.find('[data-testid="action-test-pipeline"]').trigger("click")
 
-    // 测试运行自动追加试抽样本（按全文 1/5 比例、强制 openai_compatible）
+    // 测试运行 = 一条样本链命令（1/5 试抽 + 分析 + 澄清，强制 openai_compatible）
     await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
-        outDir: "E:\\out\\abnt", llmRoute: "openai_compatible", sampleRatio: 0.2,
-      }))
-    // 试抽后自动做样本软件需求分析（终点交付物可评估）
-    await vi.waitFor(() =>
-      expect(window.ratomizerDesktop?.runRequirementsAnalysis).toHaveBeenCalledWith({
-        outDir: "E:\\out\\abnt", llmRoute: "openai_compatible",
+      expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt",
+        stages: ["ai-extract", "requirements-analysis", "clarification-report"],
+        llmRoute: "openai_compatible", templatePath: undefined, sampleRatio: 0.2,
       }))
     await vi.waitFor(() => {
       const message = wrapper.find('[data-testid="api-message"]').text()
@@ -611,6 +615,8 @@ describe("review workspace shell", () => {
       expect(message).toContain("78.5%")
       expect(message).toContain("软件需求 11 条")
       expect(message).toContain("software_requirements.xlsx")
+      expect(message).toContain("就绪判定 READY")
+      expect(message).toContain("必答澄清 3 条")
     })
   })
 
@@ -821,7 +827,7 @@ describe("review workspace shell", () => {
           outputDir: "E:\\out\\abnt",
         }),
         runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt" }),
-        aiExtract: vi.fn().mockResolvedValue({ kind: "ai_extract", count: 1, merged: {}, written: [] }),
+        runChain: vi.fn().mockResolvedValue({ kind: "chain", count: 1, results: {}, summary: {} }),
       },
     })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -835,10 +841,12 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
     await vi.waitFor(() => {
-      expect(window.ratomizerDesktop?.aiExtract).toHaveBeenCalledWith({
-        outDir: "E:\\out\\abnt",
-        llmRoute: "openai_compatible",
-      })
+      expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outDir: "E:\\out\\abnt",
+          stages: ["ai-extract"],
+          llmRoute: "openai_compatible",
+        }))
     })
   })
 

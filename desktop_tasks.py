@@ -278,6 +278,129 @@ def ai_extract_task(out_dir: Path, *, route: str | None, limit_sections: int | N
     }
 
 
+RUN_MANIFEST = "run_manifest.json"
+
+# 阶段名 == 子命令名（manifest 键与 CLI 一致，GUI 单步按钮与 chain 写同一本账）
+CHAIN_ORDER = ["ai-extract", "assemble", "requirements-analysis", "template-write",
+               "clarification-report", "compose", "export-annotation-html"]
+
+
+def stage_producer(stage: str) -> str:
+    """阶段 → 生产者版本戳（产物血统：今天拿 v9 数据当新结果看的事故，靠它绝迹）。"""
+    try:
+        if stage == "ai-extract":
+            from ai_extract import AI_EXTRACT_PROMPT_VERSION
+            return AI_EXTRACT_PROMPT_VERSION
+        if stage == "requirements-analysis":
+            from requirements_analysis import ANALYZE_PROMPT_VERSION
+            return ANALYZE_PROMPT_VERSION
+    except Exception:  # pragma: no cover - 版本戳失败不阻断任务
+        pass
+    return {"assemble": "assemble_spec/v1", "template-write": "template_writer/v1",
+            "clarification-report": "clarification/v2-tiered", "compose": "engineering_composer/v1",
+            "export-annotation-html": "doc_annotation_export/v1", "run": "pipeline/v1",
+            "llm-review": "review/v1"}.get(stage, stage)
+
+
+def update_run_manifest(out_dir: Path, stage: str, status: str, *,
+                        error: str | None = None) -> None:
+    """run_manifest.json：out_dir 的显式状态账本（阶段/状态/版本/时间）。写失败不阻断任务。"""
+    import datetime as _dt
+    path = Path(out_dir).expanduser().resolve() / RUN_MANIFEST
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    stages = data.get("stages")
+    if not isinstance(stages, dict):
+        stages = {}
+    now = _dt.datetime.now().isoformat(timespec="seconds")
+    entry = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+    if status == "running":
+        entry = {"status": "running", "started": now, "producer": stage_producer(stage)}
+    else:
+        entry.update({"status": status, "finished": now, "producer": stage_producer(stage)})
+        if error:
+            entry["error"] = str(error)[:300]
+        else:
+            entry.pop("error", None)
+    stages[stage] = entry
+    data.update({"manifest_version": 1, "stages": stages, "updated": now})
+    try:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError:  # pragma: no cover - manifest 写失败不阻断任务本体
+        LOGGER.warning("run_manifest 写入失败（忽略）：%s", path)
+
+
+def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
+               template_path: Path | None = None,
+               sample_ratio: float | None = None,
+               limit_sections: int | None = None) -> dict[str, Any]:
+    """交付物链的后端单命令编排（F1：编排从 App.vue 搬回后端——headless/批量/CI 的地基）。
+
+    阶段按 CHAIN_ORDER 归一排序去重；template-write 无模板路径时前置报错（不跑一半才死）；
+    逐阶段发进度事件并记 run_manifest；任一阶段失败 → 记账后整链响亮失败。
+    """
+    out_dir = out_dir.expanduser().resolve()
+    unknown = [s for s in stages if s not in CHAIN_ORDER]
+    if unknown:
+        raise ValueError(f"未知阶段：{', '.join(unknown)}（可用：{', '.join(CHAIN_ORDER)}）")
+    ordered = [s for s in CHAIN_ORDER if s in set(stages)]
+    if not ordered:
+        raise ValueError("阶段清单为空")
+    if "template-write" in ordered and template_path is None:
+        raise ValueError("template-write 阶段需要 --template（公司需求列表模板路径）")
+
+    runners: dict[str, Any] = {
+        "ai-extract": lambda: ai_extract_task(out_dir, route=route,
+                                              limit_sections=limit_sections,
+                                              sample_ratio=sample_ratio),
+        "assemble": lambda: assemble_task(out_dir, enrich_route=route if route != "stub" else None),
+        "requirements-analysis": lambda: requirements_analysis_task(
+            out_dir, route=route, template_path=template_path),
+        "template-write": lambda: template_write_task(out_dir, template_path),
+        "clarification-report": lambda: clarification_report_task(out_dir),
+        "compose": lambda: compose_task(out_dir),
+        "export-annotation-html": lambda: export_annotation_html_task(out_dir),
+    }
+
+    results: dict[str, Any] = {}
+    payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
+    for index, stage in enumerate(ordered, start=1):
+        emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
+                       "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
+        update_run_manifest(out_dir, stage, "running")
+        try:
+            stage_payload = runners[stage]()
+        except Exception as exc:
+            update_run_manifest(out_dir, stage, "failed", error=str(exc))
+            raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc
+        update_run_manifest(out_dir, stage, "ok")
+        stage_payload = dict(stage_payload or {})
+        stage_payload.pop("summary", None)   # 各阶段的 summary 体积大且重复，链尾统一给一份
+        results[stage] = stage_payload
+        # 顶层聚合：GUI 消息只看这几个键，不必翻 results
+        if stage == "ai-extract":
+            for key in ("consistency", "sampled", "quality", "count"):
+                if stage_payload.get(key) is not None:
+                    payload[key] = stage_payload[key]
+        elif stage == "requirements-analysis":
+            payload["analysis"] = stage_payload.get("analysis")
+        elif stage == "template-write":
+            payload["template"] = stage_payload.get("report")
+        elif stage == "clarification-report":
+            payload["readiness"] = stage_payload.get("readiness")
+            payload["questions"] = stage_payload.get("questions")
+        emit_progress({"stage": "chain", "step": stage, "completed": index,
+                       "total": len(ordered), "percent": int(index * 100 / len(ordered))})
+
+    payload["results"] = results
+    payload["summary"] = build_output_summary(out_dir)
+    return payload
+
+
 def export_annotation_html_task(out_dir: Path) -> dict[str, Any]:
     """生成自包含文档批注 HTML（独立、可分享、内含 localStorage 裁决 + 导出 JSON）。"""
     import doc_annotation_export
@@ -392,6 +515,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     compose_parser = subparsers.add_parser("compose")
     compose_parser.add_argument("--out", type=Path, required=True)
 
+    chain_parser = subparsers.add_parser("chain")
+    chain_parser.add_argument("--out", type=Path, required=True)
+    chain_parser.add_argument("--stages", required=True, help="逗号分隔的阶段清单（按依赖自动排序）")
+    chain_parser.add_argument("--llm-route", default="stub", choices=["stub", "openai_compatible"])
+    chain_parser.add_argument("--template", type=Path, default=None)
+    chain_parser.add_argument("--sample-ratio", type=float, default=None)
+    chain_parser.add_argument("--limit-sections", type=int, default=None)
+
     clarification_parser = subparsers.add_parser("clarification-report")
     clarification_parser.add_argument("--out", type=Path, required=True)
 
@@ -494,6 +625,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "compose":
             payload = compose_task(args.out)
+        elif args.command == "chain":
+            payload = chain_task(args.out, stages=[x.strip() for x in args.stages.split(",") if x.strip()],
+                                 route=args.llm_route, template_path=args.template,
+                                 sample_ratio=args.sample_ratio or None,
+                                 limit_sections=args.limit_sections or None)
         elif args.command == "clarification-report":
             payload = clarification_report_task(args.out)
         elif args.command == "template-write":
@@ -512,10 +648,15 @@ def main(argv: list[str] | None = None) -> int:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:
         logging.getLogger("requirement_atomizer").exception("desktop task 失败：%s", args.command)
+        # 单步命令也记账（chain 内部已逐阶段记，不重复）
+        if args.command in CHAIN_ORDER and getattr(args, "out", None):
+            update_run_manifest(args.out, args.command, "failed", error=str(exc))
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
     finally:
         teardown_run_logging()
+    if args.command in CHAIN_ORDER and getattr(args, "out", None):
+        update_run_manifest(args.out, args.command, "ok")
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 

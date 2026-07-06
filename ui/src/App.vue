@@ -972,98 +972,72 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     if (!options.llmReviewLimit && bridge) {
       const useLlm = llmMode.value
       const llmRoute = useLlm ? "openai_compatible" : "stub"
-      const chain: Array<{ on: boolean; label: string; progress: number; run: () => Promise<RequirementAtomizerTaskPayload> }> = [
-        { on: runStages.value.aiExtract, label: "AI 抽取（双引擎）", progress: 86,
-          run: () => bridge.aiExtract({ outDir: finalOutDir, llmRoute }) },
-        { on: runStages.value.assemble, label: "装配实现规格", progress: 91,
-          run: () => bridge.assembleSpec({ outDir: finalOutDir, enrichRoute: useLlm ? "openai_compatible" : "" }) },
-        { on: runStages.value.analyze, label: "软件需求分析", progress: 95,
-          run: () => bridge.runRequirementsAnalysis({ outDir: finalOutDir, llmRoute,
-            templatePath: templatePath.value || undefined }) },
-        { on: runStages.value.analyze && Boolean(templatePath.value) && Boolean(bridge.writeTemplate),
-          label: "成文需求列表", progress: 97,
-          run: () => bridge.writeTemplate({ outDir: finalOutDir, templatePath: templatePath.value }) },
-        { on: runStages.value.analyze && Boolean(bridge.clarificationReport),
-          label: "澄清问题清单", progress: 98,
-          run: () => bridge.clarificationReport({ outDir: finalOutDir }) },
-        { on: runStages.value.compose, label: "组装工程需求", progress: 98,
-          run: () => bridge.composeEngineering({ outDir: finalOutDir }) },
-      ]
-      for (const stage of chain) {
-        if (!stage.on) continue
-        runStage.value = stage.label
-        runProgress.value = stage.progress
-        runProgressDetail.value = `正在执行：${stage.label}…`
-        await nextUiTick()
-        let stagePayload: RequirementAtomizerTaskPayload
-        try {
-          stagePayload = await stage.run()
-        } catch (stageError) {
-          throw new Error(`${stage.label}阶段失败：${stageError instanceof Error ? stageError.message : stageError}`)
-        }
-        const stageConsistency = objectValue(stagePayload?.consistency)
-        if (stageConsistency) consistency = stageConsistency as ConsistencySummary
-        const stageReadiness = objectValue(stagePayload?.readiness) as { verdict?: string; reasons?: string[] } | null
-        if (stageReadiness?.verdict) {
-          readinessNote = `；就绪判定：${stageReadiness.verdict}` +
-            ((stageReadiness.reasons || []).length ? `（${(stageReadiness.reasons || []).join("、")}）` : "") +
-            `，必答澄清 ${Number(stagePayload?.questions ?? 0)} 条 → clarification_questions.xlsx`
-        }
-        ranStages.push(stage.label)
+      // 编排在后端（desktop_tasks chain）：UI 只发一条命令 + 渲染进度。阶段名与后端子命令一致。
+      const stages: string[] = []
+      if (runStages.value.aiExtract) stages.push("ai-extract")
+      if (runStages.value.assemble) stages.push("assemble")
+      if (runStages.value.analyze) {
+        stages.push("requirements-analysis")
+        if (templatePath.value) stages.push("template-write")
+        stages.push("clarification-report")
       }
-      if (ranStages.length) await refreshAfterDesktopTask(finalOutDir)
+      if (runStages.value.compose) stages.push("compose")
+      if (stages.length && bridge.runChain) {
+        runStage.value = "交付物链"
+        runProgress.value = 86
+        runProgressDetail.value = `正在执行：${stages.join(" → ")}…`
+        await nextUiTick()
+        let chainPayload: RequirementAtomizerTaskPayload
+        try {
+          chainPayload = await bridge.runChain({
+            outDir: finalOutDir, stages, llmRoute,
+            templatePath: templatePath.value || undefined,
+          })
+        } catch (chainError) {
+          throw new Error(`交付物链失败：${chainError instanceof Error ? chainError.message : chainError}`)
+        }
+        const chainConsistency = objectValue(chainPayload?.consistency)
+        if (chainConsistency) consistency = chainConsistency as ConsistencySummary
+        const chainReadiness = objectValue(chainPayload?.readiness) as { verdict?: string; reasons?: string[] } | null
+        if (chainReadiness?.verdict) {
+          readinessNote = `；就绪判定：${chainReadiness.verdict}` +
+            ((chainReadiness.reasons || []).length ? `（${(chainReadiness.reasons || []).join("、")}）` : "") +
+            `，必答澄清 ${Number(chainPayload?.questions ?? 0)} 条 → clarification_questions.xlsx`
+        }
+        ranStages.push(...stages.map((s) => CHAIN_STEP_LABELS[s] || s))
+        await refreshAfterDesktopTask(finalOutDir)
+      }
     }
 
-    // 测试运行追加：AI 抽取试抽样本（均匀 10 章，分钟级看 pro/模型质量，不等全量）
+    // 测试运行追加：样本交付物链（1/5 试抽 → 分析 → 成文 → 澄清），同一条后端 chain 命令
     let sampleNote = ""
-    if (options.llmReviewLimit && bridge?.aiExtract) {
-      runStage.value = "AI 抽取试抽样本"
+    if (options.llmReviewLimit && bridge?.runChain) {
+      runStage.value = "样本交付物链"
       runProgress.value = 90
-      runProgressDetail.value = `均匀抽样全文 ${Math.round(TEST_AI_EXTRACT_SAMPLE_RATIO * 100)}% 章节试抽…`
+      runProgressDetail.value = `均匀抽样全文 ${Math.round(TEST_AI_EXTRACT_SAMPLE_RATIO * 100)}% 章节试抽 + 分析…`
       await nextUiTick()
       try {
-        const sample = await bridge.aiExtract({
-          outDir: finalOutDir, llmRoute: "openai_compatible",
+        const stages = ["ai-extract", "requirements-analysis",
+                        ...(templatePath.value ? ["template-write"] : []), "clarification-report"]
+        const sample = await bridge.runChain({
+          outDir: finalOutDir, stages, llmRoute: "openai_compatible",
+          templatePath: templatePath.value || undefined,
           sampleRatio: TEST_AI_EXTRACT_SAMPLE_RATIO,
         })
         const info = objectValue(sample.sampled) as { sections?: number; total_sections?: number } | null
-        const quality = objectValue(sample.quality) as { coverage_pct?: number; self_check_added?: number } | null
+        const quality = objectValue(sample.quality) as { coverage_pct?: number } | null
         sampleNote = `；试抽样本 ${info?.sections ?? "?"}/${info?.total_sections ?? "?"} 章：` +
           `${Number(sample.count ?? 0)} 条` +
           (quality?.coverage_pct != null ? `、样本覆盖率 ${quality.coverage_pct}%` : "")
-        // 样本软件需求分析：试抽完顺手出样本 software_requirements.xlsx——质量评估看得到终点交付物
-        if (bridge.runRequirementsAnalysis) {
-          runStage.value = "样本软件需求分析"
-          runProgress.value = 96
-          runProgressDetail.value = "对试抽样本做软/硬/协同分类 + LLM 富化…"
-          await nextUiTick()
-          try {
-            const analysis = await bridge.runRequirementsAnalysis({
-              outDir: finalOutDir, llmRoute: "openai_compatible",
-              templatePath: templatePath.value || undefined,
-            })
-            const a = objectValue(analysis.analysis) as { analysis_count?: number; enriched?: number } | null
-            sampleNote += `；软件需求 ${Number(a?.analysis_count ?? 0)} 条（富化 ${Number(a?.enriched ?? 0)}）→ software_requirements.xlsx`
-            // 设置了模板 → 样本也成文：终点交付物（公司模板格式）在测试运行就看得到
-            if (templatePath.value && bridge.writeTemplate) {
-              runStage.value = "样本成文需求列表"
-              runProgressDetail.value = "分析结果按公司模板格式写入对应模块 sheet…"
-              await nextUiTick()
-              try {
-                const written = await bridge.writeTemplate({ outDir: finalOutDir, templatePath: templatePath.value })
-                const w = objectValue(written.report) as { appended_total?: number } | null
-                sampleNote += `；成文 ${Number(w?.appended_total ?? 0)} 行 → 软件需求列表-成文.xlsx`
-              } catch (writeError) {
-                sampleNote += `；成文失败：${writeError instanceof Error ? writeError.message : writeError}`
-              }
-            }
-          } catch (analysisError) {
-            sampleNote += `；样本分析失败：${analysisError instanceof Error ? analysisError.message : analysisError}`
-          }
-        }
+        const a = objectValue(sample.analysis) as { analysis_count?: number; enriched?: number } | null
+        if (a) sampleNote += `；软件需求 ${Number(a.analysis_count ?? 0)} 条（富化 ${Number(a.enriched ?? 0)}）→ software_requirements.xlsx`
+        const w = objectValue(sample.template) as { appended_total?: number } | null
+        if (w) sampleNote += `；成文 ${Number(w.appended_total ?? 0)} 行 → 软件需求列表-成文.xlsx`
+        const r = objectValue(sample.readiness) as { verdict?: string } | null
+        if (r?.verdict) sampleNote += `；就绪判定 ${r.verdict}，必答澄清 ${Number(sample.questions ?? 0)} 条`
         await refreshAfterDesktopTask(finalOutDir)
       } catch (sampleError) {
-        sampleNote = `；试抽失败：${sampleError instanceof Error ? sampleError.message : sampleError}`
+        sampleNote = `；样本链失败：${sampleError instanceof Error ? sampleError.message : sampleError}`
       }
     }
 
@@ -1094,10 +1068,22 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
   }
 }
 
-function handleTaskProgress(event: { stage: string; completed?: number; total?: number; percent?: number; model?: string }) {
+const CHAIN_STEP_LABELS: Record<string, string> = {
+  "ai-extract": "AI 抽取（双引擎）", assemble: "装配实现规格", "requirements-analysis": "软件需求分析",
+  "template-write": "成文需求列表", "clarification-report": "澄清问题清单", compose: "组装工程需求",
+  "export-annotation-html": "导出批注视图",
+}
+
+function handleTaskProgress(event: { stage: string; step?: string; completed?: number; total?: number; percent?: number; model?: string }) {
   const completed = Math.max(0, Number(event.completed || 0))
   const total = Math.max(0, Number(event.total || 0))
   const percent = Number.isFinite(Number(event.percent)) ? Math.max(0, Math.min(100, Number(event.percent))) : 0
+  if (event.stage === "chain") {
+    const label = CHAIN_STEP_LABELS[String(event.step || "")] || String(event.step || "交付物链")
+    runStage.value = total ? `交付物链 ${Math.min(completed + 1, total)}/${total}：${label}` : label
+    runProgressDetail.value = `正在执行：${label}…`
+    return   // 总进度条由链内细粒度事件（ai_extract/analyze）驱动，这里不回跳
+  }
   if (event.stage === "ai_extract") {
     runStage.value = total ? `AI 抽取 ${completed}/${total} 章节` : "AI 抽取"
     runProgress.value = percent

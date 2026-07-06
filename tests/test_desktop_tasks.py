@@ -6,7 +6,10 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 from unittest.mock import ANY, patch
+
+import desktop_tasks
 
 from llm_pipeline import write_jsonl
 
@@ -604,6 +607,70 @@ class DesktopTaskTests(unittest.TestCase):
             self.assertIn("rebuilt", payload)                          # 交付物已重建
             merged = json.loads((out / "merged_spec_requirements.json").read_text(encoding="utf-8"))
             self.assertEqual(merged["requirements"], [])               # rejected 已从交付物剔除
+
+
+
+class ChainAndManifestTests(unittest.TestCase):
+    """F1+F7：后端链编排 + run_manifest 显式状态账本。"""
+
+    def test_chain_orders_dedupes_and_aggregates(self) -> None:
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            with (mock.patch.object(desktop_tasks, "clarification_report_task",
+                                    side_effect=lambda o: (calls.append("clarification-report") or
+                                                           {"kind": "clarification_report", "questions": 7,
+                                                            "readiness": {"verdict": "READY", "reasons": []},
+                                                            "summary": {"big": 1}})),
+                  mock.patch.object(desktop_tasks, "ai_extract_task",
+                                    side_effect=lambda o, **kw: (calls.append("ai-extract") or
+                                                                 {"kind": "ai_extract", "count": 3,
+                                                                  "consistency": {"duplicate_groups": 1},
+                                                                  "summary": {"big": 1}}))):
+                payload = desktop_tasks.chain_task(
+                    out, stages=["clarification-report", "ai-extract", "ai-extract"], route="stub")
+
+            self.assertEqual(calls, ["ai-extract", "clarification-report"])   # 依赖序 + 去重
+            self.assertEqual(payload["stages"], ["ai-extract", "clarification-report"])
+            self.assertEqual(payload["questions"], 7)                          # 顶层聚合
+            self.assertEqual(payload["consistency"], {"duplicate_groups": 1})
+            self.assertNotIn("summary", payload["results"]["ai-extract"])      # 阶段 summary 被剥离
+            manifest = json.loads((out / desktop_tasks.RUN_MANIFEST).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["stages"]["ai-extract"]["status"], "ok")
+            self.assertEqual(manifest["stages"]["ai-extract"]["producer"],
+                             desktop_tasks.stage_producer("ai-extract"))
+
+    def test_chain_unknown_stage_and_missing_template_fail_fast(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            with self.assertRaises(ValueError):
+                desktop_tasks.chain_task(out, stages=["nope"], route="stub")
+            with self.assertRaises(ValueError):
+                desktop_tasks.chain_task(out, stages=["template-write"], route="stub")
+
+    def test_chain_stage_failure_recorded_and_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            with mock.patch.object(desktop_tasks, "ai_extract_task",
+                                   side_effect=RuntimeError("boom")):
+                with self.assertRaises(RuntimeError):
+                    desktop_tasks.chain_task(out, stages=["ai-extract"], route="stub")
+            manifest = json.loads((out / desktop_tasks.RUN_MANIFEST).read_text(encoding="utf-8"))
+            entry = manifest["stages"]["ai-extract"]
+            self.assertEqual(entry["status"], "failed")
+            self.assertIn("boom", entry["error"])
+
+    def test_update_run_manifest_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            desktop_tasks.update_run_manifest(out, "assemble", "running")
+            desktop_tasks.update_run_manifest(out, "assemble", "ok")
+            data = json.loads((out / desktop_tasks.RUN_MANIFEST).read_text(encoding="utf-8"))
+            entry = data["stages"]["assemble"]
+            self.assertEqual(entry["status"], "ok")
+            self.assertIn("started", entry)
+            self.assertIn("finished", entry)
+            self.assertEqual(data["manifest_version"], 1)
 
 
 if __name__ == "__main__":
