@@ -32,15 +32,21 @@ CAT_MISSING = "缺失"
 CAT_CONFLICT = "矛盾"
 CAT_ASSUMPTION = "假设待确认"
 
+# 信号分级（真实教训：v10 数据上模型自报 303 条假设 + 277 条 open_questions，清单膨胀到
+# 612 条评审会没法用）。硬信号=确定性机器检出（矛盾/漏值/验收不可测/引用不逐字）——必答；
+# 软信号=模型自报（assumptions/open_questions）——价值在"可见"，留档备查不算就绪门。
+TIER_HARD = "必答"
+TIER_SOFT = "参考"
+
 # 就绪门默认阈值（NEEDS WORK 触发条件；试点后按真实分布调）
 READY_MAX_QUESTIONS = 30
 READY_MIN_COVERAGE = 60.0
 
 
 def _entry(category: str, question: str, *, section: str = "", quote: str = "",
-           source_id: str = "", signal: str = "") -> dict[str, Any]:
+           source_id: str = "", signal: str = "", tier: str = TIER_HARD) -> dict[str, Any]:
     return {"category": category, "question": question, "section": section,
-            "quote": quote[:200], "source_id": source_id, "signal": signal}
+            "quote": quote[:200], "source_id": source_id, "signal": signal, "tier": tier}
 
 
 def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
@@ -86,11 +92,13 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
             quote = str(item.get("source_quote") or "")
             for q in (item.get("open_questions") or []):
                 entries.append(_entry(CAT_MISSING, str(q), section=sec, quote=quote,
-                                      source_id=str(rid), signal="analyze:open_question"))
+                                      source_id=str(rid), signal="analyze:open_question",
+                                      tier=TIER_SOFT))
             for a in (item.get("assumptions") or []):
                 entries.append(_entry(
                     CAT_ASSUMPTION, f"推导时假设：{a}——请确认该前提是否成立",
-                    section=sec, quote=quote, source_id=str(rid), signal="analyze:assumption"))
+                    section=sec, quote=quote, source_id=str(rid), signal="analyze:assumption",
+                    tier=TIER_SOFT))
 
     # ③ 一致性层（consistency_report.json）：跨章数值矛盾 + 重复表述
     con_path = out_dir / "consistency_report.json"
@@ -117,7 +125,8 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
 
 
 def readiness_verdict(out_dir: Path, questions: int) -> dict[str, Any]:
-    """就绪判定（确定性规则）：失败单元>0 / 覆盖率过低 / 待澄清过多 → NEEDS WORK。"""
+    """就绪判定（确定性规则）：失败单元>0 / 覆盖率过低 / **必答**澄清过多 → NEEDS WORK。
+    questions 传入的是硬信号（必答）条数——软信号（模型自报）不进门限。"""
     reasons: list[str] = []
     quality: dict[str, Any] = {}
     qp = out_dir / "ai_extract_quality.json"
@@ -133,32 +142,43 @@ def readiness_verdict(out_dir: Path, questions: int) -> dict[str, Any]:
     if isinstance(coverage, (int, float)) and coverage < READY_MIN_COVERAGE:
         reasons.append(f"覆盖率 {coverage}% < {READY_MIN_COVERAGE:g}%")
     if questions > READY_MAX_QUESTIONS:
-        reasons.append(f"待澄清 {questions} 条 > {READY_MAX_QUESTIONS}")
+        reasons.append(f"必答澄清 {questions} 条 > {READY_MAX_QUESTIONS}")
     return {"verdict": "NEEDS WORK" if reasons else "READY",
             "reasons": reasons, "questions": questions,
             "coverage_pct": coverage, "failed_sections": failed}
 
 
 def render_markdown(entries: list[dict[str, Any]], readiness: dict[str, Any]) -> str:
+    hard = [e for e in entries if e.get("tier") != TIER_SOFT]
+    soft = [e for e in entries if e.get("tier") == TIER_SOFT]
     lines = ["# 需求澄清问题清单", "",
              f"**就绪判定：{readiness['verdict']}**"
-             + (f"（{'；'.join(readiness['reasons'])}）" if readiness["reasons"] else ""), ""]
-    order = [CAT_CONFLICT, CAT_MISSING, CAT_AMBIGUOUS, CAT_ASSUMPTION]
-    for cat in order:
-        group = [e for e in entries if e["category"] == cat]
-        if not group:
-            continue
-        lines.append(f"## {cat}（{len(group)}）")
-        for i, e in enumerate(group, 1):
-            lines.append(f"{i}. {e['question']}")
-            meta = [x for x in (f"§{e['section']}" if e["section"] else "",
-                                f"来源 {e['source_id'][:12]}" if e["source_id"] else "",
-                                e["signal"]) if x]
-            if e["quote"]:
-                lines.append(f"   > {e['quote']}")
-            if meta:
-                lines.append(f"   *{' · '.join(meta)}*")
-        lines.append("")
+             + (f"（{'；'.join(readiness['reasons'])}）" if readiness["reasons"] else ""),
+             f"必答 {len(hard)} 条 · 参考 {len(soft)} 条（模型自报的假设/开放问题，留档备查）", ""]
+
+    def emit(group_entries: list[dict[str, Any]], heading: str) -> None:
+        lines.append(f"# {heading}")
+        order = [CAT_CONFLICT, CAT_MISSING, CAT_AMBIGUOUS, CAT_ASSUMPTION]
+        for cat in order:
+            group = [e for e in group_entries if e["category"] == cat]
+            if not group:
+                continue
+            lines.append(f"## {cat}（{len(group)}）")
+            for i, e in enumerate(group, 1):
+                lines.append(f"{i}. {e['question']}")
+                meta = [x for x in (f"§{e['section']}" if e["section"] else "",
+                                    f"来源 {e['source_id'][:12]}" if e["source_id"] else "",
+                                    e["signal"]) if x]
+                if e["quote"]:
+                    lines.append(f"   > {e['quote']}")
+                if meta:
+                    lines.append(f"   *{' · '.join(meta)}*")
+            lines.append("")
+
+    if hard:
+        emit(hard, f"必答（{len(hard)}）——评审会须逐条确认")
+    if soft:
+        emit(soft, f"参考（{len(soft)}）——模型自报，抽查即可")
     if not entries:
         lines.append("（无待澄清问题）")
     return "\n".join(lines) + "\n"
@@ -168,11 +188,19 @@ def write_xlsx(entries: list[dict[str, Any]], readiness: dict[str, Any], path: P
     from openpyxl import Workbook
     wb = Workbook()
     ws = wb.active
-    ws.title = "澄清问题"
-    ws.append(["序号", "分类", "问题", "出处章节", "原文引用", "来源需求", "信号"])
-    for i, e in enumerate(entries, 1):
+    ws.title = "必答"
+    header = ["序号", "分类", "问题", "出处章节", "原文引用", "来源需求", "信号"]
+    ws.append(header)
+    hard = [e for e in entries if e.get("tier") != TIER_SOFT]
+    soft = [e for e in entries if e.get("tier") == TIER_SOFT]
+    for i, e in enumerate(hard, 1):
         ws.append([i, e["category"], formula_safe(e["question"]), e["section"],
                    formula_safe(e["quote"]), e["source_id"], e["signal"]])
+    ws_soft = wb.create_sheet("参考(模型自报)")
+    ws_soft.append(header)
+    for i, e in enumerate(soft, 1):
+        ws_soft.append([i, e["category"], formula_safe(e["question"]), e["section"],
+                        formula_safe(e["quote"]), e["source_id"], e["signal"]])
     ws2 = wb.create_sheet("就绪判定")
     ws2.append(["判定", readiness["verdict"]])
     for r in readiness["reasons"]:
@@ -190,13 +218,17 @@ def run_report(out_dir: Path) -> dict[str, Any]:
         raise FileNotFoundError(
             f"ai_requirements.jsonl not found in {out_dir} — 先跑「AI 抽取」再生成澄清清单")
     entries = collect_questions(out_dir)
-    readiness = readiness_verdict(out_dir, len(entries))
+    hard_count = sum(1 for e in entries if e.get("tier") != TIER_SOFT)
+    readiness = readiness_verdict(out_dir, hard_count)
     (out_dir / REPORT_MD).write_text(render_markdown(entries, readiness), encoding="utf-8")
     write_xlsx(entries, readiness, out_dir / REPORT_XLSX)
     by_cat: dict[str, int] = {}
     for e in entries:
         by_cat[e["category"]] = by_cat.get(e["category"], 0) + 1
-    report = {"questions": len(entries), "by_category": by_cat,
+    report = {"questions": hard_count,        # 必答数（就绪门口径；GUI 消息同源）
+              "questions_total": len(entries),
+              "soft_questions": len(entries) - hard_count,
+              "by_category": by_cat,
               "readiness": readiness, "entries": entries,
               "written": [REPORT_MD, REPORT_XLSX, REPORT_JSON]}
     (out_dir / REPORT_JSON).write_text(
