@@ -34,6 +34,9 @@ declare global {
     report?: unknown
     questions?: number
     readiness?: unknown
+    results?: unknown
+    analysis?: unknown
+    template?: unknown
   }
 
   interface Window {
@@ -113,6 +116,7 @@ declare global {
       runRequirementsAnalysis: (input: { outDir: string; llmRoute?: string; templatePath?: string }) => Promise<RequirementAtomizerTaskPayload>
       writeTemplate: (input: { outDir: string; templatePath: string }) => Promise<RequirementAtomizerTaskPayload>
       clarificationReport: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
+      runChain: (input: { outDir: string; stages: string[]; llmRoute?: string; templatePath?: string; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
       selectTemplate: () => Promise<string>
       openLogsDir: () => Promise<{ dir: string }>
     }
