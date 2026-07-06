@@ -1007,7 +1007,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         if (stageReadiness?.verdict) {
           readinessNote = `；就绪判定：${stageReadiness.verdict}` +
             ((stageReadiness.reasons || []).length ? `（${(stageReadiness.reasons || []).join("、")}）` : "") +
-            `，待澄清 ${Number(stagePayload?.questions ?? 0)} 条 → clarification_questions.xlsx`
+            `，必答澄清 ${Number(stagePayload?.questions ?? 0)} 条 → clarification_questions.xlsx`
         }
         ranStages.push(stage.label)
       }
