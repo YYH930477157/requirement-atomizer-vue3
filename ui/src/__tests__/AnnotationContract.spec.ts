@@ -33,6 +33,19 @@ describe("annotation renderer contract (Vue side)", () => {
     }
   })
 
+  it("table block renders a real table per contract", async () => {
+    const wrapper = mount(DocumentReview, { props: { client: makeClient(), active: true } })
+    await flushPromises()
+    const table = wrapper.find('[data-testid="doc-table"]')
+    expect(table.exists()).toBe(true)
+    expect(table.find("figcaption").text()).toContain(fixture.expect.table_caption)
+    expect(table.find(".table-badge").text()).toBe(fixture.expect.table_badge)
+    const headers = table.findAll("th").map((c) => c.text())
+    expect(headers).toEqual(fixture.expect.table_header_cells)
+    const firstRow = table.findAll("tbody tr")[0].findAll("td").map((c) => c.text())
+    expect(firstRow).toEqual(fixture.expect.table_first_row)
+  })
+
   it("selecting AIR-1 lights the analyzed span and marks anchor evidence", async () => {
     const wrapper = mount(DocumentReview, { props: { client: makeClient(), active: true } })
     await flushPromises()

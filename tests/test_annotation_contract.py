@@ -44,6 +44,20 @@ class HtmlSideContractTests(unittest.TestCase):
             html)
         self.assertEqual(sub_labels, expect["sub_chip_labels"])
 
+    def test_table_block_renders_real_table(self) -> None:
+        """表格块按契约渲染真 <table>：题注/表头/数据格/无画线重建徽章（2026-07-07）。"""
+        html = self._render()
+        expect = self.fixture["expect"]
+        self.assertIn('<figure class="doc-table">', html)
+        self.assertIn(expect["table_caption"], html)
+        self.assertIn(expect["table_badge"], html)
+        for cell in expect["table_header_cells"]:
+            self.assertIn(f"<th>{cell}</th>", html)
+        for cell in expect["table_first_row"]:
+            self.assertIn(f"<td>{cell}</td>", html)
+        # 表格块不得再输出扁平 text 段落
+        self.assertNotIn("Symbol | Type | bytes", html)
+
     def test_select_behavior_matches_contract_via_jsdom_markers(self) -> None:
         """静态可断言的部分：markSpan 的选择器素材必须在（span 的 doc-block[data-block-id]
         与 sub chip 的 data-req）——运行时行为由既有 jsdom 冒烟覆盖。"""
