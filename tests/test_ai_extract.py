@@ -282,6 +282,11 @@ class AnnexRefAndTermDefsTests(unittest.TestCase):
         ]
         entries = ai_extract.collect_term_entries(sections)
         self.assertEqual(len(entries), 1)
+        # 术语章自身的结构标题不是术语（真实产物：曾把 "Terms and definitions" 收进对照表）
+        junk = {"section_id": "TJ", "heading": "3.1 Terms and definitions",
+                "section_path": ["3 Terms, definitions and abbreviated terms"],
+                "block_ids": ["B9"], "text": "3.1 Terms and definitions"}
+        self.assertEqual(ai_extract.collect_term_entries([junk]), [])
         ai_extract.attach_term_definitions(sections, entries)
         self.assertIn("term_defs", sections[1])                             # 用到术语的单元
         self.assertNotIn("term_defs", sections[2])                          # 没用到不注入

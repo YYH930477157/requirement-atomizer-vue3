@@ -279,6 +279,9 @@ def collect_term_entries(sections: list[dict[str, Any]]) -> list[tuple[str, str]
         term = m.group(1).strip()
         if len(term) < 8 and " " not in term:
             continue   # 单个短词（如 "AFD"）在正文中到处出现，注入价值低且刷屏
+        if _TERMS_HEADING_RE.search(term):
+            continue   # 术语章自身的结构标题（"Terms and definitions"/"Abbreviated terms"）
+                       # 不是术语——真实产物里混进对照表浪费槽位（v11 实检）
         entries.append((term, s.get("text", "")[:TERM_DEF_CHARS]))
     return entries
 

@@ -38,6 +38,10 @@ CAT_ASSUMPTION = "假设待确认"
 # 软信号=模型自报（assumptions/open_questions）——价值在"可见"，留档备查不算就绪门。
 TIER_HARD = "必答"
 TIER_SOFT = "参考"
+# 必答再分受众（真实产物观察：56 条必答被"引用非逐字"占领——它是审核员在批注视图核的
+# **内部核对项**，不是评审会问客户的问题。分开后评审会拿到的是十几条纯客户问题）
+AUDIENCE_CUSTOMER = "问客户"
+AUDIENCE_INTERNAL = "内部核对"
 
 # 就绪门默认阈值（NEEDS WORK 触发条件；试点后按真实分布调）
 READY_MAX_QUESTIONS = 30
@@ -45,9 +49,11 @@ READY_MIN_COVERAGE = 60.0
 
 
 def _entry(category: str, question: str, *, section: str = "", quote: str = "",
-           source_id: str = "", signal: str = "", tier: str = TIER_HARD) -> dict[str, Any]:
+           source_id: str = "", signal: str = "", tier: str = TIER_HARD,
+           audience: str = AUDIENCE_CUSTOMER) -> dict[str, Any]:
     return {"category": category, "question": question, "section": section,
-            "quote": quote[:200], "source_id": source_id, "signal": signal, "tier": tier}
+            "quote": quote[:200], "source_id": source_id, "signal": signal, "tier": tier,
+            "audience": audience}
 
 
 def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
@@ -73,7 +79,8 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 entries.append(_entry(
                     CAT_AMBIGUOUS,
                     f"§{sec}「{title}」的引用与原文不逐字一致，请核对该需求是否忠实原文",
-                    section=sec, quote=quote, source_id=rid, signal="suspicion:引用"))
+                    section=sec, quote=quote, source_id=rid, signal="suspicion:引用",
+                    audience=AUDIENCE_INTERNAL))
             elif reason == "验收不可测":
                 entries.append(_entry(
                     CAT_AMBIGUOUS,
@@ -176,8 +183,12 @@ def render_markdown(entries: list[dict[str, Any]], readiness: dict[str, Any]) ->
                     lines.append(f"   *{' · '.join(meta)}*")
             lines.append("")
 
-    if hard:
-        emit(hard, f"必答（{len(hard)}）——评审会须逐条确认")
+    customer = [e for e in hard if e.get("audience") != AUDIENCE_INTERNAL]
+    internal = [e for e in hard if e.get("audience") == AUDIENCE_INTERNAL]
+    if customer:
+        emit(customer, f"必答·问客户（{len(customer)}）——评审会逐条确认")
+    if internal:
+        emit(internal, f"必答·内部核对（{len(internal)}）——审核员在批注视图核对")
     if soft:
         emit(soft, f"参考（{len(soft)}）——模型自报，抽查即可")
     if not entries:
@@ -189,16 +200,23 @@ def write_xlsx(entries: list[dict[str, Any]], readiness: dict[str, Any], path: P
     from openpyxl import Workbook
     wb = Workbook()
     ws = wb.active
-    ws.title = "必答"
+    ws.title = "必答-问客户"
     header = ["序号", "分类", "问题", "出处章节", "原文引用", "来源需求", "信号", "答复", "采纳(是/否)"]
     ws.append(header)
     hard = [e for e in entries if e.get("tier") != TIER_SOFT]
     soft = [e for e in entries if e.get("tier") == TIER_SOFT]
-    for i, e in enumerate(hard, 1):
+    customer = [e for e in hard if e.get("audience") != AUDIENCE_INTERNAL]
+    internal = [e for e in hard if e.get("audience") == AUDIENCE_INTERNAL]
+    for i, e in enumerate(customer, 1):
         ws.append([i, e["category"], formula_safe(e["question"]), e["section"],
                    formula_safe(e["quote"]), e["source_id"], e["signal"]])
+    ws_int = wb.create_sheet("必答-内部核对")
+    ws_int.append(header[:7])
+    for i, e in enumerate(internal, 1):
+        ws_int.append([i, e["category"], formula_safe(e["question"]), e["section"],
+                       formula_safe(e["quote"]), e["source_id"], e["signal"]])
     ws_soft = wb.create_sheet("参考(模型自报)")
-    ws_soft.append(header)
+    ws_soft.append(header[:7])
     for i, e in enumerate(soft, 1):
         ws_soft.append([i, e["category"], formula_safe(e["question"]), e["section"],
                         formula_safe(e["quote"]), e["source_id"], e["signal"]])
@@ -239,9 +257,10 @@ def import_answers(out_dir: Path, xlsx_path: Path) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
     wb = load_workbook(Path(xlsx_path).expanduser(), data_only=True, read_only=True)
     try:
-        if "必答" not in wb.sheetnames:
-            raise ValueError("工作簿缺少「必答」sheet——请用本工具导出的澄清清单填写答复")
-        ws = wb["必答"]
+        sheet_name = next((n for n in ("必答-问客户", "必答") if n in wb.sheetnames), None)
+        if sheet_name is None:
+            raise ValueError("工作簿缺少「必答-问客户」sheet——请用本工具导出的澄清清单填写答复")
+        ws = wb[sheet_name]
         merged = load_answers(out_dir)
         imported = 0
         for row in ws.iter_rows(min_row=2, values_only=True):
@@ -311,6 +330,12 @@ def run_report(out_dir: Path) -> dict[str, Any]:
               "upstream_warnings": warnings,
               "questions_total": len(entries),
               "soft_questions": len(entries) - hard_count,
+              "customer_questions": sum(1 for e in entries
+                                         if e.get("tier") != TIER_SOFT
+                                         and e.get("audience") != AUDIENCE_INTERNAL),
+              "internal_checks": sum(1 for e in entries
+                                     if e.get("tier") != TIER_SOFT
+                                     and e.get("audience") == AUDIENCE_INTERNAL),
               "resolved_by_answers": resolved,
               "by_category": by_cat,
               "readiness": readiness, "entries": entries,
