@@ -124,13 +124,15 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
             continue
         if b.get("noise"):
             continue   # 页眉/页脚/水印等噪声不渲染（灰显仍占版面——排版保真，2026-07-07）
+        path = b.get("section_path") or []
+        region = str(b.get("doc_region") or "body")
         page_no = b.get("page_number")
-        if isinstance(page_no, int) and prev_page is not None and page_no != prev_page:
+        # 分页线只在正文区画：折叠区（封面/目录）攒 buffer 时直插外层会喷散落分页线
+        if (region not in _COLLAPSIBLE_REGIONS and isinstance(page_no, int)
+                and prev_page is not None and page_no != prev_page):
             parts.append(f'<div class="page-break"><span>第 {page_no} 页</span></div>')
         if isinstance(page_no, int):
             prev_page = page_no
-        path = b.get("section_path") or []
-        region = str(b.get("doc_region") or "body")
         is_heading = b.get("type") == "heading" or (bool(path) and text == str(path[-1]))
         is_noise = bool(b.get("noise"))
         is_omission = bool(b.get("requirement_like")) and not is_noise and bid not in covered

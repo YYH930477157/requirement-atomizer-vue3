@@ -23,6 +23,16 @@ class DefragTests(unittest.TestCase):
         for raw, expect in cases.items():
             self.assertEqual(defragment_text(raw), expect)
 
+    def test_reference_letters_protected(self) -> None:
+        """Annex/Class/Table 等后的单个大写字母是合法引用，不拼合（自审实锤的误伤）。"""
+        cases = [
+            "Annex A B gives the procedure",
+            "meters of class A and class B",
+            "see Annex B before testing",
+        ]
+        for text in cases:
+            self.assertEqual(defragment_text(text), text)
+
     def test_normal_text_untouched(self) -> None:
         text = "The AFD shall withstand a drop from 0,5 m as given in Table 6."
         self.assertEqual(defragment_text(text), text)

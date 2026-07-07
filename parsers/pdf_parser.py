@@ -46,13 +46,33 @@ _FRAG_PROBE_RE = re.compile(r"\b[A-Za-z] [a-z]{2,}\b")
 DEFRAG_RATIO_THRESHOLD = 0.02   # 每词碎片数 ≥2% 判定为破碎文档
 
 
+# 引用字母的前导词：这些词后面的单个大写字母是合法引用（"Annex B gives…"/"class A meters"），
+# 不是碎片——拼合会把 "B gives" 腐蚀成 "Bgives"（自审实锤）
+_REF_LEAD_WORDS = frozenset((
+    "annex", "appendix", "class", "table", "figure", "type", "part",
+    "zone", "group", "category", "clause", "section", "grade",
+))
+
+
+def _guarded_sub(pattern: re.Pattern[str], text: str) -> str:
+    def repl(m: re.Match[str]) -> str:
+        head = text[: m.start()].rstrip()
+        lead = head.rsplit(None, 1)[-1] if head else ""
+        # 引用字母保护：前词是 Annex/Class/Table 等，或前词本身是单个大写字母（引用链
+        # "Annex A B"——A 的前词是 Annex，B 的前词是 A）
+        if lead.lower() in _REF_LEAD_WORDS or (len(lead) == 1 and lead.isupper()):
+            return m.group(0)
+        return m.group(1) + m.group(2)
+    return pattern.sub(repl, text)
+
+
 def defragment_text(text: str) -> str:
-    """拼合词内空格碎片；迭代到稳定（"V a lue" 两轮收敛）。"""
+    """拼合词内空格碎片；迭代到稳定（"V a lue" 两轮收敛）。引用字母（Annex B 等）受保护。"""
     prev = None
     while prev != text:
         prev = text
-        text = _FRAG_ALPHA_RE.sub(r"\1\2", text)
-        text = _FRAG_CAP_RE.sub(r"\1\2", text)
+        text = _guarded_sub(_FRAG_ALPHA_RE, text)
+        text = _guarded_sub(_FRAG_CAP_RE, text)
         text = _FRAG_DIGIT_RE.sub(r"\1\2", text)
     return text
 
