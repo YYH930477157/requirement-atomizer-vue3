@@ -32,6 +32,38 @@ LOGGER = logging.getLogger("requirement_atomizer")
 TEXT_LAYER_SAMPLE_PAGES = 5
 MIN_AVERAGE_EXTRACTED_CHARS = 100
 HEADER_FOOTER_BAND_RATIO = 0.12
+_COPYRIGHT_FOOTER_RE = re.compile(chr(0xA9) + ".{0,40}" + chr(92) + "bpage" + chr(92) + "b", re.IGNORECASE)
+
+# --- 词内空格破碎修复（机翻 PDF 排版病，2026-07-07 真实案例 UNI 12007）--------
+# Google 翻译版 PDF 会把真实空格字形嵌进词内（"Water M eters"、"UNI/TS 1 2007"），
+# 27% 的块受污染——LLM 输入被污染、页脚重复行检测失配、观感稀碎。调 x_tolerance 无效
+# （空格是真字符），只能后处理拼合。**文档级门控**：仅当抽样页碎片率超阈值才启用，
+# 正常 PDF（ABNT/EN16314 实测低于阈值）零触碰。
+_FRAG_ALPHA_RE = re.compile("(?<![0-9] )" + chr(92) + "b([B-HJ-Zb-hj-z]) ([a-z]{2,})" + chr(92) + "b")  # 排除 a/A/I/i（合法单字母词）与数字后的单位字母（"0,5 m as"）
+_FRAG_CAP_RE = re.compile(r"\b([A-Z]) ([A-Z]{1,4})\b(?! [a-z])")   # "I SO"/"O NE" → ISO/ONE
+_FRAG_DIGIT_RE = re.compile(r"\b(\d) (\d{2,})\b")                   # "1 2007" → 12007
+_FRAG_PROBE_RE = re.compile(r"\b[A-Za-z] [a-z]{2,}\b")
+DEFRAG_RATIO_THRESHOLD = 0.02   # 每词碎片数 ≥2% 判定为破碎文档
+
+
+def defragment_text(text: str) -> str:
+    """拼合词内空格碎片；迭代到稳定（"V a lue" 两轮收敛）。"""
+    prev = None
+    while prev != text:
+        prev = text
+        text = _FRAG_ALPHA_RE.sub(r"\1\2", text)
+        text = _FRAG_CAP_RE.sub(r"\1\2", text)
+        text = _FRAG_DIGIT_RE.sub(r"\1\2", text)
+    return text
+
+
+def _fragmentation_ratio(pdf: Any, sample_pages: int = 8) -> float:
+    frags = words = 0
+    for page in pdf.pages[:sample_pages]:
+        text = page.extract_text() or ""
+        words += max(1, len(text.split()))
+        frags += len(_FRAG_PROBE_RE.findall(text))
+    return frags / max(1, words)
 
 
 def extract_pdf(
@@ -43,7 +75,10 @@ def extract_pdf(
     profile = document_profile or DEFAULT_DOCUMENT_PROFILE
     with pdfplumber.open(input_path) as pdf:
         _assert_text_layer(pdf)
-        repeated_noise = _detect_repeated_margin_lines(pdf)
+        defrag = _fragmentation_ratio(pdf) >= DEFRAG_RATIO_THRESHOLD
+        if defrag:
+            LOGGER.info("检测到词内空格破碎文档（机翻 PDF），启用去碎修复")
+        repeated_noise = _detect_repeated_margin_lines(pdf, defrag=defrag)
 
         sections = SectionState()
         blocks: list[dict[str, Any]] = []
@@ -55,7 +90,8 @@ def extract_pdf(
         for page_number, page in enumerate(pdf.pages, start=1):
             tables = page.find_tables()
             table_bboxes = [table.bbox for table in tables]
-            page_paragraphs = _paragraphs_outside_tables(page, table_bboxes, document_profile=profile)
+            page_paragraphs = _paragraphs_outside_tables(page, table_bboxes,
+                                                          document_profile=profile, defrag=defrag)
             paragraph_index = 0
 
             for table in tables:
@@ -74,6 +110,8 @@ def extract_pdf(
                     paragraph_index += 1
 
                 matrix = _clean_table_matrix(table.extract())
+                if defrag:
+                    matrix = [[defragment_text(cell) for cell in row] for row in matrix]
                 if _skip_table_matrix(matrix):
                     continue
                 table_count += 1
@@ -122,13 +160,13 @@ def _assert_text_layer(pdf: Any) -> None:
         raise AtomizerInputError("该 PDF 无文字层（疑似扫描件），当前版本不支持；可用 Word 打开该 PDF 另存为 .docx 后重试。")
 
 
-def _detect_repeated_margin_lines(pdf: Any) -> set[str]:
+def _detect_repeated_margin_lines(pdf: Any, *, defrag: bool = False) -> set[str]:
     threshold = max(2, int(len(pdf.pages) * 0.6 + 0.999))
     counts: Counter[str] = Counter()
     for page in pdf.pages:
         top_limit = page.height * HEADER_FOOTER_BAND_RATIO
         bottom_limit = page.height * (1 - HEADER_FOOTER_BAND_RATIO)
-        for line in _word_lines(page.extract_words()):
+        for line in _word_lines(page.extract_words(), defrag=defrag):
             if line["top"] <= top_limit or line["bottom"] >= bottom_limit:
                 normalized = _normalize_repeated_line(line["text"])
                 if normalized:
@@ -141,36 +179,41 @@ def _paragraphs_outside_tables(
     table_bboxes: list[tuple[float, float, float, float]],
     *,
     document_profile: DocumentProfile,
+    defrag: bool = False,
 ) -> list[dict[str, Any]]:
     words = [
         word
         for word in page.extract_words()
         if not any(_word_intersects_bbox(word, bbox) for bbox in table_bboxes)
     ]
-    lines = _word_lines(words)
+    lines = _word_lines(words, defrag=defrag)
     if not lines:
         return []
 
     paragraphs: list[dict[str, Any]] = []
     current: list[dict[str, Any]] = []
     previous: dict[str, Any] | None = None
+    previous_is_heading = False
     for line in lines:
-        if previous is not None and _starts_new_paragraph(
+        # 标题行独占一块：否则标题吞下随后的正文行，整段被判 heading（渲染成大字整段，
+        # 条款锚点失真——真实案例 UNI 12007 共 372 个"标题"块全是标题+正文粘连）
+        if previous is not None and (previous_is_heading or _starts_new_paragraph(
             previous,
             line,
             page_height=page.height,
             document_profile=document_profile,
-        ):
+        )):
             paragraphs.append(_merge_lines(current))
             current = []
         current.append(line)
         previous = line
+        previous_is_heading = bool(detect_heading(line["text"], "", document_profile=document_profile))
     if current:
         paragraphs.append(_merge_lines(current))
     return [paragraph for paragraph in paragraphs if paragraph["text"]]
 
 
-def _word_lines(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _word_lines(words: list[dict[str, Any]], *, defrag: bool = False) -> list[dict[str, Any]]:
     if not words:
         return []
     sorted_words = sorted(words, key=lambda word: (round(float(word["top"]), 1), float(word["x0"])))
@@ -183,18 +226,21 @@ def _word_lines(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
             current.append(word)
             current_top = top if current_top is None else (current_top + top) / 2
             continue
-        lines.append(_merge_words(current))
+        lines.append(_merge_words(current, defrag=defrag))
         current = [word]
         current_top = top
     if current:
-        lines.append(_merge_words(current))
+        lines.append(_merge_words(current, defrag=defrag))
     return lines
 
 
-def _merge_words(words: list[dict[str, Any]]) -> dict[str, Any]:
+def _merge_words(words: list[dict[str, Any]], *, defrag: bool = False) -> dict[str, Any]:
     ordered = sorted(words, key=lambda word: float(word["x0"]))
+    text = clean_text(" ".join(str(word["text"]) for word in ordered))
+    if defrag:
+        text = defragment_text(text)
     return {
-        "text": clean_text(" ".join(str(word["text"]) for word in ordered)),
+        "text": text,
         "top": min(float(word["top"]) for word in ordered),
         "bottom": max(float(word["bottom"]) for word in ordered),
         "x0": min(float(word["x0"]) for word in ordered),
@@ -262,7 +308,8 @@ def _append_text_block(
     kb_matches = match_knowledge(knowledge_bases, text, " > ".join(section_path))
     domain_tags = merge_tags(tag_domains(text, " > ".join(section_path)), kb_domain_tags(kb_matches))
     normalized = _normalize_repeated_line(text)
-    noise = is_noise(text, document_profile=profile) or normalized in repeated_noise
+    noise = (is_noise(text, document_profile=profile) or normalized in repeated_noise
+             or bool(_COPYRIGHT_FOOTER_RE.search(text)))   # ©+Page 版权页脚（机翻变体逃过重复行检测）
     block: dict[str, Any] = {
         "block_id": f"BLK-{order:06d}",
         "order": order,
@@ -317,6 +364,7 @@ def _word_intersects_bbox(word: dict[str, Any], bbox: tuple[float, float, float,
 def _normalize_repeated_line(text: str) -> str:
     text = clean_text(text).lower()
     text = re.sub(r"\bpage\s+\d+\b", "page", text)
+    text = re.sub(r"\bpage\s+[ivxlcdm]+\b", "page", text)   # 前言罗马页码（Page III 等）
     text = re.sub(r"\d+", "#", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()

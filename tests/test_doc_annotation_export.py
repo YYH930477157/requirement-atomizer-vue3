@@ -130,8 +130,9 @@ class DocAnnotationExportTests(unittest.TestCase):
             # 正文不折叠、正常渲染
             self.assertIn("Body content.", rendered)
 
-    def test_noise_blocks_greyed(self) -> None:
-        """noise 块渲染时带 noise class（灰显），不删除。"""
+    def test_noise_blocks_hidden(self) -> None:
+        """noise 块（页眉/页脚/水印）不渲染——排版保真（2026-07-07 UNI 12007：292 条
+        页眉页脚穿插正文）。数据仍保留在 blocks.jsonl，仅视图不显示。"""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             (out / "blocks.jsonl").write_text(
@@ -145,7 +146,8 @@ class DocAnnotationExportTests(unittest.TestCase):
             (out / "merged_spec_requirements.json").write_text(
                 json.dumps({"requirements": []}), encoding="utf-8")
             rendered = dae.render_annotation_html(out)
-            self.assertIn("doc-block noise", rendered)
+            self.assertNotIn("EN 16314:2013 (E)", rendered)   # 噪声不渲染
+            self.assertIn("Real content.", rendered)           # 正文照常
 
     def test_heading_levels_rendered(self) -> None:
         """heading 按 section_path 深度渲染 h1/h2/h3 class。"""

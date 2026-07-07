@@ -112,6 +112,16 @@ function reqNumber(r: AiRequirement): string {
   return n ? String(n).padStart(2, "0") : "--"
 }
 
+// 排版保真：噪声（页眉/页脚/水印）不渲染；跨页处画分页线（与自包含 HTML 同语义）
+const visibleBlocks = computed(() => blocks.value.filter((b) => !b.noise))
+function pageBreakBefore(index: number): number | null {
+  const cur = visibleBlocks.value[index]
+  const prev = visibleBlocks.value[index - 1]
+  if (!cur || !prev) return null
+  return cur.page_number != null && prev.page_number != null && cur.page_number !== prev.page_number
+    ? Number(cur.page_number) : null
+}
+
 const omissionCount = computed(
   () => blocks.value.filter((b) => b.requirement_like && !b.noise && !coveredBlocks.value.has(b.block_id)).length,
 )
@@ -206,7 +216,8 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 
     <div class="doc-body">
       <article class="doc-paper" data-testid="doc-paper">
-        <template v-for="b in blocks" :key="b.block_id">
+        <template v-for="(b, bi) in visibleBlocks" :key="b.block_id">
+          <div v-if="pageBreakBefore(bi) !== null" class="page-break"><span>第 {{ pageBreakBefore(bi) }} 页</span></div>
           <div
             :class="['doc-block',
                      { heading: isHeading(b), omission: isOmission(b),
@@ -321,6 +332,9 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .doc-block { display: grid; grid-template-columns: 130px 1fr; gap: 10px; padding: 3px 6px; border-left: 3px solid transparent; cursor: default; }
 .doc-block.heading .doc-text { font-weight: 700; color: #0f172a; margin-top: 8px; }
 .doc-block.anchored { cursor: pointer; border-left-color: #3b82f6; background: #f8fafc; }
+.page-break { display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #94a3b8; font-size: 11px; }
+.page-break::before, .page-break::after { content: ""; flex: 1; border-top: 1px dashed #e2e8f0; }
+
 .doc-block.in-span { box-shadow: inset 3px 0 0 #a8c3ee; }
 .doc-block.in-span.evidence { background: #eff6ff; box-shadow: none; }
 .dd-legend { font-size: 11px; color: #94a3b8; margin: 4px 0 8px; }

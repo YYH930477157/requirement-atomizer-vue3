@@ -114,6 +114,7 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         collapse_count = 0
         collapse_buf = []
 
+    prev_page: int | None = None
     for b in blocks:
         bid = str(b.get("block_id") or "")
         text = str(b.get("text") or "")
@@ -121,6 +122,13 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         text = _clean_block_text(text)
         if _is_symbol_only(text):
             continue
+        if b.get("noise"):
+            continue   # 页眉/页脚/水印等噪声不渲染（灰显仍占版面——排版保真，2026-07-07）
+        page_no = b.get("page_number")
+        if isinstance(page_no, int) and prev_page is not None and page_no != prev_page:
+            parts.append(f'<div class="page-break"><span>第 {page_no} 页</span></div>')
+        if isinstance(page_no, int):
+            prev_page = page_no
         path = b.get("section_path") or []
         region = str(b.get("doc_region") or "body")
         is_heading = b.get("type") == "heading" or (bool(path) and text == str(path[-1]))
@@ -342,6 +350,9 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .doc-block.anchored:hover {{ background: var(--accent-soft); }}
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
 .text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
+.page-break {{ display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #b8b2a4; font-size: 11px; }}
+.page-break::before, .page-break::after {{ content: ""; flex: 1; border-top: 1px dashed #ddd6c8; }}
+
 .doc-block.in-span {{ box-shadow: inset 3px 0 0 #a8c3ee; }}
 .doc-block.in-span.evidence {{ background: #eef4ff; border-radius: 6px; box-shadow: none; }}
 .dd-legend {{ font-size: 11px; color: #8a8f98; margin: 4px 0 8px; }}
