@@ -109,7 +109,7 @@ class TierTests(unittest.TestCase):
         entries = [cr._entry(cr.CAT_MISSING, "硬问题"),
                    cr._entry(cr.CAT_ASSUMPTION, "软问题", tier=cr.TIER_SOFT)]
         md = cr.render_markdown(entries, {"verdict": "READY", "reasons": []})
-        self.assertIn("必答（1）", md)
+        self.assertIn("必答·问客户（1）", md)
         self.assertIn("参考（1）", md)
         self.assertLess(md.find("硬问题"), md.find("软问题"))   # 必答在前
 
@@ -130,7 +130,7 @@ class AnswersRoundtripTests(unittest.TestCase):
             # 模拟评审会：打开 xlsx 在「必答」sheet 填答复
             from openpyxl import load_workbook
             wb = load_workbook(tmp / cr.REPORT_XLSX)
-            ws = wb["必答"]
+            ws = wb["必答-问客户"]
             self.assertEqual(ws.cell(row=1, column=8).value, "答复")
             ws.cell(row=2, column=8, value="限值为 25 cm3/h")
             ws.cell(row=2, column=9, value="是")
@@ -169,6 +169,20 @@ class AnswersRoundtripTests(unittest.TestCase):
             self.assertEqual(second["questions"], 1)               # 未采纳不消解
 
 
+class AudienceSplitTests(unittest.TestCase):
+    def test_internal_checks_separated_from_customer_questions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            seed(tmp,
+                 reqs=[{"title": "A", "source_section": "4", "source_quote": "q",
+                        "suspicion_reasons": ["原文数值未带全", "引用非逐字"]}],
+                 quality={"failed_sections": 0, "coverage_pct": 80.0})
+            report = cr.run_report(tmp)
+        self.assertEqual(report["customer_questions"], 1)      # 漏值 → 问客户
+        self.assertEqual(report["internal_checks"], 1)         # 引用非逐字 → 内部核对
+        self.assertEqual(report["questions"], 2)               # 就绪门仍数全部硬信号
+
+
 class RunReportTests(unittest.TestCase):
     def test_end_to_end_writes_three_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -185,8 +199,9 @@ class RunReportTests(unittest.TestCase):
             self.assertIn("缺失", md)
             from openpyxl import load_workbook
             wb = load_workbook(tmp / cr.REPORT_XLSX)
-            ws = wb["必答"]
+            ws = wb["必答-问客户"]
             self.assertNotEqual(ws.cell(row=2, column=5).data_type, "f")   # 公式已中和
+            self.assertIn("必答-内部核对", wb.sheetnames)
             self.assertIn("参考(模型自报)", wb.sheetnames)
             self.assertIn("就绪判定", wb.sheetnames)
 
