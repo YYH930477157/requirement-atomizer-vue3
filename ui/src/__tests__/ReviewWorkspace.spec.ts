@@ -387,9 +387,6 @@ describe("review workspace shell", () => {
         reviewScope: undefined,
         chunkChars: 3500,
         kbPaths: [
-          "knowledge_bases/energy_metering.json",
-          "knowledge_bases/energy_metering_protocol_layer.json",
-          "knowledge_bases/energy_metering_cosem_classes.json",
           "knowledge_bases/compiled_from_obsidian.json",
         ],
         domainPackDir: "domain_packs/dlms_cosem",
@@ -561,9 +558,6 @@ describe("review workspace shell", () => {
         llmReviewLimit: 50,
         chunkChars: 3500,
         kbPaths: [
-          "knowledge_bases/energy_metering.json",
-          "knowledge_bases/energy_metering_protocol_layer.json",
-          "knowledge_bases/energy_metering_cosem_classes.json",
           "knowledge_bases/compiled_from_obsidian.json",
         ],
         domainPackDir: "domain_packs/dlms_cosem",
