@@ -18,7 +18,7 @@ class CliKnowledgeBaseDefaultTests(unittest.TestCase):
             root = Path(tmp)
             input_path = root / "input.docx"
             out_dir = root / "out"
-            default_paths = [root / "energy.json", root / "compiled_from_obsidian.json"]
+            default_paths = [root / "compiled_from_obsidian.json"]
             args = argparse.Namespace(
                 input=input_path,
                 out=out_dir,

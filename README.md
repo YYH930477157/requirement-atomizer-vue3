@@ -27,9 +27,6 @@ Run the full pipeline:
 ratomizer run `
   ".\samples\your-standard.docx" `
   --out ".\out\run-001" `
-  --kb ".\knowledge_bases\energy_metering.json" `
-  --kb ".\knowledge_bases\energy_metering_protocol_layer.json" `
-  --kb ".\knowledge_bases\energy_metering_cosem_classes.json" `
   --kb ".\knowledge_bases\compiled_from_obsidian.json" `
   --export md,csv
 ```
@@ -134,6 +131,8 @@ knowledge_bases/*.json      # runtime KB files
 requirement_kb/             # reusable Python package
 ```
 
+`compiled_from_obsidian.json` is the default runtime domain KB. It is compiled from the layered Obsidian vault and includes the older seed KB content from `energy_metering.json`, `energy_metering_protocol_layer.json`, and `energy_metering_cosem_classes.json` in enriched form. Load the compiled KB by default to avoid duplicate hits; keep the smaller seed JSON files only for lightweight demos or targeted debugging.
+
 Compile the vault:
 
 ```powershell
@@ -148,8 +147,12 @@ Use the KB package directly:
 ```powershell
 python -m requirement_kb.cli info
 python -m requirement_kb.cli search "class 8"
+python -m requirement_kb.cli search "Profile Generic" --scope class
+python -m requirement_kb.cli search "1-0:99.1.0.255" --scope object
 python -m requirement_kb.server --host 127.0.0.1 --port 8765
 ```
+
+Use `--scope concept`, `--scope protocol`, `--scope class`, or `--scope object` when a caller needs logical layer boundaries inside the single compiled KB.
 
 External tools should depend on `requirement_kb` instead of old root-level KB scripts.
 

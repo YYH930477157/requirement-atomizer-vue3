@@ -156,15 +156,14 @@ class KnowledgeRepository:
         *,
         layer: str | None = None,
         entry_type: str | None = None,
+        scope: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         normalized = normalize_match_term(query)
         query_pattern = compile_term_pattern([normalized])
         scored: list[tuple[int, KBEntry, list[str]]] = []
         for entry in self.entries:
-            if layer and entry.layer != layer:
-                continue
-            if entry_type and entry.entry_type != entry_type:
+            if not _entry_matches_filters(entry, layer=layer, entry_type=entry_type, scope=scope):
                 continue
             score, matched_terms = score_entry(entry, normalized, query_pattern)
             if score > 0:
@@ -178,14 +177,13 @@ class KnowledgeRepository:
         *,
         layer: str | None = None,
         entry_type: str | None = None,
+        scope: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         haystack = normalize_match_term(text)
         matches: list[tuple[int, KBEntry, list[str]]] = []
         for entry in self.entries:
-            if layer and entry.layer != layer:
-                continue
-            if entry_type and entry.entry_type != entry_type:
+            if not _entry_matches_filters(entry, layer=layer, entry_type=entry_type, scope=scope):
                 continue
             matched_terms = find_matched_terms(entry.match_pattern, haystack, normalized=True)
             if matched_terms:
@@ -194,8 +192,8 @@ class KnowledgeRepository:
         matches.sort(key=lambda row: (-row[0], row[1].name))
         return [format_match(entry, matched_terms, score) for score, entry, matched_terms in matches[:limit]]
 
-    def export_context(self, text: str, *, limit: int = 20) -> dict[str, Any]:
-        matches = self.match_text(text, limit=limit)
+    def export_context(self, text: str, *, scope: str | None = None, limit: int = 20) -> dict[str, Any]:
+        matches = self.match_text(text, scope=scope, limit=limit)
         return {
             "kb_context_version": "1.0",
             "matches": matches,
@@ -210,6 +208,65 @@ class KnowledgeRepository:
                 for match in matches
             ],
         }
+
+
+SCOPE_FILTERS = {
+    "concept": {
+        "types": {
+            "application",
+            "code_system",
+            "communication_profile",
+            "data_object",
+            "data_profile",
+            "function",
+            "identifier",
+            "irregularity",
+            "measurement_quantity",
+            "meter_type",
+            "object",
+            "power_quality",
+            "protocol",
+            "regulation",
+            "security",
+            "standard",
+        },
+        "layers": {"term", "measurement_model"},
+    },
+    "protocol": {
+        "layers": {
+            "access_model",
+            "application_layer",
+            "communication_model",
+            "event_alarm_model",
+            "object_model",
+            "protocol_architecture",
+            "security_model",
+        },
+    },
+    "class": {"types": {"cosem_interface_class", "cosem_class_catalogue"}, "layers": {"cosem_class"}},
+    "object": {"types": {"cosem_object_instance"}, "layers": {"cosem_object_instance"}},
+}
+
+
+def _entry_matches_filters(
+    entry: KBEntry,
+    *,
+    layer: str | None = None,
+    entry_type: str | None = None,
+    scope: str | None = None,
+) -> bool:
+    if layer and entry.layer != layer:
+        return False
+    if entry_type and entry.entry_type != entry_type:
+        return False
+    if not scope:
+        return True
+    scope_filter = SCOPE_FILTERS.get(scope)
+    if not scope_filter:
+        return True
+    types = scope_filter.get("types")
+    layers = scope_filter.get("layers")
+    return (types is None or entry.entry_type in types) and (layers is None or entry.layer in layers)
 
 
 def score_entry(entry: KBEntry, query: str, query_pattern: re.Pattern[str] | None = None) -> tuple[int, list[str]]:

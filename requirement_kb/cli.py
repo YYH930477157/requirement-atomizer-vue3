@@ -16,9 +16,6 @@ from .vault import validate_vault
 
 
 DEFAULT_KB_FILES = [
-    "knowledge_bases/energy_metering.json",
-    "knowledge_bases/energy_metering_protocol_layer.json",
-    "knowledge_bases/energy_metering_cosem_classes.json",
     "knowledge_bases/compiled_from_obsidian.json",
 ]
 
@@ -72,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     search.add_argument("query")
     search.add_argument("--layer", default=None)
     search.add_argument("--type", dest="entry_type", default=None)
+    search.add_argument("--scope", choices=["concept", "protocol", "class", "object"], default=None)
     search.add_argument("--limit", type=int, default=20)
 
     get = sub.add_parser("get", help="Get one KB entry by id")
@@ -82,10 +80,12 @@ def parse_args() -> argparse.Namespace:
     match.add_argument("text")
     match.add_argument("--layer", default=None)
     match.add_argument("--type", dest="entry_type", default=None)
+    match.add_argument("--scope", choices=["concept", "protocol", "class", "object"], default=None)
     match.add_argument("--limit", type=int, default=50)
 
     context = sub.add_parser("context", help="Return compact LLM context for free text")
     context.add_argument("text")
+    context.add_argument("--scope", choices=["concept", "protocol", "class", "object"], default=None)
     context.add_argument("--limit", type=int, default=20)
 
     blue_book = sub.add_parser("blue-book-report", help="Report Blue Book coverage in a compiled KB")
@@ -124,13 +124,13 @@ def main() -> int:
         if args.command == "info":
             print_json(repo.info())
         elif args.command == "search":
-            print_json(repo.search(args.query, layer=args.layer, entry_type=args.entry_type, limit=args.limit))
+            print_json(repo.search(args.query, layer=args.layer, entry_type=args.entry_type, scope=args.scope, limit=args.limit))
         elif args.command == "get":
             print_json(repo.get(args.entry_id, kb_id=args.kb_id))
         elif args.command == "match":
-            print_json(repo.match_text(args.text, layer=args.layer, entry_type=args.entry_type, limit=args.limit))
+            print_json(repo.match_text(args.text, layer=args.layer, entry_type=args.entry_type, scope=args.scope, limit=args.limit))
         elif args.command == "context":
-            print_json(repo.export_context(args.text, limit=args.limit))
+            print_json(repo.export_context(args.text, scope=args.scope, limit=args.limit))
         return 0
 
     if args.command == "validate":

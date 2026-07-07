@@ -236,10 +236,23 @@ A COSEM interface class for scalar measured values.
             with patch.dict("os.environ", {"REQUIREMENT_KB_HOME": tmp}, clear=False):
                 paths = default_kb_paths()
 
-        self.assertEqual(paths[0], Path(tmp).resolve() / "energy_metering.json")
-        self.assertEqual(paths[1], Path(tmp).resolve() / "energy_metering_protocol_layer.json")
-        self.assertEqual(paths[2], Path(tmp).resolve() / "energy_metering_cosem_classes.json")
-        self.assertEqual(paths[3], Path(tmp).resolve() / "compiled_from_obsidian.json")
+        self.assertEqual(paths, [Path(tmp).resolve() / "compiled_from_obsidian.json"])
+
+    def test_search_scope_filters_logical_kb_layers(self) -> None:
+        repo = KnowledgeRepository.from_paths([ROOT / "knowledge_bases" / "compiled_from_obsidian.json"])
+
+        class_matches = repo.search("Profile Generic", scope="class", limit=3)
+        object_matches = repo.search("1-0:99.1.0.255", scope="object", limit=3)
+        concept_matches = repo.search("Load Profile", scope="concept", limit=5)
+
+        self.assertTrue(class_matches)
+        self.assertTrue(all(match["type"] == "cosem_interface_class" for match in class_matches))
+        self.assertEqual(class_matches[0]["entry_id"], "KB-L3-IC-7-PROFILE-GENERIC")
+        self.assertTrue(object_matches)
+        self.assertTrue(all(match["type"] == "cosem_object_instance" for match in object_matches))
+        self.assertEqual(object_matches[0]["entry_id"], "KB-OBIS-1-0-99-1-0-255-LOAD-PROFILE-PERIOD-1")
+        self.assertTrue(concept_matches)
+        self.assertTrue(all(match["type"] != "cosem_object_instance" for match in concept_matches))
 
     def test_http_handler_exposes_package_repository_to_other_tools(self) -> None:
         class TestHandler(KBRequestHandler):

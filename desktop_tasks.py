@@ -673,13 +673,13 @@ def main(argv: list[str] | None = None) -> int:
         # 单步命令也记账（chain 内部已逐阶段记，不重复）
         if args.command in CHAIN_ORDER and getattr(args, "out", None):
             update_run_manifest(args.out, args.command, "failed", error=str(exc))
-        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"error": str(exc)}, ensure_ascii=True), file=sys.stderr)
         return 1
     finally:
         teardown_run_logging()
     if args.command in CHAIN_ORDER and getattr(args, "out", None):
         update_run_manifest(args.out, args.command, "ok")
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    print_json_payload(payload)
     return 0
 
 
@@ -688,7 +688,12 @@ def split_formats(value: str) -> list[str]:
 
 
 def emit_progress(event: dict[str, Any]) -> None:
-    print(f"{PROGRESS_PREFIX}{json.dumps(event, ensure_ascii=False)}", flush=True)
+    print(f"{PROGRESS_PREFIX}{json.dumps(event, ensure_ascii=True)}", flush=True)
+
+
+def print_json_payload(payload: dict[str, Any]) -> None:
+    """Write IPC JSON safely even when packaged Windows stdout is GBK."""
+    print(json.dumps(payload, ensure_ascii=True, indent=2))
 
 
 if __name__ == "__main__":

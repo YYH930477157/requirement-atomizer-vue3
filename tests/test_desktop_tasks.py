@@ -95,6 +95,42 @@ class RunLoggingTests(unittest.TestCase):
         self.assertIn("desktop task 开始：summary", log_text)
 
 
+class DesktopTaskEncodingTests(unittest.TestCase):
+    def test_main_writes_json_payload_on_gbk_stdout(self) -> None:
+        """Packaged Windows stdout may be GBK; non-GBK payload chars must not crash."""
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "o"
+            out.mkdir()
+            write_jsonl(out / "atomic_requirements.jsonl", [])
+            raw = io.BytesIO()
+            gbk_stdout = io.TextIOWrapper(raw, encoding="gbk", errors="strict")
+            with (
+                mock.patch("sys.stdout", gbk_stdout),
+                mock.patch("desktop_tasks.build_output_summary", return_value={"text": "A\u0300"}),
+            ):
+                exit_code = desktop_tasks.main(["summary", "--out", str(out)])
+            gbk_stdout.flush()
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(raw.getvalue().decode("gbk"))
+        self.assertEqual(payload["kind"], "summary")
+
+    def test_emit_progress_writes_json_on_gbk_stdout(self) -> None:
+        import desktop_tasks
+
+        raw = io.BytesIO()
+        gbk_stdout = io.TextIOWrapper(raw, encoding="gbk", errors="strict")
+        with mock.patch("sys.stdout", gbk_stdout):
+            desktop_tasks.emit_progress({"stage": "probe", "text": "A\u0300"})
+        gbk_stdout.flush()
+
+        text = raw.getvalue().decode("gbk")
+        self.assertIn(desktop_tasks.PROGRESS_PREFIX, text)
+        self.assertEqual(json.loads(text.split(desktop_tasks.PROGRESS_PREFIX, 1)[1])["text"], "A\u0300")
+
+
 class DesktopTaskTests(unittest.TestCase):
     def test_run_pipeline_task_uses_default_kbs_when_not_supplied(self) -> None:
         from desktop_tasks import run_pipeline_task
