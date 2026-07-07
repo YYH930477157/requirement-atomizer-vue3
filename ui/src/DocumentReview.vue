@@ -114,6 +114,19 @@ function reqNumber(r: AiRequirement): string {
 
 // 排版保真：噪声（页眉/页脚/水印）不渲染；跨页处画分页线（与自包含 HTML 同语义）
 const visibleBlocks = computed(() => blocks.value.filter((b) => !b.noise))
+
+// 表格块渲染真 <table>（旧 out_dir 无 data_rows 时回退扁平文字段落）
+const LIST_ITEM_RE = /^(?:[a-z0-9]{1,3}[).]|[•▪—–-])\s/
+function isTable(b: DocumentBlock): boolean {
+  return b.type === "table" && Boolean((b.data_rows || []).length || (b.header_rows || []).length)
+}
+function isListItem(b: DocumentBlock): boolean {
+  return LIST_ITEM_RE.test(b.text || "")
+}
+function padRow(b: DocumentBlock, row: string[]): string[] {
+  const ncols = Math.max(...[...(b.header_rows || []), ...(b.data_rows || [])].map((r) => r.length), 0)
+  return [...row, ...Array(Math.max(0, ncols - row.length)).fill("")]
+}
 function pageBreakBefore(index: number): number | null {
   const cur = visibleBlocks.value[index]
   const prev = visibleBlocks.value[index - 1]
@@ -240,7 +253,20 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
               >{{ reqNumber(r) }} · {{ moduleOf(r) }}</button>
               <span v-if="isOmission(b)" class="omission-tag">⚠ 未覆盖</span>
             </div>
-            <p class="doc-text">
+            <figure v-if="isTable(b)" class="doc-table" data-testid="doc-table">
+              <figcaption v-if="b.table_title">{{ b.table_title }}<span v-if="b.table_source === 'text_layout'" class="table-badge">无画线重建</span></figcaption>
+              <div class="table-scroll">
+                <table>
+                  <thead v-if="(b.header_rows || []).length">
+                    <tr v-for="(hr, hi) in b.header_rows" :key="hi"><th v-for="(c, ci) in padRow(b, hr)" :key="ci">{{ c }}</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, ri) in b.data_rows" :key="ri"><td v-for="(c, ci) in padRow(b, row)" :key="ci">{{ c }}</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </figure>
+            <p v-else class="doc-text" :class="{ 'list-item': isListItem(b) }">
               <template v-for="(seg, i) in segments(b)" :key="i"><mark v-if="seg.mark">{{ seg.text }}</mark><span v-else>{{ seg.text }}</span></template>
             </p>
           </div>
@@ -334,6 +360,22 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .doc-block.anchored { cursor: pointer; border-left-color: #3b82f6; background: #f8fafc; }
 .page-break { display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #94a3b8; font-size: 11px; }
 .page-break::before, .page-break::after { content: ""; flex: 1; border-top: 1px dashed #e2e8f0; }
+
+/* 阅读排版：正文两端对齐、列表悬挂缩进、真表格（与自包含 HTML 同视觉） */
+.doc-block:not(.heading) .doc-text { text-align: justify; hyphens: none; }
+.doc-text.list-item { padding-left: 1.6em; text-indent: -1.6em; text-align: left; }
+.doc-table { margin: 14px 0 18px; }
+.doc-table figcaption { font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px; letter-spacing: .02em; }
+.doc-table .table-badge { font-size: 10px; font-weight: 500; color: #92400e; background: #fef3c7;
+  border: 1px solid #fcd34d; border-radius: 999px; padding: 1px 7px; margin-left: 8px; vertical-align: 1px; }
+.doc-table .table-scroll { overflow-x: auto; border: 1px solid #e2e8f0; border-radius: 8px; }
+.doc-table table { border-collapse: collapse; width: 100%; font-size: 12.5px; line-height: 1.5; }
+.doc-table th, .doc-table td { border: 0; border-bottom: 1px solid #eef2f7; border-right: 1px solid #f1f5f9;
+  padding: 6px 10px; text-align: left; vertical-align: top; min-width: 52px; }
+.doc-table th:last-child, .doc-table td:last-child { border-right: 0; }
+.doc-table thead th { background: #f8fafc; font-weight: 650; color: #334155; }
+.doc-table tbody tr:nth-child(even) td { background: #fbfcfe; }
+.doc-table tbody tr:last-child td { border-bottom: 0; }
 
 .doc-block.in-span { box-shadow: inset 3px 0 0 #a8c3ee; }
 .doc-block.in-span.evidence { background: #eff6ff; box-shadow: none; }

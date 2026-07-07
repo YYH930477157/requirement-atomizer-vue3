@@ -124,21 +124,25 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
             continue
         if b.get("noise"):
             continue   # 页眉/页脚/水印等噪声不渲染（灰显仍占版面——排版保真，2026-07-07）
+        path = b.get("section_path") or []
+        region = str(b.get("doc_region") or "body")
         page_no = b.get("page_number")
-        if isinstance(page_no, int) and prev_page is not None and page_no != prev_page:
+        # 分页线只在正文区画：折叠区（封面/目录）攒 buffer 时直插外层会喷散落分页线
+        if (region not in _COLLAPSIBLE_REGIONS and isinstance(page_no, int)
+                and prev_page is not None and page_no != prev_page):
             parts.append(f'<div class="page-break"><span>第 {page_no} 页</span></div>')
         if isinstance(page_no, int):
             prev_page = page_no
-        path = b.get("section_path") or []
-        region = str(b.get("doc_region") or "body")
         is_heading = b.get("type") == "heading" or (bool(path) and text == str(path[-1]))
         is_noise = bool(b.get("noise"))
         is_omission = bool(b.get("requirement_like")) and not is_noise and bid not in covered
         anchored = anchor_map.get(bid) or []
 
-        # 渲染单个 block 的 HTML
+        # 渲染单个 block 的 HTML（表格块带 data_rows 时渲染真表格，旧 out_dir 无该字段回退扁平文字）
+        table_html = _render_table_inner(b) if b.get("type") == "table" else ""
         block_html = _render_one_block(bid, text, path, region, is_heading, is_noise, is_omission, anchored,
-                                       req_numbers or {}, (sub_anchor_map or {}).get(bid) or [])
+                                       req_numbers or {}, (sub_anchor_map or {}).get(bid) or [],
+                                       table_html=table_html)
 
         # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
         if region in _COLLAPSIBLE_REGIONS:
@@ -155,10 +159,39 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
     return "\n".join(parts)
 
 
+_LIST_TEXT_RE = re.compile(r"^(?:[a-z0-9]{1,3}[).]|[•▪—–-])\s")
+
+
+def _render_table_inner(block: dict) -> str:
+    """表格块渲染成真 <table>（题注 + 表头 + 斑马纹数据行 + 横向滚动容器）。"""
+    header_rows = block.get("header_rows") or []
+    data_rows = block.get("data_rows") or []
+    ncols = max((len(r) for r in header_rows + data_rows), default=0)
+    if not data_rows and not header_rows:
+        return ""
+    title = str(block.get("table_title") or "")
+    rebuilt = block.get("table_source") == "text_layout"
+    caption = ""
+    if title:
+        badge = '<span class="table-badge">无画线重建</span>' if rebuilt else ""
+        caption = f'<figcaption>{html.escape(title)}{badge}</figcaption>'
+    head = "".join(
+        "<tr>" + "".join(f"<th>{html.escape(str(c))}</th>" for c in list(row) + [""] * (ncols - len(row))) + "</tr>"
+        for row in header_rows
+    )
+    body = "".join(
+        "<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in list(row) + [""] * (ncols - len(row))) + "</tr>"
+        for row in data_rows
+    )
+    thead = f"<thead>{head}</thead>" if head else ""
+    return (f'<figure class="doc-table">{caption}<div class="table-scroll">'
+            f'<table>{thead}<tbody>{body}</tbody></table></div></figure>')
+
+
 def _render_one_block(bid: str, text: str, path: list, region: str,
                       is_heading: bool, is_noise: bool, is_omission: bool,
                       anchored: list, req_numbers: dict[str, int] | None = None,
-                      sub_anchors: list | None = None) -> str:
+                      sub_anchors: list | None = None, table_html: str = "") -> str:
     cls = ["doc-block"]
     if is_heading:
         cls.append("heading")
@@ -169,6 +202,10 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         cls.append("omission")
     if anchored:
         cls.append("anchored")
+    if table_html:
+        cls.append("is-table")
+    elif _LIST_TEXT_RE.match(text):
+        cls.append("list-item")   # 悬挂缩进
     depth = min(len(path), 4) if path else 0
 
     numbers = req_numbers or {}
@@ -191,11 +228,12 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
     chips_html = f'<div class="chips">{chips}</div>' if chips else ""
     omission_html = ('<div class="omission-flag"><span class="omission-tag">未覆盖</span></div>'
                      if is_omission else "")
+    content = table_html or f'<p class="text" data-block-id="{html.escape(bid)}">{html.escape(text)}</p>'
     return (
         f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}" style="--depth:{depth}">'
         f'<div class="block-inner">'
         f'{chips_html}{omission_html}'
-        f'<p class="text" data-block-id="{html.escape(bid)}">{html.escape(text)}</p>'
+        f'{content}'
         f'</div></div>'
     )
 
@@ -352,6 +390,22 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
 .page-break {{ display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #b8b2a4; font-size: 11px; }}
 .page-break::before, .page-break::after {{ content: ""; flex: 1; border-top: 1px dashed #ddd6c8; }}
+
+/* --- 阅读排版（优于原版 PDF：正文两端对齐、列表悬挂缩进、真表格） --- */
+.doc-block:not(.heading) .text {{ text-align: justify; hyphens: none; }}
+.doc-block.list-item .text {{ padding-left: 1.6em; text-indent: -1.6em; text-align: left; }}
+.doc-table {{ margin: 14px 0 18px; }}
+.doc-table figcaption {{ font-size: 12px; font-weight: 600; color: #6e7787; margin-bottom: 6px; letter-spacing: .02em; }}
+.doc-table .table-badge {{ font-size: 10px; font-weight: 500; color: #8a6417; background: rgba(248,239,217,.8);
+  border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 7px; margin-left: 8px; vertical-align: 1px; }}
+.doc-table .table-scroll {{ overflow-x: auto; border: 1px solid var(--line-strong); border-radius: 8px; }}
+.doc-table table {{ border-collapse: collapse; width: 100%; font-size: 12.5px; line-height: 1.5; }}
+.doc-table th, .doc-table td {{ border: 0; border-bottom: 1px solid var(--line); border-right: 1px solid rgba(231,223,210,.5);
+  padding: 6px 10px; text-align: left; vertical-align: top; min-width: 52px; }}
+.doc-table th:last-child, .doc-table td:last-child {{ border-right: 0; }}
+.doc-table thead th {{ background: #f3efe6; font-weight: 650; color: #43494f; position: relative; }}
+.doc-table tbody tr:nth-child(even) td {{ background: rgba(245,242,236,.55); }}
+.doc-table tbody tr:last-child td {{ border-bottom: 0; }}
 
 .doc-block.in-span {{ box-shadow: inset 3px 0 0 #a8c3ee; }}
 .doc-block.in-span.evidence {{ background: #eef4ff; border-radius: 6px; box-shadow: none; }}

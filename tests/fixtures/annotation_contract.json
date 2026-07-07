@@ -47,6 +47,27 @@
       "requirement_like": true,
       "noise": false,
       "doc_region": "body"
+    },
+    {
+      "block_id": "T1",
+      "order": 4,
+      "type": "table",
+      "text": "Symbol | Type | bytes",
+      "table_title": "Table C.1 — Types of Objects",
+      "table_source": "text_layout",
+      "header_rows": [
+        ["Symbol", "Type", "bytes"]
+      ],
+      "data_rows": [
+        ["U32", "Whole binary without sign", "4"],
+        ["String", "Sequence of bytes", "L"]
+      ],
+      "section_path": [
+        "4.7"
+      ],
+      "requirement_like": false,
+      "noise": false,
+      "doc_region": "body"
     }
   ],
   "requirements": [
@@ -108,6 +129,10 @@
       "01.b"
     ],
     "select_air1_span_blocks": 2,
-    "select_air1_evidence_blocks": 1
+    "select_air1_evidence_blocks": 1,
+    "table_caption": "Table C.1 — Types of Objects",
+    "table_header_cells": ["Symbol", "Type", "bytes"],
+    "table_first_row": ["U32", "Whole binary without sign", "4"],
+    "table_badge": "无画线重建"
   }
 }

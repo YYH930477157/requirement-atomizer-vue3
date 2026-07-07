@@ -270,7 +270,9 @@ def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict
 
 
 _BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
-                 "page_number", "requirement_like", "noise", "doc_region")
+                 "page_number", "requirement_like", "noise", "doc_region",
+                 # 表格块渲染真表格所需（旧 blocks.jsonl 无这些字段 → None，前端回退扁平文字）
+                 "table_title", "table_source", "header_rows", "data_rows")
 
 
 def build_document_blocks(output_dir: Path) -> dict:

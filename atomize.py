@@ -307,6 +307,8 @@ def build_table_artifacts(
         "header_row_count": header_count,
         "header_rows": header_rows,
         "headers": headers,
+        # 完整数据行进块：批注视图渲染真表格（此前只有扁平 text，画线/无画线表都糊成一坨）
+        "data_rows": data_rows,
         "text": table_text[:5000],
         "domain_tags": domain_tags,
         "kb_matches": kb_matches,

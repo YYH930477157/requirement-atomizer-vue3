@@ -38,6 +38,11 @@ export type DocumentBlock = {
   requirement_like?: boolean
   noise?: boolean
   doc_region?: string
+  // 表格块（type="table"）：批注视图渲染真表格；旧 out_dir 无 data_rows 回退扁平文字
+  table_title?: string
+  table_source?: string
+  header_rows?: string[][]
+  data_rows?: string[][]
 }
 
 export type DocumentPayload = {
