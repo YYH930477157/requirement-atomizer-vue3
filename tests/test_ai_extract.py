@@ -1209,6 +1209,48 @@ class TargetedSelfCheckTests(unittest.TestCase):
         self.assertEqual(len(added), 1)
         self.assertIn("自检补充（初抽遗漏）", added[0]["suspicion_reasons"])
 
+    def test_definition_constraint_is_recovered_by_targeted_self_check(self) -> None:
+        definition = (
+            "A period of time that always begins on the first day of a month "
+            "and ends on the first day of one or more subsequent months; "
+            "it can be valid for 1, 2, 3, 4, 6, 12 months."
+        )
+        section = {"section_id": "3.24", "heading": "3.24 billing period",
+                   "text": f"3.24 billing period\n{definition}", "block_ids": ["B1", "B2"]}
+        block_info = {
+            "B1": {"block_id": "B1", "text": "3.24 billing period",
+                   "requirement_like": False, "noise": False, "type": "heading"},
+            "B2": {"block_id": "B2", "text": definition,
+                   "requirement_like": True, "noise": False, "type": "paragraph"},
+        }
+        calls = {"n": 0}
+        captured: dict[str, str] = {}
+
+        def chat(system: str, user: str) -> dict:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"requirements": []}
+            captured["user"] = user
+            return {"requirements": [{
+                "title": "限定结算周期有效月份",
+                "description": "结算周期从一个月的第一天开始，到后续一个或多个自然月的第一天结束；有效期只能为1、2、3、4、6或12个月。",
+                "type": "constraint",
+                "priority": "P1",
+                "module": "结算",
+                "labels": ["结算周期"],
+                "source_quote": definition,
+                "acceptance_criteria": ["配置结算周期时，只允许选择1、2、3、4、6或12个月。"],
+            }]}
+
+        reqs = ai_extract.extract_section(section, chat, self_check=True, block_info=block_info)
+
+        self.assertEqual(calls["n"], 2)
+        self.assertIn(definition, captured["user"])
+        self.assertEqual(len(reqs), 1)
+        self.assertEqual(reqs[0]["type"], "constraint")
+        self.assertIn("1, 2, 3, 4, 6, 12 months", reqs[0]["source_quote"])
+        self.assertTrue(reqs[0]["self_check_added"])
+
     # --- P1 自检收敛循环：多轮直到覆盖清单穷尽 ---
     def _section3(self) -> dict:
         return {"section_id": "S3", "heading": "S3",
@@ -1296,7 +1338,9 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("条款族=一条需求", ai_extract.SYSTEM_PROMPT)          # v9：条款族 + sub_items + Test→验收
         self.assertIn("sub_items", ai_extract.SYSTEM_PROMPT)
         self.assertIn("不得给默认建议值", ai_extract.SYSTEM_PROMPT)          # v12：无来源数字不得进入交付字段
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v12")
+        self.assertIn("术语定义中的固定起止规则", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("1, 2, 3, 4, 6, 12 months", ai_extract.SYSTEM_PROMPT)
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v13")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}

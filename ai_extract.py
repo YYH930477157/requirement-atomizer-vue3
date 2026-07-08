@@ -62,7 +62,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v12"  # v12：无来源数字不得进入验收/研发指引（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v13"  # v13：术语定义中的固定边界/允许值也要抽取（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -149,6 +149,10 @@ SYSTEM_PROMPT = (
     "\"dev_guidance\": [\"实现月结算记录存储区，容量不少于12条，写满后新记录覆盖最旧记录\", "
     "\"提供按月份读取历史结算记录的访问接口\"], "
     "\"acceptance_criteria\": [\"连续产生12个月结算记录后，最早一个月的记录仍可完整读出\"]}。"
+    "术语定义中的固定起止规则、允许取值、有效期范围、边界条件或枚举值也是约束/业务规则，"
+    "不要仅因其位于 Terms and definitions 而忽略；例如 billing period 定义里 "
+    "\"always begins ... ends ... can be valid for 1, 2, 3, 4, 6, 12 months\" "
+    "应抽为结算周期约束，并保留 1, 2, 3, 4, 6, 12 months。"
     "若提供了【文档背景/章节大纲/术语定义】，据此保持术语一致、模块判断准确、解析跨章节引用；"
     "但这些背景仅供参考——需求内容与 source_quote 必须来自【当前章节】原文，不得从背景里搬运。"
     "严禁编造原文没有的 OBIS 码、事件号、十六进制、数字——这些只能原样引用或不出现。"

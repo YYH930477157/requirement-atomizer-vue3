@@ -596,6 +596,8 @@ def kb_domain_tags(matches: list[dict[str, Any]]) -> list[str]:
 
 def is_requirement_like(text: str) -> bool:
     low = text.lower()
+    if low.strip().startswith("summary"):
+        return False
     signals = (
         "shall",
         "must",
@@ -608,7 +610,27 @@ def is_requirement_like(text: str) -> bool:
         "only",
         "mandatory",
     )
-    return any(signal in low for signal in signals)
+    if any(signal in low for signal in signals):
+        return True
+    definition_constraints = (
+        r"\balways\s+begins\b",
+        r"\balways\s+ends\b",
+        r"\bends\s+on\b",
+        r"\bcan\s+be\s+valid\s+for\b",
+    )
+    if any(re.search(pattern, low) for pattern in definition_constraints):
+        return True
+    if re.search(r"\bvalid for\b[^.;:]*\b\d+\b[^.;:]*\b(day|days|month|months|year|years|hour|hours)\b", low):
+        return True
+    if re.search(r"\b(?:default|factory)\s+value\s+of\b", low):
+        return True
+    if re.search(r"\bcan\s+be\s+one\s+of\b", low):
+        return True
+    if re.search(r"\b(?:profile|protocol|channel|medium|media)\b[^.;:]{0,120}\bcan\s+be\s+used\s+for\s+(?:the\s+)?communication\b", low):
+        return True
+    if re.search(r"\bat\s+least\b[^.;:]{0,80}\b(?:highlight|record|report|transmit|store)s?\b[^.;:]{0,120}\bif\b", low):
+        return True
+    return False
 
 
 def is_atomic_requirement_like(text: str) -> bool:

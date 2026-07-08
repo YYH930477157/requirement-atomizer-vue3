@@ -16,12 +16,71 @@ from atomize import (
     extract_matrix_facts,
     first_field_value,
     interpret_table_matrix,
+    is_requirement_like,
     parse_access_rights,
     run_atomizer_pipeline,
 )
 
 
 class AtomizeTableTests(unittest.TestCase):
+    def test_definition_with_fixed_validity_values_is_requirement_like(self) -> None:
+        text = (
+            "A period of time that always begins on the first day of a month "
+            "and ends on the first day of one or more subsequent months; "
+            "it can be valid for 1, 2, 3, 4, 6, 12 months."
+        )
+
+        self.assertTrue(is_requirement_like(text))
+
+    def test_plain_definition_without_constraint_is_not_requirement_like(self) -> None:
+        text = "A calendar is a system for naming periods of time."
+
+        self.assertFalse(is_requirement_like(text))
+
+    def test_scope_like_valid_for_sentence_is_not_requirement_like(self) -> None:
+        text = "This document is valid for electricity meters used in residential applications."
+
+        self.assertFalse(is_requirement_like(text))
+
+    def test_depends_on_does_not_match_ends_on_constraint(self) -> None:
+        text = "The number of bytes used to represent an attribute depends on the protocol used."
+
+        self.assertFalse(is_requirement_like(text))
+
+    def test_profile_permission_sentence_is_requirement_like(self) -> None:
+        text = (
+            "PM1 profile transmission media and protocols can be used for the communication "
+            "between class A, B, C GdMs and the Concentrators."
+        )
+
+        self.assertTrue(is_requirement_like(text))
+
+    def test_summary_can_be_used_sentence_is_not_requirement_like(self) -> None:
+        text = "SUMMARY The technical specification establishes the system architecture that can be used."
+
+        self.assertFalse(is_requirement_like(text))
+
+    def test_default_value_and_enum_sentence_is_requirement_like(self) -> None:
+        text = (
+            "The default value of Dpm is 25d; "
+            "the Svf status can be one of open, closed, enabled to open."
+        )
+
+        self.assertTrue(is_requirement_like(text))
+
+    def test_range_detection_weak_obligation_is_requirement_like(self) -> None:
+        text = (
+            "At least the GdM-AFD1s highlight and record if the water temperature "
+            "is out of range from the range corresponding to the temperature class."
+        )
+
+        self.assertTrue(is_requirement_like(text))
+
+    def test_acceptability_criteria_heading_is_not_requirement_like(self) -> None:
+        text = "Acceptability criteria:"
+
+        self.assertFalse(is_requirement_like(text))
+
     def test_first_field_value_matches_pdf_header_with_internal_false_space(self) -> None:
         fields = {"Object/attri bute name": "x", "CL": "3"}
 
