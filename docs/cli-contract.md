@@ -138,9 +138,6 @@ End-to-end run:
 ratomizer run `
   "D:\standards\Appendix 9-ABNT NBR 16968-2022 EN.docx" `
   --out ".\out\abnt_nbr_16968_atomizer_v5" `
-  --kb ".\knowledge_bases\energy_metering.json" `
-  --kb ".\knowledge_bases\energy_metering_protocol_layer.json" `
-  --kb ".\knowledge_bases\energy_metering_cosem_classes.json" `
   --kb ".\knowledge_bases\compiled_from_obsidian.json" `
   --export md,csv
 ```

@@ -317,7 +317,7 @@ def _llm_enrich_item(
         with guard:
             cache[key] = llm_item
 
-    drift = validate_llm_item(llm_item, source_req)
+    drift = validate_llm_item(llm_item, source_req, template_text=ctx.get("template_refs", ""))
     # 与 ai_extract 双引擎同一分级纪律：**编码漂移**（OBIS/hex/事件号）严格拒绝——"错一位即
     # 严重"；**普通整数漂移**（散文里的步骤序号"1.2.3."、复述计数等）只软标记不阻断——结构字段
     # 已确定性冻结、source_quote 随交付物同行可核，把整数当硬拒会误伤合格富化（真实 A/B 验证）。
@@ -339,6 +339,12 @@ def _llm_enrich_item(
     item["analysis_source"] = "llm"
 
     soft = [d for d in drift if not d.startswith("fabricated code")]
+    # 软标必须随交付物同行（2026-07-08 审计 B1）：此前只进 run 级 issues（excel/成文不读），
+    # 编造数字以零可见标记落进公司模板成文 xlsx。现在钉在 item 上，_notes_text/成文同列渲染。
+    if soft:
+        item["enrichment_warnings"] = soft
+    else:
+        item.pop("enrichment_warnings", None)   # 重富化后旧警告不残留
     return True, ([f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"]
                   if soft else [])
 

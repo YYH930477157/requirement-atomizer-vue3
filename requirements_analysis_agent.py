@@ -51,7 +51,8 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
     return {"system": system, "user": "\n".join(lines)}
 
 
-def validate_llm_item(item: dict[str, Any], source: dict[str, Any]) -> list[str]:
+def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
+                      template_text: str = "") -> list[str]:
     """LLM 分析产物防幻觉校验（方向与 ai_extract 双引擎护栏一致）。
 
     - 硬伤（编造）：分析文本里出现源文没有的受保护编码（OBIS/事件号/hex，原子匹配——
@@ -76,12 +77,24 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any]) -> list[str]
         str(item.get(field, ""))
         for field in ("requirement", "software_requirement_text", "hardware_dependency", "ownership_reason")
     )
+    # 交付列表字段（研发直接阅读执行）此前完全在校验盲区——编造 OBIS 可无检测落进
+    # 成文 xlsx「说明示例」列（2026-07-08 审计）。guidance 按设计允许公司模板做法，
+    # 所以其编码/数字基线是 源文 ∪ 模板注入；正文 analysis_text 基线仍不含模板（防搬运）。
+    delivery_text = " ".join(
+        " ".join(str(x) for x in (item.get(field) or []) if str(x).strip())
+        for field in ("developer_guidance", "acceptance_criteria", "assumptions")
+    )
+    guidance_basis = f"{union_text} {template_text or ''}"
 
     issues = []
     for code in sorted(extract_codes(analysis_text) - extract_codes(union_text)):
         issues.append(f"fabricated code not in source: {code}")
     for number in sorted(extract_ints(analysis_text) - extract_ints(union_text)):
         issues.append(f"fabricated number not in source: {number}")
+    for code in sorted(extract_codes(delivery_text) - extract_codes(guidance_basis)):
+        issues.append(f"fabricated code not in source: {code} (guidance)")
+    for number in sorted(extract_ints(delivery_text) - extract_ints(guidance_basis)):
+        issues.append(f"fabricated number in guidance: {number}")
     for number in sorted(extract_ints(priority_text) - extract_ints(analysis_text)):
         issues.append(f"source number {number} missing from analysis text")
     return issues

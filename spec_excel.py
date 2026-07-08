@@ -140,7 +140,7 @@ def _write_summary_sheet(wb: Workbook, meta: dict, analysis: dict, domain_groups
     doc_title = meta.get("source", "需求分析")
     if meter_label:
         doc_title = f"[{meter_label}] {doc_title}"
-    ws["A1"].value = doc_title
+    ws["A1"].value = formula_safe(doc_title)
     ws["A1"].font = TITLE_FONT
     ws["A1"].alignment = Alignment(vertical="center")
     ws.row_dimensions[1].height = 36
@@ -223,7 +223,7 @@ def _write_summary_sheet(wb: Workbook, meta: dict, analysis: dict, domain_groups
         for gap in gaps:
             row += 1
             ws.merge_cells(f"A{row}:H{row}")
-            ws.cell(row=row, column=1).value = f"[{gap.get('domain', '?')}] {gap.get('description', '')}"
+            ws.cell(row=row, column=1).value = formula_safe(f"[{gap.get('domain', '?')}] {gap.get('description', '')}")
             ws.cell(row=row, column=1).font = Font(name="Microsoft YaHei", size=10, color="C0392B")
             ws.cell(row=row, column=1).alignment = WRAP_ALIGN
 
@@ -237,7 +237,7 @@ def _write_summary_sheet(wb: Workbook, meta: dict, analysis: dict, domain_groups
             row += 1
             ws.merge_cells(f"A{row}:H{row}")
             ids = ", ".join(c.get("requirement_ids", []))
-            ws.cell(row=row, column=1).value = f"[{ids}] {c.get('description', '')}"
+            ws.cell(row=row, column=1).value = formula_safe(f"[{ids}] {c.get('description', '')}")
             ws.cell(row=row, column=1).font = Font(name="Microsoft YaHei", size=10, color="E67E22")
             ws.cell(row=row, column=1).alignment = WRAP_ALIGN
 
@@ -393,7 +393,7 @@ def _write_object_model_sheet(wb: Workbook, requirements: list[dict[str, Any]]) 
         group = _object_model_group(req)
         if group != current_group:
             current_group = group
-            ws.cell(row=row_idx, column=2).value = group
+            ws.cell(row=row_idx, column=2).value = formula_safe(group)
             _style_object_model_row(ws, row_idx, OBJECT_GROUP_FILL, bold=True)
             row_idx += 1
 

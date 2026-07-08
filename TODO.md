@@ -52,6 +52,10 @@
     UI 相应呈现；给新人的 ARCHITECTURE.md。
 - [ ] **Green Book 引入**（A 轨行为层第二本书）：散文语料无 class_id 键，需与蓝皮书不同的
     检索策略（术语倒排 or 受约束语义），先小样探针再立项。
+- [ ] **CLI 契约补链**（2026-07-08 审计 4-A）：docs/cli-contract.md 承诺 `analyze` 但契约内
+    无命令产其必需输入（ai_requirements.jsonl 需 ai-extract/chain，均不在 ratomizer CLI）；
+    `assemble`（A 轨主交付物）也不在契约。补 `ratomizer chain` 进契约 or 明确 B 轨走
+    desktop_tasks——需要产品拍板对接方案后再动契约文本。
 - [ ] **词典重分词**（机翻 PDF 残留碎词的下一刀，2026-07-07 OCR 对比裁定的替代路线）：
     确定性词频/SymSpell 重分词 pass，只在去碎门控开启的文档上跑，数字/编码/单位豁免。
     目标：残留小写碎词（UNI 实测 72 处）与词间缺空格（"ofbytes"/"i sencoded"）修掉大半。

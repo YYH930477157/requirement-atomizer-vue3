@@ -303,7 +303,7 @@ def stage_producer(stage: str) -> str:
 
 
 def update_run_manifest(out_dir: Path, stage: str, status: str, *,
-                        error: str | None = None) -> None:
+                        error: str | None = None, route: str | None = None) -> None:
     """run_manifest.json：out_dir 的显式状态账本（阶段/状态/版本/时间）。写失败不阻断任务。"""
     import datetime as _dt
     path = Path(out_dir).expanduser().resolve() / RUN_MANIFEST
@@ -322,6 +322,8 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
         entry = {"status": "running", "started": now, "producer": stage_producer(stage)}
     else:
         entry.update({"status": status, "finished": now, "producer": stage_producer(stage)})
+        if route:
+            entry["route"] = route   # stub 降级 ≠ 真 LLM：账本必须可区分（2026-07-08 审计）
         if error:
             entry["error"] = str(error)[:300]
         else:
@@ -377,7 +379,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         except Exception as exc:
             update_run_manifest(out_dir, stage, "failed", error=str(exc))
             raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc
-        update_run_manifest(out_dir, stage, "ok")
+        llm_stages = {"ai-extract", "assemble", "requirements-analysis"}
+        update_run_manifest(out_dir, stage, "ok", route=route if stage in llm_stages else None)
         stage_payload = dict(stage_payload or {})
         stage_payload.pop("summary", None)   # 各阶段的 summary 体积大且重复，链尾统一给一份
         results[stage] = stage_payload
@@ -393,6 +396,14 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         elif stage == "clarification-report":
             payload["readiness"] = stage_payload.get("readiness")
             payload["questions"] = stage_payload.get("questions")
+        # 阶段降级/告警上提（2026-07-08 审计 2-C）：此前 note 埋在 results 里，
+        # stub 降级/部分章节失败时 GUI 一律显示「运行完成」全绿
+        note = stage_payload.get("note")
+        analysis = stage_payload.get("analysis")
+        if not note and isinstance(analysis, dict):
+            note = analysis.get("note")
+        if note:
+            payload.setdefault("stage_notes", []).append(f"{stage}: {note}")
         emit_progress({"stage": "chain", "step": stage, "completed": index,
                        "total": len(ordered), "percent": int(index * 100 / len(ordered))})
 
@@ -533,7 +544,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     chain_parser = subparsers.add_parser("chain")
     chain_parser.add_argument("--out", type=Path, required=True)
     chain_parser.add_argument("--stages", required=True, help="逗号分隔的阶段清单（按依赖自动排序）")
-    chain_parser.add_argument("--llm-route", default="stub", choices=["stub", "openai_compatible"])
+    # 默认与独立子命令一致（openai_compatible）：headless 忘带路由时"没配 key 响亮失败"
+    # 优于"静默 stub 产空行为需求且 manifest 全 ok"（2026-07-08 审计 A4）
+    chain_parser.add_argument("--llm-route", default="openai_compatible", choices=["stub", "openai_compatible"])
     chain_parser.add_argument("--template", type=Path, default=None)
     chain_parser.add_argument("--sample-ratio", type=float, default=None)
     chain_parser.add_argument("--limit-sections", type=int, default=None)

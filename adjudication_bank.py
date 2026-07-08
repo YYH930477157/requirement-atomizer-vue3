@@ -60,6 +60,11 @@ def update_bank(bank_path: Path, out_dir: Path) -> dict[str, Any]:
         state = states.get(rid)
         status = str((state or {}).get("status") or "")
         if status == "accepted":
+            # 漂移标记/可疑样本不进教材（2026-07-08 审计 B5）：专家 accept 时若 notes 带
+            # 漂移标记或 suspicion 未清，样本可能含编造内容——注入 few-shot 会教坏后续富化
+            notes = str(req.get("notes") or "")
+            if "漂移" in notes or (req.get("suspicion_reasons") or []):
+                continue
             module = str((state or {}).get("module_override") or req.get("module") or "")
             bank["accepted"][rid] = {
                 "module": module,

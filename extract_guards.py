@@ -73,11 +73,24 @@ def _norm_ws(s: Any) -> str:
 
 
 def _produced_text(requirement: dict[str, Any]) -> str:
+    # sub_items 与 threshold_table 此前不在漂移扫描内（2026-07-08 审计 B3/B4）：
+    # 参数表被注释为"数值是研发的命根子"却是校验最弱的字段——编造/换算的数值零检测。
+    # 纳入后：编造编码走硬拦（draft+拦截注），无据数字走软标（批注视图 suspicion 徽章）。
+    sub_texts = " ".join(
+        str(s.get("text") or "") for s in requirement.get("sub_items") or [] if isinstance(s, dict))
+    table = requirement.get("threshold_table") or {}
+    table_cells: list[str] = []
+    if isinstance(table, dict):
+        table_cells.extend(str(c) for c in table.get("columns") or [])
+        for row in table.get("rows") or []:
+            table_cells.extend(str(c) for c in (row if isinstance(row, list) else [row]))
     return " ".join([
         str(requirement.get("title") or ""),
         str(requirement.get("description") or ""),
         str(requirement.get("source_quote") or ""),
         " ".join(str(a) for a in requirement.get("acceptance_criteria") or []),
+        sub_texts,
+        " ".join(table_cells),
     ])
 
 

@@ -486,7 +486,9 @@ type RunStages = {
   compose: boolean
   annotationHtml: boolean
 }
-const RUN_STAGES_KEY = "ratomizer.runStages"
+// v2（2026-07-08 审计 A1）：整对象持久化 + 旧值优先展开意味着默认值演进永远到不了老用户
+// （旧 localStorage 里冻结着 compose:false）。换键 = 所有用户一次性拿到新默认，代价是旧自定义重置。
+const RUN_STAGES_KEY = "ratomizer.runStages.v2"
 function loadRunStages(): RunStages {
   const fallback: RunStages = {
     llmReview: true,
@@ -681,6 +683,9 @@ const knowledgeMatches = computed(() => {
 
 onMounted(() => {
   loadInitialApiSession()
+  // 恢复已保存的 LLM 开关/端点：此前只在打开设置面板时才加载——重启后 llmMode 恒 false，
+  // 整条 AI 交付物轨静默降级 stub（2026-07-08 审计 A2）
+  void loadLlmSettings()
 })
 
 function handleNavAction(item: PhaseNavId) {
@@ -994,10 +999,17 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       const stages: string[] = []
       if (runStages.value.aiExtract) stages.push("ai-extract")
       if (runStages.value.assemble) stages.push("assemble")
+      // 分析/成文/澄清硬依赖真 LLM 抽取产物（ai_requirements.jsonl，stub 路由不产）——
+      // LLM 关时带上它们必然断链，且把排在后面的 compose/批注 HTML 一起掐死（2026-07-08 审计 A3）
+      const skippedForLlm: string[] = []
       if (runStages.value.analyze) {
-        stages.push("requirements-analysis")
-        if (templatePath.value) stages.push("template-write")
-        stages.push("clarification-report")
+        if (useLlm) {
+          stages.push("requirements-analysis")
+          if (templatePath.value) stages.push("template-write")
+          stages.push("clarification-report")
+        } else {
+          skippedForLlm.push("需求分析", "按模板成文", "澄清清单")
+        }
       }
       if (runStages.value.compose) stages.push("compose")
       if (runStages.value.annotationHtml) stages.push("export-annotation-html")
@@ -1023,8 +1035,17 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
             ((chainReadiness.reasons || []).length ? `（${(chainReadiness.reasons || []).join("、")}）` : "") +
             `，必答澄清 ${Number(chainPayload?.questions ?? 0)} 条 → clarification_questions.xlsx`
         }
+        // 阶段降级/告警必须可见（stub 路由、部分章节失败等此前 GUI 全绿沉默）
+        const chainNotes = Array.isArray(chainPayload?.stage_notes)
+          ? (chainPayload.stage_notes as unknown[]).map((n) => String(n)) : []
+        if (chainNotes.length) {
+          readinessNote += `；注意：${chainNotes.join("；")}`
+        }
         ranStages.push(...stages.map((s) => CHAIN_STEP_LABELS[s] || s))
         await refreshAfterDesktopTask(finalOutDir)
+      }
+      if (skippedForLlm.length) {
+        readinessNote += `；LLM 已关闭，跳过：${skippedForLlm.join("、")}（顶栏开启 LLM 后重跑可得完整交付物）`
       }
     }
 

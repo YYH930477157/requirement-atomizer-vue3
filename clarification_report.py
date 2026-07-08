@@ -117,7 +117,7 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
             con = {}
         for g in (con.get("obis_coreference") or []):
             if g.get("values_differ"):
-                code = g.get("code") or ""
+                code = g.get("obis") or ""   # 生产方(merged_consistency)写的键是 "obis"（2026-07-08 审计逮出渲染永远为空）
                 entries.append(_entry(
                     CAT_CONFLICT,
                     f"OBIS {code} 在多处被引用且数值不一致，请确认以哪一处为准",
@@ -129,6 +129,36 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 "同一原文语句被抽为多条需求，请确认是否合并或存在语义差异",
                 quote=quote, signal="consistency:duplicate"))
 
+    entries.extend(_parse_audit_entries(out_dir))
+    return entries
+
+
+def _parse_audit_entries(out_dir: Path) -> list[dict[str, Any]]:
+    """解析层守恒审计信号（2026-07-08 审计 H5）：此前 READY 门的全部信号源都产自
+    过滤器**之后**——噪声误标/区域误标把内容静默丢掉时，零疑问信号、照判 READY。
+    这里从 blocks.jsonl 直接算收支，异常比例升为内部核对必答项。"""
+    blocks_path = out_dir / "blocks.jsonl"
+    if not blocks_path.exists():
+        return []
+    blocks = read_jsonl(blocks_path)
+    if not blocks:
+        return []
+    entries: list[dict[str, Any]] = []
+    total_chars = sum(len(str(b.get("text") or "")) for b in blocks)
+    noise_chars = sum(len(str(b.get("text") or "")) for b in blocks if b.get("noise"))
+    body_blocks = sum(1 for b in blocks if str(b.get("doc_region") or "body") == "body")
+    if total_chars and noise_chars / total_chars > 0.2:
+        entries.append(_entry(
+            CAT_CONFLICT,
+            f"解析层将 {noise_chars / total_chars:.0%} 的文字标为页眉页脚噪声（正常约 5-10%），"
+            "请抽查 blocks.jsonl 中 noise=true 的块是否误伤正文",
+            signal="parse_audit:noise_char_ratio", audience=AUDIENCE_INTERNAL))
+    if len(blocks) >= 20 and body_blocks / len(blocks) < 0.5:
+        entries.append(_entry(
+            CAT_CONFLICT,
+            f"仅 {body_blocks / len(blocks):.0%} 的块被判为正文区（其余为前言/目录等），"
+            "文档前半可能被 Scope 标题误判整体标成前言——请核对 doc_region 分布",
+            signal="parse_audit:body_ratio", audience=AUDIENCE_INTERNAL))
     return entries
 
 
@@ -208,18 +238,18 @@ def write_xlsx(entries: list[dict[str, Any]], readiness: dict[str, Any], path: P
     customer = [e for e in hard if e.get("audience") != AUDIENCE_INTERNAL]
     internal = [e for e in hard if e.get("audience") == AUDIENCE_INTERNAL]
     for i, e in enumerate(customer, 1):
-        ws.append([i, e["category"], formula_safe(e["question"]), e["section"],
-                   formula_safe(e["quote"]), e["source_id"], e["signal"]])
+        ws.append([i, e["category"], formula_safe(e["question"]), formula_safe(e["section"]),
+                   formula_safe(e["quote"]), formula_safe(e["source_id"]), formula_safe(e["signal"])])
     ws_int = wb.create_sheet("必答-内部核对")
     ws_int.append(header[:7])
     for i, e in enumerate(internal, 1):
-        ws_int.append([i, e["category"], formula_safe(e["question"]), e["section"],
-                       formula_safe(e["quote"]), e["source_id"], e["signal"]])
+        ws_int.append([i, e["category"], formula_safe(e["question"]), formula_safe(e["section"]),
+                       formula_safe(e["quote"]), formula_safe(e["source_id"]), formula_safe(e["signal"])])
     ws_soft = wb.create_sheet("参考(模型自报)")
     ws_soft.append(header[:7])
     for i, e in enumerate(soft, 1):
-        ws_soft.append([i, e["category"], formula_safe(e["question"]), e["section"],
-                        formula_safe(e["quote"]), e["source_id"], e["signal"]])
+        ws_soft.append([i, e["category"], formula_safe(e["question"]), formula_safe(e["section"]),
+                        formula_safe(e["quote"]), formula_safe(e["source_id"]), formula_safe(e["signal"])])
     ws2 = wb.create_sheet("就绪判定")
     ws2.append(["判定", readiness["verdict"]])
     for r in readiness["reasons"]:

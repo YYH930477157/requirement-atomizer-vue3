@@ -45,8 +45,23 @@ def build_quality_report(
     domain_table_ids = {item.get("item_id") for item in body_tables_with_domain}
     domain_table_item_ids_with_candidates = table_item_ids_with_candidates & domain_table_ids
 
+    # 字符收支审计（2026-07-08 审计 C0）：noise 标记/region 标记是"测漏"指标看不见的
+    # 静默丢弃向量——把丢弃量摆上仪表盘，误伤才有被发现的机会
+    from collections import Counter as _Counter
+    region_counts = _Counter(str(b.get("doc_region") or "body") for b in blocks)
+    noise_blocks = [b for b in blocks if b.get("noise")]
+    noise_chars = sum(len(str(b.get("text") or "")) for b in noise_blocks)
+    total_chars = sum(len(str(b.get("text") or "")) for b in blocks)
+
     return {
         "quality_report_version": "1.0",
+        "audit": {
+            "region_block_counts": dict(region_counts),
+            "noise_blocks": len(noise_blocks),
+            "noise_chars": noise_chars,
+            "noise_char_ratio": ratio(noise_chars, total_chars),
+            "body_block_ratio": ratio(region_counts.get("body", 0), len(blocks)),
+        },
         "counts": {
             "blocks": len(blocks),
             "table_items": len(table_items),

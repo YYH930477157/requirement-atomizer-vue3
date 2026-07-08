@@ -103,6 +103,8 @@ def _excel_row(index: int, item: dict[str, Any]) -> list[Any]:
 
 def _notes_text(item: dict[str, Any]) -> str:
     notes: list[str] = []
+    # 富化软标随交付物同行：编造数字/遗漏漂移必须在研发看的列里可见（2026-07-08 审计 B1）
+    notes.extend(f"⚠ 富化待核：{value}" for value in item.get("enrichment_warnings") or [])
     # 参数表优先（数值是研发的命根子：粒径/成分/限值清单必须出现在交付物里，不能只留在中间产物）
     table = item.get("threshold_table")
     if isinstance(table, dict) and table.get("rows"):

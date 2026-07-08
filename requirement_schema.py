@@ -140,7 +140,7 @@ def to_requirement(item: dict[str, Any], req_id: str) -> dict[str, Any]:
     for q in item.get("expert_questions") or []:
         notes_parts.append(f"专家问题：{q}")
     if item.get("drift_codes"):
-        notes_parts.append(f"编码漂移（已拦截）：{', '.join(item['drift_codes'])}")
+        notes_parts.append(f"编码漂移（已标记待核，文本保留）：{', '.join(item['drift_codes'])}")
     lower = original.lower()
     if any(kw in lower for kw in ("threshold", "limit", "at least", "records")) or \
             any(kw in original for kw in ("门限", "阈值", "记录")):

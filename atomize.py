@@ -771,7 +771,17 @@ def mark_doc_regions(
     # Standards often include "The Scope in English..." in the preface before the
     # real normative body. If multiple Scope headings exist, the last one is the
     # safer body start.
-    body_start = body_start_indexes[-1] if body_start_indexes else 0
+    # 只认前 60% 里的 Scope（2026-07-08 审计 H1）：文档后部的裸 "Scope" 标题（双语对照页/
+    # 附录引述被判一级标题）若被当 body 起点，其前的全部正文会标成 front_matter 静默退出
+    # A 轨候选。后部候选全无时回退第一个（宁多收不静默丢）。
+    cutoff = int(len(blocks) * 0.6)
+    early = [i for i in body_start_indexes if i <= cutoff]
+    if early:
+        body_start = early[-1]
+    elif body_start_indexes:
+        body_start = body_start_indexes[0]
+    else:
+        body_start = 0
 
     for index, block in enumerate(blocks):
         if index >= body_start:

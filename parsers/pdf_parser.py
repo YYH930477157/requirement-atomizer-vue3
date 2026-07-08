@@ -353,17 +353,32 @@ def extract_pdf(
         table_count = 0
         last_caption: str | None = None
 
+        empty_pages = 0
         for page_number, page in enumerate(pdf.pages, start=1):
-            ruled_tables = page.find_tables()
-            table_bboxes = [table.bbox for table in ruled_tables]
+            # 画线表先验收再决定排除范围（2026-07-08 审计 C2）：此前 bbox 内的词无条件从
+            # 段落流剔除，若该表随后被 _skip_table_matrix 丢弃（如 extract 拆格失败的框），
+            # 词既不进表也不回段落——内容静默蒸发。现在只有验收通过的表才占用 bbox。
+            kept_ruled: list[tuple[Any, list[list[str]]]] = []
+            for table in page.find_tables():
+                matrix = _clean_table_matrix(table.extract())
+                if defrag:
+                    matrix = [[defragment_text(cell) for cell in row] for row in matrix]
+                if _skip_table_matrix(matrix):
+                    LOGGER.info("第 %d 页画线表拆格近空，内容回流段落（bbox=%s）",
+                                page_number, [round(v) for v in table.bbox])
+                    continue
+                kept_ruled.append((table, matrix))
+            table_bboxes = [table.bbox for table, _ in kept_ruled]
             lines = _page_lines(page, table_bboxes, defrag=defrag)
+            if not lines and not kept_ruled:
+                empty_pages += 1
             text_tables, prose_lines = _detect_text_tables(
                 lines, page_height=page.height, document_profile=profile, defrag=defrag)
             page_paragraphs = _group_paragraphs(prose_lines, page_height=page.height, document_profile=profile)
 
             # 画线表 + 文本重建表 + 段落按 top 统一排序，保阅读顺序
             events: list[tuple[float, str, Any]] = (
-                [(float(t.bbox[1]), "ruled", t) for t in ruled_tables]
+                [(float(t.bbox[1]), "ruled", (t, m)) for t, m in kept_ruled]
                 + [(t["top"], "text_table", t) for t in text_tables]
                 + [(p["top"], "paragraph", p) for p in page_paragraphs]
             )
@@ -384,13 +399,11 @@ def extract_pdf(
                     )
                     continue
                 if kind == "ruled":
-                    matrix = _clean_table_matrix(payload.extract())
-                    if defrag:
-                        matrix = [[defragment_text(cell) for cell in row] for row in matrix]
+                    matrix = payload[1]
                 else:
                     matrix = _clean_table_matrix(payload["matrix"])
-                if _skip_table_matrix(matrix):
-                    continue
+                    if _skip_table_matrix(matrix):
+                        continue
                 table_count += 1
                 order += 1
                 table_id = f"TBL-{table_count:06d}"
@@ -412,6 +425,12 @@ def extract_pdf(
                 blocks.append(table_block)
                 table_items.extend(new_table_items)
                 last_caption = None
+
+        # 混合扫描 PDF 审计（2026-07-08 审计 H3）：_assert_text_layer 只采样前 5 页，
+        # 正文后半是扫描页时零块产出且下游全部指标不可见——至少要在日志里喊出来
+        if empty_pages > max(3, len(pdf.pages) * 0.3):
+            LOGGER.warning("共 %d/%d 页无文字层（疑似扫描页混排），这些页内容未进入解析",
+                           empty_pages, len(pdf.pages))
 
     blocks = _merge_continuation_blocks(blocks, knowledge_bases)
     return blocks, table_items
@@ -683,8 +702,12 @@ def _append_text_block(
     kb_matches = match_knowledge(knowledge_bases, text, " > ".join(section_path))
     domain_tags = merge_tags(tag_domains(text, " > ".join(section_path)), kb_domain_tags(kb_matches))
     normalized = _normalize_repeated_line(text)
-    noise = (is_noise(text, document_profile=profile) or normalized in repeated_noise
-             or bool(_COPYRIGHT_FOOTER_RE.search(text)))   # ©+Page 版权页脚（机翻变体逃过重复行检测）
+    # 长度帽（2026-07-08 审计 M2/M3）：重复行/©页脚判定只适用于短行——页眉页脚都是短的；
+    # 不设帽时，正文段落含 "© …, see page 12" 或与页眉同形的句子会整段标噪静默退出抽取
+    short_enough = len(text) <= 120
+    noise = (is_noise(text, document_profile=profile)
+             or (short_enough and normalized in repeated_noise)
+             or (short_enough and bool(_COPYRIGHT_FOOTER_RE.search(text))))
     block: dict[str, Any] = {
         "block_id": f"BLK-{order:06d}",
         "order": order,

@@ -25,6 +25,7 @@ declare global {
     quality?: unknown
     failed_sections?: number
     note?: string
+    stage_notes?: string[]
     path?: string
     applied?: number
     skipped?: number

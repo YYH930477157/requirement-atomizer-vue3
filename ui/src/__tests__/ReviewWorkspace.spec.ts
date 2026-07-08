@@ -7,7 +7,7 @@ const ALL_STAGES_OFF = JSON.stringify({ aiExtract: false, assemble: false, analy
 describe("review workspace shell", () => {
   beforeEach(() => {
     // 默认「运行」只跑基础解析+审查，不追加交付物链——各测试按需在 mount 前开启对应阶段
-    localStorage.setItem("ratomizer.runStages", ALL_STAGES_OFF)
+    localStorage.setItem("ratomizer.runStages.v2", ALL_STAGES_OFF)
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -330,7 +330,7 @@ describe("review workspace shell", () => {
 
   it("runs pipeline then the enabled AI-extract stage as one chain from the Run button", async () => {
     // 开启 AI 抽取阶段：点一次「运行」应先跑 runPipeline 再自动接 aiExtract
-    localStorage.setItem("ratomizer.runStages",
+    localStorage.setItem("ratomizer.runStages.v2",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -412,6 +412,11 @@ describe("review workspace shell", () => {
   function deliverableBridge(overrides: Record<string, unknown> = {}) {
     return {
       getApiSession: vi.fn().mockResolvedValue(null),
+      // 已保存 LLM 设置：onMounted 恢复（2026-07-08 审计 A2）——链条测试借此走 LLM 开启路径
+      getLlmSettings: vi.fn().mockResolvedValue({
+        enabled: true, baseUrl: "http://127.0.0.1:11434/v1", model: "m", apiKeyEnv: "",
+        temperature: 0.1, maxTokens: 2048, timeoutS: 60, maxRetries: 2, concurrency: 2, selfCheck: true,
+      }),
       openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
       selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
       openOutput: vi.fn(),
@@ -447,7 +452,7 @@ describe("review workspace shell", () => {
   }
 
   it("runs all enabled deliverable stages including annotation HTML as one Run chain", async () => {
-    localStorage.setItem("ratomizer.runStages",
+    localStorage.setItem("ratomizer.runStages.v2",
       JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: true, annotationHtml: true }))
     Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
@@ -461,7 +466,8 @@ describe("review workspace shell", () => {
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
         stages: ["ai-extract", "assemble", "requirements-analysis", "clarification-report", "compose", "export-annotation-html"],
-        llmRoute: "stub", templatePath: undefined,
+        // bridge 提供已保存 enabled 设置 → onMounted 恢复（审计 A2）→ 真 LLM 路由 + 分析阶段过门控
+        llmRoute: "openai_compatible", templatePath: undefined,
       }))
     await vi.waitFor(() =>
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
@@ -471,7 +477,7 @@ describe("review workspace shell", () => {
   })
 
   it("disabled stages are skipped in the Run chain", async () => {
-    localStorage.setItem("ratomizer.runStages",
+    localStorage.setItem("ratomizer.runStages.v2",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
@@ -486,7 +492,7 @@ describe("review workspace shell", () => {
   })
 
   it("chain stages use openai_compatible routes when the LLM toggle is on", async () => {
-    localStorage.setItem("ratomizer.runStages",
+    localStorage.setItem("ratomizer.runStages.v2",
       JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -615,7 +621,7 @@ describe("review workspace shell", () => {
   })
 
   it("disabling the rule-candidate LLM review skips review in both run modes", async () => {
-    localStorage.setItem("ratomizer.runStages",
+    localStorage.setItem("ratomizer.runStages.v2",
       JSON.stringify({ llmReview: false, aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -806,7 +812,7 @@ describe("review workspace shell", () => {
   })
 
   it("passes the LLM enrichment route to the AI-extract stage when LLM mode is on", async () => {
-    localStorage.setItem("ratomizer.runStages",
+    localStorage.setItem("ratomizer.runStages.v2",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,

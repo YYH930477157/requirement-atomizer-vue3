@@ -424,25 +424,33 @@ def _unsupported_implementation_terms(text: str, source_text: str) -> list[str]:
     return unsupported
 
 
-def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> set[str]:
-    """把无来源数字/实现假设移出正式交付字段，并在 notes 留审计痕迹。
+def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> tuple[set[str], set[str]]:
+    """把无来源数字/编码/实现假设移出正式交付字段，并在 notes 留审计痕迹。
 
     普通整数在 title/description 里仍按“数字漂移”软标，避免误伤 RS-485 这类术语；但
     acceptance_criteria/dev_guidance 是研发会直接执行的字段，里面不能保留无依据容量、
-    周期、默认值或具体实现策略。
+    周期、默认值或具体实现策略。编码也必须查（2026-07-08 审计 B4）：编造 OBIS 拆成
+    整数后在源文里几乎必然全部存在，只查 extract_ints 拦不住假 OBIS。
+    返回 (漂移整数集, 漂移编码集)——编码并入 code_drift 走硬标（draft+拦截注）。
     """
     allowed = extract_ints(source_text)
+    allowed_codes = extract_codes(source_text)
     drifted: set[str] = set()
+    drifted_codes: set[str] = set()
     removed: list[str] = []
     for field in ("acceptance_criteria", "dev_guidance"):
         kept: list[str] = []
         for raw in req.get(field) or []:
             text = str(raw).strip()
             unsupported = extract_ints(text) - allowed
+            unsupported_codes = extract_codes(text) - allowed_codes
             unsupported_terms = _unsupported_implementation_terms(text, source_text)
-            if unsupported or unsupported_terms:
+            if unsupported or unsupported_terms or unsupported_codes:
                 drifted |= unsupported
+                drifted_codes |= unsupported_codes
                 reasons: list[str] = []
+                if unsupported_codes:
+                    reasons.append(f"无依据编码：{', '.join(sorted(unsupported_codes))}")
                 if unsupported:
                     reasons.append(f"无依据数字：{', '.join(sorted(unsupported))}")
                 if unsupported_terms:
@@ -454,7 +462,7 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> s
     if removed:
         suffix = "；…" if len(removed) > 6 else ""
         _append_note(req, "无依据条目已移入备注：" + "；".join(removed[:6]) + suffix)
-    return drifted
+    return drifted, drifted_codes
 
 
 def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
@@ -478,8 +486,8 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             LOGGER.info("剔除引用/范围声明条目：%s | quote=%s",
                         req.get("title", "")[:40], req.get("source_quote", "")[:60])
             continue
-        removed_ints = _move_unsupported_delivery_items(req, source)
-        codes = code_drift(req, source)
+        removed_ints, removed_codes = _move_unsupported_delivery_items(req, source)
+        codes = sorted(set(code_drift(req, source)) | removed_codes)
         ints = sorted(set(i for i in int_drift(req, source) if i not in context_ints) | removed_ints)
         notes = []
         if codes:  # 受保护编码漂移 → 严格：降级 draft 待核

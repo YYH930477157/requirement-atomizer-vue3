@@ -185,7 +185,7 @@ def render_markdown(model: dict[str, Any]) -> str:
             for question in item["expert_questions"]:
                 lines.append(f"  - ❓专家：{question}")
             if item["drift_codes"]:
-                lines.append(f"  - ⚠ **编码漂移（已拦截，打回专家）**：{', '.join(item['drift_codes'])}")
+                lines.append(f"  - ⚠ **编码漂移（已标记待核，打回专家，文本保留）**：{', '.join(item['drift_codes'])}")
             if item["int_notes"]:
                 lines.append(f"  - 数字提示：改写引入 {', '.join(item['int_notes'])}（核对来源）")
             meta = f"verify={item['verification_method']} · conf={item['confidence']} · src={'; '.join(str(r) for r in item['source_refs'])}"

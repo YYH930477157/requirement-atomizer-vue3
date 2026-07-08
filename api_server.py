@@ -17,7 +17,7 @@ from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_revi
 
 
 DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
-DEFAULT_ALLOWED_ORIGINS = {"http://127.0.0.1:8770", "http://localhost:8770", "null"}
+DEFAULT_ALLOWED_ORIGINS = {"http://127.0.0.1:8770", "http://localhost:8770"}
 TOKEN_HEADER = "X-Requirement-Atomizer-Token"
 
 
@@ -528,7 +528,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def build_allowed_origins(host: str, port: int, extra_origins: list[str]) -> set[str]:
-    origins = {"null", f"http://{host}:{port}", f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+    """"null" origin（file:///沙箱 iframe）不再无条件放行（2026-07-08 审计 6-A）：
+    裸跑无 token 时 GET 端点吐客户文档全文，任何网页的沙箱 iframe 都能跨源读取。
+    需要 file:// 场景（本地批注 HTML 本身自包含、不调 API）可显式 --allow-origin null。"""
+    origins = {f"http://{host}:{port}", f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
     origins.update(origin for origin in extra_origins if origin)
     return origins
 
