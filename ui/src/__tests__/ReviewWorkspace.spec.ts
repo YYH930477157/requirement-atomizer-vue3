@@ -2,7 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import App from "../App.vue"
 
-const ALL_STAGES_OFF = JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false })
+const ALL_STAGES_OFF = JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false })
 
 describe("review workspace shell", () => {
   beforeEach(() => {
@@ -331,7 +331,7 @@ describe("review workspace shell", () => {
   it("runs pipeline then the enabled AI-extract stage as one chain from the Run button", async () => {
     // 开启 AI 抽取阶段：点一次「运行」应先跑 runPipeline 再自动接 aiExtract
     localStorage.setItem("ratomizer.runStages",
-      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false }))
+      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
@@ -446,9 +446,9 @@ describe("review workspace shell", () => {
     }
   }
 
-  it("runs all four enabled deliverable stages as one Run chain", async () => {
+  it("runs all enabled deliverable stages including annotation HTML as one Run chain", async () => {
     localStorage.setItem("ratomizer.runStages",
-      JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: true }))
+      JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: true, annotationHtml: true }))
     Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
 
@@ -460,7 +460,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
-        stages: ["ai-extract", "assemble", "requirements-analysis", "clarification-report", "compose"],
+        stages: ["ai-extract", "assemble", "requirements-analysis", "clarification-report", "compose", "export-annotation-html"],
         llmRoute: "stub", templatePath: undefined,
       }))
     await vi.waitFor(() =>
@@ -472,7 +472,7 @@ describe("review workspace shell", () => {
 
   it("disabled stages are skipped in the Run chain", async () => {
     localStorage.setItem("ratomizer.runStages",
-      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false }))
+      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", { configurable: true, value: deliverableBridge() })
     vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
 
@@ -487,7 +487,7 @@ describe("review workspace shell", () => {
 
   it("chain stages use openai_compatible routes when the LLM toggle is on", async () => {
     localStorage.setItem("ratomizer.runStages",
-      JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: false }))
+      JSON.stringify({ aiExtract: true, assemble: true, analyze: true, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: deliverableBridge({
@@ -616,7 +616,7 @@ describe("review workspace shell", () => {
 
   it("disabling the rule-candidate LLM review skips review in both run modes", async () => {
     localStorage.setItem("ratomizer.runStages",
-      JSON.stringify({ llmReview: false, aiExtract: false, assemble: false, analyze: false, compose: false }))
+      JSON.stringify({ llmReview: false, aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
@@ -807,7 +807,7 @@ describe("review workspace shell", () => {
 
   it("passes the LLM enrichment route to the AI-extract stage when LLM mode is on", async () => {
     localStorage.setItem("ratomizer.runStages",
-      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false }))
+      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {

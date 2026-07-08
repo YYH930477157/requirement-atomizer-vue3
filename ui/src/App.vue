@@ -301,6 +301,10 @@
                 <input v-model="runStages.compose" type="checkbox" data-testid="stage-compose" />
                 <span><strong>组装工程需求</strong><small>原子需求重组为需求功能 + DLMS 对象两段。</small></span>
               </label>
+              <label class="settings-toggle">
+                <input v-model="runStages.annotationHtml" type="checkbox" data-testid="stage-annotation-html" />
+                <span><strong>导出批注 HTML</strong><small>生成 document_annotation.html，用于专家离线阅读、批注和导出裁决 JSON。</small></span>
+              </label>
               <div class="template-row">
                 <span class="field-label">需求列表模板（xlsx，选填）</span>
                 <input :value="templatePath" readonly placeholder="未设置——设置后分析结果按公司模板格式成文" data-testid="template-path" />
@@ -474,10 +478,24 @@ const llmSettings = ref<LlmSettings>({
   selfCheck: true,
 })
 // 「运行」时依次执行的阶段（基础解析+审查后追加）。可选配置、localStorage 持久化。
-type RunStages = { llmReview: boolean; aiExtract: boolean; assemble: boolean; analyze: boolean; compose: boolean }
+type RunStages = {
+  llmReview: boolean
+  aiExtract: boolean
+  assemble: boolean
+  analyze: boolean
+  compose: boolean
+  annotationHtml: boolean
+}
 const RUN_STAGES_KEY = "ratomizer.runStages"
 function loadRunStages(): RunStages {
-  const fallback: RunStages = { llmReview: true, aiExtract: true, assemble: true, analyze: true, compose: false }
+  const fallback: RunStages = {
+    llmReview: true,
+    aiExtract: true,
+    assemble: true,
+    analyze: true,
+    compose: true,
+    annotationHtml: true,
+  }
   try {
     const raw = typeof localStorage !== "undefined" ? localStorage.getItem(RUN_STAGES_KEY) : null
     if (raw) return { ...fallback, ...JSON.parse(raw) }
@@ -982,6 +1000,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         stages.push("clarification-report")
       }
       if (runStages.value.compose) stages.push("compose")
+      if (runStages.value.annotationHtml) stages.push("export-annotation-html")
       if (stages.length && bridge.runChain) {
         runStage.value = "交付物链"
         runProgress.value = 86
