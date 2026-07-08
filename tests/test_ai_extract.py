@@ -762,6 +762,42 @@ class DriftSeverityTests(unittest.TestCase):
         self.assertEqual(reqs[0]["status"], "draft")
         self.assertIn("结构漂移已拦截（编码", reqs[0]["notes"])
 
+    def test_fabricated_capacity_numbers_removed_from_delivery_fields(self) -> None:
+        section = {
+            "section_id": "3.8",
+            "heading": "3.8 measurement data",
+            "text": "Data that the GdM must collect, record locally and transmit remotely.",
+            "block_ids": ["B1"],
+        }
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "GdM测量数据采集、本地记录与远程传输",
+                "description": "GdM必须采集、记录并远程传输测量数据。",
+                "type": "functional",
+                "priority": "P1",
+                "labels": ["计量"],
+                "source_quote": "Data that the GdM must collect, record locally and transmit remotely.",
+                "acceptance_criteria": [
+                    "本地存储中至少可查询最近24小时/30天的原始测量数据",
+                    "中心系统可远程读取已记录的测量数据",
+                ],
+                "dev_guidance": [
+                    "实现本地数据存储协议：使用循环缓冲区或FIFO队列，存储至少最近N条记录（N由设计容量决定，建议≥1万条）",
+                    "使用FIFO队列缓存待传数据",
+                    "提供远程读取接口",
+                ],
+            }]}
+
+        req = ai_extract.extract_section(section, chat)[0]
+
+        self.assertEqual(req["acceptance_criteria"], ["中心系统可远程读取已记录的测量数据"])
+        self.assertEqual(req["dev_guidance"], ["提供远程读取接口"])
+        self.assertIn("数字漂移", req.get("suspicion_reasons") or [])
+        self.assertIn("无依据条目已移入备注", req["notes"])
+        self.assertIn("建议≥1万条", req["notes"])
+        self.assertIn("FIFO", req["notes"])
+
 
 class EnsureDomainLabelsTests(unittest.TestCase):
     def test_free_labels_get_a_metering_domain_prepended(self) -> None:
@@ -1259,7 +1295,8 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("数值必须落地", ai_extract.SYSTEM_PROMPT)            # v8：数值清单完整落地 + 被引条款整合
         self.assertIn("条款族=一条需求", ai_extract.SYSTEM_PROMPT)          # v9：条款族 + sub_items + Test→验收
         self.assertIn("sub_items", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v11")
+        self.assertIn("不得给默认建议值", ai_extract.SYSTEM_PROMPT)          # v12：无来源数字不得进入交付字段
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v12")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}

@@ -62,7 +62,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v11"  # v11：Annex 引用解析 + 术语定向注入（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v12"  # v12：无来源数字不得进入验收/研发指引（缓存失效重抽）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -152,6 +152,8 @@ SYSTEM_PROMPT = (
     "若提供了【文档背景/章节大纲/术语定义】，据此保持术语一致、模块判断准确、解析跨章节引用；"
     "但这些背景仅供参考——需求内容与 source_quote 必须来自【当前章节】原文，不得从背景里搬运。"
     "严禁编造原文没有的 OBIS 码、事件号、十六进制、数字——这些只能原样引用或不出现。"
+    "acceptance_criteria 和 dev_guidance 同样不得引入原文没有的容量、周期、协议编号或默认数值；"
+    "若实现需要容量/保留期等设计参数，只写“由产品配置/相关条款确定、需澄清”，不得给默认建议值。"
     "**不要输出**：目录/标题行、参考文献条目、范围声明（This standard specifies/applies to…）、"
     "仅引用其他标准编号而无本设备行为要求的语句——这些不是需求。"
     "**条款族=一条需求**：输入单元若是条款族（如 4.6 AFD2 含 4.6.1 Requirements 与 4.6.2 Test）："
@@ -386,6 +388,15 @@ _SCOPE_STMT_RE = re.compile(
     r"^\s*this\s+(?:european\s+|international\s+)?standard\s+(?:specifies|applies|is\s+applicable|covers|defines)",
     re.IGNORECASE)
 
+_UNSUPPORTED_IMPLEMENTATION_TERMS = (
+    ("FIFO", ("fifo", "fi-fo", "first in first out")),
+    ("循环缓冲区", ("循环缓冲", "环形缓冲", "circular buffer", "ring buffer")),
+    ("队列", ("队列", "queue")),
+    ("断线续传", ("断线续传", "补传", "重传", "store-and-forward", "retransmit")),
+    ("LoRa", ("lora",)),
+    ("无线 M-Bus", ("无线 m-bus", "wireless m-bus", "wmbus", "wm-bus")),
+)
+
 
 def _is_reference_stub(req: dict[str, Any]) -> bool:
     quote = str(req.get("source_quote") or "").strip()
@@ -393,6 +404,53 @@ def _is_reference_stub(req: dict[str, Any]) -> bool:
         return True
     basis = quote or str(req.get("description") or "")
     return bool(_SCOPE_STMT_RE.match(basis))
+
+
+def _append_note(req: dict[str, Any], note: str) -> None:
+    req["notes"] = f"{req['notes']}；{note}" if req.get("notes") else note
+
+
+def _unsupported_implementation_terms(text: str, source_text: str) -> list[str]:
+    source_low = str(source_text or "").lower()
+    text_low = str(text or "").lower()
+    unsupported: list[str] = []
+    for label, variants in _UNSUPPORTED_IMPLEMENTATION_TERMS:
+        if any(v in text_low for v in variants) and not any(v in source_low for v in variants):
+            unsupported.append(label)
+    return unsupported
+
+
+def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> set[str]:
+    """把无来源数字/实现假设移出正式交付字段，并在 notes 留审计痕迹。
+
+    普通整数在 title/description 里仍按“数字漂移”软标，避免误伤 RS-485 这类术语；但
+    acceptance_criteria/dev_guidance 是研发会直接执行的字段，里面不能保留无依据容量、
+    周期、默认值或具体实现策略。
+    """
+    allowed = extract_ints(source_text)
+    drifted: set[str] = set()
+    removed: list[str] = []
+    for field in ("acceptance_criteria", "dev_guidance"):
+        kept: list[str] = []
+        for raw in req.get(field) or []:
+            text = str(raw).strip()
+            unsupported = extract_ints(text) - allowed
+            unsupported_terms = _unsupported_implementation_terms(text, source_text)
+            if unsupported or unsupported_terms:
+                drifted |= unsupported
+                reasons: list[str] = []
+                if unsupported:
+                    reasons.append(f"无依据数字：{', '.join(sorted(unsupported))}")
+                if unsupported_terms:
+                    reasons.append(f"无依据实现假设：{', '.join(unsupported_terms)}")
+                removed.append(f"{field}: {text[:180]}（{'；'.join(reasons)}）")
+            else:
+                kept.append(text)
+        req[field] = kept
+    if removed:
+        suffix = "；…" if len(removed) > 6 else ""
+        _append_note(req, "无依据条目已移入备注：" + "；".join(removed[:6]) + suffix)
+    return drifted
 
 
 def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
@@ -416,8 +474,9 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             LOGGER.info("剔除引用/范围声明条目：%s | quote=%s",
                         req.get("title", "")[:40], req.get("source_quote", "")[:60])
             continue
+        removed_ints = _move_unsupported_delivery_items(req, source)
         codes = code_drift(req, source)
-        ints = [i for i in int_drift(req, source) if i not in context_ints]
+        ints = sorted(set(i for i in int_drift(req, source) if i not in context_ints) | removed_ints)
         notes = []
         if codes:  # 受保护编码漂移 → 严格：降级 draft 待核
             req["status"] = "draft"
@@ -427,7 +486,8 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
         if not codes:
             # 无编码漂移：若模型给了状态信号则尊重，否则默认 draft（AI 抽取一律待审）
             req["status"] = "draft"
-        req["notes"] = "；".join(notes)
+        if notes:
+            _append_note(req, "；".join(notes))
         # 可疑度信号（零 LLM）：给审核视图排优先级——先审最可疑的
         suspicion: list[str] = []
         if codes:
@@ -441,12 +501,12 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
         if left_behind:
             suspicion.append("原文数值未带全")
             note = f"原文数值未带全（引句附近 {left_behind} 个数值未进需求，请核对参数清单）"
-            req["notes"] = f"{req['notes']}；{note}" if req["notes"] else note
+            _append_note(req, note)
         vague = _vague_acceptance(req)
         if vague:
             suspicion.append("验收不可测")
             note = f"验收不可测（空话验收 {len(vague)} 条，如「{vague[0][:40]}」，请给出可判定条件）"
-            req["notes"] = f"{req['notes']}；{note}" if req["notes"] else note
+            _append_note(req, note)
         if suspicion:
             req["suspicion_reasons"] = suspicion
         results.append(req)
