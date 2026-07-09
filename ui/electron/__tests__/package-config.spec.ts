@@ -45,4 +45,12 @@ describe("Electron packaging config", () => {
     expect(mainProcess).toContain('process.argv.includes("--smoke")')
     expect(mainProcess).toContain("app.quit()")
   })
+
+  it("retries local API startup and keeps completed pipeline output non-fatal", () => {
+    const mainProcess = readFileSync(resolve(__dirname, "../main.cjs"), "utf-8")
+    expect(mainProcess).toContain("API_STARTUP_ATTEMPTS = 3")
+    expect(mainProcess).toContain("API_STARTUP_TIMEOUT_MS = 30000")
+    expect(mainProcess).toContain("payload.api_warning")
+    expect(mainProcess).toContain("输出目录成果已保留")
+  })
 })

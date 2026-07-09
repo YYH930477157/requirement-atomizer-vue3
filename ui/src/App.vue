@@ -47,23 +47,40 @@
         <div v-if="apiMessage && activeNav !== 'review'" class="global-message" data-testid="global-message"
              role="status" @click="apiMessage = ''">{{ apiMessage }}<span class="global-message-close">✕</span></div>
 
-        <section class="selection-bar">
-          <div class="selection-item">
-            <span>导入文档</span>
-            <strong data-testid="selected-input-path">{{ currentInputPath || "尚未选择文档" }}</strong>
-          </div>
-          <div class="selection-item">
-            <span>输出目录</span>
-            <strong data-testid="selected-output-dir">{{ currentOutputDir || "尚未选择输出目录" }}</strong>
-          </div>
-          <div class="run-meter" data-testid="run-progress">
-            <div class="run-meter-head">
-              <span>{{ runStage }}</span>
-              <strong>{{ runProgress }}%</strong>
+        <section class="run-dashboard">
+          <div class="run-paths-panel" data-testid="run-paths-panel">
+            <div class="selection-item">
+              <span>导入文档</span>
+              <strong data-testid="selected-input-path">{{ currentInputPath || "尚未选择文档" }}</strong>
             </div>
-            <div class="run-meter-detail" data-testid="run-progress-detail">{{ runProgressDetail }}</div>
-            <div class="run-meter-track">
-              <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
+            <div class="selection-item">
+              <span>输出目录</span>
+              <strong data-testid="selected-output-dir">{{ currentOutputDir || "尚未选择输出目录" }}</strong>
+            </div>
+          </div>
+          <div class="run-stage-panel">
+            <div class="run-meter" data-testid="run-progress">
+              <div class="run-meter-head">
+                <span>{{ runStage }}</span>
+                <strong>{{ runProgress }}%</strong>
+              </div>
+              <div class="run-meter-detail" data-testid="run-progress-detail">{{ runProgressDetail }}</div>
+              <div class="run-meter-track">
+                <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
+              </div>
+            </div>
+            <div class="run-stage-board" data-testid="run-stage-board">
+              <div
+                v-for="card in runStageCards"
+                :key="card.key"
+                class="run-stage-card"
+                :class="`stage-${card.status}`"
+                :data-testid="`run-stage-${card.key}`"
+              >
+                <span class="stage-name">{{ card.label }}</span>
+                <strong class="stage-status">{{ card.statusText }}</strong>
+                <small class="stage-detail">{{ card.detail }}</small>
+              </div>
             </div>
           </div>
         </section>
@@ -535,6 +552,98 @@ const runStage = ref("待运行")
 const runProgressDetail = ref("等待开始")
 const latestTaskSummary = ref<Record<string, unknown> | null>(null)
 
+type RunStageStatus = "pending" | "running" | "ok" | "skipped" | "failed" | "disabled"
+type RunStageState = { status: RunStageStatus; percent: number; detail: string }
+const RUN_STAGE_DEFS = [
+  { key: "atomize", label: "原子化" },
+  { key: "llm-review", label: "LLM审核" },
+  { key: "ai-extract", label: "AI抽取" },
+  { key: "assemble", label: "组装功能" },
+  { key: "requirements-analysis", label: "需求分析" },
+  { key: "template-write", label: "格式成文" },
+  { key: "clarification-report", label: "澄清清单" },
+  { key: "compose", label: "工程组装" },
+  { key: "export-annotation-html", label: "HTML导出" },
+] as const
+type RunStageKey = typeof RUN_STAGE_DEFS[number]["key"]
+
+function defaultStageStates(): Record<RunStageKey, RunStageState> {
+  return Object.fromEntries(RUN_STAGE_DEFS.map((item) => [
+    item.key,
+    { status: "pending" as RunStageStatus, percent: 0, detail: "待完成" },
+  ])) as Record<RunStageKey, RunStageState>
+}
+
+const runStageStates = ref<Record<RunStageKey, RunStageState>>(defaultStageStates())
+const runStageCards = computed(() => RUN_STAGE_DEFS.map((item) => {
+  const state = runStageStates.value[item.key]
+  return {
+    ...item,
+    ...state,
+    statusText: stageStatusText(state),
+  }
+}))
+
+function stageStatusText(state: RunStageState) {
+  if (state.status === "ok") return "已完成"
+  if (state.status === "skipped") return "已完成，已跳过"
+  if (state.status === "running") return `运行中，进度${Math.round(state.percent)}%`
+  if (state.status === "failed") return "失败"
+  if (state.status === "disabled") return "未启用"
+  return "待完成"
+}
+
+function setRunStageState(key: string | undefined, patch: Partial<RunStageState>) {
+  if (!key || !(key in runStageStates.value)) return
+  const stageKey = key as RunStageKey
+  runStageStates.value = {
+    ...runStageStates.value,
+    [stageKey]: {
+      ...runStageStates.value[stageKey],
+      ...patch,
+    },
+  }
+}
+
+function resetRunStageBoard() {
+  const next = defaultStageStates()
+  if (!runStages.value.llmReview) next["llm-review"] = { status: "disabled", percent: 0, detail: "未启用" }
+  if (!runStages.value.aiExtract) next["ai-extract"] = { status: "disabled", percent: 0, detail: "未启用" }
+  if (!runStages.value.assemble) next.assemble = { status: "disabled", percent: 0, detail: "未启用" }
+  if (!runStages.value.analyze) {
+    next["requirements-analysis"] = { status: "disabled", percent: 0, detail: "未启用" }
+    next["template-write"] = { status: "disabled", percent: 0, detail: "未启用" }
+    next["clarification-report"] = { status: "disabled", percent: 0, detail: "未启用" }
+  }
+  if (!templatePath.value) next["template-write"] = { status: "disabled", percent: 0, detail: "未配置模板" }
+  if (!runStages.value.compose) next.compose = { status: "disabled", percent: 0, detail: "未启用" }
+  if (!runStages.value.annotationHtml) next["export-annotation-html"] = { status: "disabled", percent: 0, detail: "未启用" }
+  runStageStates.value = next
+}
+
+function applyRunManifestSummary(summary: Record<string, unknown> | null) {
+  const manifest = objectValue(summary?.run_manifest)
+  const stages = objectValue(manifest?.stages)
+  if (!stages) return
+  for (const item of RUN_STAGE_DEFS) {
+    const entry = objectValue(stages[item.key])
+    if (!entry) continue
+    const status = String(entry.status || "")
+    const lastAction = String(entry.last_action || "")
+    if (status === "ok") {
+      setRunStageState(item.key, {
+        status: lastAction === "skipped" ? "skipped" : "ok",
+        percent: 100,
+        detail: lastAction === "skipped" ? "复用已有产物" : "产物已生成",
+      })
+    } else if (status === "running") {
+      setRunStageState(item.key, { status: "running", percent: 0, detail: "上次中断在此阶段" })
+    } else if (status === "failed") {
+      setRunStageState(item.key, { status: "failed", percent: 0, detail: String(entry.error || "上次执行失败") })
+    }
+  }
+}
+
 const abntPreset = {
   chunkChars: 3500,
   // 单编译库：三个种子库的富化超集（86 条目 id 100% 继承，实证 2026-07-07），
@@ -932,6 +1041,9 @@ async function handleOpenOutput() {
       currentOutputDir.value = path
       apiMessage.value = `已选择输出目录：${path}`
       runStage.value = "待运行"
+      const payload = await window.ratomizerDesktop.getOutputSummary?.({ outDir: path })
+      latestTaskSummary.value = objectValue(payload?.summary)
+      applyRunManifestSummary(latestTaskSummary.value)
     }
     return
   }
@@ -957,6 +1069,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     const outDir = currentOutputDir.value || defaultOutputDir(currentInputPath.value)
     currentOutputDir.value = outDir
     isRunning.value = true
+    resetRunStageBoard()
     runProgress.value = 8
     runStage.value = "准备运行"
     runProgressDetail.value = options.llmReviewLimit ? `测试运行：最多 AI 审查 ${options.llmReviewLimit} 条` : "准备启动本地任务"
@@ -982,9 +1095,11 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     runStage.value = "加载解析结果"
     runProgressDetail.value = "正在加载结果文件"
     latestTaskSummary.value = objectValue(payload.summary)
+    applyRunManifestSummary(latestTaskSummary.value)
     const finalOutDir = String(payload.out_dir || payload.outDir || outDir)
     currentOutputDir.value = finalOutDir
-    await refreshAfterDesktopTask(finalOutDir)
+    let apiReconnectWarning = formatApiReconnectWarning(finalOutDir, stringOr(payload.api_warning, ""))
+    apiReconnectWarning ||= await refreshAfterDesktopTask(finalOutDir)
 
     // 追加交付物链：按「运行阶段」配置依次执行（测试运行只跑基础解析+限量审查，不追加）
     type ConsistencySummary = { duplicate_groups?: number; obis_values_differ?: number; uncovered_requirement_like?: number }
@@ -1029,6 +1144,8 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         }
         const chainConsistency = objectValue(chainPayload?.consistency)
         if (chainConsistency) consistency = chainConsistency as ConsistencySummary
+        latestTaskSummary.value = objectValue(chainPayload.summary) || latestTaskSummary.value
+        applyRunManifestSummary(latestTaskSummary.value)
         const chainReadiness = objectValue(chainPayload?.readiness) as { verdict?: string; reasons?: string[] } | null
         if (chainReadiness?.verdict) {
           readinessNote = `；就绪判定：${chainReadiness.verdict}` +
@@ -1042,7 +1159,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           readinessNote += `；注意：${chainNotes.join("；")}`
         }
         ranStages.push(...stages.map((s) => CHAIN_STEP_LABELS[s] || s))
-        await refreshAfterDesktopTask(finalOutDir)
+        apiReconnectWarning ||= await refreshAfterDesktopTask(finalOutDir)
       }
       if (skippedForLlm.length) {
         readinessNote += `；LLM 已关闭，跳过：${skippedForLlm.join("、")}（顶栏开启 LLM 后重跑可得完整交付物）`
@@ -1075,7 +1192,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         if (w) sampleNote += `；成文 ${Number(w.appended_total ?? 0)} 行 → 软件需求列表-成文.xlsx`
         const r = objectValue(sample.readiness) as { verdict?: string } | null
         if (r?.verdict) sampleNote += `；就绪判定 ${r.verdict}，必答澄清 ${Number(sample.questions ?? 0)} 条`
-        await refreshAfterDesktopTask(finalOutDir)
+        apiReconnectWarning ||= await refreshAfterDesktopTask(finalOutDir)
       } catch (sampleError) {
         sampleNote = `；样本链失败：${sampleError instanceof Error ? sampleError.message : sampleError}`
       }
@@ -1095,8 +1212,11 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       const warn = dup || differ || uncovered
         ? `；一致性：疑似跨章重复 ${dup} 组、OBIS 数值待核 ${differ}、覆盖缺口 ${uncovered}（批注视图已标记）`
         : ""
+      const apiWarn = apiReconnectWarning
+        ? `；${apiReconnectWarning}`
+        : ""
       runProgressDetail.value = `全部阶段完成：抽取与审查${tail}`
-      apiMessage.value = `运行完成：抽取与审查${tail}${warn}${readinessNote}`
+      apiMessage.value = `运行完成：抽取与审查${tail}${warn}${readinessNote}${apiWarn}`
     }
   } catch (error) {
     runStage.value = "运行失败"
@@ -1114,23 +1234,32 @@ const CHAIN_STEP_LABELS: Record<string, string> = {
   "export-annotation-html": "导出批注视图",
 }
 
-function handleTaskProgress(event: { stage: string; step?: string; completed?: number; total?: number; percent?: number; model?: string }) {
+function handleTaskProgress(event: { stage: string; step?: string; status?: string; completed?: number; total?: number; percent?: number; model?: string }) {
   const completed = Math.max(0, Number(event.completed || 0))
   const total = Math.max(0, Number(event.total || 0))
   const percent = Number.isFinite(Number(event.percent)) ? Math.max(0, Math.min(100, Number(event.percent))) : 0
+  if (event.stage === "pipeline_stage") {
+    const status = event.status === "skipped" ? "skipped" : event.status === "ok" ? "ok" : "running"
+    setRunStageState(event.step, { status, percent, detail: status === "skipped" ? "复用已有产物" : "基础解析产物" })
+    return
+  }
   if (event.stage === "chain") {
     const label = CHAIN_STEP_LABELS[String(event.step || "")] || String(event.step || "交付物链")
+    const status = event.status === "skipped" ? "skipped" : completed >= total && total > 0 ? "ok" : "running"
+    setRunStageState(event.step, { status, percent, detail: status === "skipped" ? "复用已有产物" : label })
     runStage.value = total ? `交付物链 ${Math.min(completed + 1, total)}/${total}：${label}` : label
     runProgressDetail.value = `正在执行：${label}…`
     return   // 总进度条由链内细粒度事件（ai_extract/analyze）驱动，这里不回跳
   }
   if (event.stage === "ai_extract") {
+    setRunStageState("ai-extract", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 章节` : "逐章节调用 LLM" })
     runStage.value = total ? `AI 抽取 ${completed}/${total} 章节` : "AI 抽取"
     runProgress.value = percent
     runProgressDetail.value = event.model ? `模型：${event.model} · 逐章节调用 LLM` : "逐章节调用 LLM 抽取行为需求"
     return
   }
   if (event.stage === "analyze") {
+    setRunStageState("requirements-analysis", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 条` : "需求富化" })
     runStage.value = total ? `软件需求分析 富化 ${completed}/${total}` : "软件需求分析"
     runProgress.value = percent
     runProgressDetail.value = event.model
@@ -1139,6 +1268,7 @@ function handleTaskProgress(event: { stage: string; step?: string; completed?: n
     return
   }
   if (event.stage !== "llm_review") return
+  setRunStageState("llm-review", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 条` : "逐条审查" })
   runStage.value = total ? `AI 审查 ${completed}/${total}` : "AI 审查"
   runProgress.value = percent
   runProgressDetail.value = event.model ? `模型：${event.model}` : "模型正在逐条审查需求"
@@ -1213,11 +1343,26 @@ async function loadFromSession(session: { baseUrl: string; token: string; output
   }
 }
 
-async function refreshAfterDesktopTask(outDir: string) {
-  const session = await window.ratomizerDesktop?.startApiSession?.(outDir)
-  if (session) {
-    await loadFromSession(session)
+async function refreshAfterDesktopTask(outDir: string): Promise<string> {
+  try {
+    const session = await window.ratomizerDesktop?.startApiSession?.(outDir)
+    if (session) {
+      await loadFromSession(session)
+    }
+    return ""
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return formatApiReconnectWarning(outDir, message)
   }
+}
+
+function formatApiReconnectWarning(outDir: string, reason: string) {
+  const text = reason.trim()
+  if (!text) return ""
+  if (text.includes("输出目录") || text.includes("成果已保留")) {
+    return text
+  }
+  return `结果已生成在输出目录：${outDir}；但本地 API 暂时未连接（${text}）。无需重跑 AI，稍后重新选择该输出目录即可继续查看/批注`
 }
 
 function defaultOutputDir(inputPath: string) {
@@ -2186,13 +2331,26 @@ tbody tr.selected {
   flex-wrap: wrap;
 }
 
-.selection-bar {
+.run-dashboard {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
   gap: 14px;
   padding: 12px 26px;
   background: #fff;
   border-bottom: 1px solid #dfe5ec;
+}
+
+.run-paths-panel {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: repeat(2, 52px);
+  gap: 10px;
+}
+
+.run-stage-panel {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
 }
 
 .selection-item {
@@ -2226,7 +2384,7 @@ tbody tr.selected {
 
 .run-meter {
   min-width: 0;
-  min-height: 64px;
+  min-height: 52px;
   display: grid;
   align-content: center;
   gap: 5px;
@@ -2272,6 +2430,85 @@ tbody tr.selected {
   border-radius: inherit;
   background: #2563eb;
   transition: width 180ms ease;
+}
+
+.run-stage-board {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.run-stage-card {
+  min-width: 0;
+  height: 74px;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  border: 1px solid #dfe5ec;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 9px 10px;
+}
+
+.stage-name {
+  color: #172033;
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage-status {
+  color: #687386;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage-detail {
+  color: #7b8797;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-stage-card.stage-running {
+  border-color: #93b4f8;
+  background: #eef4ff;
+}
+
+.run-stage-card.stage-running .stage-status {
+  color: #2156c7;
+}
+
+.run-stage-card.stage-ok,
+.run-stage-card.stage-skipped {
+  border-color: #a7dfbf;
+  background: #effaf3;
+}
+
+.run-stage-card.stage-ok .stage-status,
+.run-stage-card.stage-skipped .stage-status {
+  color: #15803d;
+}
+
+.run-stage-card.stage-failed {
+  border-color: #fecaca;
+  background: #fff1f2;
+}
+
+.run-stage-card.stage-failed .stage-status {
+  color: #dc2626;
+}
+
+.run-stage-card.stage-disabled {
+  opacity: 0.58;
 }
 
 .button {
@@ -3033,7 +3270,7 @@ tbody tr:hover td {
     flex-wrap: wrap;
   }
 
-  .selection-bar {
+  .run-dashboard {
     grid-template-columns: minmax(0, 1fr);
   }
 

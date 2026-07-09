@@ -69,20 +69,51 @@ def run_pipeline_task(
 ) -> dict[str, Any]:
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
-    manifest = run_atomizer_pipeline(
-        input_path,
-        out_dir,
-        chunk_chars=chunk_chars,
-        kb_paths=resolve_kb_paths(kb_paths),
-        domain_pack_dir=resolve_bundled_path(domain_pack_dir),
-    )
-    review = None if skip_review else run_review_pipeline(
-        out_dir,
-        route=llm_route,
-        scope=review_scope,
-        llm_review_limit=llm_review_limit,
-        progress_callback=emit_progress,
-    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    atomize_reused = stage_is_reusable(out_dir, "atomize", input_path=input_path)
+    if atomize_reused:
+        manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest["resume_action"] = "skipped"
+        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"], action="skipped")
+        emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "skipped", "percent": 100})
+    else:
+        update_run_manifest(out_dir, "atomize", "running")
+        emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "running", "percent": 10})
+        try:
+            manifest = run_atomizer_pipeline(
+                input_path,
+                out_dir,
+                chunk_chars=chunk_chars,
+                kb_paths=resolve_kb_paths(kb_paths),
+                domain_pack_dir=resolve_bundled_path(domain_pack_dir),
+            )
+        except Exception as exc:
+            update_run_manifest(out_dir, "atomize", "failed", error=str(exc))
+            raise
+        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"], action="ran")
+        emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "ok", "percent": 100})
+
+    if skip_review:
+        review = None
+    elif atomize_reused and stage_is_reusable(out_dir, "llm-review", route=llm_route):
+        review = skipped_stage_payload(out_dir, "llm-review")
+        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="skipped")
+        emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "skipped", "percent": 100})
+    else:
+        update_run_manifest(out_dir, "llm-review", "running")
+        emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "running", "percent": 0})
+        try:
+            review = run_review_pipeline(
+                out_dir,
+                route=llm_route,
+                scope=review_scope,
+                llm_review_limit=llm_review_limit,
+                progress_callback=emit_progress,
+            )
+        except Exception as exc:
+            update_run_manifest(out_dir, "llm-review", "failed", error=str(exc))
+            raise
+        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="ran")
     return {
         "kind": "pipeline",
         "out_dir": str(out_dir),
@@ -279,10 +310,31 @@ def ai_extract_task(out_dir: Path, *, route: str | None, limit_sections: int | N
 
 
 RUN_MANIFEST = "run_manifest.json"
+STAGES_DIR = "_stages"
 
 # 阶段名 == 子命令名（manifest 键与 CLI 一致，GUI 单步按钮与 chain 写同一本账）
 CHAIN_ORDER = ["ai-extract", "assemble", "requirements-analysis", "template-write",
                "clarification-report", "compose", "export-annotation-html"]
+STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
+    "atomize": [
+        "manifest.json",
+        "blocks.jsonl",
+        "chunks.jsonl",
+        "table_items.jsonl",
+        "atomic_requirements.jsonl",
+        "llm_tasks.jsonl",
+        "quality_report.json",
+        "summary.md",
+    ],
+    "llm-review": ["llm_review_results.jsonl", "review_states.jsonl"],
+    "ai-extract": ["ai_requirements.jsonl", "merged_spec_requirements.json"],
+    "assemble": [ASSEMBLED_JSON],
+    "requirements-analysis": REQUIREMENTS_ANALYSIS_OUTPUTS,
+    "template-write": ["软件需求列表-成文.xlsx", "template_writer_report.json"],
+    "clarification-report": ["clarification_questions.md", "clarification_questions.xlsx", "clarification_report.json"],
+    "compose": ["engineering_requirements/engineering_requirements.json"],
+    "export-annotation-html": ["document_annotation.html"],
+}
 
 
 def stage_producer(stage: str) -> str:
@@ -302,17 +354,110 @@ def stage_producer(stage: str) -> str:
             "llm-review": "review/v1"}.get(stage, stage)
 
 
-def update_run_manifest(out_dir: Path, stage: str, status: str, *,
-                        error: str | None = None, route: str | None = None) -> None:
-    """run_manifest.json：out_dir 的显式状态账本（阶段/状态/版本/时间）。写失败不阻断任务。"""
-    import datetime as _dt
+def read_run_manifest(out_dir: Path) -> dict[str, Any]:
     path = Path(out_dir).expanduser().resolve() / RUN_MANIFEST
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except (json.JSONDecodeError, OSError):
         data = {}
-    if not isinstance(data, dict):
-        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def _relative_outputs(out_dir: Path, outputs: list[str | Path]) -> list[str]:
+    root = Path(out_dir).expanduser().resolve()
+    result: list[str] = []
+    for item in outputs:
+        path = Path(item)
+        if path.is_absolute():
+            try:
+                path = path.resolve().relative_to(root)
+            except ValueError:
+                pass
+        result.append(path.as_posix())
+    return result
+
+
+def _stage_outputs(stage: str, entry: dict[str, Any] | None = None) -> list[str]:
+    outputs = (entry or {}).get("outputs") if isinstance(entry, dict) else None
+    if isinstance(outputs, list) and outputs:
+        return [str(item) for item in outputs]
+    return list(STAGE_REQUIRED_OUTPUTS.get(stage, []))
+
+
+def _outputs_exist(out_dir: Path, outputs: list[str]) -> bool:
+    if not outputs:
+        return False
+    root = Path(out_dir).expanduser().resolve()
+    for name in outputs:
+        path = root / name
+        if not path.exists() or path.is_dir():
+            return False
+        try:
+            if path.stat().st_size <= 0:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _stage_manifest_path(out_dir: Path, stage: str) -> Path:
+    return Path(out_dir).expanduser().resolve() / STAGES_DIR / stage / "stage_manifest.json"
+
+
+def _write_stage_manifest(out_dir: Path, stage: str, entry: dict[str, Any]) -> None:
+    path = _stage_manifest_path(out_dir, stage)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"stage": stage, **entry}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def stage_is_reusable(out_dir: Path, stage: str, *,
+                      route: str | None = None,
+                      input_path: Path | None = None) -> bool:
+    data = read_run_manifest(out_dir)
+    stages = data.get("stages") if isinstance(data.get("stages"), dict) else {}
+    entry = stages.get(stage) if isinstance(stages.get(stage), dict) else None
+    if entry:
+        if entry.get("status") != "ok":
+            return False
+        if entry.get("producer") and entry.get("producer") != stage_producer(stage):
+            return False
+        if route and entry.get("route") and entry.get("route") != route:
+            return False
+    if not _outputs_exist(out_dir, _stage_outputs(stage, entry)):
+        return False
+    if stage == "atomize" and input_path is not None:
+        try:
+            manifest = json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if Path(str(manifest.get("input") or "")).expanduser().resolve() != Path(input_path).expanduser().resolve():
+            return False
+    return True
+
+
+def skipped_stage_payload(out_dir: Path, stage: str) -> dict[str, Any]:
+    data = read_run_manifest(out_dir)
+    stages = data.get("stages") if isinstance(data.get("stages"), dict) else {}
+    entry = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+    outputs = _stage_outputs(stage, entry)
+    root = Path(out_dir).expanduser().resolve()
+    return {
+        "kind": stage.replace("-", "_"),
+        "out_dir": str(root),
+        "resume_action": "skipped",
+        "written": [str(root / name) for name in outputs],
+    }
+
+
+def update_run_manifest(out_dir: Path, stage: str, status: str, *,
+                        error: str | None = None, route: str | None = None,
+                        outputs: list[str | Path] | None = None,
+                        action: str | None = None) -> None:
+    """run_manifest.json：out_dir 的显式状态账本（阶段/状态/版本/时间）。写失败不阻断任务。"""
+    import datetime as _dt
+    root = Path(out_dir).expanduser().resolve()
+    path = root / RUN_MANIFEST
+    data = read_run_manifest(root)
     stages = data.get("stages")
     if not isinstance(stages, dict):
         stages = {}
@@ -324,6 +469,12 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
         entry.update({"status": status, "finished": now, "producer": stage_producer(stage)})
         if route:
             entry["route"] = route   # stub 降级 ≠ 真 LLM：账本必须可区分（2026-07-08 审计）
+        if outputs is not None:
+            entry["outputs"] = _relative_outputs(root, outputs)
+        elif status == "ok" and "outputs" not in entry and stage in STAGE_REQUIRED_OUTPUTS:
+            entry["outputs"] = list(STAGE_REQUIRED_OUTPUTS[stage])
+        if action:
+            entry["last_action"] = action
         if error:
             entry["error"] = str(error)[:300]
         else:
@@ -332,6 +483,7 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
     data.update({"manifest_version": 1, "stages": stages, "updated": now})
     try:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _write_stage_manifest(root, stage, entry)
     except OSError:  # pragma: no cover - manifest 写失败不阻断任务本体
         LOGGER.warning("run_manifest 写入失败（忽略）：%s", path)
 
@@ -369,18 +521,31 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     }
 
     results: dict[str, Any] = {}
+    skipped_stages: list[str] = []
     payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
+    llm_stages = {"ai-extract", "assemble", "requirements-analysis"}
     for index, stage in enumerate(ordered, start=1):
         emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
                        "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
-        update_run_manifest(out_dir, stage, "running")
-        try:
-            stage_payload = runners[stage]()
-        except Exception as exc:
-            update_run_manifest(out_dir, stage, "failed", error=str(exc))
-            raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc
-        llm_stages = {"ai-extract", "assemble", "requirements-analysis"}
-        update_run_manifest(out_dir, stage, "ok", route=route if stage in llm_stages else None)
+        stage_route = route if stage in llm_stages else None
+        if stage_is_reusable(out_dir, stage, route=stage_route):
+            stage_payload = skipped_stage_payload(out_dir, stage)
+            skipped_stages.append(stage)
+            update_run_manifest(out_dir, stage, "ok", route=stage_route,
+                                outputs=stage_payload.get("written") or _stage_outputs(stage), action="skipped")
+            emit_progress({"stage": "chain", "step": stage, "status": "skipped",
+                           "completed": index, "total": len(ordered),
+                           "percent": int(index * 100 / len(ordered))})
+        else:
+            update_run_manifest(out_dir, stage, "running")
+            try:
+                stage_payload = runners[stage]()
+            except Exception as exc:
+                update_run_manifest(out_dir, stage, "failed", error=str(exc))
+                raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc
+            stage_outputs = stage_payload.get("written") if isinstance(stage_payload, dict) else None
+            update_run_manifest(out_dir, stage, "ok", route=stage_route,
+                                outputs=stage_outputs or _stage_outputs(stage), action="ran")
         stage_payload = dict(stage_payload or {})
         stage_payload.pop("summary", None)   # 各阶段的 summary 体积大且重复，链尾统一给一份
         results[stage] = stage_payload
@@ -404,8 +569,9 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             note = analysis.get("note")
         if note:
             payload.setdefault("stage_notes", []).append(f"{stage}: {note}")
-        emit_progress({"stage": "chain", "step": stage, "completed": index,
-                       "total": len(ordered), "percent": int(index * 100 / len(ordered))})
+        if stage not in skipped_stages:
+            emit_progress({"stage": "chain", "step": stage, "completed": index,
+                           "total": len(ordered), "percent": int(index * 100 / len(ordered))})
 
     from adjudication_bank import resolve_bank_path, update_bank
     bank_path = resolve_bank_path()
@@ -415,6 +581,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         except Exception as exc:  # pragma: no cover
             LOGGER.warning("裁决样本库收割失败（忽略）：%s", exc)
     payload["results"] = results
+    payload["skipped_stages"] = skipped_stages
     payload["summary"] = build_output_summary(out_dir)
     return payload
 
@@ -502,6 +669,7 @@ def build_output_summary(out_dir: Path) -> dict[str, Any]:
         "status_counts": status_counts,
         "type_counts": type_counts,
         "confidence_counts": confidence_counts,
+        "run_manifest": read_run_manifest(out_dir),
     }
 
 

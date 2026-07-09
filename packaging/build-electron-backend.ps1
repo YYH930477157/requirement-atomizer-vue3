@@ -29,17 +29,30 @@ if (-not (Test-Path $Exe)) {
     throw "Backend executable was not created: $Exe"
 }
 
+function Invoke-BackendJson {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$ArgumentList
+    )
+    $Output = & $Exe @ArgumentList
+    if ($LASTEXITCODE -ne 0) {
+        throw "Backend smoke command failed ($LASTEXITCODE): $($ArgumentList -join ' ')"
+    }
+    $Json = ($Output | Where-Object { $_ -notlike "__RATOMIZER_PROGRESS__*" }) -join "`n"
+    $Json | ConvertFrom-Json | Out-Null
+}
+
 $SmokeOut = Join-Path $env:TEMP ("ratomizer-backend-smoke-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $SmokeOut | Out-Null
 try {
-    & $Exe summary --out $SmokeOut | ConvertFrom-Json | Out-Null
+    Invoke-BackendJson @("summary", "--out", $SmokeOut)
 
     $SmokeDocx = Join-Path $SmokeOut "sample.docx"
     $SmokeRunOut = Join-Path $SmokeOut "run"
     python -c "from docx import Document; import sys; doc=Document(); doc.add_heading('Scope', level=1); doc.add_paragraph('The meter shall expose active energy import total through OBIS 1-0:1.8.0.255.'); doc.save(sys.argv[1])" $SmokeDocx
     Push-Location $env:TEMP
     try {
-        & $Exe run --input $SmokeDocx --out $SmokeRunOut | ConvertFrom-Json | Out-Null
+        Invoke-BackendJson @("run", "--input", $SmokeDocx, "--out", $SmokeRunOut)
     } finally {
         Pop-Location
     }

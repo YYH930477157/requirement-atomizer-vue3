@@ -46,6 +46,46 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="detail-scroll"]').classes()).toContain("independent-detail-scroll")
   })
 
+  it("shows a run stage board with per-stage progress", async () => {
+    type ProgressHandler = (event: { stage: string; step?: string; status?: string; completed?: number; total?: number; percent?: number }) => void
+    let progressHandler: ProgressHandler = () => {
+      throw new Error("progress handler was not registered")
+    }
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        runPipeline: vi.fn().mockResolvedValue({ kind: "pipeline", out_dir: "E:\\out\\abnt", summary: {} }),
+        startApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\out\\abnt",
+        }),
+        onTaskProgress: vi.fn((handler: ProgressHandler) => {
+          progressHandler = handler
+          return () => undefined
+        }),
+      },
+    })
+    const wrapper = mount(App)
+
+    expect(wrapper.find('[data-testid="run-paths-panel"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-stage-board"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-stage-atomize"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-stage-llm-review"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-stage-ai-extract"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    progressHandler({ stage: "pipeline_stage", step: "atomize", status: "ok", percent: 100 })
+    progressHandler({ stage: "llm_review", completed: 1, total: 2, percent: 50 })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="run-stage-atomize"]').text()).toContain("已完成")
+    expect(wrapper.find('[data-testid="run-stage-llm-review"]').text()).toContain("50%")
+  })
+
   it("updates the selected requirement status from review decisions", async () => {
     const wrapper = mount(App)
 
@@ -407,6 +447,42 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("AI 抽取")
     expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it("keeps completed outputs when the API session refresh times out after a run", async () => {
+    localStorage.setItem("ratomizer.runStages.v2",
+      JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockRejectedValue(new Error("API server startup timed out")),
+        runPipeline: vi.fn().mockResolvedValue({
+          kind: "pipeline",
+          out_dir: "E:\\out\\abnt",
+          summary: { counts: { requirements: 1 } },
+          api_warning: "API server startup timed out",
+        }),
+      },
+    })
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.runPipeline).toHaveBeenCalled()
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
+    })
+    expect(wrapper.find('[data-testid="run-progress-detail"]').text()).toContain("全部阶段完成")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("运行完成")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("输出目录")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("API")
   })
 
   function deliverableBridge(overrides: Record<string, unknown> = {}) {
@@ -776,7 +852,7 @@ describe("review workspace shell", () => {
     })
   })
 
-  it("keeps the API loading error visible when results cannot be loaded after a run", async () => {
+  it("keeps completed outputs when results cannot be loaded after a run", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
@@ -806,9 +882,11 @@ describe("review workspace shell", () => {
 
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("Origin not allowed")
-      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("运行失败")
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("运行完成")
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
     })
-    expect(wrapper.find('[data-testid="api-message"]').text()).not.toContain("抽取与审查完成")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("输出目录")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("无需重跑 AI")
   })
 
   it("passes the LLM enrichment route to the AI-extract stage when LLM mode is on", async () => {

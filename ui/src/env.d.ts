@@ -39,6 +39,7 @@ declare global {
     results?: unknown
     analysis?: unknown
     template?: unknown
+    api_warning?: string
   }
 
   interface Window {
@@ -98,7 +99,7 @@ declare global {
         concurrency: number
         selfCheck: boolean
       }) => Promise<{ ok: boolean; message: string }>
-      onTaskProgress: (handler: (event: { stage: string; completed?: number; total?: number; percent?: number; model?: string }) => void) => () => void
+      onTaskProgress: (handler: (event: { stage: string; step?: string; status?: string; completed?: number; total?: number; percent?: number; model?: string }) => void) => () => void
       runPipeline: (input: {
         inputPath: string
         outDir: string
@@ -110,6 +111,7 @@ declare global {
         kbPaths?: string[]
         domainPackDir?: string
       }) => Promise<RequirementAtomizerTaskPayload>
+      getOutputSummary: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       aiExtract: (input: { outDir: string; llmRoute?: string; limitSections?: number; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
       exportAnnotationHtml: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       importAiDecisions: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>

@@ -13,6 +13,7 @@ import {
   resolveBackendCommand,
   resolvePythonScriptPath,
   saveLlmSettingsConfig,
+  shouldReuseApiSession,
 } from "../main.helpers.cjs"
 
 describe("Electron main helpers", () => {
@@ -109,6 +110,20 @@ describe("Electron main helpers", () => {
       cwd: path.dirname(scriptPath),
       packaged: false,
     })
+  })
+
+  it("reuses a live API session for the same output directory", () => {
+    const session = {
+      baseUrl: "http://127.0.0.1:8770",
+      token: "local-token",
+      outputDir: "E:\\out\\abnt",
+    }
+    const liveProcess = { killed: false, exitCode: null }
+
+    expect(shouldReuseApiSession(session, liveProcess, "E:\\out\\abnt")).toBe(true)
+    expect(shouldReuseApiSession(session, liveProcess, "E:\\out\\other")).toBe(false)
+    expect(shouldReuseApiSession(session, { killed: true, exitCode: null }, "E:\\out\\abnt")).toBe(false)
+    expect(shouldReuseApiSession(session, { killed: false, exitCode: 1 }, "E:\\out\\abnt")).toBe(false)
   })
 
   it("normalizes API settings and exposes them to Python child processes without persisting secrets", () => {

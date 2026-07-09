@@ -107,6 +107,20 @@ function saveLlmSettingsConfig(configPath, input, safeStorage, previousApiKey = 
   return { settings, apiKey };
 }
 
+function shouldReuseApiSession(session, apiProcess, outputDir) {
+  if (!session?.baseUrl || !session?.token || !session?.outputDir || !outputDir) {
+    return false;
+  }
+  if (!apiProcess || apiProcess.killed || apiProcess.exitCode != null) {
+    return false;
+  }
+  return normalizeFsPath(session.outputDir) === normalizeFsPath(outputDir);
+}
+
+function normalizeFsPath(value) {
+  return path.resolve(String(value || "")).replace(/\\/g, "/").toLowerCase();
+}
+
 function encryptApiKey(apiKey, safeStorage) {
   if (!apiKey) return "";
   if (!safeStorage?.isEncryptionAvailable?.()) return "";
@@ -242,4 +256,5 @@ module.exports = {
   resolveBackendCommand,
   resolvePythonScriptPath,
   saveLlmSettingsConfig,
+  shouldReuseApiSession,
 };

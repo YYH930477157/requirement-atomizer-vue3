@@ -13,6 +13,7 @@ const {
   normalizeLlmSettings,
   resolveBackendCommand,
   saveLlmSettingsConfig,
+  shouldReuseApiSession,
 } = require("./main.helpers.cjs");
 
 let mainWindow = null;
@@ -20,6 +21,9 @@ let apiProcess = null;
 let apiSession = null;
 let llmSettings = null;
 let sessionApiKey = "";
+const API_STARTUP_ATTEMPTS = 3;
+const API_STARTUP_TIMEOUT_MS = 30000;
+const API_STARTUP_RETRY_DELAY_MS = 750;
 
 function createWindow() {
   Menu.setApplicationMenu(null);
@@ -107,7 +111,14 @@ ipcMain.handle("llm:save-settings", async (_event, input) => saveLlmSettings(inp
 ipcMain.handle("llm:test-connection", async (_event, input) => testLlmConnection(input));
 ipcMain.handle("task:run-pipeline", async (_event, input) => {
   const payload = await runDesktopTaskProcess(buildRunPipelineArgs(input));
-  await startApiServer(String(payload.out_dir || input.outDir));
+  const outDir = String(payload.out_dir || input.outDir);
+  try {
+    await startApiServer(outDir);
+  } catch (error) {
+    const message = `本地 API 连接失败，输出目录成果已保留，可稍后重新连接输出目录：${error.message}`;
+    appendBackendLog(logsDirPath(), "api", message);
+    payload.api_warning = message;
+  }
   return payload;
 });
 ipcMain.handle("task:ai-extract", async (_event, input) => runDesktopTaskProcess([
@@ -180,6 +191,9 @@ ipcMain.handle("dialog:open-template", async () => {
 ipcMain.handle("task:export-annotation-html", async (_event, input) =>
   runDesktopTaskProcess(["export-annotation-html", "--out", input.outDir]));
 
+ipcMain.handle("task:summary", async (_event, input) =>
+  runDesktopTaskProcess(["summary", "--out", input.outDir]));
+
 ipcMain.handle("task:import-ai-decisions", async (_event, input) => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
@@ -204,6 +218,27 @@ ipcMain.handle("task:import-clarification-answers", async (_event, input) => {
 });
 
 async function startApiServer(outputDir) {
+  if (shouldReuseApiSession(apiSession, apiProcess, outputDir)) {
+    return apiSession;
+  }
+  let lastError = null;
+  for (let attempt = 1; attempt <= API_STARTUP_ATTEMPTS; attempt += 1) {
+    try {
+      return await launchApiServer(outputDir);
+    } catch (error) {
+      lastError = error;
+      appendBackendLog(logsDirPath(), "api",
+        `startup attempt ${attempt}/${API_STARTUP_ATTEMPTS} failed: ${error.message}`);
+      stopApiServer();
+      if (attempt < API_STARTUP_ATTEMPTS) {
+        await delay(API_STARTUP_RETRY_DELAY_MS * attempt);
+      }
+    }
+  }
+  throw new Error(`API server startup failed after ${API_STARTUP_ATTEMPTS} attempts: ${lastError?.message || "unknown error"}`);
+}
+
+async function launchApiServer(outputDir) {
   stopApiServer();
   const token = crypto.randomBytes(24).toString("hex");
   const port = await findFreePort();
@@ -230,7 +265,7 @@ async function startApiServer(outputDir) {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  apiSession = await waitForApiReady(apiProcess, port, token, outputDir);
+  apiSession = await waitForApiReady(apiProcess, port, token, outputDir, API_STARTUP_TIMEOUT_MS);
   return apiSession;
 }
 
@@ -242,7 +277,7 @@ function stopApiServer() {
   apiSession = null;
 }
 
-function waitForApiReady(child, port, token, outputDir) {
+function waitForApiReady(child, port, token, outputDir, timeoutMs = API_STARTUP_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     let stdout = "";
     let stderr = "";
@@ -253,7 +288,7 @@ function waitForApiReady(child, port, token, outputDir) {
       clearTimeout(timer);
       callback(value);
     };
-    const timer = setTimeout(() => finish(reject, new Error(`API server startup timed out: ${stderr}`)), 10000);
+    const timer = setTimeout(() => finish(reject, new Error(`API server startup timed out after ${timeoutMs}ms: ${stderr}`)), timeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
@@ -285,6 +320,10 @@ function waitForApiReady(child, port, token, outputDir) {
       finish(reject, new Error(`API server exited with code ${code}: ${stderr}`));
     });
   });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function findFreePort() {

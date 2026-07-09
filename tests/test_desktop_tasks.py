@@ -708,6 +708,77 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertIn("finished", entry)
             self.assertEqual(data["manifest_version"], 1)
 
+    def test_run_pipeline_task_reuses_completed_atomize_and_review_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_path = root / "input.docx"
+            input_path.write_text("doc", encoding="utf-8")
+            out = root / "out"
+            out.mkdir()
+            (out / "manifest.json").write_text(json.dumps({
+                "input": str(input_path.resolve()),
+                "counts": {"atomic_requirements": 1},
+            }), encoding="utf-8")
+            for name in [
+                "blocks.jsonl",
+                "chunks.jsonl",
+                "table_items.jsonl",
+                "atomic_requirements.jsonl",
+                "llm_tasks.jsonl",
+                "quality_report.json",
+                "summary.md",
+                "llm_review_results.jsonl",
+                "review_states.jsonl",
+            ]:
+                (out / name).write_text("{}\n", encoding="utf-8")
+            desktop_tasks.update_run_manifest(out, "atomize", "ok")
+            desktop_tasks.update_run_manifest(out, "llm-review", "ok", route="stub")
+
+            with (mock.patch("desktop_tasks.run_atomizer_pipeline") as atomize,
+                  mock.patch("desktop_tasks.run_review_pipeline") as review):
+                payload = desktop_tasks.run_pipeline_task(input_path, out, llm_route="stub")
+
+            atomize.assert_not_called()
+            review.assert_not_called()
+            self.assertEqual(payload["manifest"]["resume_action"], "skipped")
+            self.assertEqual(payload["review"]["resume_action"], "skipped")
+            self.assertEqual(payload["summary"]["run_manifest"]["stages"]["atomize"]["status"], "ok")
+
+    def test_chain_skips_completed_stage_with_existing_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "ai_requirements.jsonl").write_text("{}\n", encoding="utf-8")
+            (out / "merged_spec_requirements.json").write_text('{"requirements":[]}', encoding="utf-8")
+            (out / "merged_spec.xlsx").write_bytes(b"xlsx")
+            desktop_tasks.update_run_manifest(
+                out,
+                "ai-extract",
+                "ok",
+                route="stub",
+                outputs=["ai_requirements.jsonl", "merged_spec_requirements.json", "merged_spec.xlsx"],
+            )
+
+            with mock.patch.object(desktop_tasks, "ai_extract_task") as task:
+                payload = desktop_tasks.chain_task(out, stages=["ai-extract"], route="stub")
+
+            task.assert_not_called()
+            self.assertEqual(payload["results"]["ai-extract"]["resume_action"], "skipped")
+            self.assertIn("ai-extract", payload["skipped_stages"])
+
+    def test_chain_reuses_legacy_outputs_without_run_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "ai_requirements.jsonl").write_text("{}\n", encoding="utf-8")
+            (out / "merged_spec_requirements.json").write_text('{"requirements":[]}', encoding="utf-8")
+
+            with mock.patch.object(desktop_tasks, "ai_extract_task") as task:
+                payload = desktop_tasks.chain_task(out, stages=["ai-extract"], route="stub")
+
+            task.assert_not_called()
+            self.assertEqual(payload["results"]["ai-extract"]["resume_action"], "skipped")
+            manifest = json.loads((out / desktop_tasks.RUN_MANIFEST).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["stages"]["ai-extract"]["last_action"], "skipped")
+
 
 if __name__ == "__main__":
     unittest.main()
