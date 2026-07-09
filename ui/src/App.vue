@@ -2,42 +2,68 @@
   <n-config-provider>
     <div class="shell">
       <aside class="side-nav">
-        <div class="nav-mark">标</div>
-        <button
-          v-for="item in phaseNavItems"
-          :key="item.id"
-          class="nav-button"
-          :class="{ active: activeNav === item.id }"
-          :data-testid="`nav-${item.label}`"
-          type="button"
-          @click="handleNavAction(item.id)"
-        >
-          <span class="nav-icon">{{ item.icon }}</span>
-          <span>{{ item.label }}</span>
-        </button>
+        <div class="side-brand">
+          <div class="brand-mark">标</div>
+          <div class="brand-text">
+            <div class="brand-name">标准需求抽取与审查平台</div>
+            <div class="brand-sub">Requirement Atomizer</div>
+          </div>
+        </div>
+        <nav class="nav-group">
+          <p class="nav-title">工作台</p>
+          <button
+            v-for="item in phaseNavItems.filter((i) => i.id !== 'settings')"
+            :key="item.id"
+            class="nav-button"
+            :class="{ active: activeNav === item.id }"
+            :data-testid="`nav-${item.label}`"
+            type="button"
+            @click="handleNavAction(item.id)"
+          >
+            <span class="nav-icon">{{ item.icon }}</span>
+            <span>{{ item.label }}</span>
+          </button>
+        </nav>
+        <div class="nav-spacer"></div>
+        <nav class="nav-group">
+          <button
+            v-for="item in phaseNavItems.filter((i) => i.id === 'settings')"
+            :key="item.id"
+            class="nav-button"
+            :class="{ active: activeNav === item.id }"
+            :data-testid="`nav-${item.label}`"
+            type="button"
+            @click="handleNavAction(item.id)"
+          >
+            <span class="nav-icon">{{ item.icon }}</span>
+            <span>{{ item.label }}</span>
+          </button>
+        </nav>
+        <div class="side-user">
+          <div class="side-avatar">专</div>
+          <div><b>需求评审专家</b><span>GUI Phase 1</span></div>
+        </div>
       </aside>
 
       <main class="main">
         <header class="app-bar">
-          <div class="brand-line">
-            <div class="brand-text">
-              <div class="product-name">标准需求抽取与审查平台</div>
-              <div class="doc-name">{{ documentDisplayName }}</div>
-            </div>
-            <div class="phase-pill">GUI Phase 1</div>
+          <div class="page-title-area">
+            <h3 class="page-title">{{ activeNavLabel }}</h3>
+            <span class="doc-chip" :title="documentDisplayName">{{ documentDisplayName }}</span>
           </div>
 
           <div class="app-actions">
-            <button class="button primary" type="button" data-testid="action-run-pipeline" :disabled="isRunning" @click="() => handleRunPipeline()">
-              {{ isRunning ? "运行中" : "运行" }}
-            </button>
-            <button class="button" type="button" data-testid="action-test-pipeline" :disabled="isRunning" @click="handleRunPipeline({ llmReviewLimit: TEST_LLM_REVIEW_LIMIT })">测试运行</button>
             <button class="button" type="button" data-testid="action-open-document" @click="handleOpenDocument">导入文档</button>
             <button class="button" type="button" data-testid="action-select-output-dir" @click="handleOpenOutput">选择输出目录</button>
             <label class="llm-toggle">
               <input v-model="llmMode" type="checkbox" data-testid="llm-mode-toggle" />
-              <span>LLM</span>
+              <span class="llm-track" aria-hidden="true"></span>
+              <span>LLM 富化</span>
             </label>
+            <button class="button" type="button" data-testid="action-test-pipeline" :disabled="isRunning" @click="handleRunPipeline({ llmReviewLimit: TEST_LLM_REVIEW_LIMIT })">测试运行</button>
+            <button class="button primary" type="button" data-testid="action-run-pipeline" :disabled="isRunning" @click="() => handleRunPipeline()">
+              {{ isRunning ? "运行中" : "▶ 运行" }}
+            </button>
             <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-export-html" @click="handleExportAnnotationHtml">导出批注HTML</button>
             <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-import-decisions" @click="handleImportDecisions">导入裁决</button>
             <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-import-answers" @click="handleImportAnswers">导入澄清答复</button>
@@ -69,6 +95,7 @@
                 <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
               </div>
             </div>
+            <div class="board-head"><h4>交付物流水线</h4><span>run_manifest 台账 · 中断可续跑</span></div>
             <div class="run-stage-board" data-testid="run-stage-board">
               <div
                 v-for="card in runStageCards"
@@ -476,6 +503,8 @@ const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
 ]
 
 const activeNav = ref<PhaseNavId>("review")
+const activeNavLabel = computed(
+  () => phaseNavItems.find((i) => i.id === activeNav.value)?.label || "审查")
 const llmMode = ref(false)
 const apiClient = ref<RequirementApiClient | null>(null)
 const apiMessage = ref("")
@@ -1584,10 +1613,56 @@ function fileName(path: string) {
 .switch-label {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  color: #3f4a61;
-  font-weight: 700;
+  gap: 8px;
+  color: #5c6675;
+  font-weight: 550;
   font-size: 13px;
+  cursor: pointer;
+}
+
+.llm-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.llm-track {
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: #d5dae4;
+  position: relative;
+  flex: none;
+  transition: background 0.15s;
+}
+
+.llm-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.15);
+  transition: left 0.15s;
+}
+
+.llm-toggle input:checked + .llm-track {
+  background: #2b56f5;
+}
+
+.llm-toggle input:checked + .llm-track::after {
+  left: 16px;
+}
+
+.llm-toggle input:focus-visible + .llm-track {
+  outline: 2px solid #2b56f5;
+  outline-offset: 2px;
 }
 
 .workflow-card {
@@ -2210,72 +2285,137 @@ tbody tr.selected {
 .side-nav {
   min-height: 0;
   overflow: auto;
-  background: #eceff5;
+  background: #ffffff;
   border-right: 1px solid #e6e9f0;
-  padding: 18px 12px;
+  padding: 16px 12px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
 
-.nav-mark {
-  width: 44px;
-  height: 44px;
-  margin: 2px auto 10px;
+.side-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 6px;
+}
+
+.brand-mark {
+  width: 34px;
+  height: 34px;
+  flex: none;
   display: grid;
   place-items: center;
   color: #ffffff;
-  font-size: 22px;
+  font-size: 15px;
   font-weight: 700;
-  background: linear-gradient(145deg, #2b56f5, #5978f7);
-  border-radius: 12px;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
+  background: #2b56f5;
+  border-radius: 9px;
+}
+
+.brand-text {
+  min-width: 0;
+}
+
+.brand-name {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.3;
+  color: #1a2233;
+}
+
+.brand-sub {
+  font-size: 10.5px;
+  color: #98a1b3;
+}
+
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-title {
+  margin: 0 0 6px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: #98a1b3;
+}
+
+.nav-spacer {
+  flex: 1;
 }
 
 .nav-button {
-  position: relative;
-  min-height: 72px;
-  padding: 10px 6px 8px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  color: #4a5568;
-  display: grid;
-  justify-items: center;
-  align-content: center;
-  gap: 7px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  color: #5c6675;
+  padding: 9px 10px;
+  text-align: left;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 500;
   background: transparent;
   cursor: pointer;
 }
 
-.nav-button:hover,
-.nav-button.active {
-  color: #2b56f5;
-  background: #ffffff;
-  border-color: #c7d3fc;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+.nav-button:hover {
+  background: #fafbfd;
+  color: #1a2233;
 }
 
-.nav-button.active::before {
-  content: "";
-  position: absolute;
-  left: -12px;
-  top: 14px;
-  width: 4px;
-  height: 44px;
-  border-radius: 0 4px 4px 0;
-  background: #2b56f5;
+.nav-button.active {
+  background: #eef2ff;
+  color: #2b56f5;
+  font-weight: 600;
 }
 
 .nav-icon {
-  width: 24px;
-  height: 24px;
+  width: 18px;
   display: grid;
   place-items: center;
   color: currentColor;
-  font-size: 18px;
+  font-size: 14px;
   line-height: 1;
+  opacity: 0.8;
+}
+
+.side-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid #e6e9f0;
+  padding: 12px 6px 2px;
+}
+
+.side-avatar {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 50%;
+  background: #eef2ff;
+  color: #2b56f5;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.side-user b {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1a2233;
+}
+
+.side-user span {
+  font-size: 11px;
+  color: #98a1b3;
 }
 
 .main {
@@ -2297,46 +2437,33 @@ tbody tr.selected {
   border-bottom: 1px solid #e6e9f0;
 }
 
-.brand-line {
+.page-title-area {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
-.brand-text {
-  min-width: 0;
-}
-
-.product-name {
-  color: #242c3d;
-  font-size: 24px;
-  line-height: 1.2;
+.page-title {
+  margin: 0;
+  color: #1a2233;
+  font-size: 19px;
   font-weight: 700;
+  letter-spacing: -0.01em;
   white-space: nowrap;
 }
 
-.doc-name {
-  margin-top: 4px;
-  color: #98a1b3;
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.phase-pill {
-  flex: 0 0 auto;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 10px;
-  border: 1px solid #d3dbe6;
-  border-radius: 999px;
+.doc-chip {
+  font-size: 12px;
   color: #5c6675;
   background: #fafbfd;
-  font-size: 12px;
-  font-weight: 600;
+  border: 1px solid #e6e9f0;
+  border-radius: 999px;
+  padding: 4px 12px;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-actions {
@@ -2450,9 +2577,33 @@ tbody tr.selected {
 
 .run-stage-board {
   min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  display: flex;
   gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.run-stage-board .run-stage-card {
+  flex: 1 0 118px;
+}
+
+.board-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.board-head h4 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: #1a2233;
+}
+
+.board-head span {
+  font-size: 11.5px;
+  color: #98a1b3;
 }
 
 /* 流水线形态（设计提案 2026-07-09）：左侧色条编码状态——绿=完成/蓝=进行/灰=等待或复用/红=失败 */
@@ -2652,10 +2803,11 @@ tbody tr.selected {
 .stat-card {
   min-width: 0;
   height: 82px;
-  padding: 15px 18px;
+  padding: 13px 16px;
   border: 1px solid #e6e9f0;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #ffffff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
@@ -2678,8 +2830,10 @@ tbody tr.selected {
 .stat-value {
   display: block;
   margin-top: 5px;
-  color: #242c3d;
-  font-size: 30px;
+  color: #1a2233;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
   font-weight: 700;
 }
