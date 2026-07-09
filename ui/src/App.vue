@@ -95,6 +95,7 @@
                 <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
               </div>
             </div>
+            <div class="stage-flow-card">
             <div class="board-head"><h4>交付物流水线</h4><span>run_manifest 台账 · 中断可续跑</span></div>
             <div class="run-stage-board" data-testid="run-stage-board">
               <div
@@ -117,6 +118,7 @@
                 <small>批注视图 · 双击可分享给专家离线裁决</small>
               </span>
               <button class="deliverable-open" type="button" @click="openAnnotationHtml">打开</button>
+            </div>
             </div>
           </div>
         </section>
@@ -2486,33 +2488,43 @@ tbody tr.selected {
 .run-dashboard {
   display: grid;
   grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-  gap: 14px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px 14px;
   padding: 12px 26px;
   background: #ffffff;
   border-bottom: 1px solid #e6e9f0;
 }
 
-.run-paths-panel {
-  min-width: 0;
-  display: grid;
-  grid-template-rows: repeat(2, 52px);
-  gap: 10px;
+/* 左右对齐（真实反馈 2026-07-09）：dashboard 双行网格,面板 display:contents 让
+   左边两卡与右边"进度行/流水线行"各占同一行——同高同比例,不再左短右长 */
+.run-paths-panel,
+.run-stage-panel {
+  display: contents;
 }
 
-.run-stage-panel {
+.run-paths-panel .selection-item:first-child { grid-column: 1; grid-row: 1; }
+.run-paths-panel .selection-item:last-child { grid-column: 1; grid-row: 2; }
+.run-stage-panel .run-meter { grid-column: 2; grid-row: 1; }
+.run-stage-panel .stage-flow-card { grid-column: 2; grid-row: 2; }
+
+.stage-flow-card {
   min-width: 0;
   display: grid;
-  gap: 10px;
+  align-content: start;
+  gap: 8px;
+  border: 1px solid #e6e9f0;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 12px 14px;
 }
 
 .selection-item {
   min-width: 0;
-  height: 52px;
   display: grid;
   align-content: center;
   gap: 5px;
   border: 1px solid #e6e9f0;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #fafbfd;
   padding: 8px 12px;
 }
