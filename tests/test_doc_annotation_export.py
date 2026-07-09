@@ -1,6 +1,7 @@
 """自包含文档批注 HTML 导出回归。"""
 from __future__ import annotations
 
+import html
 import json
 import tempfile
 import unittest
@@ -68,6 +69,244 @@ class DocAnnotationExportTests(unittest.TestCase):
             # 块正文里的 < & 必须转义，不破坏标记
             self.assertIn("volume &lt; 5 &amp; log", html)
             self.assertNotIn("volume < 5 & log it.</p>", html)
+
+    def test_annotation_number_is_inline_after_quoted_paragraph_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn(
+                'The meter shall measure volume &lt; 5 &amp; log it.'
+                '<button class="chip annotation-index"',
+                rendered,
+            )
+            self.assertIn('data-inline-marker="1"', rendered)
+            self.assertNotIn('right: calc(100% + 12px)', rendered)
+            self.assertIn('font-size: 12px', rendered)
+            self.assertIn('font-weight: 750', rendered)
+            self.assertIn('<span class="annotation-owner">软件</span>', rendered)
+
+    def test_annotation_number_is_inline_inside_table_cell(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            quote = "Data that the GdM must collect, record locally and transmit remotely."
+            (out / "blocks.jsonl").write_text(
+                json.dumps({
+                    "block_id": "T1",
+                    "order": 1,
+                    "type": "table",
+                    "text": quote,
+                    "section_path": ["4 Requirements"],
+                    "requirement_like": True,
+                    "noise": False,
+                    "doc_region": "body",
+                    "table_title": "Table 4",
+                    "header_rows": [["Function", "Requirement"]],
+                    "data_rows": [["Data collection", quote]],
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            (out / "ai_requirements.jsonl").write_text(
+                json.dumps({
+                    "ai_req_id": "AI-TABLE",
+                    "title": "Data collection",
+                    "description": "Collect, store and transmit data.",
+                    "module": "Data",
+                    "source_section": "4",
+                    "source_quote": quote,
+                    "source_block_ids": ["T1"],
+                    "labels": ["Data"],
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn(
+                quote + '<button class="chip annotation-index" data-req="AI-TABLE" data-inline-marker="1"',
+                rendered,
+            )
+            self.assertNotIn(f'<td>{quote}</td>', rendered)
+
+    def test_unanalyzed_hardware_table_text_gets_classification_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            quote = ("a natural or legal person who manufactures a device or has a device designed "
+                     "or manufactured, and places it on the market by placing its name or trademark "
+                     "on it or puts it into service for the own purposes;")
+            (out / "blocks.jsonl").write_text(
+                json.dumps({
+                    "block_id": "T1",
+                    "order": 1,
+                    "type": "table",
+                    "text": "3.13 | manufacturer\n | " + quote,
+                    "section_path": ["3 TERMS AND DEFINITIONS"],
+                    "requirement_like": True,
+                    "noise": False,
+                    "doc_region": "body",
+                    "table_title": "Terms",
+                    "header_rows": [["3.13", "manufacturer"]],
+                    "data_rows": [["", quote]],
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            (out / "ai_requirements.jsonl").write_text("", encoding="utf-8")
+
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn(quote + '<button class="source-classification source-classification-hardware"', rendered)
+            self.assertIn('data-source-classification="hardware"', rendered)
+            self.assertIn('data-source-text=', rendered)
+            self.assertIn('<span class="annotation-number">01</span>', rendered)
+            self.assertIn('<span class="annotation-owner">硬件</span>', rendered)
+            self.assertIn("function selectSourceClassification", rendered)
+            self.assertIn("为什么没有生成研发需求", rendered)
+
+    def test_unanalyzed_hardware_software_definition_gets_co_design_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            quote = ("Set of central hardware and software components intended for the management "
+                     "of the functions of remote reading and remote management of measurement groups.")
+            (out / "blocks.jsonl").write_text(
+                json.dumps({
+                    "block_id": "B1",
+                    "order": 1,
+                    "type": "paragraph",
+                    "text": quote,
+                    "section_path": ["3 TERMS AND DEFINITIONS", "3.4 (Remote Management) Center"],
+                    "requirement_like": False,
+                    "noise": False,
+                    "doc_region": "body",
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            (out / "ai_requirements.jsonl").write_text("", encoding="utf-8")
+
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn(quote + '<button class="source-classification source-classification-co_design"', rendered)
+            self.assertIn('data-source-classification="co_design"', rendered)
+            self.assertIn('<span class="annotation-number">01</span>', rendered)
+            self.assertIn('<span class="annotation-owner">协同</span>', rendered)
+
+    def test_unanalyzed_mobile_concentrator_definition_gets_hardware_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            title = "Dispositivo walk by"
+            quote = ('Device with mobile data concentrator function. It allows the management '
+                     'of GdMs in "modalità walk by" o "drive by"')
+            (out / "blocks.jsonl").write_text(
+                json.dumps({
+                    "block_id": "T1",
+                    "order": 1,
+                    "type": "table",
+                    "text": f"3.10 | {title}\n | {quote}",
+                    "section_path": ["3 TERMS AND DEFINITIONS"],
+                    "requirement_like": True,
+                    "noise": False,
+                    "doc_region": "body",
+                    "table_title": "Terms",
+                    "header_rows": [["3.10", title]],
+                    "data_rows": [["", quote]],
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            (out / "ai_requirements.jsonl").write_text("", encoding="utf-8")
+
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn(
+                html.escape(quote) + '<button class="source-classification source-classification-hardware"',
+                rendered,
+            )
+            self.assertIn('<span class="annotation-owner">硬件</span>', rendered)
+
+    def test_unanalyzed_significant_event_definition_gets_software_term_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            title = "significant event"
+            quote = "Event or report in the GdM, which can affect its functioning or alter its data in its contents."
+            (out / "blocks.jsonl").write_text(
+                json.dumps({
+                    "block_id": "T1",
+                    "order": 1,
+                    "type": "table",
+                    "text": f"3.15 | {title}\n | {quote}",
+                    "section_path": ["3 TERMS AND DEFINITIONS"],
+                    "requirement_like": True,
+                    "noise": False,
+                    "doc_region": "body",
+                    "table_title": "Terms",
+                    "header_rows": [["3.15", title]],
+                    "data_rows": [["", quote]],
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            (out / "ai_requirements.jsonl").write_text("", encoding="utf-8")
+
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn(
+                quote + '<button class="source-classification source-classification-software_term"',
+                rendered,
+            )
+            self.assertIn('data-source-classification="software_term"', rendered)
+            self.assertIn('<span class="annotation-owner">术语</span>', rendered)
+            self.assertIn("软件概念或事件/状态术语", rendered)
+
+    def test_inline_markers_number_requirements_and_classifications_in_source_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            req_a = "The GdM shall record measurement data."
+            hardware = "The manufacturer shall place its trademark on the device."
+            req_b = "The GdM shall transmit data remotely."
+            (out / "blocks.jsonl").write_text(
+                json.dumps({
+                    "block_id": "T1",
+                    "order": 1,
+                    "type": "table",
+                    "text": "\n".join([req_a, hardware, req_b]),
+                    "section_path": ["4 Requirements"],
+                    "requirement_like": True,
+                    "noise": False,
+                    "doc_region": "body",
+                    "table_title": "Mixed",
+                    "header_rows": [["Item", "Text"]],
+                    "data_rows": [["A", req_a], ["B", hardware], ["C", req_b]],
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            (out / "ai_requirements.jsonl").write_text(
+                json.dumps({
+                    "ai_req_id": "AI-A",
+                    "title": "Record data",
+                    "description": "Record measurement data.",
+                    "module": "Data",
+                    "source_section": "4",
+                    "source_quote": req_a,
+                    "source_block_ids": ["T1"],
+                }, ensure_ascii=False) + "\n" +
+                json.dumps({
+                    "ai_req_id": "AI-B",
+                    "title": "Transmit data",
+                    "description": "Transmit data remotely.",
+                    "module": "Communication",
+                    "source_section": "4",
+                    "source_quote": req_b,
+                    "source_block_ids": ["T1"],
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            rendered = dae.render_annotation_html(out)
+
+            positions = [
+                rendered.index('<span class="annotation-number">01</span><span class="annotation-owner">软件</span>'),
+                rendered.index('<span class="annotation-number">02</span><span class="annotation-owner">硬件</span>'),
+                rendered.index('<span class="annotation-number">03</span><span class="annotation-owner">软件</span>'),
+            ]
+            self.assertEqual(positions, sorted(positions))
 
     def test_omission_flag_for_uncovered_requirement_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,6 +433,19 @@ class DocAnnotationExportTests(unittest.TestCase):
             self.assertIn('return selected !== base ? selected : "";', rendered)
             self.assertIn("const ownershipOverride = ownershipOverrideForSave(id);", rendered)
             self.assertIn("ownership_override: ownershipOverride", rendered)
+
+    def test_hardware_detail_hides_full_guidance_and_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn("function isHardwareRequirement", rendered)
+            self.assertIn("const isHardware = isHardwareRequirement(r);", rendered)
+            self.assertIn("const dev = isHardware ? \"\" :", rendered)
+            self.assertIn("const acc = isHardware ? \"\" :", rendered)
+            self.assertIn("hardwareTranslationHtml(r)", rendered)
+            self.assertIn("ownershipReasonHtml(r)", rendered)
 
 
 if __name__ == "__main__":

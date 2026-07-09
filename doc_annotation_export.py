@@ -35,6 +35,43 @@ _LEADER_DOTS_RE = re.compile(r"\s*[.·…]{3,}\s*\d*\s*$")
 _INLINE_GARBAGE_RE = re.compile(r"(?:\d+\s+)?[,`'=\-*_~|+…]{6,}")
 # 纯符号行：PDF 框线/制表符被误读成符号串
 _SYMBOL_ONLY_RE = re.compile(r"^[,\-`'=*_~|+.…\s]+$")
+_OWNER_LABELS = {"software": "软件", "hardware": "硬件", "co_design": "协同", "software_term": "术语"}
+_UNANALYZED_HARDWARE_TERMS = (
+    "manufacturer",
+    "manufactures",
+    "manufactured",
+    "trademark",
+    "places it on the market",
+    "puts it into service",
+    "mechanical",
+    "battery",
+    "valve",
+    "physical",
+    "mobile data concentrator",
+    "concentrator function",
+    "concentrator functions",
+    "walk by",
+    "walk-by",
+    "drive by",
+    "drive-by",
+)
+_UNANALYZED_CO_DESIGN_TERMS = (
+    "hardware and software components",
+    "central hardware and software components",
+    "hardware related",
+    "driver",
+    "interface",
+    "dataflash",
+    "m-bus",
+    "wmbus",
+)
+_UNANALYZED_SOFTWARE_TERM_TERMS = (
+    "significant event",
+    "event or report",
+    "affect its functioning",
+    "alter its data",
+    "data in its contents",
+)
 
 
 def _module_vocab() -> list[str]:
@@ -115,6 +152,7 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         collapse_buf = []
 
     prev_page: int | None = None
+    marker_state: dict[str, Any] = {"next": 1, "req_numbers": {}}
     for b in blocks:
         bid = str(b.get("block_id") or "")
         text = str(b.get("text") or "")
@@ -139,10 +177,9 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         anchored = anchor_map.get(bid) or []
 
         # 渲染单个 block 的 HTML（表格块带 data_rows 时渲染真表格，旧 out_dir 无该字段回退扁平文字）
-        table_html = _render_table_inner(b) if b.get("type") == "table" else ""
         block_html = _render_one_block(bid, text, path, region, is_heading, is_noise, is_omission, anchored,
                                        req_numbers or {}, (sub_anchor_map or {}).get(bid) or [],
-                                       table_html=table_html)
+                                       block=b, marker_state=marker_state)
 
         # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
         if region in _COLLAPSIBLE_REGIONS:
@@ -162,13 +199,183 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
 _LIST_TEXT_RE = re.compile(r"^(?:[a-z0-9]{1,3}[).]|[•▪—–-])\s")
 
 
-def _render_table_inner(block: dict) -> str:
+def _normalize_with_char_map(text: str) -> tuple[str, list[tuple[int, int]]]:
+    normalized: list[str] = []
+    char_map: list[tuple[int, int]] = []
+    in_space = False
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            if not in_space:
+                normalized.append(" ")
+                char_map.append((i, i + 1))
+                in_space = True
+            else:
+                start, _ = char_map[-1]
+                char_map[-1] = (start, i + 1)
+        else:
+            normalized.append(ch)
+            char_map.append((i, i + 1))
+            in_space = False
+    return "".join(normalized), char_map
+
+
+def _find_quote_span(text: str, quote: str) -> tuple[int, int] | None:
+    quote = quote.strip()
+    if not quote:
+        return None
+    pos = text.find(quote)
+    if pos >= 0:
+        return pos, pos + len(quote)
+
+    normalized_text, char_map = _normalize_with_char_map(text)
+    normalized_quote = re.sub(r"\s+", " ", quote).strip()
+    pos = normalized_text.find(normalized_quote)
+    if pos < 0:
+        return None
+    end_pos = pos + len(normalized_quote) - 1
+    if pos >= len(char_map) or end_pos >= len(char_map):
+        return None
+    return char_map[pos][0], char_map[end_pos][1]
+
+
+def _annotation_chip(req: dict[str, Any], number: int, *,
+                     fallback_index: int = 1, sub_label: str | None = None) -> str:
+    rid = html.escape(str(req.get("ai_req_id") or ""))
+    if sub_label is not None:
+        return (
+            f'<button class="chip annotation-index sub" data-req="{rid}" '
+            f'title="{html.escape(str(req.get("title") or ""))} · 子项 {html.escape(sub_label)}" '
+            f'aria-label="子项 {html.escape(sub_label)}">'
+            f'<span class="annotation-number">{number:02d}.{html.escape(sub_label)}</span></button>'
+        )
+    owner = _OWNER_LABELS.get(str(req.get("ownership_effective") or req.get("ownership") or "software"), "软件")
+    return (
+        f'<button class="chip annotation-index" data-req="{rid}" data-inline-marker="1" '
+        f'title="{html.escape(str(req.get("module_effective") or ""))} · {html.escape(str(req.get("title") or ""))}" '
+        f'aria-label="{html.escape(str(req.get("title") or "需求批注"))}">'
+        f'<span class="annotation-dot"></span>'
+        f'<span class="annotation-number">{number or fallback_index:02d}</span>'
+        f'<span class="annotation-owner">{html.escape(owner)}</span></button>'
+    )
+
+
+def _marker_number_for_req(req: dict[str, Any], marker_state: dict[str, Any] | None,
+                           fallback_index: int = 1,
+                           req_numbers: dict[str, int] | None = None) -> int:
+    rid = str(req.get("ai_req_id") or "")
+    if marker_state is None:
+        return (req_numbers or {}).get(rid, fallback_index)
+    assigned = marker_state.setdefault("req_numbers", {})
+    if rid:
+        if rid not in assigned:
+            number = int(marker_state.get("next", fallback_index))
+            assigned[rid] = number
+            marker_state["next"] = number + 1
+        return int(assigned[rid])
+    number = int(marker_state.get("next", fallback_index))
+    marker_state["next"] = number + 1
+    return number
+
+
+def _render_text_with_quote_markers(text: str, anchored: list[dict[str, Any]],
+                                    req_numbers: dict[str, int],
+                                    placed_ids: set[str] | None = None,
+                                    marker_state: dict[str, Any] | None = None) -> tuple[str, set[str]]:
+    placed = placed_ids if placed_ids is not None else set()
+    matches: dict[tuple[int, int], list[tuple[int, dict[str, Any]]]] = {}
+    for fallback_index, req in enumerate(anchored, start=1):
+        rid = str(req.get("ai_req_id") or "")
+        if not rid or rid in placed:
+            continue
+        span = _find_quote_span(text, str(req.get("source_quote") or ""))
+        if span:
+            matches.setdefault(span, []).append((fallback_index, req))
+    if not matches:
+        return html.escape(text), set()
+
+    rendered: list[str] = []
+    cursor = 0
+    newly_placed: set[str] = set()
+    for (start, end), reqs in sorted(matches.items(), key=lambda item: (item[0][0], item[0][1])):
+        if start < cursor:
+            continue
+        rendered.append(html.escape(text[cursor:end]))
+        for fallback_index, req in reqs:
+            rid = str(req.get("ai_req_id") or "")
+            if rid in placed:
+                continue
+            number = _marker_number_for_req(req, marker_state, fallback_index, req_numbers)
+            rendered.append(_annotation_chip(req, number, fallback_index=fallback_index))
+            placed.add(rid)
+            newly_placed.add(rid)
+        cursor = end
+    rendered.append(html.escape(text[cursor:]))
+    return "".join(rendered), newly_placed
+
+
+def _render_fallback_chips(anchored: list[dict[str, Any]], req_numbers: dict[str, int],
+                           placed_ids: set[str], marker_state: dict[str, Any] | None = None) -> str:
+    chips: list[str] = []
+    for fallback_index, req in enumerate(anchored, start=1):
+        rid = str(req.get("ai_req_id") or "")
+        if rid and rid not in placed_ids:
+            number = _marker_number_for_req(req, marker_state, fallback_index, req_numbers)
+            chips.append(_annotation_chip(req, number, fallback_index=fallback_index))
+    return "".join(chips)
+
+
+def _render_sub_anchor_chips(sub_anchors: list | None, req_numbers: dict[str, int],
+                             marker_state: dict[str, Any] | None = None) -> str:
+    return "".join(
+        _annotation_chip(
+            req,
+            _marker_number_for_req(req, marker_state, req_numbers.get(str(req.get("ai_req_id") or ""), 0), req_numbers),
+            sub_label=str(label),
+        )
+        for req, label in (sub_anchors or [])
+    )
+
+
+def _unanalyzed_owner_for_text(text: str) -> str | None:
+    if not text.strip():
+        return None
+    probe = text.casefold()
+    if any(term in probe for term in _UNANALYZED_CO_DESIGN_TERMS):
+        return "co_design"
+    if any(term in probe for term in _UNANALYZED_HARDWARE_TERMS):
+        return "hardware"
+    if any(term in probe for term in _UNANALYZED_SOFTWARE_TERM_TERMS):
+        return "software_term"
+    return None
+
+
+def _source_classification_marker(owner: str, marker_state: dict[str, Any], text: str = "") -> str:
+    label = _OWNER_LABELS.get(owner, owner)
+    number = marker_state.get("next", 1)
+    marker_state["next"] = number + 1
+    return (
+        f'<button class="source-classification source-classification-{html.escape(owner)}" '
+        f'data-source-classification="{html.escape(owner)}" '
+        f'data-source-text="{html.escape(text)}" '
+        f'title="该原文已归类为{html.escape(label)}，点击查看原因">'
+        f'<span class="annotation-number">{number:02d}</span>'
+        f'<span class="annotation-owner">{html.escape(label)}</span></button>'
+    )
+
+
+def _render_table_inner(block: dict, anchored: list[dict[str, Any]] | None = None,
+                        req_numbers: dict[str, int] | None = None,
+                        marker_state: dict[str, Any] | None = None) -> tuple[str, set[str]]:
     """表格块渲染成真 <table>（题注 + 表头 + 斑马纹数据行 + 横向滚动容器）。"""
     header_rows = block.get("header_rows") or []
     data_rows = block.get("data_rows") or []
     ncols = max((len(r) for r in header_rows + data_rows), default=0)
     if not data_rows and not header_rows:
-        return ""
+        return "", set()
+    anchored_rows = anchored or []
+    numbers = req_numbers or {}
+    state = marker_state if marker_state is not None else {"next": 1}
+    placed: set[str] = set()
     title = str(block.get("table_title") or "")
     rebuilt = block.get("table_source") == "text_layout"
     caption = ""
@@ -179,19 +386,31 @@ def _render_table_inner(block: dict) -> str:
         "<tr>" + "".join(f"<th>{html.escape(str(c))}</th>" for c in list(row) + [""] * (ncols - len(row))) + "</tr>"
         for row in header_rows
     )
-    body = "".join(
-        "<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in list(row) + [""] * (ncols - len(row))) + "</tr>"
-        for row in data_rows
-    )
+    body_rows: list[str] = []
+    for row in data_rows:
+        cells: list[str] = []
+        for c in list(row) + [""] * (ncols - len(row)):
+            cell_text = str(c)
+            rendered_cell, newly_placed = _render_text_with_quote_markers(
+                cell_text, anchored_rows, numbers, placed, state
+            )
+            if not newly_placed:
+                owner = _unanalyzed_owner_for_text(cell_text)
+                if owner:
+                    rendered_cell += _source_classification_marker(owner, state, cell_text)
+            cells.append(f"<td>{rendered_cell}</td>")
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+    body = "".join(body_rows)
     thead = f"<thead>{head}</thead>" if head else ""
     return (f'<figure class="doc-table">{caption}<div class="table-scroll">'
-            f'<table>{thead}<tbody>{body}</tbody></table></div></figure>')
+            f'<table>{thead}<tbody>{body}</tbody></table></div></figure>'), placed
 
 
 def _render_one_block(bid: str, text: str, path: list, region: str,
                       is_heading: bool, is_noise: bool, is_omission: bool,
                       anchored: list, req_numbers: dict[str, int] | None = None,
-                      sub_anchors: list | None = None, table_html: str = "") -> str:
+                      sub_anchors: list | None = None, block: dict | None = None,
+                      marker_state: dict[str, Any] | None = None) -> str:
     cls = ["doc-block"]
     if is_heading:
         cls.append("heading")
@@ -202,37 +421,37 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         cls.append("omission")
     if anchored:
         cls.append("anchored")
-    if table_html:
+    is_table = bool(block and block.get("type") == "table")
+    if is_table:
         cls.append("is-table")
     elif _LIST_TEXT_RE.match(text):
         cls.append("list-item")   # 悬挂缩进
     depth = min(len(path), 4) if path else 0
 
     numbers = req_numbers or {}
-    chips = "".join(
-        f'<button class="chip annotation-index" data-req="{html.escape(str(r["ai_req_id"]))}" '
-        f'title="{html.escape(str(r.get("module_effective") or ""))} · {html.escape(str(r.get("title") or ""))}" '
-        f'aria-label="{html.escape(str(r.get("title") or "需求批注"))}">'
-        f'<span class="annotation-dot"></span>'
-        f'<span class="annotation-number">{numbers.get(str(r["ai_req_id"]), i):02d}</span></button>'
-        for i, r in enumerate(anchored, start=1)
-    )
-    # 二级子项批注（01.a / 01.b…）：挂在枚举项各自段落上，点击选中所属条款需求
-    chips += "".join(
-        f'<button class="chip annotation-index sub" data-req="{html.escape(str(r["ai_req_id"]))}" '
-        f'title="{html.escape(str(r.get("title") or ""))} · 子项 {html.escape(label)}" '
-        f'aria-label="子项 {html.escape(label)}">'
-        f'<span class="annotation-number">{numbers.get(str(r["ai_req_id"]), 0):02d}.{html.escape(label)}</span></button>'
-        for r, label in (sub_anchors or [])
-    )
-    chips_html = f'<div class="chips">{chips}</div>' if chips else ""
+    state = marker_state if marker_state is not None else {"next": 1, "req_numbers": {}}
     omission_html = ('<div class="omission-flag"><span class="omission-tag">未覆盖</span></div>'
                      if is_omission else "")
-    content = table_html or f'<p class="text" data-block-id="{html.escape(bid)}">{html.escape(text)}</p>'
+    if is_table and block is not None:
+        table_html, placed_ids = _render_table_inner(block, anchored, numbers, state)
+        fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
+        sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
+        trailing = f'<span class="chips inline-chips">{fallback}{sub_chips}</span>' if fallback or sub_chips else ""
+        content = f'{table_html}{trailing}'
+    else:
+        text_html, placed_ids = _render_text_with_quote_markers(text, anchored, numbers, marker_state=state)
+        fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
+        if not placed_ids and not fallback:
+            owner = _unanalyzed_owner_for_text(text)
+            if owner:
+                text_html += _source_classification_marker(owner, state, text)
+        sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
+        content = (f'<p class="text" data-block-id="{html.escape(bid)}">'
+                   f'{text_html}{fallback}{sub_chips}</p>')
     return (
         f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}" style="--depth:{depth}">'
         f'<div class="block-inner">'
-        f'{chips_html}{omission_html}'
+        f'{omission_html}'
         f'{content}'
         f'</div></div>'
     )
@@ -416,13 +635,29 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .dd-table th, .dd-table td {{ border: 1px solid #e3e0d8; padding: 3px 8px; text-align: left; }}
 .dd-table th {{ background: #f6f3ec; font-weight: 600; }}
 
-/* chips（左侧留白垂直堆叠，Word 批注式编号，不侵入正文） */
-.chips {{ position: absolute; right: calc(100% + 12px); top: 4px; display: flex; flex-direction: column;
-  gap: 3px; align-items: flex-end; }}
-.chip {{ display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; font-size: 10px;
-  border: 0; border-right: 2px solid var(--line-strong); border-radius: 0; padding: 0 7px 0 0;
-  background: transparent; cursor: pointer; color: var(--accent-quiet); height: 18px;
-  transition: color .12s, border-color .12s; white-space: nowrap; }}
+/* chips（贴在引用原文后的行内角标） */
+.chips {{ display: inline-flex; gap: 4px; align-items: baseline; margin-left: 5px; vertical-align: baseline; }}
+.chip {{ display: inline-flex; align-items: center; justify-content: center; gap: 4px; font-size: 10px;
+  border: 0; border-bottom: 1px solid var(--line-strong); border-radius: 0; padding: 0 2px 1px;
+  background: transparent; cursor: pointer; color: var(--accent-quiet); height: auto; line-height: 1;
+  transition: color .12s, border-color .12s, background .12s; white-space: nowrap; vertical-align: super; }}
+.chip[data-inline-marker="1"] {{ margin-left: 5px; border-bottom: 2px solid var(--accent-quiet);
+  color: var(--accent); transform: translateY(-0.08em); }}
+.chip[data-inline-marker="1"] .annotation-dot {{ display: none; }}
+.chip[data-inline-marker="1"] .annotation-number,
+.chip[data-inline-marker="1"] .annotation-owner {{ font-size: 12px; font-weight: 750; letter-spacing: .03em; }}
+.chip[data-inline-marker="1"] .annotation-owner {{ margin-left: 2px; }}
+.chip[data-inline-marker="1"].quote-selected {{ background: #ffe89a; color: var(--accent); border-color: var(--accent); }}
+.source-classification {{ display: inline-flex; margin-left: 5px; transform: translateY(-0.08em);
+  color: var(--faint); border: 0; border-bottom: 1px dotted var(--line-strong); padding: 0 2px 1px;
+  background: transparent; cursor: pointer; vertical-align: super; line-height: 1; font-family: inherit; }}
+.source-classification .annotation-number,
+.source-classification .annotation-owner {{ font-size: 12px; font-weight: 750; letter-spacing: .03em; }}
+.source-classification .annotation-owner {{ margin-left: 2px; }}
+.source-classification-hardware {{ color: #8a6417; }}
+.source-classification-co_design {{ color: var(--accent-quiet); }}
+.source-classification-software_term {{ color: #5b6f8f; }}
+.source-classification:hover, .source-classification.sel {{ color: var(--accent); border-color: var(--accent); }}
 .annotation-dot {{ width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .68; }}
 .annotation-number {{ font-variant-numeric: tabular-nums; letter-spacing: .04em; }}
 .chip:hover {{ color: var(--accent); border-color: var(--accent); }}
@@ -633,9 +868,28 @@ function thresholdHtml(r) {{
   return '<div class="dd-label">参数表（数值原样照抄原文）</div><table class="dd-table">'+head+body+'</table>';
 }}
 
+function isHardwareRequirement(r) {{
+  return ownershipOf(r) === "hardware";
+}}
+
+function hardwareTranslationHtml(r) {{
+  if (!isHardwareRequirement(r)) return "";
+  const text = r.hardware_summary || r.hardware_translation || r.source_quote || r.description || "";
+  return text ? '<div class="dd-label">中文翻译 / 说明</div><div class="dd-body">'+esc(text)+'</div>' : "";
+}}
+
+function ownershipReasonHtml(r) {{
+  if (!isHardwareRequirement(r)) return "";
+  const text = r.ownership_reason || "";
+  return text ? '<div class="dd-label">为什么判断为硬件</div><div class="dd-body">'+esc(text)+'</div>' : "";
+}}
+
 function highlightQuote() {{
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
+  document.querySelectorAll('.chip[data-inline-marker="1"].quote-selected').forEach(m => m.classList.remove("quote-selected"));
   const r = selected && byId[selected]; if (!r || !r.source_quote) return;
+  const marker = document.querySelector('.chip[data-inline-marker="1"][data-req="' + selected + '"]');
+  if (marker) {{ marker.classList.add("quote-selected"); return; }}
   const anchor = r.anchor_block_id || (r.source_block_ids||[])[0];
   const p = document.querySelector('.text[data-block-id="' + anchor + '"]'); if (!p) return;
   const t = p.textContent, q = r.source_quote, i = t.indexOf(q);
@@ -645,20 +899,53 @@ function highlightQuote() {{
 function deselect() {{
   selected = null;
   document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".source-classification").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll('.chip[data-inline-marker="1"].quote-selected').forEach(m => m.classList.remove("quote-selected"));
   document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   document.getElementById("detail").innerHTML = '<div class="empty">点击批注标记查看详情</div>';
 }}
 
+function sourceClassificationReason(owner, text) {{
+  if (owner === "hardware") return "该段原文描述制造主体、设备、部件、阀门、电池、物理结构或其它硬件对象，当前规则只做硬件归类与原文说明，不生成软件研发指引或测试指引。";
+  if (owner === "co_design") return "该段原文同时涉及硬件与软件/通信接口，当前先标为软硬件协同提示，需要在功能分析阶段结合上下文再拆分软件侧职责。";
+  if (owner === "software_term") return "该段原文是软件概念或事件/状态术语定义，当前没有独立的 shall/must 行为约束，因此未生成完整研发需求；它会作为后续事件记录、状态管理或数据处理需求的术语依据。";
+  return "该段原文未进入软件需求分析。";
+}}
+
+function selectSourceClassification(el) {{
+  selected = null;
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".source-classification").forEach(c => c.classList.toggle("sel", c === el));
+  document.querySelectorAll(".doc-block").forEach(block => block.classList.remove("in-span", "evidence"));
+  const block = el.closest(".doc-block");
+  if (block) block.classList.add("in-span", "evidence");
+  const owner = el.getAttribute("data-source-classification") || "";
+  const label = owner === "hardware" ? "硬件" : owner === "co_design" ? "软硬件协同" : owner === "software_term" ? "软件术语" : owner;
+  const text = el.getAttribute("data-source-text") || "";
+  document.getElementById("detail").innerHTML =
+    '<div class="annotation-card detail-card">'+
+    '<div class="dd-head"><span class="dd-module">'+esc(label)+'</span><span class="badge">说明</span></div>'+
+    '<div class="dd-title">为什么没有生成研发需求</div>'+
+    '<div class="dd-body">'+esc(sourceClassificationReason(owner, text))+'</div>'+
+    (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
+    '</div>';
+}}
+
 function select(id) {{
   if (selected === id) {{ deselect(); return; }}  // 再点一下 → 取消选中
   selected = id;
+  document.querySelectorAll(".source-classification").forEach(c => c.classList.remove("sel"));
   document.querySelectorAll(".chip").forEach(c => c.classList.toggle("sel", c.getAttribute("data-req") === id));
   const r = byId[id]; if (!r) return;
   const d = decisionOf(id) || {{}};
   const st = statusOf(id);
-  const acc = (r.acceptance_criteria||[]).map(c => "<li>" + esc(c) + "</li>").join("");
-  const dev = (r.dev_guidance||[]).map(c => "<li>" + esc(c) + "</li>").join("");
+  const isHardware = isHardwareRequirement(r);
+  const dev = isHardware ? "" : (r.dev_guidance||[]).map(c => "<li>" + esc(c) + "</li>").join("");
+  const acc = isHardware ? "" : (r.acceptance_criteria||[]).map(c => "<li>" + esc(c) + "</li>").join("");
+  const analysisHtml = isHardware
+    ? hardwareTranslationHtml(r) + ownershipReasonHtml(r)
+    : '<div class="dd-label">需求分析</div><div class="dd-body">'+esc(r.description)+'</div>'+subItemsHtml(r)+thresholdHtml(r);
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
   const ownershipOptions = [
     ["", "自动/不覆盖"],
@@ -673,9 +960,7 @@ function select(id) {{
     '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+
     '<div class="dd-legend">正文标记：<span style="background:#ffe89a;padding:0 4px">黄=引用依据</span> · <span style="background:#eef4ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文（模型通读范围）</div>'+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
-    '<div class="dd-label">需求分析</div><div class="dd-body">'+esc(r.description)+'</div>'+
-    subItemsHtml(r)+
-    thresholdHtml(r)+
+    analysisHtml+
     (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
     (r.source_quote ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(r.source_quote)+'</div>' : '')+
@@ -705,6 +990,7 @@ function decide(id, status) {{
 
 document.getElementById("paper").addEventListener("click", e => {{
   const chip = e.target.closest(".chip"); if (chip) {{ select(chip.getAttribute("data-req")); return; }}
+  const sourceMarker = e.target.closest(".source-classification"); if (sourceMarker) {{ selectSourceClassification(sourceMarker); return; }}
   const blk = e.target.closest(".doc-block.anchored");
   if (blk) {{ const c = blk.querySelector(".chip"); if (c) select(c.getAttribute("data-req")); }}
 }});

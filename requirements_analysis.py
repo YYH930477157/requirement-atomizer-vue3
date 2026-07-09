@@ -94,7 +94,7 @@ def run_requirements_analysis(
     enrich_cache = _load_enrich_cache(out_dir, model) if active_chat is not None else {}
     enriched_count = 0
     degraded_count = 0
-    enrich_jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, str]]] = []
+    enrich_jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, str], str]] = []
 
     items: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
@@ -114,6 +114,8 @@ def run_requirements_analysis(
                 "source_requirement_ids": item.get("source_requirement_ids") or [],
                 "issues": [f"ownership_override 非法，已忽略: {exc}"],
             })
+        if item.get("ownership") == OWNERSHIP_HARDWARE:
+            _normalize_hardware_item(item, reviewed_req)
 
         # 富化只做软件/协同（硬件按 GLM prompt 只需简要说明，硬件项走 ownership_reason/引用，
         # 不产 software_requirement_text——跳过省真实调用）；先收集、循环后并发执行
@@ -123,14 +125,15 @@ def run_requirements_analysis(
             reviewed_req = dict(reviewed_req)
             reviewed_req["clarification_answers_text"] = answers_text   # 进有据基线（validate 读它）
             item["notes"] = list(item.get("notes") or []) + [f"客户答复：{r.get('answer')}" for r in ans_rows]
-        if active_chat is not None and item.get("ownership") != OWNERSHIP_HARDWARE:
+        if active_chat is not None:
             refs = select_template_references(knowledge, reviewed_req)
             req_text = " ".join(str(reviewed_req.get(k) or "") for k in ("title", "description", "source_quote"))
             exemplars = render_exemplars(select_exemplars(bank, str(reviewed_req.get("module") or ""), req_text))
             ctx = {"template_refs": render_template_references(refs),
                    "exemplars": exemplars,
                    "answers": reviewed_req.get("clarification_answers_text") or ""}
-            enrich_jobs.append((item, reviewed_req, ctx))
+            mode = "hardware" if item.get("ownership") == OWNERSHIP_HARDWARE else "software"
+            enrich_jobs.append((item, reviewed_req, ctx, mode))
 
         item_issues = validate_analysis_item(item)
         if item_issues:
@@ -349,9 +352,66 @@ def _llm_enrich_item(
                   if soft else [])
 
 
+def _build_hardware_prompt(source_req: dict[str, Any]) -> dict[str, str]:
+    system = "你是电表标准文档的硬件条目审查助手。"
+    user = "\n".join([
+        "该条目已由规则/人工归类为 hardware。",
+        "只输出硬件翻译和判断依据，不要输出软件研发指引、测试指引、验收标准或实现方案。",
+        "输出 JSON 对象 {\"items\":[{\"hardware_translation\":\"...\",\"ownership_reason\":\"...\"}]}。",
+        "hardware_translation: 将原文翻译为中文；若原文已是中文，则做简洁中文说明。",
+        "ownership_reason: 用一句话说明为什么判断为硬件，必须引用原文中的关键词或设备/部件/制造主体依据。",
+        "不得新增原文没有的容量、数量、协议编号、OBIS 或测试建议。",
+        "需求 JSON:",
+        json.dumps([source_req], ensure_ascii=False),
+    ])
+    return {"system": system, "user": user}
+
+
+def _llm_enrich_hardware_item(
+    item: dict[str, Any],
+    source_req: dict[str, Any],
+    chat: ChatFn,
+    cache: dict[str, Any],
+    model: str,
+    lock: Any = None,
+) -> tuple[bool, list[str]]:
+    """硬件项只做翻译/判断依据富化，绝不接收研发或测试字段。"""
+    from contextlib import nullcontext
+
+    guard = lock if lock is not None else nullcontext()
+    key = _enrich_key(source_req, model, "hardware-only")
+    with guard:
+        llm_item = cache.get(key)
+    if llm_item is None:
+        prompt = _build_hardware_prompt(source_req)
+        try:
+            payload = chat(prompt["system"], prompt["user"])
+        except Exception as exc:
+            return False, [f"硬件翻译调用失败，已保留原文说明: {exc}"]
+        llm_item = _first_item(payload)
+        if llm_item is None:
+            return False, ["硬件翻译返回空或格式非法，已保留原文说明"]
+        with guard:
+            cache[key] = llm_item
+
+    translation = str(llm_item.get("hardware_translation") or llm_item.get("hardware_summary") or "").strip()
+    reason = str(llm_item.get("ownership_reason") or "").strip()
+    if translation:
+        item["hardware_translation"] = translation
+        item["hardware_summary"] = f"硬件项：{translation}"
+    if reason:
+        item["ownership_reason"] = reason
+    item["software_requirement_text"] = ""
+    item["developer_guidance"] = []
+    item["acceptance_criteria"] = []
+    item["hardware_dependency"] = ""
+    item["analysis_source"] = "llm"
+    return True, []
+
+
 def _run_enrichment(
     out_dir: Path,
-    jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, str]]],
+    jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, str], str]],
     vocabulary: dict[str, Any],
     chat: ChatFn,
     cache: dict[str, Any],
@@ -385,10 +445,13 @@ def _run_enrichment(
             progress_callback({"stage": "analyze", "completed": done, "total": total,
                                "percent": int(round(done * 100 / total)), "model": model})
 
-    def work(job: tuple[dict[str, Any], dict[str, Any], dict[str, str]]) -> tuple[dict[str, Any], bool, list[str]]:
-        item, reviewed_req, ctx = job
-        ok, item_issues = _llm_enrich_item(item, reviewed_req, vocabulary, chat, cache, model,
-                                           lock=lock, context=ctx)
+    def work(job: tuple[dict[str, Any], dict[str, Any], dict[str, str], str]) -> tuple[dict[str, Any], bool, list[str]]:
+        item, reviewed_req, ctx, mode = job
+        if mode == "hardware":
+            ok, item_issues = _llm_enrich_hardware_item(item, reviewed_req, chat, cache, model, lock=lock)
+        else:
+            ok, item_issues = _llm_enrich_item(item, reviewed_req, vocabulary, chat, cache, model,
+                                               lock=lock, context=ctx)
         return item, ok, item_issues
 
     emit(0)
@@ -444,6 +507,36 @@ def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> d
     }
 
 
+def _normalize_hardware_item(item: dict[str, Any], req: dict[str, Any]) -> None:
+    source_text = _source_text_for_summary(req)
+    item["software_requirement_text"] = ""
+    item["developer_guidance"] = []
+    item["acceptance_criteria"] = []
+    item["hardware_dependency"] = ""
+    item["hardware_translation"] = _hardware_translation(source_text)
+    item["hardware_summary"] = f"硬件项：{item['hardware_translation']}"
+    reason = str(item.get("ownership_reason") or "").strip()
+    if reason:
+        item["ownership_reason"] = reason
+    else:
+        item["ownership_reason"] = "已归类为硬件项；仅保留原文翻译/说明，不生成软件研发或测试指引。"
+
+
+def _source_text_for_summary(req: dict[str, Any]) -> str:
+    return next(
+        (str(req.get(field) or "").strip()
+         for field in ("source_quote", "description", "requirement", "title")
+         if str(req.get(field) or "").strip()),
+        "",
+    )
+
+
+def _hardware_translation(text: str) -> str:
+    if not text:
+        return "原文未提供可翻译内容。"
+    return text
+
+
 def _source_requirement_id(req: dict[str, Any]) -> str:
     # 与裁决回流/批注视图共用同一主键函数（ai_review_actions.source_ai_requirement_id），
     # 三处各写一份迟早分叉——这正是 io_utils 去重要防的问题。
@@ -477,7 +570,8 @@ def _write_report(path: Path, rows: list[dict[str, Any]], title: str) -> None:
     for row in rows:
         lines.extend([
             f"## {row.get('analysis_id')} {row.get('description') or ''}".rstrip(),
-            f"- Ownership reason: {row.get('ownership_reason') or ''}",
+            f"- 中文翻译/说明: {row.get('hardware_summary') or row.get('hardware_translation') or row.get('description') or ''}",
+            f"- 为什么判断为硬件: {row.get('ownership_reason') or ''}",
             f"- Source: {', '.join(str(value) for value in row.get('source_requirement_ids') or [])}",
             f"- Source quote: {row.get('source_quote') or ''}",
             "",

@@ -557,28 +557,77 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert count["n"] == 1                              # 第二次命中缓存，零新增调用
             assert (tmp_path / "analyze_enrich_cache.json").exists()
 
-    def test_hardware_items_skip_enrichment_calls(self) -> None:
-        """硬件项只需简要说明（不产 software_requirement_text）——不该为它烧真实 LLM 调用。"""
+    def test_hardware_items_use_llm_only_for_translation_and_reason(self) -> None:
+        """硬件项可以轻量调用 LLM 做翻译/依据，但不得生成软件研发或测试指引。"""
         with tempfile.TemporaryDirectory() as td:
             tmp_path = Path(td)
             write_jsonl(tmp_path / "ai_requirements.jsonl", [
-                {"ai_req_id": "AI-HW", "description": "计量芯片型号为 Att7022e。",
-                 "source_quote": "计量芯片型号为 Att7022e", "source_block_ids": ["B-1"], "module": "计量"},
+                {"ai_req_id": "AI-HW", "description": "Device with mobile data concentrator function.",
+                 "source_quote": "Device with mobile data concentrator function.",
+                 "source_block_ids": ["B-1"], "module": "communication"},
             ])
-            calls = {"n": 0}
+            calls: list[str] = []
 
             def fake_chat(system: str, user: str) -> dict:
-                calls["n"] += 1
-                return {"items": [{"software_requirement_text": "不该出现"}]}
+                calls.append(user)
+                return {"items": [{
+                    "hardware_translation": "具有移动数据集中器功能的设备。",
+                    "ownership_reason": "原文描述的是 mobile data concentrator 设备功能，属于硬件/设备定义。",
+                    "software_requirement_text": "不该出现",
+                    "developer_guidance": ["不该出现"],
+                    "acceptance_criteria": ["不该出现"],
+                }]}
 
             result = run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
 
-            assert calls["n"] == 0                     # 硬件项零调用
-            assert result["enriched"] == 0
+            assert len(calls) == 1
+            assert "只输出硬件翻译和判断依据" in calls[0]
+            assert result["enriched"] == 1
             assert result["enrich_degraded"] == 0      # 跳过≠降级
             payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
-            assert payload["items"][0]["ownership"] == "hardware"
-            assert payload["items"][0]["software_requirement_text"] == ""
+            item = payload["items"][0]
+            assert item["ownership"] == "hardware"
+            assert item["software_requirement_text"] == ""
+            assert item["developer_guidance"] == []
+            assert item["acceptance_criteria"] == []
+            assert item["hardware_translation"] == "具有移动数据集中器功能的设备。"
+            assert item["hardware_summary"] == "硬件项：具有移动数据集中器功能的设备。"
+            assert "mobile data concentrator" in item["ownership_reason"]
+
+    def test_hardware_items_keep_translation_and_reason_without_guidance_or_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [
+                {
+                    "ai_req_id": "AI-HW",
+                    "title": "Dispositivo walk by",
+                    "description": "Device with mobile data concentrator function.",
+                    "source_quote": 'Device with mobile data concentrator function. It allows GdMs in "walk by" mode.',
+                    "source_block_ids": ["B-1"],
+                    "module": "communication",
+                    "dev_guidance": ["实现移动采集协议流程"],
+                    "acceptance_criteria": ["验证移动采集协议联通"],
+                },
+            ])
+
+            run_requirements_analysis(tmp_path, route="stub")
+
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            assert item["ownership"] == "hardware"
+            assert item["software_requirement_text"] == ""
+            assert item["developer_guidance"] == []
+            assert item["acceptance_criteria"] == []
+            assert item["hardware_translation"]
+            assert "mobile data concentrator" in item["hardware_translation"]
+            assert item["hardware_summary"].startswith("硬件项：")
+            assert "mobile data concentrator" in item["ownership_reason"]
+
+            report = (tmp_path / "hardware_items.md").read_text(encoding="utf-8")
+            assert "中文翻译/说明" in report
+            assert "为什么判断为硬件" in report
+            assert "实现移动采集协议流程" not in report
+            assert "验证移动采集协议联通" not in report
 
     def test_concurrent_enrichment_is_correct_and_reports_progress(self) -> None:
         """并发富化（288 条规模的关键）：多条并发跑、每条落对自己的 item、逐条进度上报。"""

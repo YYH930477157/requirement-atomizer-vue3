@@ -60,6 +60,13 @@ HARDWARE_TERMS = (
     "寿命",
     "器件",
     "硬件更换",
+    "mobile data concentrator",
+    "concentrator function",
+    "concentrator functions",
+    "walk by",
+    "walk-by",
+    "drive by",
+    "drive-by",
 )
 
 CO_DESIGN_TERMS = (
