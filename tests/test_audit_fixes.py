@@ -216,6 +216,67 @@ class NoiseCapTests(unittest.TestCase):
         self.assertTrue(blocks[0]["noise"])
 
 
+class StageReuseGuardTests(unittest.TestCase):
+    """2026-07-09 评审修正：台账复用必须有出处证明——无条目/无路由记录不复用。"""
+
+    def _prepare(self, tmp: str, entry: dict | None) -> Path:
+        out = Path(tmp)
+        (out / "ai_requirements.jsonl").write_text("{}\n", encoding="utf-8")
+        (out / "merged_spec_requirements.json").write_text("{}", encoding="utf-8")
+        if entry is not None:
+            (out / "run_manifest.json").write_text(
+                json.dumps({"stages": {"ai-extract": entry}}), encoding="utf-8")
+        return out
+
+    def test_files_without_ledger_entry_not_reusable(self) -> None:
+        from desktop_tasks import stage_is_reusable
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._prepare(tmp, None)
+            self.assertFalse(stage_is_reusable(out, "ai-extract", route="openai_compatible"))
+
+    def test_routeless_entry_not_reusable_when_route_required(self) -> None:
+        """旧 stub 跑的条目无 route 字段——开 LLM 重跑不得复用 stub 空产物。"""
+        from desktop_tasks import stage_is_reusable, stage_producer
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._prepare(tmp, {"status": "ok", "producer": stage_producer("ai-extract")})
+            self.assertFalse(stage_is_reusable(out, "ai-extract", route="openai_compatible"))
+
+    def test_matching_route_entry_reusable(self) -> None:
+        from desktop_tasks import stage_is_reusable, stage_producer
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._prepare(tmp, {"status": "ok", "route": "openai_compatible",
+                                      "producer": stage_producer("ai-extract")})
+            self.assertTrue(stage_is_reusable(out, "ai-extract", route="openai_compatible"))
+
+
+class HardwareEnrichGuardTests(unittest.TestCase):
+    """2026-07-09 评审修正：硬件翻译富化路径同样过漂移护栏。"""
+
+    def test_fabricated_code_in_translation_rejected(self) -> None:
+        from requirements_analysis import _llm_enrich_hardware_item
+        source = {"source_quote": "The valve shall close on tamper detection.",
+                  "description": "", "requirement": "", "title": ""}
+        item = {"ownership": "hardware"}
+        fake_chat = lambda s, u: {"items": [{
+            "hardware_translation": "阀门在检测到窃动时关闭（对象 0-0:96.3.10.255）",
+            "ownership_reason": "机械部件"}]}
+        ok, issues = _llm_enrich_hardware_item(item, source, fake_chat, {}, "m")
+        self.assertFalse(ok)
+        self.assertTrue(any("无据编码" in i for i in issues))
+        self.assertNotIn("hardware_translation", item)
+
+    def test_faithful_translation_accepted(self) -> None:
+        from requirements_analysis import _llm_enrich_hardware_item
+        source = {"source_quote": "The valve shall close within 30 seconds.",
+                  "description": "", "requirement": "", "title": ""}
+        item = {"ownership": "hardware"}
+        fake_chat = lambda s, u: {"items": [{
+            "hardware_translation": "阀门须在 30 秒内关闭", "ownership_reason": "机械部件"}]}
+        ok, _ = _llm_enrich_hardware_item(item, source, fake_chat, {}, "m")
+        self.assertTrue(ok)
+        self.assertEqual(item.get("hardware_translation"), "阀门须在 30 秒内关闭")
+
+
 class QualityAuditFieldsTests(unittest.TestCase):
     """C0：quality report 带字符收支审计。"""
 

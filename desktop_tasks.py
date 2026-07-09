@@ -416,12 +416,16 @@ def stage_is_reusable(out_dir: Path, stage: str, *,
     data = read_run_manifest(out_dir)
     stages = data.get("stages") if isinstance(data.get("stages"), dict) else {}
     entry = stages.get(stage) if isinstance(stages.get(stage), dict) else None
+    # 出处方向性守卫（评审修正 2026-07-09）：请求真 LLM 时，复用 stub/来历不明的产物有害
+    # （空行为需求被标"已完成"）——必须有带 route 的台账条目佐证；请求 stub/确定性阶段时，
+    # 复用任何现成产物无害（最坏反而复用了更好的），保留遗留目录续跑价值（文件存在即可）。
+    if route == "openai_compatible":
+        if not entry or entry.get("route") != route:
+            return False
     if entry:
         if entry.get("status") != "ok":
             return False
         if entry.get("producer") and entry.get("producer") != stage_producer(stage):
-            return False
-        if route and entry.get("route") and entry.get("route") != route:
             return False
     if not _outputs_exist(out_dir, _stage_outputs(stage, entry)):
         return False
