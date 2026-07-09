@@ -2219,19 +2219,28 @@ tbody tr.selected {
 }
 @media (max-width: 1480px) {
   .shell {
-    grid-template-columns: 94px minmax(0, 1fr);
+    grid-template-columns: 64px minmax(0, 1fr);
   }
 
-  .brand-copy,
-  .nav-group-title,
-  .user-chip div:not(.user-avatar) {
+  .brand-text,
+  .nav-title,
+  .side-user div:not(.side-avatar),
+  .nav-button span:not(.nav-icon) {
     display: none;
   }
 
-  .nav-item {
-    text-align: center;
-    padding: 12px 6px;
-    font-size: 12px;
+  .side-brand {
+    justify-content: center;
+    padding: 2px 0;
+  }
+
+  .nav-button {
+    justify-content: center;
+    padding: 10px 6px;
+  }
+
+  .side-user {
+    justify-content: center;
   }
 
   .summary-grid {
@@ -2273,7 +2282,7 @@ tbody tr.selected {
 /* Phase 1 Chinese dashboard shell */
 .shell {
   display: grid;
-  grid-template-columns: 108px minmax(0, 1fr);
+  grid-template-columns: 224px minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
   background: #fafbfd;
