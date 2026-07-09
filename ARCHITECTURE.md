@@ -45,6 +45,21 @@ parse(parsers/) → blocks.jsonl
 - **回归裁判**：`corpus_eval`（碎片率/重复对/噪声/漏值/验收可测性/覆盖率）——动抽取必跑对比。
 - **配置单源**：`config.ENV_REGISTRY`（测试强制核对全仓 RATOMIZER_* 变量）。
 
+### 新增 LLM 输出通路检查单（同一病灶两天两现：2026-07-08 审计 B2 → 2026-07-09 硬件翻译）
+
+任何让 LLM 输出进入交付物/评审面（xlsx、md、批注 HTML、few-shot 教材）的新通路，合并前逐条过：
+
+1. **漂移基线**：写清"有据"的定义——源文哪些字段 ∪ 哪些授权注入（模板/答复/蓝皮书条款）；
+   基线永不含范例与模板默认值（防搬运）。
+2. **双向校验**：编码（extract_codes）硬拦——拒绝或移除，绝不只标记；数字（extract_ints）
+   按字段性质定级——研发直接执行的字段（验收/指引/参数表/翻译）硬处理，叙述字段软标。
+3. **标记随行**：软标必须钉在条目上（如 `enrichment_warnings`）并被所有渲染器（xlsx/成文/
+   批注视图）呈现——只进 run 级 issues = 交付物零标记（B1 病灶）。
+4. **出处落账**：route/model 进产物 provenance 与 run_manifest（stub 降级≠真 LLM 必须可区分；
+   复用/续跑判定依赖它——见 `stage_is_reusable` 的方向性守卫）。
+5. **两向回归**：漏（源文内容丢失）与编（无据内容出现）各至少一条测试；测试放
+   `tests/test_audit_fixes.py` 同风格（名字带病灶编号可倒查）。
+
 ## 模块索引（顶层 *.py）
 
 - 解析：`parsers/`（docx/xlsx/pdf → blocks/table_items）

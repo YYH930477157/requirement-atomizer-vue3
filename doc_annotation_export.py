@@ -72,6 +72,41 @@ _UNANALYZED_SOFTWARE_TERM_TERMS = (
     "alter its data",
     "data in its contents",
 )
+# 以上三个词表按具体语料调优（2026-07-09 UNI 水表文档），只影响视图层回退标记。
+# 换语料可不改代码覆盖：out_dir/annotation_terms.json 优先，其次 manifest 里 domain_pack
+# 目录下的 annotation_terms.json；格式 {"hardware": [...], "co_design": [...], "software_term": [...]}，
+# 缺键回落内置默认。
+_UNANALYZED_TERM_DEFAULTS: dict[str, tuple[str, ...]] = {
+    "hardware": _UNANALYZED_HARDWARE_TERMS,
+    "co_design": _UNANALYZED_CO_DESIGN_TERMS,
+    "software_term": _UNANALYZED_SOFTWARE_TERM_TERMS,
+}
+_active_unanalyzed_terms: dict[str, tuple[str, ...]] = dict(_UNANALYZED_TERM_DEFAULTS)
+
+
+def _load_annotation_terms(out_dir: Path) -> dict[str, tuple[str, ...]]:
+    merged = dict(_UNANALYZED_TERM_DEFAULTS)
+    candidates: list[Path] = []
+    try:
+        manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+        pack_dir = str(manifest.get("domain_pack") or "")
+        if pack_dir:
+            candidates.append(Path(pack_dir) / "annotation_terms.json")
+    except (OSError, json.JSONDecodeError):
+        pass
+    candidates.append(out_dir / "annotation_terms.json")   # out_dir 覆盖最后应用=优先级最高
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key in _UNANALYZED_TERM_DEFAULTS:
+            values = data.get(key)
+            if isinstance(values, list):
+                merged[key] = tuple(str(v).casefold() for v in values if str(v).strip())
+    return merged
 
 
 def _module_vocab() -> list[str]:
@@ -340,11 +375,12 @@ def _unanalyzed_owner_for_text(text: str) -> str | None:
     if not text.strip():
         return None
     probe = text.casefold()
-    if any(term in probe for term in _UNANALYZED_CO_DESIGN_TERMS):
+    terms = _active_unanalyzed_terms
+    if any(term in probe for term in terms["co_design"]):
         return "co_design"
-    if any(term in probe for term in _UNANALYZED_HARDWARE_TERMS):
+    if any(term in probe for term in terms["hardware"]):
         return "hardware"
-    if any(term in probe for term in _UNANALYZED_SOFTWARE_TERM_TERMS):
+    if any(term in probe for term in terms["software_term"]):
         return "software_term"
     return None
 
@@ -458,7 +494,9 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
 
 
 def render_annotation_html(out_dir: Path) -> str:
+    global _active_unanalyzed_terms
     out_dir = Path(out_dir).expanduser().resolve()
+    _active_unanalyzed_terms = _load_annotation_terms(out_dir)   # 语料词表可覆盖（默认=内置）
     doc = build_document_blocks(out_dir)
     blocks = doc.get("blocks") or []
     requirements = build_ai_requirements(out_dir)

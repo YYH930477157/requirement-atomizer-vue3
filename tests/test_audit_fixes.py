@@ -277,6 +277,28 @@ class HardwareEnrichGuardTests(unittest.TestCase):
         self.assertEqual(item.get("hardware_translation"), "阀门须在 30 秒内关闭")
 
 
+class AnnotationTermsOverrideTests(unittest.TestCase):
+    """2026-07-09 评审建议：视图层回退标记词表按语料可覆盖（内置默认按 UNI 调优）。"""
+
+    def test_out_dir_override_wins(self) -> None:
+        import doc_annotation_export as dae
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "annotation_terms.json").write_text(json.dumps({
+                "hardware": ["pressure sensor housing"],
+            }, ensure_ascii=False), encoding="utf-8")
+            terms = dae._load_annotation_terms(out)
+        self.assertEqual(terms["hardware"], ("pressure sensor housing",))
+        # 缺键回落内置默认
+        self.assertEqual(terms["software_term"], dae._UNANALYZED_TERM_DEFAULTS["software_term"])
+
+    def test_no_override_uses_defaults(self) -> None:
+        import doc_annotation_export as dae
+        with tempfile.TemporaryDirectory() as tmp:
+            terms = dae._load_annotation_terms(Path(tmp))
+        self.assertEqual(terms, dict(dae._UNANALYZED_TERM_DEFAULTS))
+
+
 class QualityAuditFieldsTests(unittest.TestCase):
     """C0：quality report 带字符收支审计。"""
 
