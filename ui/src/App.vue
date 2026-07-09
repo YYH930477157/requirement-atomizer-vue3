@@ -24,6 +24,18 @@
             <span>{{ item.label }}</span>
           </button>
         </nav>
+        <nav class="nav-group">
+          <p class="nav-title">交付物</p>
+          <button class="nav-button" type="button" data-testid="nav-实现规格" @click="openDeliverable('dlms_cosem_spec_requirements.json')">
+            <span class="nav-icon">▦</span><span>实现规格</span>
+          </button>
+          <button class="nav-button" type="button" data-testid="nav-软件需求列表" @click="openDeliverable('软件需求列表-成文.xlsx')">
+            <span class="nav-icon">▤</span><span>软件需求列表</span>
+          </button>
+          <button class="nav-button" type="button" data-testid="nav-澄清清单" @click="openDeliverable('clarification_questions.xlsx')">
+            <span class="nav-icon">◔</span><span>澄清清单</span>
+          </button>
+        </nav>
         <div class="nav-spacer"></div>
         <nav class="nav-group">
           <button
@@ -70,21 +82,42 @@
           </div>
         </header>
 
-        <div v-if="apiMessage && activeNav !== 'review'" class="global-message" data-testid="global-message"
+        <!-- 统一消息 testid:与审查页 api-message 互斥渲染,任意页面都能拿到运行反馈 -->
+        <div v-if="apiMessage && activeNav !== 'review'" class="global-message" data-testid="api-message"
              role="status" @click="apiMessage = ''">{{ apiMessage }}<span class="global-message-close">✕</span></div>
 
-        <section class="run-dashboard">
-          <div class="run-paths-panel" data-testid="run-paths-panel">
-            <div class="selection-item">
-              <span>导入文档</span>
-              <strong data-testid="selected-input-path">{{ currentInputPath || "尚未选择文档" }}</strong>
+        <section v-if="activeNav === 'run'" class="run-home" data-testid="run-paths-panel">
+          <div class="ov-stats">
+            <div class="ov-stat">
+              <div class="k">原子需求</div>
+              <div class="v">{{ runOverview.atoms != null ? runOverview.atoms.toLocaleString("zh-CN") : "—" }}</div>
+              <div class="d flat">结构化字段确定性抽取</div>
             </div>
-            <div class="selection-item">
-              <span>输出目录</span>
-              <strong data-testid="selected-output-dir">{{ currentOutputDir || "尚未选择输出目录" }}</strong>
+            <div class="ov-stat">
+              <div class="k">AI 行为需求</div>
+              <div class="v">{{ runOverview.aiReqs != null ? runOverview.aiReqs : "—" }}</div>
+              <div class="d up">{{ runOverview.selfCheck != null ? `↑ ${runOverview.selfCheck} 条来自自检补充` : "含自检收敛补充" }}</div>
+            </div>
+            <div class="ov-stat">
+              <div class="k">章节覆盖率</div>
+              <div class="v">{{ runOverview.coverage != null ? `${runOverview.coverage.toFixed(1)}%` : "—" }}</div>
+              <div class="d up">{{ runOverview.chapters || "跑完整链后统计" }}</div>
+            </div>
+            <div class="ov-stat">
+              <div class="k">必答澄清</div>
+              <div class="v">{{ runOverview.questions != null ? runOverview.questions : "—" }}</div>
+              <div class="d" :class="runOverview.verdict === 'READY' ? 'up' : 'warn'">
+                {{ runOverview.verdict ? `就绪判定:${runOverview.verdict}` : "评审会前必答清单" }}</div>
             </div>
           </div>
-          <div class="run-stage-panel">
+
+          <div class="flow-card">
+            <div class="board-head">
+              <h4>交付物流水线</h4>
+              <span>run_manifest 台账 · 中断可续跑
+                <em class="path-hint" data-testid="selected-input-path">{{ currentInputPath || "尚未选择文档" }}</em>
+              </span>
+            </div>
             <div class="run-meter" data-testid="run-progress">
               <div class="run-meter-head">
                 <span>{{ runStage }}</span>
@@ -95,8 +128,6 @@
                 <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
               </div>
             </div>
-            <div class="stage-flow-card">
-            <div class="board-head"><h4>交付物流水线</h4><span>run_manifest 台账 · 中断可续跑</span></div>
             <div class="run-stage-board" data-testid="run-stage-board">
               <div
                 v-for="card in runStageCards"
@@ -108,22 +139,53 @@
                 <span class="stage-name">{{ card.label }}</span>
                 <strong class="stage-status">{{ card.statusText }}</strong>
                 <small class="stage-detail">{{ card.detail }}</small>
+                <span class="stage-bar"><i :style="{ width: `${card.status === 'ok' || card.status === 'skipped' ? 100 : card.percent}%` }"></i></span>
               </div>
             </div>
-            <!-- 交付物入口（用户裁定 2026-07-09：当前只呈现批注 HTML） -->
-            <div v-if="currentOutputDir" class="deliverable-row" data-testid="deliverable-html">
-              <span class="deliverable-icon">HTM</span>
-              <span class="deliverable-name">
-                <strong>document_annotation.html</strong>
-                <small>批注视图 · 双击可分享给专家离线裁决</small>
-              </span>
-              <button class="deliverable-open" type="button" @click="openAnnotationHtml">打开</button>
+          </div>
+
+          <div class="run-grid">
+            <div class="panel-card">
+              <div class="board-head">
+                <h4>需求审查 · 待裁决</h4>
+                <button class="link-button" type="button" @click="handleNavAction('review')">进入工作台 →</button>
+              </div>
+              <div class="preview-wrap">
+                <table class="preview-table">
+                  <thead><tr><th>编号</th><th>需求</th><th>模块</th><th>置信度</th><th>状态</th></tr></thead>
+                  <tbody>
+                    <tr v-for="row in reviewPreviewRows" :key="row.id" @click="handleNavAction('review')">
+                      <td class="rid">{{ row.id }}</td>
+                      <td class="req-cell">{{ row.chineseText }}</td>
+                      <td><span class="pchip plain">{{ row.module || "未分模块" }}</span></td>
+                      <td class="num">{{ row.confidence.toFixed(2) }}</td>
+                      <td><span class="pchip" :class="`st-${row.status}`">{{ statusOptionLabel(row.status) }}</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
+            <div class="panel-card">
+              <div class="board-head">
+                <h4>最新交付物</h4>
+                <span class="path-hint" data-testid="selected-output-dir">{{ currentOutputDir || "尚未选择输出目录" }}</span>
+              </div>
+              <div class="dl-files" data-testid="deliverable-html">
+                <div v-for="f in DELIVERABLE_FILES" :key="f.key" class="dl-file">
+                  <span class="dl-icon" :class="f.tone">{{ f.icon }}</span>
+                  <span class="dl-name"><strong>{{ f.name }}</strong><small>{{ f.hint }}</small></span>
+                  <button class="deliverable-open" type="button" @click="openDeliverable(f.name)">打开</button>
+                </div>
+              </div>
+              <div v-if="lastStageNotes.length" class="note-warn">
+                <b>注意</b>
+                <span>{{ lastStageNotes.join("；") }}</span>
+              </div>
             </div>
           </div>
         </section>
 
-        <template v-if="activeNav !== 'document'">
+        <template v-if="activeNav === 'review'">
         <section class="stat-strip" data-testid="phase1-stats">
           <button
             v-for="card in phaseStats"
@@ -483,7 +545,7 @@ import { requirements as mockRequirements } from "./mock-data"
 import { applyReviewState, mapBackendRequirement, statusDisplay as displayStatus } from "./requirement-mapper"
 import type { Requirement, ReviewStatus } from "./types"
 
-type PhaseNavId = "review" | "document" | "settings"
+type PhaseNavId = "run" | "review" | "document" | "settings"
 type StatFilter = "all" | "accepted" | "expert_pending" | "ambiguous"
 type LlmSettings = {
   enabled: boolean
@@ -499,12 +561,42 @@ type LlmSettings = {
 }
 
 const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
-  { id: "review", label: "审查", icon: "▣" },
+  { id: "run", label: "运行", icon: "▶" },
+  { id: "review", label: "审查工作台", icon: "▣" },
   { id: "document", label: "文档批注", icon: "▤" },
   { id: "settings", label: "设置", icon: "⚙" },
 ]
 
-const activeNav = ref<PhaseNavId>("review")
+const activeNav = ref<PhaseNavId>("run")
+// 运行页总览（样机 2026-07-09）：跑完链后填充,未知显示 —
+const runOverview = ref<{ atoms: number | null; aiReqs: number | null; selfCheck: number | null;
+  coverage: number | null; chapters: string; questions: number | null; verdict: string }>({
+  atoms: null, aiReqs: null, selfCheck: null, coverage: null, chapters: "", questions: null, verdict: "",
+})
+const lastStageNotes = ref<string[]>([])
+const reviewPreviewRows = computed(() => requirementRows.value.slice(0, 4))
+const DELIVERABLE_FILES = [
+  { key: "software", icon: "XLS", tone: "xls", name: "软件需求列表-成文.xlsx", hint: "V2.3.x 模板成文（B 轨主交付物）" },
+  { key: "annotation", icon: "HTM", tone: "htm", name: "document_annotation.html", hint: "批注视图 · 分享给专家离线裁决" },
+  { key: "clarification", icon: "XLS", tone: "xls", name: "clarification_questions.xlsx", hint: "必答澄清 · 问客户/内部核对" },
+  { key: "manifest", icon: "JSN", tone: "jsn", name: "run_manifest.json", hint: "阶段台账 · 路由与续跑依据" },
+] as const
+async function openDeliverable(name: string) {
+  if (!currentOutputDir.value) {
+    apiMessage.value = "尚未选择输出目录——先运行或打开一个输出目录"
+    return
+  }
+  if (name === "document_annotation.html") {
+    void handleExportAnnotationHtml()   // 幂等重渲染,保证打开最新
+    return
+  }
+  try {
+    await window.ratomizerDesktop?.openPath?.(currentOutputDir.value + "\\" + name)
+  } catch (error) {
+    apiMessage.value = error instanceof Error ? error.message : `打开 ${name} 失败（可能尚未生成）`
+  }
+}
+
 const activeNavLabel = computed(
   () => phaseNavItems.find((i) => i.id === activeNav.value)?.label || "审查")
 const llmMode = ref(false)
@@ -1136,6 +1228,10 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     runProgressDetail.value = "正在加载结果文件"
     latestTaskSummary.value = objectValue(payload.summary)
     applyRunManifestSummary(latestTaskSummary.value)
+    const summaryCounts = objectValue((latestTaskSummary.value as Record<string, unknown> | null)?.counts) as Record<string, unknown> | null
+    if (summaryCounts?.atomic_requirements != null) {
+      runOverview.value = { ...runOverview.value, atoms: Number(summaryCounts.atomic_requirements) }
+    }
     const finalOutDir = String(payload.out_dir || payload.outDir || outDir)
     currentOutputDir.value = finalOutDir
     let apiReconnectWarning = formatApiReconnectWarning(finalOutDir, stringOr(payload.api_warning, ""))
@@ -1197,6 +1293,18 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           ? (chainPayload.stage_notes as unknown[]).map((n) => String(n)) : []
         if (chainNotes.length) {
           readinessNote += `；注意：${chainNotes.join("；")}`
+        }
+        lastStageNotes.value = chainNotes
+        // 运行页总览瓦片（样机）：从链载荷提取,缺项保持 —
+        const q = objectValue(chainPayload?.quality) as Record<string, unknown> | null
+        runOverview.value = {
+          atoms: runOverview.value.atoms,
+          aiReqs: chainPayload?.count != null ? Number(chainPayload.count) : runOverview.value.aiReqs,
+          selfCheck: q?.self_check_added != null ? Number(q.self_check_added) : runOverview.value.selfCheck,
+          coverage: q?.coverage_pct != null ? Number(q.coverage_pct) : runOverview.value.coverage,
+          chapters: q?.sections_total != null ? `${q.sections_total} 章 · 失败 ${q.failed_sections ?? 0}` : runOverview.value.chapters,
+          questions: chainPayload?.questions != null ? Number(chainPayload.questions) : runOverview.value.questions,
+          verdict: chainReadiness?.verdict || runOverview.value.verdict,
         }
         ranStages.push(...stages.map((s) => CHAIN_STEP_LABELS[s] || s))
         apiReconnectWarning ||= await refreshAfterDesktopTask(finalOutDir)
@@ -2505,7 +2613,219 @@ tbody tr.selected {
 .run-paths-panel .selection-item:first-child { grid-column: 1; grid-row: 1; }
 .run-paths-panel .selection-item:last-child { grid-column: 1; grid-row: 2; }
 .run-stage-panel .run-meter { grid-column: 2; grid-row: 1; }
-.run-stage-panel .stage-flow-card { grid-column: 2; grid-row: 2; }
+.run-stage-panel /* ===== 运行页(样机 1:1,2026-07-09) ===== */
+.run-home {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 26px 24px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  background: #f6f7fa;
+}
+
+.ov-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ov-stat {
+  background: #ffffff;
+  border: 1px solid #e6e9f0;
+  border-radius: 12px;
+  padding: 14px 16px 12px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+.ov-stat .k {
+  font-size: 12px;
+  color: #5c6675;
+}
+
+.ov-stat .v {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+  color: #1a2233;
+}
+
+.ov-stat .d {
+  font-size: 11.5px;
+  margin-top: 1px;
+}
+
+.ov-stat .d.up { color: #1d8a5c; }
+.ov-stat .d.flat { color: #98a1b3; }
+.ov-stat .d.warn { color: #cc8925; }
+
+.flow-card,
+.panel-card {
+  background: #ffffff;
+  border: 1px solid #e6e9f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+  padding: 16px 18px;
+  min-width: 0;
+}
+
+.path-hint {
+  font-style: normal;
+  color: #b6bdcb;
+  margin-left: 10px;
+  font-size: 11.5px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
+.run-grid {
+  display: grid;
+  grid-template-columns: 1.55fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.link-button {
+  border: 0;
+  background: none;
+  color: #2b56f5;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.link-button:hover { background: #eef2ff; }
+
+.preview-wrap { overflow-x: auto; }
+
+.preview-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.preview-table th {
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #98a1b3;
+  padding: 7px 10px;
+  border-bottom: 1px solid #e6e9f0;
+  white-space: nowrap;
+}
+
+.preview-table td {
+  padding: 10px;
+  border-bottom: 1px solid #eef0f5;
+  vertical-align: middle;
+}
+
+.preview-table tbody tr { cursor: pointer; }
+.preview-table tbody tr:hover td { background: #fafbfd; }
+.preview-table tr:last-child td { border-bottom: 0; }
+.preview-table .rid { font-family: Consolas, monospace; font-size: 12px; color: #5c6675; white-space: nowrap; }
+.preview-table .req-cell { max-width: 360px; }
+.preview-table .num { font-variant-numeric: tabular-nums; }
+
+.pchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 550;
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.pchip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pchip.plain { background: #f1f3f8; color: #5c6675; border: 1px solid #e6e9f0; }
+.pchip.plain::before { display: none; }
+.pchip.st-accepted { background: #e6f6ef; color: #1d8a5c; }
+.pchip.st-rejected { background: #fdecec; color: #d63a40; }
+.pchip.st-needs_discussion, .pchip.st-expert_pending { background: #fdf3e3; color: #cc8925; }
+.pchip.st-candidate, .pchip.st-ai_generated, .pchip.st-frozen { background: #f1edff; color: #7c5cff; }
+
+.dl-files { display: flex; flex-direction: column; }
+
+.dl-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 2px;
+  border-bottom: 1px solid #eef0f5;
+}
+
+.dl-file:last-child { border-bottom: 0; }
+
+.dl-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  flex: none;
+}
+
+.dl-icon.xls { background: #e6f6ef; color: #1d8a5c; }
+.dl-icon.htm { background: #fdf3e3; color: #cc8925; }
+.dl-icon.jsn { background: #eef2ff; color: #2b56f5; }
+
+.dl-name { flex: 1; min-width: 0; }
+.dl-name strong { display: block; font-size: 13px; font-weight: 600; color: #1a2233;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dl-name small { font-size: 11.5px; color: #98a1b3; }
+
+.note-warn {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  margin-top: 12px;
+  background: #fdf3e3;
+  color: #cc8925;
+}
+
+.note-warn b { font-weight: 650; flex: none; }
+
+/* 流水线格子:样机形态(左色条 + 底部细进度条) */
+.run-stage-board .run-stage-card { position: relative; }
+
+.stage-bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: #eef0f5;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.stage-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: #2b56f5;
+  transition: width 0.3s;
+}
+
+.run-stage-card.stage-ok .stage-bar i { background: #22a06b; }
+.run-stage-card.stage-skipped .stage-bar i { background: #98a1b3; }
+.run-stage-card.stage-failed .stage-bar i { background: #e5484d; }
+
+.stage-flow-card { grid-column: 2; grid-row: 2; }
 
 .stage-flow-card {
   min-width: 0;
