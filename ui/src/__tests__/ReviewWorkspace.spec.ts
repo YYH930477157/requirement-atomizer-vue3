@@ -4,6 +4,11 @@ import App from "../App.vue"
 
 const ALL_STAGES_OFF = JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false })
 
+async function openReview(wrapper: ReturnType<typeof mount>) {
+  await wrapper.find('[data-testid="nav-审查工作台"]').trigger("click")
+  await flushPromises()
+}
+
 describe("review workspace shell", () => {
   beforeEach(() => {
     // 默认「运行」只跑基础解析+审查，不追加交付物链——各测试按需在 mount 前开启对应阶段
@@ -15,8 +20,9 @@ describe("review workspace shell", () => {
     localStorage.clear()
   })
 
-  it("renders the Phase 1 Chinese dashboard structure", () => {
+  it("renders the Phase 1 Chinese dashboard structure", async () => {
     const wrapper = mount(App)
+    await openReview(wrapper)
 
     expect(wrapper.text()).toContain("标准需求抽取与审查平台")
     expect(wrapper.text()).toContain("GUI Phase 1")
@@ -33,8 +39,9 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="detail-panel"]').exists()).toBe(true)
   })
 
-  it("keeps details on the right while the table can scroll horizontally", () => {
+  it("keeps details on the right while the table can scroll horizontally", async () => {
     const wrapper = mount(App)
+    await openReview(wrapper)
 
     const workspace = wrapper.find('[data-testid="workspace"]')
     const tableScroll = wrapper.find('[data-testid="requirement-table"]')
@@ -88,6 +95,7 @@ describe("review workspace shell", () => {
 
   it("updates the selected requirement status from review decisions", async () => {
     const wrapper = mount(App)
+    await openReview(wrapper)
 
     await wrapper.find('[data-testid="row-REQ-2024-0003"]').trigger("click")
     expect(wrapper.find('[data-testid="detail-title"]').text()).toContain("REQ-2024-0003")
@@ -257,6 +265,7 @@ describe("review workspace shell", () => {
     })
 
     const wrapper = mount(App)
+    await openReview(wrapper)
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="row-SREQ-UI-1"]').exists()).toBe(true)
     })
@@ -328,6 +337,7 @@ describe("review workspace shell", () => {
     })
 
     const wrapper = mount(App)
+    await openReview(wrapper)
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="row-SREQ-TRANSLATE-1"]').exists()).toBe(true)
     })
@@ -360,6 +370,7 @@ describe("review workspace shell", () => {
     } as Response)
 
     const wrapper = mount(App)
+    await openReview(wrapper)
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="empty-requirements"]').exists()).toBe(true)
     })
@@ -442,10 +453,13 @@ describe("review workspace shell", () => {
       })
     })
     await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
+    })
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("AI 抽取")
+    await openReview(wrapper)
+    await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="row-SREQ-RUN-1"]').exists()).toBe(true)
     })
-    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
-    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("AI 抽取")
     expect(fetchMock).toHaveBeenCalled()
   })
 
@@ -757,6 +771,7 @@ describe("review workspace shell", () => {
     } as Response)
 
     const wrapper = mount(App)
+    await openReview(wrapper)
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="row-SREQ-ABNT-UI"]').exists()).toBe(true)
     })
