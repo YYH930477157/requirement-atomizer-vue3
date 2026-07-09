@@ -289,7 +289,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             ⇄ 全文档一致性：{{ (selectedReq.consistency_flags || []).join("；") }}
           </div>
 
-          <div class="dd-legend">正文标记：<span style="background:#fde68a;padding:0 4px">黄=引用依据</span> · <span style="background:#eff6ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文</div>
+          <div class="dd-legend">正文标记：<span style="background:#e7d29a;padding:0 4px">黄=引用依据</span> · <span style="background:#e8f0f1;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文</div>
           <div class="dd-section"><div class="dd-label">需求分析</div><div class="dd-body">{{ selectedReq.description }}</div></div>
           <div class="dd-section" v-if="(selectedReq.sub_items || []).length">
             <div class="dd-label">子项要求（二级）</div>
@@ -348,67 +348,67 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 
 <style scoped>
 .doc-review { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.doc-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid #e2e8f0; }
-.doc-stats { display: flex; gap: 18px; font-size: 13px; color: #475569; }
-.doc-stats strong { color: #0f172a; }
+.doc-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid #e7dfd2; }
+.doc-stats { display: flex; gap: 18px; font-size: 13px; color: #5b6169; }
+.doc-stats strong { color: #24282f; }
 .omission-stat.warn strong { color: #b45309; }
-.doc-message { padding: 6px 14px; font-size: 12px; color: #b45309; background: #fffbeb; }
+.doc-message { padding: 6px 14px; font-size: 12px; color: #b45309; background: #f6efd8; }
 .doc-body { display: grid; grid-template-columns: 1fr 360px; gap: 0; flex: 1; min-height: 0; }
-.doc-paper { overflow: auto; padding: 18px 22px; background: #fff; }
+.doc-paper { overflow: auto; padding: 18px 22px; background: #fffdf8; }
 .doc-block { display: grid; grid-template-columns: 130px 1fr; gap: 10px; padding: 3px 6px; border-left: 3px solid transparent; cursor: default; }
-.doc-block.heading .doc-text { font-weight: 700; color: #0f172a; margin-top: 8px; }
-.doc-block.anchored { cursor: pointer; border-left-color: #3b82f6; background: #f8fafc; }
-.page-break { display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #94a3b8; font-size: 11px; }
-.page-break::before, .page-break::after { content: ""; flex: 1; border-top: 1px dashed #e2e8f0; }
+.doc-block.heading .doc-text { font-weight: 700; color: #24282f; margin-top: 8px; }
+.doc-block.anchored { cursor: pointer; border-left-color: #4a7385; background: #fbfaf6; }
+.page-break { display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #a8a49a; font-size: 11px; }
+.page-break::before, .page-break::after { content: ""; flex: 1; border-top: 1px dashed #e7dfd2; }
 
 /* 阅读排版：正文两端对齐、列表悬挂缩进、真表格（与自包含 HTML 同视觉） */
 .doc-block:not(.heading) .doc-text { text-align: justify; hyphens: none; }
 .doc-text.list-item { padding-left: 1.6em; text-indent: -1.6em; text-align: left; }
 .doc-table { margin: 14px 0 18px; }
-.doc-table figcaption { font-size: 12px; font-weight: 600; color: #64748b; margin-bottom: 6px; letter-spacing: .02em; }
-.doc-table .table-badge { font-size: 10px; font-weight: 500; color: #92400e; background: #fef3c7;
-  border: 1px solid #fcd34d; border-radius: 999px; padding: 1px 7px; margin-left: 8px; vertical-align: 1px; }
-.doc-table .table-scroll { overflow-x: auto; border: 1px solid #e2e8f0; border-radius: 8px; }
+.doc-table figcaption { font-size: 12px; font-weight: 600; color: #858a92; margin-bottom: 6px; letter-spacing: .02em; }
+.doc-table .table-badge { font-size: 10px; font-weight: 500; color: #8a6417; background: #f6efd8;
+  border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 7px; margin-left: 8px; vertical-align: 1px; }
+.doc-table .table-scroll { overflow-x: auto; border: 1px solid #e7dfd2; border-radius: 8px; }
 .doc-table table { border-collapse: collapse; width: 100%; font-size: 12.5px; line-height: 1.5; }
-.doc-table th, .doc-table td { border: 0; border-bottom: 1px solid #eef2f7; border-right: 1px solid #f1f5f9;
+.doc-table th, .doc-table td { border: 0; border-bottom: 1px solid #efe9dd; border-right: 1px solid #f3efe6;
   padding: 6px 10px; text-align: left; vertical-align: top; min-width: 52px; }
 .doc-table th:last-child, .doc-table td:last-child { border-right: 0; }
-.doc-table thead th { background: #f8fafc; font-weight: 650; color: #334155; }
-.doc-table tbody tr:nth-child(even) td { background: #fbfcfe; }
+.doc-table thead th { background: #fbfaf6; font-weight: 650; color: #43494f; }
+.doc-table tbody tr:nth-child(even) td { background: #faf8f2; }
 .doc-table tbody tr:last-child td { border-bottom: 0; }
 
-.doc-block.in-span { box-shadow: inset 3px 0 0 #a8c3ee; }
-.doc-block.in-span.evidence { background: #eff6ff; box-shadow: none; }
-.dd-legend { font-size: 11px; color: #94a3b8; margin: 4px 0 8px; }
-.doc-block.omission { border-left-color: #f59e0b; border-left-style: dashed; }
+.doc-block.in-span { box-shadow: inset 3px 0 0 #a9c2c9; }
+.doc-block.in-span.evidence { background: #e8f0f1; box-shadow: none; }
+.dd-legend { font-size: 11px; color: #a8a49a; margin: 4px 0 8px; }
+.doc-block.omission { border-left-color: #b08325; border-left-style: dashed; }
 .doc-gutter { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
-.doc-text { margin: 0; font-size: 13px; line-height: 1.55; color: #334155; white-space: pre-wrap; }
-.doc-text mark { background: #fde68a; padding: 0 1px; }
-.anno-chip { font-size: 11px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 1px 7px; background: #fff; cursor: pointer; max-width: 124px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.anno-chip.sel { outline: 2px solid #3b82f6; }
-.anno-chip.st-accepted { border-color: #16a34a; color: #16a34a; }
-.anno-chip.st-rejected { border-color: #dc2626; color: #dc2626; }
-.anno-chip.st-needs_discussion { border-color: #d97706; color: #d97706; }
+.doc-text { margin: 0; font-size: 13px; line-height: 1.55; color: #43494f; white-space: pre-wrap; }
+.doc-text mark { background: #e7d29a; padding: 0 1px; }
+.anno-chip { font-size: 11px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 1px 7px; background: #fffdf8; cursor: pointer; max-width: 124px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.anno-chip.sel { outline: 2px solid #4a7385; }
+.anno-chip.st-accepted { border-color: #2f6842; color: #2f6842; }
+.anno-chip.st-rejected { border-color: #9b3b32; color: #9b3b32; }
+.anno-chip.st-needs_discussion { border-color: #8a6417; color: #8a6417; }
 .omission-tag { font-size: 10px; color: #b45309; }
-.doc-detail { border-left: 1px solid #e2e8f0; overflow: auto; padding: 14px; background: #fafafa; }
-.doc-detail-empty { color: #94a3b8; font-size: 13px; padding-top: 40px; text-align: center; }
+.doc-detail { border-left: 1px solid #e7dfd2; overflow: auto; padding: 14px; background: #faf8f2; }
+.doc-detail-empty { color: #a8a49a; font-size: 13px; padding-top: 40px; text-align: center; }
 .dd-head { display: flex; justify-content: space-between; align-items: center; }
-.dd-module { font-weight: 700; color: #1d4ed8; }
-.dd-status { font-size: 12px; padding: 1px 8px; border-radius: 8px; background: #e2e8f0; }
-.dd-status.st-accepted { background: #dcfce7; color: #166534; }
-.dd-status.st-rejected { background: #fee2e2; color: #991b1b; }
+.dd-module { font-weight: 700; color: #2a5162; }
+.dd-status { font-size: 12px; padding: 1px 8px; border-radius: 8px; background: #e7dfd2; }
+.dd-status.st-accepted { background: #e6f0e8; color: #2f6842; }
+.dd-status.st-rejected { background: #f4e7e3; color: #991b1b; }
 .dd-title { margin: 8px 0 2px; font-size: 15px; }
-.dd-meta { font-size: 12px; color: #64748b; margin-bottom: 8px; }
-.dd-suspicion { font-size: 12px; color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
-.dd-consistency { font-size: 12px; color: #1e40af; background: #dbeafe; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
+.dd-meta { font-size: 12px; color: #858a92; margin-bottom: 8px; }
+.dd-suspicion { font-size: 12px; color: #8a6417; background: #f6efd8; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
+.dd-consistency { font-size: 12px; color: #274d5c; background: #e8f0f1; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
 .dd-table { border-collapse: collapse; font-size: 12px; width: 100%; }
-.dd-table th, .dd-table td { border: 1px solid #e2e8f0; padding: 3px 8px; text-align: left; }
-.dd-table th { background: #f8fafc; font-weight: 600; }
+.dd-table th, .dd-table td { border: 1px solid #e7dfd2; padding: 3px 8px; text-align: left; }
+.dd-table th { background: #fbfaf6; font-weight: 600; }
 .dd-section { margin: 10px 0; }
-.dd-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 3px; }
-.dd-body { font-size: 13px; line-height: 1.55; color: #334155; }
-.dd-list { margin: 0; padding-left: 18px; font-size: 13px; color: #334155; }
-.dd-quote { font-size: 12px; color: #475569; border-left: 3px solid #cbd5e1; padding-left: 8px; font-style: italic; }
+.dd-label { font-size: 11px; color: #a8a49a; text-transform: uppercase; margin-bottom: 3px; }
+.dd-body { font-size: 13px; line-height: 1.55; color: #43494f; }
+.dd-list { margin: 0; padding-left: 18px; font-size: 13px; color: #43494f; }
+.dd-quote { font-size: 12px; color: #5b6169; border-left: 3px solid #cbd5e1; padding-left: 8px; font-style: italic; }
 .dd-select, .dd-comment { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; font-size: 13px; }
 .dd-comment { min-height: 56px; margin-top: 8px; resize: vertical; }
 .dd-actions { display: flex; gap: 8px; margin-top: 10px; }
