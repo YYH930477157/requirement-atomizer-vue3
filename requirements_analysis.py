@@ -75,6 +75,14 @@ def run_requirements_analysis(
             requirements = synthesized_payload.get("items") if isinstance(synthesized_payload, dict) else None
         except (OSError, json.JSONDecodeError):
             requirements = None
+        # C4（0710 评审）：消费端血统校验（§43）——陈旧/异源 functional_requirements.json
+        # 会被静默采信（链内指纹只管要不要重跑，不做产物互一致校验）。producer 家族不符
+        # 即告警并回退逐原子输入；只校验家族名不校验版本号（版本演进由指纹层负责失效）。
+        if isinstance(requirements, list) and isinstance(synthesized_payload, dict):
+            producer = str(synthesized_payload.get("producer") or "")
+            if not producer.startswith("functional-synthesis"):
+                LOGGER.warning("functional_requirements.json producer 异常（%s），回退逐原子输入", producer or "缺失")
+                requirements = None
         if not isinstance(requirements, list):
             requirements = read_jsonl(source_path)
     else:

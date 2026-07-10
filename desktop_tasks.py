@@ -607,6 +607,9 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     if "template-write" in ordered and template_path is None:
         raise ValueError("template-write 阶段需要 --template（公司需求列表模板路径）")
 
+    # 归一化与单命令落账一致（R8，0710 评审）：显式 0/0.0 与 None 指纹必须同形
+    sample_ratio = sample_ratio or None
+    limit_sections = limit_sections or None
     ai_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
     ai_dependent = {"functional-synthesis", "requirements-analysis", "template-write",
                     "clarification-report"}

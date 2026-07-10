@@ -241,7 +241,9 @@ class StageReuseGuardTests(unittest.TestCase):
             out = self._prepare(tmp, {"status": "ok", "producer": stage_producer("ai-extract")})
             self.assertFalse(stage_is_reusable(out, "ai-extract", route="openai_compatible"))
 
-    def test_matching_route_entry_reusable(self) -> None:
+    def test_route_matching_entry_without_fingerprint_not_reusable(self) -> None:
+        """manifest v2（0710）：route 匹配但缺输入指纹 → 不复用（正向可达性由
+        test_desktop_tasks 的 test_stub_request_can_reuse_valid_openai_ai_extract_output 覆盖）。"""
         from desktop_tasks import stage_is_reusable, stage_producer
         with tempfile.TemporaryDirectory() as tmp:
             out = self._prepare(tmp, {"status": "ok", "route": "openai_compatible",
@@ -297,6 +299,140 @@ class AnnotationTermsOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             terms = dae._load_annotation_terms(Path(tmp))
         self.assertEqual(terms, dict(dae._UNANALYZED_TERM_DEFAULTS))
+
+
+class DesignOptionsGuardTests(unittest.TestCase):
+    """C1（0710 评审）：design_options 纳入漂移扫描——非规范候选也不得带无据编码/数字。"""
+
+    def test_design_options_codes_visible_to_drift(self) -> None:
+        from ai_extract import code_drift
+        req = {"title": "t", "description": "", "source_quote": "",
+               "design_options": ["用对象 1-0:99.2.0.255 做镜像缓存"], "acceptance_criteria": []}
+        drift = code_drift(req, "The meter shall store data.")
+        self.assertIn("1-0:99.2.0.255", drift)
+
+    def test_move_unsupported_scrubs_option_numbers_keeps_terms(self) -> None:
+        from ai_extract import _move_unsupported_delivery_items
+        req = {"acceptance_criteria": [], "dev_guidance": [],
+               "design_options": ["容量建议 20000 条", "可用环形缓冲实现归档"]}
+        ints, codes = _move_unsupported_delivery_items(req, "The meter shall archive data.")
+        self.assertIn("20000", ints)
+        self.assertEqual(req["design_options"], ["可用环形缓冲实现归档"])   # 实现词条保留=该字段用途
+        self.assertIn("无依据数字", req.get("notes") or "")
+
+
+class CatalogTitleGuardTests(unittest.TestCase):
+    """C2（0710 评审）：catalog-LLM 自由文本标题直达交付描述列——漂移即弃用回退确定性。"""
+
+    def _rows(self) -> list[dict]:
+        return [{"ai_req_id": "AIR-1", "title": "事件记录", "module": "事件记录",
+                 "description": "The meter shall record tamper events.",
+                 "source_quote": "The meter shall record tamper events.",
+                 "functional_key": "事件记录"}]
+
+    def test_unsafe_title_dropped(self) -> None:
+        from functional_catalog import _title_is_source_safe
+        self.assertFalse(_title_is_source_safe("事件记录（对象 0-0:96.11.0.255）", self._rows()))
+        self.assertFalse(_title_is_source_safe("事件记录容量 65535 条", self._rows()))
+
+    def test_safe_title_adopted(self) -> None:
+        from functional_catalog import _title_is_source_safe
+        self.assertTrue(_title_is_source_safe("窃动事件记录功能", self._rows()))
+
+
+class SynthesisRouteHonestyTests(unittest.TestCase):
+    """C3/C5（0710 评审）：route 按实际 merge_method 判定；确定性侧守恒记账。"""
+
+    def _write_inputs(self, out: Path) -> None:
+        rows = [{"ai_req_id": "AIR-1", "title": "事件记录", "module": "事件记录",
+                 "description": "The meter shall record tamper events.",
+                 "source_quote": "The meter shall record tamper events.", "status": "draft"},
+                {"ai_req_id": "AIR-2", "title": "时钟同步", "module": "时钟",
+                 "description": "The meter shall sync clock daily.",
+                 "source_quote": "The meter shall sync clock daily.", "status": "draft"}]
+        (out / "ai_requirements.jsonl").write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+
+    def test_route_downgrades_when_llm_never_used(self) -> None:
+        from functional_synthesis import run_functional_synthesis
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._write_inputs(out)
+            # 注入的 chat 全程失败 → 每个模块回退确定性 → route 不得号称 llm
+            def broken_chat(system: str, user: str) -> dict:
+                raise RuntimeError("boom")
+            payload_summary = run_functional_synthesis(out, route="openai_compatible", chat=broken_chat)
+            data = json.loads((out / "functional_requirements.json").read_text(encoding="utf-8"))
+        self.assertNotIn("llm", str(payload_summary["route"]))
+        self.assertEqual(data["route_requested"], "openai_compatible")
+        self.assertIn("provenance", data)
+        self.assertTrue(str(data["provenance"].get("generated_at") or ""))
+
+    def test_conservation_clean_on_normal_run(self) -> None:
+        from functional_synthesis import run_functional_synthesis
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._write_inputs(out)
+            run_functional_synthesis(out, route="stub")
+            data = json.loads((out / "functional_requirements.json").read_text(encoding="utf-8"))
+        conservation = data.get("conservation") or {}
+        self.assertEqual(conservation.get("missing_source_ids"), [])
+        self.assertEqual(conservation.get("duplicate_assignments"), [])
+
+
+class SynthesizedConsumerValidationTests(unittest.TestCase):
+    """C4（0710 评审）：requirements_analysis 消费 functional_requirements.json 前校验血统。"""
+
+    def test_bad_producer_falls_back_to_atoms(self) -> None:
+        from requirements_analysis import run_requirements_analysis
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            rows = [{"ai_req_id": f"AIR-{i}", "title": f"t{i}", "module": "计量",
+                     "description": "The meter shall measure.", "source_quote": "The meter shall measure.",
+                     "status": "draft"} for i in range(2)]
+            (out / "ai_requirements.jsonl").write_text(
+                "\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+            (out / "functional_requirements.json").write_text(json.dumps({
+                "producer": "someone-else/v1",
+                "items": [{"ai_req_id": "X-1", "title": "异源", "module": "计量",
+                           "description": "d", "source_quote": "q"}],
+            }, ensure_ascii=False), encoding="utf-8")
+            result = run_requirements_analysis(out, route="stub")
+        # producer 异常 → 回退逐原子输入（2 条),而非采信异源 1 条
+        self.assertEqual(int(result.get("analysis_count") or 0), 2)
+
+
+class SemanticGateDenominatorTests(unittest.TestCase):
+    """C6（0710 评审）：语义门用例缺 functional_count 必须响亮失败（自引分母恒真）。"""
+
+    def test_missing_functional_count_fails(self) -> None:
+        from semantic_quality import _catalog_case
+        case = {"name": "x", "requirements": [
+            {"ai_req_id": "A", "title": "事件记录", "module": "事件记录",
+             "description": "The meter shall record events.", "source_quote": "q"}],
+            "expected": {}}
+        failures = _catalog_case(case)[0]
+        self.assertTrue(any("functional_count" in f for f in failures))
+
+
+class SynthesisConflictToClarificationTests(unittest.TestCase):
+    """C10（0710 评审）：合成冲突标记必须上澄清清单（内部核对必答）。"""
+
+    def test_conflict_flags_become_internal_questions(self) -> None:
+        from clarification_report import collect_questions, AUDIENCE_INTERNAL
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "functional_requirements.json").write_text(json.dumps({
+                "producer": "functional-synthesis-v5",
+                "items": [{"title": "归档周期", "functional_key": "归档",
+                           "source_ai_requirement_ids": ["AIR-9"],
+                           "conflict_flags": ["同一功能存在未限定的冲突参数 30/60 min"]}],
+            }, ensure_ascii=False), encoding="utf-8")
+            entries = collect_questions(out)
+        hits = [e for e in entries if e["signal"] == "synthesis:conflict_flag"]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["audience"], AUDIENCE_INTERNAL)
+        self.assertIn("30/60 min", hits[0]["question"])
 
 
 class QualityAuditFieldsTests(unittest.TestCase):

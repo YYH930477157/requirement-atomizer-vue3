@@ -89,6 +89,9 @@ def _produced_text(requirement: dict[str, Any]) -> str:
         str(requirement.get("description") or ""),
         str(requirement.get("source_quote") or ""),
         " ".join(str(a) for a in requirement.get("acceptance_criteria") or []),
+        # design_options 是"非规范候选"但直达交付描述（C1，0710 评审）：编造编码/数字同样
+        # 要进漂移扫描——"不得带无依据容量"此前只是提示词约定
+        " ".join(str(a) for a in requirement.get("design_options") or []),
         sub_texts,
         " ".join(table_cells),
     ])

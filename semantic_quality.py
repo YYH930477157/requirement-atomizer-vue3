@@ -16,8 +16,13 @@ def _catalog_case(case: dict[str, Any]) -> tuple[list[str], bool, bool]:
     expected = case.get("expected") or {}
     items = build_function_catalog(requirements)
     failures: list[str] = []
-    expected_count = int(expected.get("functional_count", len(items)))
-    if len(items) != expected_count:
+    if "functional_count" not in expected:
+        # C6（0710 评审）：缺省取 len(items) 是自引分母——计数检查恒真。用例必须显式给出。
+        failures.append("case missing required expected.functional_count")
+        expected_count = -1
+    else:
+        expected_count = int(expected["functional_count"])
+    if expected_count >= 0 and len(items) != expected_count:
         failures.append(f"functional_count expected {expected_count}, got {len(items)}")
     expected_groups = expected.get("groups")
     if expected_groups is not None:

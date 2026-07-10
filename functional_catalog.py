@@ -575,6 +575,15 @@ def _consolidate_catalog_groups(
                 break
     return consolidated
 
+def _title_is_source_safe(title: str, group: list[dict[str, Any]]) -> bool:
+    """LLM 标题防漂移：标题里的受保护编码/数字必须在组内源文出现过（C2，0710 评审）。"""
+    from cosem_behavior_spec import extract_codes, extract_ints
+    basis = " ".join(
+        " ".join(str(row.get(key) or "") for key in ("title", "description", "source_quote", "functional_key"))
+        for row in group)
+    return not (extract_codes(title) - extract_codes(basis)) and not (extract_ints(title) - extract_ints(basis))
+
+
 def build_function_catalog(requirements: list[dict[str, Any]], *, chat: CatalogChat | None = None) -> list[dict[str, Any]]:
     rows = [dict(row) for row in requirements if isinstance(row, dict)]
     groups: list[tuple[list[dict[str, Any]], str, dict[str, Any] | None]] = []
@@ -598,7 +607,9 @@ def build_function_catalog(requirements: list[dict[str, Any]], *, chat: CatalogC
         render_method = _llm_render_method(group) if meta is not None else method
         item = _merge_group(group, render_method)
         if meta is not None:
-            if meta.get("title"):
+            # C2（0710 评审）：LLM 标题是自由文本且直达交付「描述」列——含组内源文没有的
+            # 编码/数字即弃用（保确定性标题）。编码/数字纪律对人读标题同样成立。
+            if meta.get("title") and _title_is_source_safe(str(meta["title"]), group):
                 item["title"] = meta["title"]
             item["functional_key"] = meta.get("catalog_key") or item["functional_key"]
             item["synthesis_reason"] = meta.get("reason") or "文档级 LLM 功能目录映射"

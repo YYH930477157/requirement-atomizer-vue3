@@ -1266,7 +1266,11 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           if (templatePath.value) stages.push("template-write")
           stages.push("clarification-report")
         } else {
-          skippedForLlm.push("需求分析", "按模板成文", "澄清清单")
+          skippedForLlm.push("功能重组", "需求分析", "按模板成文", "澄清清单")
+          // 阶段卡同步:不然 LLM 关时这些卡永远停在"待完成"(0710 评审 R2)
+          for (const key of ["functional-synthesis", "requirements-analysis", "template-write", "clarification-report"]) {
+            setRunStageState(key, { status: "disabled", percent: 0, detail: "LLM 关闭，未运行" })
+          }
         }
       }
       if (runStages.value.compose) stages.push("compose")
@@ -1384,6 +1388,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
 }
 
 const CHAIN_STEP_LABELS: Record<string, string> = {
+  "functional-synthesis": "功能重组",
   "ai-extract": "AI 抽取（双引擎）", assemble: "装配实现规格", "requirements-analysis": "软件需求分析",
   "template-write": "成文需求列表", "clarification-report": "澄清问题清单", compose: "组装工程需求",
   "export-annotation-html": "导出批注视图",

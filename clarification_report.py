@@ -129,6 +129,23 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 "同一原文语句被抽为多条需求，请确认是否合并或存在语义差异",
                 quote=quote, signal="consistency:duplicate"))
 
+    # 合成层冲突标记（C10，0710 评审）：确定性检出的"同一功能未限定参数冲突/归属覆盖冲突"
+    # 此前只落 functional_requirements.json——评审会该裁的冲突在澄清清单上隐身
+    synth_path = out_dir / "functional_requirements.json"
+    if synth_path.exists():
+        try:
+            synth = json.loads(synth_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            synth = {}
+        for item in (synth.get("items") or []) if isinstance(synth, dict) else []:
+            title = str(item.get("title") or item.get("functional_key") or "")
+            for flag in item.get("conflict_flags") or []:
+                entries.append(_entry(
+                    CAT_CONFLICT,
+                    f"功能「{title[:40]}」存在合成冲突：{str(flag)[:140]}——请评审裁定以哪处为准",
+                    source_id=str((item.get("source_ai_requirement_ids") or [""])[0]),
+                    signal="synthesis:conflict_flag", audience=AUDIENCE_INTERNAL))
+
     entries.extend(_parse_audit_entries(out_dir))
     return entries
 

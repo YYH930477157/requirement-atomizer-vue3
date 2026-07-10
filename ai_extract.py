@@ -466,7 +466,25 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
             else:
                 kept.append(text)
         req[field] = kept
-    req["design_options"] = list(dict.fromkeys(design_options))
+    # C1（0710 评审）：design_options 本体同样要洗——它是"非规范候选"但直达交付描述，
+    # 实现方案词条（FIFO/缓存）是其用途所以保留，无据数字/编码仍必须移除（其自身契约
+    # "不得带无依据容量或默认值"此前只是提示词约定）。降级来的条目已验证干净，不受影响。
+    kept_options: list[str] = []
+    for text in design_options:
+        unsupported = extract_ints(text) - allowed
+        unsupported_codes = extract_codes(text) - allowed_codes
+        if unsupported or unsupported_codes:
+            drifted |= unsupported
+            drifted_codes |= unsupported_codes
+            reasons = []
+            if unsupported_codes:
+                reasons.append(f"无依据编码：{', '.join(sorted(unsupported_codes))}")
+            if unsupported:
+                reasons.append(f"无依据数字：{', '.join(sorted(unsupported))}")
+            removed.append(f"design_options: {text[:180]}（{'；'.join(reasons)}）")
+        else:
+            kept_options.append(text)
+    req["design_options"] = list(dict.fromkeys(kept_options))
     if removed:
         suffix = "；…" if len(removed) > 6 else ""
         _append_note(req, "无依据条目已移入备注：" + "；".join(removed[:6]) + suffix)

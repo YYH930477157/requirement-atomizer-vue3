@@ -68,15 +68,38 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
         eligible.append(reviewed)
     active_chat, executed_route = _resolve_catalog_chat(route, chat)
     items = synthesize_requirements(eligible, chat=active_chat)
+    # C3（0710 评审）：route 不得夸大——resolver 只凭"有 key"就报 llm:{model}，但每个模块
+    # 都可能因调用失败/映射非法回退确定性。按产物实际 merge_method 事后判定。
+    if executed_route.startswith("llm:") and not any(
+            str(item.get("merge_method") or "") == "llm_catalog" for item in items):
+        executed_route = "stub"
+    # C5（0710 评审）：确定性侧守恒核对——LLM 侧有 exactly-once 校验，确定性侧此前零防线,
+    # 空 id/重复 id 会被 _unique_strings 静默丢弃。违反不阻断（记账+告警），交付可审计。
+    eligible_ids = [str(r.get("ai_req_id") or "") for r in eligible]
+    assigned: list[str] = []
+    for item in items:
+        assigned.extend(str(x) for x in item.get("source_ai_requirement_ids") or [])
+    from collections import Counter as _Counter
+    dup_assigned = sorted(k for k, v in _Counter(assigned).items() if v > 1)
+    missing = sorted(set(x for x in eligible_ids if x) - set(assigned))
+    if dup_assigned or missing or len(eligible_ids) != len(set(eligible_ids)):
+        import logging
+        logging.getLogger("requirement_atomizer").warning(
+            "功能合成守恒异常：缺失 %d / 重复归属 %d / 输入重复 id %d",
+            len(missing), len(dup_assigned), len(eligible_ids) - len(set(eligible_ids)))
+    from requirement_record import provenance
     payload = {
         "schema_version": 1,
         "producer": FUNCTIONAL_SYNTHESIS_VERSION,
+        # C4（0710 评审）：标准 provenance 块（§43：producer/version/generated_at），消费端校验
+        "provenance": provenance("functional_synthesis", FUNCTIONAL_SYNTHESIS_VERSION),
         "route_requested": route or "stub",
         "route": executed_route,
         "source": source.name,
         "source_requirements": len(requirements),
         "eligible_requirements": len(eligible),
         "functional_requirements": len(items),
+        "conservation": {"missing_source_ids": missing[:20], "duplicate_assignments": dup_assigned[:20]},
         "items": items,
     }
     target = out_dir / FUNCTIONAL_REQUIREMENTS
