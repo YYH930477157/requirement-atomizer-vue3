@@ -134,6 +134,8 @@ def _clean_block_text(text: str) -> str:
     # 剥离段内嵌的框线乱码（正文 + 句末框线噪声，如 'When --``,``-- tested' → 'When tested'）
     text = _INLINE_GARBAGE_RE.sub(" ", text)
     text = _LEADER_DOTS_RE.sub("", text)
+    # 行中长点串（目录行被段落合并黏进正文时,点引导线出现在行中——真实截图:整屏点溢出）
+    text = re.sub(r"[.·…]{4,}", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -462,6 +464,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         cls.append("is-table")
     elif _LIST_TEXT_RE.match(text):
         cls.append("list-item")   # 悬挂缩进
+    if len(text) < 160:
+        cls.append("short")   # 短行不 justify（目录条目/落款,拉词距很丑——真实截图反馈）
     depth = min(len(path), 4) if path else 0
 
     numbers = req_numbers or {}
@@ -659,7 +663,9 @@ body {{ margin: 0; font-family: var(--sans);
 .page-break::before, .page-break::after {{ content: ""; flex: 1; border-top: 1px dashed #ddd6c8; }}
 
 /* --- 阅读排版（优于原版 PDF：正文两端对齐、列表悬挂缩进、真表格） --- */
-.doc-block:not(.heading) .text {{ text-align: justify; hyphens: none; }}
+.doc-block .text {{ overflow-wrap: anywhere; }}
+.doc-block:not(.heading):not(.short) .text {{ text-align: justify; hyphens: none; }}
+.doc-block.short .text {{ text-align: left; }}
 .doc-block.list-item .text {{ padding-left: 1.6em; text-indent: -1.6em; text-align: left; }}
 .doc-table {{ margin: 14px 0 18px; }}
 .doc-table figcaption {{ font-size: 12px; font-weight: 600; color: #6e7787; margin-bottom: 6px; letter-spacing: .02em; }}

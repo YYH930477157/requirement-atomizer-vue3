@@ -476,6 +476,8 @@ def _merge_continuation_blocks(
             if (prev_text and prev_text[-1] not in _SENTENCE_TERMINALS
                     and cur_text[:1].islower()
                     and not _LIST_ITEM_RE.match(cur_text)
+                    and not _DOT_LEADER_RE.search(prev_text)
+                    and not _DOT_LEADER_RE.search(cur_text)
                     and len(prev_text) + len(cur_text) < 4000):
                 if prev_text.endswith("-"):
                     joined = prev_text[:-1] + cur_text   # 跨页连字断词
@@ -635,6 +637,8 @@ def _starts_new_paragraph(
         return True
     if _LIST_ITEM_RE.match(line["text"]):
         return True   # 列表项必自成段（不论行距）
+    if _DOT_LEADER_RE.search(line["text"]) or _DOT_LEADER_RE.search(previous["text"]):
+        return True   # 目录条目（点引导线）永不与相邻行黏段——黏了会把整屏点串塞进正文
     gap = float(line["top"]) - float(previous["bottom"])
     if gap >= 12:
         # 续行豁免：机翻 PDF 行距不齐会把一句话切成两块（真实取证 22% 段落块小写开头）。
