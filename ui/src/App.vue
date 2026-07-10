@@ -690,6 +690,7 @@ const RUN_STAGE_DEFS = [
   { key: "atomize", label: "原子化" },
   { key: "llm-review", label: "LLM审核" },
   { key: "ai-extract", label: "AI抽取" },
+  { key: "functional-synthesis", label: "功能重组" },
   { key: "assemble", label: "组装功能" },
   { key: "requirements-analysis", label: "需求分析" },
   { key: "template-write", label: "格式成文" },
@@ -740,7 +741,10 @@ function setRunStageState(key: string | undefined, patch: Partial<RunStageState>
 function resetRunStageBoard() {
   const next = defaultStageStates()
   if (!runStages.value.llmReview) next["llm-review"] = { status: "disabled", percent: 0, detail: "未启用" }
-  if (!runStages.value.aiExtract) next["ai-extract"] = { status: "disabled", percent: 0, detail: "未启用" }
+  if (!runStages.value.aiExtract) {
+    next["ai-extract"] = { status: "disabled", percent: 0, detail: "未启用" }
+    next["functional-synthesis"] = { status: "disabled", percent: 0, detail: "依赖 AI 抽取" }
+  }
   if (!runStages.value.assemble) next.assemble = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.analyze) {
     next["requirements-analysis"] = { status: "disabled", percent: 0, detail: "未启用" }
@@ -1248,7 +1252,10 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       const llmRoute = useLlm ? "openai_compatible" : "stub"
       // 编排在后端（desktop_tasks chain）：UI 只发一条命令 + 渲染进度。阶段名与后端子命令一致。
       const stages: string[] = []
-      if (runStages.value.aiExtract) stages.push("ai-extract")
+      if (runStages.value.aiExtract) {
+        stages.push("ai-extract")
+        if (useLlm) stages.push("functional-synthesis")
+      }
       if (runStages.value.assemble) stages.push("assemble")
       // 分析/成文/澄清硬依赖真 LLM 抽取产物（ai_requirements.jsonl，stub 路由不产）——
       // LLM 关时带上它们必然断链，且把排在后面的 compose/批注 HTML 一起掐死（2026-07-08 审计 A3）
@@ -1322,7 +1329,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       runProgressDetail.value = `均匀抽样全文 ${Math.round(TEST_AI_EXTRACT_SAMPLE_RATIO * 100)}% 章节试抽 + 分析…`
       await nextUiTick()
       try {
-        const stages = ["ai-extract", "requirements-analysis",
+        const stages = ["ai-extract", "functional-synthesis", "requirements-analysis",
                         ...(templatePath.value ? ["template-write"] : []), "clarification-report"]
         const sample = await bridge.runChain({
           outDir: finalOutDir, stages, llmRoute: "openai_compatible",

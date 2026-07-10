@@ -970,6 +970,23 @@ function selectSourceClassification(el) {{
     '</div>';
 }}
 
+function functionalMembershipHtml(r) {{
+  if (!r.functional_requirement_id) return "";
+  const behaviors = (r.functional_behaviors||[]).map(value => '<li>'+esc(value)+'</li>').join("");
+  const preconditions = (r.functional_preconditions||[]).map(value => '<li>'+esc(value)+'</li>').join("");
+  const constraints = (r.functional_data_constraints||[]).map(value => '<li>'+esc(value)+'</li>').join("");
+  const variants = (r.functional_variants||[]).map(value => '<li><strong>'+esc(value.name||"变体")+'</strong>：'+esc(value.behavior||"")+'</li>').join("");
+  const conflicts = (r.functional_conflict_flags||[]).map(value => '<li>'+esc(value)+'</li>').join("");
+  return '<div class="dd-section"><div class="dd-label">所属研发功能</div>'+
+    '<div class="dd-body"><strong>'+esc(r.functional_title||r.functional_requirement_id)+'</strong></div>'+
+    (r.functional_objective ? '<div class="dd-body">'+esc(r.functional_objective)+'</div>' : '')+
+    (behaviors ? '<div class="dd-label">功能行为</div><ul class="dd-list">'+behaviors+'</ul>' : '')+
+    (preconditions ? '<div class="dd-label">前置条件</div><ul class="dd-list">'+preconditions+'</ul>' : '')+
+    (constraints ? '<div class="dd-label">数据约束</div><ul class="dd-list">'+constraints+'</ul>' : '')+
+    (variants ? '<div class="dd-label">功能变体</div><ul class="dd-list">'+variants+'</ul>' : '')+
+    (conflicts ? '<div class="dd-suspicion">待澄清冲突<ul class="dd-list">'+conflicts+'</ul></div>' : '')+
+    '</div>';
+}}
 function select(id) {{
   if (selected === id) {{ deselect(); return; }}  // 再点一下 → 取消选中
   selected = id;
@@ -999,6 +1016,7 @@ function select(id) {{
     '<div class="dd-legend">正文标记：<span style="background:#ffe89a;padding:0 4px">黄=引用依据</span> · <span style="background:#eef4ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文（模型通读范围）</div>'+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
     analysisHtml+
+    functionalMembershipHtml(r)+
     (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
     (r.source_quote ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(r.source_quote)+'</div>' : '')+

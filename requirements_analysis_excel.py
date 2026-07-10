@@ -103,6 +103,36 @@ def _excel_row(index: int, item: dict[str, Any]) -> list[Any]:
 
 def _notes_text(item: dict[str, Any]) -> str:
     notes: list[str] = []
+    objective = str(item.get("objective") or "").strip()
+    if objective:
+        notes.append(f"功能目标：{objective}")
+    notes.extend(f"功能行为：{value}" for value in item.get("behaviors") or [])
+    role_labels = {
+        "configure": "配置", "detect": "检测/触发", "execute": "执行/控制",
+        "store": "存储/归档", "query": "查询/读取", "report": "上报/传输",
+        "access": "权限/访问", "recover": "恢复/重试", "behavior": "其它行为",
+    }
+    for entry in item.get("lifecycle_behaviors") or []:
+        if isinstance(entry, dict):
+            role = role_labels.get(str(entry.get("role") or "behavior"), str(entry.get("role") or "其它行为"))
+            behavior = str(entry.get("behavior") or "").strip()
+            if behavior:
+                notes.append(f"生命周期-{role}：{behavior}")
+    source_modules = [str(value).strip() for value in item.get("source_modules") or [] if str(value).strip()]
+    if len(source_modules) > 1:
+        notes.append("跨模块来源：" + "、".join(source_modules))
+    notes.extend(f"前置条件：{value}" for value in item.get("preconditions") or [])
+    notes.extend(f"数据约束：{value}" for value in item.get("data_constraints") or [])
+    for variant in item.get("variants") or []:
+        if isinstance(variant, dict):
+            name = str(variant.get("name") or "变体").strip()
+            behavior = str(variant.get("behavior") or "").strip()
+            notes.append(f"功能变体 {name}：{behavior}" if behavior else f"功能变体：{name}")
+    notes.extend(f"异常处理：{value}" for value in item.get("exceptions") or [])
+    related = [str(value).strip() for value in item.get("related_dlms_objects") or [] if str(value).strip()]
+    if related:
+        notes.append("关联 DLMS 对象：" + "、".join(related))
+    notes.extend(f"待澄清冲突：{value}" for value in item.get("conflict_flags") or [])
     # 富化软标随交付物同行：编造数字/遗漏漂移必须在研发看的列里可见（2026-07-08 审计 B1）
     notes.extend(f"⚠ 富化待核：{value}" for value in item.get("enrichment_warnings") or [])
     # 参数表优先（数值是研发的命根子：粒径/成分/限值清单必须出现在交付物里，不能只留在中间产物）
@@ -114,6 +144,7 @@ def _notes_text(item: dict[str, Any]) -> str:
         for row in table.get("rows") or []:
             notes.append("  " + " | ".join(str(cell) for cell in (row if isinstance(row, list) else [row])))
     notes.extend(str(value) for value in item.get("developer_guidance") or [])
+    notes.extend(f"设计候选（非规范约束）：{value}" for value in item.get("design_options") or [])
     notes.extend(f"假设：{value}" for value in item.get("assumptions") or [])
     source_quote = str(item.get("source_quote") or "").strip()
     if source_quote:

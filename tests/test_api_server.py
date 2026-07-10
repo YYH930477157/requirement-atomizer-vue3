@@ -261,5 +261,30 @@ class ConsistencyFlagsTests(unittest.TestCase):
             self.assertTrue(all("consistency_flags" not in r for r in rows))
 
 
+class FunctionalMembershipProjectionTests(unittest.TestCase):
+    def test_ai_requirements_include_synthesized_function_membership(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "ai_requirements.jsonl").write_text(json.dumps({
+                "ai_req_id": "AI-1", "title": "采集事件", "description": "采集重要事件。",
+                "source_quote": "Collect significant events.", "source_block_ids": ["B-1"], "module": "事件",
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+            (out / "blocks.jsonl").write_text(json.dumps({
+                "block_id": "B-1", "order": 1, "text": "Collect significant events."
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+            (out / "functional_requirements.json").write_text(json.dumps({"items": [{
+                "functional_requirement_id": "FREQ-1", "title": "重要事件管理",
+                "objective": "实现重要事件管理。", "behaviors": ["采集重要事件。"],
+                "source_ai_requirement_ids": ["AI-1"], "merge_method": "event_subject",
+                "merge_confidence": 0.9, "conflict_flags": [],
+            }]}, ensure_ascii=False), encoding="utf-8")
+
+            row = api_server.build_ai_requirements(out)[0]
+
+        self.assertEqual(row["functional_requirement_id"], "FREQ-1")
+        self.assertEqual(row["functional_title"], "重要事件管理")
+        self.assertEqual(row["functional_objective"], "实现重要事件管理。")
+        self.assertEqual(row["functional_behaviors"], ["采集重要事件。"])
+
 if __name__ == "__main__":
     unittest.main()

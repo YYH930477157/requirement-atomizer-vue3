@@ -308,6 +308,34 @@ class DocAnnotationExportTests(unittest.TestCase):
             ]
             self.assertEqual(positions, sorted(positions))
 
+    def test_exact_source_anchor_places_marker_on_quoted_block_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            blocks = [
+                {"block_id": "B1", "order": 1, "type": "heading", "text": "3.24 billing period",
+                 "section_path": ["3.24 billing period"], "requirement_like": False, "noise": False},
+                {"block_id": "B2", "order": 2, "type": "paragraph", "text": "Unrelated definition.",
+                 "section_path": ["3.24 billing period"], "requirement_like": False, "noise": False},
+                {"block_id": "B3", "order": 3, "type": "paragraph",
+                 "text": "The billing period can be valid for 1, 2, 3, 4, 6, 12 months.",
+                 "section_path": ["3.24 billing period"], "requirement_like": True, "noise": False},
+            ]
+            (out / "blocks.jsonl").write_text(
+                "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in blocks), encoding="utf-8")
+            (out / "ai_requirements.jsonl").write_text(json.dumps({
+                "ai_req_id": "AI-BILLING", "title": "结算周期", "description": "周期可配置。",
+                "source_quote": blocks[2]["text"], "source_section": "3.24",
+                "source_block_ids": ["B3"], "anchor_block_id": "B3", "module": "结算",
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            rendered = dae.render_annotation_html(out)
+
+        b2_start = rendered.index('data-block-id="B2"')
+        b3_start = rendered.index('data-block-id="B3"')
+        b3_end = rendered.find('</div></div>', b3_start)
+        self.assertNotIn('data-req="AI-BILLING"', rendered[b2_start:b3_start])
+        self.assertIn('data-req="AI-BILLING"', rendered[b3_start:b3_end if b3_end >= 0 else None])
+
     def test_omission_flag_for_uncovered_requirement_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -448,5 +476,29 @@ class DocAnnotationExportTests(unittest.TestCase):
             self.assertIn("ownershipReasonHtml(r)", rendered)
 
 
+
+class FunctionalSynthesisAnnotationTests(unittest.TestCase):
+    def test_detail_panel_renders_function_membership_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            source_id = dae.build_ai_requirements(out)[0]["ai_req_id"]
+            (out / "functional_requirements.json").write_text(json.dumps({"items": [{
+                "functional_requirement_id": "FREQ-1",
+                "title": "体积计量管理",
+                "objective": "实现体积计量管理。",
+                "behaviors": ["应计量体积"],
+                "variants": [{"name": "常规", "behavior": "按正常周期计量"}],
+                "conflict_flags": ["参数待确认"],
+                "source_ai_requirement_ids": [source_id],
+            }]}, ensure_ascii=False), encoding="utf-8")
+
+            rendered = dae.render_annotation_html(out)
+
+        self.assertIn("所属研发功能", rendered)
+        self.assertIn("functional_title", rendered)
+        self.assertIn("functional_objective", rendered)
+        self.assertIn("functional_variants", rendered)
+        self.assertIn("functional_conflict_flags", rendered)
 if __name__ == "__main__":
     unittest.main()

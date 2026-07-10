@@ -309,6 +309,37 @@ def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
     return span[0] if span else ""
 
 
+def _functional_membership(output_dir: Path) -> dict[str, dict]:
+    path = output_dir / "functional_requirements.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return {}
+    mapping: dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        projected = {
+            "functional_requirement_id": item.get("functional_requirement_id"),
+            "functional_title": item.get("title"),
+            "functional_objective": item.get("objective"),
+            "functional_behaviors": item.get("behaviors") or [],
+            "functional_preconditions": item.get("preconditions") or [],
+            "functional_data_constraints": item.get("data_constraints") or [],
+            "functional_variants": item.get("variants") or [],
+            "functional_exceptions": item.get("exceptions") or [],
+            "functional_related_dlms_objects": item.get("related_dlms_objects") or [],
+            "functional_merge_method": item.get("merge_method"),
+            "functional_merge_confidence": item.get("merge_confidence"),
+            "functional_conflict_flags": item.get("conflict_flags") or [],
+        }
+        for source_id in item.get("source_ai_requirement_ids") or []:
+            mapping[str(source_id)] = projected
+    return mapping
+
 def build_ai_requirements(output_dir: Path) -> list[dict]:
     """供文档批注视图：merged_spec 需求 + 内容稳定 ai_req_id + 精确锚点 + 当前裁决态。
 
@@ -317,6 +348,7 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
     """
     requirements = _load_ai_requirements(output_dir)
     states = read_ai_review_states(output_dir)
+    membership = _functional_membership(output_dir)
     text_by_block = {str(b.get("block_id")): (b.get("text") or "")
                      for b in read_jsonl(output_dir / "blocks.jsonl")}
     from requirements_analysis_rules import classify_ownership  # 规则初判（确定性、零 LLM）
@@ -328,6 +360,7 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
         state = states.get(rid)
         row = dict(req)
         row["ai_req_id"] = rid
+        row.update(membership.get(rid, {}))
         row["anchor_block_id"] = anchor_block_id(req, text_by_block)
         row["review_state"] = state
         # 专家改过模块则以 override 为准（module 字段保持原值供追溯）

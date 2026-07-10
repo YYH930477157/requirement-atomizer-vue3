@@ -82,6 +82,7 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="run-stage-atomize"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="run-stage-llm-review"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="run-stage-ai-extract"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-stage-functional-synthesis"]').exists()).toBe(true)
 
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
@@ -555,7 +556,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
-        stages: ["ai-extract", "assemble", "requirements-analysis", "clarification-report", "compose", "export-annotation-html"],
+        stages: ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "clarification-report", "compose", "export-annotation-html"],
         // bridge 提供已保存 enabled 设置 → onMounted 恢复（审计 A2）→ 真 LLM 路由 + 分析阶段过门控
         llmRoute: "openai_compatible", templatePath: undefined,
       }))
@@ -578,7 +579,7 @@ describe("review workspace shell", () => {
 
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
-        expect.objectContaining({ stages: ["ai-extract"] })))
+        expect.objectContaining({ stages: ["ai-extract", "functional-synthesis"] })))
   })
 
   it("chain stages use openai_compatible routes when the LLM toggle is on", async () => {
@@ -604,7 +605,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
         expect.objectContaining({
-          stages: ["ai-extract", "assemble", "requirements-analysis", "clarification-report"],
+          stages: ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "clarification-report"],
           llmRoute: "openai_compatible",
         })))
     await vi.waitFor(() =>
@@ -695,7 +696,7 @@ describe("review workspace shell", () => {
     await vi.waitFor(() =>
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
-        stages: ["ai-extract", "requirements-analysis", "clarification-report"],
+        stages: ["ai-extract", "functional-synthesis", "requirements-analysis", "clarification-report"],
         llmRoute: "openai_compatible", templatePath: undefined, sampleRatio: 0.2,
       }))
     await vi.waitFor(() => {
@@ -937,7 +938,7 @@ describe("review workspace shell", () => {
       expect(window.ratomizerDesktop?.runChain).toHaveBeenCalledWith(
         expect.objectContaining({
           outDir: "E:\\out\\abnt",
-          stages: ["ai-extract"],
+          stages: ["ai-extract", "functional-synthesis"],
           llmRoute: "openai_compatible",
         }))
     })
