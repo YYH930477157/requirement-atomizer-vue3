@@ -190,6 +190,7 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
 
     prev_page: int | None = None
     marker_state: dict[str, Any] = {"next": 1, "req_numbers": {}}
+    outline_map = _build_outline_map(blocks)
     for b in blocks:
         bid = str(b.get("block_id") or "")
         text = str(b.get("text") or "")
@@ -216,7 +217,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         # 渲染单个 block 的 HTML（表格块带 data_rows 时渲染真表格，旧 out_dir 无该字段回退扁平文字）
         block_html = _render_one_block(bid, text, path, region, is_heading, is_noise, is_omission, anchored,
                                        req_numbers or {}, (sub_anchor_map or {}).get(bid) or [],
-                                       block=b, marker_state=marker_state)
+                                       block=b, marker_state=marker_state,
+                                       outline_level=outline_map.get(bid))
 
         # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
         if region in _COLLAPSIBLE_REGIONS:
@@ -444,11 +446,98 @@ def _render_table_inner(block: dict, anchored: list[dict[str, Any]] | None = Non
             f'<table>{thead}<tbody>{body}</tbody></table></div></figure>'), placed
 
 
+_TOC_ENTRY_SHAPE_RE = re.compile(r"^\d+(?:\.\d+)*\s+.+\s\d{1,3}$")
+_TRAILING_PAGE_RE = re.compile(r"\s+\d{1,3}$")
+
+
+_ANNEX_HEADING_RE = re.compile(r"^(annex|appendix|附录)\s+[A-Z0-9]", re.IGNORECASE)
+_LEADING_NUM_RE = re.compile(r"^(\d+)(?:\.(\d+))?\b")
+# 印刷目录条目：编号 + 标题 + （点引导线）+ 页码
+_PRINTED_TOC_RE = re.compile(r"^(\d+(?:\.\d+)*)\s+(.{3,}?)[\s.·…]*?(\d{1,3})?\s*$")
+
+
+def _norm_outline(text: str) -> str:
+    return re.sub(r"[^0-9a-z一-鿿]+", "", text.casefold())
+
+
+def _parse_printed_toc(blocks: list[dict[str, Any]]) -> tuple[list[tuple[str, str, int]], int]:
+    """从文档自带的印刷目录（INDEX/Contents 区,点引导线条目）解析 (编号, 标题, 级别)。
+    只认前 40% 的块里、点引导线/尾页码形态的条目——这是文档结构的权威来源。
+    返回 (条目, 目录最后一块的下标)——回链搜索从目录之后开始。"""
+    entries: list[tuple[str, str, int]] = []
+    last_index = 0
+    limit = max(30, int(len(blocks) * 0.4))   # 小文档全扫（40% 窗口在测试级夹具上会饿死）
+    for index, b in enumerate(blocks[:limit]):
+        raw = str(b.get("text") or "")
+        if not (re.search(r"[.·…]{4,}", raw) or _TOC_ENTRY_SHAPE_RE.match(_clean_block_text(raw))):
+            continue
+        cleaned = _clean_block_text(raw)
+        m = _PRINTED_TOC_RE.match(cleaned)
+        if not m:
+            continue
+        numbering, title = m.group(1), m.group(2).strip()
+        level = min(numbering.count(".") + 1, 2)
+        if numbering.count(".") >= 2 or len(title) < 3:
+            continue   # 只收章/节两级
+        entries.append((numbering, title, level))
+        last_index = index
+    return entries, last_index
+
+
+def _build_outline_map(blocks: list[dict[str, Any]]) -> dict[str, int]:
+    """左栏=文件目录（真实反馈 2026-07-10）：以文档**自带印刷目录**为权威源——把目录
+    条目回链到正文对应标题块。启发式（标题块序列）在无印刷目录的文档上兜底。
+    序列法教训：事件码表行本身就是连续编号（1..40），任何"递增即是章"的启发式都会
+    把大表吞进目录。"""
+    entries, toc_end = _parse_printed_toc(blocks)
+    if len(entries) >= 5:
+        toc_end = toc_end + 1
+        picked: dict[str, int] = {}
+        used: set[str] = set()
+        for numbering, title, level in entries:
+            want_prefix = _norm_outline(f"{numbering} {title[:16]}")
+            for b in blocks[toc_end:] if len(blocks) > toc_end else blocks:
+                if b.get("type") != "heading" or b.get("noise"):
+                    continue
+                bid = str(b.get("block_id") or "")
+                if not bid or bid in used:
+                    continue
+                text = _clean_block_text(str(b.get("text") or ""))
+                if _norm_outline(text)[:len(want_prefix)] == want_prefix:
+                    picked[bid] = level
+                    used.add(bid)
+                    break
+        if len(picked) >= 3:
+            return picked
+    # 兜底：无印刷目录 → 标题块直接进目录（章/节两级,印刷目录形态与超深层剔除）
+    picked = {}
+    seen: dict[str, str] = {}
+    for b in blocks:
+        if b.get("type") != "heading" or b.get("noise"):
+            continue
+        text = _clean_block_text(str(b.get("text") or ""))
+        if not text or _TOC_ENTRY_SHAPE_RE.match(text):
+            continue
+        level = _block_heading_level(b)
+        if level >= 3:
+            continue
+        key = _TRAILING_PAGE_RE.sub("", text).casefold()
+        prev = seen.get(key)
+        if prev:
+            picked.pop(prev, None)
+        bid = str(b.get("block_id") or "")
+        if bid:
+            picked[bid] = level
+            seen[key] = bid
+    return picked
+
+
 def _render_one_block(bid: str, text: str, path: list, region: str,
                       is_heading: bool, is_noise: bool, is_omission: bool,
                       anchored: list, req_numbers: dict[str, int] | None = None,
                       sub_anchors: list | None = None, block: dict | None = None,
-                      marker_state: dict[str, Any] | None = None) -> str:
+                      marker_state: dict[str, Any] | None = None,
+                      outline_level: int | None = None) -> str:
     cls = ["doc-block"]
     if is_heading:
         cls.append("heading")
@@ -489,7 +578,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         content = (f'<p class="text" data-block-id="{html.escape(bid)}">'
                    f'{text_html}{fallback}{sub_chips}</p>')
     return (
-        f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}" style="--depth:{depth}">'
+        f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}"'
+        f'{f" data-outline={outline_level}" if outline_level else ""} style="--depth:{depth}">'
         f'<div class="block-inner">'
         f'{omission_html}'
         f'{content}'
@@ -782,7 +872,7 @@ textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
 </div>
 <div class="read-progress"><i id="read-progress-fill"></i></div>
 <div class="reader-layout layout">
-  <nav class="outline" id="outline"><div class="outline-title">大纲</div></nav>
+  <nav class="outline" id="outline"><div class="outline-title">目录</div></nav>
   <article class="paper" id="paper">
     <div class="doc-content">
 {blocks_html}
@@ -843,7 +933,8 @@ function paintChips() {{
 /* --- 左侧大纲：树形可折叠（h1 可展开/收起，h2/h3 嵌套） --- */
 function buildOutline() {{
   const nav = document.getElementById("outline");
-  const headings = Array.from(document.querySelectorAll(".doc-block.heading"));
+  // 文件目录（Python 侧权威判定 data-outline：章=1/节=2；印刷目录条目与深层条款不入）
+  const headings = Array.from(document.querySelectorAll(".doc-block[data-outline]"));
   if (headings.length === 0) {{ nav.style.display = "none"; return; }}
 
   const frag = document.createDocumentFragment();
@@ -851,7 +942,7 @@ function buildOutline() {{
   let currentH1Item = null; // 当前 h1 的 nav-item（用于 h2 归属）
 
   headings.forEach(h => {{
-    const level = h.classList.contains("h1") ? 1 : h.classList.contains("h3") ? 3 : 2;
+    const level = parseInt(h.getAttribute("data-outline") || "2", 10);
     const p = h.querySelector(".text"); if (!p) return;
     const text = p.textContent.trim().slice(0, 40); if (!text) return;
 
