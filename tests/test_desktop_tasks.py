@@ -516,6 +516,43 @@ class DesktopTaskTests(unittest.TestCase):
         task.assert_called_once_with(out_dir, route="stub", template_path=template)
         self.assertEqual(json.loads(stdout.getvalue())["kind"], "requirements_analysis")
 
+    def test_functional_synthesis_cli_records_actual_degraded_route(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "ai_requirements.jsonl").write_text(
+                json.dumps({"ai_req_id": "AI-1", "title": "事件管理", "module": "事件"}) + "\n",
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), mock.patch.dict("os.environ", {"RATOMIZER_LLM_API_KEY": ""}):
+                rc = desktop_tasks.main([
+                    "functional-synthesis", "--out", str(out),
+                    "--llm-route", "openai_compatible",
+                ])
+            payload = json.loads(stdout.getvalue())
+            manifest = json.loads((out / desktop_tasks.RUN_MANIFEST).read_text(encoding="utf-8"))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["route"], "stub")
+        self.assertEqual(payload["route_requested"], "openai_compatible")
+        self.assertEqual(manifest["stages"]["functional-synthesis"]["route"], "stub")
+
+    def test_functional_synthesis_task_forwards_route(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with mock.patch.object(
+                desktop_tasks, "run_functional_synthesis",
+                return_value={"kind": "functional_synthesis", "written": ["functional_requirements.json"]},
+            ) as run:
+                payload = desktop_tasks.functional_synthesis_task(out, route="openai_compatible")
+
+        run.assert_called_once_with(out.resolve(), route="openai_compatible")
+        self.assertEqual(payload["kind"], "functional_synthesis")
+
     def test_ai_extract_task_wraps_run_ai_extract(self) -> None:
         import desktop_tasks
 
@@ -649,6 +686,30 @@ class DesktopTaskTests(unittest.TestCase):
 class ChainAndManifestTests(unittest.TestCase):
     """F1+F7：后端链编排 + run_manifest 显式状态账本。"""
 
+    def test_chain_manifest_records_actual_functional_synthesis_route(self) -> None:
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "ai_requirements.jsonl").write_text(
+                json.dumps({"ai_req_id": "AI-1", "title": "事件管理", "module": "事件"}) + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                desktop_tasks, "functional_synthesis_task",
+                return_value={
+                    "kind": "functional_synthesis", "route_requested": "openai_compatible",
+                    "route": "stub", "written": ["functional_requirements.json"],
+                },
+            ):
+                (out / "functional_requirements.json").write_text("{}", encoding="utf-8")
+                desktop_tasks.chain_task(
+                    out, stages=["functional-synthesis"], route="openai_compatible")
+
+            manifest = json.loads((out / desktop_tasks.RUN_MANIFEST).read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest["stages"]["functional-synthesis"]["route"], "stub")
+
     def test_chain_orders_dedupes_and_aggregates(self) -> None:
         calls: list[str] = []
         with tempfile.TemporaryDirectory() as td:
@@ -664,7 +725,8 @@ class ChainAndManifestTests(unittest.TestCase):
                                                                   "consistency": {"duplicate_groups": 1},
                                                                   "summary": {"big": 1}}))):
                 payload = desktop_tasks.chain_task(
-                    out, stages=["clarification-report", "ai-extract", "ai-extract"], route="stub")
+                    out, stages=["clarification-report", "ai-extract", "ai-extract"],
+                    route="openai_compatible")
 
             self.assertEqual(calls, ["ai-extract", "clarification-report"])   # 依赖序 + 去重
             self.assertEqual(payload["stages"], ["ai-extract", "clarification-report"])
@@ -706,7 +768,7 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertEqual(entry["status"], "ok")
             self.assertIn("started", entry)
             self.assertIn("finished", entry)
-            self.assertEqual(data["manifest_version"], 1)
+            self.assertEqual(data["manifest_version"], 2)
 
     def test_run_pipeline_task_reuses_completed_atomize_and_review_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -731,7 +793,13 @@ class ChainAndManifestTests(unittest.TestCase):
                 "review_states.jsonl",
             ]:
                 (out / name).write_text("{}\n", encoding="utf-8")
-            desktop_tasks.update_run_manifest(out, "atomize", "ok")
+            atomize_config = {
+                "chunk_chars": 3500,
+                "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
+                "domain_pack_dir": "",
+            }
+            desktop_tasks.update_run_manifest(
+                out, "atomize", "ok", input_path=input_path, config=atomize_config)
             desktop_tasks.update_run_manifest(out, "llm-review", "ok", route="stub")
 
             with (mock.patch("desktop_tasks.run_atomizer_pipeline") as atomize,
@@ -756,6 +824,7 @@ class ChainAndManifestTests(unittest.TestCase):
                 "ok",
                 route="stub",
                 outputs=["ai_requirements.jsonl", "merged_spec_requirements.json", "merged_spec.xlsx"],
+                config={"sample_ratio": None, "limit_sections": None},
             )
 
             with mock.patch.object(desktop_tasks, "ai_extract_task") as task:
@@ -765,19 +834,22 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertEqual(payload["results"]["ai-extract"]["resume_action"], "skipped")
             self.assertIn("ai-extract", payload["skipped_stages"])
 
-    def test_chain_reuses_legacy_outputs_without_run_manifest(self) -> None:
+    def test_chain_reruns_legacy_outputs_without_run_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             (out / "ai_requirements.jsonl").write_text("{}\n", encoding="utf-8")
             (out / "merged_spec_requirements.json").write_text('{"requirements":[]}', encoding="utf-8")
 
-            with mock.patch.object(desktop_tasks, "ai_extract_task") as task:
+            with mock.patch.object(
+                desktop_tasks, "ai_extract_task",
+                return_value={"written": ["ai_requirements.jsonl", "merged_spec_requirements.json"]},
+            ) as task:
                 payload = desktop_tasks.chain_task(out, stages=["ai-extract"], route="stub")
 
-            task.assert_not_called()
-            self.assertEqual(payload["results"]["ai-extract"]["resume_action"], "skipped")
+            task.assert_called_once()
+            self.assertNotIn("ai-extract", payload["skipped_stages"])
             manifest = json.loads((out / desktop_tasks.RUN_MANIFEST).read_text(encoding="utf-8"))
-            self.assertEqual(manifest["stages"]["ai-extract"]["last_action"], "skipped")
+            self.assertEqual(manifest["stages"]["ai-extract"]["last_action"], "ran")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -13,8 +14,9 @@ import ai_extract
 from assemble_spec import assemble
 from atomize import run_atomizer_pipeline
 from engineering_composer import compose_engineering_requirements, write_engineering_requirements
+from functional_synthesis import FUNCTIONAL_REQUIREMENTS, FUNCTIONAL_SYNTHESIS_VERSION, run_functional_synthesis
 from export_requirements import export_requirements
-from llm_pipeline import read_jsonl, run_review_pipeline
+from llm_pipeline import DEFAULT_PIPELINE_PATH, read_jsonl, run_review_pipeline
 from requirement_kb.cli import default_kb_paths, package_root
 from requirements_analysis import run_requirements_analysis
 from requirements_analysis_schema import normalize_ownership
@@ -70,11 +72,18 @@ def run_pipeline_task(
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    atomize_reused = stage_is_reusable(out_dir, "atomize", input_path=input_path)
+    atomize_config = {
+        "chunk_chars": chunk_chars,
+        "kb_paths": [str(path) for path in resolve_kb_paths(kb_paths)],
+        "domain_pack_dir": str(resolve_bundled_path(domain_pack_dir) or ""),
+    }
+    atomize_reused = stage_is_reusable(
+        out_dir, "atomize", input_path=input_path, config=atomize_config)
     if atomize_reused:
         manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
         manifest["resume_action"] = "skipped"
-        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"], action="skipped")
+        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
+                            action="skipped", input_path=input_path, config=atomize_config)
         emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "skipped", "percent": 100})
     else:
         update_run_manifest(out_dir, "atomize", "running")
@@ -90,7 +99,8 @@ def run_pipeline_task(
         except Exception as exc:
             update_run_manifest(out_dir, "atomize", "failed", error=str(exc))
             raise
-        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"], action="ran")
+        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
+                            action="ran", input_path=input_path, config=atomize_config)
         emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "ok", "percent": 100})
 
     if skip_review:
@@ -192,6 +202,11 @@ def assemble_task(
         "written": written,
         "summary": build_output_summary(out_dir),
     }
+
+
+def functional_synthesis_task(out_dir: Path, *, route: str = "stub") -> dict[str, Any]:
+    out_dir = out_dir.expanduser().resolve()
+    return run_functional_synthesis(out_dir, route=route)
 
 
 def compose_task(out_dir: Path) -> dict[str, Any]:
@@ -313,8 +328,22 @@ RUN_MANIFEST = "run_manifest.json"
 STAGES_DIR = "_stages"
 
 # 阶段名 == 子命令名（manifest 键与 CLI 一致，GUI 单步按钮与 chain 写同一本账）
-CHAIN_ORDER = ["ai-extract", "assemble", "requirements-analysis", "template-write",
+CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
                "clarification-report", "compose", "export-annotation-html"]
+STAGE_INPUTS: dict[str, list[str]] = {
+    "atomize": [],
+    "llm-review": ["atomic_requirements.jsonl", "llm_tasks.jsonl"],
+    "ai-extract": ["blocks.jsonl", "llm_review_results.jsonl", "review_states.jsonl"],
+    "assemble": ["table_items.jsonl", "atomic_requirements.jsonl", "llm_review_results.jsonl"],
+    "functional-synthesis": ["ai_requirements.jsonl", "ai_review_states.jsonl"],
+    "requirements-analysis": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "ai_review_states.jsonl", "clarification_answers.jsonl"],
+    "template-write": ["engineering_analysis.json"],
+    "clarification-report": ["ai_requirements.jsonl", "engineering_analysis.json", "consistency_report.json", "blocks.jsonl"],
+    "compose": ["atomic_requirements.jsonl", "table_items.jsonl"],
+    "export-annotation-html": ["blocks.jsonl", "ai_requirements.jsonl", "engineering_analysis.json", "ai_review_states.jsonl"],
+}
+
+
 STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
     "atomize": [
         "manifest.json",
@@ -328,6 +357,7 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
     ],
     "llm-review": ["llm_review_results.jsonl", "review_states.jsonl"],
     "ai-extract": ["ai_requirements.jsonl", "merged_spec_requirements.json"],
+    "functional-synthesis": [FUNCTIONAL_REQUIREMENTS],
     "assemble": [ASSEMBLED_JSON],
     "requirements-analysis": REQUIREMENTS_ANALYSIS_OUTPUTS,
     "template-write": ["软件需求列表-成文.xlsx", "template_writer_report.json"],
@@ -346,6 +376,8 @@ def stage_producer(stage: str) -> str:
         if stage == "requirements-analysis":
             from requirements_analysis import ANALYZE_PROMPT_VERSION
             return ANALYZE_PROMPT_VERSION
+        if stage == "functional-synthesis":
+            return FUNCTIONAL_SYNTHESIS_VERSION
     except Exception:  # pragma: no cover - 版本戳失败不阻断任务
         pass
     return {"assemble": "assemble_spec/v1", "template-write": "template_writer/v1",
@@ -400,6 +432,51 @@ def _outputs_exist(out_dir: Path, outputs: list[str]) -> bool:
     return True
 
 
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = None,
+                            template_path: Path | None = None,
+                            input_path: Path | None = None,
+                            config: dict[str, Any] | None = None) -> str:
+    root = Path(out_dir).expanduser().resolve()
+    inputs: list[dict[str, Any]] = []
+    for name in STAGE_INPUTS.get(stage, []):
+        path = root / name
+        inputs.append({
+            "path": name,
+            "sha256": _hash_file(path) if path.exists() and path.is_file() else None,
+        })
+    template = Path(template_path).expanduser().resolve() if template_path else None
+    payload = {
+        "stage": stage,
+        "producer": stage_producer(stage),
+        "route": route or "",
+        "inputs": inputs,
+        "template": ({"path": str(template), "sha256": _hash_file(template)}
+                     if template and template.exists() and template.is_file() else None),
+        "source_input": ({"path": str(Path(input_path).expanduser().resolve()),
+                          "sha256": _hash_file(Path(input_path).expanduser().resolve())}
+                         if input_path and Path(input_path).expanduser().resolve().is_file() else None),
+        "config": config or {},
+        "llm_pipeline": ({"path": str(DEFAULT_PIPELINE_PATH), "sha256": _hash_file(DEFAULT_PIPELINE_PATH)}
+                         if stage in {"llm-review", "ai-extract", "functional-synthesis", "assemble", "requirements-analysis"}
+                         and DEFAULT_PIPELINE_PATH.exists() else None),
+        "llm": {key: os.environ.get(key, "") for key in (
+            "RATOMIZER_LLM_BASE_URL", "RATOMIZER_LLM_MODEL", "RATOMIZER_LLM_MAX_TOKENS",
+            "RATOMIZER_LLM_TEMPERATURE", "RATOMIZER_AI_UNIT_MODE", "RATOMIZER_AI_SELFCHECK",
+            "RATOMIZER_AI_SELFCHECK_ROUNDS",
+        )},
+    }
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _stage_manifest_path(out_dir: Path, stage: str) -> Path:
     return Path(out_dir).expanduser().resolve() / STAGES_DIR / stage / "stage_manifest.json"
 
@@ -412,20 +489,31 @@ def _write_stage_manifest(out_dir: Path, stage: str, entry: dict[str, Any]) -> N
 
 def stage_is_reusable(out_dir: Path, stage: str, *,
                       route: str | None = None,
-                      input_path: Path | None = None) -> bool:
+                      input_path: Path | None = None,
+                      template_path: Path | None = None,
+                      config: dict[str, Any] | None = None) -> bool:
     data = read_run_manifest(out_dir)
     stages = data.get("stages") if isinstance(data.get("stages"), dict) else {}
     entry = stages.get(stage) if isinstance(stages.get(stage), dict) else None
     # 出处方向性守卫（评审修正 2026-07-09）：请求真 LLM 时，复用 stub/来历不明的产物有害
     # （空行为需求被标"已完成"）——必须有带 route 的台账条目佐证；请求 stub/确定性阶段时，
     # 复用任何现成产物无害（最坏反而复用了更好的），保留遗留目录续跑价值（文件存在即可）。
-    if route == "openai_compatible":
-        if not entry or entry.get("route") != route:
-            return False
+    if not entry:
+        return False
+    if route == "openai_compatible" and entry.get("route") != route:
+        return False
     if entry:
         if entry.get("status") != "ok":
             return False
         if entry.get("producer") and entry.get("producer") != stage_producer(stage):
+            return False
+        recorded_fingerprint = str(entry.get("input_fingerprint") or "")
+        recorded_route = str(entry.get("route") or "")
+        fingerprint_route = recorded_route if route == "stub" and recorded_route == "openai_compatible" else route
+        current_fingerprint = stage_input_fingerprint(
+            out_dir, stage, route=fingerprint_route, template_path=template_path,
+            input_path=input_path, config=config)
+        if recorded_fingerprint != current_fingerprint:
             return False
     if not _outputs_exist(out_dir, _stage_outputs(stage, entry)):
         return False
@@ -456,7 +544,11 @@ def skipped_stage_payload(out_dir: Path, stage: str) -> dict[str, Any]:
 def update_run_manifest(out_dir: Path, stage: str, status: str, *,
                         error: str | None = None, route: str | None = None,
                         outputs: list[str | Path] | None = None,
-                        action: str | None = None) -> None:
+                        action: str | None = None,
+                        input_fingerprint: str | None = None,
+                        template_path: Path | None = None,
+                        input_path: Path | None = None,
+                        config: dict[str, Any] | None = None) -> None:
     """run_manifest.json：out_dir 的显式状态账本（阶段/状态/版本/时间）。写失败不阻断任务。"""
     import datetime as _dt
     root = Path(out_dir).expanduser().resolve()
@@ -477,6 +569,10 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
             entry["outputs"] = _relative_outputs(root, outputs)
         elif status == "ok" and "outputs" not in entry and stage in STAGE_REQUIRED_OUTPUTS:
             entry["outputs"] = list(STAGE_REQUIRED_OUTPUTS[stage])
+        if status == "ok":
+            entry["input_fingerprint"] = input_fingerprint or stage_input_fingerprint(
+                root, stage, route=route, template_path=template_path,
+                input_path=input_path, config=config)
         if action:
             entry["last_action"] = action
         if error:
@@ -484,7 +580,7 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
         else:
             entry.pop("error", None)
     stages[stage] = entry
-    data.update({"manifest_version": 1, "stages": stages, "updated": now})
+    data.update({"manifest_version": 2, "stages": stages, "updated": now})
     try:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         _write_stage_manifest(root, stage, entry)
@@ -511,10 +607,21 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     if "template-write" in ordered and template_path is None:
         raise ValueError("template-write 阶段需要 --template（公司需求列表模板路径）")
 
+    ai_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
+    ai_dependent = {"functional-synthesis", "requirements-analysis", "template-write",
+                    "clarification-report"}
+    if route == "stub" and ai_dependent.intersection(ordered) and not stage_is_reusable(
+            out_dir, "ai-extract", route="stub", config=ai_config):
+        raise ValueError(
+            "当前链包含功能重组/需求分析等 AI 依赖阶段，但没有可复用的 AI 抽取产物；"
+            "请使用 openai_compatible 完成 AI 抽取后再继续。"
+        )
+
     runners: dict[str, Any] = {
         "ai-extract": lambda: ai_extract_task(out_dir, route=route,
                                               limit_sections=limit_sections,
                                               sample_ratio=sample_ratio),
+        "functional-synthesis": lambda: functional_synthesis_task(out_dir, route=route),
         "assemble": lambda: assemble_task(out_dir, enrich_route=route if route != "stub" else None),
         "requirements-analysis": lambda: requirements_analysis_task(
             out_dir, route=route, template_path=template_path),
@@ -527,16 +634,25 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     results: dict[str, Any] = {}
     skipped_stages: list[str] = []
     payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
-    llm_stages = {"ai-extract", "assemble", "requirements-analysis"}
+    llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis"}
     for index, stage in enumerate(ordered, start=1):
         emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
                        "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
         stage_route = route if stage in llm_stages else None
-        if stage_is_reusable(out_dir, stage, route=stage_route):
+        stage_template = template_path if stage in {"requirements-analysis", "template-write"} else None
+        stage_config = ({"sample_ratio": sample_ratio, "limit_sections": limit_sections}
+                        if stage == "ai-extract" else None)
+        if stage_is_reusable(out_dir, stage, route=stage_route, template_path=stage_template,
+                             config=stage_config):
             stage_payload = skipped_stage_payload(out_dir, stage)
             skipped_stages.append(stage)
-            update_run_manifest(out_dir, stage, "ok", route=stage_route,
-                                outputs=stage_payload.get("written") or _stage_outputs(stage), action="skipped")
+            existing_stages = read_run_manifest(out_dir).get("stages", {})
+            existing_entry = existing_stages.get(stage, {}) if isinstance(existing_stages, dict) else {}
+            preserved_route = str(existing_entry.get("route") or stage_route or "") or None
+            update_run_manifest(out_dir, stage, "ok", route=preserved_route,
+                                outputs=stage_payload.get("written") or _stage_outputs(stage), action="skipped",
+                                input_fingerprint=str(existing_entry.get("input_fingerprint") or "") or None,
+                                template_path=stage_template, config=stage_config)
             emit_progress({"stage": "chain", "step": stage, "status": "skipped",
                            "completed": index, "total": len(ordered),
                            "percent": int(index * 100 / len(ordered))})
@@ -548,8 +664,11 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 update_run_manifest(out_dir, stage, "failed", error=str(exc))
                 raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc
             stage_outputs = stage_payload.get("written") if isinstance(stage_payload, dict) else None
-            update_run_manifest(out_dir, stage, "ok", route=stage_route,
-                                outputs=stage_outputs or _stage_outputs(stage), action="ran")
+            actual_route = (str(stage_payload.get("route") or "").strip()
+                            if isinstance(stage_payload, dict) else "") or stage_route
+            update_run_manifest(out_dir, stage, "ok", route=actual_route,
+                                outputs=stage_outputs or _stage_outputs(stage), action="ran",
+                                template_path=stage_template, config=stage_config)
         stage_payload = dict(stage_payload or {})
         stage_payload.pop("summary", None)   # 各阶段的 summary 体积大且重复，链尾统一给一份
         results[stage] = stage_payload
@@ -702,6 +821,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     assemble_parser.add_argument("--enrich-route", default="")
     assemble_parser.add_argument("--blue-book-index", type=Path, default=None)
 
+    synthesis_parser = subparsers.add_parser("functional-synthesis")
+    synthesis_parser.add_argument("--out", type=Path, required=True)
+    synthesis_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="stub")
+
     compose_parser = subparsers.add_parser("compose")
     compose_parser.add_argument("--out", type=Path, required=True)
 
@@ -751,6 +874,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     import_parser.add_argument("--out", type=Path, required=True)
     import_parser.add_argument("--file", type=Path, required=True, help="HTML 导出的裁决 JSON")
     return parser.parse_args(argv)
+
+
+def _manifest_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    command = str(getattr(args, "command", "") or "")
+    context: dict[str, Any] = {}
+    if command in {"llm-review", "ai-extract", "requirements-analysis"}:
+        context["route"] = getattr(args, "llm_route", None)
+    elif command == "assemble":
+        context["route"] = getattr(args, "enrich_route", None) or None
+    if command in {"requirements-analysis", "template-write"}:
+        context["template_path"] = getattr(args, "template", None)
+    if command == "ai-extract":
+        context["config"] = {
+            "sample_ratio": getattr(args, "sample_ratio", 0.0) or None,
+            "limit_sections": getattr(args, "limit_sections", 0) or None,
+        }
+    return context
 
 
 def setup_run_logging(out_dir: Path | None) -> None:
@@ -823,6 +963,8 @@ def main(argv: list[str] | None = None) -> int:
                 enrich_route=args.enrich_route or None,
                 blue_book_index_path=args.blue_book_index,
             )
+        elif args.command == "functional-synthesis":
+            payload = functional_synthesis_task(args.out, route=args.llm_route)
         elif args.command == "compose":
             payload = compose_task(args.out)
         elif args.command == "adjudication-bank":
@@ -857,13 +999,18 @@ def main(argv: list[str] | None = None) -> int:
         logging.getLogger("requirement_atomizer").exception("desktop task 失败：%s", args.command)
         # 单步命令也记账（chain 内部已逐阶段记，不重复）
         if args.command in CHAIN_ORDER and getattr(args, "out", None):
-            update_run_manifest(args.out, args.command, "failed", error=str(exc))
+            update_run_manifest(args.out, args.command, "failed", error=str(exc),
+                                **_manifest_context_from_args(args))
         print(json.dumps({"error": str(exc)}, ensure_ascii=True), file=sys.stderr)
         return 1
     finally:
         teardown_run_logging()
     if args.command in CHAIN_ORDER and getattr(args, "out", None):
-        update_run_manifest(args.out, args.command, "ok")
+        manifest_context = _manifest_context_from_args(args)
+        actual_route = str(payload.get("route") or "").strip() if isinstance(payload, dict) else ""
+        if actual_route:
+            manifest_context["route"] = actual_route
+        update_run_manifest(args.out, args.command, "ok", **manifest_context)
     print_json_payload(payload)
     return 0
 

@@ -1,0 +1,626 @@
+{
+  "schema_version": 1,
+  "source": "test18 historical paid AI extraction sample",
+  "rows": [
+    {
+      "title": "PM1点对多点协议配置文件要求",
+      "description": "PM1协议配置文件用于A、B、C类GdM与集中器之间的点对多点通信。通信物理层允许使用169 MHz频段无线M-Bus（模式N），协议层支持DLMS/Cosem（适用部分需符合本规范）。连接必须由GdM发起，无持续连接，通信建立后始终由GdM主动发起（push方式）。",
+      "module": "通信协议",
+      "source_section": "4.5.1 PM1 Point-Multipoint Profile",
+      "source_quote": "PM1 profile transmission media and protocols can be used for the communication between class A, B, C GdMs and the Concentrators. The PM1 profile allows the use of the following physical means of communication: 169 MHz band network with transmissions encoded in a specified subset of UNI CEI EN 13757-4 (wireless M-Bus), mode N, as detailed in UNI/TS 11291-11-4. The following protocols belong to the PM1 profile: CEI EN 62056-21 (DLMS/Cosem), for the applicable parts and compliant with what defined in this technical specification. PM1 profile protocols refer to communication methods in which the connection is originated by the GdM. There are no methods in which the connection between GdM and Concentrator is maintained over time, in addition to that necessary for the communication. Communication, once the connection is established, is always initiated spontaneously from the GdM (\"push\" method).",
+      "source_block_ids": [
+        "BLK-000204",
+        "BLK-000205",
+        "BLK-000206",
+        "BLK-000207",
+        "BLK-000208",
+        "BLK-000209",
+        "BLK-000210",
+        "BLK-000211",
+        "BLK-000212",
+        "BLK-000214",
+        "BLK-000215",
+        "BLK-000216",
+        "BLK-000217"
+      ],
+      "type": "functional",
+      "priority": "P0",
+      "labels": [
+        "通信协议",
+        "PM1",
+        "GdM",
+        "集中器"
+      ],
+      "acceptance_criteria": [
+        "GdM与集中器通信时，GdM必须作为连接发起方",
+        "GdM与集中器之间不维持持久连接，仅在通信需要时建立临时连接",
+        "通信一旦建立，所有消息必须由GdM主动发送（push模式）",
+        "物理层必须使用169 MHz无线M-Bus模式N，符合UNI/TS 11291-11-4",
+        "协议栈至少支持DLMS/Cosem（适用部分）"
+      ],
+      "dev_guidance": [
+        "GdM通信模块实现169 MHz无线M-Bus模式N的物理层驱动",
+        "实现DLMS/Cosem协议栈，并确保仅使用本规范允许的子集",
+        "连接管理逻辑：GdM只作为连接发起方，通信完成后立即断开；不实现服务器端监听",
+        "所有应用层消息由GdM主动推送，不允许集中器主动拉取"
+      ],
+      "threshold_table": null,
+      "ai_req_id": "AIR-ee0ae469c177"
+    },
+    {
+      "title": "PM2点对多点协议配置文件要求",
+      "description": "PM2协议配置文件用于GdM与移动集中器（WBD）之间的点对多点通信，支持步行/驾车（walk-by/drive-by）方式。所有GdM必须至少实现一个PM2协议。通信物理层允许使用868 MHz频段无线M-Bus（模式R2/T1/T2/C1/C2）、169 MHz频段无线M-Bus（模式N）或868 MHz频段LoRaWAN/LoRa-P2P。PM2支持基于时间窗的通信策略，且通信可由WBD或GdM发起。",
+      "module": "通信协议",
+      "source_section": "4.5.2 PM2 Point-Multipoint Profile",
+      "source_quote": "PM2 type protocol profiles allow point-to-multipoint communication between GdMs and the mobile concentrators (WBD) used for communication with the GdMs with the method \"walk-by\" o \"drive-by\" o similari The GdM of any type and class to support the \"walk-by\" or \"drive-by\" method, must implement at least one of the PM2 profile protocols. ... The PM2 profile supports time-window-based communication strategies. The PM2 profile uses communication strategies that can be originated from the WBD or from the GdM. The PM2 profile allows the use of the following physical means of communication: 868 MHz band networks with transmissions encoded in a specified subset of UNI CEI EN 13757-4 (wireless M-Bus), mode R2 or T1/T2 or C1/C2; Network on the 169 MHz band with transmissions coded in a specified subset of UNI CEI EN 13757-4 (wireless M-Bus), mode N, as detailed in this technical specification Networks on 868 MHz band and LoRaWANTM or LoRa-P2P protocol, for the Mobile communication on LoRa technology networks",
+      "source_block_ids": [
+        "BLK-000204",
+        "BLK-000205",
+        "BLK-000206",
+        "BLK-000207",
+        "BLK-000208",
+        "BLK-000209",
+        "BLK-000210",
+        "BLK-000211",
+        "BLK-000212",
+        "BLK-000214",
+        "BLK-000215",
+        "BLK-000216",
+        "BLK-000217"
+      ],
+      "type": "functional",
+      "priority": "P0",
+      "labels": [
+        "通信协议",
+        "PM2",
+        "GdM",
+        "WBD",
+        "walk-by",
+        "drive-by"
+      ],
+      "acceptance_criteria": [
+        "所有支持步行/驾车方式的GdM必须至少实现一个PM2协议",
+        "GdM与WBD通信时，物理层可使用868 MHz无线M-Bus模式R2/T1/T2/C1/C2",
+        "GdM与WBD通信时，物理层可使用169 MHz无线M-Bus模式N",
+        "GdM与WBD通信时，物理层可使用868 MHz LoRaWAN或LoRa-P2P",
+        "通信策略支持基于时间窗的方式",
+        "通信发起方可以是WBD或GdM"
+      ],
+      "dev_guidance": [
+        "GdM实现至少一种PM2协议（如868 MHz无线M-Bus或LoRa），确保满足walk-by/drive-by场景",
+        "实现物理层驱动：868 MHz无线M-Bus（模式R2/T1/T2/C1/C2）、169 MHz无线M-Bus（模式N）、LoRaWAN/LoRa-P2P（至少选其一）",
+        "实现基于时间窗的通信调度逻辑，允许WBD或GdM按时间窗发起通信",
+        "允许通信双向发起：GdM端支持作为客户端或服务器端（取决于协议配置）"
+      ],
+      "threshold_table": null,
+      "ai_req_id": "AIR-e395f118c4ae"
+    },
+    {
+      "title": "计量事件日志（REV_M）",
+      "description": "至少GdM_AFD1须配备计量事件日志REV_M，记录所有对计量有意义的事件。每条事件记录包括：发生时间、事件代码、事件绝对序号（自初始化或上次全量复位开始）、至少一个操作者身份代码（区分自发或被引发），以及辅助信息（如旧值、软件版本等）。日志容量至少180个事件。当容量达到90%时生成诊断报告；容量满前两个事件时，须：生成另一诊断报告、生成缓冲区满事件、存储新事件并删除最近事件、禁止修改产生计量事件的参数、禁止更新法律相关软件。须记录附录C中的事件（如日志清除、满、参数编程、超范围、故障、数据库损坏、软件更新、复位、低电量、篡改、安全阈值超限、安全凭证更新、供应点标识变更、模块更换、逻辑密封移除/恢复）。对于可能持续或频繁发生的事件（如篡改、温度超限、安全阈值超限、制造商定义的类似事件），采用避免饱和的策略（如每天仅记录首次出现）。",
+      "module": "事件记录",
+      "source_section": "5.3.2.3 Metrological Events Log",
+      "source_quote": "At least the GdM_AFD1 must be equipped with an \"event log\" (REV_M) in which it must every significant event for metrology must be stored and predicted from the metrological approval of the instrument, as specified below. For each event, where this is significant, they must be identified separately. the starting moment and the ending moment. For each event, the following must be recorded: The time reference of occurrence; The event code; The progressive number of the event (absolute, starting from the initialization or since the last full reset); The identification code of at least the profile to which the Authorized Operator belongs generated the event, distinguishing spontaneous events from caused ones; auxiliary information for event identification (example: the old value at (e.g., a parameter update, updated software version, etc.). The GdM must be able to record at least 180 of the aforementioned events. Once the capacity reaches 90% of the maximum, the register must generate a specific diagnostic report. Two events before the event log reaches its maximum capacity, the GdM must: Generate an appropriate diagnostic report, separate from the previous one; Generate a buffer full event; Store each new event, always deleting the one immediately after recent preserving buffer full event; Prevent the configuration of parameters whose modification generates metrological events\" (example, changing the date and time); Prevent legally relevant software from being updated. At least the following events must be recorded if detected (see Appendix C): Clearing (resetting) the event log; event log full; programming with recording of metrological parameters measurements of metrologically relevant quantities outside the operating range metrological device failure and/or software error; corrupted database; legally relevant software update process events; partial and/or total reset of the database; low battery; access to electronic parts or tampering attempts when detected; exceeding a threshold of security breach attempts; updating the administrator's security credentials; changing the delivery point identification code (PdC) when this information is supported; removal/replacement of a GdM functional module removal and restoration of the logical metrological seal (if implemented) In order to avoid saturation of the event log, the following events, related to conditions which may persist or recur with close occurrence, must be recorded with criteria that avoid saturation of the register itself (for example by recording only the first occurrence in a day): tamper detection events; ambient temperature outside the permitted limits water temperature outside the permitted limits exceeding a threshold of security breach attempts any events defined by the Manufacturer that have a repetition logic comparable.",
+      "source_block_ids": [
+        "BLK-000252",
+        "BLK-000253",
+        "BLK-000254",
+        "BLK-000255",
+        "BLK-000256",
+        "BLK-000257",
+        "BLK-000258",
+        "BLK-000259",
+        "BLK-000260",
+        "BLK-000261",
+        "BLK-000262",
+        "BLK-000263",
+        "BLK-000264"
+      ],
+      "type": "functional",
+      "priority": "P1",
+      "labels": [
+        "事件记录",
+        "计量事件",
+        "事件日志",
+        "容量管理",
+        "篡改检测",
+        "软件升级保护"
+      ],
+      "acceptance_criteria": [
+        "连续产生180个计量事件后，第1个事件仍可读取（容量至少180）",
+        "在日志满前2个事件时，GdM输出另一诊断报告，生成缓冲区满事件，存储新事件并删除最旧事件（保留缓冲区满事件）",
+        "在日志满前2个事件时，无法配置会触发计量事件的参数（如日期时间），无法更新法律相关软件",
+        "附录C中列举的事件（如日志清除、满、参数编程、超范围等）均被记录",
+        "对于篡改、温度超限、安全阈值超限等重复事件，每天仅记录首次出现（或满足其他避免饱和策略）"
+      ],
+      "dev_guidance": [
+        "实现计量事件日志存储区，容量180条，每条包含时间、编码、序号、操作者身份、辅助信息字段",
+        "实现容量阈值：90%时触发诊断报告生成",
+        "实现容量满前2个事件时：触发第二次诊断报告、生成‘缓冲区满’事件、采用环形覆盖策略（新事件覆盖最旧，但保留‘缓冲区满’事件不被覆盖）",
+        "在日志满前2个事件时，禁止修改会触发计量事件的参数（如日期时间修改）、禁止启动法律相关软件更新流程",
+        "实现附录C事件列表的检测与记录实现，包括篡改、温度、安全阈值等事件",
+        "对持续/重复事件，实现防饱和机制：如每天仅存储首次出现，或基于制造商逻辑限制记录频次"
+      ],
+      "threshold_table": null,
+      "ai_req_id": "AIR-3951515976df"
+    },
+    {
+      "title": "通用事件日志（REV）",
+      "description": "GdM须配备不同于计量日志的通用事件日志REV，记录所有重要事件（包括计量事件）。每条记录包含：时间、事件代码、绝对序号、操作者身份（区分自发/引发）、事件时刻的净总量(Tot)，以及辅助信息（如泄漏检测中的当日Qi_min、参数旧值、软件版本等）。日志容量至少800个事件。管理逻辑：满容量时新事件覆盖最旧事件。为避免过早删除已发生事件，对可能持续或频繁发生的事件（如溢流条件检测、制造商定义的类似事件）采用避免早期删除的记录策略。",
+      "module": "事件记录",
+      "source_section": "5.3.2.4 Event Log The",
+      "source_quote": "The GdM must be equipped with an \"event log\" different from the \"metrological\" one (REV) in which every significant event must be stored, including those identified as metrological events. For each event, where this is significant, they must be identified separately. the starting moment and the ending moment. For each event, at least the following must be recorded: The time reference of occurrence; The event code; The progressive number of the event (absolute, starting from the initialization or since the last full reset); The identification code of at least the profile to which the Authorized Operator belongs generated the event, distinguishing spontaneous events from caused ones; net total (Tot) at the time of the event. auxiliary information for event identification (example: Qi_min of the day in the leak detection event, the old value after an update of parameter, updated software version, etc.). The GdM must be able to record at least 800 events. The events that must be registered are indicated in Appendix C. The event log must be managed with the logic that once the maximum capacity of the log, a new event must overwrite the oldest one. In order to avoid the early cancellation of events that have already occurred, the events, relating to conditions that may persist or recur with close occurrence, must be registered with criteria that avoid the early cancellation of the oldest event. Among these events include: overflow condition detection events; any events defined by the Manufacturer that have a repetition logic comparable.",
+      "source_block_ids": [
+        "BLK-000252",
+        "BLK-000253",
+        "BLK-000254",
+        "BLK-000255",
+        "BLK-000256",
+        "BLK-000257",
+        "BLK-000258",
+        "BLK-000259",
+        "BLK-000260",
+        "BLK-000261",
+        "BLK-000262",
+        "BLK-000263",
+        "BLK-000264"
+      ],
+      "type": "functional",
+      "priority": "P1",
+      "labels": [
+        "事件记录",
+        "通用事件日志",
+        "容量管理",
+        "环形缓冲区"
+      ],
+      "acceptance_criteria": [
+        "事件记录包含净总量(Tot)字段",
+        "对于溢流检测等重复性事件，不会由于频繁出现导致早期取消最旧事件（即采用防饱和策略，如限制记录频次或保留重要事件）"
+      ],
+      "dev_guidance": [
+        "实现通用事件日志存储区，容量800条，每条包含时间、编码、序号、操作者身份、Tot、辅助信息字段",
+        "实现环形覆盖逻辑：满容量时新事件写入覆盖最旧事件",
+        "实现防早期取消机制：对溢流等重复事件，限制记录频次（如每小时/每天仅记一次）或设置优先级确保关键事件不被过早覆盖",
+        "与计量事件日志分开存储，但可包含计量事件"
+      ],
+      "threshold_table": null,
+      "ai_req_id": "AIR-b6744a02ac7e"
+    },
+    {
+      "title": "通用事件日志记录净总量",
+      "description": "在通用事件日志（REV）中，每条事件记录必须包含事件发生时的净总量（Tot），用于辅助分析事件时的水表读数。",
+      "module": "事件记录",
+      "source_section": "5.3.2.4 Event Log The",
+      "source_quote": "For each event, at least the following must be recorded: … net total (Tot) at the time of the event.",
+      "source_block_ids": [
+        "BLK-000252",
+        "BLK-000253",
+        "BLK-000254",
+        "BLK-000255",
+        "BLK-000256",
+        "BLK-000257",
+        "BLK-000258",
+        "BLK-000259",
+        "BLK-000260",
+        "BLK-000261",
+        "BLK-000262",
+        "BLK-000263",
+        "BLK-000264"
+      ],
+      "type": "constraint",
+      "priority": "P1",
+      "labels": [
+        "事件记录",
+        "通用事件日志",
+        "计量数据"
+      ],
+      "acceptance_criteria": [
+        "触发任意事件（如通信故障、参数修改），事件记录中包含事件发生时刻的净总量值。",
+        "净总量值与记录时间点的数据一致。"
+      ],
+      "dev_guidance": [
+        "在事件记录结构中增加净总量字段，事件产生时从当前累计器中读取并填充。",
+        "确保读时刻与事件时间戳同步。"
+      ],
+      "threshold_table": null,
+      "ai_req_id": "AIR-1fa0621376ee"
+    },
+    {
+      "title": "计量事件日志（REV_M）容量告警及满前处理机制",
+      "description": "水表（GdM_AFD1及以上）需配备计量事件日志（REV_M）。当日志容量达到最大值的90%时，必须生成一个特定的诊断报告。在日志即将满（倒数第二个事件）时，GdM必须执行以下操作：生成一个新的诊断报告（与前一个不同）；生成一个缓冲区满事件；存储每个新事件时删除最旧事件并保留缓冲区满事件；阻止修改生成计量事件的参数配置；阻止更新法律相关软件。",
+      "module": "事件记录",
+      "source_section": "5.3.2.3 Metrological Events Log",
+      "source_quote": "Once the capacity reaches 90% of the maximum, the register must generate a specific diagnostic report. Two events before the event log reaches its maximum capacity, the GdM must: Generate an appropriate diagnostic report, separate from the previous one; Generate a buffer full event; Store each new event, always deleting the one immediately after recent preserving buffer full event; Prevent the configuration of parameters whose modification generates metrological events; Prevent legally relevant software from being updated.",
+      "source_block_ids": [
+        "BLK-000252",
+        "BLK-000253",
+        "BLK-000254",
+        "BLK-000255",
+        "BLK-000256",
+        "BLK-000257",
+        "BLK-000258",
+        "BLK-000259",
+        "BLK-000260",
+        "BLK-000261",
+        "BLK-000262",
+        "BLK-000263",
+        "BLK-000264"
+      ],
+      "type": "functional",
+      "priority": "P1",
+      "labels": [
+        "事件记录",
+        "计量事件日志",
+        "容量管理",
+        "诊断"
+      ],
+      "acceptance_criteria": [
+        "当计量事件日志记录数达到最大容量的90%时，GdM生成诊断报告",
+        "在日志即将满（剩余2个事件空间）时，GdM生成新的诊断报告和缓冲区满事件",
+        "日志满时新事件覆盖最旧事件且保留缓冲区满事件",
+        "日志满时无法修改生成计量事件的参数",
+        "日志满时无法更新法律相关软件"
+      ],
+      "dev_guidance": [],
+      "threshold_table": null,
+      "ai_req_id": "AIR-2fa24b25867e"
+    },
+    {
+      "title": "计量事件日志（REV_M）必须记录的事件列表",
+      "description": "水表（GdM）在检测到以下事件时必须记录到计量事件日志（REV_M）中：清除（复位）事件日志；事件日志满；编程(记录计量参数)；计量相关量超出工作范围；计量设备故障和/或软件错误；数据库损坏；法律相关软件更新过程事件；数据库部分和/或全部复位；低电量；访问电子部件或篡改尝试（当检测到时）；超出安全尝试阈值；更新管理员安全凭证；更改交付点识别码（PdC）（如果支持）；移除/更换GdM功能模块；移除和恢复逻辑计量密封（如果实现）。",
+      "module": "事件记录",
+      "source_section": "5.3.2.3 Metrological Events Log",
+      "source_quote": "At least the following events must be recorded if detected (see Appendix C): Clearing (resetting) the event log; event log full; programming with recording of metrological parameters measurements of metrologically relevant quantities outside the operating range metrological device failure and/or software error; corrupted database; legally relevant software update process events; partial and/or total reset of the database; low battery; access to electronic parts or tampering attempts when detected; exceeding a threshold of security breach attempts; updating the administrator's security credentials; changing the delivery point identification code (PdC)34) when this information is supported; removal/replacement of a GdM functional module removal and restoration of the logical metrological seal (if implemented)",
+      "source_block_ids": [
+        "BLK-000252",
+        "BLK-000253",
+        "BLK-000254",
+        "BLK-000255",
+        "BLK-000256",
+        "BLK-000257",
+        "BLK-000258",
+        "BLK-000259",
+        "BLK-000260",
+        "BLK-000261",
+        "BLK-000262",
+        "BLK-000263",
+        "BLK-000264"
+      ],
+      "type": "functional",
+      "priority": "P0",
+      "labels": [
+        "事件记录",
+        "计量事件日志",
+        "事件列表"
+      ],
+      "acceptance_criteria": [
+        "上述每个事件发生时，计量事件日志中均生成对应记录",
+        "记录包含事件代码、时间戳、序列号、操作者身份等信息"
+      ],
+      "dev_guidance": [],
+      "threshold_table": null,
+      "ai_req_id": "AIR-49faeb877290"
+    },
+    {
+      "title": "不可更换电池GdM的电池寿命要求",
+      "description": "对于不可更换电池供电的GdM，电池预期寿命应保证完整功能（包括通信）至少等于制造商声明的运行使用寿命，在附录A定义的典型参考模式下运行。",
+      "module": "环境可靠性",
+      "source_section": "5.12 Diet",
+      "source_quote": "For GdMs powered by non-replaceable battery, the expected battery life shall be such as to guarantee the complete functionality of the GdM (including communications) for a time at least equal to the operational useful life declared by the module manufacturer counter, when used in the typical reference modes defined in Appendix A.",
+      "source_block_ids": [
+        "BLK-000388",
+        "BLK-000389",
+        "BLK-000390",
+        "BLK-000391",
+        "BLK-000392"
+      ],
+      "type": "non_functional",
+      "priority": "P1",
+      "labels": [
+        "环境可靠性",
+        "电池",
+        "寿命"
+      ],
+      "acceptance_criteria": [
+        "在附录A典型参考模式下测试，电池寿命测量结果不小于制造商声明的运行使用寿命"
+      ],
+      "dev_guidance": [
+        "选择电池时确保容量满足完整功能需求",
+        "根据附录A参考模式计算功耗，验证电池寿命"
+      ],
+      "threshold_table": null,
+      "ai_req_id": "AIR-56ccdfac8886"
+    },
+    {
+      "title": "可更换电池GdM的电池寿命要求",
+      "description": "对于可更换电池供电的GdM，电池预期寿命应保证至少基本测量和记录功能至少一年超过仪表运行寿命，在附录A典型参考模式下使用。",
+      "module": "环境可靠性",
+      "source_section": "5.12 Diet",
+      "source_quote": "For GdMs powered by replaceable battery, the expected battery life shall be such to guarantee at least the essential measurement and recording functions for at least one year88) beyond the operational life of the meter, if used in typical reference modes defined in Appendix A.",
+      "source_block_ids": [
+        "BLK-000388",
+        "BLK-000389",
+        "BLK-000390",
+        "BLK-000391",
+        "BLK-000392"
+      ],
+      "type": "non_functional",
+      "priority": "P1",
+      "labels": [
+        "环境可靠性",
+        "电池",
+        "寿命"
+      ],
+      "acceptance_criteria": [
+        "在附录A典型参考模式下测试，电池寿命测量结果大于等于仪表运行寿命+1年"
+      ],
+      "dev_guidance": [
+        "设计可更换电池供电方案，确保基本测量和记录功能在仪表寿命后额外维持至少1年"
+      ],
+      "threshold_table": null,
+      "ai_req_id": "AIR-396cd39da293"
+    },
+    {
+      "title": "账单周期起始与持续时间规则",
+      "description": "结算周期必须从每月1日开始，持续时间选自12个月的除数（允许的持续时间为30天？原文写(30)），频率始终从1月开始。可通过可配置日期(DSW)提前结束当前周期并开启新周期。GdM在周期关闭时必须记录5.3.4.6节的信息。支持配置DSW时由GdM独立截断供应（若支持）。",
+      "module": "结算",
+      "source_section": "5.3.2.2 Billing Period",
+      "source_quote": "The billing period must always start on the 1st of the month, depending on the frequency and duration set. Durations derived from the divisors of the 12 months of the year are permitted (30), and the frequency always begins in January. Closing a billing period must also be possible on occasion of reaching a configurable date (DSW - switch date), expressed indicating the year, the month, the day and the time which always coincides with the start time of the day. It determines the (early) closure of the current billing period and the opening of a new billing period. The GdM, on the occasion of the closure of a billing period, must provide for the recording of the information indicated in paragraph 5.3.4.6. It must be possible, through appropriate configuration, that at the DSW, the GdM can independently take care of the interception of the supply when supported.",
+      "source_block_ids": [
+        "BLK-000252",
+        "BLK-000253",
+        "BLK-000254",
+        "BLK-000255",
+        "BLK-000256",
+        "BLK-000257",
+        "BLK-000258",
+        "BLK-000259",
+        "BLK-000260",
+        "BLK-000261",
+        "BLK-000262",
+        "BLK-000263",
+        "BLK-000264"
+      ],
+      "type": "business_rule",
+      "priority": "P0",
+      "labels": [
+        "结算",
+        "结算周期",
+        "配置日期",
+        "业务规则"
+      ],
+      "acceptance_criteria": [
+        "设置DSW日期后，到达该日期时当前周期立即关闭，新周期开启，且关闭时刻记录的信息符合5.3.4.6要求",
+        "若配置允许，DSW触发时GdM可自动截断供应（需检验是否支持该功能）"
+      ],
+      "dev_guidance": [
+        "实现结算周期模块，支持持续时间参数为12的除数（1,2,3,4,6,12），频率固定从1月开始",
+        "实现DSW日期配置，存储年/月/日/时（时=日起始），到达该时刻触发周期关闭与开启",
+        "在周期关闭事件中调用记录服务，写入5.3.4.6规定的信息",
+        "提供配置开关使能DSW时自动截断供应（当硬件支持时）"
+      ],
+      "threshold_table": null,
+      "ai_req_id": "AIR-7d9d9909bd22"
+    },
+    {
+      "title": "结算周期关闭归档（至少20个周期）",
+      "description": "水表必须在每个结算周期关闭时记录必要数据到Rpf或Rpf_A寄存器，以便中心重建用户消费。记录信息包括：时间参考（日期和时间）、当前总表Tot值、Totneg值、Tot_FTp（仅B/C类）、Tot_all（仅B/C类）、Tot_F1/F2/F3值（仅B/C类）、DiagP诊断报告值、日超额总量Tot_vge。必须至少存储20个结算周期关闭记录。",
+      "module": "结算",
+      "source_section": "5.3.4.6 Billing Period Closure Archive",
+      "source_quote": "5.3.4.6 Billing Period Closure Archive\nThe GdM must be able to provide the necessary data so that the Centre can correctly reconstruct, for billing purposes, the User's consumption. To this end, the GdM must record in a separate document at each closing of the billing period. appropriate register (Rpf or Rpf_A) the following information: the time reference (date and time) relating to the closing of the period the current value of Tot the current value of Totneg the current value of Tot_FTp (for class B and C devices only) the current value of Tot_all (for class B and C devices only) The current values of Tot_F1, Tot_F2, Tot_F3 (only for class B and C devices) The current value of the DiagP register which reports all diagnostic reports detected in the period The current value of the daily excess volume totalizer (Tot_vge) The GdM must provide for the recording of at least 20 billing period closures47).",
+      "source_block_ids": [
+        "BLK-000280",
+        "BLK-000281",
+        "BLK-000282",
+        "BLK-000284",
+        "BLK-000285",
+        "BLK-000286",
+        "BLK-000287",
+        "BLK-000288"
+      ],
+      "type": "functional",
+      "priority": "P0",
+      "labels": [
+        "结算",
+        "数据存储",
+        "结算周期"
+      ],
+      "acceptance_criteria": [
+        "验证每个结算周期关闭时，Rpf或Rpf_A寄存器记录时间戳、Tot、Totneg、Tot_FTp（B/C类）、Tot_all（B/C类）、Tot_F1/F2/F3（B/C类）、DiagP、Tot_vge",
+        "验证至少可存储20个结算周期关闭记录",
+        "验证记录可通过中心读取用于结算"
+      ],
+      "dev_guidance": [
+        "实现Rpf/Rpf_A寄存器，含所有必要字段：时间戳、Tot、Totneg、Tot_FTp（B/C）、Tot_all（B/C）、Tot_F1/F2/F3（B/C）、DiagP、Tot_vge",
+        "实现结算周期关闭事件触发记录到Rpf/Rpf_A",
+        "保证存储容量至少20条记录，写满后处理方式由产品配置确定",
+        "提供通过通信信道读取Rpf/Rpf_A的接口"
+      ],
+      "threshold_table": null,
+      "ai_req_id": "AIR-f079fb261165"
+    },
+    {
+      "title": "结算周期配置",
+      "description": "水表须支持通过数据对象Sot配置结算周期，该对象类型为U8，Administrator、Meter Reading Operator of the、Operator of the、Communication、User等角色具有读取权限(R)，Administrator、Operator of the Meter Reading等角色具有写入权限(W)或(RV)（根据角色差异）。可配置的有效结算周期值为1、2、3、4、6、12个月，单位为月。此配置用于水表结算功能。",
+      "module": "结算",
+      "source_section": "7.19 Criteria for non-repeatability of a n event",
+      "source_quote": "Sot | Burlington | U8 | (RV) |  |  |  | R | R | [1],2,3,4,6,12 | months |",
+      "source_block_ids": [
+        "BLK-000578",
+        "BLK-000579",
+        "BLK-000580",
+        "BLK-000581",
+        "BLK-000582",
+        "BLK-000583",
+        "BLK-000584",
+        "BLK-000585",
+        "BLK-000586",
+        "BLK-000587",
+        "BLK-000588",
+        "BLK-000589",
+        "BLK-000591",
+        "BLK-000592",
+        "BLK-000593",
+        "BLK-000594",
+        "BLK-000595",
+        "BLK-000596",
+        "BLK-000597",
+        "BLK-000598",
+        "BLK-000599",
+        "BLK-000600",
+        "BLK-000601",
+        "BLK-000602",
+        "BLK-000603",
+        "BLK-000604",
+        "BLK-000605",
+        "BLK-000606",
+        "BLK-000607",
+        "BLK-000608",
+        "BLK-000609",
+        "BLK-000610",
+        "BLK-000611",
+        "BLK-000612",
+        "BLK-000613",
+        "BLK-000614",
+        "BLK-000615",
+        "BLK-000616",
+        "BLK-000617",
+        "BLK-000618",
+        "BLK-000619",
+        "BLK-000620",
+        "BLK-000621",
+        "BLK-000622",
+        "BLK-000623",
+        "BLK-000624",
+        "BLK-000625",
+        "BLK-000626",
+        "BLK-000627",
+        "BLK-000628",
+        "BLK-000632",
+        "BLK-000633",
+        "BLK-000634",
+        "BLK-000635",
+        "BLK-000636",
+        "BLK-000637",
+        "BLK-000638",
+        "BLK-000639",
+        "BLK-000640",
+        "BLK-000641",
+        "BLK-000642",
+        "BLK-000643",
+        "BLK-000644",
+        "BLK-000645",
+        "BLK-000646",
+        "BLK-000647",
+        "BLK-000648",
+        "BLK-000649",
+        "BLK-000650",
+        "BLK-000651",
+        "BLK-000652",
+        "BLK-000653",
+        "BLK-000654",
+        "BLK-000655",
+        "BLK-000656",
+        "BLK-000657",
+        "BLK-000658",
+        "BLK-000659",
+        "BLK-000660",
+        "BLK-000661",
+        "BLK-000662",
+        "BLK-000663",
+        "BLK-000664",
+        "BLK-000665",
+        "BLK-000666",
+        "BLK-000667",
+        "BLK-000668",
+        "BLK-000669",
+        "BLK-000670",
+        "BLK-000671",
+        "BLK-000672",
+        "BLK-000673",
+        "BLK-000674",
+        "BLK-000675",
+        "BLK-000676",
+        "BLK-000677",
+        "BLK-000678",
+        "BLK-000680",
+        "BLK-000681",
+        "BLK-000682",
+        "BLK-000683",
+        "BLK-000684",
+        "BLK-000685",
+        "BLK-000686",
+        "BLK-000687",
+        "BLK-000688",
+        "BLK-000689",
+        "BLK-000690",
+        "BLK-000691",
+        "BLK-000692",
+        "BLK-000693",
+        "BLK-000697",
+        "BLK-000698",
+        "BLK-000699",
+        "BLK-000700",
+        "BLK-000701",
+        "BLK-000702",
+        "BLK-000703",
+        "BLK-000704",
+        "BLK-000705",
+        "BLK-000706",
+        "BLK-000707",
+        "BLK-000708",
+        "BLK-000709",
+        "BLK-000710",
+        "BLK-000711"
+      ],
+      "type": "business_rule",
+      "priority": "P1",
+      "labels": [
+        "结算",
+        "数据存储",
+        "配置"
+      ],
+      "acceptance_criteria": [
+        "通过管理工具对Sot对象写入值1时，系统返回成功且后续结算周期按1个月执行",
+        "通过管理工具对Sot对象写入值12时，系统返回成功且后续结算周期按12个月执行",
+        "尝试写入值0或13时，系统应拒绝并返回错误",
+        "各角色（Administrator、Meter Reading Operator of the、Operator of the、Communication、User）读取Sot对象时，能够读取到当前设置值"
+      ],
+      "dev_guidance": [
+        "实现Sot数据对象（U8类型），存储于水表非易失性存储区",
+        "实现访问权限矩阵：Administrator、Meter Reading Operator of the（写）、Operator of the（写）、Communication（读）、User（读）等按原文表格列出的权限（原文Sot行未明确全部角色，但参考表格列权限：Administrator (RV), Meter Reading Operator of the (空), Operator of the (空), Communication (空), User (R), CHAN2 (R)；其他角色根据表格上下文判断，研发需根据实际权限表实现）",
+        "对Sot写入值进行校验：仅允许1,2,3,4,6,12，其他值返回错误",
+        "将Sot值与结算周期生成逻辑关联，在结算事件中使用该周期值"
+      ],
+      "threshold_table": {
+        "columns": [
+          "对象",
+          "类型",
+          "权限(Administrator)",
+          "权限(Maintenance worker)",
+          "权限(Meter Reading Operator of the)",
+          "权限(Operator of the)",
+          "权限(Communication)",
+          "权限(User)",
+          "范围",
+          "单位"
+        ],
+        "rows": [
+          [
+            "Sot",
+            "U8",
+            "(RV)",
+            "",
+            "W?",
+            "W?",
+            "R?",
+            "R",
+            "[1],2,3,4,6,12",
+            "months"
+          ]
+        ]
+      },
+      "ai_req_id": "AIR-c08607b5e8e3"
+    }
+  ]
+}

@@ -1,0 +1,1032 @@
+{
+  "schema_version": 2,
+  "cases": [
+    {
+      "id": "billing-period-definition",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-BILL",
+          "title": "结算周期定义",
+          "module": "结算",
+          "description": "结算周期可为1、2、3、4、6或12个月。",
+          "source_quote": "A period of time that always begins on the first day of a month and ends on the first day of one or more subsequent months; it can be valid for 1, 2, 3, 4, 6, 12 months.",
+          "source_section": "3.24",
+          "source_block_ids": [
+            "B-BILLING-DEF"
+          ],
+          "functional_key": "结算周期管理"
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-BILL"
+          ]
+        ],
+        "protected_values": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "6",
+          "12"
+        ],
+        "requirement_count": 1,
+        "functional_key": "结算周期管理",
+        "source_block_ids": [
+          "B-BILLING-DEF"
+        ],
+        "required_values": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "6",
+          "12"
+        ]
+      }
+    },
+    {
+      "id": "significant-event-cross-section",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-EVENT-COLLECT",
+          "title": "采集重要事件",
+          "module": "事件记录",
+          "description": "设备必须采集重要事件。",
+          "source_quote": "The device shall collect significant events.",
+          "source_section": "5",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-EVENT-TRANSMIT",
+          "title": "远程传输重要事件",
+          "module": "事件记录",
+          "description": "设备必须远程传输重要事件。",
+          "source_quote": "The device shall remotely transmit significant events.",
+          "source_section": "8",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-EVENT-COLLECT",
+            "AI-EVENT-TRANSMIT"
+          ]
+        ],
+        "functional_requirement_count": 1,
+        "source_ai_requirement_ids": [
+          "AI-EVENT-COLLECT",
+          "AI-EVENT-TRANSMIT"
+        ]
+      }
+    },
+    {
+      "id": "pm-profile-variants",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-PM1",
+          "title": "PM1点对多点协议配置文件要求",
+          "module": "通信协议",
+          "description": "支持PM1配置。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-PM2",
+          "title": "PM2点对多点协议配置文件要求",
+          "module": "通信协议",
+          "description": "支持PM2配置。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-PM1",
+            "AI-PM2"
+          ]
+        ],
+        "variants": [
+          "PM1",
+          "PM2"
+        ],
+        "protected_values": [
+          "PM1",
+          "PM2"
+        ]
+      }
+    },
+    {
+      "id": "pp-profile-variants",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-PP2",
+          "title": "PP2点对点配置文件通信",
+          "module": "通信协议",
+          "description": "支持PP2配置。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-PP3",
+          "title": "PP3点对点配置文件通信",
+          "module": "通信协议",
+          "description": "支持PP3配置。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-PP2",
+            "AI-PP3"
+          ]
+        ],
+        "variants": [
+          "PP2",
+          "PP3"
+        ],
+        "protected_values": [
+          "PP2",
+          "PP3"
+        ]
+      }
+    },
+    {
+      "id": "archive-period-variants",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-15",
+          "title": "15分钟用量归档",
+          "module": "曲线",
+          "description": "每15分钟归档一次。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-60",
+          "title": "1小时用量归档",
+          "module": "曲线",
+          "description": "每1小时归档一次。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-15",
+            "AI-60"
+          ]
+        ],
+        "variants": [
+          "15 分钟",
+          "1 小时"
+        ],
+        "protected_values": [
+          "15",
+          "1"
+        ]
+      }
+    },
+    {
+      "id": "distinct-event-subjects",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-BAT",
+          "title": "低电量事件检测与报告",
+          "module": "事件记录",
+          "description": "检测低电量事件。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-FLOW",
+          "title": "异常流量事件检测与报告",
+          "module": "事件记录",
+          "description": "检测异常流量事件。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 2,
+        "groups": [
+          [
+            "AI-BAT"
+          ],
+          [
+            "AI-FLOW"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "replaceability-qualifier-split",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-NR",
+          "title": "不可更换电池GdM的电池寿命要求",
+          "module": "环境可靠性",
+          "description": "不可更换电池寿命要求。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-R",
+          "title": "可更换电池GdM的电池寿命要求",
+          "module": "环境可靠性",
+          "description": "可更换电池寿命要求。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 2,
+        "groups": [
+          [
+            "AI-NR"
+          ],
+          [
+            "AI-R"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "import-export-split",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-IMP",
+          "title": "进口有功电能记录",
+          "module": "计量",
+          "description": "记录进口有功电能。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-EXP",
+          "title": "出口有功电能记录",
+          "module": "计量",
+          "description": "记录出口有功电能。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 2,
+        "groups": [
+          [
+            "AI-IMP"
+          ],
+          [
+            "AI-EXP"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "local-remote-split",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-L",
+          "title": "本地参数配置",
+          "module": "配置",
+          "description": "允许本地配置参数。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-R",
+          "title": "远程参数配置",
+          "module": "配置",
+          "description": "允许远程配置参数。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 2,
+        "groups": [
+          [
+            "AI-L"
+          ],
+          [
+            "AI-R"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "explicit-key-punctuation",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-1",
+          "title": "采集事件",
+          "module": "事件",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "重要事件：采集与远传"
+        },
+        {
+          "ai_req_id": "AI-2",
+          "title": "远传事件",
+          "module": "事件",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "重要事件-采集与远传"
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-1",
+            "AI-2"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "clock-sync-explicit",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-C1",
+          "title": "GdM时钟同步要求",
+          "module": "时钟",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "时钟同步"
+        },
+        {
+          "ai_req_id": "AI-C2",
+          "title": "系统组件时钟同步服务",
+          "module": "时钟",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "时钟同步"
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-C1",
+            "AI-C2"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "access-control-explicit",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-A1",
+          "title": "客户端访问控制",
+          "module": "安全",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "客户端访问控制"
+        },
+        {
+          "ai_req_id": "AI-A2",
+          "title": "角色权限管理",
+          "module": "安全",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "客户端访问控制"
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-A1",
+            "AI-A2"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "retention-conflict",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-30",
+          "title": "事件保留30天",
+          "module": "事件",
+          "description": "保留30天。",
+          "source_quote": "Events retained for 30 days.",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "事件保留"
+        },
+        {
+          "ai_req_id": "AI-60",
+          "title": "事件保留60天",
+          "module": "事件",
+          "description": "保留60天。",
+          "source_quote": "Events retained for 60 days.",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "事件保留"
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-30",
+            "AI-60"
+          ]
+        ],
+        "protected_values": [
+          "30",
+          "60"
+        ],
+        "conflict_contains": [
+          "30",
+          "60"
+        ]
+      }
+    },
+    {
+      "id": "obis-retention",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-O",
+          "title": "累计有功电能对象",
+          "module": "DLMS对象",
+          "description": "提供OBIS 1-0:1.8.0.255对象。",
+          "source_quote": "The object 1-0:1.8.0.255 shall be available.",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-O"
+          ]
+        ],
+        "protected_values": [
+          "1-0:1.8.0.255"
+        ]
+      }
+    },
+    {
+      "id": "class-id-retention",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-CL",
+          "title": "Register接口类",
+          "module": "DLMS对象",
+          "description": "对象使用接口类3。",
+          "source_quote": "The object uses interface class 3.",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-CL"
+          ]
+        ],
+        "protected_values": [
+          "class 3"
+        ]
+      }
+    },
+    {
+      "id": "security-suite-split",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-S0",
+          "title": "安全套件0支持",
+          "module": "安全",
+          "description": "支持安全套件0。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-S1",
+          "title": "安全套件1支持",
+          "module": "安全",
+          "description": "支持安全套件1。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 2,
+        "groups": [
+          [
+            "AI-S0"
+          ],
+          [
+            "AI-S1"
+          ]
+        ],
+        "protected_values": [
+          "0",
+          "1"
+        ]
+      }
+    },
+    {
+      "id": "nb-lora-split",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-NB",
+          "title": "NB-IoT远程通信要求",
+          "module": "通信协议",
+          "description": "支持NB-IoT。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        },
+        {
+          "ai_req_id": "AI-LORA",
+          "title": "LoRa远程通信要求",
+          "module": "通信协议",
+          "description": "支持LoRa。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 2,
+        "groups": [
+          [
+            "AI-NB"
+          ],
+          [
+            "AI-LORA"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "event-log-explicit",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-E1",
+          "title": "计量事件日志必须记录事件",
+          "module": "事件",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "计量事件日志"
+        },
+        {
+          "ai_req_id": "AI-E2",
+          "title": "计量事件日志访问权限",
+          "module": "事件",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "计量事件日志"
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-E1",
+            "AI-E2"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "display-sequence-explicit",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-D1",
+          "title": "用户循环显示序列内容",
+          "module": "显示",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "用户循环显示"
+        },
+        {
+          "ai_req_id": "AI-D2",
+          "title": "用户页面显示循环顺序",
+          "module": "显示",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "用户循环显示"
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-D1",
+            "AI-D2"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "billing-date-object",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-BD",
+          "title": "结算周期日期对象",
+          "module": "DLMS对象",
+          "description": "提供1-0:0.1.2.255。",
+          "source_quote": "OBIS 1-0:0.1.2.255 shall be available.",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-BD"
+          ]
+        ],
+        "protected_values": [
+          "1-0:0.1.2.255"
+        ]
+      }
+    },
+    {
+      "id": "tariff-season-explicit",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-T1",
+          "title": "季节费率切换",
+          "module": "费率",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "费率日历"
+        },
+        {
+          "ai_req_id": "AI-T2",
+          "title": "每日费率时段",
+          "module": "费率",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "费率日历"
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-T1",
+            "AI-T2"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "date-time-fields-explicit",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-DT1",
+          "title": "Date_Time对象编码规则",
+          "module": "时钟",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "Date_Time编码"
+        },
+        {
+          "ai_req_id": "AI-DT2",
+          "title": "Date_Time特殊编码值",
+          "module": "时钟",
+          "description": "",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": [],
+          "functional_key": "Date_Time编码"
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-DT1",
+            "AI-DT2"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "firmware-update-singleton",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-FW",
+          "title": "固件升级完整性校验",
+          "module": "升级",
+          "description": "升级前校验固件完整性。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-FW"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "alarm-clear-singleton",
+      "kind": "catalog",
+      "requirements": [
+        {
+          "ai_req_id": "AI-AL",
+          "title": "告警清除记录",
+          "module": "事件",
+          "description": "清除告警时保留记录。",
+          "source_quote": "",
+          "source_section": "",
+          "source_block_ids": []
+        }
+      ],
+      "expected": {
+        "functional_count": 1,
+        "groups": [
+          [
+            "AI-AL"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "walk-by-data-concentrator",
+      "kind": "ownership",
+      "requirements": [
+        {
+          "title": "Dispositivo walk by",
+          "description": "Device with mobile data concentrator function for walk-by and drive-by collection.",
+          "module": "通信"
+        }
+      ],
+      "expected": {
+        "ownership": "co_design",
+        "preserve_software_guidance": true
+      }
+    },
+    {
+      "id": "manufacturer-hardware",
+      "kind": "ownership",
+      "requirements": [
+        {
+          "title": "manufacturer",
+          "description": "A person who manufactures a device and places it on the market.",
+          "module": "术语"
+        }
+      ],
+      "expected": {
+        "ownership": "hardware"
+      }
+    },
+    {
+      "id": "remote-center-co-design",
+      "kind": "ownership",
+      "requirements": [
+        {
+          "title": "Remote Management Center",
+          "description": "Central hardware and software components manage remote reading and communication.",
+          "module": "通信"
+        }
+      ],
+      "expected": {
+        "ownership": "co_design"
+      }
+    },
+    {
+      "id": "unsupported-buffer-choice",
+      "kind": "design_guard",
+      "requirements": [
+        {
+          "title": "采集存储并远传数据",
+          "description": "GdM必须采集、本地记录并远程传输数据。",
+          "source_quote": "The GdM shall collect, record locally and transmit the data remotely.",
+          "module": "通信",
+          "dev_guidance": [
+            "采用FIFO队列解耦本地记录与远程发送"
+          ]
+        }
+      ],
+      "source_text": "The GdM shall collect, record locally and transmit the data remotely.",
+      "expected": {
+        "normative_guidance_count": 0,
+        "design_options": [
+          "FIFO"
+        ]
+      }
+    },
+    {
+      "id": "unsupported-capacity-number",
+      "kind": "design_guard",
+      "requirements": [
+        {
+          "title": "本地记录数据",
+          "description": "本地记录数据。",
+          "source_quote": "The GdM shall record data locally.",
+          "module": "存储",
+          "dev_guidance": [
+            "至少保存10000条记录"
+          ]
+        }
+      ],
+      "source_text": "The GdM shall record data locally.",
+      "expected": {
+        "forbidden_delivery_values": [
+          "10000"
+        ]
+      }
+    },
+    {
+      "id": "exact-source-block",
+      "kind": "source_mapping",
+      "requirements": [
+        {
+          "title": "结算周期起始",
+          "description": "从每月第一天开始。",
+          "source_quote": "A period begins on the first day of a month.",
+          "module": "结算"
+        }
+      ],
+      "section": {
+        "section_id": "3.24",
+        "heading": "billing period",
+        "text": "unrelated\nA period begins on the first day of a month.",
+        "block_ids": [
+          "B1",
+          "B2"
+        ],
+        "source_blocks": [
+          {
+            "block_id": "B1",
+            "text": "unrelated"
+          },
+          {
+            "block_id": "B2",
+            "text": "A period begins on the first day of a month."
+          }
+        ]
+      },
+      "expected": {
+        "source_block_ids": [
+          "B2"
+        ],
+        "source_mapping": "exact"
+      }
+    },
+    {
+      "id": "multi-block-source-quote",
+      "kind": "source_mapping",
+      "requirements": [
+        {
+          "title": "双句要求",
+          "description": "执行A和B。",
+          "source_quote": "The meter shall record data. It shall transmit data.",
+          "module": "通信"
+        }
+      ],
+      "section": {
+        "section_id": "5",
+        "heading": "data",
+        "text": "The meter shall record data.\nIt shall transmit data.",
+        "block_ids": [
+          "B1",
+          "B2"
+        ],
+        "source_blocks": [
+          {
+            "block_id": "B1",
+            "text": "The meter shall record data."
+          },
+          {
+            "block_id": "B2",
+            "text": "It shall transmit data."
+          }
+        ]
+      },
+      "expected": {
+        "source_block_ids": [
+          "B1",
+          "B2"
+        ],
+        "source_mapping": "multi_block"
+      }
+    },
+    {
+      "id": "section-fallback-source",
+      "kind": "source_mapping",
+      "requirements": [
+        {
+          "title": "无法逐字定位",
+          "description": "保留章节证据。",
+          "source_quote": "Paraphrased requirement unavailable verbatim.",
+          "module": "其它"
+        }
+      ],
+      "section": {
+        "section_id": "9",
+        "heading": "other",
+        "text": "Different source wording.",
+        "block_ids": [
+          "B9"
+        ],
+        "source_blocks": [
+          {
+            "block_id": "B9",
+            "text": "Different source wording."
+          }
+        ]
+      },
+      "expected": {
+        "source_block_ids": [
+          "B9"
+        ],
+        "source_mapping": "section_fallback"
+      }
+    }
+  ]
+}

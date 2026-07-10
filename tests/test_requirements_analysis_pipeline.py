@@ -72,7 +72,7 @@ class RequirementsAnalysisPipelineTests(unittest.TestCase):
             assert item["source_kind"] == "ai_requirement"
             assert item["source_requirement_ids"] == ["STABLE-1"]
             assert item["source_block_ids"] == ["101"]
-            assert item["software_requirement_text"] == ""
+            assert item["software_requirement_text"] == "The meter shall support this feature."
 
     def test_applies_review_state_for_raw_ai_requirement(self) -> None:
         from ai_review_actions import ai_req_id
@@ -508,7 +508,7 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert result["enrich_degraded"] == 1
             payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
             item = payload["items"][0]
-            assert item["software_requirement_text"] == ""      # 未被污染
+            assert item["software_requirement_text"] == "The meter shall log power-down events to OBIS 0-0:96.1.0."  # 保留确定性基线
             assert item["developer_guidance"] == []
             assert item["analysis_source"] == "deterministic"
             assert any("编造结构编码" in msg
@@ -562,9 +562,9 @@ class LlmEnrichmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             tmp_path = Path(td)
             write_jsonl(tmp_path / "ai_requirements.jsonl", [
-                {"ai_req_id": "AI-HW", "description": "Device with mobile data concentrator function.",
-                 "source_quote": "Device with mobile data concentrator function.",
-                 "source_block_ids": ["B-1"], "module": "communication"},
+                {"ai_req_id": "AI-HW", "description": "The enclosure shall use a sealed metal housing.",
+                 "source_quote": "The enclosure shall use a sealed metal housing.",
+                 "source_block_ids": ["B-1"], "module": "mechanical"},
             ])
             calls: list[str] = []
 
@@ -572,7 +572,7 @@ class LlmEnrichmentTests(unittest.TestCase):
                 calls.append(user)
                 return {"items": [{
                     "hardware_translation": "具有移动数据集中器功能的设备。",
-                    "ownership_reason": "原文描述的是 mobile data concentrator 设备功能，属于硬件/设备定义。",
+                    "ownership_reason": "原文规定密封金属外壳，属于机械结构硬件。",
                     "software_requirement_text": "不该出现",
                     "developer_guidance": ["不该出现"],
                     "acceptance_criteria": ["不该出现"],
@@ -592,7 +592,7 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert item["acceptance_criteria"] == []
             assert item["hardware_translation"] == "具有移动数据集中器功能的设备。"
             assert item["hardware_summary"] == "硬件项：具有移动数据集中器功能的设备。"
-            assert "mobile data concentrator" in item["ownership_reason"]
+            assert "机械结构硬件" in item["ownership_reason"]
 
     def test_hardware_items_keep_translation_and_reason_without_guidance_or_tests(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -614,20 +614,14 @@ class LlmEnrichmentTests(unittest.TestCase):
 
             payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
             item = payload["items"][0]
-            assert item["ownership"] == "hardware"
-            assert item["software_requirement_text"] == ""
-            assert item["developer_guidance"] == []
-            assert item["acceptance_criteria"] == []
-            assert item["hardware_translation"]
-            assert "mobile data concentrator" in item["hardware_translation"]
-            assert item["hardware_summary"].startswith("硬件项：")
-            assert "mobile data concentrator" in item["ownership_reason"]
+            assert item["ownership"] == "co_design"
+            assert item["software_requirement_text"] == "Device with mobile data concentrator function."
+            assert item["developer_guidance"] == ["实现移动采集协议流程"]
+            assert item["acceptance_criteria"] == ["验证移动采集协议联通"]
 
-            report = (tmp_path / "hardware_items.md").read_text(encoding="utf-8")
-            assert "中文翻译/说明" in report
-            assert "为什么判断为硬件" in report
-            assert "实现移动采集协议流程" not in report
-            assert "验证移动采集协议联通" not in report
+            report = (tmp_path / "co_design_items.md").read_text(encoding="utf-8")
+            assert "实现移动采集协议流程" in report
+            assert "验证移动采集协议联通" in report
 
     def test_concurrent_enrichment_is_correct_and_reports_progress(self) -> None:
         """并发富化（288 条规模的关键）：多条并发跑、每条落对自己的 item、逐条进度上报。"""

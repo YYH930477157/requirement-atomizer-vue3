@@ -34,7 +34,7 @@ LOGGER = logging.getLogger("requirement_atomizer")
 ChatFn = Callable[[str, str], dict[str, Any]]
 
 SCHEMA_VERSION = "requirements-analysis/v1"
-ANALYZE_PROMPT_VERSION = "analyze-llm-v3"  # v3：assumptions 契约——推导前提必须显性记录（缓存失效重富化）
+ANALYZE_PROMPT_VERSION = "analyze-llm-v4"  # v4：保留确定性基线并分离 design_options
 ANALYZE_MIN_MAX_TOKENS = 6144  # 与 ai_extract 同：推理模型（如 mimo-v2.5-pro）会输出思维链，2048 会截断 JSON
 ANALYZE_ENRICH_CACHE = "analyze_enrich_cache.json"
 # 确定性分析层（规则+模板+裁决）恒在；openai_compatible 追加 LLM 富化层，只填叙述字段、
@@ -43,7 +43,7 @@ STUB_ROUTE = "stub"
 DEGRADE_NOTE = "openai_compatible 端点未配置，本次按规则/模板/裁决确定性运行（未做 LLM 富化）"
 # LLM 只允许填这些叙述字段；OBIS/class/访问位/归属/id 等结构字段永不被 LLM 覆盖（防幻觉红线）
 _ENRICH_FIELDS_TEXT = ("software_requirement_text", "hardware_dependency")
-_ENRICH_FIELDS_LIST = ("developer_guidance", "acceptance_criteria", "open_questions", "assumptions")
+_ENRICH_FIELDS_LIST = ("developer_guidance", "design_options", "acceptance_criteria", "open_questions", "assumptions")
 OUTPUT_FILES = [
     "software_requirements.xlsx",
     "engineering_analysis.json",
@@ -63,12 +63,22 @@ def run_requirements_analysis(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
+    synthesized_path = out_dir / "functional_requirements.json"
     source_path = out_dir / "ai_requirements.jsonl"
     if not source_path.exists():
         # 缺输入必须响亮失败：静默产出"0 条 0 问题"的空交付物会掩盖打错目录（仓库纪律）
         raise FileNotFoundError(
             f"ai_requirements.jsonl not found in {out_dir} — 请先运行「AI 抽取」再做需求分析")
-    requirements = read_jsonl(source_path)
+    if synthesized_path.exists():
+        try:
+            synthesized_payload = json.loads(synthesized_path.read_text(encoding="utf-8"))
+            requirements = synthesized_payload.get("items") if isinstance(synthesized_payload, dict) else None
+        except (OSError, json.JSONDecodeError):
+            requirements = None
+        if not isinstance(requirements, list):
+            requirements = read_jsonl(source_path)
+    else:
+        requirements = read_jsonl(source_path)
     # 容错读（坏行跳过）+ 最新覆盖，与裁决回流同一读取器——单条撕裂写不弄死整跑
     states = read_ai_review_states(out_dir)
     vocabulary = extract_template_vocabulary(template_path)
@@ -100,14 +110,22 @@ def run_requirements_analysis(
     issues: list[dict[str, Any]] = []
     for req in requirements:
         source_id = _source_requirement_id(req)
+        source_atom_ids = list(dict.fromkeys(
+            [str(value).strip() for value in _as_list(req.get("source_ai_requirement_ids")) if str(value).strip()]
+            + [source_id]
+        ))
         state = states.get(source_id)
         if _is_rejected(state):
             continue
         reviewed_req = _apply_module_override(req, state)
         item = _base_item(len(items) + 1, reviewed_req, vocabulary)
         item.update(classify_ownership(reviewed_req))
+        effective_state = dict(state or {})
+        embedded_ownership = str(reviewed_req.get("ownership_override") or "").strip()
+        if embedded_ownership and not effective_state.get("ownership_override"):
+            effective_state["ownership_override"] = embedded_ownership
         try:
-            item = apply_ownership_override(item, state)
+            item = apply_ownership_override(item, effective_state)
         except ValueError as exc:  # 非法归属覆盖：单条降级记 issue，不整跑死（设计文档要求逐条继续）
             issues.append({
                 "analysis_id": item.get("analysis_id"),
@@ -119,7 +137,7 @@ def run_requirements_analysis(
 
         # 富化只做软件/协同（硬件按 GLM prompt 只需简要说明，硬件项走 ownership_reason/引用，
         # 不产 software_requirement_text——跳过省真实调用）；先收集、循环后并发执行
-        ans_rows = answers_by_source.get(source_id) or []
+        ans_rows = [row for atom_id in source_atom_ids for row in (answers_by_source.get(atom_id) or [])]
         if ans_rows:
             answers_text = "；".join(f"问：{r.get('question')} 答：{r.get('answer')}" for r in ans_rows)
             reviewed_req = dict(reviewed_req)
@@ -178,6 +196,7 @@ def run_requirements_analysis(
         out_dir / "co_design_items.md",
         [item for item in items if item.get("ownership") == OWNERSHIP_CO_DESIGN],
         "Co-design Items",
+        co_design=True,
     )
 
     result = {
@@ -413,6 +432,7 @@ def _llm_enrich_hardware_item(
         item["ownership_reason"] = reason
     item["software_requirement_text"] = ""
     item["developer_guidance"] = []
+    item["design_options"] = []
     item["acceptance_criteria"] = []
     item["hardware_dependency"] = ""
     item["analysis_source"] = "llm"
@@ -492,28 +512,48 @@ def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> d
     source_id = _source_requirement_id(req)
     description = str(req.get("title") or req.get("description") or req.get("requirement") or "").strip()
     requirement_text = str(req.get("description") or req.get("requirement") or "").strip()
+    developer_guidance = [str(value).strip() for value in _as_list(req.get("dev_guidance") or req.get("developer_guidance")) if str(value).strip()]
+    design_options = [str(value).strip() for value in _as_list(req.get("design_options")) if str(value).strip()]
+    acceptance_criteria = [str(value).strip() for value in _as_list(req.get("acceptance_criteria")) if str(value).strip()]
+    assumptions = [str(value).strip() for value in _as_list(req.get("assumptions")) if str(value).strip()]
 
     return {
         "analysis_id": build_analysis_id(index),
         "source_kind": "ai_requirement",
-        "source_requirement_ids": [source_id],
+        "source_requirement_ids": [str(value) for value in _as_list(req.get("source_ai_requirement_ids")) if str(value).strip()] or [source_id],
         "source_block_ids": [str(value) for value in _as_list(req.get("source_block_ids"))],
         "module": module,
         "submodule": str(req.get("module") or module),
         "template_match": "matched" if module in vocabulary.get("modules", []) else "unmapped",
         "description": description,
         "requirement": requirement_text,
-        "software_requirement_text": "",
-        "developer_guidance": [],
+        "software_requirement_text": requirement_text,
+        "developer_guidance": developer_guidance,
+        "design_options": design_options,
         "hardware_dependency": "",
-        "acceptance_criteria": [],
+        "acceptance_criteria": acceptance_criteria,
         "open_questions": [],
-        "assumptions": [],
+        "assumptions": assumptions,
+        "objective": str(req.get("objective") or "").strip(),
+        "behaviors": [str(value).strip() for value in _as_list(req.get("behaviors")) if str(value).strip()],
+        "lifecycle_behaviors": [dict(value) for value in _as_list(req.get("lifecycle_behaviors")) if isinstance(value, dict)],
+        "source_modules": [str(value).strip() for value in _as_list(req.get("source_modules")) if str(value).strip()],
+        "preconditions": [str(value).strip() for value in _as_list(req.get("preconditions")) if str(value).strip()],
+        "data_constraints": [str(value).strip() for value in _as_list(req.get("data_constraints")) if str(value).strip()],
+        "variants": [dict(value) for value in _as_list(req.get("variants")) if isinstance(value, dict)],
+        "exceptions": [str(value).strip() for value in _as_list(req.get("exceptions")) if str(value).strip()],
+        "related_dlms_objects": [str(value).strip() for value in _as_list(req.get("related_dlms_objects")) if str(value).strip()],
+        "functional_requirement_id": str(req.get("functional_requirement_id") or "").strip(),
+        "functional_key": str(req.get("functional_key") or "").strip(),
+        "merge_method": str(req.get("merge_method") or "").strip(),
+        "merge_confidence": req.get("merge_confidence"),
+        "synthesis_reason": str(req.get("synthesis_reason") or "").strip(),
+        "conflict_flags": [str(value).strip() for value in _as_list(req.get("conflict_flags")) if str(value).strip()],
         "notes": [],
         "threshold_table": req.get("threshold_table") if isinstance(req.get("threshold_table"), dict) else None,
         "analysis_source": "deterministic",  # LLM 富化成功则改写为 "llm"（叙述字段来源追溯）
-        "source_quote": str(req.get("source_quote") or ""),
-        "source_section": str(req.get("source_section") or ""),
+        "source_quote": str(req.get("source_quote") or "\n".join(str(value) for value in _as_list(req.get("source_quotes")) if str(value).strip())),
+        "source_section": str(req.get("source_section") or " / ".join(str(value) for value in _as_list(req.get("source_sections")) if str(value).strip())),
     }
 
 
@@ -573,15 +613,26 @@ def _module_or_unmapped(req: dict[str, Any], vocabulary: dict[str, Any]) -> str:
     return module or "unmapped"
 
 
-def _write_report(path: Path, rows: list[dict[str, Any]], title: str) -> None:
+def _write_report(path: Path, rows: list[dict[str, Any]], title: str, *, co_design: bool = False) -> None:
     lines = [f"# {title}", ""]
     if not rows:
         lines.extend(["No items.", ""])
     for row in rows:
+        lines.append(f"## {row.get('analysis_id')} {row.get('description') or ''}".rstrip())
+        if co_design:
+            lines.extend([
+                f"- 软件需求: {row.get('software_requirement_text') or row.get('requirement') or ''}",
+                f"- 为什么判断为协同设计: {row.get('ownership_reason') or ''}",
+            ])
+            lines.extend(f"- 研发指引: {value}" for value in row.get("developer_guidance") or [])
+            lines.extend(f"- 设计候选: {value}" for value in row.get("design_options") or [])
+            lines.extend(f"- 验收点: {value}" for value in row.get("acceptance_criteria") or [])
+        else:
+            lines.extend([
+                f"- 中文翻译/说明: {row.get('hardware_summary') or row.get('hardware_translation') or row.get('description') or ''}",
+                f"- 为什么判断为硬件: {row.get('ownership_reason') or ''}",
+            ])
         lines.extend([
-            f"## {row.get('analysis_id')} {row.get('description') or ''}".rstrip(),
-            f"- 中文翻译/说明: {row.get('hardware_summary') or row.get('hardware_translation') or row.get('description') or ''}",
-            f"- 为什么判断为硬件: {row.get('ownership_reason') or ''}",
             f"- Source: {', '.join(str(value) for value in row.get('source_requirement_ids') or [])}",
             f"- Source quote: {row.get('source_quote') or ''}",
             "",
