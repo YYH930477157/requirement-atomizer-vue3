@@ -2557,9 +2557,24 @@ tbody tr.selected {
   height: 100vh;
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: 78px auto 118px 72px minmax(0, 1fr) 32px;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+}
+
+.main > .app-bar {
+  flex: none;
+}
+
+.main > .workspace,
+.main > .run-home,
+.main > .doc-review {
+  flex: 1;
+  min-height: 0;
+}
+
+.main > .status-bar {
+  flex: none;
 }
 
 .app-bar {
