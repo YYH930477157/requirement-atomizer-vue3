@@ -566,25 +566,28 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <title>文档批注审核 · {source}</title>
 <style>
 :root {{
-  --page: #f5f2ec;
-  --paper: #fffdf8;
-  --panel: #fbfaf6;
-  --line: #e7dfd2;
-  --line-strong: #d8cebd;
-  --ink: #24282f;
-  --muted: #858a92;
-  --faint: #b4aaa0;
-  --accent: #315f72;
-  --accent-soft: #e8f0f1;
-  --accent-quiet: #6e8791;
+  --page: #f5f3ee;
+  --paper: #fbfaf7;
+  --panel: #ffffff;
+  --line: #e4e0d8;
+  --line-strong: #d7d1c6;
+  --ink: #171717;
+  --muted: #707070;
+  --faint: #a4a09a;
+  --accent: #0f766e;
+  --accent-soft: #dff4ef;
+  --accent-quiet: #4d9a92;
+  --highlight: #fff1a8;
+  --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  --sans: Inter, system-ui, -apple-system, "Microsoft YaHei", sans-serif;
   --st-accepted: #e6f0e8; --st-accepted-tx: #2f6842;
   --st-rejected: #f4e7e3; --st-rejected-tx: #9b3b32;
   --st-discussion: #f6efd8; --st-discussion-tx: #8a6417;
   --omission-bg: #f8efd9;
 }}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-  color: var(--ink); background: var(--page); font-size: 15px; line-height: 1.76; }}
+body {{ margin: 0; font-family: var(--sans);
+  color: var(--ink); background: var(--page); font-size: 14px; line-height: 1.7; }}
 .reader-shell {{ min-height: 100vh; background:
   linear-gradient(90deg, rgba(255,255,255,.62), rgba(255,255,255,0) 18%, rgba(255,255,255,0) 82%, rgba(255,255,255,.5)),
   var(--page); }}
@@ -597,12 +600,16 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .topbar .stats {{ display: flex; gap: 22px; font-size: 12px; color: var(--muted); }}
 .topbar .stats strong {{ color: var(--ink); font-weight: 600; }}
 .topbar .stats .warn strong {{ color: var(--st-discussion-tx); }}
-.topbar button {{ background: transparent; color: var(--accent); border: 1px solid var(--line-strong); border-radius: 999px;
-  padding: 7px 14px; cursor: pointer; font-size: 12px; font-weight: 600; }}
-.topbar button:hover {{ background: var(--accent-soft); border-color: var(--accent-quiet); }}
+.topbar button {{ background: var(--ink); color: #ffffff; border: 1px solid var(--ink); border-radius: 8px;
+  padding: 7px 14px; cursor: pointer; font-size: 12px; font-weight: 600; font-family: var(--sans); }}
+.topbar button:hover {{ background: #333333; border-color: #333333; }}
 
 /* --- 三栏布局 --- */
-.layout {{ display: grid; grid-template-columns: 240px minmax(0, 1fr) 390px; height: calc(100vh - 56px); }}
+.layout {{ display: grid; grid-template-columns: 264px minmax(0, 1fr) 336px; height: calc(100vh - 56px); }}
+
+/* 阅读进度条（Instapaper 式细条） */
+.read-progress {{ position: sticky; top: 56px; z-index: 9; height: 3px; background: transparent; }}
+.read-progress i {{ display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }}
 
 /* --- 左：大纲 --- */
 /* --- 左侧大纲：树形可折叠 --- */
@@ -627,24 +634,27 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 
 /* --- 中：文档 --- */
 .paper {{ overflow-y: auto; padding: 46px 0 72px; }}
-.doc-content {{ max-width: 760px; margin: 0 auto; padding: 48px 58px 70px; background: var(--paper);
-  border: 1px solid rgba(231,223,210,.72); box-shadow: 0 24px 80px rgba(44,39,31,.08); }}
+.doc-content {{ max-width: 720px; margin: 0 auto; padding: 56px 64px 72px; background: var(--paper);
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(23, 23, 23, 0.08);
+  font-family: var(--serif); font-size: 18px; line-height: 2.0; }}
 
-.doc-block {{ margin-bottom: 5px; }}
+.doc-block {{ margin-bottom: 10px; }}
 .block-inner {{ position: relative; padding-left: calc(var(--depth, 0) * 16px); }}
 .doc-block .text {{ margin: 0; padding: 2px 0; }}
 .doc-block.heading .text {{ font-weight: 600; margin-top: 20px; }}
-.doc-block.h1 .text {{ font-size: 22px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }}
-.doc-block.h2 .text {{ font-size: 18px; }}
+.doc-block.heading .text {{ line-height: 1.3; }}
+.doc-block.h1 .text {{ font-size: 32px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }}
+.doc-block.h2 .text {{ font-size: 23px; }}
 .doc-block.h2 .block-inner {{ border-left: 2px solid var(--accent-quiet); padding-left: 12px; margin-left: -14px; }}
-.doc-block.h3 .text {{ font-size: 16px; color: #515761; }}
+.doc-block.h3 .text {{ font-size: 19px; color: #3d3d3d; }}
 .doc-block.noise .text {{ opacity: 0.3; font-size: 13px; }}
 .doc-block.omission {{ background: linear-gradient(90deg, var(--omission-bg), rgba(248,239,217,.35)); border-radius: 4px; padding: 4px 8px; margin: 5px 0; }}
 .doc-block.omission .text {{ border-left: 2px solid #cda85c; padding-left: 9px; }}
 .doc-block.anchored {{ cursor: pointer; border-radius: 4px; }}
 .doc-block.anchored:hover {{ background: var(--accent-soft); }}
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
-.text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
+.text mark {{ background: linear-gradient(transparent 44%, var(--highlight) 44%); padding: 0 2px; border-radius: 0; }}
 .page-break {{ display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #b8b2a4; font-size: 11px; }}
 .page-break::before, .page-break::after {{ content: ""; flex: 1; border-top: 1px dashed #ddd6c8; }}
 
@@ -656,7 +666,8 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .doc-table .table-badge {{ font-size: 10px; font-weight: 500; color: #8a6417; background: rgba(248,239,217,.8);
   border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 7px; margin-left: 8px; vertical-align: 1px; }}
 .doc-table .table-scroll {{ overflow-x: auto; border: 1px solid var(--line-strong); border-radius: 8px; }}
-.doc-table table {{ border-collapse: collapse; width: 100%; font-size: 12.5px; line-height: 1.5; }}
+.doc-table {{ font-family: var(--sans); }}
+.doc-table table {{ border-collapse: collapse; width: 100%; font-size: 13px; line-height: 1.55; }}
 .doc-table th, .doc-table td {{ border: 0; border-bottom: 1px solid var(--line); border-right: 1px solid rgba(231,223,210,.5);
   padding: 6px 10px; text-align: left; vertical-align: top; min-width: 52px; }}
 .doc-table th:last-child, .doc-table td:last-child {{ border-right: 0; }}
@@ -664,8 +675,8 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .doc-table tbody tr:nth-child(even) td {{ background: rgba(245,242,236,.55); }}
 .doc-table tbody tr:last-child td {{ border-bottom: 0; }}
 
-.doc-block.in-span {{ box-shadow: inset 3px 0 0 #a8c3ee; }}
-.doc-block.in-span.evidence {{ background: #eef4ff; border-radius: 6px; box-shadow: none; }}
+.doc-block.in-span {{ box-shadow: inset 3px 0 0 #9fd3cc; }}
+.doc-block.in-span.evidence {{ background: #ecf7f4; border-radius: 6px; box-shadow: none; }}
 .dd-legend {{ font-size: 11px; color: #8a8f98; margin: 4px 0 8px; }}
 .chip.sub .annotation-number {{ font-size: 10px; opacity: .75; }}
 .dd-subitems li {{ margin-bottom: 4px; }}
@@ -685,7 +696,7 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .chip[data-inline-marker="1"] .annotation-number,
 .chip[data-inline-marker="1"] .annotation-owner {{ font-size: 12px; font-weight: 750; letter-spacing: .03em; }}
 .chip[data-inline-marker="1"] .annotation-owner {{ margin-left: 2px; }}
-.chip[data-inline-marker="1"].quote-selected {{ background: #ffe89a; color: var(--accent); border-color: var(--accent); }}
+.chip[data-inline-marker="1"].quote-selected {{ background: var(--highlight); color: var(--accent); border-color: var(--accent); }}
 .source-classification {{ display: inline-flex; margin-left: 5px; transform: translateY(-0.08em);
   color: var(--faint); border: 0; border-bottom: 1px dotted var(--line-strong); padding: 0 2px 1px;
   background: transparent; cursor: pointer; vertical-align: super; line-height: 1; font-family: inherit; }}
@@ -698,6 +709,8 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .source-classification:hover, .source-classification.sel {{ color: var(--accent); border-color: var(--accent); }}
 .annotation-dot {{ width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .68; }}
 .annotation-number {{ font-variant-numeric: tabular-nums; letter-spacing: .04em; }}
+.chips, .chip, .source-classification, .page-break, .dd-legend, .omission-tag,
+.doc-table figcaption, .region-collapse summary {{ font-family: var(--sans); }}
 .chip:hover {{ color: var(--accent); border-color: var(--accent); }}
 .chip.sel {{ color: var(--accent); border-color: var(--accent); font-weight: 700; }}
 .chip.st-accepted {{ color: var(--st-accepted-tx); }}
@@ -761,6 +774,7 @@ textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
   </div>
   <button id="export-btn">导出裁决 JSON</button>
 </div>
+<div class="read-progress"><i id="read-progress-fill"></i></div>
 <div class="reader-layout layout">
   <nav class="outline" id="outline"><div class="outline-title">大纲</div></nav>
   <article class="paper" id="paper">
@@ -1058,6 +1072,17 @@ document.getElementById("export-btn").onclick = () => {{
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
   a.download = "ai_decisions_" + DOC_ID + ".json"; a.click();
 }};
+
+// 阅读进度条:中栏滚动比例(Instapaper 式)
+(function () {{
+  var paper = document.getElementById("paper");
+  var fill = document.getElementById("read-progress-fill");
+  if (!paper || !fill) return;
+  paper.addEventListener("scroll", function () {{
+    var max = paper.scrollHeight - paper.clientHeight;
+    fill.style.width = (max > 0 ? Math.min(100, paper.scrollTop / max * 100) : 0) + "%";
+  }}, {{ passive: true }});
+}})();
 
 paintChips(); buildOutline(); refreshDecidedCount();
 </script>
