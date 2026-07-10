@@ -60,13 +60,8 @@ HARDWARE_TERMS = (
     "寿命",
     "器件",
     "硬件更换",
-    "mobile data concentrator",
-    "concentrator function",
-    "concentrator functions",
-    "walk by",
-    "walk-by",
-    "drive by",
-    "drive-by",
+    "manufacturer",
+    "manufactures a device",
 )
 
 CO_DESIGN_TERMS = (
@@ -86,6 +81,15 @@ CO_DESIGN_TERMS = (
     "硬件接口",
     "采样影响",
     "继电器状态",
+    "mobile data concentrator",
+    "concentrator function",
+    "concentrator functions",
+    "walk by",
+    "walk-by",
+    "drive by",
+    "drive-by",
+    "remote management center",
+    "central hardware and software components",
 )
 
 SEARCH_FIELDS = ("title", "description", "requirement", "module", "source_quote", "labels")

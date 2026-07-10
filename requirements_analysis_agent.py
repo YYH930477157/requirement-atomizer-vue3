@@ -17,7 +17,8 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         "每个 item 的字段：",
         "  - source_requirement_ids: 原样回填输入需求的 ai_req_id（用于对齐）",
         "  - software_requirement_text: 软件需求正文（输入/触发→处理逻辑→输出/状态变化）",
-        "  - developer_guidance: 研发落地要点数组（如涉及的对象/属性/时序）",
+        "  - developer_guidance: 由原文/客户答复直接支持的研发落地要点数组（涉及对象/属性/时序）",
+        "  - design_options: 原文未指定但可供研发选型的实现候选数组（队列/缓存/接口分层等）；不得带无依据容量或默认值",
         "  - acceptance_criteria: 可测的验收标准数组",
         "  - hardware_dependency: 硬件依赖简述（software 类留空字符串）",
         "  - open_questions: 需澄清的问题数组（无则空数组）",
@@ -82,7 +83,7 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
     # 所以其编码/数字基线是 源文 ∪ 模板注入；正文 analysis_text 基线仍不含模板（防搬运）。
     delivery_text = " ".join(
         " ".join(str(x) for x in (item.get(field) or []) if str(x).strip())
-        for field in ("developer_guidance", "acceptance_criteria", "assumptions")
+        for field in ("developer_guidance", "design_options", "acceptance_criteria", "assumptions")
     )
     guidance_basis = f"{union_text} {template_text or ''}"
 

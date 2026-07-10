@@ -62,7 +62,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v13"  # v13：术语定义中的固定边界/允许值也要抽取（缓存失效重抽）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v15"  # v15：缺失功能键保持为空，由文档级目录安全推导
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -125,7 +125,7 @@ VALID_PRIORITIES = {"P0", "P1", "P2"}
 SYSTEM_PROMPT = (
     "你是表计行业（电表/水表/气表）需求分析师。读给定的标准/规范文本，抽取其中的需求条目。"
     "把同一功能的零散语句**合并成一条功能需求**，不要逐句拆；表格类规范化为一条带说明的需求。"
-    "每条需求输出：title（不超过 80 字）、description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
+    "每条需求输出：title（不超过 80 字）、functional_key（跨章节同一研发功能使用完全相同的稳定中文短语）、description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
     "type（functional/non_functional/constraint/business_rule）、priority（P0/P1/P2，按重要性区分）、"
     "module（该需求归属的模块，**必须原样照抄下面清单里的一个词**，按需求实质语义选最贴切的；"
     "确实都不贴切时才填\"" + OTHER_MODULE + "\"）：" + "、".join(MODULE_VOCAB) + "。"
@@ -134,8 +134,8 @@ SYSTEM_PROMPT = (
     "acceptance_criteria（可测试的验收点数组）、"
     "sub_items（**可选**：条款枚举子项数组，每项 {\"label\": \"a\", \"text\": \"该子项的自包含中文要求\"}——"
     "原文以 a) b) c) 枚举多个要求时逐项填写，作为需求的二级结构）、"
-    "dev_guidance（**研发落地指引**数组：为满足本需求，研发要实现的具体功能/逻辑/数据结构/接口，"
-    "写\"做什么\"的可执行条目，不复述原文、不写空话）、"
+    "dev_guidance（**规范直接支持的研发落地指引**数组：为满足本需求必须实现的功能/逻辑/接口，不复述原文）、"
+    "design_options（**非规范约束的设计候选**数组：原文未指定但可供研发选型的队列/缓存/分层方案，不得给无依据容量或默认值）、"
     "threshold_table（**仅当原文含参数/门限/档位表**时输出 {\"columns\": [...], \"rows\": [[...]]}，"
     "数字逐格照抄原文，不重排不换算；原文无表格则省略此字段）。"
     "质量准则：description 必须自包含（研发不回原文即可实现：条件+动作+参数齐全）；"
@@ -359,9 +359,11 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
                  for item in (raw.get("sub_items") or [])
                  if isinstance(item, dict) and str(item.get("text") or "").strip()]
     dev_guidance = [str(x) for x in (raw.get("dev_guidance") or []) if str(x).strip()]
+    design_options = [str(x) for x in (raw.get("design_options") or []) if str(x).strip()]
     module = str(raw.get("module") or "").strip()  # LLM 受控分类，ensure_domain_labels 据此定首要领域
     return {
         "title": str(raw.get("title") or "").strip()[:80],
+        "functional_key": str(raw.get("functional_key") or "").strip()[:100],
         "description": str(raw.get("description") or "").strip(),
         "type": rtype,
         "priority": priority,
@@ -373,6 +375,7 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         "sub_items": sub_items,
         "acceptance_criteria": acceptance,
         "dev_guidance": dev_guidance,
+        "design_options": design_options,
         "dependencies": [],
         "parent": None,
         "children": [],
@@ -438,6 +441,7 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
     drifted: set[str] = set()
     drifted_codes: set[str] = set()
     removed: list[str] = []
+    design_options = [str(value).strip() for value in (req.get("design_options") or []) if str(value).strip()]
     for field in ("acceptance_criteria", "dev_guidance"):
         kept: list[str] = []
         for raw in req.get(field) or []:
@@ -448,6 +452,9 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
             if unsupported or unsupported_terms or unsupported_codes:
                 drifted |= unsupported
                 drifted_codes |= unsupported_codes
+                if field == "dev_guidance" and unsupported_terms and not unsupported and not unsupported_codes:
+                    design_options.append(text)
+                    continue
                 reasons: list[str] = []
                 if unsupported_codes:
                     reasons.append(f"无依据编码：{', '.join(sorted(unsupported_codes))}")
@@ -459,10 +466,59 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
             else:
                 kept.append(text)
         req[field] = kept
+    req["design_options"] = list(dict.fromkeys(design_options))
     if removed:
         suffix = "；…" if len(removed) > 6 else ""
         _append_note(req, "无依据条目已移入备注：" + "；".join(removed[:6]) + suffix)
     return drifted, drifted_codes
+
+
+def _map_requirement_source(req: dict[str, Any], section: dict[str, Any]) -> None:
+    quote = _norm_ws(req.get("source_quote"))
+    source_blocks = [row for row in (section.get("source_blocks") or []) if isinstance(row, dict)]
+    exact: list[str] = []
+    containing: list[str] = []
+    for row in source_blocks:
+        block_id = str(row.get("block_id") or "")
+        block_text = _norm_ws(row.get("text"))
+        if not block_id or not block_text or not quote:
+            continue
+        if quote == block_text:
+            exact.append(block_id)
+        elif quote in block_text or block_text in quote:
+            containing.append(block_id)
+    matched = exact or containing
+    mapping = "exact" if exact else ("multi_block" if len(containing) > 1 else "contains")
+    if not matched and quote and source_blocks:
+        for start in range(len(source_blocks)):
+            for width in range(2, min(5, len(source_blocks) - start + 1)):
+                window = source_blocks[start:start + width]
+                joined = _norm_ws(" ".join(str(row.get("text") or "") for row in window))
+                if joined and (quote in joined or joined in quote):
+                    matched = [str(row.get("block_id") or "") for row in window if row.get("block_id")]
+                    mapping = "multi_block"
+                    break
+            if matched:
+                break
+    if not matched and quote and source_blocks:
+        from difflib import SequenceMatcher
+        scored = [
+            (SequenceMatcher(None, quote, _norm_ws(row.get("text"))).ratio(), str(row.get("block_id") or ""))
+            for row in source_blocks if row.get("block_id") and row.get("text")
+        ]
+        score, block_id = max(scored, default=(0.0, ""))
+        if score >= 0.82 and block_id:
+            matched = [block_id]
+            mapping = "fuzzy"
+    if matched:
+        req["source_block_ids"] = list(dict.fromkeys(matched))
+        req["anchor_block_id"] = req["source_block_ids"][0]
+        req["source_mapping"] = mapping
+    else:
+        req["source_block_ids"] = list(section.get("block_ids") or [])
+        if req["source_block_ids"]:
+            req["anchor_block_id"] = req["source_block_ids"][0]
+        req["source_mapping"] = "section_fallback"
 
 
 def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
@@ -479,6 +535,7 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
         if not isinstance(raw, dict):
             continue
         req = normalize_requirement(raw, section)
+        _map_requirement_source(req, section)
         if not req["description"] and not req["source_quote"]:
             continue
         if _is_reference_stub(req):

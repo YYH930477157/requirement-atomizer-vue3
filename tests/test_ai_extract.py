@@ -1340,7 +1340,7 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("不得给默认建议值", ai_extract.SYSTEM_PROMPT)          # v12：无来源数字不得进入交付字段
         self.assertIn("术语定义中的固定起止规则", ai_extract.SYSTEM_PROMPT)
         self.assertIn("1, 2, 3, 4, 6, 12 months", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v13")
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v15")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}
@@ -1398,6 +1398,28 @@ class QualityReportTests(unittest.TestCase):
             ai_extract.config_for_route = orig_cfg
             ai_extract.chat_json = orig_chat
 
+
+
+class FunctionalKeyNormalizationTests(unittest.TestCase):
+    def test_missing_functional_key_stays_empty_for_catalog_inference(self) -> None:
+        import ai_extract
+
+        row = ai_extract.normalize_requirement(
+            {"title": "上报计量事件", "description": "设备应上报计量事件。"},
+            {"heading": "Events", "block_ids": ["B-1"]},
+        )
+
+        self.assertEqual(row["functional_key"], "")
+
+    def test_explicit_functional_key_is_preserved(self) -> None:
+        import ai_extract
+
+        row = ai_extract.normalize_requirement(
+            {"title": "上报计量事件", "functional_key": "计量事件管理", "description": "设备应上报计量事件。"},
+            {"heading": "Events", "block_ids": ["B-1"]},
+        )
+
+        self.assertEqual(row["functional_key"], "计量事件管理")
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,7 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             unit["texts"].append(text)
         if block.get("block_id"):
             unit["block_ids"].append(block["block_id"])
+            unit.setdefault("source_blocks", []).append({"block_id": block["block_id"], "text": text})
 
     sections: list[dict[str, Any]] = []
     for unit in groups.values():
@@ -54,7 +55,8 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not body:
             continue
         sections.append({"section_id": unit["section_id"], "section_path": unit["section_path"],
-                         "heading": unit["heading"], "text": body, "block_ids": unit["block_ids"]})
+                         "heading": unit["heading"], "text": body, "block_ids": unit["block_ids"],
+                         "source_blocks": unit.get("source_blocks", [])})
     return sections
 
 
@@ -131,6 +133,7 @@ def _pack_sections(sections: list[dict[str, Any]], *, target_chars: int,
     for sec in sections:
         piece = f"## {sec['heading']}\n{sec['text']}" if sec.get("heading") else sec["text"]
         block_ids = list(sec.get("block_ids") or [])
+        source_blocks = list(sec.get("source_blocks") or [])
         if len(piece) > target_chars:
             # 超大源章节：拆成 ≤split 的多块，各自独立成段（同段 block_ids 全量保留以便溯源）。
             # drift_source 保留完整原文：漂移护栏须以整章为 baseline，否则 LLM 合理引用同章
@@ -139,18 +142,20 @@ def _pack_sections(sections: list[dict[str, Any]], *, target_chars: int,
             for chunk in _split_text(piece, split_chars):
                 merged.append(_finalize_merged({
                     "section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                    "texts": [chunk], "block_ids": block_ids, "drift_source": piece}))
+                    "texts": [chunk], "block_ids": block_ids, "source_blocks": source_blocks,
+                    "drift_source": piece}))
             continue
         if cur is None:
             cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": block_ids, "len": len(piece)}
+                   "texts": [piece], "block_ids": block_ids, "source_blocks": source_blocks, "len": len(piece)}
         elif cur["len"] + len(piece) > target_chars and cur["texts"]:
             flush()
             cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": block_ids, "len": len(piece)}
+                   "texts": [piece], "block_ids": block_ids, "source_blocks": source_blocks, "len": len(piece)}
         else:
             cur["texts"].append(piece)
             cur["block_ids"].extend(block_ids)
+            cur.setdefault("source_blocks", []).extend(source_blocks)
             cur["len"] += len(piece)
     flush()
     return merged
@@ -162,7 +167,8 @@ def _finalize_merged(cur: dict[str, Any]) -> dict[str, Any]:
     drift_source = cur.get("drift_source") or text
     return {"section_id": cur["section_id"], "heading": cur["heading"],
             "section_path": [cur["heading"]] if cur["heading"] else [],
-            "text": text, "block_ids": cur["block_ids"], "drift_source": drift_source}
+            "text": text, "block_ids": cur["block_ids"], "source_blocks": cur.get("source_blocks", []),
+            "drift_source": drift_source}
 
 
 def _split_text(text: str, target_chars: int) -> list[str]:

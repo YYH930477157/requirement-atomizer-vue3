@@ -246,7 +246,7 @@ class StageReuseGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = self._prepare(tmp, {"status": "ok", "route": "openai_compatible",
                                       "producer": stage_producer("ai-extract")})
-            self.assertTrue(stage_is_reusable(out, "ai-extract", route="openai_compatible"))
+            self.assertFalse(stage_is_reusable(out, "ai-extract", route="openai_compatible"))
 
 
 class HardwareEnrichGuardTests(unittest.TestCase):
