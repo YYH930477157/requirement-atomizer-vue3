@@ -16,7 +16,7 @@ ratomizer --version
 
 `analyze` runs the requirements analysis agent over a reviewed output directory (requires `ai_requirements.jsonl` produced by AI extraction; missing input is an input error, exit 2 semantics via error envelope). It writes `software_requirements.xlsx`, `engineering_analysis.json`, `hardware_items.md`, and `co_design_items.md`. An explicit `--template` path must exist.
 
-Ownership classification, module mapping, review decisions, and all structural fields are deterministic. `--llm-route openai_compatible` additionally enables an **LLM enrichment layer** that fills the narrative fields only — `software_requirement_text`, `developer_guidance`, `acceptance_criteria`, `hardware_dependency`, `open_questions`. Structural and routing fields (ownership, module, OBIS/class/access, ids) are never overwritten by the model. Each enrichment is drift-checked: if the model fabricates a code or number not in the source, that item's enrichment is rejected and it stays deterministic (recorded as an issue). When the endpoint is unusable (no `RATOMIZER_LLM_API_KEY` set), the run degrades to the deterministic path and records `route: "stub"` plus `route_requested` (provenance is never falsified). Output adds `enriched` / `enrich_degraded` counts. Enrichment results are cached per source-content fingerprint in `analyze_enrich_cache.json` (idempotent re-runs).
+Ownership classification, module mapping, review decisions, and all structural fields are deterministic. `--llm-route openai_compatible` additionally enables an **LLM enrichment layer** that fills the narrative fields only — `software_requirement_text`, `developer_guidance`, `design_options`, `acceptance_criteria`, `hardware_dependency`, `open_questions`. Structural and routing fields (ownership, module, OBIS/class/access, ids) are never overwritten by the model. Each enrichment is drift-checked: if the model fabricates a code or number not in the source, that item's enrichment is rejected and it stays deterministic (recorded as an issue). When the endpoint is unusable (no `RATOMIZER_LLM_API_KEY` set), the run degrades to the deterministic path and records `route: "stub"` plus `route_requested` (provenance is never falsified). Output adds `enriched` / `enrich_degraded` counts. Enrichment results are cached per source-content fingerprint in `analyze_enrich_cache.json` (idempotent re-runs).
 
 Existing entry points remain compatible:
 
@@ -94,6 +94,10 @@ The core logger name is `requirement_atomizer`.
 - `--quiet` emits only `WARNING` and above.
 - default emits `INFO` and above.
 - `--verbose` emits `DEBUG` and above.
+
+## Functional Synthesis Contract
+
+The desktop bridge command `python -m desktop_tasks functional-synthesis --out DIR [--llm-route stub|openai_compatible]` writes `functional_requirements.json`. Every eligible AI requirement ID must appear exactly once. Items contain structured objective, behavior, lifecycle-role, condition, constraint, variant, exception, DLMS-object, source-module, provenance, and merge-diagnostic fields. Safe event/profile/period families may span modules; opposed qualifiers, different event subjects, low-confidence LLM mappings, and unqualified parameter conflicts cannot be auto-merged. The optional LLM catalog is assignment-only: malformed, incomplete, duplicate, or unknown atom mappings fall back to deterministic grouping. `route_requested` records intent; `route` records the route actually executed after any credential/config degradation.
 
 ## Output Files
 

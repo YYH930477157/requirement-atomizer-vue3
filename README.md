@@ -59,11 +59,16 @@ Function outputs include deterministic acceptance criteria derived from source a
 
 ## Requirements Analysis Agent
 
-After AI extraction, HTML expert review, and adjudication/import have produced a reviewed output directory, run the requirements analysis agent on that same directory:
+After AI extraction and expert adjudication, normalize related atomic items into functional requirements before analysis:
 
 ```powershell
+python -m desktop_tasks functional-synthesis --out ".\out\run-001"
 ratomizer analyze --out ".\out\run-001" --llm-route stub
 ```
+
+`functional_requirements.json` preserves all source AI requirement IDs, quotes, and block anchors. Rejected AI requirements are excluded, while expert module and ownership overrides are projected into the synthesized result. `stub` can analyze an existing AI extraction, but it does not create AI behavioral requirements on a fresh run; use `openai_compatible` for the AI extraction stage.
+
+Each synthesized item exposes structured fields for downstream development: `objective`, `behaviors`, `lifecycle_behaviors`, `preconditions`, `data_constraints`, `variants`, `exceptions`, `related_dlms_objects`, `source_modules`, provenance evidence, and merge diagnostics (`merge_method`, `merge_confidence`, `synthesis_reason`, `conflict_flags`). Deterministic synthesis is intentionally conservative: explicit function identities and compatible event/profile/period families may merge across source modules, while opposed qualifiers, different event subjects, and unqualified parameter conflicts remain split. With `--llm-route openai_compatible`, the optional catalog pass may only assign existing atom IDs to function groups; it cannot rewrite requirement content, and invalid mappings fall back per module. The output records both `route_requested` and the route actually used.
 
 The desktop task bridge exposes the same step:
 
@@ -71,7 +76,13 @@ The desktop task bridge exposes the same step:
 python -m desktop_tasks requirements-analysis --out ".\out\run-001" --llm-route stub
 ```
 
-The accepted `--llm-route` values are `stub` and `openai_compatible`; the default is `stub`. Ownership classification, module mapping, and review decisions are always deterministic. `openai_compatible` adds an **LLM enrichment layer** that fills narrative fields only (`software_requirement_text`, `developer_guidance`, `acceptance_criteria`, `hardware_dependency`, `open_questions`); structural fields (ownership/module/OBIS/class/access/ids) are frozen, and any item where the model fabricates a code or number absent from the source is rejected back to the deterministic path (recorded as an issue). When no `RATOMIZER_LLM_API_KEY` is set the route degrades to deterministic and records `route: "stub"` plus `route_requested` (provenance is never falsified). Use `--quiet` or `--verbose` to adjust CLI logging. The generated files are written directly under `out`:
+The accepted `--llm-route` values are `stub` and `openai_compatible`; the default is `stub`. Ownership classification, module mapping, and review decisions are always deterministic. `openai_compatible` adds an **LLM enrichment layer** that fills narrative fields only (`software_requirement_text`, `developer_guidance`, `design_options`, `acceptance_criteria`, `hardware_dependency`, `open_questions`). `developer_guidance` is reserved for source-backed normative guidance; non-normative implementation alternatives belong in `design_options`. Structural fields (ownership/module/OBIS/class/access/ids) are frozen, and any item where the model fabricates a code or number absent from the source is rejected back to the deterministic path (recorded as an issue). When no `RATOMIZER_LLM_API_KEY` is set the route degrades to deterministic and records `route: "stub"` plus `route_requested` (provenance is never falsified). Use `--quiet` or `--verbose` to adjust CLI logging. Semantic quality is guarded by 32 executable cases plus a checked-in 12-row sample from the historical `test18` paid extraction. The gates cover merge/split behavior, lifecycle roles, cross-module consolidation, ownership, protected OBIS/profile values, source mapping, normative/design separation, exactly-once source assignment, and known real-document false-merge prevention:
+
+```powershell
+python -m semantic_quality
+```
+
+The generated files are written directly under `out`:
 
 ```text
 engineering_analysis.json

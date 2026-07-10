@@ -32,7 +32,9 @@ parse(parsers/) → blocks.jsonl
 ```
 
 编排：`desktop_tasks chain --out DIR --stages ...`（单命令全链，GUI 只发命令渲染进度）。
-状态：每个输出目录 `run_manifest.json`（阶段/状态/producer 版本戳）。
+状态：每个输出目录 `run_manifest.json`（manifest v2：阶段状态、producer 版本、route、配置与上游文件 SHA-256 输入指纹）。缺少账本或任一输入指纹变化时不得复用；stub 请求可以保留已验证的 OpenAI 产物，但不能在新目录伪装完成 AI 抽取。
+
+AI 抽取后增加 `functional-synthesis` 阶段：读取 `ai_requirements.jsonl` 与 `ai_review_states.jsonl`，过滤 rejected、投影专家 module/ownership 覆盖，并写 `functional_requirements.json`。`requirements-analysis` 优先消费该文件；不存在时兼容旧的逐原子输入。实现建议与规范要求分栏：`developer_guidance` 只放有来源约束，`design_options` 放非规范实现候选。 合成层按文档级功能目录输出 `objective/behaviors/lifecycle_behaviors/preconditions/data_constraints/variants/exceptions/related_dlms_objects/source_modules`，每个来源原子必须且只能分配一次，并保留合并方法、置信度、理由、冲突标记和完整 evidence。确定性目录只在显式功能身份、兼容事件主体、协议 profile 或周期家族上进行跨章节/跨模块保守合并；互斥限定、不同事件主体和未限定参数冲突保持拆分。可选 LLM 目录只允许映射 atom ID，不允许改写内容，校验失败时按模块回退确定性结果，再执行同一安全归并门禁。
 
 ## 关键机制（动之前先读）
 
