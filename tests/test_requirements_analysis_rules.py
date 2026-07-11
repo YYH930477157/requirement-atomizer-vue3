@@ -32,6 +32,26 @@ class ClassifyOwnershipTests(unittest.TestCase):
         assert decision["ownership"] == "hardware"
         assert "计量芯片" in decision["ownership_reason"]
 
+    def test_hardware_source_does_not_hide_clock_software_action(self) -> None:
+        req = {"description": "软件应从计量芯片读取时钟并同步系统时间。"}
+
+        decision = classify_ownership(req)
+
+        assert decision["ownership"] == "software"
+        assert decision["ownership_confidence"] >= 0.8
+        assert "时钟" in decision["ownership_reason"]
+
+    def test_hardware_local_occurrence_does_not_hide_later_software_occurrence(self) -> None:
+        req = {
+            "title": "时钟计数器型号",
+            "description": "软件应同步时钟并记录事件。",
+        }
+
+        decision = classify_ownership(req)
+
+        assert decision["ownership"] == "software"
+        assert decision["ownership_confidence"] >= 0.8
+
     def test_classifies_baudrate_hardware_limit_as_co_design(self) -> None:
         req = {
             "description": "波特率最大值与硬件相关，需要驱动适配。",

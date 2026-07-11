@@ -224,11 +224,9 @@ class ConservationSurfaceTests(unittest.TestCase):
 # --- P2 #11: MODULE_TO_SHEET 漂移检查 -------------------------------------------
 
 class ModuleMappingDriftTests(unittest.TestCase):
-    def test_drift_check_returns_lists(self) -> None:
+    def test_no_unexpected_module_mapping_drift(self) -> None:
         from template_writer import module_mapping_drift
-        unmapped, extra = module_mapping_drift()
-        self.assertIsInstance(unmapped, list)
-        self.assertIsInstance(extra, list)
+        self.assertEqual(module_mapping_drift(), ([], []))
 
 
 # --- P2 #12: CJK 短词假朋友 ------------------------------------------------------
