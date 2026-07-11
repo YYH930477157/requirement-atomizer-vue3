@@ -744,6 +744,8 @@ function resetRunStageBoard() {
   if (!runStages.value.aiExtract) {
     next["ai-extract"] = { status: "disabled", percent: 0, detail: "未启用" }
     next["functional-synthesis"] = { status: "disabled", percent: 0, detail: "依赖 AI 抽取" }
+  } else if (!llmMode.value) {
+    next["functional-synthesis"] = { status: "disabled", percent: 0, detail: "LLM 关闭，未运行" }
   }
   if (!runStages.value.assemble) next.assemble = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.analyze) {

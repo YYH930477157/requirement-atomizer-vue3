@@ -944,6 +944,27 @@ describe("review workspace shell", () => {
     })
   })
 
+  it("marks functional synthesis disabled when LLM and analysis are off", async () => {
+    localStorage.setItem("ratomizer.runStages.v2",
+      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: deliverableBridge({ getLlmSettings: vi.fn().mockResolvedValue(null) }),
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+
+    await vi.waitFor(() => {
+      const card = wrapper.find('[data-testid="run-stage-functional-synthesis"]').text()
+      expect(card).toContain("未启用")
+      expect(card).not.toContain("待完成")
+    })
+  })
+
   it("surfaces desktop task failures without leaving the UI silent", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
