@@ -156,6 +156,19 @@ class TraceTruncationTests(unittest.TestCase):
         out = _truncate_for_trace([{"role": "user", "content": "short"}])
         self.assertEqual(out[0]["role"], "user")
 
+    def test_nested_response_content_truncated(self) -> None:
+        from llm_client import _truncate_for_trace
+        value = {"choices": [{"message": {
+            "content": "x" * 5000,
+            "reasoning_content": "r" * 5000,
+        }}]}
+        out = _truncate_for_trace(value)
+        message = out["choices"][0]["message"]
+        self.assertLess(len(message["content"]), 2200)
+        self.assertLess(len(message["reasoning_content"]), 2200)
+        self.assertIn("truncated", message["content"])
+        self.assertIn("truncated", message["reasoning_content"])
+
     def test_full_mode_when_env_set(self) -> None:
         from llm_client import _truncate_for_trace
         long = "x" * 5000
