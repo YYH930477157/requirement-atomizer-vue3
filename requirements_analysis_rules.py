@@ -133,7 +133,8 @@ def _search_text(requirement: dict[str, Any]) -> str:
             parts.extend(str(item) for item in value)
         elif value is not None:
             parts.append(str(value))
-    return " ".join(parts).casefold()
+    # Keep local CJK context windows inside one source field/value.
+    return (" " * (_CJK_CONTEXT_RADIUS + 1)).join(parts).casefold()
 
 
 def _first_match(text: str, terms: tuple[str, ...]) -> str | None:

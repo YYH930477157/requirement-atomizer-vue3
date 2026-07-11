@@ -359,17 +359,23 @@ def _llm_enrich_item(
     if fabricated_codes:
         return False, [f"LLM 富化编造结构编码，已拒绝并降级: {'; '.join(fabricated_codes)}"]
 
+    accepted = False
     for field in _ENRICH_FIELDS_TEXT:
         value = str(llm_item.get(field) or "").strip()
         if value:
             item[field] = value
+            accepted = True
     for field in _ENRICH_FIELDS_LIST:
         values = [str(x).strip() for x in _as_list(llm_item.get(field)) if str(x).strip()]
         if values:
             item[field] = values
+            accepted = True
     reason = str(llm_item.get("ownership_reason") or "").strip()
     if reason and not item.get("ownership_reason"):
         item["ownership_reason"] = reason
+        accepted = True
+    if not accepted:
+        return False, ["LLM 富化未返回可采纳的叙述字段，已降级为确定性"]
     item["analysis_source"] = "llm"
 
     soft = [d for d in drift if not d.startswith("fabricated code")]
@@ -437,6 +443,8 @@ def _llm_enrich_hardware_item(
                         | (extract_ints(produced) - extract_ints(source_basis)))
     if fabricated:
         return False, [f"硬件翻译含无据编码/数字，已保留原文说明: {', '.join(fabricated[:6])}"]
+    if not translation and not reason:
+        return False, ["LLM 硬件富化未返回可采纳的翻译或判断依据，已保留原文说明"]
     if translation:
         item["hardware_translation"] = translation
         item["hardware_summary"] = f"硬件项：{translation}"

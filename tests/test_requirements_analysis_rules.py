@@ -52,6 +52,17 @@ class ClassifyOwnershipTests(unittest.TestCase):
         assert decision["ownership"] == "software"
         assert decision["ownership_confidence"] >= 0.8
 
+    def test_hardware_context_in_another_field_does_not_hide_software_term(self) -> None:
+        req = {
+            "title": "时钟功能",
+            "description": "芯片型号由硬件选型确定。",
+        }
+
+        decision = classify_ownership(req)
+
+        assert decision["ownership"] == "software"
+        assert "时钟" in decision["ownership_reason"]
+
     def test_classifies_baudrate_hardware_limit_as_co_design(self) -> None:
         req = {
             "description": "波特率最大值与硬件相关，需要驱动适配。",

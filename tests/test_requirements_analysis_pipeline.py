@@ -552,6 +552,24 @@ class LlmEnrichmentTests(unittest.TestCase):
         assert result["enrich_degraded"] == 1
         assert result["route"] == "openai_compatible"
 
+    def test_empty_enrichment_item_is_degraded_and_reports_stub_route(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            self._seed(tmp_path)
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{}]}
+
+            result = run_requirements_analysis(
+                tmp_path, route="openai_compatible", chat=fake_chat)
+            payload = json.loads(
+                (tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+
+        assert result["enriched"] == 0
+        assert result["enrich_degraded"] == 1
+        assert result["route"] == "stub"
+        assert payload["items"][0]["analysis_source"] == "deterministic"
+
     def test_fabricated_plain_integer_is_soft_not_rejected(self) -> None:
         """散文里的序号/步骤数（如"1. 2. 3."）非结构编码 → 软标记、保留富化（与 ai_extract 同纪律）。"""
         with tempfile.TemporaryDirectory() as td:
@@ -631,6 +649,30 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert item["hardware_translation"] == "具有移动数据集中器功能的设备。"
             assert item["hardware_summary"] == "硬件项：具有移动数据集中器功能的设备。"
             assert "机械结构硬件" in item["ownership_reason"]
+
+    def test_empty_hardware_enrichment_is_degraded(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [{
+                "ai_req_id": "AI-HW",
+                "description": "The enclosure shall use a sealed metal housing.",
+                "source_quote": "The enclosure shall use a sealed metal housing.",
+                "source_block_ids": ["B-1"],
+                "module": "mechanical",
+            }])
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{}]}
+
+            result = run_requirements_analysis(
+                tmp_path, route="openai_compatible", chat=fake_chat)
+            payload = json.loads(
+                (tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+
+        assert result["enriched"] == 0
+        assert result["enrich_degraded"] == 1
+        assert result["route"] == "stub"
+        assert payload["items"][0]["analysis_source"] == "deterministic"
 
     def test_hardware_items_keep_translation_and_reason_without_guidance_or_tests(self) -> None:
         with tempfile.TemporaryDirectory() as td:

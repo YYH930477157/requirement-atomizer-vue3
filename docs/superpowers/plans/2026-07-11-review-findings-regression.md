@@ -371,4 +371,3 @@ Expected: only intended code, tests, design, and plan changes are present; no te
 - [ ] **Step 5: Request final code review**
 
 Review against `docs/superpowers/specs/2026-07-11-review-findings-regression-design.md`, with findings ordered by severity and exact file/line references.
-
