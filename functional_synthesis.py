@@ -104,6 +104,14 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
     }
     target = out_dir / FUNCTIONAL_REQUIREMENTS
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # 守恒摘要上浮顶层（0711 评审）：此前只在写盘 JSON + WARNING 日志里，桌面/UI 看不到，
+    # 丢原子无人察觉。上浮计数（明细仍留 conservation 字段），让调用方可直接显示。
+    conservation_summary = {
+        "missing": len(missing),
+        "duplicates": len(dup_assigned),
+        "input_duplicate_ids": len(eligible_ids) - len(set(eligible_ids)),
+        "ok": not (missing or dup_assigned or len(eligible_ids) != len(set(eligible_ids))),
+    }
     return {
         "kind": "functional_synthesis",
         "out_dir": str(out_dir),
@@ -111,5 +119,6 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
         "functional_requirements": len(items),
         "route_requested": route or "stub",
         "route": executed_route,
+        "conservation": conservation_summary,
         "written": [target.name],
     }

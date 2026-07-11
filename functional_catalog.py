@@ -611,7 +611,11 @@ def build_function_catalog(requirements: list[dict[str, Any]], *, chat: CatalogC
             # 编码/数字即弃用（保确定性标题）。编码/数字纪律对人读标题同样成立。
             if meta.get("title") and _title_is_source_safe(str(meta["title"]), group):
                 item["title"] = meta["title"]
-            item["functional_key"] = meta.get("catalog_key") or item["functional_key"]
+            # C2 同理（0711 评审）：catalog_key 是 LLM 自由文本，直达 functional_key 交付字段——
+            # 含组内源文没有的编码/数字即弃用（保确定性 key），与 title 守卫同一基线。
+            catalog_key = str(meta.get("catalog_key") or "")
+            if catalog_key and _title_is_source_safe(catalog_key, group):
+                item["functional_key"] = catalog_key
             item["synthesis_reason"] = meta.get("reason") or "文档级 LLM 功能目录映射"
             item["merge_confidence"] = meta.get("confidence", 0.0)
             item["merge_method"] = "llm_catalog"

@@ -94,6 +94,11 @@ CO_DESIGN_TERMS = (
 
 SEARCH_FIELDS = ("title", "description", "requirement", "module", "source_quote", "labels")
 
+# CJK 短词（事件/显示/时钟…）按裸子串匹配会误伤部件描述（"无事件发生"、"时钟计数器型号"）。
+# 中文无词边界，难以精确分词；务实护栏：当短 CJK 软件词命中时，若上下文出现这些"硬件/部件"
+# 修饰词，则视为假朋友、撤销该命中（宁可漏判软件→走默认 software，也不把硬件件误判归类）。
+_CJK_HW_CONTEXT_TERMS = ("型号", "芯片", "器件", "物理", "结构", "材质", "规格", "封装", "引脚", "硬件")
+
 
 def classify_ownership(requirement: dict[str, Any]) -> dict[str, Any]:
     text = _search_text(requirement)
@@ -130,11 +135,25 @@ def _search_text(requirement: dict[str, Any]) -> str:
 def _first_match(text: str, terms: tuple[str, ...]) -> str | None:
     for term in terms:
         normalized_term = term.casefold()
-        if _contains_cjk(normalized_term) and normalized_term in text:
-            return term
-        if not _contains_cjk(normalized_term) and _matches_ascii_term(text, normalized_term):
+        if _contains_cjk(normalized_term):
+            if normalized_term in text and not _is_cjk_false_friend(text, normalized_term):
+                return term
+            continue
+        if _matches_ascii_term(text, normalized_term):
             return term
     return None
+
+
+def _is_cjk_false_friend(text: str, term: str) -> bool:
+    """短 CJK 软件词（≤2 字）若出现在硬件/部件上下文里，判为假朋友（0711 评审）。
+
+    例如 term="时钟" 命中 "时钟计数器型号"、term="事件" 命中 "事件计数器芯片"——
+    这些是硬件件描述里的字面词，不是功能域信号。长 CJK 词（≥3 字，如"访问权限"）
+    语义已足够明确，不撤。
+    """
+    if len(term) > 2:
+        return False
+    return any(hw in text for hw in _CJK_HW_CONTEXT_TERMS)
 
 
 def _contains_cjk(value: str) -> bool:

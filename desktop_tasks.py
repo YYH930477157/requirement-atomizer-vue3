@@ -481,10 +481,18 @@ def _stage_manifest_path(out_dir: Path, stage: str) -> Path:
     return Path(out_dir).expanduser().resolve() / STAGES_DIR / stage / "stage_manifest.json"
 
 
+def _atomic_write_json(path: Path, text: str) -> None:
+    """原子写：临时文件 + os.replace。崩溃中途不会留下半截 JSON（旧 write_text 会，
+    read_run_manifest 吞 JSONDecodeError 后静默丢弃所有阶段记录 → 强制全量重跑）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _write_stage_manifest(out_dir: Path, stage: str, entry: dict[str, Any]) -> None:
     path = _stage_manifest_path(out_dir, stage)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"stage": stage, **entry}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(path, json.dumps({"stage": stage, **entry}, ensure_ascii=False, indent=2) + "\n")
 
 
 def stage_is_reusable(out_dir: Path, stage: str, *,
@@ -582,7 +590,7 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
     stages[stage] = entry
     data.update({"manifest_version": 2, "stages": stages, "updated": now})
     try:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _atomic_write_json(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
         _write_stage_manifest(root, stage, entry)
     except OSError:  # pragma: no cover - manifest 写失败不阻断任务本体
         LOGGER.warning("run_manifest 写入失败（忽略）：%s", path)

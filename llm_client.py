@@ -61,6 +61,31 @@ def _write_trace(record: dict[str, Any]) -> None:
         pass
 
 
+# llm_trace.jsonl 默认开启、写入客户文档全文（排查必需），但大段专有标准正文落盘是数据外发面。
+# 截断长文本字段：messages[].content / response.choices[].message.content 各保留上限字符，
+# usage / model / 错误码等结构化字段不动（排查"0 条/慢/被拒"看这些就够）。可通过
+# RATOMIZER_LLM_TRACE_FULL=1 关闭截断（完整落盘，仅离线调试用）。
+_TRACE_TEXT_CAP = 2000
+
+
+def _truncate_for_trace(value: Any) -> Any:
+    if os.environ.get("RATOMIZER_LLM_TRACE_FULL"):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= _TRACE_TEXT_CAP else value[:_TRACE_TEXT_CAP] + f"…<truncated {len(value) - _TRACE_TEXT_CAP} chars>"
+    if isinstance(value, list):
+        return [_truncate_for_trace(v) for v in value]
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if k in ("content", "reasoning_content") and isinstance(v, str):
+                out[k] = _truncate_for_trace(v)
+            else:
+                out[k] = v  # role/name/usage/finish_reason/model 等结构字段原样
+        return out
+    return value
+
+
 class LLMError(Exception):
     """Base exception for OpenAI-compatible LLM calls."""
 
@@ -182,7 +207,8 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                 parsed = _loads_response_json(raw)
                 _write_trace({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "model": config.model,
                               "dur_s": round(duration, 1), "attempt": attempt + 1,
-                              "messages": payload.get("messages"), "response": parsed})
+                              "messages": _truncate_for_trace(payload.get("messages")),
+                              "response": _truncate_for_trace(parsed)})
                 return parsed
         except urllib.error.HTTPError as exc:
             raw = _read_error_body(exc)
@@ -190,7 +216,7 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                            config.model, time.monotonic() - started, attempt + 1, exc.code)
             _write_trace({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "model": config.model,
                           "dur_s": round(time.monotonic() - started, 1), "attempt": attempt + 1,
-                          "messages": payload.get("messages"),
+                          "messages": _truncate_for_trace(payload.get("messages")),
                           "error": {"http": exc.code, "body": raw[:2000]}})
             if exc.code in {401, 403}:
                 raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
@@ -256,7 +282,9 @@ def _is_retryable_status(status: int) -> bool:
 def _retry_delay(attempt: int, retry_after: str | None) -> float:
     if retry_after is not None:
         try:
-            return max(0.0, float(retry_after))
+            # 封顶 60s：服务端可能返回超大 Retry-After（如 3600），指数分支已有 2**attempt 上限，
+            # 服务端值分支同样必须有界，否则恶意/误配网关会让单次重试睡掉整轮运行。
+            return min(max(0.0, float(retry_after)), 60.0)
         except ValueError:
             pass
     return float(2**attempt)

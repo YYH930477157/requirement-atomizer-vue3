@@ -81,9 +81,11 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
     # 交付列表字段（研发直接阅读执行）此前完全在校验盲区——编造 OBIS 可无检测落进
     # 成文 xlsx「说明示例」列（2026-07-08 审计）。guidance 按设计允许公司模板做法，
     # 所以其编码/数字基线是 源文 ∪ 模板注入；正文 analysis_text 基线仍不含模板（防搬运）。
+    # open_questions 同为 LLM 可写、直达交付「待确认」列（2026-07-11 评审补漏），纳入扫描。
     delivery_text = " ".join(
         " ".join(str(x) for x in (item.get(field) or []) if str(x).strip())
-        for field in ("developer_guidance", "design_options", "acceptance_criteria", "assumptions")
+        for field in ("developer_guidance", "design_options", "acceptance_criteria",
+                      "assumptions", "open_questions")
     )
     guidance_basis = f"{union_text} {template_text or ''}"
 

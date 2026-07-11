@@ -153,14 +153,24 @@ def _nearest_column(x0: float, columns: list[float]) -> int | None:
 
 
 def _assemble_rows(region: list[dict[str, Any]], columns: list[float]) -> list[list[str]]:
-    """逻辑行组装：首列有内容且当前行已有首列 → 新行；否则并入当前行（包裹续行/后补列）。"""
+    """逻辑行组装：首列有内容且当前行已有首列 → 新行；否则并入当前行（包裹续行/后补列）。
+
+    0711 评审修复：单元格距最近列锚点 >2×容差时旧逻辑直接丢弃（机翻 PDF 列漂移的
+    OBIS/访问权限单元格会静默丢内容）。现在改为兜底：找不到列的单元格按 x0 落到最近列
+    （位置可能不精确，但内容不丢——OBIS 错一位是严重缺陷，丢失单元格更严重）。
+    """
     rows: list[dict[int, list[str]]] = []
     current: dict[int, list[str]] | None = None
     for line in region:
         assigned: list[tuple[int, str]] = []
         for cell in line["cells"]:
+            if not cell["text"]:
+                continue
             col = _nearest_column(cell["x0"], columns)
-            if col is not None and cell["text"]:
+            if col is None and columns:
+                # 兜底：容差外不丢，归到 x0 最近的列（保内容；列归属可能粗，但不静默丢）
+                col = min(range(len(columns)), key=lambda i: abs(columns[i] - cell["x0"]))
+            if col is not None:
                 assigned.append((col, cell["text"]))
         if not assigned:
             continue
@@ -581,6 +591,9 @@ def _merge_words(words: list[dict[str, Any]], *, defrag: bool = False) -> dict[s
 
 _LIST_ITEM_RE = re.compile(r"^(?:[a-z]|\d{1,2}|[ivx]{1,4})[).]\s|^[•▪]\s|^[—–-]\s")
 _SENTENCE_TERMINALS = ".:;!?…"
+# 需求标志词（0711 评审）：两行都像独立需求（都含 shall/must/should/要求/应当）时，
+# 即便前行无句终标点 + 下行小写开头，也判为新段——防止两条需求被误并成一条而丢一条。
+_REQ_KEYWORD_RE = re.compile(r"\b(?:shall|must|should|required)\b|要求|应当|应支持|应能", re.IGNORECASE)
 
 
 def _merge_lines(lines: list[dict[str, Any]]) -> dict[str, Any]:
@@ -618,9 +631,12 @@ def _starts_new_paragraph(
     if gap >= 12:
         # 续行豁免：机翻 PDF 行距不齐会把一句话切成两块（真实取证 22% 段落块小写开头）。
         # 前行无句终标点 + 当前行小写开头 + 间距未大到换节 → 仍是同一段。
+        # 0711 评审护栏：但若两行都像独立需求（都含 shall/must/should 等标志词），
+        # 则判为新段——两条需求不应被误并成一条（会丢一条需求）。
         prev_text = previous["text"].rstrip()
         if (gap < 26 and prev_text and prev_text[-1] not in _SENTENCE_TERMINALS
-                and line["text"][:1].islower()):
+                and line["text"][:1].islower()
+                and not (_REQ_KEYWORD_RE.search(prev_text) and _REQ_KEYWORD_RE.search(line["text"]))):
             return False
         return True
     return False
