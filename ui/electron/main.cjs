@@ -189,7 +189,8 @@ ipcMain.handle("dialog:open-template", async () => {
 });
 
 ipcMain.handle("task:export-annotation-html", async (_event, input) =>
-  runDesktopTaskProcess(["export-annotation-html", "--out", input.outDir]));
+  runDesktopTaskProcess(["export-annotation-html", "--out", input.outDir,
+    ...(input.route ? ["--route", input.route] : [])]));
 
 ipcMain.handle("task:summary", async (_event, input) =>
   runDesktopTaskProcess(["summary", "--out", input.outDir]));

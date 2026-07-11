@@ -1449,7 +1449,11 @@ async function handleExportAnnotationHtml() {
     return
   }
   try {
-    const payload = await window.ratomizerDesktop.exportAnnotationHtml({ outDir: currentOutputDir.value })
+    // LLM 开时顺带补齐块级"说明"标记的中文翻译（内容哈希缓存,重导出零调用）
+    const payload = await window.ratomizerDesktop.exportAnnotationHtml({
+      outDir: currentOutputDir.value,
+      route: llmMode.value ? "openai_compatible" : undefined,
+    })
     if (payload.path) {
       await window.ratomizerDesktop.openPath?.(payload.path)
       apiMessage.value = `已生成并打开文档批注 HTML：${payload.path}`

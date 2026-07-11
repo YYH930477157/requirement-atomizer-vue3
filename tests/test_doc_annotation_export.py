@@ -536,3 +536,164 @@ class OutlineMapTests(unittest.TestCase):
         ]
         omap = dae._build_outline_map(blocks)
         self.assertEqual(set(omap), {"H1", "H2"})
+
+
+def _seed_marker_block(out: Path, quote: str) -> None:
+    (out / "blocks.jsonl").write_text(
+        json.dumps({"block_id": "B1", "order": 1, "type": "paragraph", "text": quote,
+                    "section_path": ["3 TERMS"], "requirement_like": False, "noise": False,
+                    "doc_region": "body"}, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    (out / "ai_requirements.jsonl").write_text("", encoding="utf-8")
+
+
+class MarkerTranslationTests(unittest.TestCase):
+    """块级"说明"标记三段式（归类原因/原文翻译/原文引用）与翻译通路护栏。"""
+
+    QUOTE = "The manufacturer shall place its trademark on the device."
+
+    def test_detail_card_has_three_sections_with_translation_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            rendered = dae.render_annotation_html(out)
+            # 卡片脚本包含三段：原因标题 / 原文翻译 / 原文引用（无译文时给可读空态）
+            self.assertIn("为什么没有生成研发需求", rendered)
+            self.assertIn("原文翻译", rendered)
+            self.assertIn("原文引用", rendered)
+            self.assertIn("未生成翻译", rendered)
+            self.assertIn('data-source-translation=""', rendered)
+
+    def test_marker_embeds_translation_from_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1, "items": {key: {"owner": "hardware", "translation": "制造商应在设备上标注其商标。"}},
+            }, ensure_ascii=False), encoding="utf-8")
+            rendered = dae.render_annotation_html(out)
+            self.assertIn('data-source-translation="制造商应在设备上标注其商标。"', rendered)
+
+    def test_rejected_sidecar_entry_is_not_embedded_but_note_shows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1, "items": {key: {"owner": "hardware", "translation": "",
+                                              "rejected": True, "reason": "翻译含无据编码/数字"}},
+            }, ensure_ascii=False), encoding="utf-8")
+            rendered = dae.render_annotation_html(out)
+            # 拒绝要如实呈现：译文不嵌入,但拒绝原因随标记进卡片（检查单 #3 标记随行）
+            self.assertIn('data-source-translation=""', rendered)
+            self.assertIn('data-source-translation-note="翻译含无据编码/数字"', rendered)
+            self.assertIn("翻译未通过防幻觉校验", rendered)
+
+    def test_quote_fragment_yellow_highlight_machinery_present(self) -> None:
+        """选中说明标记：引用片段黄标（sc-quote）、上下文整块保持蓝底（evidence）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            rendered = dae.render_annotation_html(out)
+            self.assertIn("mark.sc-quote", rendered)              # 黄标样式（p 与 td 通用）
+            self.assertIn("function clearSourceQuoteMarks", rendered)
+            self.assertIn('classList.add("in-span", "evidence")', rendered)   # 蓝底保留
+
+    def test_digit_grouping_in_source_is_not_fabrication(self) -> None:
+        """欧标千位分隔："4 000 cycles" 忠实翻译写 "4000" 是格式归一,不得拒绝（test16 实测误伤）。"""
+
+        def chat(system: str, user: str) -> dict:
+            return {"items": [{"id": 1, "translation": "阀门应运行 4000 次循环。"}]}
+
+        quote = "The valve shall operate for 4 000 cycles."
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, quote)
+            summary = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+            self.assertEqual(summary["translated"], 1)
+            self.assertEqual(summary["rejected"], 0)
+
+    def test_generate_translations_writes_cache_and_reuses(self) -> None:
+        calls: list[str] = []
+
+        def chat(system: str, user: str) -> dict:
+            calls.append(user)
+            return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            summary = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+            self.assertEqual(summary["translated"], 1)
+            self.assertEqual(summary["route"], "openai_compatible")
+            self.assertEqual(len(calls), 1)
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            key = dae._translation_key(self.QUOTE)
+            self.assertEqual(sidecar["items"][key]["translation"], "制造商应在设备上标注其商标。")
+            # 第二次：全部命中缓存，零调用
+            summary2 = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+            self.assertEqual(summary2["cached"], 1)
+            self.assertEqual(summary2["translated"], 0)
+            self.assertEqual(len(calls), 1)
+            # 导出嵌入译文
+            path, _ = dae.export_annotation_bundle(out, route=None)
+            self.assertIn('data-source-translation="制造商应在设备上标注其商标。"',
+                          path.read_text(encoding="utf-8"))
+
+    def test_generate_translations_rejects_fabricated_code_and_int(self) -> None:
+        """编向：忠实翻译不会引入源文没有的编码/数字——出现即拒绝并留账不嵌入。"""
+
+        def chat(system: str, user: str) -> dict:
+            return {"items": [{"id": 1, "translation": "制造商应在 30 秒内标注对象 0-0:96.1.0.255。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            summary = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+            self.assertEqual(summary["rejected"], 1)
+            self.assertEqual(summary["translated"], 0)
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            entry = sidecar["items"][dae._translation_key(self.QUOTE)]
+            self.assertTrue(entry["rejected"])
+            self.assertIn("无据编码/数字", entry["reason"])
+            rendered = dae.render_annotation_html(out)
+            self.assertIn('data-source-translation=""', rendered)
+
+    def test_generate_translations_missing_item_stays_pending(self) -> None:
+        """漏向：LLM 漏答的条目不落账，下次导出自动重试。"""
+
+        def chat(system: str, user: str) -> dict:
+            return {"items": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            summary = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+            self.assertEqual(summary["unresolved"], 1)
+            self.assertFalse((out / dae.ANNOTATION_TRANSLATIONS).exists())
+
+    def test_generate_translations_degrades_honestly_without_llm(self) -> None:
+        import os as _os
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            saved = _os.environ.pop("RATOMIZER_LLM_API_KEY", None)
+            try:
+                summary = dae.generate_annotation_translations(out, route="openai_compatible")
+            finally:
+                if saved is not None:
+                    _os.environ["RATOMIZER_LLM_API_KEY"] = saved
+            self.assertEqual(summary["route"], "stub")
+            self.assertEqual(summary["unresolved"], 1)
+            self.assertFalse((out / dae.ANNOTATION_TRANSLATIONS).exists())
+
+    def test_export_task_reports_translation_route(self) -> None:
+        import desktop_tasks
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            payload = desktop_tasks.export_annotation_html_task(out)
+            self.assertEqual(payload["route"], "stub")
+            self.assertIn("translations", payload)
+            self.assertTrue(Path(payload["path"]).exists())

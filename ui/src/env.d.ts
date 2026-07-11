@@ -113,7 +113,7 @@ declare global {
       }) => Promise<RequirementAtomizerTaskPayload>
       getOutputSummary: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       aiExtract: (input: { outDir: string; llmRoute?: string; limitSections?: number; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
-      exportAnnotationHtml: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
+      exportAnnotationHtml: (input: { outDir: string; route?: string }) => Promise<RequirementAtomizerTaskPayload>
       importAiDecisions: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       assembleSpec: (input: { outDir: string; enrichRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
       composeEngineering: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
