@@ -338,7 +338,8 @@ STAGE_INPUTS: dict[str, list[str]] = {
     "functional-synthesis": ["ai_requirements.jsonl", "ai_review_states.jsonl"],
     "requirements-analysis": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "ai_review_states.jsonl", "clarification_answers.jsonl"],
     "template-write": ["engineering_analysis.json"],
-    "clarification-report": ["ai_requirements.jsonl", "engineering_analysis.json", "consistency_report.json", "blocks.jsonl"],
+    "clarification-report": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "engineering_analysis.json",
+                             "consistency_report.json", "blocks.jsonl"],
     "compose": ["atomic_requirements.jsonl", "table_items.jsonl"],
     "export-annotation-html": ["blocks.jsonl", "ai_requirements.jsonl", "engineering_analysis.json", "ai_review_states.jsonl"],
 }
@@ -367,23 +368,44 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 }
 
 
+STAGE_IMPLEMENTATION_REVISIONS = {
+    "atomize": "v2",
+    "ai-extract": "v2",
+    "assemble": "v2",
+    "functional-synthesis": "v2",
+    "requirements-analysis": "v2",
+    "template-write": "v2",
+    "clarification-report": "v3",
+}
+
+_STAGE_BASE_PRODUCERS = {
+    "atomize": "atomize",
+    "assemble": "assemble_spec/v1",
+    "template-write": "template_writer/v1",
+    "clarification-report": "clarification/v2-tiered",
+    "compose": "engineering_composer/v1",
+    "export-annotation-html": "doc_annotation_export/v1",
+    "run": "pipeline/v1",
+    "llm-review": "review/v1",
+}
+
+
 def stage_producer(stage: str) -> str:
     """阶段 → 生产者版本戳（产物血统：今天拿 v9 数据当新结果看的事故，靠它绝迹）。"""
+    producer = _STAGE_BASE_PRODUCERS.get(stage, stage)
     try:
         if stage == "ai-extract":
             from ai_extract import AI_EXTRACT_PROMPT_VERSION
-            return AI_EXTRACT_PROMPT_VERSION
-        if stage == "requirements-analysis":
+            producer = AI_EXTRACT_PROMPT_VERSION
+        elif stage == "requirements-analysis":
             from requirements_analysis import ANALYZE_PROMPT_VERSION
-            return ANALYZE_PROMPT_VERSION
-        if stage == "functional-synthesis":
-            return FUNCTIONAL_SYNTHESIS_VERSION
+            producer = ANALYZE_PROMPT_VERSION
+        elif stage == "functional-synthesis":
+            producer = FUNCTIONAL_SYNTHESIS_VERSION
     except Exception:  # pragma: no cover - 版本戳失败不阻断任务
         pass
-    return {"assemble": "assemble_spec/v1", "template-write": "template_writer/v1",
-            "clarification-report": "clarification/v2-tiered", "compose": "engineering_composer/v1",
-            "export-annotation-html": "doc_annotation_export/v1", "run": "pipeline/v1",
-            "llm-review": "review/v1"}.get(stage, stage)
+    revision = STAGE_IMPLEMENTATION_REVISIONS.get(stage)
+    return f"{producer}+impl-{revision}" if revision else producer
 
 
 def read_run_manifest(out_dir: Path) -> dict[str, Any]:

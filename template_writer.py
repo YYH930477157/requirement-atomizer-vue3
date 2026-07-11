@@ -49,6 +49,9 @@ MODULE_TO_SHEET = {
     "电网质量": "电网质量需求", "升级": "升级需求", "负控": "负控需求", "状态字": "状态字需求",
     "事件记录": "事件需求", "通信协议": "协议栈需求", "Push": "push需求", "预付费": "预付费需求",
     "计量精度": "计量需求", "门限范围": "系统需求", "数据存储": "系统需求",
+    "CIU": FALLBACK_SHEET, "其它": FALLBACK_SHEET, "安全": FALLBACK_SHEET,
+    "机械结构": FALLBACK_SHEET, "测试合规": FALLBACK_SHEET, "环境可靠性": FALLBACK_SHEET,
+    "节假日": FALLBACK_SHEET, "附加功能": FALLBACK_SHEET,
 }
 
 

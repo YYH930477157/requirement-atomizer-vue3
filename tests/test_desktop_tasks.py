@@ -686,6 +686,54 @@ class DesktopTaskTests(unittest.TestCase):
 class ChainAndManifestTests(unittest.TestCase):
     """F1+F7：后端链编排 + run_manifest 显式状态账本。"""
 
+    def test_affected_stage_producers_include_implementation_revision(self) -> None:
+        expected = {
+            "atomize": "atomize+impl-v2",
+            "ai-extract": "ai-extract-v15+impl-v2",
+            "assemble": "assemble_spec/v1+impl-v2",
+            "functional-synthesis": "functional-synthesis-v5+impl-v2",
+            "requirements-analysis": "analyze-llm-v4+impl-v2",
+            "template-write": "template_writer/v1+impl-v2",
+            "clarification-report": "clarification/v2-tiered+impl-v3",
+        }
+        self.assertEqual(
+            {stage: desktop_tasks.stage_producer(stage) for stage in expected},
+            expected,
+        )
+
+    def test_manifest_with_old_producer_is_not_reusable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "engineering_analysis.json").write_text("{}", encoding="utf-8")
+            for name in desktop_tasks.STAGE_REQUIRED_OUTPUTS["template-write"]:
+                (out / name).write_bytes(b"old-output")
+            old_producer = "template_writer/v1"
+            with mock.patch.object(desktop_tasks, "stage_producer", return_value=old_producer):
+                fingerprint = desktop_tasks.stage_input_fingerprint(out, "template-write")
+                desktop_tasks.update_run_manifest(
+                    out, "template-write", "ok",
+                    outputs=desktop_tasks.STAGE_REQUIRED_OUTPUTS["template-write"],
+                    input_fingerprint=fingerprint,
+                )
+
+            self.assertFalse(desktop_tasks.stage_is_reusable(out, "template-write"))
+
+    def test_clarification_fingerprint_tracks_functional_conflicts(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            for name in ("ai_requirements.jsonl", "engineering_analysis.json",
+                         "consistency_report.json", "blocks.jsonl"):
+                (out / name).write_text("{}\n", encoding="utf-8")
+            synthesis = out / desktop_tasks.FUNCTIONAL_REQUIREMENTS
+            synthesis.write_text(
+                json.dumps({"items": [{"conflict_flags": ["30 min"]}]}), encoding="utf-8")
+            first = desktop_tasks.stage_input_fingerprint(out, "clarification-report")
+            synthesis.write_text(
+                json.dumps({"items": [{"conflict_flags": ["60 min"]}]}), encoding="utf-8")
+            second = desktop_tasks.stage_input_fingerprint(out, "clarification-report")
+
+        self.assertNotEqual(first, second)
+
     def test_chain_manifest_records_actual_functional_synthesis_route(self) -> None:
         import desktop_tasks
 

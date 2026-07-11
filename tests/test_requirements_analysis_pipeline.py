@@ -506,13 +506,69 @@ class LlmEnrichmentTests(unittest.TestCase):
 
             assert result["enriched"] == 0
             assert result["enrich_degraded"] == 1
+            assert result["route"] == "stub"
+            assert result["route_requested"] == "openai_compatible"
+            assert result.get("note")
             payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            assert payload["route"] == "stub"
             item = payload["items"][0]
             assert item["software_requirement_text"] == "The meter shall log power-down events to OBIS 0-0:96.1.0."  # 保留确定性基线
             assert item["developer_guidance"] == []
             assert item["analysis_source"] == "deterministic"
             assert any("编造结构编码" in msg
                        for row in payload["issues"] for msg in row["issues"])
+
+    def test_partially_accepted_enrichment_keeps_openai_route(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [
+                {
+                    "ai_req_id": "AI-1",
+                    "description": "Log events at OBIS 0-0:96.1.0.",
+                    "source_quote": "log events at 0-0:96.1.0",
+                    "source_block_ids": ["B-1"],
+                    "module": "事件记录",
+                },
+                {
+                    "ai_req_id": "AI-2",
+                    "description": "The meter shall synchronize its clock.",
+                    "source_quote": "synchronize its clock",
+                    "source_block_ids": ["B-2"],
+                    "module": "时钟",
+                },
+            ])
+
+            def fake_chat(system: str, user: str) -> dict:
+                if '"ai_req_id": "AI-1"' in user:
+                    return {"items": [{
+                        "software_requirement_text": "写入伪造对象 0-0:96.1.7。",
+                    }]}
+                return {"items": [{"software_requirement_text": "同步电表时钟。"}]}
+
+            result = run_requirements_analysis(
+                tmp_path, route="openai_compatible", chat=fake_chat, concurrency=1)
+
+        assert result["enriched"] == 1
+        assert result["enrich_degraded"] == 1
+        assert result["route"] == "openai_compatible"
+
+    def test_empty_enrichment_item_is_degraded_and_reports_stub_route(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            self._seed(tmp_path)
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{}]}
+
+            result = run_requirements_analysis(
+                tmp_path, route="openai_compatible", chat=fake_chat)
+            payload = json.loads(
+                (tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+
+        assert result["enriched"] == 0
+        assert result["enrich_degraded"] == 1
+        assert result["route"] == "stub"
+        assert payload["items"][0]["analysis_source"] == "deterministic"
 
     def test_fabricated_plain_integer_is_soft_not_rejected(self) -> None:
         """散文里的序号/步骤数（如"1. 2. 3."）非结构编码 → 软标记、保留富化（与 ai_extract 同纪律）。"""
@@ -593,6 +649,30 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert item["hardware_translation"] == "具有移动数据集中器功能的设备。"
             assert item["hardware_summary"] == "硬件项：具有移动数据集中器功能的设备。"
             assert "机械结构硬件" in item["ownership_reason"]
+
+    def test_empty_hardware_enrichment_is_degraded(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [{
+                "ai_req_id": "AI-HW",
+                "description": "The enclosure shall use a sealed metal housing.",
+                "source_quote": "The enclosure shall use a sealed metal housing.",
+                "source_block_ids": ["B-1"],
+                "module": "mechanical",
+            }])
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{}]}
+
+            result = run_requirements_analysis(
+                tmp_path, route="openai_compatible", chat=fake_chat)
+            payload = json.loads(
+                (tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+
+        assert result["enriched"] == 0
+        assert result["enrich_degraded"] == 1
+        assert result["route"] == "stub"
+        assert payload["items"][0]["analysis_source"] == "deterministic"
 
     def test_hardware_items_keep_translation_and_reason_without_guidance_or_tests(self) -> None:
         with tempfile.TemporaryDirectory() as td:

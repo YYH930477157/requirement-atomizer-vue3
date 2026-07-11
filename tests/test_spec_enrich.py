@@ -176,6 +176,45 @@ class SpecEnrichTests(unittest.TestCase):
         self.assertIn("Register value scaler_unit 77 selective access", prompts[0])
         self.assertIn("§4.3.2", prompts[0])
 
+    def test_blue_book_origin_survives_cache_hit(self) -> None:
+        index = {
+            "interface_classes": {
+                "3": {
+                    "name": "Register",
+                    "section": "4.3.2",
+                    "text": "Register value scaler_unit selective access",
+                }
+            }
+        }
+        calls = 0
+
+        def fake_chat(config, system, user):
+            nonlocal calls
+            calls += 1
+            return {"description": "Register 行为说明；依据 DLMS Blue Book Ed.16 §4.3.2。"}
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.chat_json", side_effect=fake_chat):
+            root = Path(tmp)
+            index_path = root / "blue_book_index.json"
+            cache_path = root / "c.jsonl"
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            first_req = obj_req()
+            first_req["class_id"] = "3"
+            second_req = obj_req()
+            second_req["class_id"] = "3"
+
+            spec_enrich.enrich_descriptions(
+                [first_req], config=make_config(1), cache_path=cache_path,
+                blue_book_index_path=index_path)
+            first_calls = calls
+            spec_enrich.enrich_descriptions(
+                [second_req], config=make_config(1), cache_path=cache_path,
+                blue_book_index_path=index_path)
+
+        self.assertEqual(calls, first_calls)
+        self.assertEqual(first_req.get("blue_book_origin"), "4.3.2")
+        self.assertEqual(second_req.get("blue_book_origin"), "4.3.2")
+
     def test_blue_book_citation_mismatch_rejected_and_template_kept(self) -> None:
         req = obj_req()
         req["class_id"] = "3"

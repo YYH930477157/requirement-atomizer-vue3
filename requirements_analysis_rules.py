@@ -95,9 +95,13 @@ CO_DESIGN_TERMS = (
 SEARCH_FIELDS = ("title", "description", "requirement", "module", "source_quote", "labels")
 
 # CJK 短词（事件/显示/时钟…）按裸子串匹配会误伤部件描述（"无事件发生"、"时钟计数器型号"）。
-# 中文无词边界，难以精确分词；务实护栏：当短 CJK 软件词命中时，若上下文出现这些"硬件/部件"
-# 修饰词，则视为假朋友、撤销该命中（宁可漏判软件→走默认 software，也不把硬件件误判归类）。
+# 中文无词边界，难以精确分词；只检查命中附近的硬件名词，并让明确的软件动作保留该命中。
 _CJK_HW_CONTEXT_TERMS = ("型号", "芯片", "器件", "物理", "结构", "材质", "规格", "封装", "引脚", "硬件")
+_CJK_SOFTWARE_ACTION_TERMS = (
+    "读取", "同步", "记录", "配置", "处理", "上报", "控制",
+    "管理", "计算", "更新", "校准", "实现", "支持",
+)
+_CJK_CONTEXT_RADIUS = 12
 
 
 def classify_ownership(requirement: dict[str, Any]) -> dict[str, Any]:
@@ -129,7 +133,8 @@ def _search_text(requirement: dict[str, Any]) -> str:
             parts.extend(str(item) for item in value)
         elif value is not None:
             parts.append(str(value))
-    return " ".join(parts).casefold()
+    # Keep local CJK context windows inside one source field/value.
+    return (" " * (_CJK_CONTEXT_RADIUS + 1)).join(parts).casefold()
 
 
 def _first_match(text: str, terms: tuple[str, ...]) -> str | None:
@@ -145,7 +150,7 @@ def _first_match(text: str, terms: tuple[str, ...]) -> str | None:
 
 
 def _is_cjk_false_friend(text: str, term: str) -> bool:
-    """短 CJK 软件词（≤2 字）若出现在硬件/部件上下文里，判为假朋友（0711 评审）。
+    """短 CJK 软件词仅在局部硬件名词上下文且无软件动作时判为假朋友。
 
     例如 term="时钟" 命中 "时钟计数器型号"、term="事件" 命中 "事件计数器芯片"——
     这些是硬件件描述里的字面词，不是功能域信号。长 CJK 词（≥3 字，如"访问权限"）
@@ -153,7 +158,18 @@ def _is_cjk_false_friend(text: str, term: str) -> bool:
     """
     if len(term) > 2:
         return False
-    return any(hw in text for hw in _CJK_HW_CONTEXT_TERMS)
+    positions = [match.start() for match in re.finditer(re.escape(term), text)]
+    if not positions:
+        return False
+    for position in positions:
+        start = max(0, position - _CJK_CONTEXT_RADIUS)
+        end = min(len(text), position + len(term) + _CJK_CONTEXT_RADIUS)
+        context = text[start:end]
+        hardware_context = any(value in context for value in _CJK_HW_CONTEXT_TERMS)
+        software_action = any(value in context for value in _CJK_SOFTWARE_ACTION_TERMS)
+        if not hardware_context or software_action:
+            return False
+    return True
 
 
 def _contains_cjk(value: str) -> bool:

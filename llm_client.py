@@ -76,13 +76,7 @@ def _truncate_for_trace(value: Any) -> Any:
     if isinstance(value, list):
         return [_truncate_for_trace(v) for v in value]
     if isinstance(value, dict):
-        out = {}
-        for k, v in value.items():
-            if k in ("content", "reasoning_content") and isinstance(v, str):
-                out[k] = _truncate_for_trace(v)
-            else:
-                out[k] = v  # role/name/usage/finish_reason/model 等结构字段原样
-        return out
+        return {key: _truncate_for_trace(item) for key, item in value.items()}
     return value
 
 

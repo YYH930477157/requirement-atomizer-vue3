@@ -104,7 +104,7 @@ def run_requirements_analysis(
     # LLM 富化层：注入的 chat 优先（测试/嵌入）；否则请求 LLM 路由时按 pipeline 解析端点，
     # 端点缺失则降级为纯确定性（executed_route=stub），出处如实记录。
     active_chat, model = _resolve_chat(route, chat, pipeline_path)
-    executed_route = "openai_compatible" if active_chat is not None else STUB_ROUTE
+    executed_route = STUB_ROUTE
     note = ""
     if route != STUB_ROUTE and active_chat is None:
         note = DEGRADE_NOTE
@@ -175,6 +175,10 @@ def run_requirements_analysis(
             out_dir, enrich_jobs, vocabulary, active_chat, enrich_cache, model,
             issues=issues, concurrency=concurrency, progress_callback=progress_callback)
         _save_enrich_cache(out_dir, model, enrich_cache)
+        if enriched_count > 0:
+            executed_route = "openai_compatible"
+        else:
+            note = "LLM 富化结果均未被采纳，本次交付物仅包含确定性分析结果"
 
     from requirement_record import provenance
     payload = {
@@ -355,17 +359,23 @@ def _llm_enrich_item(
     if fabricated_codes:
         return False, [f"LLM 富化编造结构编码，已拒绝并降级: {'; '.join(fabricated_codes)}"]
 
+    accepted = False
     for field in _ENRICH_FIELDS_TEXT:
         value = str(llm_item.get(field) or "").strip()
         if value:
             item[field] = value
+            accepted = True
     for field in _ENRICH_FIELDS_LIST:
         values = [str(x).strip() for x in _as_list(llm_item.get(field)) if str(x).strip()]
         if values:
             item[field] = values
+            accepted = True
     reason = str(llm_item.get("ownership_reason") or "").strip()
     if reason and not item.get("ownership_reason"):
         item["ownership_reason"] = reason
+        accepted = True
+    if not accepted:
+        return False, ["LLM 富化未返回可采纳的叙述字段，已降级为确定性"]
     item["analysis_source"] = "llm"
 
     soft = [d for d in drift if not d.startswith("fabricated code")]
@@ -433,6 +443,8 @@ def _llm_enrich_hardware_item(
                         | (extract_ints(produced) - extract_ints(source_basis)))
     if fabricated:
         return False, [f"硬件翻译含无据编码/数字，已保留原文说明: {', '.join(fabricated[:6])}"]
+    if not translation and not reason:
+        return False, ["LLM 硬件富化未返回可采纳的翻译或判断依据，已保留原文说明"]
     if translation:
         item["hardware_translation"] = translation
         item["hardware_summary"] = f"硬件项：{translation}"

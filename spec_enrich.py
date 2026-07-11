@@ -276,6 +276,9 @@ def enrich_descriptions(
         fp = fingerprint(req, config.model, blue_book_entry)
         hit = cache.get(fp)
         if hit is not None:
+            blue_book_origin = str(hit.get("blue_book_origin") or "").strip()
+            if blue_book_origin:
+                req["blue_book_origin"] = blue_book_origin
             apply_result(req, hit["description"], enriched=bool(hit.get("enriched")), note=str(hit.get("note") or ""))
             enriched += 1 if hit.get("enriched") else 0
             rejected += 0 if hit.get("enriched") else 1
@@ -295,7 +298,8 @@ def enrich_descriptions(
             rejected += 1
         new_rows.append({"fingerprint": fp, "model": config.model,
                          "prompt_version": ENRICH_PROMPT_VERSION, "description": desc,
-                         "enriched": is_enriched, "note": note})
+                         "enriched": is_enriched, "note": note,
+                         "blue_book_origin": str(req.get("blue_book_origin") or "")})
 
     total = len(pending)
     done = 0

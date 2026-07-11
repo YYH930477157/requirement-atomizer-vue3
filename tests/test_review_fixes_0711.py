@@ -89,15 +89,22 @@ class CatalogKeyGuardTests(unittest.TestCase):
 
 class PdfCellFallbackTests(unittest.TestCase):
     def test_cell_outside_tolerance_is_not_dropped(self) -> None:
-        """单元格距列锚点 >2×容差时旧逻辑丢弃；现兜底归到最近列（保内容）。"""
-        from parsers.pdf_parser import _assemble_rows, COLUMN_ALIGN_TOLERANCE
-        columns = [100.0, 200.0, 300.0]
-        # 一个单元格 x0 严重偏离任何列锚点（>2×容差），但带关键 OBIS 文本
-        region = [{"cells": [{"x0": 100.0, "text": "A"}, {"x0": 200.0, "text": "B"}]},
-                  {"cells": [{"x0": 100.0, "text": "obj"},
-                             {"x0": 999.0, "text": "0-0:96.1.0"}]}]  # 999 远离所有列
+        """偏移单元格成为单例锚点后，经过稀疏列校验仍不得丢失。"""
+        from parsers.pdf_parser import _assemble_rows, _validate_text_table
+        columns = [100.0, 200.0, 300.0, 999.0]
+        region = [
+            {"cells": [{"x0": 100.0, "text": "A"}, {"x0": 200.0, "text": "B"},
+                       {"x0": 300.0, "text": "C"}]},
+            {"cells": [{"x0": 100.0, "text": "D"}, {"x0": 200.0, "text": "E"},
+                       {"x0": 300.0, "text": "F"},
+                       {"x0": 999.0, "text": "0-0:96.1.0"}]},
+            {"cells": [{"x0": 100.0, "text": "G"}, {"x0": 200.0, "text": "H"},
+                       {"x0": 300.0, "text": "I"}]},
+        ]
         rows = _assemble_rows(region, columns)
-        all_text = " ".join(" ".join(r) for r in rows)
+        validated = _validate_text_table(rows, region_lines=3, page_candidate_lines=3)
+        self.assertIsNotNone(validated)
+        all_text = " ".join(" ".join(r) for r in validated or [])
         self.assertIn("0-0:96.1.0", all_text, "容差外的单元格不应被丢弃")
 
 
@@ -156,6 +163,19 @@ class TraceTruncationTests(unittest.TestCase):
         out = _truncate_for_trace([{"role": "user", "content": "short"}])
         self.assertEqual(out[0]["role"], "user")
 
+    def test_nested_response_content_truncated(self) -> None:
+        from llm_client import _truncate_for_trace
+        value = {"choices": [{"message": {
+            "content": "x" * 5000,
+            "reasoning_content": "r" * 5000,
+        }}]}
+        out = _truncate_for_trace(value)
+        message = out["choices"][0]["message"]
+        self.assertLess(len(message["content"]), 2200)
+        self.assertLess(len(message["reasoning_content"]), 2200)
+        self.assertIn("truncated", message["content"])
+        self.assertIn("truncated", message["reasoning_content"])
+
     def test_full_mode_when_env_set(self) -> None:
         from llm_client import _truncate_for_trace
         long = "x" * 5000
@@ -204,11 +224,9 @@ class ConservationSurfaceTests(unittest.TestCase):
 # --- P2 #11: MODULE_TO_SHEET 漂移检查 -------------------------------------------
 
 class ModuleMappingDriftTests(unittest.TestCase):
-    def test_drift_check_returns_lists(self) -> None:
+    def test_no_unexpected_module_mapping_drift(self) -> None:
         from template_writer import module_mapping_drift
-        unmapped, extra = module_mapping_drift()
-        self.assertIsInstance(unmapped, list)
-        self.assertIsInstance(extra, list)
+        self.assertEqual(module_mapping_drift(), ([], []))
 
 
 # --- P2 #12: CJK 短词假朋友 ------------------------------------------------------
