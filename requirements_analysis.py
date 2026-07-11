@@ -104,7 +104,7 @@ def run_requirements_analysis(
     # LLM 富化层：注入的 chat 优先（测试/嵌入）；否则请求 LLM 路由时按 pipeline 解析端点，
     # 端点缺失则降级为纯确定性（executed_route=stub），出处如实记录。
     active_chat, model = _resolve_chat(route, chat, pipeline_path)
-    executed_route = "openai_compatible" if active_chat is not None else STUB_ROUTE
+    executed_route = STUB_ROUTE
     note = ""
     if route != STUB_ROUTE and active_chat is None:
         note = DEGRADE_NOTE
@@ -175,6 +175,10 @@ def run_requirements_analysis(
             out_dir, enrich_jobs, vocabulary, active_chat, enrich_cache, model,
             issues=issues, concurrency=concurrency, progress_callback=progress_callback)
         _save_enrich_cache(out_dir, model, enrich_cache)
+        if enriched_count > 0:
+            executed_route = "openai_compatible"
+        else:
+            note = "LLM 富化结果均未被采纳，本次交付物仅包含确定性分析结果"
 
     from requirement_record import provenance
     payload = {
