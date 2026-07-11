@@ -89,15 +89,22 @@ class CatalogKeyGuardTests(unittest.TestCase):
 
 class PdfCellFallbackTests(unittest.TestCase):
     def test_cell_outside_tolerance_is_not_dropped(self) -> None:
-        """单元格距列锚点 >2×容差时旧逻辑丢弃；现兜底归到最近列（保内容）。"""
-        from parsers.pdf_parser import _assemble_rows, COLUMN_ALIGN_TOLERANCE
-        columns = [100.0, 200.0, 300.0]
-        # 一个单元格 x0 严重偏离任何列锚点（>2×容差），但带关键 OBIS 文本
-        region = [{"cells": [{"x0": 100.0, "text": "A"}, {"x0": 200.0, "text": "B"}]},
-                  {"cells": [{"x0": 100.0, "text": "obj"},
-                             {"x0": 999.0, "text": "0-0:96.1.0"}]}]  # 999 远离所有列
+        """偏移单元格成为单例锚点后，经过稀疏列校验仍不得丢失。"""
+        from parsers.pdf_parser import _assemble_rows, _validate_text_table
+        columns = [100.0, 200.0, 300.0, 999.0]
+        region = [
+            {"cells": [{"x0": 100.0, "text": "A"}, {"x0": 200.0, "text": "B"},
+                       {"x0": 300.0, "text": "C"}]},
+            {"cells": [{"x0": 100.0, "text": "D"}, {"x0": 200.0, "text": "E"},
+                       {"x0": 300.0, "text": "F"},
+                       {"x0": 999.0, "text": "0-0:96.1.0"}]},
+            {"cells": [{"x0": 100.0, "text": "G"}, {"x0": 200.0, "text": "H"},
+                       {"x0": 300.0, "text": "I"}]},
+        ]
         rows = _assemble_rows(region, columns)
-        all_text = " ".join(" ".join(r) for r in rows)
+        validated = _validate_text_table(rows, region_lines=3, page_candidate_lines=3)
+        self.assertIsNotNone(validated)
+        all_text = " ".join(" ".join(r) for r in validated or [])
         self.assertIn("0-0:96.1.0", all_text, "容差外的单元格不应被丢弃")
 
 

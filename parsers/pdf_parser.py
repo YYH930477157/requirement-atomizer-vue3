@@ -194,6 +194,14 @@ def _validate_text_table(matrix: list[list[str]], *, region_lines: int, page_can
     # 列占用率：非首列须在 ≥2 行有内容，幽灵列删掉后重验
     keep = [0] + [j for j in range(1, ncols)
                   if sum(1 for row in matrix if j < len(row) and row[j]) >= 2]
+    dropped = [j for j in range(1, ncols) if j not in keep]
+    # 偏移单元格可能自成单例锚点；删幽灵列前并回最近保留列，保证内容守恒。
+    for row in matrix:
+        for column in dropped:
+            if column >= len(row) or not row[column]:
+                continue
+            target = min(keep, key=lambda candidate: abs(candidate - column))
+            row[target] = " ".join(part for part in (row[target], row[column]) if part)
     matrix = [[row[j] if j < len(row) else "" for j in keep] for row in matrix]
     ncols = len(keep)
     if ncols < 2:
