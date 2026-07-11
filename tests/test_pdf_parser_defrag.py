@@ -41,6 +41,26 @@ class DefragTests(unittest.TestCase):
         self.assertGreater(DEFRAG_RATIO_THRESHOLD, 0)   # 门控存在（ABNT 实测 0.001，UNI 0.19）
 
 
+class DedoubleTests(unittest.TestCase):
+    """PDF 假粗体双写（粗体=同字形画两遍,抽出来每字符×2——真实案例 UNI 前言）。"""
+
+    def test_doubled_bold_paragraph_collapsed(self) -> None:
+        raw = "TThhiiss tteecchhnniiccaall ssppeecciiffiiccaattiioonn ww aass dd eevveellooppeedd"
+        self.assertEqual(defragment_text(raw), "This technical specification was developed")
+
+    def test_mixed_bold_and_normal_line(self) -> None:
+        raw = "TThhiiss ww aass aapppprroovveedd The normal sentence stays."
+        self.assertEqual(defragment_text(raw), "This was approved The normal sentence stays.")
+
+    def test_normal_text_never_collapsed(self) -> None:
+        text = "The meter shall support classes A and B look book proof"
+        self.assertEqual(defragment_text(text), text)
+
+    def test_legit_double_letter_words_safe(self) -> None:
+        text = "The book keeper took a good look at the wood floor"
+        self.assertEqual(defragment_text(text), text)
+
+
 class FooterNoiseTests(unittest.TestCase):
     def test_copyright_footer_pattern(self) -> None:
         self.assertTrue(_COPYRIGHT_FOOTER_RE.search("UNI/TS 12007:2026 © UNI Page 23"))

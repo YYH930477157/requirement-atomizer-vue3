@@ -59,15 +59,53 @@ def _guarded_sub(pattern: re.Pattern[str], text: str) -> str:
         head = text[: m.start()].rstrip()
         lead = head.rsplit(None, 1)[-1] if head else ""
         # 引用字母保护：前词是 Annex/Class/Table 等，或前词本身是单个大写字母（引用链
-        # "Annex A B"——A 的前词是 Annex，B 的前词是 A）
+        # "Annex A B"——A 的前词是 Annex，B 的前词是 A）；and/or 后的单个大写字母同理
+        # （"classes A and B look…"），小写不豁免（"and b ecomes" 是真碎片）
         if lead.lower() in _REF_LEAD_WORDS or (len(lead) == 1 and lead.isupper()):
+            return m.group(0)
+        if lead.lower() in ("and", "or") and m.group(1).isupper():
             return m.group(0)
         return m.group(1) + m.group(2)
     return pattern.sub(repl, text)
 
 
+_PAIR_RE = re.compile(r"(.)\1")
+
+
+def _collapse_pairs(word: str) -> str | None:
+    """相邻等对折半（"TThhiiss"→"This"，"002255.."→"025."）。几乎全部字符成对才算
+    双写词（允许 1 个落单残字,容纳粘尾标点/奇数长度）,否则返回 None（"book" 折成
+    "bok" 会损失信息——必须整词自证是双写才动）。"""
+    collapsed = _PAIR_RE.sub(r"\1", word)
+    if 2 * len(collapsed) - len(word) in (0, 1):
+        return collapsed
+    return None
+
+
+def dedouble_text(text: str) -> str:
+    """PDF 假粗体去双写（真实案例 UNI 12007 前言：粗体=同字形画两遍→"TThhiiss tteecchh…"）。
+
+    两级门控：长词(≥4)完全成对即自证双写、无条件收（正常英文不存在全双写长词）；
+    短词（"ww"/"11"/"aa"合法存在）只在同文本另有 ≥2 个长双写词佐证时才收。
+    """
+    words = text.split(" ")
+    long_doubles = sum(1 for w in words if len(w) >= 4 and _collapse_pairs(w) is not None)
+    if long_doubles == 0:
+        return text
+    out: list[str] = []
+    for w in words:
+        collapsed = _collapse_pairs(w) if len(w) >= 2 else None
+        if collapsed is not None and (len(w) >= 4 or long_doubles >= 2):
+            out.append(collapsed)
+        else:
+            out.append(w)
+    return " ".join(out)
+
+
 def defragment_text(text: str) -> str:
-    """拼合词内空格碎片；迭代到稳定（"V a lue" 两轮收敛）。引用字母（Annex B 等）受保护。"""
+    """拼合词内空格碎片；迭代到稳定（"V a lue" 两轮收敛）。引用字母（Annex B 等）受保护。
+    假粗体双写先收缩（"TThhiiss"→"This"），再走碎片拼合（"D eevveellooppeedd"→"d eveloped"→"developed"）。"""
+    text = dedouble_text(text)
     prev = None
     while prev != text:
         prev = text
@@ -476,6 +514,8 @@ def _merge_continuation_blocks(
             if (prev_text and prev_text[-1] not in _SENTENCE_TERMINALS
                     and cur_text[:1].islower()
                     and not _LIST_ITEM_RE.match(cur_text)
+                    and not _DOT_LEADER_RE.search(prev_text)
+                    and not _DOT_LEADER_RE.search(cur_text)
                     and len(prev_text) + len(cur_text) < 4000):
                 if prev_text.endswith("-"):
                     joined = prev_text[:-1] + cur_text   # 跨页连字断词
@@ -635,6 +675,8 @@ def _starts_new_paragraph(
         return True
     if _LIST_ITEM_RE.match(line["text"]):
         return True   # 列表项必自成段（不论行距）
+    if _DOT_LEADER_RE.search(line["text"]) or _DOT_LEADER_RE.search(previous["text"]):
+        return True   # 目录条目（点引导线）永不与相邻行黏段——黏了会把整屏点串塞进正文
     gap = float(line["top"]) - float(previous["bottom"])
     if gap >= 12:
         # 续行豁免：机翻 PDF 行距不齐会把一句话切成两块（真实取证 22% 段落块小写开头）。

@@ -103,7 +103,12 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
         "items": items,
     }
     target = out_dir / FUNCTIONAL_REQUIREMENTS
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # 原子写（0711 评审跟进）：manifest 已原子化,主产物同样不能留半截 JSON——消费端
+    # (requirements_analysis) 读坏文件会静默回退逐原子输入,合成结果悄悄丢失。
+    # 不 import desktop_tasks(它 import 本模块,会循环);os.replace 在 Windows 上可覆盖目标。
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, target)
     # 守恒摘要上浮顶层（0711 评审）：此前只在写盘 JSON + WARNING 日志里，桌面/UI 看不到，
     # 丢原子无人察觉。上浮计数（明细仍留 conservation 字段），让调用方可直接显示。
     conservation_summary = {

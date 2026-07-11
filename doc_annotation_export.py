@@ -134,6 +134,8 @@ def _clean_block_text(text: str) -> str:
     # 剥离段内嵌的框线乱码（正文 + 句末框线噪声，如 'When --``,``-- tested' → 'When tested'）
     text = _INLINE_GARBAGE_RE.sub(" ", text)
     text = _LEADER_DOTS_RE.sub("", text)
+    # 行中长点串（目录行被段落合并黏进正文时,点引导线出现在行中——真实截图:整屏点溢出）
+    text = re.sub(r"[.·…]{4,}", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -188,6 +190,7 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
 
     prev_page: int | None = None
     marker_state: dict[str, Any] = {"next": 1, "req_numbers": {}}
+    outline_map = _build_outline_map(blocks)
     for b in blocks:
         bid = str(b.get("block_id") or "")
         text = str(b.get("text") or "")
@@ -214,7 +217,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         # 渲染单个 block 的 HTML（表格块带 data_rows 时渲染真表格，旧 out_dir 无该字段回退扁平文字）
         block_html = _render_one_block(bid, text, path, region, is_heading, is_noise, is_omission, anchored,
                                        req_numbers or {}, (sub_anchor_map or {}).get(bid) or [],
-                                       block=b, marker_state=marker_state)
+                                       block=b, marker_state=marker_state,
+                                       outline_level=outline_map.get(bid))
 
         # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
         if region in _COLLAPSIBLE_REGIONS:
@@ -442,11 +446,98 @@ def _render_table_inner(block: dict, anchored: list[dict[str, Any]] | None = Non
             f'<table>{thead}<tbody>{body}</tbody></table></div></figure>'), placed
 
 
+_TOC_ENTRY_SHAPE_RE = re.compile(r"^\d+(?:\.\d+)*\s+.+\s\d{1,3}$")
+_TRAILING_PAGE_RE = re.compile(r"\s+\d{1,3}$")
+
+
+_ANNEX_HEADING_RE = re.compile(r"^(annex|appendix|附录)\s+[A-Z0-9]", re.IGNORECASE)
+_LEADING_NUM_RE = re.compile(r"^(\d+)(?:\.(\d+))?\b")
+# 印刷目录条目：编号 + 标题 + （点引导线）+ 页码
+_PRINTED_TOC_RE = re.compile(r"^(\d+(?:\.\d+)*)\s+(.{3,}?)[\s.·…]*?(\d{1,3})?\s*$")
+
+
+def _norm_outline(text: str) -> str:
+    return re.sub(r"[^0-9a-z一-鿿]+", "", text.casefold())
+
+
+def _parse_printed_toc(blocks: list[dict[str, Any]]) -> tuple[list[tuple[str, str, int]], int]:
+    """从文档自带的印刷目录（INDEX/Contents 区,点引导线条目）解析 (编号, 标题, 级别)。
+    只认前 40% 的块里、点引导线/尾页码形态的条目——这是文档结构的权威来源。
+    返回 (条目, 目录最后一块的下标)——回链搜索从目录之后开始。"""
+    entries: list[tuple[str, str, int]] = []
+    last_index = 0
+    limit = max(30, int(len(blocks) * 0.4))   # 小文档全扫（40% 窗口在测试级夹具上会饿死）
+    for index, b in enumerate(blocks[:limit]):
+        raw = str(b.get("text") or "")
+        if not (re.search(r"[.·…]{4,}", raw) or _TOC_ENTRY_SHAPE_RE.match(_clean_block_text(raw))):
+            continue
+        cleaned = _clean_block_text(raw)
+        m = _PRINTED_TOC_RE.match(cleaned)
+        if not m:
+            continue
+        numbering, title = m.group(1), m.group(2).strip()
+        level = min(numbering.count(".") + 1, 2)
+        if numbering.count(".") >= 2 or len(title) < 3:
+            continue   # 只收章/节两级
+        entries.append((numbering, title, level))
+        last_index = index
+    return entries, last_index
+
+
+def _build_outline_map(blocks: list[dict[str, Any]]) -> dict[str, int]:
+    """左栏=文件目录（真实反馈 2026-07-10）：以文档**自带印刷目录**为权威源——把目录
+    条目回链到正文对应标题块。启发式（标题块序列）在无印刷目录的文档上兜底。
+    序列法教训：事件码表行本身就是连续编号（1..40），任何"递增即是章"的启发式都会
+    把大表吞进目录。"""
+    entries, toc_end = _parse_printed_toc(blocks)
+    if len(entries) >= 5:
+        toc_end = toc_end + 1
+        picked: dict[str, int] = {}
+        used: set[str] = set()
+        for numbering, title, level in entries:
+            want_prefix = _norm_outline(f"{numbering} {title[:16]}")
+            for b in blocks[toc_end:] if len(blocks) > toc_end else blocks:
+                if b.get("type") != "heading" or b.get("noise"):
+                    continue
+                bid = str(b.get("block_id") or "")
+                if not bid or bid in used:
+                    continue
+                text = _clean_block_text(str(b.get("text") or ""))
+                if _norm_outline(text)[:len(want_prefix)] == want_prefix:
+                    picked[bid] = level
+                    used.add(bid)
+                    break
+        if len(picked) >= 3:
+            return picked
+    # 兜底：无印刷目录 → 标题块直接进目录（章/节两级,印刷目录形态与超深层剔除）
+    picked = {}
+    seen: dict[str, str] = {}
+    for b in blocks:
+        if b.get("type") != "heading" or b.get("noise"):
+            continue
+        text = _clean_block_text(str(b.get("text") or ""))
+        if not text or _TOC_ENTRY_SHAPE_RE.match(text):
+            continue
+        level = _block_heading_level(b)
+        if level >= 3:
+            continue
+        key = _TRAILING_PAGE_RE.sub("", text).casefold()
+        prev = seen.get(key)
+        if prev:
+            picked.pop(prev, None)
+        bid = str(b.get("block_id") or "")
+        if bid:
+            picked[bid] = level
+            seen[key] = bid
+    return picked
+
+
 def _render_one_block(bid: str, text: str, path: list, region: str,
                       is_heading: bool, is_noise: bool, is_omission: bool,
                       anchored: list, req_numbers: dict[str, int] | None = None,
                       sub_anchors: list | None = None, block: dict | None = None,
-                      marker_state: dict[str, Any] | None = None) -> str:
+                      marker_state: dict[str, Any] | None = None,
+                      outline_level: int | None = None) -> str:
     cls = ["doc-block"]
     if is_heading:
         cls.append("heading")
@@ -462,6 +553,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         cls.append("is-table")
     elif _LIST_TEXT_RE.match(text):
         cls.append("list-item")   # 悬挂缩进
+    if len(text) < 160:
+        cls.append("short")   # 短行不 justify（目录条目/落款,拉词距很丑——真实截图反馈）
     depth = min(len(path), 4) if path else 0
 
     numbers = req_numbers or {}
@@ -485,7 +578,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         content = (f'<p class="text" data-block-id="{html.escape(bid)}">'
                    f'{text_html}{fallback}{sub_chips}</p>')
     return (
-        f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}" style="--depth:{depth}">'
+        f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}"'
+        f'{f" data-outline={outline_level}" if outline_level else ""} style="--depth:{depth}">'
         f'<div class="block-inner">'
         f'{omission_html}'
         f'{content}'
@@ -566,25 +660,28 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <title>文档批注审核 · {source}</title>
 <style>
 :root {{
-  --page: #f5f2ec;
-  --paper: #fffdf8;
-  --panel: #fbfaf6;
-  --line: #e7dfd2;
-  --line-strong: #d8cebd;
-  --ink: #24282f;
-  --muted: #858a92;
-  --faint: #b4aaa0;
-  --accent: #315f72;
-  --accent-soft: #e8f0f1;
-  --accent-quiet: #6e8791;
+  --page: #f5f3ee;
+  --paper: #fbfaf7;
+  --panel: #ffffff;
+  --line: #e4e0d8;
+  --line-strong: #d7d1c6;
+  --ink: #171717;
+  --muted: #707070;
+  --faint: #a4a09a;
+  --accent: #0f766e;
+  --accent-soft: #dff4ef;
+  --accent-quiet: #4d9a92;
+  --highlight: #fff1a8;
+  --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  --sans: Inter, system-ui, -apple-system, "Microsoft YaHei", sans-serif;
   --st-accepted: #e6f0e8; --st-accepted-tx: #2f6842;
   --st-rejected: #f4e7e3; --st-rejected-tx: #9b3b32;
   --st-discussion: #f6efd8; --st-discussion-tx: #8a6417;
   --omission-bg: #f8efd9;
 }}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-  color: var(--ink); background: var(--page); font-size: 15px; line-height: 1.76; }}
+body {{ margin: 0; font-family: var(--sans);
+  color: var(--ink); background: var(--page); font-size: 14px; line-height: 1.7; }}
 .reader-shell {{ min-height: 100vh; background:
   linear-gradient(90deg, rgba(255,255,255,.62), rgba(255,255,255,0) 18%, rgba(255,255,255,0) 82%, rgba(255,255,255,.5)),
   var(--page); }}
@@ -597,12 +694,16 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .topbar .stats {{ display: flex; gap: 22px; font-size: 12px; color: var(--muted); }}
 .topbar .stats strong {{ color: var(--ink); font-weight: 600; }}
 .topbar .stats .warn strong {{ color: var(--st-discussion-tx); }}
-.topbar button {{ background: transparent; color: var(--accent); border: 1px solid var(--line-strong); border-radius: 999px;
-  padding: 7px 14px; cursor: pointer; font-size: 12px; font-weight: 600; }}
-.topbar button:hover {{ background: var(--accent-soft); border-color: var(--accent-quiet); }}
+.topbar button {{ background: var(--ink); color: #ffffff; border: 1px solid var(--ink); border-radius: 8px;
+  padding: 7px 14px; cursor: pointer; font-size: 12px; font-weight: 600; font-family: var(--sans); }}
+.topbar button:hover {{ background: #333333; border-color: #333333; }}
 
 /* --- 三栏布局 --- */
-.layout {{ display: grid; grid-template-columns: 240px minmax(0, 1fr) 390px; height: calc(100vh - 56px); }}
+.layout {{ display: grid; grid-template-columns: 264px minmax(0, 1fr) 336px; height: calc(100vh - 56px); }}
+
+/* 阅读进度条（Instapaper 式细条） */
+.read-progress {{ position: sticky; top: 56px; z-index: 9; height: 3px; background: transparent; }}
+.read-progress i {{ display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }}
 
 /* --- 左：大纲 --- */
 /* --- 左侧大纲：树形可折叠 --- */
@@ -627,36 +728,42 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 
 /* --- 中：文档 --- */
 .paper {{ overflow-y: auto; padding: 46px 0 72px; }}
-.doc-content {{ max-width: 760px; margin: 0 auto; padding: 48px 58px 70px; background: var(--paper);
-  border: 1px solid rgba(231,223,210,.72); box-shadow: 0 24px 80px rgba(44,39,31,.08); }}
+.doc-content {{ max-width: 720px; margin: 0 auto; padding: 56px 64px 72px; background: var(--paper);
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(23, 23, 23, 0.08);
+  font-family: var(--serif); font-size: 18px; line-height: 2.0; }}
 
-.doc-block {{ margin-bottom: 5px; }}
+.doc-block {{ margin-bottom: 10px; }}
 .block-inner {{ position: relative; padding-left: calc(var(--depth, 0) * 16px); }}
 .doc-block .text {{ margin: 0; padding: 2px 0; }}
 .doc-block.heading .text {{ font-weight: 600; margin-top: 20px; }}
-.doc-block.h1 .text {{ font-size: 22px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }}
-.doc-block.h2 .text {{ font-size: 18px; }}
+.doc-block.heading .text {{ line-height: 1.3; }}
+.doc-block.h1 .text {{ font-size: 32px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }}
+.doc-block.h2 .text {{ font-size: 23px; }}
 .doc-block.h2 .block-inner {{ border-left: 2px solid var(--accent-quiet); padding-left: 12px; margin-left: -14px; }}
-.doc-block.h3 .text {{ font-size: 16px; color: #515761; }}
+.doc-block.h3 .text {{ font-size: 19px; color: #3d3d3d; }}
 .doc-block.noise .text {{ opacity: 0.3; font-size: 13px; }}
 .doc-block.omission {{ background: linear-gradient(90deg, var(--omission-bg), rgba(248,239,217,.35)); border-radius: 4px; padding: 4px 8px; margin: 5px 0; }}
 .doc-block.omission .text {{ border-left: 2px solid #cda85c; padding-left: 9px; }}
 .doc-block.anchored {{ cursor: pointer; border-radius: 4px; }}
 .doc-block.anchored:hover {{ background: var(--accent-soft); }}
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
-.text mark {{ background: #ffe89a; padding: 0 2px; border-radius: 2px; }}
+.text mark {{ background: linear-gradient(transparent 44%, var(--highlight) 44%); padding: 0 2px; border-radius: 0; }}
 .page-break {{ display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #b8b2a4; font-size: 11px; }}
 .page-break::before, .page-break::after {{ content: ""; flex: 1; border-top: 1px dashed #ddd6c8; }}
 
 /* --- 阅读排版（优于原版 PDF：正文两端对齐、列表悬挂缩进、真表格） --- */
-.doc-block:not(.heading) .text {{ text-align: justify; hyphens: none; }}
+.doc-block .text {{ overflow-wrap: anywhere; }}
+.doc-block:not(.heading):not(.short) .text {{ text-align: justify; hyphens: none; }}
+.doc-block.short .text {{ text-align: left; }}
 .doc-block.list-item .text {{ padding-left: 1.6em; text-indent: -1.6em; text-align: left; }}
 .doc-table {{ margin: 14px 0 18px; }}
 .doc-table figcaption {{ font-size: 12px; font-weight: 600; color: #6e7787; margin-bottom: 6px; letter-spacing: .02em; }}
 .doc-table .table-badge {{ font-size: 10px; font-weight: 500; color: #8a6417; background: rgba(248,239,217,.8);
   border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 7px; margin-left: 8px; vertical-align: 1px; }}
 .doc-table .table-scroll {{ overflow-x: auto; border: 1px solid var(--line-strong); border-radius: 8px; }}
-.doc-table table {{ border-collapse: collapse; width: 100%; font-size: 12.5px; line-height: 1.5; }}
+.doc-table {{ font-family: var(--sans); }}
+.doc-table table {{ border-collapse: collapse; width: 100%; font-size: 13px; line-height: 1.55; }}
 .doc-table th, .doc-table td {{ border: 0; border-bottom: 1px solid var(--line); border-right: 1px solid rgba(231,223,210,.5);
   padding: 6px 10px; text-align: left; vertical-align: top; min-width: 52px; }}
 .doc-table th:last-child, .doc-table td:last-child {{ border-right: 0; }}
@@ -664,8 +771,8 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .doc-table tbody tr:nth-child(even) td {{ background: rgba(245,242,236,.55); }}
 .doc-table tbody tr:last-child td {{ border-bottom: 0; }}
 
-.doc-block.in-span {{ box-shadow: inset 3px 0 0 #a8c3ee; }}
-.doc-block.in-span.evidence {{ background: #eef4ff; border-radius: 6px; box-shadow: none; }}
+.doc-block.in-span {{ box-shadow: inset 3px 0 0 #9fd3cc; }}
+.doc-block.in-span.evidence {{ background: #ecf7f4; border-radius: 6px; box-shadow: none; }}
 .dd-legend {{ font-size: 11px; color: #8a8f98; margin: 4px 0 8px; }}
 .chip.sub .annotation-number {{ font-size: 10px; opacity: .75; }}
 .dd-subitems li {{ margin-bottom: 4px; }}
@@ -685,7 +792,7 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .chip[data-inline-marker="1"] .annotation-number,
 .chip[data-inline-marker="1"] .annotation-owner {{ font-size: 12px; font-weight: 750; letter-spacing: .03em; }}
 .chip[data-inline-marker="1"] .annotation-owner {{ margin-left: 2px; }}
-.chip[data-inline-marker="1"].quote-selected {{ background: #ffe89a; color: var(--accent); border-color: var(--accent); }}
+.chip[data-inline-marker="1"].quote-selected {{ background: var(--highlight); color: var(--accent); border-color: var(--accent); }}
 .source-classification {{ display: inline-flex; margin-left: 5px; transform: translateY(-0.08em);
   color: var(--faint); border: 0; border-bottom: 1px dotted var(--line-strong); padding: 0 2px 1px;
   background: transparent; cursor: pointer; vertical-align: super; line-height: 1; font-family: inherit; }}
@@ -698,6 +805,8 @@ body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .source-classification:hover, .source-classification.sel {{ color: var(--accent); border-color: var(--accent); }}
 .annotation-dot {{ width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .68; }}
 .annotation-number {{ font-variant-numeric: tabular-nums; letter-spacing: .04em; }}
+.chips, .chip, .source-classification, .page-break, .dd-legend, .omission-tag,
+.doc-table figcaption, .region-collapse summary {{ font-family: var(--sans); }}
 .chip:hover {{ color: var(--accent); border-color: var(--accent); }}
 .chip.sel {{ color: var(--accent); border-color: var(--accent); font-weight: 700; }}
 .chip.st-accepted {{ color: var(--st-accepted-tx); }}
@@ -761,8 +870,9 @@ textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
   </div>
   <button id="export-btn">导出裁决 JSON</button>
 </div>
+<div class="read-progress"><i id="read-progress-fill"></i></div>
 <div class="reader-layout layout">
-  <nav class="outline" id="outline"><div class="outline-title">大纲</div></nav>
+  <nav class="outline" id="outline"><div class="outline-title">目录</div></nav>
   <article class="paper" id="paper">
     <div class="doc-content">
 {blocks_html}
@@ -823,7 +933,8 @@ function paintChips() {{
 /* --- 左侧大纲：树形可折叠（h1 可展开/收起，h2/h3 嵌套） --- */
 function buildOutline() {{
   const nav = document.getElementById("outline");
-  const headings = Array.from(document.querySelectorAll(".doc-block.heading"));
+  // 文件目录（Python 侧权威判定 data-outline：章=1/节=2；印刷目录条目与深层条款不入）
+  const headings = Array.from(document.querySelectorAll(".doc-block[data-outline]"));
   if (headings.length === 0) {{ nav.style.display = "none"; return; }}
 
   const frag = document.createDocumentFragment();
@@ -831,7 +942,7 @@ function buildOutline() {{
   let currentH1Item = null; // 当前 h1 的 nav-item（用于 h2 归属）
 
   headings.forEach(h => {{
-    const level = h.classList.contains("h1") ? 1 : h.classList.contains("h3") ? 3 : 2;
+    const level = parseInt(h.getAttribute("data-outline") || "2", 10);
     const p = h.querySelector(".text"); if (!p) return;
     const text = p.textContent.trim().slice(0, 40); if (!text) return;
 
@@ -1058,6 +1169,17 @@ document.getElementById("export-btn").onclick = () => {{
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
   a.download = "ai_decisions_" + DOC_ID + ".json"; a.click();
 }};
+
+// 阅读进度条:中栏滚动比例(Instapaper 式)
+(function () {{
+  var paper = document.getElementById("paper");
+  var fill = document.getElementById("read-progress-fill");
+  if (!paper || !fill) return;
+  paper.addEventListener("scroll", function () {{
+    var max = paper.scrollHeight - paper.clientHeight;
+    fill.style.width = (max > 0 ? Math.min(100, paper.scrollTop / max * 100) : 0) + "%";
+  }}, {{ passive: true }});
+}})();
 
 paintChips(); buildOutline(); refreshDecidedCount();
 </script>

@@ -369,7 +369,7 @@
           </aside>
         </section>
         </template>
-        <DocumentReview v-else :client="apiClient" :active="activeNav === 'document'" />
+        <DocumentReview v-else-if="activeNav === 'document'" :client="apiClient" :active="activeNav === 'document'" />
 
         <footer class="status-bar">
           <span>输出目录：{{ currentOutputDir || "尚未选择输出目录" }}</span>
@@ -936,11 +936,13 @@ onMounted(() => {
 })
 
 function handleNavAction(item: PhaseNavId) {
-  activeNav.value = item
   if (item === "settings") {
+    // 设置是弹层不切页——切页会让背景空白（运行/审查内容都被 v-if 收走）
     showSettingsPanel.value = true
     void loadLlmSettings()
+    return
   }
+  activeNav.value = item
 }
 
 function closeSettingsPanel() {
@@ -2555,9 +2557,24 @@ tbody tr.selected {
   height: 100vh;
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: 78px auto 118px 72px minmax(0, 1fr) 32px;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+}
+
+.main > .app-bar {
+  flex: none;
+}
+
+.main > .workspace,
+.main > .run-home,
+.main > .doc-review {
+  flex: 1;
+  min-height: 0;
+}
+
+.main > .status-bar {
+  flex: none;
 }
 
 .app-bar {
@@ -2702,7 +2719,16 @@ tbody tr.selected {
   display: grid;
   grid-template-columns: 1.55fr 1fr;
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
+}
+
+.run-grid .panel-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.run-grid .panel-card .dl-files {
+  flex: 1;
 }
 
 .link-button {
@@ -2964,7 +2990,8 @@ tbody tr.selected {
 /* 流水线形态（设计提案 2026-07-09）：左侧色条编码状态——绿=完成/蓝=进行/灰=等待或复用/红=失败 */
 .run-stage-card {
   min-width: 0;
-  height: 74px;
+  min-height: 92px;
+  height: auto;
   display: grid;
   align-content: center;
   gap: 4px;

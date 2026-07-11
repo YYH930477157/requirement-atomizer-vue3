@@ -502,3 +502,37 @@ class FunctionalSynthesisAnnotationTests(unittest.TestCase):
         self.assertIn("functional_conflict_flags", rendered)
 if __name__ == "__main__":
     unittest.main()
+
+
+class OutlineMapTests(unittest.TestCase):
+    """左栏=文件目录（2026-07-10 真实反馈）：印刷目录为权威源,回链正文;无目录回退标题。"""
+
+    def test_printed_toc_preferred_and_backlinked(self) -> None:
+        blocks = [
+            {"block_id": "T1", "type": "paragraph", "text": "1 Scope .......... 5", "noise": False},
+            {"block_id": "T2", "type": "paragraph", "text": "2 References .......... 6", "noise": False},
+            {"block_id": "T3", "type": "paragraph", "text": "2.1 Normative .......... 6", "noise": False},
+            {"block_id": "T4", "type": "paragraph", "text": "3 Terms .......... 7", "noise": False},
+            {"block_id": "T5", "type": "paragraph", "text": "4 System .......... 9", "noise": False},
+            {"block_id": "H1", "type": "heading", "text": "1 Scope", "noise": False},
+            {"block_id": "H2", "type": "heading", "text": "2 References", "noise": False},
+            {"block_id": "H21", "type": "heading", "text": "2.1 Normative", "noise": False},
+            # 事件表行(编号递增的假章)不得进目录
+            {"block_id": "E1", "type": "heading", "text": "3 Battery emergency 5.12", "noise": False},
+        ]
+        omap = dae._build_outline_map(blocks)
+        self.assertEqual(omap.get("H1"), 1)
+        self.assertEqual(omap.get("H2"), 1)
+        self.assertEqual(omap.get("H21"), 2)
+        self.assertNotIn("E1", omap)     # 表行与目录条目 "3 Terms" 前缀不符
+        self.assertNotIn("T1", omap)     # 目录条目本身不做导航目标
+
+    def test_fallback_headings_when_no_printed_toc(self) -> None:
+        blocks = [
+            {"block_id": "H1", "type": "heading", "text": "1 Scope", "noise": False,
+             "section_path": ["1 Scope"]},
+            {"block_id": "H2", "type": "heading", "text": "2 References", "noise": False,
+             "section_path": ["2 References"]},
+        ]
+        omap = dae._build_outline_map(blocks)
+        self.assertEqual(set(omap), {"H1", "H2"})
