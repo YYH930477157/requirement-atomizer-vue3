@@ -205,9 +205,13 @@ def make_doc(
         for label in req.get("labels") or []:
             by_domain[label] = by_domain.get(label, 0) + 1
 
+    # 两条写入路径的 note 串不同：behavior-spec/P3 写「编码漂移（已标记待核…）」，
+    # AI 抽取主路径写「结构漂移已拦截（编码…）」（原仅匹配前者 → 主路径 conflicts 恒空）。
+    # 这里同时认两个标记串，让两种来源的编码漂移都进 conflicts/coverage_report。
+    _DRIFT_MARKERS = ("编码漂移", "结构漂移已拦截")
     conflicts = [
         {"requirement_ids": [req["id"]], "description": req.get("notes", "")}
-        for req in requirements if "编码漂移" in req.get("notes", "")
+        for req in requirements if any(m in req.get("notes", "") for m in _DRIFT_MARKERS)
     ]
     gaps, passed = coverage_gaps(requirements)
     sections = sorted({s for req in requirements if (s := req.get("source_section"))})

@@ -210,7 +210,11 @@ def enrich_one(
     if blue_book_entry:
         # 注意：批处理按子串「富化（结构字段未变）」判成败计数——附加信息只能放在其后
         section = str(blue_book_entry.get("section") or "").strip()
-        return new_desc, f"描述经 LLM 富化（结构字段未变）；参考 Blue Book §{section}"
+        # 溯源标记（0711 评审）：drift 护栏把 Blue Book 文本并入基线，LLM 可抄其编码进描述，
+        # 但下游无法区分码来自源文档还是 Blue Book。在此打标，让审阅者知道描述可能含
+        # Blue Book 来源的编码/数值（非源文档原文），便于逐码核验。
+        req["blue_book_origin"] = section
+        return new_desc, f"描述经 LLM 富化（结构字段未变）；参考 Blue Book §{section}（描述可能含蓝皮书来源的编码/数值）"
     return new_desc, "描述经 LLM 富化（结构字段未变）"
 
 

@@ -61,6 +61,24 @@ def target_sheet(item: dict[str, Any], sheetnames: list[str]) -> str:
     return FALLBACK_SHEET
 
 
+def module_mapping_drift() -> tuple[list[str], list[str]]:
+    """MODULE_TO_SHEET 与抽取轨 MODULE_VOCAB 的漂移检查（0711 评审）。
+
+    返回 (vocab 里没有映射的模块, 映射表里多余的、不在 vocab 的键)。两份词表分头维护
+    易漂移：新增模块没进映射表 → 静默落 FALLBACK_SHEET；映射表里写错/多写 → 永不命中。
+    报告里显式列出，供人核，不阻断成文。
+    """
+    try:
+        from ai_extract import MODULE_VOCAB
+    except Exception:
+        return ([], [])
+    vocab = set(MODULE_VOCAB)
+    mapped = set(MODULE_TO_SHEET)
+    unmapped = sorted(vocab - mapped)
+    extra = sorted(mapped - vocab)
+    return (unmapped, extra)
+
+
 def _next_seq(ws: Any) -> tuple[int, int]:
     """返回 (下一序号, 追加起始行)。序号接着表内最大数字序号继续。"""
     max_seq = 0
@@ -145,6 +163,11 @@ def run_writer(out_dir: Path, template_path: Path) -> dict[str, Any]:
     report = append_analysis_to_template(template_path, items, out_path)
     from requirement_record import provenance as _prov
     report["provenance"] = _prov("template_writer", "template_writer/v1")
+    unmapped, extra = module_mapping_drift()
+    if unmapped or extra:
+        report["module_mapping_drift"] = {"unmapped_vocab": unmapped, "extra_keys": extra}
+        LOGGER.warning("模块→sheet 映射与抽取词表漂移：未映射=%s 多余=%s（缺失项将落兜底 sheet）",
+                       unmapped, extra)
     report.update({"items": len(items), "analysis_route": payload.get("route"),
                    "written": [report.get("workbook") or WRITTEN_WORKBOOK, WRITER_REPORT]})
     (out_dir / WRITER_REPORT).write_text(
