@@ -713,16 +713,21 @@ class MarkerTranslationTests(unittest.TestCase):
         """未覆盖段文本进翻译收集（owner=omission），LLM 导出时自动补齐。"""
 
         def chat(system: str, user: str) -> dict:
-            return {"items": [{"id": 1, "translation": "一条未被覆盖的需求应当成立。"}]}
+            payload = json.loads(user.split("原文条目 JSON:")[-1])
+            names = "甲乙丙丁戊己庚辛"
+            return {"items": [{"id": e["id"], "translation": f"中文译文{names[e['id'] - 1]}"} for e in payload]}
 
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             _seed(out)
             summary = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
-            self.assertEqual(summary["translated"], 1)
+            self.assertGreaterEqual(summary["translated"], 1)
             sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
             key = dae._translation_key("An uncovered requirement shall hold.")
             self.assertEqual(sidecar["items"][key]["owner"], "omission")
+            # 有批注的块(B2)也进收集——硬件卡块级翻译回退的料(test18)
+            covered_key = dae._translation_key("The meter shall measure volume < 5 & log it.")
+            self.assertEqual(sidecar["items"][covered_key]["owner"], "covered")
 
     def test_api_blocks_carry_translation(self) -> None:
         """应用内视图同语义：build_document_blocks 按内容哈希附带块级译文。"""

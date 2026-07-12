@@ -216,6 +216,35 @@ describe("DocumentReview", () => {
     expect(wrapper.find('[data-testid="dd-analysis-text"]').text()).toContain("应计量体积")
   })
 
+  it("hardware card never shows english as translation, falls back to block translation", async () => {
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 1,
+        blocks: [
+          { block_id: "B1", order: 1, type: "paragraph", text: "The valve is mechanical.",
+            section_path: ["4"], requirement_like: true, noise: false,
+            translation: "该阀门为机械部件。" },
+        ],
+      }),
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        { ai_req_id: "AIR-HW", title: "阀门", description: "The valve is mechanical.", module: "机械结构",
+          module_effective: "机械结构", type: "functional", priority: "P1", status: "draft",
+          source_section: "4", source_quote: "The valve is mechanical.",
+          source_block_ids: ["B1"], anchor_block_id: "B1", labels: [], review_state: null,
+          ownership: "hardware", ownership_effective: "hardware",
+          hardware_translation: "The valve is mechanical.",   // 确定性兜底=英文,不得当翻译显示
+        },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-HW"]').trigger("click")
+    const shown = wrapper.find('[data-testid="dd-hw-translation"]')
+    expect(shown.exists()).toBe(true)
+    expect(shown.text()).toContain("该阀门为机械部件。")            // 块级翻译回退
+    expect(shown.text()).not.toContain("The valve is mechanical")  // 英文绝不冒充翻译
+  })
+
   it("plain background paragraph opens a context card on click", async () => {
     const client = makeClient({
       loadDocument: vi.fn().mockResolvedValue({

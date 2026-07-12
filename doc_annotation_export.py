@@ -613,14 +613,18 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
     else:
         text_html, placed_ids = _render_text_with_quote_markers(text, anchored, numbers, marker_state=state)
         fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
+        collectable = (not is_heading and not is_noise and text.strip()
+                       and region not in ("front_matter", "table_of_contents"))
         if not placed_ids and not fallback:
             owner = _unanalyzed_owner_for_text(text)
             if owner:
                 text_html += _source_classification_marker(owner, state, text)
-            elif (not is_heading and not is_noise and not is_omission and text.strip()
-                  and region not in ("front_matter", "table_of_contents")):
+            elif collectable and not is_omission:
                 # 背景段也进翻译收集（全文每段都有分析结果——真实反馈 2026-07-12）
                 _collected_marker_texts.setdefault(_translation_key(text), ("context", text))
+        elif collectable:
+            # 有批注的正文块同样收集（test18：硬件卡的块级翻译回退此前无料可用）
+            _collected_marker_texts.setdefault(_translation_key(text), ("covered", text))
         sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
         key = _translation_key(text)
         translation_attrs = ""
@@ -801,10 +805,12 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
                         summary["unresolved"] += 1   # 漏译不落账 → 下次导出自动补齐
                         continue
                     # 基线含数字并组形态：欧标千位分隔 "4 000"，忠实翻译写 "4000" 是格式
-                    # 归一不是编造（test16 实测 3 条误伤）。编码仍按原文严格。
+                    # 归一不是编造（test16 实测 3 条误伤）;枚举标号同理（test18：a)→1. 转写），
+                    # int 提取先剥标号。编码仍按原文严格。
+                    from text_normalize import strip_enum_markers
                     basis = f"{text} {_DIGIT_GROUP_RE.sub('', text)}"
                     fabricated = sorted((extract_codes(translation) - extract_codes(text))
-                                        | (extract_ints(translation) - extract_ints(basis)))
+                                        | (extract_ints(strip_enum_markers(translation)) - extract_ints(basis)))
                     entry: dict[str, Any] = {"owner": owner, "model": summary["model"],
                                              "source_head": " ".join(text.split())[:120]}
                     if fabricated:
@@ -1215,10 +1221,26 @@ function isHardwareRequirement(r) {{
   return ownershipOf(r) === "hardware";
 }}
 
+function anchorBlockTranslation(r) {{
+  const anchor = r.anchor_block_id || (r.source_block_ids||[])[0];
+  if (!anchor) return "";
+  const p = document.querySelector('.text[data-block-id="' + anchor + '"]');
+  return p ? (p.getAttribute("data-translation") || "") : "";
+}}
+
 function hardwareTranslationHtml(r) {{
   if (!isHardwareRequirement(r)) return "";
-  const text = r.hardware_summary || r.hardware_translation || r.source_quote || r.description || "";
-  return text ? '<div class="dd-label">中文翻译 / 说明</div><div class="dd-body">'+esc(text)+'</div>' : "";
+  // 诚实回退（真实反馈 2026-07-12,test18）：确定性兜底的 hardware_translation 是英文原文,
+  // 不得顶着"中文翻译"标签展示。候选含中文才用;否则回退锚点块的全文翻译;再无 → 空态。
+  // 原文本就在卡片底部「原文引用」区,不丢信息。
+  const cjk = /[一-鿿]/;
+  const label = '<div class="dd-label">中文翻译 / 说明</div>';
+  for (const candidate of [r.hardware_summary, r.hardware_translation]) {{
+    if (candidate && cjk.test(String(candidate))) return label + '<div class="dd-body">'+esc(candidate)+'</div>';
+  }}
+  const blockT = anchorBlockTranslation(r);
+  if (blockT) return label + '<div class="dd-body">'+esc(blockT)+'</div>';
+  return label + '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>';
 }}
 
 function ownershipReasonHtml(r) {{

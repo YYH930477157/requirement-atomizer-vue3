@@ -325,3 +325,126 @@ class W4OwnershipReasonTests(unittest.TestCase):
                 self.assertTrue(str(row.get("ownership_reason") or "").strip(),
                                 f"{row['ai_req_id']} 缺归属原因")
                 self.assertTrue(row.get("ownership_source"))
+
+
+class OwnershipSingleSourceTests(unittest.TestCase):
+    """test18 错乱修复:视图归属优先采用分析层判定,两层不再各判一次分叉。"""
+
+    def _seed(self, out: Path) -> None:
+        # 原文含 mechanical(规则会判 hardware),但分析层已判 software
+        quote = "When tested, the mechanical index of the meter shall remain legible."
+        _write_jsonl(out / "ai_requirements.jsonl", [
+            {"ai_req_id": "AIR-X", "title": "标记可读", "module": "环境可靠性",
+             "description": quote, "source_quote": quote, "source_block_ids": ["B1"]}])
+        _write_jsonl(out / "blocks.jsonl", [
+            {"block_id": "B1", "order": 1, "type": "paragraph", "text": quote,
+             "section_path": [], "noise": False}])
+
+    def test_analysis_ownership_wins_over_rule(self) -> None:
+        from api_server import build_ai_requirements
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out)
+            (out / "engineering_analysis.json").write_text(json.dumps({
+                "provenance": {"producer": "requirements_analysis"},
+                "items": [{"analysis_id": "ANREQ-000001", "analysis_source": "llm",
+                           "software_requirement_text": "软件侧监控与自检。",
+                           "ownership": "software",
+                           "ownership_reason": "设备状态监控与自检逻辑是典型软件职责",
+                           "ownership_source": "rule",
+                           "source_requirement_ids": ["AIR-X"]}],
+            }, ensure_ascii=False), encoding="utf-8")
+            row = build_ai_requirements(out)[0]
+            self.assertEqual(row["ownership"], "software")   # 此前=规则判的 hardware → 卡片错乱
+            self.assertIn("软件职责", row["ownership_reason"])
+
+    def test_rule_fallback_without_analysis(self) -> None:
+        from api_server import build_ai_requirements
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out)
+            row = build_ai_requirements(out)[0]
+            self.assertEqual(row["ownership"], "hardware")   # 无分析产物 → 规则兜底
+            self.assertTrue(row.get("ownership_reason"))
+
+    def test_reviewer_override_still_final(self) -> None:
+        from api_server import build_ai_requirements
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out)
+            _write_jsonl(out / "ai_review_states.jsonl", [
+                {"ai_req_id": "AIR-X", "status": "accepted", "ownership_override": "co_design"}])
+            row = build_ai_requirements(out)[0]
+            self.assertEqual(row["ownership_effective"], "co_design")
+
+
+class HardwareTranslationHonestyTests(unittest.TestCase):
+    """test18 修复:英文原文不得顶着"中文翻译"标签;回退块级翻译或空态。"""
+
+    def test_html_hardware_card_never_shows_english_as_translation(self) -> None:
+        import doc_annotation_export as dae
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            quote = "The valve is a mechanical device with battery power."
+            _write_jsonl(out / "blocks.jsonl", [
+                {"block_id": "B1", "order": 1, "type": "paragraph", "text": quote,
+                 "section_path": ["4"], "requirement_like": True, "noise": False, "doc_region": "body"}])
+            _write_jsonl(out / "ai_requirements.jsonl", [
+                {"ai_req_id": "AIR-HW", "title": "阀门", "description": quote, "module": "机械结构",
+                 "source_quote": quote, "source_block_ids": ["B1"], "anchor_block_id": "B1"}])
+            rendered = dae.render_annotation_html(out)
+            # JS 含 CJK 检查与锚块回退,不再有 source_quote 直填翻译位的旧回退
+            self.assertIn("anchorBlockTranslation", rendered)
+            self.assertNotIn("r.hardware_translation || r.source_quote", rendered)
+
+    def test_covered_block_enters_translation_collection(self) -> None:
+        import doc_annotation_export as dae
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            quote = "The valve shall close within the declared time."
+            _write_jsonl(out / "blocks.jsonl", [
+                {"block_id": "B1", "order": 1, "type": "paragraph", "text": quote,
+                 "section_path": ["4"], "requirement_like": True, "noise": False, "doc_region": "body"}])
+            _write_jsonl(out / "ai_requirements.jsonl", [
+                {"ai_req_id": "AIR-1", "title": "t", "description": quote,
+                 "source_quote": quote, "source_block_ids": ["B1"], "anchor_block_id": "B1"}])
+            dae.render_annotation_html(out)
+            owners = {owner for owner, _text in dae._collected_marker_texts.values()}
+            self.assertIn("covered", owners)   # 有批注的块也收集——硬件卡块级回退的料
+
+
+class EnumMarkerGuardTests(unittest.TestCase):
+    """test18 护栏误伤:a) b) c) 转写成 1. 2. 3. 是格式归一;真编造数字仍拒。"""
+
+    def test_enum_transliteration_not_rejected(self) -> None:
+        from requirements_analysis import _llm_enrich_hardware_item
+        source = {"ai_req_id": "A", "source_quote": "a) close the valve; b) record the event.",
+                  "description": "", "requirement": "", "title": ""}
+        item = {"ownership": "hardware"}
+        ok, issues = _llm_enrich_hardware_item(
+            item, source,
+            chat=lambda s, u: {"items": [{"hardware_translation": "1. 关闭阀门；2. 记录事件。",
+                                          "ownership_reason": "机械部件操作"}]},
+            cache={}, model="m")
+        self.assertTrue(ok, issues)
+        self.assertEqual(item["hardware_translation"], "1. 关闭阀门；2. 记录事件。")
+
+    def test_real_fabricated_number_still_rejected(self) -> None:
+        from requirements_analysis import _llm_enrich_hardware_item
+        source = {"ai_req_id": "A", "source_quote": "a) close the valve.",
+                  "description": "", "requirement": "", "title": ""}
+        item = {"ownership": "hardware"}
+        ok, issues = _llm_enrich_hardware_item(
+            item, source,
+            chat=lambda s, u: {"items": [{"hardware_translation": "阀门容量 4000 次循环。",
+                                          "ownership_reason": "机械部件"}]},
+            cache={}, model="m")
+        self.assertFalse(ok)
+        self.assertIn("4000", str(issues))
+
+    def test_strip_preserves_real_values(self) -> None:
+        from text_normalize import strip_enum_markers
+        self.assertIn("67", strip_enum_markers("code IP67. done"))       # 前邻字母不剥
+        self.assertIn("4.9.3.2", strip_enum_markers("按 4.9.3.2 执行"))   # 条款号不剥
+        self.assertIn("15", strip_enum_markers("保持 15 年"))             # 普通数字不剥
+        self.assertNotIn("1.", strip_enum_markers("1. 关闭阀门"))          # 行首标号剥除

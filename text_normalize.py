@@ -65,3 +65,15 @@ def formula_safe(value: object) -> object:
     if _NUMERIC_CELL.fullmatch(value) or _ACCESS_CODE_CELL.fullmatch(value):
         return value
     return "'" + value
+
+# 枚举标号：行首/分隔符后的 "1." "2)" "3、"（1-2 位,后不接数字）。翻译把 a) b) c)
+# 列表转写成数字编号是格式归一不是编造数字(test18 实测 3 条硬件翻译被误拒)——
+# 漂移护栏的 int 提取侧先剥标号再算。前邻必须是行首/空白/分隔符:"IP67." 的 67
+# 前邻是字母,不受影响;"4.9.3.2" 后接数字,不匹配。
+_ENUM_MARKER = re.compile(r"(?:(?<=^)|(?<=[\s;；:：,，、]))(\d{1,2})\s*[.、)）](?!\d)", re.MULTILINE)
+
+
+def strip_enum_markers(text: object) -> str:
+    """剥除列表枚举标号本体,供漂移护栏数字提取用;编码扫描不得经此剥除(仍严格)。"""
+    return _ENUM_MARKER.sub(" ", str(text or ""))
+

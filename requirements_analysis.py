@@ -581,12 +581,14 @@ def _llm_enrich_hardware_item(
     reason = str(llm_item.get("ownership_reason") or "").strip()
     # 漂移护栏（评审修正 2026-07-09）：这是新增的 LLM→交付物通路（hardware_items.md/批注视图），
     # 与其他富化路径同纪律。忠实翻译不会引入源文没有的编码/数字——出现即拒绝整条富化。
+    # int 提取先剥枚举标号（test18：a) b) c) 转写成 1. 2. 3. 被误拒）;编码扫描仍严格不剥。
     from cosem_behavior_spec import extract_codes, extract_ints
+    from text_normalize import strip_enum_markers
     source_basis = " ".join(
         str(source_req.get(k) or "") for k in ("source_quote", "description", "requirement", "title"))
     produced = f"{translation} {reason}"
     fabricated = sorted((extract_codes(produced) - extract_codes(source_basis))
-                        | (extract_ints(produced) - extract_ints(source_basis)))
+                        | (extract_ints(strip_enum_markers(produced)) - extract_ints(source_basis)))
     if fabricated:
         return False, [f"硬件翻译含无据编码/数字，已保留原文说明: {', '.join(fabricated[:6])}"]
     if not translation and not reason:

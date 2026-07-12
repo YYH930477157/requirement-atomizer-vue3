@@ -463,8 +463,14 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
             row["module_effective"] = state["module_override"]
         else:
             row["module_effective"] = req.get("module") or (req.get("labels") or [None])[0]
-        # 归属：规则初判回填（专家在批注里能看到规则怎么判的+为什么），override 优先生效。
-        # 传全 dict（此前只取归属值,原因/来源/置信度一直被丢弃——软件件全链路无"为什么"）
+        # 归属单源化（真实反馈 2026-07-12,test18）：视图层与分析层各判一次会分叉——
+        # 视图规则判 hardware、分析层判 software 时,硬件卡拿不到翻译、理由却是软件论证。
+        # 优先采用分析层判定（含 override 生效后的值,与 analysis_ownership_reason 同源）,
+        # 无分析产物才回退规则兜底;review_state 的 override 仍是最终权威（effective 逻辑不动）。
+        if not row.get("ownership") and str(row.get("analysis_ownership") or "").strip():
+            row["ownership"] = str(row["analysis_ownership"])
+            row.setdefault("ownership_reason", str(row.get("analysis_ownership_reason") or ""))
+            row.setdefault("ownership_source", row.get("analysis_ownership_source"))
         if not row.get("ownership"):
             verdict = classify_ownership(req)
             row["ownership"] = verdict["ownership"]

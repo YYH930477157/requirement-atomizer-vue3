@@ -211,6 +211,17 @@ function ownershipOverrideNote(r: AiRequirement): string {
   if (!base || base === effective) return ""
   return `已被人工覆盖为${OWNERSHIP_LABELS[effective] || effective}（原判${OWNERSHIP_LABELS[base] || base}）`
 }
+// 硬件卡翻译诚实回退（与导出 HTML 同语义,2026-07-12）：候选含中文才用,
+// 否则回退锚点块的全文翻译,再无返回空串(模板显示空态);绝不拿英文冒充中文翻译。
+function hardwareTranslationOf(r: AiRequirement): string {
+  const cjk = /[一-鿿]/
+  for (const candidate of [r.hardware_summary, r.hardware_translation]) {
+    if (candidate && cjk.test(String(candidate))) return String(candidate)
+  }
+  const anchor = String(r.anchor_block_id || (r.source_block_ids || [])[0] || "")
+  const block = blocks.value.find((b) => b.block_id === anchor)
+  return block?.translation || ""
+}
 
 function select(req: AiRequirement) {
   selectedBlockId.value = ""
@@ -381,9 +392,10 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           <div class="dd-section" v-if="(selectedReq.analysis_enrichment_warnings || []).length">
             <div class="dd-suspicion" data-testid="dd-enrich-warnings">⚠ 富化待核：{{ (selectedReq.analysis_enrichment_warnings || []).join("；") }}</div>
           </div>
-          <div class="dd-section" v-if="ownershipOf(selectedReq) === 'hardware' && (selectedReq.hardware_summary || selectedReq.hardware_translation)">
+          <div class="dd-section" v-if="ownershipOf(selectedReq) === 'hardware'">
             <div class="dd-label">中文翻译 / 说明</div>
-            <div class="dd-body">{{ selectedReq.hardware_summary || selectedReq.hardware_translation }}</div>
+            <div v-if="hardwareTranslationOf(selectedReq)" class="dd-body" data-testid="dd-hw-translation">{{ hardwareTranslationOf(selectedReq) }}</div>
+            <div v-else class="dd-body dd-empty">未生成翻译（开启 LLM 后点「导出批注HTML」可自动补齐，刷新即见）</div>
           </div>
           <div class="dd-section" v-if="ownershipReasonOf(selectedReq)">
             <div class="dd-label">为什么判为{{ OWNERSHIP_LABELS[ownershipOf(selectedReq)] || ownershipOf(selectedReq) }}</div>
