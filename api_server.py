@@ -274,11 +274,52 @@ _BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
                  # 表格块渲染真表格所需（旧 blocks.jsonl 无这些字段 → None，前端回退扁平文字）
                  "table_title", "table_source", "header_rows", "data_rows")
 
+# 块级中文翻译缓存（内容哈希键,仅由真 LLM 写入;详见 doc_annotation_export 的生成侧）。
+# 键函数与加载器放这里作为唯一实现——批注导出与本 API 两个渲染面共用,防分叉。
+ANNOTATION_TRANSLATIONS = "annotation_translations.json"
+
+
+def translation_key(text: object) -> str:
+    import hashlib
+    return hashlib.sha1(" ".join(str(text or "").split()).encode("utf-8")).hexdigest()
+
+
+def load_annotation_translations(output_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """annotation_translations.json → (可嵌入译文, 被拒条目原因)。缺失/损坏 → 空（视图无翻译照常）。"""
+    try:
+        data = json.loads((Path(output_dir) / ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, {}
+    items = data.get("items") if isinstance(data, dict) else None
+    translations: dict[str, str] = {}
+    notes: dict[str, str] = {}
+    if isinstance(items, dict):
+        for key, entry in items.items():
+            if not isinstance(entry, dict):
+                continue
+            translation = str(entry.get("translation") or "").strip()
+            if translation and not entry.get("rejected"):
+                translations[str(key)] = translation
+            elif entry.get("rejected"):
+                notes[str(key)] = str(entry.get("reason") or "翻译未通过防幻觉校验")
+    return translations, notes
+
 
 def build_document_blocks(output_dir: Path) -> dict:
-    """供文档批注视图：blocks 按 order 排序、只留渲染需要的字段（去掉 kb_matches 等重负载）。"""
+    """供文档批注视图：blocks 按 order 排序、只留渲染需要的字段（去掉 kb_matches 等重负载）。
+
+    附带块级中文翻译（内容哈希查缓存）：未覆盖段/说明标记的三段式卡片（原因/翻译/引用）
+    在应用内视图与导出 HTML 同语义。"""
     blocks = read_jsonl(output_dir / "blocks.jsonl")
     trimmed = [{k: b.get(k) for k in _BLOCK_FIELDS} for b in blocks]
+    translations, notes = load_annotation_translations(output_dir)
+    if translations or notes:
+        for block in trimmed:
+            key = translation_key(block.get("text"))
+            if key in translations:
+                block["translation"] = translations[key]
+            elif key in notes:
+                block["translation_note"] = notes[key]
     trimmed.sort(key=lambda b: b.get("order") or 0)
     return {"blocks": trimmed, "count": len(trimmed)}
 
@@ -340,6 +381,58 @@ def _functional_membership(output_dir: Path) -> dict[str, dict]:
             mapping[str(source_id)] = projected
     return mapping
 
+
+def _analysis_enrichment(output_dir: Path) -> dict[str, dict]:
+    """engineering_analysis.json → AIR id 一对多投影（analysis_ 前缀,批注视图消费）。
+
+    此前富化正文只落 xlsx/成文,批注卡显示的"需求分析"一直是抽取轨浅描述——用户
+    体感"分析不如聊天 AI"的最大一块其实是好内容没上墙。缺失/坏 JSON/异源 producer
+    → 空 merge(裁决回流免 LLM 重建语义不受影响,视图与旧行为逐字节一致)。"""
+    path = output_dir / "engineering_analysis.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    producer = str((payload.get("provenance") or {}).get("producer") or payload.get("producer") or "")
+    if producer and not producer.startswith(("requirements_analysis", "analyze")):
+        import logging
+        logging.getLogger("requirement_atomizer").warning(
+            "engineering_analysis.json producer 异源（%s），批注视图不合并其内容", producer)
+        return {}
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return {}
+    mapping: dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        projected: dict = {
+            "analysis_id": item.get("analysis_id"),
+            "analysis_source": item.get("analysis_source"),
+            "analysis_software_requirement_text": str(item.get("software_requirement_text") or ""),
+            "analysis_dev_guidance": [str(v) for v in item.get("developer_guidance") or []],
+            "analysis_design_options": [str(v) for v in item.get("design_options") or []],
+            "analysis_acceptance_criteria": [str(v) for v in item.get("acceptance_criteria") or []],
+            "analysis_open_questions": [str(v) for v in item.get("open_questions") or []],
+            "analysis_assumptions": [str(v) for v in item.get("assumptions") or []],
+            "analysis_enrichment_warnings": [str(v) for v in item.get("enrichment_warnings") or []],
+            "analysis_ownership": item.get("ownership"),
+            "analysis_ownership_reason": str(item.get("ownership_reason") or ""),
+            "analysis_ownership_source": item.get("ownership_source"),
+            "analysis_ownership_reason_source": item.get("ownership_reason_source"),
+        }
+        if str(item.get("hardware_translation") or "").strip():
+            projected["hardware_translation"] = item.get("hardware_translation")
+            projected["hardware_summary"] = item.get("hardware_summary")
+        # 一对多展开：functional 合并后一个分析 item 携带 N 条 AIR id,N 张批注卡
+        # 共享同一份分析;重复 sid 首见者胜(items 按 analysis_id 有序,确定性)
+        for source_id in item.get("source_requirement_ids") or []:
+            mapping.setdefault(str(source_id), projected)
+    return mapping
+
+
 def build_ai_requirements(output_dir: Path) -> list[dict]:
     """供文档批注视图：merged_spec 需求 + 内容稳定 ai_req_id + 精确锚点 + 当前裁决态。
 
@@ -349,6 +442,7 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
     requirements = _load_ai_requirements(output_dir)
     states = read_ai_review_states(output_dir)
     membership = _functional_membership(output_dir)
+    analysis_map = _analysis_enrichment(output_dir)
     text_by_block = {str(b.get("block_id")): (b.get("text") or "")
                      for b in read_jsonl(output_dir / "blocks.jsonl")}
     from requirements_analysis_rules import classify_ownership  # 规则初判（确定性、零 LLM）
@@ -361,6 +455,7 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
         row = dict(req)
         row["ai_req_id"] = rid
         row.update(membership.get(rid, {}))
+        row.update(analysis_map.get(rid, {}))   # 富化正文/归属原因上墙（缺失=空 merge）
         row["anchor_block_id"] = anchor_block_id(req, text_by_block)
         row["review_state"] = state
         # 专家改过模块则以 override 为准（module 字段保持原值供追溯）
@@ -368,9 +463,19 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
             row["module_effective"] = state["module_override"]
         else:
             row["module_effective"] = req.get("module") or (req.get("labels") or [None])[0]
-        # 归属：规则初判回填（专家在批注里能看到规则怎么判的），override 优先生效
+        # 归属单源化（真实反馈 2026-07-12,test18）：视图层与分析层各判一次会分叉——
+        # 视图规则判 hardware、分析层判 software 时,硬件卡拿不到翻译、理由却是软件论证。
+        # 优先采用分析层判定（含 override 生效后的值,与 analysis_ownership_reason 同源）,
+        # 无分析产物才回退规则兜底;review_state 的 override 仍是最终权威（effective 逻辑不动）。
+        if not row.get("ownership") and str(row.get("analysis_ownership") or "").strip():
+            row["ownership"] = str(row["analysis_ownership"])
+            row.setdefault("ownership_reason", str(row.get("analysis_ownership_reason") or ""))
+            row.setdefault("ownership_source", row.get("analysis_ownership_source"))
         if not row.get("ownership"):
-            row["ownership"] = classify_ownership(req)["ownership"]
+            verdict = classify_ownership(req)
+            row["ownership"] = verdict["ownership"]
+            for key in ("ownership_reason", "ownership_source", "ownership_confidence"):
+                row.setdefault(key, verdict.get(key))
         if state and state.get("ownership_override"):
             row["ownership_effective"] = state["ownership_override"]
         else:

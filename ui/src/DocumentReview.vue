@@ -82,6 +82,31 @@ const coveredBlocks = computed(() => {
 })
 
 const selectedReq = computed(() => requirements.value.find((r) => r.ai_req_id === selectedId.value) || null)
+
+// 块级三段式卡片：未覆盖段/背景段（与导出 HTML 同语义/同文案——双渲染器契约）。
+// 目标：全文每一段都有分析结果——需求段有批注,其余段点开能看到为什么没生成需求+翻译+引用。
+const OMISSION_REASON = "该段含规范性措辞（shall/must/应…），被判为疑似需求，但没有任何已抽取需求的来源范围覆盖它。可能原因：抽取遗漏（自检未补回）或该句实为背景说明。确属需求请反馈补抽；背景说明可忽略。"
+const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），被判定为背景/说明性内容，因此没有生成研发需求；其信息会作为上下文供相邻需求的分析使用。如认为该段实际包含需求，请反馈补抽。"
+const selectedBlockId = ref("")
+const selectedBlock = computed(() => blocks.value.find((b) => b.block_id === selectedBlockId.value) || null)
+const selectedBlockKind = computed(() => (selectedBlock.value && isOmission(selectedBlock.value) ? "omission" : "context"))
+function selectBlockCard(b: DocumentBlock) {
+  if (selectedBlockId.value === b.block_id) {  // 再点一下 → 取消选中
+    selectedBlockId.value = ""
+    return
+  }
+  selectedBlockId.value = b.block_id
+  selectedId.value = ""
+}
+function onBlockClick(b: DocumentBlock) {
+  const anchored = anchorByBlock.value.get(b.block_id)
+  if (anchored?.length) {
+    select(anchored[0])
+    return
+  }
+  if (isHeading(b) || b.noise || isTable(b) || !(b.text || "").trim()) return
+  selectBlockCard(b)
+}
 // 只高亮选中的片段（锚点小段），不把整个章节跨度刷蓝
 const evidenceBlocks = computed(() => {
   // 证据块（蓝填充）= 引用所在锚点段；其余跨度块仅左侧细条 = 分析上下文（模型通读范围）
@@ -160,8 +185,46 @@ function statusOf(r: AiRequirement): string {
 function ownershipOf(r: AiRequirement): string {
   return String(r.ownership_effective || r.ownership || "software")
 }
+const OWNERSHIP_LABELS: Record<string, string> = { software: "软件", hardware: "硬件", co_design: "软硬件协同" }
+// 富化产物消费（与导出 HTML 同语义——双渲染器契约）：analysis_source=llm 且非空 → 富化优先
+function useEnriched(r: AiRequirement): boolean {
+  return r.analysis_source === "llm"
+}
+function analysisNarrative(r: AiRequirement): { text: string; enriched: boolean } {
+  const enriched = String(r.analysis_software_requirement_text || "").trim()
+  if (enriched && useEnriched(r)) return { text: enriched, enriched: true }
+  return { text: String(r.description || ""), enriched: false }
+}
+function devGuidanceOf(r: AiRequirement): string[] {
+  return useEnriched(r) && (r.analysis_dev_guidance || []).length ? r.analysis_dev_guidance! : (r.dev_guidance || [])
+}
+function acceptanceOf(r: AiRequirement): string[] {
+  return useEnriched(r) && (r.analysis_acceptance_criteria || []).length
+    ? r.analysis_acceptance_criteria! : (r.acceptance_criteria || [])
+}
+function ownershipReasonOf(r: AiRequirement): string {
+  return String(r.analysis_ownership_reason || r.ownership_reason || "")
+}
+function ownershipOverrideNote(r: AiRequirement): string {
+  const base = String(r.ownership || "")
+  const effective = String(r.ownership_effective || base)
+  if (!base || base === effective) return ""
+  return `已被人工覆盖为${OWNERSHIP_LABELS[effective] || effective}（原判${OWNERSHIP_LABELS[base] || base}）`
+}
+// 硬件卡翻译诚实回退（与导出 HTML 同语义,2026-07-12）：候选含中文才用,
+// 否则回退锚点块的全文翻译,再无返回空串(模板显示空态);绝不拿英文冒充中文翻译。
+function hardwareTranslationOf(r: AiRequirement): string {
+  const cjk = /[一-鿿]/
+  for (const candidate of [r.hardware_summary, r.hardware_translation]) {
+    if (candidate && cjk.test(String(candidate))) return String(candidate)
+  }
+  const anchor = String(r.anchor_block_id || (r.source_block_ids || [])[0] || "")
+  const block = blocks.value.find((b) => b.block_id === anchor)
+  return block?.translation || ""
+}
 
 function select(req: AiRequirement) {
+  selectedBlockId.value = ""
   if (selectedId.value === req.ai_req_id) {  // 再点一下 → 取消选中
     selectedId.value = ""
     return
@@ -172,9 +235,10 @@ function select(req: AiRequirement) {
   ownershipEdit.value = ownershipOf(req)
 }
 
-// 选中需求时，在锚段内的块里高亮 source_quote 原句。
+// 选中需求时，在锚段内的块里高亮 source_quote 原句；选中未覆盖/背景段时整段=引用本体 → 全黄。
 function segments(b: DocumentBlock): Array<{ text: string; mark: boolean }> {
   const text = b.text || ""
+  if (b.block_id === selectedBlockId.value) return [{ text, mark: true }]
   const quote = selectedReq.value?.source_quote || ""
   if (!quote || !selectedSpan.value.has(b.block_id) || !text.includes(quote)) return [{ text, mark: false }]
   const i = text.indexOf(quote)
@@ -235,10 +299,10 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             :class="['doc-block',
                      { heading: isHeading(b), omission: isOmission(b),
                        anchored: anchorByBlock.get(b.block_id)?.length,
-                       'in-span': selectedSpan.has(b.block_id),
-                       evidence: evidenceBlocks.has(b.block_id) }]"
+                       'in-span': selectedSpan.has(b.block_id) || b.block_id === selectedBlockId,
+                       evidence: evidenceBlocks.has(b.block_id) || b.block_id === selectedBlockId }]"
             :data-testid="isOmission(b) ? 'omission-block' : undefined"
-            @click="anchorByBlock.get(b.block_id)?.length && select(anchorByBlock.get(b.block_id)![0])"
+            @click="onBlockClick(b)"
           >
             <div class="doc-gutter">
               <button
@@ -251,7 +315,15 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                 :title="`${moduleOf(r)} · ${r.title}`"
                 @click.stop="select(r)"
               >{{ reqNumber(r) }} · {{ moduleOf(r) }}</button>
-              <span v-if="isOmission(b)" class="omission-tag">⚠ 未覆盖</span>
+              <button
+                v-if="isOmission(b)"
+                class="omission-tag"
+                :class="{ sel: b.block_id === selectedBlockId }"
+                type="button"
+                data-testid="omission-tag"
+                title="疑似需求但未被任何抽取需求覆盖，点击查看说明"
+                @click.stop="selectBlockCard(b)"
+              >⚠ 未覆盖</button>
             </div>
             <figure v-if="isTable(b)" class="doc-table" data-testid="doc-table">
               <figcaption v-if="b.table_title">{{ b.table_title }}<span v-if="b.table_source === 'text_layout'" class="table-badge">无画线重建</span></figcaption>
@@ -274,8 +346,27 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
       </article>
 
       <aside class="doc-detail" data-testid="doc-detail">
-        <div v-if="!selectedReq" class="doc-detail-empty">点左侧 💬 批注查看需求详情</div>
-        <div v-else class="doc-detail-card">
+        <div v-if="!selectedReq && !selectedBlock" class="doc-detail-empty">点左侧 💬 批注查看需求详情</div>
+        <div v-else-if="selectedBlock" class="doc-detail-card"
+             :data-testid="selectedBlockKind === 'omission' ? 'omission-card' : 'context-card'">
+          <div class="dd-head">
+            <span class="dd-module">{{ selectedBlockKind === "omission" ? "未覆盖" : "背景/上下文" }}</span>
+            <span class="dd-status">说明</span>
+          </div>
+          <h3 class="dd-title">{{ selectedBlockKind === "omission" ? "为什么标为未覆盖" : "为什么没有生成研发需求" }}</h3>
+          <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "omission" ? OMISSION_REASON : CONTEXT_REASON }}</div></div>
+          <div class="dd-section">
+            <div class="dd-label">原文翻译</div>
+            <div v-if="selectedBlock.translation" class="dd-body" data-testid="omission-translation">{{ selectedBlock.translation }}</div>
+            <div v-else-if="selectedBlock.translation_note" class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（{{ selectedBlock.translation_note }}）</div>
+            <div v-else class="dd-body dd-empty">未生成翻译（开启 LLM 后点「导出批注HTML」可自动补齐，刷新即见）</div>
+          </div>
+          <div class="dd-section">
+            <div class="dd-label">原文引用</div>
+            <div class="dd-quote">{{ selectedBlock.text }}</div>
+          </div>
+        </div>
+        <div v-else-if="selectedReq" class="doc-detail-card">
           <div class="dd-head">
             <span class="dd-module" data-testid="dd-module">{{ moduleOf(selectedReq) }}</span>
             <span class="dd-status" :class="'st-' + statusOf(selectedReq)">{{ STATUS_LABELS[statusOf(selectedReq)] || statusOf(selectedReq) }}</span>
@@ -290,7 +381,22 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
 
           <div class="dd-legend">正文标记：<span style="background:#f3d9a0;padding:0 4px">黄=引用依据</span> · <span style="background:#eef2ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文</div>
-          <div class="dd-section"><div class="dd-label">需求分析</div><div class="dd-body">{{ selectedReq.description }}</div></div>
+          <div class="dd-section">
+            <div class="dd-label">需求分析
+              <span class="src-badge" :class="{ quiet: !analysisNarrative(selectedReq).enriched }" data-testid="dd-analysis-badge">
+                {{ analysisNarrative(selectedReq).enriched ? "富化(LLM)" : "抽取" }}
+              </span>
+            </div>
+            <div class="dd-body dd-prewrap" data-testid="dd-analysis-text">{{ analysisNarrative(selectedReq).text }}</div>
+          </div>
+          <div class="dd-section" v-if="(selectedReq.analysis_enrichment_warnings || []).length">
+            <div class="dd-suspicion" data-testid="dd-enrich-warnings">⚠ 富化待核：{{ (selectedReq.analysis_enrichment_warnings || []).join("；") }}</div>
+          </div>
+          <div class="dd-section" v-if="ownershipOf(selectedReq) === 'hardware'">
+            <div class="dd-label">中文翻译 / 说明</div>
+            <div v-if="hardwareTranslationOf(selectedReq)" class="dd-body" data-testid="dd-hw-translation">{{ hardwareTranslationOf(selectedReq) }}</div>
+            <div v-else class="dd-body dd-empty">未生成翻译（开启 LLM 后点「导出批注HTML」可自动补齐，刷新即见）</div>
+          </div>
           <div class="dd-section" v-if="(selectedReq.sub_items || []).length">
             <div class="dd-label">子项要求（二级）</div>
             <ul class="dd-list" data-testid="dd-subitems">
@@ -310,16 +416,25 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
               </tbody>
             </table>
           </div>
-          <div class="dd-section" v-if="(selectedReq.dev_guidance || []).length">
-            <div class="dd-label">研发指引 / 落地实现</div>
-            <ul class="dd-list"><li v-for="(g, i) in selectedReq.dev_guidance" :key="i">{{ g }}</li></ul>
+          <div class="dd-section" v-if="devGuidanceOf(selectedReq).length">
+            <div class="dd-label">研发指引 / 落地实现
+              <span v-if="useEnriched(selectedReq)" class="src-badge">富化(LLM)</span>
+            </div>
+            <ul class="dd-list"><li v-for="(g, i) in devGuidanceOf(selectedReq)" :key="i">{{ g }}</li></ul>
           </div>
-          <div class="dd-section" v-if="(selectedReq.acceptance_criteria || []).length">
-            <div class="dd-label">测试指引 / 验收</div>
-            <ul class="dd-list"><li v-for="(c, i) in selectedReq.acceptance_criteria" :key="i">{{ c }}</li></ul>
+          <div class="dd-section" v-if="acceptanceOf(selectedReq).length">
+            <div class="dd-label">测试指引 / 验收
+              <span v-if="useEnriched(selectedReq)" class="src-badge">富化(LLM)</span>
+            </div>
+            <ul class="dd-list"><li v-for="(c, i) in acceptanceOf(selectedReq)" :key="i">{{ c }}</li></ul>
           </div>
           <div class="dd-section" v-if="selectedReq.source_quote">
             <div class="dd-label">原文引用</div><div class="dd-quote">{{ selectedReq.source_quote }}</div>
+          </div>
+          <div class="dd-section" v-if="ownershipReasonOf(selectedReq)">
+            <div class="dd-label">为什么判为{{ OWNERSHIP_LABELS[ownershipOf(selectedReq)] || ownershipOf(selectedReq) }}</div>
+            <div class="dd-body" data-testid="dd-ownership-reason">{{ ownershipReasonOf(selectedReq) }}</div>
+            <div v-if="ownershipOverrideNote(selectedReq)" class="dd-body dd-empty">{{ ownershipOverrideNote(selectedReq) }}</div>
           </div>
 
           <div class="dd-section">
@@ -389,7 +504,14 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .anno-chip.st-accepted { border-color: #1d8a5c; color: #1d8a5c; }
 .anno-chip.st-rejected { border-color: #d63a40; color: #d63a40; }
 .anno-chip.st-needs_discussion { border-color: #b06f12; color: #b06f12; }
-.omission-tag { font-size: 10px; color: #b45309; }
+.omission-tag { font-size: 10px; color: #b45309; background: #fdf3e3; border: 1px solid #ecd9ae;
+  border-radius: 10px; padding: 1px 7px; cursor: pointer; }
+.omission-tag:hover, .omission-tag.sel { border-color: #b45309; background: #f9e8c6; }
+.dd-empty { color: #98a1b3; }
+.dd-prewrap { white-space: pre-wrap; }
+.src-badge { font-size: 10px; text-transform: none; color: #1e41c9; background: #eef2ff;
+  border: 1px solid #dbe3fb; border-radius: 8px; padding: 0 6px; margin-left: 4px; }
+.src-badge.quiet { color: #98a1b3; background: transparent; border-color: #e6e9f0; }
 .doc-detail { border-left: 1px solid #e6e9f0; overflow: auto; padding: 14px; background: #fafbfd; }
 .doc-detail-empty { color: #98a1b3; font-size: 13px; padding-top: 40px; text-align: center; }
 .dd-head { display: flex; justify-content: space-between; align-items: center; }

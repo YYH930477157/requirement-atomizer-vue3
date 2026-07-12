@@ -19,6 +19,7 @@ from requirements_analysis_schema import (
     OWNERSHIP_HARDWARE,
     apply_ownership_override,
     build_analysis_id,
+    normalize_ownership,
     validate_analysis_item,
 )
 from requirements_analysis_template import (
@@ -34,9 +35,12 @@ LOGGER = logging.getLogger("requirement_atomizer")
 ChatFn = Callable[[str, str], dict[str, Any]]
 
 SCHEMA_VERSION = "requirements-analysis/v1"
-ANALYZE_PROMPT_VERSION = "analyze-llm-v4"  # v4：保留确定性基线并分离 design_options
-ANALYZE_MIN_MAX_TOKENS = 6144  # 与 ai_extract 同：推理模型（如 mimo-v2.5-pro）会输出思维链，2048 会截断 JSON
+ANALYZE_PROMPT_VERSION = "analyze-llm-v5"  # v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
+ANALYZE_MIN_MAX_TOKENS = 8192  # 连贯多段正文+更长输入;推理模型思维链挤占,低于下限 JSON 截断
 ANALYZE_ENRICH_CACHE = "analyze_enrich_cache.json"
+# W1 上下文注入帽：条款原文与 prompt/指纹/校验三处用同一字符串（单一构造点）
+SECTION_CONTEXT_MAX_CHARS = 2000
+SIBLING_TITLES_MAX = 8
 # 确定性分析层（规则+模板+裁决）恒在；openai_compatible 追加 LLM 富化层，只填叙述字段、
 # 结构/归属/路由字段全冻结。请求 LLM 但端点未配置时如实降级并记 route_requested（出处诚实）。
 STUB_ROUTE = "stub"
@@ -50,6 +54,90 @@ OUTPUT_FILES = [
     "hardware_items.md",
     "co_design_items.md",
 ]
+
+
+def _read_term_map_text(out_dir: Path) -> str:
+    """term_map.json（抽取轨缓存）只读渲染——分析轨零额外调用,中文译法与抽取轨一致。"""
+    try:
+        cached = json.loads((out_dir / "term_map.json").read_text(encoding="utf-8"))
+        terms = cached.get("terms") or []
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return ""
+    if not terms:
+        return ""
+    from ai_extract import _render_term_map
+    return _render_term_map(terms)
+
+
+def _build_doc_context(out_dir: Path, blocks: list[dict[str, Any]]) -> str:
+    """文档背景（表计画像+大纲+术语表+译法对照）——复用抽取轨实现（W1,2026-07-12）。
+
+    此前富化 prompt 无任何文档级背景,是"不如把需求粘给聊天 AI"的结构性原因之一。"""
+    context = ""
+    try:
+        from ai_extract import build_doc_context
+        context = build_doc_context(out_dir, blocks)
+    except Exception as exc:  # pragma: no cover - 背景失败不阻断富化
+        LOGGER.warning("文档背景构建失败（富化退回无背景）：%s", exc)
+    term_text = _read_term_map_text(out_dir)
+    if term_text:
+        context = f"{context}\n{term_text}" if context else term_text
+    return context
+
+
+def _section_context(req: dict[str, Any], blocks_by_id: dict[str, dict[str, Any]],
+                     blocks_by_section: dict[tuple[str, ...], list[dict[str, Any]]]) -> str:
+    """需求所在条款族原文（≤SECTION_CONTEXT_MAX_CHARS,以需求块为中心向两侧扩展）。
+
+    解析不了 → ""，**绝不回退整章**——这个字符串同时进 prompt/缓存指纹/漂移基线
+    （单一构造点），基线只收模型实际看到的注入串。"""
+    from extract_units import clean_block_text
+
+    section_key: tuple[str, ...] | None = None
+    anchor_bid = ""
+    for bid in (str(b) for b in _as_list(req.get("source_block_ids"))):
+        block = blocks_by_id.get(bid)
+        if block is not None:
+            section_key = tuple(str(s) for s in (block.get("section_path") or []))
+            anchor_bid = bid
+            break
+    if section_key is None:
+        target = str(req.get("source_section") or "").strip()
+        if target:
+            section_key = next((key for key in blocks_by_section if key and key[-1].strip() == target), None)
+    if not section_key:
+        return ""
+    texts: list[str] = []
+    anchor_index = 0
+    for block in blocks_by_section.get(section_key) or []:
+        if block.get("noise"):
+            continue
+        text = clean_block_text(block)
+        if not text:
+            continue
+        if str(block.get("block_id") or "") == anchor_bid:
+            anchor_index = len(texts)
+        texts.append(text)
+    if not texts:
+        return ""
+    # 中心扩展：先取需求块本体,再左右交替补齐到帽值——长条款不会只剩开头
+    picked = [anchor_index]
+    total = len(texts[anchor_index])
+    left, right = anchor_index - 1, anchor_index + 1
+    while total < SECTION_CONTEXT_MAX_CHARS and (left >= 0 or right < len(texts)):
+        for candidate in (right, left):
+            if candidate == right and right < len(texts):
+                picked.append(right)
+                total += len(texts[right])
+                right += 1
+            elif candidate == left and left >= 0:
+                picked.insert(0, left)
+                total += len(texts[left])
+                left -= 1
+            if total >= SECTION_CONTEXT_MAX_CHARS:
+                break
+    joined = "\n".join(texts[i] for i in sorted(set(picked)))
+    return joined[:SECTION_CONTEXT_MAX_CHARS]
 
 
 def run_requirements_analysis(
@@ -114,6 +202,28 @@ def run_requirements_analysis(
     degraded_count = 0
     enrich_jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, str], str]] = []
 
+    # W1（2026-07-12 富化深度）：文档背景/条款原文/相邻需求标题——仅 LLM 模式构建,
+    # blocks.jsonl 缺失 → 空上下文优雅降级（行为同旧版）
+    doc_context = ""
+    blocks_by_id: dict[str, dict[str, Any]] = {}
+    blocks_by_section: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    titles_by_module: dict[str, list[str]] = {}
+    if active_chat is not None:
+        analysis_blocks = read_jsonl(out_dir / "blocks.jsonl")
+        if analysis_blocks:
+            doc_context = _build_doc_context(out_dir, analysis_blocks)
+            for block in analysis_blocks:
+                bid = str(block.get("block_id") or "")
+                if bid:
+                    blocks_by_id[bid] = block
+                blocks_by_section.setdefault(
+                    tuple(str(s) for s in (block.get("section_path") or [])), []).append(block)
+        for req in requirements:
+            module = str(req.get("module") or "").strip()
+            title = str(req.get("title") or "").strip()
+            if module and title:
+                titles_by_module.setdefault(module, []).append(title[:40])
+
     items: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
     for req in requirements:
@@ -155,9 +265,15 @@ def run_requirements_analysis(
             refs = select_template_references(knowledge, reviewed_req)
             req_text = " ".join(str(reviewed_req.get(k) or "") for k in ("title", "description", "source_quote"))
             exemplars = render_exemplars(select_exemplars(bank, str(reviewed_req.get("module") or ""), req_text))
+            own_title = str(reviewed_req.get("title") or "").strip()[:40]
+            siblings = [t for t in titles_by_module.get(str(reviewed_req.get("module") or "").strip(), [])
+                        if t != own_title][:SIBLING_TITLES_MAX]
             ctx = {"template_refs": render_template_references(refs),
                    "exemplars": exemplars,
-                   "answers": reviewed_req.get("clarification_answers_text") or ""}
+                   "answers": reviewed_req.get("clarification_answers_text") or "",
+                   "doc_context": doc_context,
+                   "section_context": _section_context(reviewed_req, blocks_by_id, blocks_by_section),
+                   "siblings": "\n".join(f"- {t}" for t in siblings)}
             mode = "hardware" if item.get("ownership") == OWNERSHIP_HARDWARE else "software"
             enrich_jobs.append((item, reviewed_req, ctx, mode))
 
@@ -333,14 +449,23 @@ def _llm_enrich_item(
     guard = lock if lock is not None else nullcontext()
 
     ctx = context or {}
-    context_basis = "".join(ctx.get(k, "") for k in ("template_refs", "exemplars", "answers"))
+    # 词表瘦身（W1-4）：全量 submodule JSON 每条重复注入零知识含量,裁成本模块视图
+    from requirements_analysis_agent import slim_vocabulary
+    slim_vocab = slim_vocabulary(vocabulary, str(source_req.get("module") or ""))
+    # 指纹=注入 prompt 的实际内容（单一构造点纪律）：上下文/词表任何变化 → key 变 → 重富化
+    context_basis = "".join([ctx.get(k, "") for k in (
+        "template_refs", "exemplars", "answers", "doc_context", "section_context", "siblings"
+    )] + [json.dumps(slim_vocab, ensure_ascii=False)])
     key = _enrich_key(source_req, model, context_basis)
     with guard:
         llm_item = cache.get(key)
     if llm_item is None:
-        prompt = build_analysis_prompt([source_req], vocabulary, ctx.get("template_refs", ""),
+        prompt = build_analysis_prompt([source_req], slim_vocab, ctx.get("template_refs", ""),
                                        exemplars=ctx.get("exemplars", ""),
-                                       answers=ctx.get("answers", ""))
+                                       answers=ctx.get("answers", ""),
+                                       doc_context=ctx.get("doc_context", ""),
+                                       section_context=ctx.get("section_context", ""),
+                                       siblings=ctx.get("siblings", ""))
         try:
             payload = chat(prompt["system"], prompt["user"])
         except Exception as exc:  # 调用失败非致命
@@ -351,7 +476,9 @@ def _llm_enrich_item(
         with guard:
             cache[key] = llm_item
 
-    drift = validate_llm_item(llm_item, source_req, template_text=ctx.get("template_refs", ""))
+    drift = validate_llm_item(llm_item, source_req, template_text=ctx.get("template_refs", ""),
+                              section_context=ctx.get("section_context", ""),
+                              context_text=ctx.get("doc_context", "") + " " + ctx.get("siblings", ""))
     # 与 ai_extract 双引擎同一分级纪律：**编码漂移**（OBIS/hex/事件号）严格拒绝——"错一位即
     # 严重"；**普通整数漂移**（散文里的步骤序号"1.2.3."、复述计数等）只软标记不阻断——结构字段
     # 已确定性冻结、source_quote 随交付物同行可核，把整数当硬拒会误伤合格富化（真实 A/B 验证）。
@@ -371,9 +498,27 @@ def _llm_enrich_item(
             item[field] = values
             accepted = True
     reason = str(llm_item.get("ownership_reason") or "").strip()
-    if reason and not item.get("ownership_reason"):
-        item["ownership_reason"] = reason
-        accepted = True
+    # 恒真 guard 修复（2026-07-12）：classify_ownership 对所有类别都前置填了规则原因,
+    # 旧条件 `not item.get("ownership_reason")` 恒假 → 软件/协同的 LLM 原因永不被采纳。
+    # 采纳三条件：原因非空;LLM 若自带 ownership 须与冻结归属一致（不一致=模型想借"原因"
+    # 字段改写归属叙事,保留规则原因并记 issue）;人工覆盖过的归属其叙事权威不被 LLM 冲掉。
+    # 归属值/置信度仍冻结;reason 本就在 validate_llm_item 的 analysis_text 扫描内（编码硬拒）。
+    reason_issues: list[str] = []
+    if reason and str(item.get("ownership_source") or "") != "reviewer_override":
+        llm_ownership = str(llm_item.get("ownership") or "").strip()
+        consistent = True
+        if llm_ownership:
+            try:
+                consistent = normalize_ownership(llm_ownership) == str(item.get("ownership") or "")
+            except ValueError:
+                consistent = False
+        if consistent:
+            item["ownership_reason"] = reason
+            item["ownership_reason_source"] = "llm"
+            accepted = True
+        else:
+            reason_issues.append(
+                f"LLM 归属叙述与冻结归属不一致（{llm_ownership} vs {item.get('ownership')}），保留规则原因")
     if not accepted:
         return False, ["LLM 富化未返回可采纳的叙述字段，已降级为确定性"]
     item["analysis_source"] = "llm"
@@ -385,8 +530,9 @@ def _llm_enrich_item(
         item["enrichment_warnings"] = soft
     else:
         item.pop("enrichment_warnings", None)   # 重富化后旧警告不残留
-    return True, ([f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"]
-                  if soft else [])
+    issues = reason_issues + ([f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"]
+                              if soft else [])
+    return True, issues
 
 
 def _build_hardware_prompt(source_req: dict[str, Any]) -> dict[str, str]:
@@ -435,12 +581,14 @@ def _llm_enrich_hardware_item(
     reason = str(llm_item.get("ownership_reason") or "").strip()
     # 漂移护栏（评审修正 2026-07-09）：这是新增的 LLM→交付物通路（hardware_items.md/批注视图），
     # 与其他富化路径同纪律。忠实翻译不会引入源文没有的编码/数字——出现即拒绝整条富化。
+    # int 提取先剥枚举标号（test18：a) b) c) 转写成 1. 2. 3. 被误拒）;编码扫描仍严格不剥。
     from cosem_behavior_spec import extract_codes, extract_ints
+    from text_normalize import strip_enum_markers
     source_basis = " ".join(
         str(source_req.get(k) or "") for k in ("source_quote", "description", "requirement", "title"))
     produced = f"{translation} {reason}"
     fabricated = sorted((extract_codes(produced) - extract_codes(source_basis))
-                        | (extract_ints(produced) - extract_ints(source_basis)))
+                        | (extract_ints(strip_enum_markers(produced)) - extract_ints(source_basis)))
     if fabricated:
         return False, [f"硬件翻译含无据编码/数字，已保留原文说明: {', '.join(fabricated[:6])}"]
     if not translation and not reason:
