@@ -381,6 +381,58 @@ def _functional_membership(output_dir: Path) -> dict[str, dict]:
             mapping[str(source_id)] = projected
     return mapping
 
+
+def _analysis_enrichment(output_dir: Path) -> dict[str, dict]:
+    """engineering_analysis.json → AIR id 一对多投影（analysis_ 前缀,批注视图消费）。
+
+    此前富化正文只落 xlsx/成文,批注卡显示的"需求分析"一直是抽取轨浅描述——用户
+    体感"分析不如聊天 AI"的最大一块其实是好内容没上墙。缺失/坏 JSON/异源 producer
+    → 空 merge(裁决回流免 LLM 重建语义不受影响,视图与旧行为逐字节一致)。"""
+    path = output_dir / "engineering_analysis.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    producer = str((payload.get("provenance") or {}).get("producer") or payload.get("producer") or "")
+    if producer and not producer.startswith(("requirements_analysis", "analyze")):
+        import logging
+        logging.getLogger("requirement_atomizer").warning(
+            "engineering_analysis.json producer 异源（%s），批注视图不合并其内容", producer)
+        return {}
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return {}
+    mapping: dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        projected: dict = {
+            "analysis_id": item.get("analysis_id"),
+            "analysis_source": item.get("analysis_source"),
+            "analysis_software_requirement_text": str(item.get("software_requirement_text") or ""),
+            "analysis_dev_guidance": [str(v) for v in item.get("developer_guidance") or []],
+            "analysis_design_options": [str(v) for v in item.get("design_options") or []],
+            "analysis_acceptance_criteria": [str(v) for v in item.get("acceptance_criteria") or []],
+            "analysis_open_questions": [str(v) for v in item.get("open_questions") or []],
+            "analysis_assumptions": [str(v) for v in item.get("assumptions") or []],
+            "analysis_enrichment_warnings": [str(v) for v in item.get("enrichment_warnings") or []],
+            "analysis_ownership": item.get("ownership"),
+            "analysis_ownership_reason": str(item.get("ownership_reason") or ""),
+            "analysis_ownership_source": item.get("ownership_source"),
+            "analysis_ownership_reason_source": item.get("ownership_reason_source"),
+        }
+        if str(item.get("hardware_translation") or "").strip():
+            projected["hardware_translation"] = item.get("hardware_translation")
+            projected["hardware_summary"] = item.get("hardware_summary")
+        # 一对多展开：functional 合并后一个分析 item 携带 N 条 AIR id,N 张批注卡
+        # 共享同一份分析;重复 sid 首见者胜(items 按 analysis_id 有序,确定性)
+        for source_id in item.get("source_requirement_ids") or []:
+            mapping.setdefault(str(source_id), projected)
+    return mapping
+
+
 def build_ai_requirements(output_dir: Path) -> list[dict]:
     """供文档批注视图：merged_spec 需求 + 内容稳定 ai_req_id + 精确锚点 + 当前裁决态。
 
@@ -390,6 +442,7 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
     requirements = _load_ai_requirements(output_dir)
     states = read_ai_review_states(output_dir)
     membership = _functional_membership(output_dir)
+    analysis_map = _analysis_enrichment(output_dir)
     text_by_block = {str(b.get("block_id")): (b.get("text") or "")
                      for b in read_jsonl(output_dir / "blocks.jsonl")}
     from requirements_analysis_rules import classify_ownership  # 规则初判（确定性、零 LLM）
@@ -402,6 +455,7 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
         row = dict(req)
         row["ai_req_id"] = rid
         row.update(membership.get(rid, {}))
+        row.update(analysis_map.get(rid, {}))   # 富化正文/归属原因上墙（缺失=空 merge）
         row["anchor_block_id"] = anchor_block_id(req, text_by_block)
         row["review_state"] = state
         # 专家改过模块则以 override 为准（module 字段保持原值供追溯）
@@ -409,9 +463,13 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
             row["module_effective"] = state["module_override"]
         else:
             row["module_effective"] = req.get("module") or (req.get("labels") or [None])[0]
-        # 归属：规则初判回填（专家在批注里能看到规则怎么判的），override 优先生效
+        # 归属：规则初判回填（专家在批注里能看到规则怎么判的+为什么），override 优先生效。
+        # 传全 dict（此前只取归属值,原因/来源/置信度一直被丢弃——软件件全链路无"为什么"）
         if not row.get("ownership"):
-            row["ownership"] = classify_ownership(req)["ownership"]
+            verdict = classify_ownership(req)
+            row["ownership"] = verdict["ownership"]
+            for key in ("ownership_reason", "ownership_source", "ownership_confidence"):
+                row.setdefault(key, verdict.get(key))
         if state and state.get("ownership_override"):
             row["ownership_effective"] = state["ownership_override"]
         else:

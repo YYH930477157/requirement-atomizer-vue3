@@ -185,6 +185,32 @@ function statusOf(r: AiRequirement): string {
 function ownershipOf(r: AiRequirement): string {
   return String(r.ownership_effective || r.ownership || "software")
 }
+const OWNERSHIP_LABELS: Record<string, string> = { software: "软件", hardware: "硬件", co_design: "软硬件协同" }
+// 富化产物消费（与导出 HTML 同语义——双渲染器契约）：analysis_source=llm 且非空 → 富化优先
+function useEnriched(r: AiRequirement): boolean {
+  return r.analysis_source === "llm"
+}
+function analysisNarrative(r: AiRequirement): { text: string; enriched: boolean } {
+  const enriched = String(r.analysis_software_requirement_text || "").trim()
+  if (enriched && useEnriched(r)) return { text: enriched, enriched: true }
+  return { text: String(r.description || ""), enriched: false }
+}
+function devGuidanceOf(r: AiRequirement): string[] {
+  return useEnriched(r) && (r.analysis_dev_guidance || []).length ? r.analysis_dev_guidance! : (r.dev_guidance || [])
+}
+function acceptanceOf(r: AiRequirement): string[] {
+  return useEnriched(r) && (r.analysis_acceptance_criteria || []).length
+    ? r.analysis_acceptance_criteria! : (r.acceptance_criteria || [])
+}
+function ownershipReasonOf(r: AiRequirement): string {
+  return String(r.analysis_ownership_reason || r.ownership_reason || "")
+}
+function ownershipOverrideNote(r: AiRequirement): string {
+  const base = String(r.ownership || "")
+  const effective = String(r.ownership_effective || base)
+  if (!base || base === effective) return ""
+  return `已被人工覆盖为${OWNERSHIP_LABELS[effective] || effective}（原判${OWNERSHIP_LABELS[base] || base}）`
+}
 
 function select(req: AiRequirement) {
   selectedBlockId.value = ""
@@ -344,7 +370,26 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
 
           <div class="dd-legend">正文标记：<span style="background:#f3d9a0;padding:0 4px">黄=引用依据</span> · <span style="background:#eef2ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文</div>
-          <div class="dd-section"><div class="dd-label">需求分析</div><div class="dd-body">{{ selectedReq.description }}</div></div>
+          <div class="dd-section">
+            <div class="dd-label">需求分析
+              <span class="src-badge" :class="{ quiet: !analysisNarrative(selectedReq).enriched }" data-testid="dd-analysis-badge">
+                {{ analysisNarrative(selectedReq).enriched ? "富化(LLM)" : "抽取" }}
+              </span>
+            </div>
+            <div class="dd-body dd-prewrap" data-testid="dd-analysis-text">{{ analysisNarrative(selectedReq).text }}</div>
+          </div>
+          <div class="dd-section" v-if="(selectedReq.analysis_enrichment_warnings || []).length">
+            <div class="dd-suspicion" data-testid="dd-enrich-warnings">⚠ 富化待核：{{ (selectedReq.analysis_enrichment_warnings || []).join("；") }}</div>
+          </div>
+          <div class="dd-section" v-if="ownershipOf(selectedReq) === 'hardware' && (selectedReq.hardware_summary || selectedReq.hardware_translation)">
+            <div class="dd-label">中文翻译 / 说明</div>
+            <div class="dd-body">{{ selectedReq.hardware_summary || selectedReq.hardware_translation }}</div>
+          </div>
+          <div class="dd-section" v-if="ownershipReasonOf(selectedReq)">
+            <div class="dd-label">为什么判为{{ OWNERSHIP_LABELS[ownershipOf(selectedReq)] || ownershipOf(selectedReq) }}</div>
+            <div class="dd-body" data-testid="dd-ownership-reason">{{ ownershipReasonOf(selectedReq) }}</div>
+            <div v-if="ownershipOverrideNote(selectedReq)" class="dd-body dd-empty">{{ ownershipOverrideNote(selectedReq) }}</div>
+          </div>
           <div class="dd-section" v-if="(selectedReq.sub_items || []).length">
             <div class="dd-label">子项要求（二级）</div>
             <ul class="dd-list" data-testid="dd-subitems">
@@ -364,13 +409,21 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
               </tbody>
             </table>
           </div>
-          <div class="dd-section" v-if="(selectedReq.dev_guidance || []).length">
-            <div class="dd-label">研发指引 / 落地实现</div>
-            <ul class="dd-list"><li v-for="(g, i) in selectedReq.dev_guidance" :key="i">{{ g }}</li></ul>
+          <div class="dd-section" v-if="devGuidanceOf(selectedReq).length">
+            <div class="dd-label">研发指引 / 落地实现
+              <span v-if="useEnriched(selectedReq)" class="src-badge">富化(LLM)</span>
+            </div>
+            <ul class="dd-list"><li v-for="(g, i) in devGuidanceOf(selectedReq)" :key="i">{{ g }}</li></ul>
           </div>
-          <div class="dd-section" v-if="(selectedReq.acceptance_criteria || []).length">
-            <div class="dd-label">测试指引 / 验收</div>
-            <ul class="dd-list"><li v-for="(c, i) in selectedReq.acceptance_criteria" :key="i">{{ c }}</li></ul>
+          <div class="dd-section" v-if="useEnriched(selectedReq) && (selectedReq.analysis_design_options || []).length">
+            <div class="dd-label">设计候选（非规范约束）</div>
+            <ul class="dd-list"><li v-for="(g, i) in selectedReq.analysis_design_options" :key="i">{{ g }}</li></ul>
+          </div>
+          <div class="dd-section" v-if="acceptanceOf(selectedReq).length">
+            <div class="dd-label">测试指引 / 验收
+              <span v-if="useEnriched(selectedReq)" class="src-badge">富化(LLM)</span>
+            </div>
+            <ul class="dd-list"><li v-for="(c, i) in acceptanceOf(selectedReq)" :key="i">{{ c }}</li></ul>
           </div>
           <div class="dd-section" v-if="selectedReq.source_quote">
             <div class="dd-label">原文引用</div><div class="dd-quote">{{ selectedReq.source_quote }}</div>
@@ -447,6 +500,10 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
   border-radius: 10px; padding: 1px 7px; cursor: pointer; }
 .omission-tag:hover, .omission-tag.sel { border-color: #b45309; background: #f9e8c6; }
 .dd-empty { color: #98a1b3; }
+.dd-prewrap { white-space: pre-wrap; }
+.src-badge { font-size: 10px; text-transform: none; color: #1e41c9; background: #eef2ff;
+  border: 1px solid #dbe3fb; border-radius: 8px; padding: 0 6px; margin-left: 4px; }
+.src-badge.quiet { color: #98a1b3; background: transparent; border-color: #e6e9f0; }
 .doc-detail { border-left: 1px solid #e6e9f0; overflow: auto; padding: 14px; background: #fafbfd; }
 .doc-detail-empty { color: #98a1b3; font-size: 13px; padding-top: 40px; text-align: center; }
 .dd-head { display: flex; justify-content: space-between; align-items: center; }

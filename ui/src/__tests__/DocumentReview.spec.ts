@@ -177,6 +177,45 @@ describe("DocumentReview", () => {
     expect(card.text()).toContain("未生成翻译")
   })
 
+  it("prefers enriched analysis narrative with source badge and ownership reason", async () => {
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        {
+          ai_req_id: "AIR-1", title: "体积计量", description: "抽取轨浅描述", module: "计量",
+          module_effective: "计量", type: "functional", priority: "P1", status: "draft",
+          source_section: "4", source_quote: "The meter shall measure volume.",
+          source_block_ids: ["B2"], labels: ["计量"], review_state: null,
+          ownership: "software", ownership_effective: "software",
+          ownership_reason: "Matched software rule term: dlms",
+          analysis_source: "llm",
+          analysis_software_requirement_text: "富化正文第一段。\n第二段:边界条件与异常处理。",
+          analysis_dev_guidance: ["实现指引(富化)"],
+          analysis_acceptance_criteria: ["验收(富化)"],
+          analysis_enrichment_warnings: ["数字待核 42"],
+          analysis_ownership_reason: "纯数据处理逻辑,无硬件依赖",
+        },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-analysis-badge"]').text()).toContain("富化(LLM)")
+    expect(wrapper.find('[data-testid="dd-analysis-text"]').text()).toContain("富化正文第一段")
+    expect(wrapper.find('[data-testid="dd-enrich-warnings"]').text()).toContain("数字待核 42")
+    expect(wrapper.find('[data-testid="dd-ownership-reason"]').text()).toContain("纯数据处理逻辑")
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("实现指引(富化)")
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("为什么判为软件")
+  })
+
+  it("falls back to extraction description without analysis fields", async () => {
+    const client = makeClient()
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-analysis-badge"]').text()).toContain("抽取")
+    expect(wrapper.find('[data-testid="dd-analysis-text"]').text()).toContain("应计量体积")
+  })
+
   it("plain background paragraph opens a context card on click", async () => {
     const client = makeClient({
       loadDocument: vi.fn().mockResolvedValue({

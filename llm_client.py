@@ -20,7 +20,7 @@ LOGGER = logging.getLogger("requirement_atomizer")
 PURPOSE_MIN_TOKENS = {
     "extract": 6144,          # 逐条款抽取
     "extract-chapter": 16384,  # 整章模式（实验）：几十条需求的输出
-    "analyze": 6144,          # 软件需求富化
+    "analyze": 8192,          # 软件需求富化（v5 连贯多段正文+更长注入上下文,6144 实测偏紧）
     "enrich": 6144,           # 装配描述富化（蓝皮书）
 }
 

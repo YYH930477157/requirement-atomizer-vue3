@@ -692,7 +692,7 @@ class ChainAndManifestTests(unittest.TestCase):
             "ai-extract": "ai-extract-v15+impl-v2",
             "assemble": "assemble_spec/v1+impl-v2",
             "functional-synthesis": "functional-synthesis-v5+impl-v2",
-            "requirements-analysis": "analyze-llm-v4+impl-v2",
+            "requirements-analysis": "analyze-llm-v5+impl-v2",
             "template-write": "template_writer/v1+impl-v2",
             "clarification-report": "clarification/v2-tiered+impl-v3",
         }

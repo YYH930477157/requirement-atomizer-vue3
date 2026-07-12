@@ -1029,6 +1029,10 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .dd-label {{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 15px 0 5px; }}
 .dd-body {{ font-size: 14px; line-height: 1.7; }}
 .dd-empty {{ color: var(--faint); }}
+.dd-prewrap {{ white-space: pre-wrap; }}
+.src-badge {{ font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--accent);
+  border: 1px solid var(--accent-soft); background: var(--accent-soft); border-radius: 8px; padding: 0 6px; }}
+.src-badge.quiet {{ color: var(--faint); border-color: var(--line); background: transparent; }}
 .dd-list {{ margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }}
 .dd-list li {{ margin-bottom: 2px; }}
 .dd-quote {{ font-size: 13px; color: #515761; border-left: 2px solid var(--line-strong); padding: 5px 10px;
@@ -1218,9 +1222,38 @@ function hardwareTranslationHtml(r) {{
 }}
 
 function ownershipReasonHtml(r) {{
-  if (!isHardwareRequirement(r)) return "";
-  const text = r.ownership_reason || "";
-  return text ? '<div class="dd-label">为什么判断为硬件</div><div class="dd-body">'+esc(text)+'</div>' : "";
+  // 归属原因全类别显示（真实反馈 2026-07-12）：此前只硬件有"为什么",软件/协同全链路无原因
+  const labels = {{ software: "软件", hardware: "硬件", co_design: "软硬件协同" }};
+  const own = ownershipOf(r);
+  const reason = r.analysis_ownership_reason || r.ownership_reason || "";
+  if (!reason) return "";
+  let html = '<div class="dd-label">为什么判为' + esc(labels[own] || own) + '</div>'+
+             '<div class="dd-body">'+esc(reason)+'</div>';
+  const base = String(r.ownership || "");
+  const effective = String(r.ownership_effective || base);
+  if (base && effective && base !== effective) {{
+    html += '<div class="dd-body dd-empty">已被人工覆盖为' + esc(labels[effective] || effective) +
+            '（原判' + esc(labels[base] || base) + '）</div>';
+  }}
+  return html;
+}}
+
+function enrichmentWarningsHtml(r) {{
+  // 检查单#3 标记随行：富化正文上墙的同时,软标必须同卡可见
+  const warnings = r.analysis_enrichment_warnings || [];
+  if (!warnings.length) return "";
+  return '<div class="dd-suspicion">⚠ 富化待核：'+esc(warnings.join("；"))+'</div>';
+}}
+
+function analysisNarrativeHtml(r) {{
+  // 富化正文优先（analysis_source=llm 且非空）,回退抽取轨 description——来源徽标如实标注
+  const enriched = String(r.analysis_software_requirement_text || "").trim();
+  if (enriched && r.analysis_source === "llm") {{
+    return '<div class="dd-label">需求分析 <span class="src-badge">富化(LLM)</span></div>'+
+           '<div class="dd-body dd-prewrap">'+esc(enriched)+'</div>';
+  }}
+  return '<div class="dd-label">需求分析 <span class="src-badge quiet">抽取</span></div>'+
+         '<div class="dd-body">'+esc(r.description)+'</div>';
 }}
 
 function markQuoteTextNodes(container, quote) {{
@@ -1424,11 +1457,16 @@ function select(id) {{
   const d = decisionOf(id) || {{}};
   const st = statusOf(id);
   const isHardware = isHardwareRequirement(r);
-  const dev = isHardware ? "" : (r.dev_guidance||[]).map(c => "<li>" + esc(c) + "</li>").join("");
-  const acc = isHardware ? "" : (r.acceptance_criteria||[]).map(c => "<li>" + esc(c) + "</li>").join("");
+  // 富化列表优先(analysis_source=llm 且非空),回退抽取字段——好内容此前只落 xlsx 不上墙
+  const useEnriched = !isHardware && r.analysis_source === "llm";
+  const devSrc = (useEnriched && (r.analysis_dev_guidance||[]).length) ? r.analysis_dev_guidance : (r.dev_guidance||[]);
+  const accSrc = (useEnriched && (r.analysis_acceptance_criteria||[]).length) ? r.analysis_acceptance_criteria : (r.acceptance_criteria||[]);
+  const dev = isHardware ? "" : devSrc.map(c => "<li>" + esc(c) + "</li>").join("");
+  const acc = isHardware ? "" : accSrc.map(c => "<li>" + esc(c) + "</li>").join("");
+  const design = (useEnriched ? (r.analysis_design_options||[]) : []).map(c => "<li>" + esc(c) + "</li>").join("");
   const analysisHtml = isHardware
     ? hardwareTranslationHtml(r) + ownershipReasonHtml(r)
-    : '<div class="dd-label">需求分析</div><div class="dd-body">'+esc(r.description)+'</div>'+subItemsHtml(r)+thresholdHtml(r);
+    : analysisNarrativeHtml(r) + ownershipReasonHtml(r) + enrichmentWarningsHtml(r) + subItemsHtml(r) + thresholdHtml(r);
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
   const ownershipOptions = [
     ["", "自动/不覆盖"],
@@ -1445,8 +1483,9 @@ function select(id) {{
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
     analysisHtml+
     functionalMembershipHtml(r)+
-    (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
-    (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
+    (dev ? '<div class="dd-label">研发指引 / 落地实现'+(useEnriched?' <span class="src-badge">富化(LLM)</span>':'')+'</div><ul class="dd-list">'+dev+'</ul>' : '')+
+    (design ? '<div class="dd-label">设计候选（非规范约束）</div><ul class="dd-list">'+design+'</ul>' : '')+
+    (acc ? '<div class="dd-label">测试指引 / 验收'+(useEnriched?' <span class="src-badge">富化(LLM)</span>':'')+'</div><ul class="dd-list">'+acc+'</ul>' : '')+
     (r.source_quote ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(r.source_quote)+'</div>' : '')+
     '<div class="dd-label">模块（可改）</div><select id="mod-sel">'+opts+'</select>'+
     '<div class="dd-section"><div class="dd-label">归属（可改）</div><select id="own-sel" class="dd-select">'+ownershipOptions+'</select></div>'+

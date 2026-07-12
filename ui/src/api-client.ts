@@ -76,7 +76,25 @@ export type AiRequirement = Record<string, unknown> & {
   self_check_added?: boolean
   ownership?: string
   ownership_effective?: string
+  ownership_reason?: string
+  ownership_source?: string
   review_state?: { status?: string; module_override?: string | null; ownership_override?: string | null; reason?: string } | null
+  // 需求分析富化产物（engineering_analysis.json,后端按 AIR id 合并;缺失=字段不存在,回退抽取内容）
+  analysis_id?: string
+  analysis_source?: string
+  analysis_software_requirement_text?: string
+  analysis_dev_guidance?: string[]
+  analysis_design_options?: string[]
+  analysis_acceptance_criteria?: string[]
+  analysis_open_questions?: string[]
+  analysis_assumptions?: string[]
+  analysis_enrichment_warnings?: string[]
+  analysis_ownership?: string
+  analysis_ownership_reason?: string
+  analysis_ownership_source?: string
+  analysis_ownership_reason_source?: string
+  hardware_translation?: string
+  hardware_summary?: string
 }
 
 export type AiReviewActionInput = {

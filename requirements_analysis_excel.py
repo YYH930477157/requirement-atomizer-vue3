@@ -145,7 +145,18 @@ def _notes_text(item: dict[str, Any]) -> str:
             notes.append("  " + " | ".join(str(cell) for cell in (row if isinstance(row, list) else [row])))
     notes.extend(str(value) for value in item.get("developer_guidance") or [])
     notes.extend(f"设计候选（非规范约束）：{value}" for value in item.get("design_options") or [])
+    # 验收建议进交付列（此前 acceptance_criteria 不落 xlsx 任何列——富化白算）
+    notes.extend(f"验收建议：{value}" for value in item.get("acceptance_criteria") or [])
     notes.extend(f"假设：{value}" for value in item.get("assumptions") or [])
+    # 归属判定随行（真实反馈 2026-07-12：软件件全链路无"为什么"）
+    ownership = str(item.get("ownership") or "").strip()
+    reason = str(item.get("ownership_reason") or "").strip()
+    if ownership and reason:
+        labels = {"software": "软件", "hardware": "硬件", "co_design": "软硬件协同"}
+        suffix = "，LLM 判定" if item.get("ownership_reason_source") == "llm" else ""
+        if str(item.get("ownership_source") or "") == "reviewer_override":
+            suffix += "；已人工覆盖"
+        notes.append(f"归属判定：{labels.get(ownership, ownership)}（依据：{reason}{suffix}）")
     source_quote = str(item.get("source_quote") or "").strip()
     if source_quote:
         notes.append(f"原文：{source_quote}")
