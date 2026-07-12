@@ -1212,12 +1212,38 @@ function ownershipReasonHtml(r) {{
   return text ? '<div class="dd-label">为什么判断为硬件</div><div class="dd-body">'+esc(text)+'</div>' : "";
 }}
 
+function markQuoteTextNodes(container, quote) {{
+  // 引用片段精确黄标（真实反馈 2026-07-11）：不重建 innerHTML——角标按钮/其它需求的
+  // 标记都保留,只把 source_quote 命中的文本节点区间包进 mark。角标插在引用末尾,
+  // 引用文本通常完整落在单个文本节点里;跨节点(被子项角标截断)时放弃黄标不误标。
+  if (!container || !quote) return false;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {{
+    const i = node.textContent.indexOf(quote);
+    if (i < 0) continue;
+    const range = document.createRange();
+    range.setStart(node, i);
+    range.setEnd(node, i + quote.length);
+    const m = document.createElement("mark");
+    m.className = "sc-quote";
+    range.surroundContents(m);
+    return true;
+  }}
+  return false;
+}}
+
 function highlightQuote() {{
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   document.querySelectorAll('.chip[data-inline-marker="1"].quote-selected').forEach(m => m.classList.remove("quote-selected"));
   const r = selected && byId[selected]; if (!r || !r.source_quote) return;
   const marker = document.querySelector('.chip[data-inline-marker="1"][data-req="' + selected + '"]');
-  if (marker) {{ marker.classList.add("quote-selected"); return; }}
+  if (marker) {{
+    marker.classList.add("quote-selected");
+    // 引用片段黄标、上下文整块保持蓝底：黄标只盖 source_quote 本体,与右卡「原文引用」一致
+    markQuoteTextNodes(marker.parentElement, r.source_quote);
+    return;
+  }}
   const anchor = r.anchor_block_id || (r.source_block_ids||[])[0];
   const p = document.querySelector('.text[data-block-id="' + anchor + '"]'); if (!p) return;
   const t = p.textContent, q = r.source_quote, i = t.indexOf(q);

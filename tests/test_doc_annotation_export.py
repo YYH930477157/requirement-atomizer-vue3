@@ -591,13 +591,15 @@ class MarkerTranslationTests(unittest.TestCase):
             self.assertIn("翻译未通过防幻觉校验", rendered)
 
     def test_quote_fragment_yellow_highlight_machinery_present(self) -> None:
-        """选中说明标记：引用片段黄标（sc-quote）、上下文整块保持蓝底（evidence）。"""
+        """选中批注：引用片段精确黄标（sc-quote,只盖 source_quote 本体）、上下文整块保持蓝底。"""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             _seed_marker_block(out, self.QUOTE)
             rendered = dae.render_annotation_html(out)
             self.assertIn("mark.sc-quote", rendered)              # 黄标样式（p 与 td 通用）
             self.assertIn("function clearSourceQuoteMarks", rendered)
+            self.assertIn("function markQuoteTextNodes", rendered)   # 需求角标选中→引用片段黄标
+            self.assertIn("markQuoteTextNodes(marker.parentElement, r.source_quote)", rendered)
             self.assertIn('classList.add("in-span", "evidence")', rendered)   # 蓝底保留
 
     def test_digit_grouping_in_source_is_not_fabrication(self) -> None:
