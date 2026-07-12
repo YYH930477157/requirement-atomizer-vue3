@@ -130,4 +130,78 @@ describe("DocumentReview", () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="doc-message"]').text()).toContain("先运行管线")
   })
+
+  it("omission tag opens a three-part card: reason / translation / quote", async () => {
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 3,
+        blocks: [
+          { block_id: "B1", order: 1, type: "heading", text: "4 Requirements",
+            section_path: ["4 Requirements"], requirement_like: false, noise: false },
+          { block_id: "B2", order: 2, type: "paragraph", text: "The meter shall measure volume.",
+            section_path: ["4 Requirements"], requirement_like: true, noise: false },
+          { block_id: "B3", order: 3, type: "paragraph", text: "An uncovered requirement shall hold.",
+            section_path: ["4 Requirements"], requirement_like: true, noise: false,
+            translation: "一条未被覆盖的需求应当成立。" },
+        ],
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="omission-tag"]').trigger("click")
+    const card = wrapper.find('[data-testid="omission-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain("为什么标为未覆盖")                       // 第一段：原因
+    expect(card.text()).toContain("没有任何已抽取需求的来源范围覆盖它")
+    expect(card.find('[data-testid="omission-translation"]').text())       // 第二段：翻译
+      .toContain("一条未被覆盖的需求应当成立")
+    expect(card.text()).toContain("An uncovered requirement shall hold.")  // 第三段：原文引用
+    // 选中态：整段黄标 + 块蓝底
+    expect(wrapper.findAll(".doc-block.evidence").length).toBe(1)
+    expect(wrapper.find('[data-testid="omission-block"] .doc-text mark').text())
+      .toContain("An uncovered requirement shall hold.")
+
+    // 再点一下 → 取消选中
+    await wrapper.find('[data-testid="omission-tag"]').trigger("click")
+    expect(wrapper.find('[data-testid="omission-card"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("点左侧")
+  })
+
+  it("omission card shows honest empty state without translation", async () => {
+    const client = makeClient()
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="omission-tag"]').trigger("click")
+    const card = wrapper.find('[data-testid="omission-card"]')
+    expect(card.text()).toContain("未生成翻译")
+  })
+
+  it("plain background paragraph opens a context card on click", async () => {
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 2,
+        blocks: [
+          { block_id: "B1", order: 1, type: "paragraph", text: "Background drafting note.",
+            section_path: ["Introduction"], requirement_like: false, noise: false,
+            translation: "背景起草说明。" },
+          { block_id: "B2", order: 2, type: "paragraph", text: "The meter shall measure volume.",
+            section_path: ["4"], requirement_like: true, noise: false },
+        ],
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.findAll(".doc-block")[0].trigger("click")
+    const card = wrapper.find('[data-testid="context-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain("为什么没有生成研发需求")
+    expect(card.text()).toContain("背景/说明性内容")
+    expect(card.text()).toContain("背景起草说明。")
+    expect(card.text()).toContain("Background drafting note.")
+    // 再点一下 → 取消
+    await wrapper.findAll(".doc-block")[0].trigger("click")
+    expect(wrapper.find('[data-testid="context-card"]').exists()).toBe(false)
+  })
 })

@@ -82,6 +82,31 @@ const coveredBlocks = computed(() => {
 })
 
 const selectedReq = computed(() => requirements.value.find((r) => r.ai_req_id === selectedId.value) || null)
+
+// 块级三段式卡片：未覆盖段/背景段（与导出 HTML 同语义/同文案——双渲染器契约）。
+// 目标：全文每一段都有分析结果——需求段有批注,其余段点开能看到为什么没生成需求+翻译+引用。
+const OMISSION_REASON = "该段含规范性措辞（shall/must/应…），被判为疑似需求，但没有任何已抽取需求的来源范围覆盖它。可能原因：抽取遗漏（自检未补回）或该句实为背景说明。确属需求请反馈补抽；背景说明可忽略。"
+const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），被判定为背景/说明性内容，因此没有生成研发需求；其信息会作为上下文供相邻需求的分析使用。如认为该段实际包含需求，请反馈补抽。"
+const selectedBlockId = ref("")
+const selectedBlock = computed(() => blocks.value.find((b) => b.block_id === selectedBlockId.value) || null)
+const selectedBlockKind = computed(() => (selectedBlock.value && isOmission(selectedBlock.value) ? "omission" : "context"))
+function selectBlockCard(b: DocumentBlock) {
+  if (selectedBlockId.value === b.block_id) {  // 再点一下 → 取消选中
+    selectedBlockId.value = ""
+    return
+  }
+  selectedBlockId.value = b.block_id
+  selectedId.value = ""
+}
+function onBlockClick(b: DocumentBlock) {
+  const anchored = anchorByBlock.value.get(b.block_id)
+  if (anchored?.length) {
+    select(anchored[0])
+    return
+  }
+  if (isHeading(b) || b.noise || isTable(b) || !(b.text || "").trim()) return
+  selectBlockCard(b)
+}
 // 只高亮选中的片段（锚点小段），不把整个章节跨度刷蓝
 const evidenceBlocks = computed(() => {
   // 证据块（蓝填充）= 引用所在锚点段；其余跨度块仅左侧细条 = 分析上下文（模型通读范围）
@@ -162,6 +187,7 @@ function ownershipOf(r: AiRequirement): string {
 }
 
 function select(req: AiRequirement) {
+  selectedBlockId.value = ""
   if (selectedId.value === req.ai_req_id) {  // 再点一下 → 取消选中
     selectedId.value = ""
     return
@@ -172,9 +198,10 @@ function select(req: AiRequirement) {
   ownershipEdit.value = ownershipOf(req)
 }
 
-// 选中需求时，在锚段内的块里高亮 source_quote 原句。
+// 选中需求时，在锚段内的块里高亮 source_quote 原句；选中未覆盖/背景段时整段=引用本体 → 全黄。
 function segments(b: DocumentBlock): Array<{ text: string; mark: boolean }> {
   const text = b.text || ""
+  if (b.block_id === selectedBlockId.value) return [{ text, mark: true }]
   const quote = selectedReq.value?.source_quote || ""
   if (!quote || !selectedSpan.value.has(b.block_id) || !text.includes(quote)) return [{ text, mark: false }]
   const i = text.indexOf(quote)
@@ -235,10 +262,10 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             :class="['doc-block',
                      { heading: isHeading(b), omission: isOmission(b),
                        anchored: anchorByBlock.get(b.block_id)?.length,
-                       'in-span': selectedSpan.has(b.block_id),
-                       evidence: evidenceBlocks.has(b.block_id) }]"
+                       'in-span': selectedSpan.has(b.block_id) || b.block_id === selectedBlockId,
+                       evidence: evidenceBlocks.has(b.block_id) || b.block_id === selectedBlockId }]"
             :data-testid="isOmission(b) ? 'omission-block' : undefined"
-            @click="anchorByBlock.get(b.block_id)?.length && select(anchorByBlock.get(b.block_id)![0])"
+            @click="onBlockClick(b)"
           >
             <div class="doc-gutter">
               <button
@@ -251,7 +278,15 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                 :title="`${moduleOf(r)} · ${r.title}`"
                 @click.stop="select(r)"
               >{{ reqNumber(r) }} · {{ moduleOf(r) }}</button>
-              <span v-if="isOmission(b)" class="omission-tag">⚠ 未覆盖</span>
+              <button
+                v-if="isOmission(b)"
+                class="omission-tag"
+                :class="{ sel: b.block_id === selectedBlockId }"
+                type="button"
+                data-testid="omission-tag"
+                title="疑似需求但未被任何抽取需求覆盖，点击查看说明"
+                @click.stop="selectBlockCard(b)"
+              >⚠ 未覆盖</button>
             </div>
             <figure v-if="isTable(b)" class="doc-table" data-testid="doc-table">
               <figcaption v-if="b.table_title">{{ b.table_title }}<span v-if="b.table_source === 'text_layout'" class="table-badge">无画线重建</span></figcaption>
@@ -274,8 +309,27 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
       </article>
 
       <aside class="doc-detail" data-testid="doc-detail">
-        <div v-if="!selectedReq" class="doc-detail-empty">点左侧 💬 批注查看需求详情</div>
-        <div v-else class="doc-detail-card">
+        <div v-if="!selectedReq && !selectedBlock" class="doc-detail-empty">点左侧 💬 批注查看需求详情</div>
+        <div v-else-if="selectedBlock" class="doc-detail-card"
+             :data-testid="selectedBlockKind === 'omission' ? 'omission-card' : 'context-card'">
+          <div class="dd-head">
+            <span class="dd-module">{{ selectedBlockKind === "omission" ? "未覆盖" : "背景/上下文" }}</span>
+            <span class="dd-status">说明</span>
+          </div>
+          <h3 class="dd-title">{{ selectedBlockKind === "omission" ? "为什么标为未覆盖" : "为什么没有生成研发需求" }}</h3>
+          <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "omission" ? OMISSION_REASON : CONTEXT_REASON }}</div></div>
+          <div class="dd-section">
+            <div class="dd-label">原文翻译</div>
+            <div v-if="selectedBlock.translation" class="dd-body" data-testid="omission-translation">{{ selectedBlock.translation }}</div>
+            <div v-else-if="selectedBlock.translation_note" class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（{{ selectedBlock.translation_note }}）</div>
+            <div v-else class="dd-body dd-empty">未生成翻译（开启 LLM 后点「导出批注HTML」可自动补齐，刷新即见）</div>
+          </div>
+          <div class="dd-section">
+            <div class="dd-label">原文引用</div>
+            <div class="dd-quote">{{ selectedBlock.text }}</div>
+          </div>
+        </div>
+        <div v-else-if="selectedReq" class="doc-detail-card">
           <div class="dd-head">
             <span class="dd-module" data-testid="dd-module">{{ moduleOf(selectedReq) }}</span>
             <span class="dd-status" :class="'st-' + statusOf(selectedReq)">{{ STATUS_LABELS[statusOf(selectedReq)] || statusOf(selectedReq) }}</span>
@@ -389,7 +443,10 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .anno-chip.st-accepted { border-color: #1d8a5c; color: #1d8a5c; }
 .anno-chip.st-rejected { border-color: #d63a40; color: #d63a40; }
 .anno-chip.st-needs_discussion { border-color: #b06f12; color: #b06f12; }
-.omission-tag { font-size: 10px; color: #b45309; }
+.omission-tag { font-size: 10px; color: #b45309; background: #fdf3e3; border: 1px solid #ecd9ae;
+  border-radius: 10px; padding: 1px 7px; cursor: pointer; }
+.omission-tag:hover, .omission-tag.sel { border-color: #b45309; background: #f9e8c6; }
+.dd-empty { color: #98a1b3; }
 .doc-detail { border-left: 1px solid #e6e9f0; overflow: auto; padding: 14px; background: #fafbfd; }
 .doc-detail-empty { color: #98a1b3; font-size: 13px; padding-top: 40px; text-align: center; }
 .dd-head { display: flex; justify-content: space-between; align-items: center; }

@@ -22,11 +22,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from api_server import build_ai_requirements, build_document_blocks
+from api_server import (ANNOTATION_TRANSLATIONS, build_ai_requirements, build_document_blocks,
+                        load_annotation_translations, translation_key)
 
 ANNOTATION_HTML = "document_annotation.html"
-# 块级"说明"标记的原文中文翻译缓存（内容哈希键，仅由真 LLM 写入；渲染层只读=保持确定性）
-ANNOTATION_TRANSLATIONS = "annotation_translations.json"
+# 翻译缓存键/加载器的唯一实现在 api_server（两个渲染面共用防分叉）；生成侧在本模块。
 _TRANSLATION_BATCH = 8
 # 数字并组：千位空格/逗号分隔（"4 000"→"4000"），护栏基线用
 _DIGIT_GROUP_RE = re.compile(r"(?<=\d)[\s,  ](?=\d)")
@@ -94,30 +94,18 @@ _active_translations: dict[str, str] = {}
 _active_translation_notes: dict[str, str] = {}
 
 
-def _translation_key(text: str) -> str:
-    return hashlib.sha1(" ".join(str(text).split()).encode("utf-8")).hexdigest()
+_translation_key = translation_key
+_load_annotation_translations = load_annotation_translations
 
 
 def _read_translation_sidecar(out_dir: Path) -> dict[str, dict[str, Any]]:
+    """生成侧读完整条目（含被拒留账的）——pending 计算要把被拒的也当已判定,不重试。"""
     try:
         data = json.loads((Path(out_dir) / ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     items = data.get("items") if isinstance(data, dict) else None
     return {str(k): dict(v) for k, v in items.items() if isinstance(v, dict)} if isinstance(items, dict) else {}
-
-
-def _load_annotation_translations(out_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
-    """渲染可嵌入的译文 + 被护栏拒绝条目的原因（拒绝要如实呈现，不伪装成未生成）。"""
-    result: dict[str, str] = {}
-    notes: dict[str, str] = {}
-    for key, entry in _read_translation_sidecar(out_dir).items():
-        translation = str(entry.get("translation") or "").strip()
-        if translation and not entry.get("rejected"):
-            result[key] = translation
-        elif entry.get("rejected"):
-            notes[key] = str(entry.get("reason") or "翻译未通过防幻觉校验")
-    return result, notes
 
 
 def _load_annotation_terms(out_dir: Path) -> dict[str, tuple[str, ...]]:
@@ -602,8 +590,20 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
 
     numbers = req_numbers or {}
     state = marker_state if marker_state is not None else {"next": 1, "req_numbers": {}}
-    omission_html = ('<div class="omission-flag"><span class="omission-tag">未覆盖</span></div>'
-                     if is_omission else "")
+    omission_html = ""
+    if is_omission:
+        # 未覆盖段与说明标记同待遇（真实反馈 2026-07-12）：可点击 → 三段式卡片
+        # （为什么未覆盖/原文翻译/原文引用）;文本进翻译收集,LLM 导出时自动补齐译文
+        key = _translation_key(text)
+        if text.strip():
+            _collected_marker_texts.setdefault(key, ("omission", text))
+        translation = _active_translations.get(key, "")
+        note = _active_translation_notes.get(key, "")
+        omission_html = ('<div class="omission-flag"><button class="omission-tag" type="button" '
+                         f'data-omission-text="{html.escape(text)}" '
+                         f'data-omission-translation="{html.escape(translation)}" '
+                         f'data-omission-translation-note="{html.escape(note)}" '
+                         'title="疑似需求但未被任何抽取需求覆盖，点击查看说明">⚠ 未覆盖</button></div>')
     if is_table and block is not None:
         table_html, placed_ids = _render_table_inner(block, anchored, numbers, state)
         fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
@@ -617,8 +617,18 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
             owner = _unanalyzed_owner_for_text(text)
             if owner:
                 text_html += _source_classification_marker(owner, state, text)
+            elif (not is_heading and not is_noise and not is_omission and text.strip()
+                  and region not in ("front_matter", "table_of_contents")):
+                # 背景段也进翻译收集（全文每段都有分析结果——真实反馈 2026-07-12）
+                _collected_marker_texts.setdefault(_translation_key(text), ("context", text))
         sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
-        content = (f'<p class="text" data-block-id="{html.escape(bid)}">'
+        key = _translation_key(text)
+        translation_attrs = ""
+        if not is_heading and not is_noise and text.strip():
+            translation_attrs = (
+                f' data-translation="{html.escape(_active_translations.get(key, ""))}"'
+                f' data-translation-note="{html.escape(_active_translation_notes.get(key, ""))}"')
+        content = (f'<p class="text" data-block-id="{html.escape(bid)}"{translation_attrs}>'
                    f'{text_html}{fallback}{sub_chips}</p>')
     return (
         f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}"'
@@ -992,7 +1002,8 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .chip.st-needs_discussion {{ color: var(--st-discussion-tx); }}
 .omission-flag {{ margin: 1px 0 2px; }}
 .omission-tag {{ font-size: 11px; color: var(--st-discussion-tx); background: rgba(248,239,217,.74);
-  border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 8px; }}
+  border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 8px; cursor: pointer; font-family: var(--sans); }}
+.omission-tag:hover, .omission-tag.sel {{ border-color: var(--st-discussion-tx); background: #f6e9c8; }}
 
 /* 折叠区 */
 .region-collapse {{ margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; background: rgba(250,248,242,.62); }}
@@ -1257,13 +1268,92 @@ function clearSourceQuoteMarks() {{
 
 function deselect() {{
   selected = null;
+  selectedContextBlock = null;
   document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
   document.querySelectorAll(".source-classification").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
   document.querySelectorAll('.chip[data-inline-marker="1"].quote-selected').forEach(m => m.classList.remove("quote-selected"));
   document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   clearSourceQuoteMarks();
   document.getElementById("detail").innerHTML = '<div class="empty">点击批注标记查看详情</div>';
+}}
+
+// 与 DocumentReview.vue 同文案（双渲染器契约）：未覆盖=疑似需求但无任何抽取需求覆盖
+const OMISSION_REASON = "该段含规范性措辞（shall/must/应…），被判为疑似需求，但没有任何已抽取需求的来源范围覆盖它。可能原因：抽取遗漏（自检未补回）或该句实为背景说明。确属需求请反馈补抽；背景说明可忽略。";
+const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），被判定为背景/说明性内容，因此没有生成研发需求；其信息会作为上下文供相邻需求的分析使用。如认为该段实际包含需求，请反馈补抽。";
+let selectedContextBlock = null;
+
+function selectContextBlock(blk) {{
+  const bid = blk.getAttribute("data-block-id") || "";
+  if (selectedContextBlock === bid) {{ selectedContextBlock = null; deselect(); return; }}
+  selected = null;
+  selectedContextBlock = bid;
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".source-classification").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
+  document.querySelectorAll(".doc-block").forEach(b => b.classList.remove("in-span", "evidence"));
+  document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
+  clearSourceQuoteMarks();
+  blk.classList.add("in-span", "evidence");
+  const p = blk.querySelector(".text");
+  markWholeTextNodes(p);
+  const text = p ? p.textContent : "";
+  const translation = p ? (p.getAttribute("data-translation") || "") : "";
+  const note = p ? (p.getAttribute("data-translation-note") || "") : "";
+  document.getElementById("detail").innerHTML =
+    '<div class="annotation-card detail-card">'+
+    '<div class="dd-head"><span class="dd-module">背景/上下文</span><span class="badge">说明</span></div>'+
+    '<div class="dd-title">为什么没有生成研发需求</div>'+
+    '<div class="dd-body">'+esc(CONTEXT_REASON)+'</div>'+
+    '<div class="dd-label">原文翻译</div>'+
+    (translation ? '<div class="dd-body">'+esc(translation)+'</div>'
+     : note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(note)+'）</div>'
+     : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>')+
+    (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
+    '</div>';
+}}
+
+function markWholeTextNodes(container) {{
+  if (!container) return;
+  Array.from(container.childNodes).forEach(node => {{
+    if (node.nodeType === 3 && node.textContent.trim()) {{
+      const m = document.createElement("mark");
+      m.className = "sc-quote";
+      node.parentNode.insertBefore(m, node);
+      m.appendChild(node);
+    }}
+  }});
+}}
+
+function selectOmission(el) {{
+  selected = null;
+  selectedContextBlock = null;
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".source-classification").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.toggle("sel", t === el));
+  document.querySelectorAll(".doc-block").forEach(block => block.classList.remove("in-span", "evidence"));
+  document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
+  clearSourceQuoteMarks();
+  const block = el.closest(".doc-block");
+  if (block) {{
+    block.classList.add("in-span", "evidence");
+    markWholeTextNodes(block.querySelector(".text"));   // 整段=引用本体 → 黄标,块底保持蓝
+  }}
+  const text = el.getAttribute("data-omission-text") || "";
+  const translation = el.getAttribute("data-omission-translation") || "";
+  const note = el.getAttribute("data-omission-translation-note") || "";
+  document.getElementById("detail").innerHTML =
+    '<div class="annotation-card detail-card">'+
+    '<div class="dd-head"><span class="dd-module">未覆盖</span><span class="badge">说明</span></div>'+
+    '<div class="dd-title">为什么标为未覆盖</div>'+
+    '<div class="dd-body">'+esc(OMISSION_REASON)+'</div>'+
+    '<div class="dd-label">原文翻译</div>'+
+    (translation ? '<div class="dd-body">'+esc(translation)+'</div>'
+     : note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(note)+'）</div>'
+     : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>')+
+    (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
+    '</div>';
 }}
 
 function sourceClassificationReason(owner, text) {{
@@ -1275,8 +1365,10 @@ function sourceClassificationReason(owner, text) {{
 
 function selectSourceClassification(el) {{
   selected = null;
+  selectedContextBlock = null;
   document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
   document.querySelectorAll(".source-classification").forEach(c => c.classList.toggle("sel", c === el));
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
   document.querySelectorAll(".doc-block").forEach(block => block.classList.remove("in-span", "evidence"));
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   clearSourceQuoteMarks();
@@ -1284,17 +1376,7 @@ function selectSourceClassification(el) {{
   if (block) block.classList.add("in-span", "evidence");
   // 引用片段黄标、上下文整块保持蓝底（真实反馈 2026-07-11）：标记按钮所在容器
   // （段落 p 或表格 td）的文本＝原文引用本体,逐文本节点包 mark 保住按钮不重建
-  const holder = el.parentElement;
-  if (holder) {{
-    Array.from(holder.childNodes).forEach(node => {{
-      if (node.nodeType === 3 && node.textContent.trim()) {{
-        const m = document.createElement("mark");
-        m.className = "sc-quote";
-        node.parentNode.insertBefore(m, node);
-        m.appendChild(node);
-      }}
-    }});
-  }}
+  markWholeTextNodes(el.parentElement);
   const owner = el.getAttribute("data-source-classification") || "";
   const label = owner === "hardware" ? "硬件" : owner === "co_design" ? "软硬件协同" : owner === "software_term" ? "软件术语" : owner;
   const text = el.getAttribute("data-source-text") || "";
@@ -1333,7 +1415,9 @@ function functionalMembershipHtml(r) {{
 function select(id) {{
   if (selected === id) {{ deselect(); return; }}  // 再点一下 → 取消选中
   selected = id;
+  selectedContextBlock = null;
   document.querySelectorAll(".source-classification").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
   clearSourceQuoteMarks();   // 说明标记的引用黄标不跨选中残留（td 容器不在 .text 清扫范围内）
   document.querySelectorAll(".chip").forEach(c => c.classList.toggle("sel", c.getAttribute("data-req") === id));
   const r = byId[id]; if (!r) return;
@@ -1391,8 +1475,18 @@ function decide(id, status) {{
 document.getElementById("paper").addEventListener("click", e => {{
   const chip = e.target.closest(".chip"); if (chip) {{ select(chip.getAttribute("data-req")); return; }}
   const sourceMarker = e.target.closest(".source-classification"); if (sourceMarker) {{ selectSourceClassification(sourceMarker); return; }}
+  const omission = e.target.closest(".omission-tag"); if (omission) {{ selectOmission(omission); return; }}
   const blk = e.target.closest(".doc-block.anchored");
-  if (blk) {{ const c = blk.querySelector(".chip"); if (c) select(c.getAttribute("data-req")); }}
+  if (blk) {{ const c = blk.querySelector(".chip"); if (c) select(c.getAttribute("data-req")); return; }}
+  // 全文每段都有分析结果：无批注/无标记的正文段落点击 → 背景说明卡（原因/翻译/引用）
+  const plain = e.target.closest(".doc-block");
+  if (plain && !plain.classList.contains("heading") && !plain.classList.contains("noise")
+      && !plain.classList.contains("is-table")) {{
+    const om = plain.querySelector(".omission-tag"); if (om) {{ selectOmission(om); return; }}
+    const marker = plain.querySelector(".source-classification"); if (marker) {{ selectSourceClassification(marker); return; }}
+    const p = plain.querySelector(".text");
+    if (p && p.textContent.trim()) selectContextBlock(plain);
+  }}
 }});
 
 document.getElementById("export-btn").onclick = () => {{

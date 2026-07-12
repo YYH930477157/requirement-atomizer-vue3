@@ -43,6 +43,9 @@ export type DocumentBlock = {
   table_source?: string
   header_rows?: string[][]
   data_rows?: string[][]
+  // 块级中文翻译（annotation_translations.json 内容哈希缓存,后端装配时附带）
+  translation?: string
+  translation_note?: string
 }
 
 export type DocumentPayload = {

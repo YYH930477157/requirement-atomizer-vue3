@@ -690,6 +690,95 @@ class MarkerTranslationTests(unittest.TestCase):
             self.assertEqual(summary["unresolved"], 1)
             self.assertFalse((out / dae.ANNOTATION_TRANSLATIONS).exists())
 
+    def test_omission_tag_is_clickable_three_part_card(self) -> None:
+        """未覆盖段与说明标记同待遇：可点击按钮 + 三段式卡片（原因/翻译/引用）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)   # B3 requirement_like 且未覆盖
+            quote = "An uncovered requirement shall hold."
+            key = dae._translation_key(quote)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1, "items": {key: {"owner": "omission",
+                                              "translation": "一条未被覆盖的需求应当成立。"}},
+            }, ensure_ascii=False), encoding="utf-8")
+            rendered = dae.render_annotation_html(out)
+            self.assertIn('<button class="omission-tag"', rendered)
+            self.assertIn(f'data-omission-text="{quote}"', rendered)
+            self.assertIn('data-omission-translation="一条未被覆盖的需求应当成立。"', rendered)
+            self.assertIn("为什么标为未覆盖", rendered)
+            self.assertIn("没有任何已抽取需求的来源范围覆盖它", rendered)
+            self.assertIn("function selectOmission", rendered)
+
+    def test_omission_text_enters_translation_collection(self) -> None:
+        """未覆盖段文本进翻译收集（owner=omission），LLM 导出时自动补齐。"""
+
+        def chat(system: str, user: str) -> dict:
+            return {"items": [{"id": 1, "translation": "一条未被覆盖的需求应当成立。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            summary = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+            self.assertEqual(summary["translated"], 1)
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            key = dae._translation_key("An uncovered requirement shall hold.")
+            self.assertEqual(sidecar["items"][key]["owner"], "omission")
+
+    def test_api_blocks_carry_translation(self) -> None:
+        """应用内视图同语义：build_document_blocks 按内容哈希附带块级译文。"""
+        from api_server import build_document_blocks
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            quote = "An uncovered requirement shall hold."
+            key = dae._translation_key(quote)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1, "items": {
+                    key: {"owner": "omission", "translation": "一条未被覆盖的需求应当成立。"},
+                    dae._translation_key("其它"): {"owner": "omission", "translation": "",
+                                                   "rejected": True, "reason": "含无据数字"},
+                }}, ensure_ascii=False), encoding="utf-8")
+            doc = build_document_blocks(out)
+            by_id = {b["block_id"]: b for b in doc["blocks"]}
+            self.assertEqual(by_id["B3"].get("translation"), "一条未被覆盖的需求应当成立。")
+            self.assertNotIn("translation", by_id["B2"])   # 无译文的块不带字段
+
+    def test_context_paragraph_collected_and_card_present(self) -> None:
+        """全文每段都有分析结果：背景段进翻译收集（owner=context）、可点击出说明卡。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            plain = "This document was drafted under Mandate M/441 as background."
+            (out / "blocks.jsonl").write_text(
+                json.dumps({"block_id": "B1", "order": 1, "type": "paragraph", "text": plain,
+                            "section_path": ["Introduction"], "requirement_like": False,
+                            "noise": False, "doc_region": "introduction"}, ensure_ascii=False) + "\n",
+                encoding="utf-8")
+            (out / "ai_requirements.jsonl").write_text("", encoding="utf-8")
+            key = dae._translation_key(plain)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1, "items": {key: {"owner": "context",
+                                              "translation": "本文件系依据 M/441 号授权起草的背景说明。"}},
+            }, ensure_ascii=False), encoding="utf-8")
+            rendered = dae.render_annotation_html(out)
+            self.assertIn('data-translation="本文件系依据 M/441 号授权起草的背景说明。"', rendered)
+            self.assertIn("function selectContextBlock", rendered)
+            self.assertIn("被判定为背景/说明性内容", rendered)
+            self.assertIn(("context", plain), dae._collected_marker_texts.values())
+
+    def test_front_matter_context_not_collected(self) -> None:
+        """封面/目录区背景段不进翻译收集（折叠区,翻译无消费场景纯烧调用）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            cover = "EUROPEAN STANDARD EN 16314 July 2013 English Version"
+            (out / "blocks.jsonl").write_text(
+                json.dumps({"block_id": "B1", "order": 1, "type": "paragraph", "text": cover,
+                            "section_path": [], "requirement_like": False,
+                            "noise": False, "doc_region": "front_matter"}, ensure_ascii=False) + "\n",
+                encoding="utf-8")
+            (out / "ai_requirements.jsonl").write_text("", encoding="utf-8")
+            dae.render_annotation_html(out)
+            self.assertNotIn(("context", cover), dae._collected_marker_texts.values())
+
     def test_export_task_reports_translation_route(self) -> None:
         import desktop_tasks
         with tempfile.TemporaryDirectory() as tmp:

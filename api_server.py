@@ -274,11 +274,52 @@ _BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
                  # 表格块渲染真表格所需（旧 blocks.jsonl 无这些字段 → None，前端回退扁平文字）
                  "table_title", "table_source", "header_rows", "data_rows")
 
+# 块级中文翻译缓存（内容哈希键,仅由真 LLM 写入;详见 doc_annotation_export 的生成侧）。
+# 键函数与加载器放这里作为唯一实现——批注导出与本 API 两个渲染面共用,防分叉。
+ANNOTATION_TRANSLATIONS = "annotation_translations.json"
+
+
+def translation_key(text: object) -> str:
+    import hashlib
+    return hashlib.sha1(" ".join(str(text or "").split()).encode("utf-8")).hexdigest()
+
+
+def load_annotation_translations(output_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """annotation_translations.json → (可嵌入译文, 被拒条目原因)。缺失/损坏 → 空（视图无翻译照常）。"""
+    try:
+        data = json.loads((Path(output_dir) / ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, {}
+    items = data.get("items") if isinstance(data, dict) else None
+    translations: dict[str, str] = {}
+    notes: dict[str, str] = {}
+    if isinstance(items, dict):
+        for key, entry in items.items():
+            if not isinstance(entry, dict):
+                continue
+            translation = str(entry.get("translation") or "").strip()
+            if translation and not entry.get("rejected"):
+                translations[str(key)] = translation
+            elif entry.get("rejected"):
+                notes[str(key)] = str(entry.get("reason") or "翻译未通过防幻觉校验")
+    return translations, notes
+
 
 def build_document_blocks(output_dir: Path) -> dict:
-    """供文档批注视图：blocks 按 order 排序、只留渲染需要的字段（去掉 kb_matches 等重负载）。"""
+    """供文档批注视图：blocks 按 order 排序、只留渲染需要的字段（去掉 kb_matches 等重负载）。
+
+    附带块级中文翻译（内容哈希查缓存）：未覆盖段/说明标记的三段式卡片（原因/翻译/引用）
+    在应用内视图与导出 HTML 同语义。"""
     blocks = read_jsonl(output_dir / "blocks.jsonl")
     trimmed = [{k: b.get(k) for k in _BLOCK_FIELDS} for b in blocks]
+    translations, notes = load_annotation_translations(output_dir)
+    if translations or notes:
+        for block in trimmed:
+            key = translation_key(block.get("text"))
+            if key in translations:
+                block["translation"] = translations[key]
+            elif key in notes:
+                block["translation_note"] = notes[key]
     trimmed.sort(key=lambda b: b.get("order") or 0)
     return {"blocks": trimmed, "count": len(trimmed)}
 
