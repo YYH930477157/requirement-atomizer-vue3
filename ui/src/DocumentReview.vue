@@ -397,11 +397,6 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             <div v-if="hardwareTranslationOf(selectedReq)" class="dd-body" data-testid="dd-hw-translation">{{ hardwareTranslationOf(selectedReq) }}</div>
             <div v-else class="dd-body dd-empty">未生成翻译（开启 LLM 后点「导出批注HTML」可自动补齐，刷新即见）</div>
           </div>
-          <div class="dd-section" v-if="ownershipReasonOf(selectedReq)">
-            <div class="dd-label">为什么判为{{ OWNERSHIP_LABELS[ownershipOf(selectedReq)] || ownershipOf(selectedReq) }}</div>
-            <div class="dd-body" data-testid="dd-ownership-reason">{{ ownershipReasonOf(selectedReq) }}</div>
-            <div v-if="ownershipOverrideNote(selectedReq)" class="dd-body dd-empty">{{ ownershipOverrideNote(selectedReq) }}</div>
-          </div>
           <div class="dd-section" v-if="(selectedReq.sub_items || []).length">
             <div class="dd-label">子项要求（二级）</div>
             <ul class="dd-list" data-testid="dd-subitems">
@@ -427,10 +422,6 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             </div>
             <ul class="dd-list"><li v-for="(g, i) in devGuidanceOf(selectedReq)" :key="i">{{ g }}</li></ul>
           </div>
-          <div class="dd-section" v-if="useEnriched(selectedReq) && (selectedReq.analysis_design_options || []).length">
-            <div class="dd-label">设计候选（非规范约束）</div>
-            <ul class="dd-list"><li v-for="(g, i) in selectedReq.analysis_design_options" :key="i">{{ g }}</li></ul>
-          </div>
           <div class="dd-section" v-if="acceptanceOf(selectedReq).length">
             <div class="dd-label">测试指引 / 验收
               <span v-if="useEnriched(selectedReq)" class="src-badge">富化(LLM)</span>
@@ -439,6 +430,11 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
           <div class="dd-section" v-if="selectedReq.source_quote">
             <div class="dd-label">原文引用</div><div class="dd-quote">{{ selectedReq.source_quote }}</div>
+          </div>
+          <div class="dd-section" v-if="ownershipReasonOf(selectedReq)">
+            <div class="dd-label">为什么判为{{ OWNERSHIP_LABELS[ownershipOf(selectedReq)] || ownershipOf(selectedReq) }}</div>
+            <div class="dd-body" data-testid="dd-ownership-reason">{{ ownershipReasonOf(selectedReq) }}</div>
+            <div v-if="ownershipOverrideNote(selectedReq)" class="dd-body dd-empty">{{ ownershipOverrideNote(selectedReq) }}</div>
           </div>
 
           <div class="dd-section">

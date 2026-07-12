@@ -208,6 +208,18 @@ class W3MergeTests(unittest.TestCase):
             rows = build_ai_requirements(out)
             self.assertFalse(any(k.startswith("analysis_") for k in rows[0]))
 
+    def test_ownership_reason_after_quote_and_design_hidden(self) -> None:
+        """卡片布局（真实反馈 2026-07-12）：归属判定在「原文引用」之后;设计候选暂不渲染。"""
+        import doc_annotation_export as dae
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed_air(out)
+            rendered = dae.render_annotation_html(out)
+            quote_pos = rendered.index("(r.source_quote ? '<div class=\"dd-label\">原文引用</div>")
+            reason_pos = rendered.index("ownershipReasonHtml(r)+", quote_pos)
+            self.assertGreater(reason_pos, quote_pos)   # 归属判定在引用之后
+            self.assertNotIn("设计候选（非规范约束）", rendered)   # 暂不渲染
+
     def test_html_renders_enriched_narrative_and_warnings(self) -> None:
         import doc_annotation_export as dae
         with tempfile.TemporaryDirectory() as td:

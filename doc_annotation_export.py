@@ -1485,10 +1485,10 @@ function select(id) {{
   const accSrc = (useEnriched && (r.analysis_acceptance_criteria||[]).length) ? r.analysis_acceptance_criteria : (r.acceptance_criteria||[]);
   const dev = isHardware ? "" : devSrc.map(c => "<li>" + esc(c) + "</li>").join("");
   const acc = isHardware ? "" : accSrc.map(c => "<li>" + esc(c) + "</li>").join("");
-  const design = (useEnriched ? (r.analysis_design_options||[]) : []).map(c => "<li>" + esc(c) + "</li>").join("");
+  // 归属判定挪到「原文引用」之后（真实反馈 2026-07-12）；设计候选暂不渲染（数据仍在 xlsx）
   const analysisHtml = isHardware
-    ? hardwareTranslationHtml(r) + ownershipReasonHtml(r)
-    : analysisNarrativeHtml(r) + ownershipReasonHtml(r) + enrichmentWarningsHtml(r) + subItemsHtml(r) + thresholdHtml(r);
+    ? hardwareTranslationHtml(r)
+    : analysisNarrativeHtml(r) + enrichmentWarningsHtml(r) + subItemsHtml(r) + thresholdHtml(r);
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
   const ownershipOptions = [
     ["", "自动/不覆盖"],
@@ -1506,9 +1506,9 @@ function select(id) {{
     analysisHtml+
     functionalMembershipHtml(r)+
     (dev ? '<div class="dd-label">研发指引 / 落地实现'+(useEnriched?' <span class="src-badge">富化(LLM)</span>':'')+'</div><ul class="dd-list">'+dev+'</ul>' : '')+
-    (design ? '<div class="dd-label">设计候选（非规范约束）</div><ul class="dd-list">'+design+'</ul>' : '')+
     (acc ? '<div class="dd-label">测试指引 / 验收'+(useEnriched?' <span class="src-badge">富化(LLM)</span>':'')+'</div><ul class="dd-list">'+acc+'</ul>' : '')+
     (r.source_quote ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(r.source_quote)+'</div>' : '')+
+    ownershipReasonHtml(r)+
     '<div class="dd-label">模块（可改）</div><select id="mod-sel">'+opts+'</select>'+
     '<div class="dd-section"><div class="dd-label">归属（可改）</div><select id="own-sel" class="dd-select">'+ownershipOptions+'</select></div>'+
     '<textarea id="cmt" placeholder="审查意见（可选）">'+esc(d.reason||"")+'</textarea>'+
