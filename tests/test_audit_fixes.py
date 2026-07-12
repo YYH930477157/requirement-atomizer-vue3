@@ -453,3 +453,81 @@ class QualityAuditFieldsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NumberedScopeBodyStartTests(unittest.TestCase):
+    """EN 16314：body 起点容忍条款号前缀——"1 Scope" 也是 body 起点,封面/目录标 front_matter。"""
+
+    def test_numbered_scope_marks_front_matter(self) -> None:
+        from atomize import mark_doc_regions
+        blocks = [
+            {"block_id": "B1", "type": "paragraph", "text": "EUROPEAN STANDARD EN 16314", "section_path": []},
+            {"block_id": "B2", "type": "paragraph", "text": "Contents Page", "section_path": []},
+            {"block_id": "B3", "type": "heading", "text": "1 Scope", "section_path": ["1 Scope"]},
+            {"block_id": "B4", "type": "paragraph", "text": "This standard specifies things.", "section_path": ["1 Scope"]},
+        ]
+        mark_doc_regions(blocks, [])
+        self.assertEqual(blocks[0]["doc_region"], "front_matter")
+        self.assertEqual(blocks[1]["doc_region"], "front_matter")
+        self.assertEqual(blocks[2]["doc_region"], "body")
+        self.assertEqual(blocks[3]["doc_region"], "body")
+
+    def test_exact_scope_still_matches(self) -> None:
+        from atomize import mark_doc_regions
+        blocks = [
+            {"block_id": "B1", "type": "paragraph", "text": "cover", "section_path": []},
+            {"block_id": "B2", "type": "heading", "text": "Scope", "section_path": ["Scope"]},
+            {"block_id": "B3", "type": "paragraph", "text": "body", "section_path": ["Scope"]},
+        ]
+        mark_doc_regions(blocks, [])
+        self.assertEqual(blocks[0]["doc_region"], "front_matter")
+        self.assertEqual(blocks[1]["doc_region"], "body")
+
+
+class RuledTocTableVetoTests(unittest.TestCase):
+    """EN 16314：pdfplumber 把印刷目录抽成画线"真表"——文本表守卫全不经过该路径。
+    多数行含点引导线+页码 → 整表回流段落（C2：未验收的表不占 bbox,内容不蒸发）。"""
+
+    def test_toc_matrix_skipped(self) -> None:
+        from parsers.pdf_parser import _skip_table_matrix
+        matrix = [
+            ["", "Foreword ................................................ 4"],
+            ["1", "Scope ................................................... 6"],
+            ["2", "Normative references .................................... 6"],
+            ["3.1", "Terms and definitions ................................. 8"],
+        ]
+        self.assertTrue(_skip_table_matrix(matrix))
+
+    def test_real_table_kept(self) -> None:
+        from parsers.pdf_parser import _skip_table_matrix
+        matrix = [
+            ["Symbol", "Description", "Unit"],
+            ["Qmax", "Maximum flow rate", "m3/h"],
+            ["Pmax", "Maximum working pressure", "mbar"],
+        ]
+        self.assertFalse(_skip_table_matrix(matrix))
+
+    def test_minor_leader_rows_do_not_veto(self) -> None:
+        from parsers.pdf_parser import _skip_table_matrix
+        matrix = [
+            ["Item", "Value ......... 3"],
+            ["Qmax", "10"],
+            ["Pmax", "500"],
+        ]
+        self.assertFalse(_skip_table_matrix(matrix))
+
+
+class ExtractRegionExclusionTests(unittest.TestCase):
+    """EN 16314：B 轨抽取不吃封面/目录区块——目录条目不再变成空壳需求(11 条挂封面)。"""
+
+    def test_front_matter_and_toc_excluded_body_kept(self) -> None:
+        from extract_units import body_blocks
+        blocks = [
+            {"block_id": "B1", "text": "cover", "doc_region": "front_matter"},
+            {"block_id": "B2", "text": "toc", "doc_region": "table_of_contents"},
+            {"block_id": "B3", "text": "intro", "doc_region": "introduction"},
+            {"block_id": "B4", "text": "body", "doc_region": "body"},
+            {"block_id": "B5", "text": "legacy no region"},
+        ]
+        kept = [b["block_id"] for b in body_blocks(blocks)]
+        self.assertEqual(kept, ["B3", "B4", "B5"])

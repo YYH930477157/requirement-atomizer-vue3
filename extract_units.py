@@ -30,6 +30,17 @@ def clean_block_text(block: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+# 抽取排除区：封面/印刷目录——目录条目形似需求路径,进 LLM 会抽出空壳需求
+# （真实案例 EN 16314：11 条引用=目录路径、锚点兜底挂封面）。preface/introduction
+# 保留（可含背景约束）；缺 doc_region 的块视为 body（旧产物/测试夹具兼容）。
+_EXTRACT_EXCLUDED_REGIONS = ("front_matter", "table_of_contents")
+
+
+def body_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [b for b in blocks
+            if str(b.get("doc_region") or "body") not in _EXTRACT_EXCLUDED_REGIONS]
+
+
 def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block）。"""
     groups: "OrderedDict[str, dict[str, Any]]" = OrderedDict()

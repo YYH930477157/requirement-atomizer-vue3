@@ -814,11 +814,24 @@ def _clean_table_matrix(raw_matrix: list[list[Any]] | None) -> list[list[str]]:
     return matrix
 
 
+_TOC_CELL_RE = re.compile(r"[.·…]{4,}\s*\d{1,3}\s*$")
+
+
 def _skip_table_matrix(matrix: list[list[str]]) -> bool:
     if not matrix:
         return True
     non_empty_cells = sum(1 for row in matrix for value in row if value)
-    return non_empty_cells <= 1
+    if non_empty_cells <= 1:
+        return True
+    # 目录页画线表否决（真实案例 EN 16314）：pdfplumber 把印刷目录抽成"真表"——所有
+    # 文本表守卫都不经过这条路径。多数行含点引导线+页码 = TOC 不是数据表，整表回流段落
+    # （C2 验收：未通过的表不占 bbox，内容不蒸发），下游按目录行规则清洁/折叠。
+    rows = [row for row in matrix if any(str(value).strip() for value in row)]
+    leader_rows = sum(1 for row in rows
+                      if any(_TOC_CELL_RE.search(str(value)) for value in row if value))
+    if rows and leader_rows * 2 >= len(rows):
+        return True
+    return False
 
 
 def _word_intersects_bbox(word: dict[str, Any], bbox: tuple[float, float, float, float]) -> bool:
