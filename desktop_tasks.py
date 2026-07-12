@@ -341,7 +341,8 @@ STAGE_INPUTS: dict[str, list[str]] = {
     "clarification-report": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "engineering_analysis.json",
                              "consistency_report.json", "blocks.jsonl"],
     "compose": ["atomic_requirements.jsonl", "table_items.jsonl"],
-    "export-annotation-html": ["blocks.jsonl", "ai_requirements.jsonl", "engineering_analysis.json", "ai_review_states.jsonl"],
+    "export-annotation-html": ["blocks.jsonl", "ai_requirements.jsonl", "engineering_analysis.json",
+                               "ai_review_states.jsonl", "annotation_translations.json"],
 }
 
 
@@ -384,7 +385,7 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v2-tiered",
     "compose": "engineering_composer/v1",
-    "export-annotation-html": "doc_annotation_export/v1",
+    "export-annotation-html": "doc_annotation_export/v2",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
@@ -661,13 +662,14 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         "template-write": lambda: template_write_task(out_dir, template_path),
         "clarification-report": lambda: clarification_report_task(out_dir),
         "compose": lambda: compose_task(out_dir),
-        "export-annotation-html": lambda: export_annotation_html_task(out_dir),
+        "export-annotation-html": lambda: export_annotation_html_task(out_dir, route=route),
     }
 
     results: dict[str, Any] = {}
     skipped_stages: list[str] = []
     payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
-    llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis"}
+    llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis",
+                  "export-annotation-html"}
     for index, stage in enumerate(ordered, start=1):
         emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
                        "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
@@ -742,13 +744,27 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     return payload
 
 
-def export_annotation_html_task(out_dir: Path) -> dict[str, Any]:
-    """生成自包含文档批注 HTML（独立、可分享、内含 localStorage 裁决 + 导出 JSON）。"""
+def export_annotation_html_task(out_dir: Path, route: str | None = None) -> dict[str, Any]:
+    """生成自包含文档批注 HTML（独立、可分享、内含 localStorage 裁决 + 导出 JSON）。
+
+    route=openai_compatible 时补齐块级"说明"标记的原文中文翻译（内容哈希缓存
+    annotation_translations.json，重导出零调用）；渲染本体保持确定性。"""
     import doc_annotation_export
     out_dir = out_dir.expanduser().resolve()
-    path = doc_annotation_export.export_annotation_html(out_dir)
-    return {"kind": "annotation_html", "out_dir": str(out_dir),
-            "path": str(path), "written": [str(path)]}
+    path, translations = doc_annotation_export.export_annotation_bundle(out_dir, route=route)
+    payload = {"kind": "annotation_html", "out_dir": str(out_dir),
+               "path": str(path), "route": str(translations.get("route") or "stub"),
+               "translations": translations, "written": [str(path)]}
+    notes: list[str] = []
+    if route and route != "stub" and payload["route"] != "openai_compatible":
+        notes.append("LLM 不可用，块级说明未翻译（原文照排，开启后重导出自动补齐）")
+    if translations.get("rejected"):
+        notes.append(f"{translations['rejected']} 条翻译含无据编码/数字被拒（保留原文）")
+    if translations.get("failed_calls"):
+        notes.append(f"{translations['failed_calls']} 批翻译调用失败（重新导出自动补齐）")
+    if notes:
+        payload["note"] = "；".join(notes)
+    return payload
 
 
 def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, Any]:
@@ -902,6 +918,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     anno_parser = subparsers.add_parser("export-annotation-html")
     anno_parser.add_argument("--out", type=Path, required=True)
+    anno_parser.add_argument("--route", choices=["stub", "openai_compatible"], default=None,
+                             help="openai_compatible 时补齐块级说明标记的中文翻译（缓存复用）")
 
     import_parser = subparsers.add_parser("import-ai-decisions")
     import_parser.add_argument("--out", type=Path, required=True)
@@ -916,6 +934,8 @@ def _manifest_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
         context["route"] = getattr(args, "llm_route", None)
     elif command == "assemble":
         context["route"] = getattr(args, "enrich_route", None) or None
+    elif command == "export-annotation-html":
+        context["route"] = getattr(args, "route", None) or None
     if command in {"requirements-analysis", "template-write"}:
         context["template_path"] = getattr(args, "template", None)
     if command == "ai-extract":
@@ -1023,7 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
                                       limit_sections=args.limit_sections or None,
                                       sample_ratio=args.sample_ratio or None)
         elif args.command == "export-annotation-html":
-            payload = export_annotation_html_task(args.out)
+            payload = export_annotation_html_task(args.out, route=getattr(args, "route", None))
         elif args.command == "import-ai-decisions":
             payload = import_ai_decisions_task(args.out, args.file)
         else:

@@ -761,7 +761,10 @@ def mark_doc_regions(
 
     for index, block in enumerate(blocks):
         text = normalize_title(block.get("text", ""))
-        if block.get("type") == "heading" and text == profile.body_start_heading:
+        # 容忍条款号前缀（真实案例 EN 16314）："1 Scope" 精确匹配不上 "scope" →
+        # body_start=0 → 封面/目录全标 body，目录条目混进抽取单元变成空壳需求。
+        stripped = re.sub(r"^\d+(?:\.\d+)*[.)]?\s+", "", text)
+        if block.get("type") == "heading" and profile.body_start_heading in (text, stripped):
             body_start_indexes.append(index)
         if block.get("type") == "heading" and text == "preface" and preface_index is None:
             preface_index = index

@@ -52,7 +52,7 @@ from extract_units import (  # noqa: F401 —— F3 拆分门面：旧名保持�
     _CLAUSE_HEADING_RE, _CLAUSE_REF_RE, _TERMS_HEADING_RE, _TERM_NAME_RE,
     _TOC_LEADER_RUN_RE, _TOC_LINE_END_RE, _finalize_merged, _is_toc_line,
     DEFAULT_MERGE_CHARS, _normalize_clause_ref, _pack_sections, _split_text, assemble_sections,
-    attach_term_definitions, clause_key, clean_block_text, collect_term_entries,
+    attach_term_definitions, body_blocks, clause_key, clean_block_text, collect_term_entries,
     merge_sections, resolve_section_refs, sample_sections,
 )
 from extract_guards import (  # noqa: F401
@@ -1071,6 +1071,7 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     """
     out_dir = out_dir.expanduser().resolve()
     blocks = read_jsonl(out_dir / "blocks.jsonl")
+    blocks = body_blocks(blocks)   # 封面/目录区不进抽取（EN 16314：目录条目被抽成 11 条空壳需求）
     resolved_mode = (unit_mode or os.environ.get(UNIT_MODE_ENV) or "clause").strip().lower()
     if resolved_mode not in ("clause", "chapter"):
         resolved_mode = "clause"

@@ -17,6 +17,7 @@ import datetime
 import hashlib
 import html
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,11 @@ from typing import Any
 from api_server import build_ai_requirements, build_document_blocks
 
 ANNOTATION_HTML = "document_annotation.html"
+# 块级"说明"标记的原文中文翻译缓存（内容哈希键，仅由真 LLM 写入；渲染层只读=保持确定性）
+ANNOTATION_TRANSLATIONS = "annotation_translations.json"
+_TRANSLATION_BATCH = 8
+# 数字并组：千位空格/逗号分隔（"4 000"→"4000"），护栏基线用
+_DIGIT_GROUP_RE = re.compile(r"(?<=\d)[\s,  ](?=\d)")
 
 # 非正文区：折叠显示（不删除，研发可展开核查）
 _COLLAPSIBLE_REGIONS = {"front_matter", "table_of_contents", "preface", "introduction"}
@@ -82,6 +88,36 @@ _UNANALYZED_TERM_DEFAULTS: dict[str, tuple[str, ...]] = {
     "software_term": _UNANALYZED_SOFTWARE_TERM_TERMS,
 }
 _active_unanalyzed_terms: dict[str, tuple[str, ...]] = dict(_UNANALYZED_TERM_DEFAULTS)
+# 渲染期状态：本次渲染出现的说明标记文本（hash → (owner, text)，翻译阶段消费）与可嵌入译文
+_collected_marker_texts: dict[str, tuple[str, str]] = {}
+_active_translations: dict[str, str] = {}
+_active_translation_notes: dict[str, str] = {}
+
+
+def _translation_key(text: str) -> str:
+    return hashlib.sha1(" ".join(str(text).split()).encode("utf-8")).hexdigest()
+
+
+def _read_translation_sidecar(out_dir: Path) -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads((Path(out_dir) / ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    items = data.get("items") if isinstance(data, dict) else None
+    return {str(k): dict(v) for k, v in items.items() if isinstance(v, dict)} if isinstance(items, dict) else {}
+
+
+def _load_annotation_translations(out_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """渲染可嵌入的译文 + 被护栏拒绝条目的原因（拒绝要如实呈现，不伪装成未生成）。"""
+    result: dict[str, str] = {}
+    notes: dict[str, str] = {}
+    for key, entry in _read_translation_sidecar(out_dir).items():
+        translation = str(entry.get("translation") or "").strip()
+        if translation and not entry.get("rejected"):
+            result[key] = translation
+        elif entry.get("rejected"):
+            notes[key] = str(entry.get("reason") or "翻译未通过防幻觉校验")
+    return result, notes
 
 
 def _load_annotation_terms(out_dir: Path) -> dict[str, tuple[str, ...]]:
@@ -393,10 +429,17 @@ def _source_classification_marker(owner: str, marker_state: dict[str, Any], text
     label = _OWNER_LABELS.get(owner, owner)
     number = marker_state.get("next", 1)
     marker_state["next"] = number + 1
+    key = _translation_key(text)
+    if text.strip():
+        _collected_marker_texts.setdefault(key, (owner, text))
+    translation = _active_translations.get(key, "")
+    note = _active_translation_notes.get(key, "")
     return (
         f'<button class="source-classification source-classification-{html.escape(owner)}" '
         f'data-source-classification="{html.escape(owner)}" '
         f'data-source-text="{html.escape(text)}" '
+        f'data-source-translation="{html.escape(translation)}" '
+        f'data-source-translation-note="{html.escape(note)}" '
         f'title="该原文已归类为{html.escape(label)}，点击查看原因">'
         f'<span class="annotation-number">{number:02d}</span>'
         f'<span class="annotation-owner">{html.escape(label)}</span></button>'
@@ -588,9 +631,11 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
 
 
 def render_annotation_html(out_dir: Path) -> str:
-    global _active_unanalyzed_terms
+    global _active_unanalyzed_terms, _active_translations, _active_translation_notes
     out_dir = Path(out_dir).expanduser().resolve()
     _active_unanalyzed_terms = _load_annotation_terms(out_dir)   # 语料词表可覆盖（默认=内置）
+    _active_translations, _active_translation_notes = _load_annotation_translations(out_dir)
+    _collected_marker_texts.clear()
     doc = build_document_blocks(out_dir)
     blocks = doc.get("blocks") or []
     requirements = build_ai_requirements(out_dir)
@@ -645,11 +690,143 @@ def render_annotation_html(out_dir: Path) -> str:
     )
 
 
-def export_annotation_html(out_dir: Path) -> Path:
-    out_dir = out_dir.expanduser().resolve()
+def _translate_marker_batch(chat: Any, batch: list[tuple[str, str, str]]) -> dict[int, str]:
+    # 发送前做渲染同款清洁（目录点引导线/页码/框线乱码），模型不必翻译排版噪声
+    numbered = [{"id": i, "text": " ".join(_clean_block_text(text).split()) or " ".join(text.split())}
+                for i, (_key, _owner, text) in enumerate(batch, start=1)]
+    system = "你是电表/燃气表等技术标准文档的翻译助手。"
+    user = "\n".join([
+        "把下列标准原文逐条忠实翻译成中文。规则：",
+        "- 逐条对应，不合并、不拆分、不遗漏；",
+        "- 忠实原文：不得新增原文没有的数字、编号、协议代码、单位或任何建议/解释；",
+        "- 专有名词与缩写（如 AFD、M-Bus、GdM）保留原文；",
+        "- 只输出 JSON 对象 {\"items\":[{\"id\":1,\"translation\":\"...\"}]}。",
+        "原文条目 JSON:",
+        json.dumps(numbered, ensure_ascii=False),
+    ])
+    payload = chat(system, user)
+    items = payload.get("items") if isinstance(payload, dict) else None
+    result: dict[int, str] = {}
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            item_id = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        result[item_id] = str(item.get("translation") or "").strip()
+    return result
+
+
+def generate_annotation_translations(out_dir: Path, *, route: str | None,
+                                     texts: dict[str, tuple[str, str]] | None = None,
+                                     chat: Any = None) -> dict[str, Any]:
+    """块级"说明"标记的原文中文翻译（评审卡三段式：归类原因/原文翻译/原文引用）。
+
+    翻译只在此处生成、按内容哈希写 annotation_translations.json；渲染层只读缓存，
+    保持确定性（裁决回流免 LLM 重建不受影响）。护栏同硬件翻译通路（检查单 #2）：
+    忠实翻译不会引入源文没有的编码/数字——出现即拒绝该条并留账（不嵌入、不重试）。
+    """
+    out_dir = Path(out_dir).expanduser().resolve()
+    if texts is None:
+        render_annotation_html(out_dir)   # 收集本文档全部说明标记文本
+        texts = dict(_collected_marker_texts)
+    sidecar = _read_translation_sidecar(out_dir)
+    pending = {key: value for key, value in texts.items() if key not in sidecar}
+    summary: dict[str, Any] = {
+        "route": "stub", "model": "", "total_markers": len(texts),
+        "cached": len(texts) - len(pending), "translated": 0, "rejected": 0,
+        "unresolved": 0, "failed_calls": 0,
+    }
+    if not pending:
+        # 无新文本：不必解析 LLM 配置；缓存条目本就全部来自真 LLM
+        summary["route"] = "openai_compatible" if summary["cached"] else "stub"
+        return summary
+    from functional_synthesis import _resolve_catalog_chat
+    invoke, executed = _resolve_catalog_chat(route, chat)
+    if invoke is None:
+        summary["unresolved"] = len(pending)   # 诚实降级：stub 绝不虚标（检查单 #4）
+        return summary
+    summary["route"] = "openai_compatible"
+    summary["model"] = executed.split(":", 1)[1] if executed.startswith("llm:") else executed
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from threading import Lock
+
+    from cosem_behavior_spec import extract_codes, extract_ints
+
+    def _flush() -> None:
+        target = out_dir / ANNOTATION_TRANSLATIONS
+        payload = {"version": 1, "model": summary["model"],
+                   "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                   "items": sidecar}
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+
+    pending_list = [(key, owner, text) for key, (owner, text) in pending.items()]
+    batches = [pending_list[start:start + _TRANSLATION_BATCH]
+               for start in range(0, len(pending_list), _TRANSLATION_BATCH)]
+    lock = Lock()
+    changed = False
+    try:
+        from ai_extract import resolve_concurrency
+        workers = resolve_concurrency(None)
+    except Exception:  # pragma: no cover - 兜底串行
+        workers = 1
+    # 并发批次 + 每批完成即落盘（分析富化 288 条串行数小时+零落盘的教训，同对策）
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = {executor.submit(_translate_marker_batch, invoke, batch): batch for batch in batches}
+        for future in as_completed(futures):
+            batch = futures[future]
+            try:
+                translations = future.result()
+            except Exception:
+                with lock:
+                    summary["failed_calls"] += 1
+                continue
+            with lock:
+                for index, (key, owner, text) in enumerate(batch, start=1):
+                    translation = translations.get(index, "")
+                    if not translation:
+                        summary["unresolved"] += 1   # 漏译不落账 → 下次导出自动补齐
+                        continue
+                    # 基线含数字并组形态：欧标千位分隔 "4 000"，忠实翻译写 "4000" 是格式
+                    # 归一不是编造（test16 实测 3 条误伤）。编码仍按原文严格。
+                    basis = f"{text} {_DIGIT_GROUP_RE.sub('', text)}"
+                    fabricated = sorted((extract_codes(translation) - extract_codes(text))
+                                        | (extract_ints(translation) - extract_ints(basis)))
+                    entry: dict[str, Any] = {"owner": owner, "model": summary["model"],
+                                             "source_head": " ".join(text.split())[:120]}
+                    if fabricated:
+                        entry.update({"translation": "", "rejected": True,
+                                      "reason": "翻译含无据编码/数字: " + ", ".join(str(x) for x in fabricated[:6])})
+                        summary["rejected"] += 1
+                    else:
+                        entry["translation"] = translation
+                        summary["translated"] += 1
+                    sidecar[key] = entry
+                    changed = True
+                if changed:
+                    _flush()   # 中途被杀不丢已完成的真实调用
+    return summary
+
+
+def export_annotation_bundle(out_dir: Path, *, route: str | None = None) -> tuple[Path, dict[str, Any]]:
+    out_dir = Path(out_dir).expanduser().resolve()
     target = out_dir / ANNOTATION_HTML
-    target.write_text(render_annotation_html(out_dir), encoding="utf-8")
-    return target
+    rendered = render_annotation_html(out_dir)
+    summary: dict[str, Any] = {"route": "stub", "total_markers": len(_collected_marker_texts)}
+    if route and route != "stub":
+        summary = generate_annotation_translations(out_dir, route=route,
+                                                   texts=dict(_collected_marker_texts))
+        if summary.get("translated"):
+            rendered = render_annotation_html(out_dir)   # 重渲染嵌入新译文（毫秒级）
+    target.write_text(rendered, encoding="utf-8")
+    return target, summary
+
+
+def export_annotation_html(out_dir: Path, route: str | None = None) -> Path:
+    return export_annotation_bundle(out_dir, route=route)[0]
 
 
 _TEMPLATE = r"""<!DOCTYPE html>
@@ -749,6 +926,7 @@ body {{ margin: 0; font-family: var(--sans);
 .doc-block.anchored:hover {{ background: var(--accent-soft); }}
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
 .text mark {{ background: linear-gradient(transparent 44%, var(--highlight) 44%); padding: 0 2px; border-radius: 0; }}
+mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 44%); padding: 0 2px; border-radius: 0; }}
 .page-break {{ display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #b8b2a4; font-size: 11px; }}
 .page-break::before, .page-break::after {{ content: ""; flex: 1; border-top: 1px dashed #ddd6c8; }}
 
@@ -839,6 +1017,7 @@ body {{ margin: 0; font-family: var(--sans);
 .dd-suspicion {{ font-size: 12px; color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 8px; margin-bottom: 10px; }}
 .dd-label {{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 15px 0 5px; }}
 .dd-body {{ font-size: 14px; line-height: 1.7; }}
+.dd-empty {{ color: var(--faint); }}
 .dd-list {{ margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }}
 .dd-list li {{ margin-bottom: 2px; }}
 .dd-quote {{ font-size: 13px; color: #515761; border-left: 2px solid var(--line-strong); padding: 5px 10px;
@@ -1033,16 +1212,47 @@ function ownershipReasonHtml(r) {{
   return text ? '<div class="dd-label">为什么判断为硬件</div><div class="dd-body">'+esc(text)+'</div>' : "";
 }}
 
+function markQuoteTextNodes(container, quote) {{
+  // 引用片段精确黄标（真实反馈 2026-07-11）：不重建 innerHTML——角标按钮/其它需求的
+  // 标记都保留,只把 source_quote 命中的文本节点区间包进 mark。角标插在引用末尾,
+  // 引用文本通常完整落在单个文本节点里;跨节点(被子项角标截断)时放弃黄标不误标。
+  if (!container || !quote) return false;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {{
+    const i = node.textContent.indexOf(quote);
+    if (i < 0) continue;
+    const range = document.createRange();
+    range.setStart(node, i);
+    range.setEnd(node, i + quote.length);
+    const m = document.createElement("mark");
+    m.className = "sc-quote";
+    range.surroundContents(m);
+    return true;
+  }}
+  return false;
+}}
+
 function highlightQuote() {{
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   document.querySelectorAll('.chip[data-inline-marker="1"].quote-selected').forEach(m => m.classList.remove("quote-selected"));
   const r = selected && byId[selected]; if (!r || !r.source_quote) return;
   const marker = document.querySelector('.chip[data-inline-marker="1"][data-req="' + selected + '"]');
-  if (marker) {{ marker.classList.add("quote-selected"); return; }}
+  if (marker) {{
+    marker.classList.add("quote-selected");
+    // 引用片段黄标、上下文整块保持蓝底：黄标只盖 source_quote 本体,与右卡「原文引用」一致
+    markQuoteTextNodes(marker.parentElement, r.source_quote);
+    return;
+  }}
   const anchor = r.anchor_block_id || (r.source_block_ids||[])[0];
   const p = document.querySelector('.text[data-block-id="' + anchor + '"]'); if (!p) return;
   const t = p.textContent, q = r.source_quote, i = t.indexOf(q);
   if (i >= 0) p.innerHTML = esc(t.slice(0,i)) + "<mark>" + esc(q) + "</mark>" + esc(t.slice(i+q.length));
+}}
+
+function clearSourceQuoteMarks() {{
+  // 说明标记的引用黄标（p 与 td 两种容器）；replaceWith 文本节点,不经 innerHTML 免转义
+  document.querySelectorAll("mark.sc-quote").forEach(m => m.replaceWith(document.createTextNode(m.textContent)));
 }}
 
 function deselect() {{
@@ -1052,6 +1262,7 @@ function deselect() {{
   document.querySelectorAll('.chip[data-inline-marker="1"].quote-selected').forEach(m => m.classList.remove("quote-selected"));
   document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
+  clearSourceQuoteMarks();
   document.getElementById("detail").innerHTML = '<div class="empty">点击批注标记查看详情</div>';
 }}
 
@@ -1067,16 +1278,37 @@ function selectSourceClassification(el) {{
   document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
   document.querySelectorAll(".source-classification").forEach(c => c.classList.toggle("sel", c === el));
   document.querySelectorAll(".doc-block").forEach(block => block.classList.remove("in-span", "evidence"));
+  document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
+  clearSourceQuoteMarks();
   const block = el.closest(".doc-block");
   if (block) block.classList.add("in-span", "evidence");
+  // 引用片段黄标、上下文整块保持蓝底（真实反馈 2026-07-11）：标记按钮所在容器
+  // （段落 p 或表格 td）的文本＝原文引用本体,逐文本节点包 mark 保住按钮不重建
+  const holder = el.parentElement;
+  if (holder) {{
+    Array.from(holder.childNodes).forEach(node => {{
+      if (node.nodeType === 3 && node.textContent.trim()) {{
+        const m = document.createElement("mark");
+        m.className = "sc-quote";
+        node.parentNode.insertBefore(m, node);
+        m.appendChild(node);
+      }}
+    }});
+  }}
   const owner = el.getAttribute("data-source-classification") || "";
   const label = owner === "hardware" ? "硬件" : owner === "co_design" ? "软硬件协同" : owner === "software_term" ? "软件术语" : owner;
   const text = el.getAttribute("data-source-text") || "";
+  const translation = el.getAttribute("data-source-translation") || "";
+  const translationNote = el.getAttribute("data-source-translation-note") || "";
   document.getElementById("detail").innerHTML =
     '<div class="annotation-card detail-card">'+
     '<div class="dd-head"><span class="dd-module">'+esc(label)+'</span><span class="badge">说明</span></div>'+
     '<div class="dd-title">为什么没有生成研发需求</div>'+
     '<div class="dd-body">'+esc(sourceClassificationReason(owner, text))+'</div>'+
+    '<div class="dd-label">原文翻译</div>'+
+    (translation ? '<div class="dd-body">'+esc(translation)+'</div>'
+     : translationNote ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(translationNote)+'）</div>'
+     : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>')+
     (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
     '</div>';
 }}
@@ -1102,6 +1334,7 @@ function select(id) {{
   if (selected === id) {{ deselect(); return; }}  // 再点一下 → 取消选中
   selected = id;
   document.querySelectorAll(".source-classification").forEach(c => c.classList.remove("sel"));
+  clearSourceQuoteMarks();   // 说明标记的引用黄标不跨选中残留（td 容器不在 .text 清扫范围内）
   document.querySelectorAll(".chip").forEach(c => c.classList.toggle("sel", c.getAttribute("data-req") === id));
   const r = byId[id]; if (!r) return;
   const d = decisionOf(id) || {{}};
