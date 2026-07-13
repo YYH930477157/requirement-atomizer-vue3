@@ -835,8 +835,8 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None) -> tupl
     if route and route != "stub":
         summary = generate_annotation_translations(out_dir, route=route,
                                                    texts=dict(_collected_marker_texts))
-        if summary.get("translated"):
-            rendered = render_annotation_html(out_dir)   # 重渲染嵌入新译文（毫秒级）
+        if summary.get("translated") or summary.get("rejected"):
+            rendered = render_annotation_html(out_dir)   # 重渲染嵌入新译文或拒绝原因（毫秒级）
     target.write_text(rendered, encoding="utf-8")
     return target, summary
 
