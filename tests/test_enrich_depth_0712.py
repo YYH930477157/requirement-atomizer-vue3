@@ -143,6 +143,37 @@ class W1PipelineTests(unittest.TestCase):
         k2 = _enrich_key(req, "m", "ctxB")
         self.assertNotEqual(k1, k2)
 
+    def test_sibling_number_remains_a_drift_warning(self) -> None:
+        from requirements_analysis import _llm_enrich_item
+
+        source = {
+            "ai_req_id": "AI-1",
+            "module": "数据存储",
+            "source_quote": "The meter shall store 12 months of data.",
+            "description": "",
+            "requirement": "",
+        }
+        item = {
+            "ownership": "software",
+            "ownership_reason": "Matched software rule term: store",
+            "analysis_source": "deterministic",
+        }
+        ok, issues = _llm_enrich_item(
+            item,
+            source,
+            {},
+            chat=lambda _system, _user: {
+                "items": [{"software_requirement_text": "Store 12 months and refresh every 60 seconds."}]
+            },
+            cache={},
+            model="test-model",
+            context={"doc_context": "", "siblings": "- Refresh every 60 seconds"},
+        )
+
+        self.assertTrue(ok)
+        self.assertTrue(any("fabricated number not in source: 60" in issue for issue in issues), issues)
+        self.assertIn("fabricated number not in source: 60", item.get("enrichment_warnings") or [])
+
 
 class W2FloorTests(unittest.TestCase):
     def test_analyze_floor_raised(self) -> None:

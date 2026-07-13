@@ -478,7 +478,7 @@ def _llm_enrich_item(
 
     drift = validate_llm_item(llm_item, source_req, template_text=ctx.get("template_refs", ""),
                               section_context=ctx.get("section_context", ""),
-                              context_text=ctx.get("doc_context", "") + " " + ctx.get("siblings", ""))
+                              context_text=ctx.get("doc_context", ""))
     # 与 ai_extract 双引擎同一分级纪律：**编码漂移**（OBIS/hex/事件号）严格拒绝——"错一位即
     # 严重"；**普通整数漂移**（散文里的步骤序号"1.2.3."、复述计数等）只软标记不阻断——结构字段
     # 已确定性冻结、source_quote 随交付物同行可核，把整数当硬拒会误伤合格富化（真实 A/B 验证）。
