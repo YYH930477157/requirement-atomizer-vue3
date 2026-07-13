@@ -76,4 +76,3 @@ _ENUM_MARKER = re.compile(r"(?:(?<=^)|(?<=[\s;；:：,，、]))(\d{1,2})\s*[.、
 def strip_enum_markers(text: object) -> str:
     """剥除列表枚举标号本体,供漂移护栏数字提取用;编码扫描不得经此剥除(仍严格)。"""
     return _ENUM_MARKER.sub(" ", str(text or ""))
-
