@@ -245,6 +245,31 @@ describe("DocumentReview", () => {
     expect(shown.text()).not.toContain("The valve is mechanical")  // 英文绝不冒充翻译
   })
 
+  it("hardware card does not fall back to extraction guidance or acceptance", async () => {
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        {
+          ai_req_id: "AIR-HW", title: "阀门", description: "The valve is mechanical.", module: "机械结构",
+          module_effective: "机械结构", type: "functional", priority: "P1", status: "draft",
+          source_section: "4", source_quote: "The valve is mechanical.", source_block_ids: ["B2"],
+          labels: [], review_state: null, ownership: "hardware", ownership_effective: "hardware",
+          analysis_source: "llm", analysis_dev_guidance: [], analysis_acceptance_criteria: [],
+          hardware_translation: "该阀门是机械部件。",
+          dev_guidance: ["不应显示的软件研发指引"],
+          acceptance_criteria: ["不应显示的软件验收建议"],
+        },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-HW"]').trigger("click")
+
+    const detail = wrapper.find('[data-testid="doc-detail"]').text()
+    expect(wrapper.find('[data-testid="dd-hw-translation"]').text()).toContain("该阀门是机械部件")
+    expect(detail).not.toContain("不应显示的软件研发指引")
+    expect(detail).not.toContain("不应显示的软件验收建议")
+  })
+
   it("plain background paragraph opens a context card on click", async () => {
     const client = makeClient({
       loadDocument: vi.fn().mockResolvedValue({

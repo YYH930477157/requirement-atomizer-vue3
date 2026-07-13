@@ -688,8 +688,8 @@ class ChainAndManifestTests(unittest.TestCase):
 
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
         expected = {
-            "atomize": "atomize+impl-v2",
-            "ai-extract": "ai-extract-v15+impl-v2",
+            "atomize": "atomize+impl-v3",
+            "ai-extract": "ai-extract-v15+impl-v3",
             "assemble": "assemble_spec/v1+impl-v2",
             "functional-synthesis": "functional-synthesis-v5+impl-v2",
             "requirements-analysis": "analyze-llm-v5+impl-v2",
@@ -700,6 +700,25 @@ class ChainAndManifestTests(unittest.TestCase):
             {stage: desktop_tasks.stage_producer(stage) for stage in expected},
             expected,
         )
+
+    def test_requirements_analysis_fingerprint_tracks_term_map(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            for name in desktop_tasks.STAGE_INPUTS["requirements-analysis"]:
+                (out / name).write_text("{}\n", encoding="utf-8")
+            term_map = out / "term_map.json"
+            term_map.write_text(
+                json.dumps({"terms": [{"source": "meter", "target": "电表"}]}),
+                encoding="utf-8",
+            )
+            first = desktop_tasks.stage_input_fingerprint(out, "requirements-analysis")
+            term_map.write_text(
+                json.dumps({"terms": [{"source": "meter", "target": "表计"}]}),
+                encoding="utf-8",
+            )
+            second = desktop_tasks.stage_input_fingerprint(out, "requirements-analysis")
+
+        self.assertNotEqual(first, second)
 
     def test_manifest_with_old_producer_is_not_reusable(self) -> None:
         with tempfile.TemporaryDirectory() as td:

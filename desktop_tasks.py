@@ -337,7 +337,7 @@ STAGE_INPUTS: dict[str, list[str]] = {
     "assemble": ["table_items.jsonl", "atomic_requirements.jsonl", "llm_review_results.jsonl"],
     "functional-synthesis": ["ai_requirements.jsonl", "ai_review_states.jsonl"],
     "requirements-analysis": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "ai_review_states.jsonl",
-                              "clarification_answers.jsonl", "blocks.jsonl"],
+                              "clarification_answers.jsonl", "blocks.jsonl", "term_map.json"],
     "template-write": ["engineering_analysis.json"],
     "clarification-report": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "engineering_analysis.json",
                              "consistency_report.json", "blocks.jsonl"],
@@ -371,8 +371,8 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 
 
 STAGE_IMPLEMENTATION_REVISIONS = {
-    "atomize": "v2",
-    "ai-extract": "v2",
+    "atomize": "v3",
+    "ai-extract": "v3",
     "assemble": "v2",
     "functional-synthesis": "v2",
     "requirements-analysis": "v2",

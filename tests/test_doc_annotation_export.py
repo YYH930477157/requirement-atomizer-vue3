@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import doc_annotation_export as dae
 
@@ -661,6 +662,30 @@ class MarkerTranslationTests(unittest.TestCase):
             self.assertIn("无据编码/数字", entry["reason"])
             rendered = dae.render_annotation_html(out)
             self.assertIn('data-source-translation=""', rendered)
+
+    def test_first_export_embeds_all_rejected_notes(self) -> None:
+        def chat(_system: str, _user: str) -> dict:
+            return {
+                "items": [{
+                    "id": 1,
+                    "translation": "制造商应在 30 秒内标注对象 0-0:96.1.0.255。",
+                }]
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            with patch(
+                "functional_synthesis._resolve_catalog_chat",
+                return_value=(chat, "llm:test-model"),
+            ):
+                path, summary = dae.export_annotation_bundle(out, route="openai_compatible")
+
+            rendered = path.read_text(encoding="utf-8")
+
+        self.assertEqual(summary["rejected"], 1)
+        self.assertEqual(summary["translated"], 0)
+        self.assertIn('data-source-translation-note="翻译含无据编码/数字', rendered)
 
     def test_generate_translations_missing_item_stays_pending(self) -> None:
         """漏向：LLM 漏答的条目不落账，下次导出自动重试。"""
