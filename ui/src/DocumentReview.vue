@@ -196,9 +196,11 @@ function analysisNarrative(r: AiRequirement): { text: string; enriched: boolean 
   return { text: String(r.description || ""), enriched: false }
 }
 function devGuidanceOf(r: AiRequirement): string[] {
+  if (ownershipOf(r) === "hardware") return []
   return useEnriched(r) && (r.analysis_dev_guidance || []).length ? r.analysis_dev_guidance! : (r.dev_guidance || [])
 }
 function acceptanceOf(r: AiRequirement): string[] {
+  if (ownershipOf(r) === "hardware") return []
   return useEnriched(r) && (r.analysis_acceptance_criteria || []).length
     ? r.analysis_acceptance_criteria! : (r.acceptance_criteria || [])
 }
