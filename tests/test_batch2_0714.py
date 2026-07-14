@@ -195,6 +195,44 @@ class JsonModeDefaultTests(unittest.TestCase):
             self.assertEqual(llm_client._JSON_MODE_UNSUPPORTED, set())   # 连接类错误不定罪端点
 
 
+class GuidanceTemplateCodeTests(unittest.TestCase):
+    """E4：guidance 里的模板来源受保护编码——从无声放行改软标随行（不硬拒但必须可见）。"""
+
+    SOURCE = {"source_quote": "The meter shall log tamper events.",
+              "description": "", "requirement": ""}
+
+    def test_template_code_in_guidance_soft_flagged_not_rejected(self) -> None:
+        from requirements_analysis_agent import validate_llm_item
+        item = {"software_requirement_text": "记录篡改事件。",
+                "developer_guidance": ["公司通用做法：写入 0-0:96.1.0.255 事件对象"]}
+        issues = validate_llm_item(item, self.SOURCE,
+                                   template_text="事件对象 0-0:96.1.0.255 固件宏 EVT_TAMPER")
+        self.assertTrue(any(i.startswith("template-sourced code in guidance: 0-0:96.1.0.255")
+                            for i in issues), issues)
+        self.assertFalse(any(i.startswith("fabricated code") for i in issues))   # 软标不硬拒
+
+    def test_soft_flag_lands_in_enrichment_warnings(self) -> None:
+        from requirements_analysis import _apply_llm_item
+        item = {"analysis_id": "SRA-001", "ownership": "software",
+                "ownership_reason": "rule", "ownership_source": "rule"}
+        llm_item = {"software_requirement_text": "记录篡改事件的软件逻辑。",
+                    "developer_guidance": ["公司通用做法：写入 0-0:96.1.0.255 事件对象"]}
+        ok, _ = _apply_llm_item(item, self.SOURCE, llm_item,
+                                {"template_refs": "事件对象 0-0:96.1.0.255", "section_context": "",
+                                 "doc_context": "", "exemplars": "", "answers": "", "siblings": ""})
+        self.assertTrue(ok)                                        # 采纳(模板做法允许进指引)
+        self.assertTrue(any("template-sourced code" in w
+                            for w in item.get("enrichment_warnings") or []))   # 但软标随行可核
+
+    def test_code_neither_in_source_nor_template_still_hard(self) -> None:
+        from requirements_analysis_agent import validate_llm_item
+        item = {"software_requirement_text": "记录篡改事件。",
+                "developer_guidance": ["写入 1-0:99.98.0.255"]}
+        issues = validate_llm_item(item, self.SOURCE, template_text="无关模板内容")
+        self.assertTrue(any(i.startswith("fabricated code not in source: 1-0:99.98.0.255 (guidance)")
+                            for i in issues), issues)
+
+
 class PromptPrefixOrderTests(unittest.TestCase):
     """S6b：分析 prompt 按稳定性降序——固定指令在前,条级内容后移(服务端前缀缓存)。"""
 

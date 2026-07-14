@@ -151,8 +151,15 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
         issues.append(f"fabricated code not in source: {code}")
     for number in sorted(extract_ints(analysis_text) - extract_ints(union_text) - context_ints):
         issues.append(f"fabricated number not in source: {number}")
-    for code in sorted(extract_codes(delivery_text) - extract_codes(guidance_basis)):
+    union_codes = extract_codes(union_text)
+    template_codes = extract_codes(template_text or "")
+    for code in sorted(extract_codes(delivery_text) - union_codes - template_codes):
         issues.append(f"fabricated code not in source: {code} (guidance)")
+    # 收紧（0714 批次二 E4）：guidance 的受保护编码此前以"源文∪模板"为基线**无声放行**——
+    # 模板里的 OBIS 可被搬进源文没有该码的需求指引,研发照错码实现无从察觉。改软标随行
+    # （不硬拒:公司通用做法的宏/码本就允许进指引,但必须可见可核）;正文侧基线不变仍硬拒。
+    for code in sorted((extract_codes(delivery_text) & template_codes) - union_codes):
+        issues.append(f"template-sourced code in guidance: {code}（公司模板来源，请核对适用性）")
     for number in sorted(extract_ints(delivery_text) - extract_ints(guidance_basis) - context_ints):
         issues.append(f"fabricated number in guidance: {number}")
     # 遗漏分母的格式归一（2026-07-14,test18 实测 25 条警告几乎全是条款号/列表标号拆散的
