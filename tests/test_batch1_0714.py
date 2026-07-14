@@ -216,6 +216,173 @@ class CoverageGapClarificationTests(unittest.TestCase):
                 wb.close()
 
 
+class BatchMappingTests(unittest.TestCase):
+    """S1：合批响应槽位映射——宁缺勿错（缺槽走单条回退,绝不张冠李戴）。"""
+
+    def test_slot_echo_mapping(self) -> None:
+        from requirements_analysis import _map_batch_items
+        mapped = _map_batch_items({"items": [
+            {"enrich_slot": 1, "software_requirement_text": "乙"},
+            {"enrich_slot": 0, "software_requirement_text": "甲"},
+        ]}, 2)
+        self.assertEqual(mapped[0]["software_requirement_text"], "甲")
+        self.assertEqual(mapped[1]["software_requirement_text"], "乙")
+
+    def test_index_alignment_only_when_counts_match_and_no_slots(self) -> None:
+        from requirements_analysis import _map_batch_items
+        mapped = _map_batch_items({"items": [{"a": 1}, {"b": 2}]}, 2)
+        self.assertEqual(len(mapped), 2)                     # 全缺槽+数量吻合 → 按序
+        self.assertEqual(_map_batch_items({"items": [{"a": 1}]}, 2), {})   # 数量不吻合 → 空
+        self.assertEqual(_map_batch_items({"items": "bad"}, 2), {})
+
+    def test_partial_slots_do_not_index_align(self) -> None:
+        from requirements_analysis import _map_batch_items
+        mapped = _map_batch_items({"items": [
+            {"enrich_slot": 0, "text": "有槽"}, {"text": "缺槽"},
+        ]}, 2)
+        self.assertEqual(list(mapped.keys()), [0])           # 缺槽条目不冒充槽 1
+
+
+class BatchEnrichmentTests(unittest.TestCase):
+    """S1：同模块合批富化——调用数下降,护栏逐条不放宽,失败回退单条。"""
+
+    def _seed(self, out: Path, n: int, module: str = "事件记录") -> None:
+        _write_jsonl(out / "ai_requirements.jsonl", [
+            {"ai_req_id": f"AI-{i}", "title": f"任务{i}",
+             "description": f"The meter shall do task {i}.",
+             "source_quote": f"shall do task {i}",
+             "source_block_ids": [f"B-{i}"], "module": module}
+            for i in range(n)
+        ])
+
+    def test_same_module_jobs_are_batched(self) -> None:
+        from requirements_analysis import run_requirements_analysis
+        calls: list[str] = []
+
+        def chat(system: str, user: str) -> dict:
+            calls.append(user)
+            data = json.loads(user.split("需求 JSON:")[-1].strip())
+            return {"items": [
+                {"enrich_slot": entry.get("enrich_slot", 0),
+                 "source_requirement_ids": [entry.get("ai_req_id")],
+                 "software_requirement_text":
+                     f"实现任务 {entry['description'].split('task ')[1].rstrip('.')} 的处理逻辑。"}
+                for entry in data
+            ]}
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out, 5)
+            result = run_requirements_analysis(out, route="openai_compatible", chat=chat)
+            self.assertEqual(result["enriched"], 5)
+            self.assertEqual(len(calls), 2)                  # 4 条一批 + 1 条单发
+            self.assertIn("enrich_slot", calls[0] + calls[1])
+            payload = json.loads((out / "engineering_analysis.json").read_text(encoding="utf-8"))
+            for item in payload["items"]:
+                idx = item["source_requirement_ids"][0].split("-")[1]
+                self.assertEqual(item["software_requirement_text"],
+                                 f"实现任务 {idx} 的处理逻辑。")    # 槽位映射不串条
+
+    def test_batch_env_one_restores_per_item_calls(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from requirements_analysis import run_requirements_analysis
+        calls: list[str] = []
+
+        def chat(system: str, user: str) -> dict:
+            calls.append(user)
+            return {"items": [{"software_requirement_text": "对应处理逻辑成文。"}]}
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out, 3)
+            with patch.dict(os.environ, {"RATOMIZER_ANALYZE_BATCH": "1"}):
+                result = run_requirements_analysis(out, route="openai_compatible", chat=chat)
+            self.assertEqual(result["enriched"], 3)
+            self.assertEqual(len(calls), 3)                  # 逐条模式恢复
+            self.assertNotIn("enrich_slot", "".join(calls))
+
+    def test_batch_failure_falls_back_to_single_calls(self) -> None:
+        from requirements_analysis import run_requirements_analysis
+        calls: list[str] = []
+
+        def chat(system: str, user: str) -> dict:
+            calls.append(user)
+            if "enrich_slot" in user:
+                raise RuntimeError("batch boom")             # 整批失败
+            return {"items": [{"software_requirement_text": "单条回退成文。"}]}
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out, 4)
+            result = run_requirements_analysis(out, route="openai_compatible", chat=chat)
+            self.assertEqual(result["enriched"], 4)          # 回退后全部成功
+            self.assertEqual(result["enrich_degraded"], 0)
+            self.assertEqual(len(calls), 5)                  # 1 批失败 + 4 单条
+
+    def test_cross_item_code_borrowing_rejected_per_item(self) -> None:
+        """合批不放宽护栏：B 条借用 A 条条款原文里的 OBIS → 仅 B 被硬拒。"""
+        from requirements_analysis import _llm_enrich_batch
+
+        ctx_a = {"template_refs": "", "exemplars": "", "answers": "",
+                 "doc_context": "", "siblings": "",
+                 "section_context": "Clause A: use 0-0:96.1.0.255 here."}
+        ctx_b = dict(ctx_a, section_context="Clause B: no codes at all.")
+        req_a = {"ai_req_id": "AI-A", "module": "安全",
+                 "description": "Requirement alpha.", "source_quote": "Requirement alpha."}
+        req_b = {"ai_req_id": "AI-B", "module": "安全",
+                 "description": "Requirement beta.", "source_quote": "Requirement beta."}
+        item_a = {"analysis_id": "SRA-001", "ownership": "software",
+                  "ownership_reason": "rule", "ownership_source": "rule"}
+        item_b = {"analysis_id": "SRA-002", "ownership": "software",
+                  "ownership_reason": "rule", "ownership_source": "rule"}
+
+        def chat(system: str, user: str) -> dict:
+            return {"items": [
+                {"enrich_slot": 0, "software_requirement_text": "读取对象 0-0:96.1.0.255。"},
+                {"enrich_slot": 1, "software_requirement_text": "读取对象 0-0:96.1.0.255。"},
+            ]}
+
+        results = _llm_enrich_batch(
+            [(item_a, req_a, ctx_a, "software"), (item_b, req_b, ctx_b, "software")],
+            {"modules": ["安全"]}, chat, {}, "m")
+        by_id = {r[0]["analysis_id"]: r for r in results}
+        self.assertTrue(by_id["SRA-001"][1])                 # A 有据 → 采纳
+        self.assertFalse(by_id["SRA-002"][1])                # B 跨条借码 → 硬拒降级
+        self.assertTrue(any("fabricated" in i or "编造" in i for i in by_id["SRA-002"][2]))
+
+    def test_hardware_jobs_batched_with_slot_echo(self) -> None:
+        from requirements_analysis import run_requirements_analysis
+        calls: list[str] = []
+
+        def chat(system: str, user: str) -> dict:
+            calls.append(user)
+            data = json.loads(user.split("需求 JSON:")[-1].strip())
+            return {"items": [
+                {"enrich_slot": entry.get("enrich_slot", 0),
+                 "hardware_translation": f"硬件条目{'甲乙丙'[int(entry.get('enrich_slot', 0))]}的中文说明",
+                 "ownership_reason": "外壳与阀门为机械部件"}
+                for entry in data
+            ]}
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_jsonl(out / "ai_requirements.jsonl", [
+                {"ai_req_id": f"AI-{i}", "title": f"外壳{i}",
+                 "description": f"The meter case variant {chr(65 + i)} shall be sealed metal enclosure.",
+                 "source_quote": "sealed metal enclosure",
+                 "ownership_override": "hardware", "module": "机械结构"}
+                for i in range(3)
+            ])
+            result = run_requirements_analysis(out, route="openai_compatible", chat=chat)
+            self.assertEqual(result["enriched"], 3)
+            self.assertEqual(len(calls), 1)                  # 3 条硬件一批
+            payload = json.loads((out / "engineering_analysis.json").read_text(encoding="utf-8"))
+            translations = {item["hardware_translation"] for item in payload["items"]}
+            self.assertEqual(len(translations), 3)           # 槽位映射不串条
+
+
 class CoverageGapMarkdownTests(unittest.TestCase):
     def test_markdown_renders_gap_section(self) -> None:
         import clarification_report as cr

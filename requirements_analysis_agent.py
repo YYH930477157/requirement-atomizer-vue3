@@ -15,7 +15,8 @@ def slim_vocabulary(vocabulary: dict[str, Any], module: str) -> dict[str, Any]:
 def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[str, Any],
                           template_refs: str = "", *, exemplars: str = "",
                           answers: str = "", doc_context: str = "",
-                          section_context: str = "", siblings: str = "") -> dict[str, str]:
+                          section_context: str = "", siblings: str = "",
+                          per_item_fields: bool = False) -> dict[str, str]:
     system = "你是电表软件需求分析工程师。你的任务不是翻译原文，而是基于可追溯的抽取结果推导软件研发需求。"
     lines: list[str] = []
     if doc_context:
@@ -29,6 +30,20 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
                   siblings]
     lines += [
         "请基于需求 JSON 和模板词表 JSON 输出 JSON 对象 {\"items\": [ ... ]}，items 与输入需求一一对应。",
+    ]
+    if per_item_fields:
+        # 合批模式（0714 批次一 S1）：条级上下文随条嵌进需求 JSON——护栏语义与单条完全一致,
+        # 尤其"只能用于本条"是防跨条借数的关键指令（validate 仍逐条按本条基线硬拒/软标）
+        lines += [
+            "本次输入为同模块多条需求（合批）。每条需求 JSON 可能带以下随行字段：",
+            "  - enrich_slot: 批内序号——每个输出 item 必须原样回填对应输入的 enrich_slot；",
+            "  - section_context: 该需求所在条款原文（客户文档内容，引用其中数值/编码视为有据）"
+            "——**只能用于本条，绝不跨条借用其它需求的条款原文**；",
+            "  - template_refs: 该条的公司标准做法参考——数值/编码只准来自客户原文，"
+            "样本默认值绝不写入需求正文；通用做法进 developer_guidance 并以「公司通用做法：」前缀标注；",
+            "  - clarification_answers_text: 该条的客户澄清答复（权威输入，其中数值/结论视为有据，应吸收进正文）。",
+        ]
+    lines += [
         "每条需求 JSON 的 ownership 字段（software/hardware/co_design）已由规则与专家裁决**冻结**——"
         "原样回填、绝不改判；你的任务是按给定归属写出深度匹配的正文，不是重新判定归属。",
         "hardware 需求只做简要说明。",

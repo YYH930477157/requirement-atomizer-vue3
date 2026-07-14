@@ -29,6 +29,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_LLM_MAX_RETRIES", "", "非 429 错误重试次数（429 另有独立预算）", True),
     EnvVar("RATOMIZER_LLM_CONCURRENCY", "8", "抽取/富化并发度（1..16；2026-07-14 默认 4→8）", True),
     EnvVar("RATOMIZER_LLM_ADAPTIVE", "1", "429 自适应闸门（跨线程全局冷却+在飞上限 AIMD；=0 关闭回到各线程独立退避）", False),
+    EnvVar("RATOMIZER_ANALYZE_BATCH", "4", "软需富化合批条数（1..8；1=逐条；硬件翻译批量 ×2 封顶 8）", False),
     EnvVar("RATOMIZER_LLM_JSON_SCHEMA", "0", "=1 请求 response_format=json_object（端点须支持；不支持自动降级）", False),
     EnvVar("RATOMIZER_LLM_TRACE", "1", "=0/false 关闭 llm_trace.jsonl 消息级追踪（含客户文档全文，外发目录前注意）", False),
     EnvVar("RATOMIZER_LLM_TRACE_FULL", "", "=1 关闭 trace 文本截断、完整落盘 messages/response（仅离线调试，默认截断长文本减数据外发面）", False),
