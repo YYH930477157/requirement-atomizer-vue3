@@ -314,14 +314,28 @@ def build_document_blocks(output_dir: Path) -> dict:
     blocks = read_jsonl(output_dir / "blocks.jsonl")
     trimmed = [{k: b.get(k) for k in _BLOCK_FIELDS} for b in blocks]
     translations, notes = load_annotation_translations(output_dir)
+    clean_block_text = None
+    if translations or notes:
+        # 键同源（0714 评审跟进）：导出侧写缓存的键 = 渲染清洗后文本的哈希;此前 API 只按
+        # 原始文本取键,含 leader-dots/私用字形的块在应用内查不到译文（两评审面译文有无不一致）。
+        # 惰性反向导入写侧的唯一权威实现（doc_annotation_export 顶层 import 本模块,函数级
+        # 导入在运行期无环）;先按原始键查（旧缓存兼容）,未命中再按清洗键查。
+        from doc_annotation_export import _clean_block_text as clean_block_text
     for block in trimmed:
         original_text = block.get("text")
         if translations or notes:
-            key = translation_key(original_text)
-            if key in translations:
-                block["translation"] = translations[key]
-            elif key in notes:
-                block["translation_note"] = notes[key]
+            keys = [translation_key(original_text)]
+            if clean_block_text is not None:
+                cleaned_key = translation_key(clean_block_text(str(original_text or "")))
+                if cleaned_key != keys[0]:
+                    keys.append(cleaned_key)
+            for key in keys:
+                if key in translations:
+                    block["translation"] = translations[key]
+                    break
+                if key in notes:
+                    block["translation_note"] = notes[key]
+                    break
         block["text"] = normalize_text(original_text)
     trimmed.sort(key=lambda b: b.get("order") or 0)
     return {"blocks": trimmed, "count": len(trimmed)}

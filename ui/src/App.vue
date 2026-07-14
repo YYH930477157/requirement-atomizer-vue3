@@ -442,8 +442,8 @@
               <label class="settings-toggle">
                 <input v-model="llmSettings.visionCapable" type="checkbox" data-testid="settings-vision-capable" />
                 <span>
-                  <strong>模型具备视觉能力</strong>
-                  <small>PDF 批注：开启后使用优化排版；关闭后直接显示原 PDF，不改动正文版式。</small>
+                  <strong>批注排版：优化重排</strong>
+                  <small>开启=文字重排版式（单文件、只含抽取片段）；关闭=原版 PDF 影印批注（文件夹,含完整原文档）。纯本地渲染,任何模式都不会把文档发给模型。</small>
                 </span>
               </label>
               <div class="settings-form-grid">

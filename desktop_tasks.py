@@ -781,6 +781,10 @@ def export_annotation_html_task(out_dir: Path, route: str | None = None,
         notes.append(f"{translations['failed_calls']} 批翻译调用失败（重新导出自动补齐）")
     if translations.get("pdf_render_error"):
         notes.append("PDF 批注覆盖层生成失败，已回退浏览器原版查看器")
+    if str(translations.get("layout_mode") or "") == "pdf_original":
+        # 数据处置提醒（0714 评审）：原版影印 bundle 内含完整原始 PDF + 整页影印图,
+        # 数据面与优化模式（仅抽取片段）完全不同——分享文件夹=分享整份客户文档
+        notes.append("原版影印导出为文件夹（含完整原始 PDF 与整页影印图），对外分享前请确认可提供整份文档")
     if notes:
         payload["note"] = "；".join(notes)
     return payload

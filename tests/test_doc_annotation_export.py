@@ -974,3 +974,70 @@ class MarkerTranslationTests(unittest.TestCase):
             self.assertEqual(payload["route"], "stub")
             self.assertIn("translations", payload)
             self.assertTrue(Path(payload["path"]).exists())
+
+
+class TranslationKeyParityTests(unittest.TestCase):
+    """0714 评审跟进:API 读键与导出写键同源(写侧=渲染清洗后文本的哈希)。"""
+
+    def test_api_finds_translation_keyed_on_cleaned_text(self) -> None:
+        from api_server import build_document_blocks, translation_key
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            raw = "Battery lifetime totaliser ................................ 24"
+            (out / "blocks.jsonl").write_text(json.dumps({
+                "block_id": "B1", "order": 1, "type": "paragraph", "text": raw,
+                "section_path": [], "requirement_like": False, "noise": False,
+                "doc_region": "body"}, ensure_ascii=False) + "\n", encoding="utf-8")
+            cleaned_key = translation_key(dae._clean_block_text(raw))
+            self.assertNotEqual(cleaned_key, translation_key(raw))   # 前提:两键确实不同
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1, "items": {cleaned_key: {"owner": "context",
+                                                      "translation": "电池寿命累计器"}},
+            }, ensure_ascii=False), encoding="utf-8")
+            doc = build_document_blocks(out)
+            self.assertEqual(doc["blocks"][0].get("translation"), "电池寿命累计器")
+
+    def test_api_raw_key_still_wins_for_legacy_sidecar(self) -> None:
+        from api_server import build_document_blocks, translation_key
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            raw = "The meter shall log events."
+            (out / "blocks.jsonl").write_text(json.dumps({
+                "block_id": "B1", "order": 1, "type": "paragraph", "text": raw,
+                "section_path": [], "requirement_like": False, "noise": False,
+                "doc_region": "body"}, ensure_ascii=False) + "\n", encoding="utf-8")
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1, "items": {translation_key(raw): {"owner": "context",
+                                                               "translation": "电表应记录事件。"}},
+            }, ensure_ascii=False), encoding="utf-8")
+            doc = build_document_blocks(out)
+            self.assertEqual(doc["blocks"][0].get("translation"), "电表应记录事件。")
+
+
+class PdfOriginalShareNoteTests(unittest.TestCase):
+    """0714 评审跟进:原版影印 bundle 含完整客户 PDF——任务提示随载荷可见。"""
+
+    def test_pdf_original_result_carries_share_warning(self) -> None:
+        import desktop_tasks
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            fake = {"route": "stub", "layout_mode_requested": "pdf_original",
+                    "layout_mode": "pdf_original", "source_pdf": str(out / "document_source.pdf"),
+                    "annotation_overlay": True, "page_files": []}
+            with mock.patch("doc_annotation_export.export_annotation_bundle",
+                            return_value=(out / "document_annotation.html", fake)):
+                payload = desktop_tasks.export_annotation_html_task(out, layout_mode="pdf_original")
+            self.assertIn("对外分享前请确认", str(payload.get("note")))
+
+    def test_optimized_result_has_no_share_warning(self) -> None:
+        import desktop_tasks
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            fake = {"route": "stub", "layout_mode_requested": "optimized",
+                    "layout_mode": "optimized", "page_files": []}
+            with mock.patch("doc_annotation_export.export_annotation_bundle",
+                            return_value=(out / "document_annotation.html", fake)):
+                payload = desktop_tasks.export_annotation_html_task(out)
+            self.assertNotIn("对外分享", str(payload.get("note") or ""))
