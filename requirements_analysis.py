@@ -484,7 +484,8 @@ def _software_prompt_parts(
     """key/prompt 载荷单一构造点（单条与合批共用）。
 
     返回 (slim_vocab, prompt_req, cache_key)。key 只由本条内容 + 模块级/条级注入构成，
-    与批组成无关——合批与否、批里还有谁，都不改变本条的缓存命中。
+    与批组成无关——合批与否、批里还有谁，都不改变本条的缓存命中;
+    软背景（doc_context/siblings/exemplars）不进 key（S3,见下方注释）。
     冻结归属注入（0714）：prompt 只写不判；归属变化（专家改判）→ key 变 → 重富化。
     """
     from requirements_analysis_agent import slim_vocabulary
@@ -492,8 +493,13 @@ def _software_prompt_parts(
     frozen_ownership = str(item.get("ownership") or "")
     prompt_req = dict(source_req)
     prompt_req["ownership"] = frozen_ownership
+    # key 收窄（0714 批次二 S3）：只折**有据基底与硬约束**——源字段(在 _enrich_key 内)、
+    # 条款原文、客户答复、模板参考、词表、冻结归属。软背景（doc_context/siblings/exemplars）
+    # 进 prompt 不进 key：它们只影响文风/粒度,验证每次运行按当前基线重跑（护栏不受缓存影响,
+    # 背景码从不豁免,复用最多多出软标）;而背景漂移导致整库缓存报废（test18 事故:术语表
+    # 一变全文档重富化、同模块加一条全模块重富化）的代价远大于文风陈旧。
     context_basis = "".join([ctx.get(k, "") for k in (
-        "template_refs", "exemplars", "answers", "doc_context", "section_context", "siblings"
+        "template_refs", "answers", "section_context"
     )] + [json.dumps(slim_vocab, ensure_ascii=False), frozen_ownership])
     return slim_vocab, prompt_req, _enrich_key(source_req, model, context_basis)
 
