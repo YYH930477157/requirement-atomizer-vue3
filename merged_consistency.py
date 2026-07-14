@@ -92,7 +92,7 @@ def coverage_gaps(requirements: list[dict[str, Any]],
     if req_like_blocks is None:
         return {"measured": False}
     quotes = [q for q in (_norm(r.get("source_quote")) for r in requirements) if q]
-    uncovered: list[str] = []
+    uncovered: list[dict[str, str]] = []
     seen: set[str] = set()
     total = 0
     for block in req_like_blocks:
@@ -102,7 +102,14 @@ def coverage_gaps(requirements: list[dict[str, Any]],
         seen.add(bt)
         total += 1
         if not any(q in bt or bt in q for q in quotes):
-            uncovered.append(str(block.get("text") or "").strip()[:200])
+            # 带溯源（0714 批次一）：此前样本只有裸文本,遗漏候选无法回链批注视图/澄清清单;
+            # block_id + 末级章节让"疑似漏抽"可逐条 triage（消费端兼容旧的裸字符串形状）
+            section_path = [str(s) for s in (block.get("section_path") or []) if str(s).strip()]
+            uncovered.append({
+                "block_id": str(block.get("block_id") or ""),
+                "section": section_path[-1] if section_path else "",
+                "text": str(block.get("text") or "").strip()[:200],
+            })
     covered = total - len(uncovered)
     return {
         "measured": True,

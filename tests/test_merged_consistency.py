@@ -80,7 +80,9 @@ class CoverageGapTests(unittest.TestCase):
         self.assertEqual(cov["requirement_like"], 2)
         self.assertEqual(cov["covered"], 1)
         self.assertEqual(cov["uncovered_count"], 1)
-        self.assertIn("The meter shall do B.", cov["uncovered_samples"])
+        # 0714 批次一：样本带溯源（block_id/section），供澄清清单与批注视图回链
+        self.assertEqual(cov["uncovered_samples"][0]["text"], "The meter shall do B.")
+        self.assertEqual(cov["uncovered_samples"][0]["block_id"], "B2")
 
     def test_no_block_info_marks_unmeasured(self) -> None:
         cov = mc.coverage_gaps([], None)

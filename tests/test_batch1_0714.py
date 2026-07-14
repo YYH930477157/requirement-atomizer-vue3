@@ -132,5 +132,103 @@ class PartialDegradeNoteTests(unittest.TestCase):
             self.assertNotIn("note", result)
 
 
+class CoverageGapClarificationTests(unittest.TestCase):
+    """E1b：覆盖缺口的遗漏候选进澄清清单（独立档,不进就绪门,不混入模型自报）。"""
+
+    def _seed(self, out: Path, consistency: dict) -> None:
+        _write_jsonl(out / "ai_requirements.jsonl", [
+            {"ai_req_id": "AI-1", "title": "需求", "source_quote": "q"}])
+        (out / "consistency_report.json").write_text(
+            json.dumps(consistency, ensure_ascii=False), encoding="utf-8")
+
+    def test_uncovered_samples_become_gap_entries(self) -> None:
+        import clarification_report as cr
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out, {"coverage": {
+                "measured": True, "uncovered_count": 2,
+                "uncovered_samples": [
+                    {"block_id": "BLK-1", "section": "4.5", "text": "The AFD shall close the valve."},
+                    {"block_id": "BLK-2", "section": "", "text": "All meters shall meet this."},
+                ]}})
+            entries = cr.collect_questions(out)
+        gap = [e for e in entries if e.get("tier") == cr.TIER_GAP]
+        self.assertEqual(len(gap), 2)
+        self.assertEqual(gap[0]["source_id"], "BLK-1")     # 溯源可回链批注视图
+        self.assertEqual(gap[0]["section"], "4.5")
+        self.assertIn("AFD shall close", gap[0]["quote"])
+        self.assertTrue(all(e["audience"] == cr.AUDIENCE_INTERNAL for e in gap))
+
+    def test_legacy_plain_string_samples_tolerated(self) -> None:
+        import clarification_report as cr
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out, {"coverage": {"measured": True, "uncovered_count": 1,
+                                          "uncovered_samples": ["Legacy uncovered text."]}})
+            entries = cr.collect_questions(out)
+        gap = [e for e in entries if e.get("tier") == cr.TIER_GAP]
+        self.assertEqual(len(gap), 1)
+        self.assertEqual(gap[0]["quote"], "Legacy uncovered text.")
+
+    def test_gap_entries_do_not_trip_readiness_gate(self) -> None:
+        import clarification_report as cr
+        samples = [{"block_id": f"B{i}", "section": "", "text": f"Uncovered requirement {i}."}
+                   for i in range(40)]   # 超过 READY_MAX_QUESTIONS=30
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out, {"coverage": {"measured": True, "uncovered_count": 40,
+                                          "uncovered_samples": samples}})
+            report = cr.run_report(out)
+        self.assertEqual(report["questions"], 0)                 # 必答口径不含遗漏候选
+        self.assertEqual(report["coverage_candidates"], 40)
+        self.assertEqual(report["readiness"]["verdict"], "READY")
+
+    def test_sample_cap_overflow_leaves_trace(self) -> None:
+        import clarification_report as cr
+        samples = [{"block_id": "B1", "section": "", "text": "Uncovered one."}]
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out, {"coverage": {"measured": True, "uncovered_count": 113,
+                                          "uncovered_samples": samples}})
+            entries = cr.collect_questions(out)
+        overflow = [e for e in entries if e["signal"] == "consistency:uncovered_overflow"]
+        self.assertEqual(len(overflow), 1)
+        self.assertIn("112", overflow[0]["question"])            # 无声截断禁令：超上限必留痕
+
+    def test_gap_sheet_written_and_hard_sheets_unpolluted(self) -> None:
+        import clarification_report as cr
+        from openpyxl import load_workbook
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out, {"coverage": {"measured": True, "uncovered_count": 1,
+                                          "uncovered_samples": [
+                                              {"block_id": "B1", "section": "4.5",
+                                               "text": "The AFD shall close the valve."}]}})
+            cr.run_report(out)
+            wb = load_workbook(out / cr.REPORT_XLSX, read_only=True)
+            try:
+                self.assertIn("遗漏候选(内部核对)", wb.sheetnames)
+                gap_rows = list(wb["遗漏候选(内部核对)"].iter_rows(min_row=2, values_only=True))
+                self.assertEqual(len(gap_rows), 1)
+                self.assertIn("AFD shall close", str(gap_rows[0][4]))
+                self.assertEqual(list(wb["必答-问客户"].iter_rows(min_row=2, values_only=True)), [])
+            finally:
+                wb.close()
+
+
+class CoverageGapMarkdownTests(unittest.TestCase):
+    def test_markdown_renders_gap_section(self) -> None:
+        import clarification_report as cr
+        entries = [
+            cr._entry(cr.CAT_MISSING, "该段疑似含需求但未被覆盖", quote="The AFD shall act.",
+                      source_id="B1", signal="consistency:uncovered",
+                      tier=cr.TIER_GAP, audience=cr.AUDIENCE_INTERNAL),
+        ]
+        md = cr.render_markdown(entries, {"verdict": "READY", "reasons": [], "questions": 0})
+        self.assertIn("遗漏候选（1）", md)
+        self.assertIn("遗漏候选 1 条", md)
+        self.assertIn("The AFD shall act.", md)
+
+
 if __name__ == "__main__":
     unittest.main()

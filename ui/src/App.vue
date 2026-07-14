@@ -1392,7 +1392,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       const differ = Number(consistency?.obis_values_differ || 0)
       const uncovered = Number(consistency?.uncovered_requirement_like || 0)
       const warn = dup || differ || uncovered
-        ? `；一致性：疑似跨章重复 ${dup} 组、OBIS 数值待核 ${differ}、覆盖缺口 ${uncovered}（批注视图已标记）`
+        ? `；一致性：疑似跨章重复 ${dup} 组、OBIS 数值待核 ${differ}、覆盖缺口 ${uncovered}（批注视图已标记，遗漏候选已列入澄清清单）`
         : ""
       const apiWarn = apiReconnectWarning
         ? `；${apiReconnectWarning}`

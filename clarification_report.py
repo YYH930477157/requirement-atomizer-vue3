@@ -38,6 +38,10 @@ CAT_ASSUMPTION = "假设待确认"
 # 软信号=模型自报（assumptions/open_questions）——价值在"可见"，留档备查不算就绪门。
 TIER_HARD = "必答"
 TIER_SOFT = "参考"
+# 遗漏候选（0714 批次一）：覆盖缺口的 requirement_like 段落——机器检出但**假阳性率高**
+# （前言/引用书目/纯标题都会命中 requirement_like），量可达上百条。既不能进必答（挤爆就绪门
+# READY_MAX_QUESTIONS）也不是"模型自报"，单列一档：独立 sheet/段落，审核员核对是漏抽还是噪声。
+TIER_GAP = "遗漏候选"
 # 必答再分受众（真实产物观察：56 条必答被"引用非逐字"占领——它是审核员在批注视图核的
 # **内部核对项**，不是评审会问客户的问题。分开后评审会拿到的是十几条纯客户问题）
 AUDIENCE_CUSTOMER = "问客户"
@@ -128,6 +132,33 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 CAT_CONFLICT,
                 "同一原文语句被抽为多条需求，请确认是否合并或存在语义差异",
                 quote=quote, signal="consistency:duplicate"))
+        # 覆盖缺口 → 遗漏候选（0714 批次一）：最直接的"漏需求"信号此前只有一个计数,
+        # 30 条样本文本无处可看。兼容旧报表的裸字符串样本（无溯源字段按空处理）。
+        coverage = con.get("coverage") or {}
+        samples = coverage.get("uncovered_samples") or []
+        for s in samples:
+            if isinstance(s, dict):
+                text = str(s.get("text") or "")
+                bid = str(s.get("block_id") or "")
+                sec = str(s.get("section") or "")
+            else:
+                text, bid, sec = str(s or ""), "", ""
+            if not text.strip():
+                continue
+            entries.append(_entry(
+                CAT_MISSING,
+                "该段疑似含需求但未被任何抽取需求覆盖——请核对是漏抽还是非需求文本（前言/引用/标题）",
+                section=sec, quote=text, source_id=bid,
+                signal="consistency:uncovered", tier=TIER_GAP, audience=AUDIENCE_INTERNAL))
+        total_uncovered = int(coverage.get("uncovered_count") or 0)
+        if total_uncovered > len(samples) > 0:
+            # 无声截断禁令：报表样本有 30 条上限,超出部分必须留痕
+            entries.append(_entry(
+                CAT_MISSING,
+                f"另有 {total_uncovered - len(samples)} 条遗漏候选超出样本上限未列出"
+                "（全量计数见 consistency_report.json coverage.uncovered_count）",
+                signal="consistency:uncovered_overflow", tier=TIER_GAP,
+                audience=AUDIENCE_INTERNAL))
 
     # 合成层冲突标记（C10，0710 评审）：确定性检出的"同一功能未限定参数冲突/归属覆盖冲突"
     # 此前只落 functional_requirements.json——评审会该裁的冲突在澄清清单上隐身
@@ -204,12 +235,14 @@ def readiness_verdict(out_dir: Path, questions: int) -> dict[str, Any]:
 
 
 def render_markdown(entries: list[dict[str, Any]], readiness: dict[str, Any]) -> str:
-    hard = [e for e in entries if e.get("tier") != TIER_SOFT]
+    hard = [e for e in entries if e.get("tier", TIER_HARD) == TIER_HARD]
     soft = [e for e in entries if e.get("tier") == TIER_SOFT]
+    gap = [e for e in entries if e.get("tier") == TIER_GAP]
     lines = ["# 需求澄清问题清单", "",
              f"**就绪判定：{readiness['verdict']}**"
              + (f"（{'；'.join(readiness['reasons'])}）" if readiness["reasons"] else ""),
-             f"必答 {len(hard)} 条 · 参考 {len(soft)} 条（模型自报的假设/开放问题，留档备查）", ""]
+             f"必答 {len(hard)} 条 · 参考 {len(soft)} 条（模型自报的假设/开放问题，留档备查）"
+             + (f" · 遗漏候选 {len(gap)} 条（覆盖缺口机器检出，请核对）" if gap else ""), ""]
 
     def emit(group_entries: list[dict[str, Any]], heading: str) -> None:
         lines.append(f"# {heading}")
@@ -236,6 +269,8 @@ def render_markdown(entries: list[dict[str, Any]], readiness: dict[str, Any]) ->
         emit(customer, f"必答·问客户（{len(customer)}）——评审会逐条确认")
     if internal:
         emit(internal, f"必答·内部核对（{len(internal)}）——审核员在批注视图核对")
+    if gap:
+        emit(gap, f"遗漏候选（{len(gap)}）——覆盖缺口机器检出，核对是漏抽还是非需求文本")
     if soft:
         emit(soft, f"参考（{len(soft)}）——模型自报，抽查即可")
     if not entries:
@@ -250,8 +285,9 @@ def write_xlsx(entries: list[dict[str, Any]], readiness: dict[str, Any], path: P
     ws.title = "必答-问客户"
     header = ["序号", "分类", "问题", "出处章节", "原文引用", "来源需求", "信号", "答复", "采纳(是/否)"]
     ws.append(header)
-    hard = [e for e in entries if e.get("tier") != TIER_SOFT]
+    hard = [e for e in entries if e.get("tier", TIER_HARD) == TIER_HARD]
     soft = [e for e in entries if e.get("tier") == TIER_SOFT]
+    gap = [e for e in entries if e.get("tier") == TIER_GAP]
     customer = [e for e in hard if e.get("audience") != AUDIENCE_INTERNAL]
     internal = [e for e in hard if e.get("audience") == AUDIENCE_INTERNAL]
     for i, e in enumerate(customer, 1):
@@ -261,6 +297,11 @@ def write_xlsx(entries: list[dict[str, Any]], readiness: dict[str, Any], path: P
     ws_int.append(header[:7])
     for i, e in enumerate(internal, 1):
         ws_int.append([i, e["category"], formula_safe(e["question"]), formula_safe(e["section"]),
+                       formula_safe(e["quote"]), formula_safe(e["source_id"]), formula_safe(e["signal"])])
+    ws_gap = wb.create_sheet("遗漏候选(内部核对)")
+    ws_gap.append(header[:7])
+    for i, e in enumerate(gap, 1):
+        ws_gap.append([i, e["category"], formula_safe(e["question"]), formula_safe(e["section"]),
                        formula_safe(e["quote"]), formula_safe(e["source_id"]), formula_safe(e["signal"])])
     ws_soft = wb.create_sheet("参考(模型自报)")
     ws_soft.append(header[:7])
@@ -352,7 +393,8 @@ def run_report(out_dir: Path) -> dict[str, Any]:
                 continue
             kept.append(e)
         entries = kept
-    hard_count = sum(1 for e in entries if e.get("tier") != TIER_SOFT)
+    # 就绪门只数必答（遗漏候选假阳性率高、量可达上百,进门限会永远 NEEDS WORK）
+    hard_count = sum(1 for e in entries if e.get("tier", TIER_HARD) == TIER_HARD)
     readiness = readiness_verdict(out_dir, hard_count)
     (out_dir / REPORT_MD).write_text(render_markdown(entries, readiness), encoding="utf-8")
     write_xlsx(entries, readiness, out_dir / REPORT_XLSX)
@@ -373,15 +415,16 @@ def run_report(out_dir: Path) -> dict[str, Any]:
         except Exception:  # 血统校验永不阻断出报告
             pass
     report = {"questions": hard_count,        # 必答数（就绪门口径；GUI 消息同源）
-              "provenance": provenance("clarification_report", "clarification/v2-tiered"),
+              "provenance": provenance("clarification_report", "clarification/v3-gap-tier"),
               "upstream_warnings": warnings,
               "questions_total": len(entries),
-              "soft_questions": len(entries) - hard_count,
+              "soft_questions": sum(1 for e in entries if e.get("tier") == TIER_SOFT),
+              "coverage_candidates": sum(1 for e in entries if e.get("tier") == TIER_GAP),
               "customer_questions": sum(1 for e in entries
-                                         if e.get("tier") != TIER_SOFT
+                                         if e.get("tier", TIER_HARD) == TIER_HARD
                                          and e.get("audience") != AUDIENCE_INTERNAL),
               "internal_checks": sum(1 for e in entries
-                                     if e.get("tier") != TIER_SOFT
+                                     if e.get("tier", TIER_HARD) == TIER_HARD
                                      and e.get("audience") == AUDIENCE_INTERNAL),
               "resolved_by_answers": resolved,
               "by_category": by_cat,
