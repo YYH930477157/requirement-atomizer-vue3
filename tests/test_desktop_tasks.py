@@ -715,9 +715,9 @@ class ChainAndManifestTests(unittest.TestCase):
             "ai-extract": "ai-extract-v15+impl-v3",
             "assemble": "assemble_spec/v1+impl-v2",
             "functional-synthesis": "functional-synthesis-v5+impl-v2",
-            "requirements-analysis": "analyze-llm-v5+impl-v2",
+            "requirements-analysis": "analyze-llm-v6+impl-v2",   # v6: 冻结归属注入(0714 批次一)
             "template-write": "template_writer/v1+impl-v2",
-            "clarification-report": "clarification/v2-tiered+impl-v3",
+            "clarification-report": "clarification/v3-gap-tier+impl-v3",   # v3: 遗漏候选档(0714 批次一)
             "export-annotation-html": "doc_annotation_export/v5",
         }
         self.assertEqual(

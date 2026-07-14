@@ -301,5 +301,109 @@ class LLMClientTests(unittest.TestCase):
                 )
 
 
+class AdaptiveRateGateTests(unittest.TestCase):
+    """429 自适应闸门（0714 批次一 S2）：全局冷却 + 在飞上限 AIMD。
+    真实数据:EN 16314 全量跑并发 4 时 164/781 次 429,各线程独立退避互不通气。"""
+
+    def setUp(self) -> None:
+        from llm_client import _reset_rate_gates
+        _reset_rate_gates()
+
+    def tearDown(self) -> None:
+        from llm_client import _reset_rate_gates
+        _reset_rate_gates()
+
+    def test_rate_limit_halves_inflight_and_recovers_additively(self) -> None:
+        from llm_client import GATE_RECOVERY_SUCCESSES, _AdaptiveRateGate
+        clock = [0.0]
+        gate = _AdaptiveRateGate(now_fn=lambda: clock[0])
+        gate.acquire()
+        gate.acquire()                                   # 模拟 2 在飞
+        gate.on_rate_limited(5.0)
+        snap = gate.snapshot()
+        self.assertEqual(snap["limit"], 1)               # 2//2=1（AIMD 砍半,下限 1）
+        self.assertEqual(snap["pause_until"], 5.0)       # 全局冷却期
+        gate.release()
+        gate.release()
+        for _ in range(GATE_RECOVERY_SUCCESSES):
+            gate.on_success()
+        self.assertEqual(gate.snapshot()["limit"], 2)    # 连续成功加法恢复 +1
+
+    def test_success_without_prior_rate_limit_keeps_uncapped(self) -> None:
+        from llm_client import _AdaptiveRateGate
+        gate = _AdaptiveRateGate()
+        for _ in range(20):
+            gate.on_success()
+        self.assertIsNone(gate.snapshot()["limit"])      # 未限流不设上限
+
+    def test_pause_blocks_new_acquires_until_cooldown(self) -> None:
+        import time as _time
+
+        from llm_client import _AdaptiveRateGate
+        gate = _AdaptiveRateGate()
+        gate.acquire()
+        gate.on_rate_limited(0.15)
+        gate.release()
+        started = _time.monotonic()
+        gate.acquire()                                   # 须等冷却期过
+        elapsed = _time.monotonic() - started
+        gate.release()
+        self.assertGreaterEqual(elapsed, 0.10)
+
+    def test_inflight_limit_blocks_second_acquire(self) -> None:
+        import time as _time
+
+        from llm_client import _AdaptiveRateGate
+        gate = _AdaptiveRateGate()
+        gate.acquire()
+        gate.on_rate_limited(0.0)                        # limit=1,无冷却
+        acquired: list[int] = []
+
+        def worker() -> None:
+            gate.acquire()
+            acquired.append(1)
+            gate.release()
+
+        th = threading.Thread(target=worker, daemon=True)
+        th.start()
+        _time.sleep(0.05)
+        self.assertEqual(acquired, [])                   # 在飞上限挡住第二个
+        gate.release()
+        th.join(timeout=2)
+        self.assertEqual(acquired, [1])
+
+    def test_429_updates_shared_gate_for_endpoint(self) -> None:
+        from llm_client import _gate_for
+        with MockOpenAIService([
+            {"status": 429, "headers": {"Retry-After": "0"}, "body": {"error": "rate limit"}},
+            {"body": openai_response({"ok": True})},
+        ]) as service:
+            with patch("llm_client.time.sleep", side_effect=lambda value: None):
+                result = chat_json(
+                    LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="",
+                                    timeout_s=2, max_retries=0),
+                    "system", "user")
+            self.assertTrue(result["ok"])
+            snap = _gate_for(service.base_url).snapshot()
+        self.assertEqual(snap["limit"], 1)               # 命中 429 后该端点闸门收紧
+        self.assertEqual(snap["active"], 0)              # 权柄全部归还(无泄漏)
+
+    def test_adaptive_disabled_by_env(self) -> None:
+        import llm_client
+        with MockOpenAIService([
+            {"status": 429, "headers": {"Retry-After": "0"}, "body": {"error": "rate limit"}},
+            {"body": openai_response({"ok": True})},
+        ]) as service:
+            with patch.dict(os.environ, {"RATOMIZER_LLM_ADAPTIVE": "0"}):
+                with patch("llm_client.time.sleep", side_effect=lambda value: None):
+                    result = chat_json(
+                        LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="",
+                                        timeout_s=2, max_retries=0),
+                        "system", "user")
+        self.assertTrue(result["ok"])
+        with llm_client._GATES_LOCK:
+            self.assertEqual(llm_client._GATES, {})      # 关闭时不创建闸门(行为=旧退避)
+
+
 if __name__ == "__main__":
     unittest.main()

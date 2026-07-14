@@ -384,7 +384,7 @@ _STAGE_BASE_PRODUCERS = {
     "atomize": "atomize",
     "assemble": "assemble_spec/v1",
     "template-write": "template_writer/v1",
-    "clarification-report": "clarification/v2-tiered",
+    "clarification-report": "clarification/v3-gap-tier",
     "compose": "engineering_composer/v1",
     "export-annotation-html": "doc_annotation_export/v5",
     "run": "pipeline/v1",
