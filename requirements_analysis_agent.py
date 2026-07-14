@@ -18,17 +18,10 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
                           section_context: str = "", siblings: str = "",
                           per_item_fields: bool = False) -> dict[str, str]:
     system = "你是电表软件需求分析工程师。你的任务不是翻译原文，而是基于可追溯的抽取结果推导软件研发需求。"
-    lines: list[str] = []
-    if doc_context:
-        lines += [doc_context,
-                  "（以上文档背景仅供术语与模块一致性参考，勿据此编造原文没有的编码/数字。）"]
-    if section_context:
-        lines += ["【所在条款原文——客户文档内容，引用其中的数值/编码视为有据】",
-                  section_context]
-    if siblings:
-        lines += ["【同模块相邻需求标题——仅供避免重复/保持粒度一致，不得从中引用编码或数值】",
-                  siblings]
-    lines += [
+    # 前缀缓存友好排序（0714 批次二 S6）：按稳定性降序——固定指令（全局同一）→ 文档背景
+    # （全文档同一）→ 词表/范例/相邻标题（模块级）→ 答复/模板参考/条款原文（条级）→ 需求 JSON。
+    # 此前条级内容排最前,服务端 KV 前缀缓存每次调用全 miss;语义内容一字不改,只动顺序。
+    lines: list[str] = [
         "请基于需求 JSON 和模板词表 JSON 输出 JSON 对象 {\"items\": [ ... ]}，items 与输入需求一一对应。",
     ]
     if per_item_fields:
@@ -54,7 +47,7 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         "  - source_requirement_ids: 原样回填输入需求的 ai_req_id（用于对齐）",
         "  - software_requirement_text: 软件需求正文——**连贯的自然段成文（2-4 段）**，依次覆盖："
         "输入/触发条件 → 处理逻辑（关键步骤、状态变化、数据流）→ 输出/状态变化 → 边界条件与异常处理"
-        "（掉电、并发、越界、时序等落到具体场景）。禁止只写一句话或短语碎片罗列；术语采用上方对照表的统一译法。",
+        "（掉电、并发、越界、时序等落到具体场景）。禁止只写一句话或短语碎片罗列；术语采用文档背景中英对照表的统一译法。",
         "  - developer_guidance: 研发落地要点数组——每条**具体可执行**（点名涉及的对象/属性/接口/时序/存储布局），"
         "由原文/客户答复直接支持；公司标准做法可吸收但须以「公司通用做法：」前缀标注",
         "  - design_options: 原文未指定但可供研发选型的实现候选数组（队列/缓存/接口分层等）——"
@@ -66,6 +59,11 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         "  - assumptions: 推导中不得不假设的、原文没有的前提数组——**一律记录在此，绝不无声编入正文**（无则空数组）",
         "  - ownership_reason: 解释**给定归属**为何成立的一句话理由（引用原文关键词/依据）——"
         "不是重新判定；若你认为给定归属可疑，把疑问写进 open_questions，不要改 ownership",
+    ]
+    if doc_context:
+        lines += [doc_context,
+                  "（以上文档背景仅供术语与模块一致性参考，勿据此编造原文没有的编码/数字。）"]
+    lines += [
         "模板词表 JSON:",
         json.dumps(vocabulary, ensure_ascii=False),
     ]
@@ -74,6 +72,9 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
             "【专家已验收的同模块范例——粒度/写法基准，内容不得搬运进本需求】",
             exemplars,
         ]
+    if siblings:
+        lines += ["【同模块相邻需求标题——仅供避免重复/保持粒度一致，不得从中引用编码或数值】",
+                  siblings]
     if answers:
         lines += [
             "【客户澄清答复——权威输入：其中的数值/结论视为有据，应吸收进软件需求正文】",
@@ -87,6 +88,9 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
             "样本里的默认值绝不写入需求正文；样本\"说明\"里的通用做法/宏定义/选项枚举应吸收进 "
             "developer_guidance，并以「公司通用做法：」前缀标注；写法上模仿样本的粒度与术语。",
         ]
+    if section_context:
+        lines += ["【所在条款原文——客户文档内容，引用其中的数值/编码视为有据】",
+                  section_context]
     lines += [
         "需求 JSON:",
         json.dumps(requirements, ensure_ascii=False),

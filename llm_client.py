@@ -221,11 +221,27 @@ def chat_json_messages(config: LLMClientConfig, messages: list[dict[str, str]]) 
             raise LLMResponseError(f"LLM response is not a JSON object after repair: {second_error}") from second_error
 
 
-JSON_MODE_ENV = "RATOMIZER_LLM_JSON_SCHEMA"   # =1 请求 response_format=json_object（端点须支持）
+JSON_MODE_ENV = "RATOMIZER_LLM_JSON_SCHEMA"   # 默认开;=0 关闭（0714 批次二 S6）
+
+# 端点不支持 response_format 的记忆（按 base_url|model）：此前每次调用都探测,
+# 不支持的端点每次白发一遍 4xx（调用翻倍）。命中一次 4xx 即记住,本进程后续直发无 JSON 模式。
+_JSON_MODE_UNSUPPORTED: set[str] = set()
+_JSON_MODE_LOCK = threading.Lock()
 
 
 def _json_mode_enabled() -> bool:
-    return os.environ.get(JSON_MODE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    raw = os.environ.get(JSON_MODE_ENV)
+    if raw is None or not raw.strip():
+        # 默认开（0714 批次二 S6）：mimo 双模型探针已验证 json_object;开着能基本消灭
+        # "解析失败→修复重发"的调用翻倍。不支持的端点 4xx 一次后被记住并降级。
+        return True
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _reset_json_mode_memory() -> None:
+    """仅测试用。"""
+    with _JSON_MODE_LOCK:
+        _JSON_MODE_UNSUPPORTED.clear()
 
 
 def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> str:
@@ -235,13 +251,19 @@ def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> st
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
     }
-    if _json_mode_enabled():
-        # JSON 强制模式：端点支持时基本消灭"解析失败重修"（每轮 1-2 个失败单元的来源）。
-        # 端点不支持会 4xx——失败一次即去掉该字段重发（探针式降级，不影响本次调用结果）。
+    endpoint_key = f"{config.base_url}|{config.model}"
+    with _JSON_MODE_LOCK:
+        endpoint_supported = endpoint_key not in _JSON_MODE_UNSUPPORTED
+    if _json_mode_enabled() and endpoint_supported:
         payload["response_format"] = {"type": "json_object"}
         try:
             response = _post_json(config, payload)
-        except LLMError:
+        except LLMResponseError:
+            # 只有"响应类"4xx 才判定端点不支持并降级重发;连接类错误（401/403/429 打光/
+            # 5xx/网络）原样抛出——重发无 JSON 模式救不了真故障,只会调用翻倍。
+            with _JSON_MODE_LOCK:
+                _JSON_MODE_UNSUPPORTED.add(endpoint_key)
+            LOGGER.warning("端点疑似不支持 response_format=json_object,已记住并降级重发: %s", endpoint_key)
             payload.pop("response_format", None)
             response = _post_json(config, payload)
     else:

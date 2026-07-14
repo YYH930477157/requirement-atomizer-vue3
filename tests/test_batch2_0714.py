@@ -126,5 +126,97 @@ class CacheKeyNarrowingTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)          # 背景漂移 → 命中缓存,零新调用
 
 
+class JsonModeDefaultTests(unittest.TestCase):
+    """S6a：JSON 模式默认开 + 端点不支持记忆（不支持的端点只白发一次,不再逐次翻倍）。"""
+
+    def setUp(self) -> None:
+        import llm_client
+        llm_client._reset_json_mode_memory()
+
+    tearDown = setUp
+
+    def test_default_on_sends_response_format(self) -> None:
+        import os
+        from tests.test_llm_client import MockOpenAIService, openai_response
+
+        from llm_client import LLMClientConfig, chat_json
+        with MockOpenAIService([{"body": openai_response({"ok": True})}]) as service:
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("RATOMIZER_LLM_JSON_SCHEMA", None)
+                chat_json(LLMClientConfig(base_url=service.base_url, model="m", api_key_env="",
+                                          timeout_s=2, max_retries=0), "s", "u")
+        self.assertEqual(service.requests[0].get("response_format"), {"type": "json_object"})
+
+    def test_env_zero_disables(self) -> None:
+        import os
+        from tests.test_llm_client import MockOpenAIService, openai_response
+
+        from llm_client import LLMClientConfig, chat_json
+        with MockOpenAIService([{"body": openai_response({"ok": True})}]) as service:
+            with patch.dict(os.environ, {"RATOMIZER_LLM_JSON_SCHEMA": "0"}):
+                chat_json(LLMClientConfig(base_url=service.base_url, model="m", api_key_env="",
+                                          timeout_s=2, max_retries=0), "s", "u")
+        self.assertNotIn("response_format", service.requests[0])
+
+    def test_unsupported_endpoint_remembered(self) -> None:
+        import os
+        from tests.test_llm_client import MockOpenAIService, openai_response
+
+        from llm_client import LLMClientConfig, chat_json
+        with MockOpenAIService([
+            {"status": 400, "body": {"error": "response_format unsupported"}},   # 首次探测 4xx
+            {"body": openai_response({"ok": 1})},                                # 降级重发成功
+            {"body": openai_response({"ok": 2})},                                # 第二次调用
+        ]) as service:
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("RATOMIZER_LLM_JSON_SCHEMA", None)
+                cfg = LLMClientConfig(base_url=service.base_url, model="m", api_key_env="",
+                                      timeout_s=2, max_retries=0)
+                chat_json(cfg, "s", "u")
+                chat_json(cfg, "s", "u")
+        self.assertEqual(len(service.requests), 3)
+        self.assertIn("response_format", service.requests[0])
+        self.assertNotIn("response_format", service.requests[1])   # 降级重发
+        self.assertNotIn("response_format", service.requests[2])   # 已记住,不再探测
+
+    def test_connection_error_does_not_mark_unsupported(self) -> None:
+        import os
+        from tests.test_llm_client import MockOpenAIService
+
+        import llm_client
+        from llm_client import LLMClientConfig, LLMConnectionError, chat_json
+        with MockOpenAIService([{"status": 401, "body": {"error": "bad key"}}]) as service:
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("RATOMIZER_LLM_JSON_SCHEMA", None)
+                with self.assertRaises(LLMConnectionError):
+                    chat_json(LLMClientConfig(base_url=service.base_url, model="m", api_key_env="",
+                                              timeout_s=2, max_retries=0), "s", "u")
+        with llm_client._JSON_MODE_LOCK:
+            self.assertEqual(llm_client._JSON_MODE_UNSUPPORTED, set())   # 连接类错误不定罪端点
+
+
+class PromptPrefixOrderTests(unittest.TestCase):
+    """S6b：分析 prompt 按稳定性降序——固定指令在前,条级内容后移(服务端前缀缓存)。"""
+
+    def test_fixed_instructions_precede_variable_context(self) -> None:
+        from requirements_analysis_agent import build_analysis_prompt, slim_vocabulary
+        prompt = build_analysis_prompt(
+            [{"ai_req_id": "AI-1", "module": "时钟", "ownership": "software"}],
+            slim_vocabulary({"modules": ["时钟"]}, "时钟"),
+            template_refs="【模板行】x",
+            doc_context="【文档背景】表计类型:燃气表。",
+            section_context="4.5 clause text", siblings="- 时钟同步需求")
+        user = prompt["user"]
+        fixed = user.index("请基于需求 JSON")
+        specs = user.index("每个 item 的字段")
+        doc = user.index("【文档背景】")
+        clause = user.index("【所在条款原文")
+        reqs = user.index("需求 JSON:")
+        self.assertLess(fixed, specs)
+        self.assertLess(specs, doc)          # 固定指令块整体在文档背景之前
+        self.assertLess(doc, clause)         # 条级条款原文靠后
+        self.assertLess(clause, reqs)        # 需求 JSON 收尾
+
+
 if __name__ == "__main__":
     unittest.main()
