@@ -16,6 +16,40 @@ from cosem_behavior_spec import extract_codes, extract_ints
 
 _MIN_QUOTE_CHARS = 12  # 太短的引用片段（如"see 4.2"）不作重复判据，防误判
 
+# 覆盖/遗漏口径的假阳性剔除（0714 批次二 E3b,实证 EN 16314:113 条"未覆盖"混着
+# 引用书目/编号短标题/前言声明,覆盖率被稀释、真漏项被淹没）
+_REF_LINE = re.compile(r"^(?:EN|IEC|ISO|CEN|CENELEC|ETSI|IEEE|ITU)[\s/–-]?\d", re.IGNORECASE)
+_HEADING_LINE = re.compile(r"^\d+(?:\.\d+)*\s+[A-Za-z][A-Za-z /\-]{0,40}$")
+
+
+def is_coverage_candidate(block: dict[str, Any]) -> bool:
+    """覆盖率分母 /「未覆盖」标记的统一谓词。
+
+    requirement_like 是**候选生成**的宽口径（atomize/golden 不动）；覆盖/遗漏是**质量
+    指标**口径——剔除三类实证假阳性：非正文区（前言/目录的版式假阳性）、标题行
+    （类型或"编号+短名词"形态,如 "4.5.1 Requirements"）、规范性引用书目行（标准号
+    开头的短行,如 "EN 60950-1, … General requirements"）。消费方：覆盖率
+    （quality/consistency）、批注视图未覆盖标记（双渲染器同源）、澄清清单遗漏候选。
+    """
+    if not block.get("requirement_like") or block.get("noise"):
+        return False
+    if str(block.get("doc_region") or "body") != "body":
+        return False
+    if str(block.get("type") or "") == "heading":
+        return False
+    text = str(block.get("text") or "").strip()
+    if not text:
+        return False
+    if len(text) <= 160 and _REF_LINE.match(text):
+        return False
+    if _HEADING_LINE.match(text):
+        return False
+    return True
+
+
+def coverage_denominator_blocks(blocks: Any) -> list[dict[str, Any]]:
+    return [b for b in blocks if is_coverage_candidate(b)]
+
 
 def _norm(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip().lower()

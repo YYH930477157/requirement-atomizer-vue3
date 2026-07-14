@@ -242,8 +242,16 @@ function pageBreakBefore(index: number): number | null {
     ? Number(cur.page_number) : null
 }
 
+// 覆盖/遗漏统一口径（E3b）：服务端 coverage_candidate（剔除标题/引用书目/非正文假阳性）;
+// 旧后端 payload 无该字段时回退宽口径,行为同旧版
+function isCoverageCandidate(b: DocumentBlock): boolean {
+  return b.coverage_candidate !== undefined
+    ? Boolean(b.coverage_candidate)
+    : Boolean(b.requirement_like) && !b.noise
+}
+
 const omissionCount = computed(
-  () => blocks.value.filter((b) => b.requirement_like && !b.noise && !coveredBlocks.value.has(b.block_id)).length,
+  () => blocks.value.filter((b) => isCoverageCandidate(b) && !coveredBlocks.value.has(b.block_id)).length,
 )
 
 const stats = computed(() => ({
@@ -256,7 +264,7 @@ function isHeading(b: DocumentBlock): boolean {
   return b.type === "heading" || (b.section_path?.length ? b.text === b.section_path[b.section_path.length - 1] : false)
 }
 function isOmission(b: DocumentBlock): boolean {
-  return Boolean(b.requirement_like) && !b.noise && !coveredBlocks.value.has(b.block_id)
+  return isCoverageCandidate(b) && !coveredBlocks.value.has(b.block_id)
 }
 function moduleOf(r: AiRequirement): string {
   return String(r.module_effective || r.module || (r.labels || [])[0] || "未分模块")

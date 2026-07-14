@@ -233,6 +233,59 @@ class GuidanceTemplateCodeTests(unittest.TestCase):
                             for i in issues), issues)
 
 
+class CoverageCandidateTests(unittest.TestCase):
+    """E3b：覆盖/遗漏统一口径——剔除实证假阳性,真 shall 条款保留。"""
+
+    def _b(self, text: str, **kw) -> dict:
+        base = {"block_id": "B", "text": text, "requirement_like": True,
+                "noise": False, "type": "paragraph", "doc_region": "body"}
+        base.update(kw)
+        return base
+
+    def test_real_shall_statement_kept(self) -> None:
+        from merged_consistency import is_coverage_candidate
+        self.assertTrue(is_coverage_candidate(
+            self._b("The AFD shall be connected to the meter during all tests.")))
+
+    def test_false_positives_excluded(self) -> None:
+        from merged_consistency import is_coverage_candidate
+        self.assertFalse(is_coverage_candidate(
+            self._b("EN 60950-1, Information technology equipment - Safety - Part 1: General requirements")))
+        self.assertFalse(is_coverage_candidate(self._b("4.5.1 Requirements")))
+        self.assertFalse(is_coverage_candidate(self._b("4.11 Safety Requirements")))
+        self.assertFalse(is_coverage_candidate(
+            self._b("This standard shall be given national status.", doc_region="front_matter")))
+        self.assertFalse(is_coverage_candidate(
+            self._b("4 General requirements", type="heading")))
+        self.assertFalse(is_coverage_candidate(self._b("x", requirement_like=False)))
+        self.assertFalse(is_coverage_candidate(self._b("x", noise=True)))
+
+    def test_numbered_requirement_sentence_not_mistaken_for_heading(self) -> None:
+        from merged_consistency import is_coverage_candidate
+        # 编号开头但是完整句子（多词+句号）——不是标题,必须保留
+        self.assertTrue(is_coverage_candidate(
+            self._b("4.6.1 The AFD shall close the valve within 5 s.")))
+
+    def test_document_blocks_payload_carries_candidate_flag(self) -> None:
+        import api_server
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            rows = [
+                {"block_id": "B1", "order": 1, "text": "The meter shall log events.",
+                 "requirement_like": True, "noise": False, "type": "paragraph",
+                 "doc_region": "body", "section_path": ["4"]},
+                {"block_id": "B2", "order": 2, "text": "4.5.1 Requirements",
+                 "requirement_like": True, "noise": False, "type": "paragraph",
+                 "doc_region": "body", "section_path": ["4"]},
+            ]
+            (out / "blocks.jsonl").write_text(
+                "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+            payload = api_server.build_document_blocks(out)
+        by_id = {b["block_id"]: b for b in payload["blocks"]}
+        self.assertTrue(by_id["B1"]["coverage_candidate"])
+        self.assertFalse(by_id["B2"]["coverage_candidate"])   # 编号短标题不再标"未覆盖"
+
+
 class PromptPrefixOrderTests(unittest.TestCase):
     """S6b：分析 prompt 按稳定性降序——固定指令在前,条级内容后移(服务端前缀缓存)。"""
 

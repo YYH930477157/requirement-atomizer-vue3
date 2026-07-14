@@ -1009,8 +1009,9 @@ def _write_consistency_report(out_dir: Path, merged: dict[str, Any]) -> Path:
     """P1 全局一致性 critic：跨章去重 + OBIS 共引 + 覆盖缺口（确定性，非破坏，只标记）。"""
     import merged_consistency
     blocks = read_jsonl(out_dir / "blocks.jsonl")
-    req_like = ([b for b in blocks if b.get("requirement_like") and not b.get("noise") and clean_block_text(b)]
-                if blocks else None)  # 纯目录块不进覆盖分母
+    # 覆盖分母统一口径（E3b）：剔除标题/引用书目/非正文假阳性,详见 is_coverage_candidate
+    req_like = ([b for b in merged_consistency.coverage_denominator_blocks(blocks) if clean_block_text(b)]
+                if blocks else None)
     report = merged_consistency.analyze_consistency(merged.get("requirements") or [], req_like)
     path = out_dir / "consistency_report.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1135,9 +1136,10 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                 f.write(json.dumps(req, ensure_ascii=False) + "\n")
         written.append(target.name)
 
-        # 质量报表：这轮抽取的可核指标（覆盖率/漂移/自检补充/模块分布），落盘供追溯
-        req_like = [b for b in block_info.values()
-                    if b.get("requirement_like") and not b.get("noise") and clean_block_text(b)]
+        # 质量报表：这轮抽取的可核指标（覆盖率/漂移/自检补充/模块分布），落盘供追溯。
+        # 覆盖分母统一口径（E3b）：与 consistency/批注/澄清同用 is_coverage_candidate
+        from merged_consistency import coverage_denominator_blocks
+        req_like = [b for b in coverage_denominator_blocks(block_info.values()) if clean_block_text(b)]
         if sampled:  # 试抽模式：覆盖率分母只算样本章节的块，否则数字必然假低
             sampled_ids = {str(bid) for s in sections for bid in (s.get("block_ids") or [])}
             req_like = [b for b in req_like if str(b.get("block_id")) in sampled_ids]

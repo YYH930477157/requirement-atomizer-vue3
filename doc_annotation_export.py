@@ -460,7 +460,10 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
             prev_page = page_no
         is_heading = b.get("type") == "heading" or (bool(path) and text == str(path[-1]))
         is_noise = bool(b.get("noise"))
-        is_omission = bool(b.get("requirement_like")) and not is_noise and bid not in covered
+        # 覆盖/遗漏统一口径（E3b）：payload 带 coverage_candidate 用之;旧数据回退宽口径
+        candidate = (bool(b.get("coverage_candidate")) if "coverage_candidate" in b
+                     else bool(b.get("requirement_like")) and not is_noise)
+        is_omission = candidate and bid not in covered
         anchored = anchor_map.get(bid) or []
 
         # 渲染单个 block 的 HTML（表格块带 data_rows 时渲染真表格，旧 out_dir 无该字段回退扁平文字）
@@ -1090,11 +1093,12 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
 
 
 def _omission_records(blocks: list[dict[str, Any]], covered: set[str]) -> list[dict[str, Any]]:
+    from merged_consistency import is_coverage_candidate
     records: list[dict[str, Any]] = []
     for block in blocks:
         block_id = str(block.get("block_id") or "")
         text = str(block.get("text") or "").strip()
-        if (not block.get("requirement_like") or block.get("noise") or block_id in covered or not text):
+        if not is_coverage_candidate(block) or block_id in covered or not text:
             continue
         key = _translation_key(text)
         records.append({
@@ -1268,10 +1272,11 @@ def build_pdf_annotation_payload(out_dir: Path) -> dict[str, Any]:
         requirement_markers.append({"req_id": req_id, "page": page,
                                     "rect": _pdf_zone_rect(regions[0])})
     covered = _covered_blocks(requirements)
+    from merged_consistency import is_coverage_candidate
     omission_markers: list[dict[str, Any]] = []
     for block in blocks:
         block_id = str(block.get("block_id") or "")
-        if (not block.get("requirement_like") or block.get("noise")
+        if (not is_coverage_candidate(block)
                 or block_id in covered or not str(block.get("text") or "").strip()):
             continue
         for region in geometry.get(block_id) or []:

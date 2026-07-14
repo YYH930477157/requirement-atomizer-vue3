@@ -36,6 +36,7 @@ export type DocumentBlock = {
   section_path?: string[]
   page_number?: number
   requirement_like?: boolean
+  coverage_candidate?: boolean   // 覆盖/遗漏统一口径(E3b,服务端计算);旧后端缺省→前端回退宽口径
   noise?: boolean
   doc_region?: string
   // 表格块（type="table"）：批注视图渲染真表格；旧 out_dir 无 data_rows 回退扁平文字

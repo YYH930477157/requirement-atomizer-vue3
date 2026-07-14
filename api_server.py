@@ -412,7 +412,13 @@ def build_document_blocks(output_dir: Path) -> dict:
     附带块级中文翻译（内容哈希查缓存）：未覆盖段/说明标记的三段式卡片（原因/翻译/引用）
     在应用内视图与导出 HTML 同语义。"""
     blocks = read_jsonl(output_dir / "blocks.jsonl")
-    trimmed = [{k: b.get(k) for k in _BLOCK_FIELDS} for b in blocks]
+    from merged_consistency import is_coverage_candidate
+    trimmed = []
+    for b in blocks:
+        row = {k: b.get(k) for k in _BLOCK_FIELDS}
+        # 覆盖/遗漏统一口径（E3b）：服务端算好,双渲染器与澄清清单同源消费
+        row["coverage_candidate"] = is_coverage_candidate(b)
+        trimmed.append(row)
     translations, notes = load_annotation_translations(output_dir)
     clean_block_text = None
     if translations or notes:
