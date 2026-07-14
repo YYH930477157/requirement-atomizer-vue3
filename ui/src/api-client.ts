@@ -53,6 +53,16 @@ export type DocumentPayload = {
   count: number
 }
 
+// 原版影印批注数据（/document/pdf,与分享 HTML 同源）
+export type PdfZoneRect = { left: number; top: number; width: number; height: number }
+export type PdfAnnotationPayload = {
+  available: boolean
+  reason?: string
+  pages?: Array<{ page_number: number; file: string; width: number; height: number }>
+  requirement_markers?: Array<{ req_id: string; page: number; rect: PdfZoneRect }>
+  omission_markers?: Array<{ block_id: string; page: number; rect: PdfZoneRect }>
+}
+
 export type AiRequirement = Record<string, unknown> & {
   ai_req_id: string
   anchor_block_id?: string
@@ -153,6 +163,27 @@ export class RequirementApiClient {
 
   async loadDocument(): Promise<DocumentPayload> {
     return this.request<DocumentPayload>("/document")
+  }
+
+  // 原版影印批注数据（后端与分享 HTML 同源:同几何缓存/百分比换算——双渲染器等价）
+  async loadPdfAnnotation(): Promise<PdfAnnotationPayload> {
+    return this.request<PdfAnnotationPayload>("/document/pdf")
+  }
+
+  // 页图走带鉴权头的 fetch → blob URL。仓库安全锁:token 绝不进 URL/查询参数
+  // (test_platform_scaffold 锁定查询 token 必须拒绝——防 token 落日志/历史)。
+  async loadPdfPageBlob(file: string): Promise<string> {
+    const headers: Record<string, string> = {}
+    if (this.token) {
+      headers["X-Requirement-Atomizer-Token"] = this.token
+    }
+    const response = await this.fetchImpl.call(
+      globalThis, `${this.baseUrl}/document/pages/${encodeURIComponent(file)}`, { headers })
+    if (!response.ok) {
+      throw new Error(`页图加载失败(${response.status})`)
+    }
+    const blob = await response.blob()
+    return URL.createObjectURL(blob)
   }
 
   async loadAiRequirements(): Promise<AiRequirement[]> {

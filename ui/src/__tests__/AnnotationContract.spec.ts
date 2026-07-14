@@ -16,6 +16,8 @@ function makeClient() {
     loadDocument: vi.fn().mockResolvedValue({ count: fixture.blocks.length, blocks: fixture.blocks }),
     loadAiRequirements: vi.fn().mockResolvedValue(fixture.requirements),
     applyAiReviewAction: vi.fn(),
+    loadPdfAnnotation: vi.fn().mockResolvedValue({ available: false, reason: "影印页尚未生成" }),
+    loadPdfPageBlob: vi.fn(async (file: string) => `blob:fake-${file}`),
   }
 }
 

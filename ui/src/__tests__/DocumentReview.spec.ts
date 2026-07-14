@@ -28,6 +28,8 @@ function makeClient(over: Record<string, unknown> = {}) {
       },
     ]),
     applyAiReviewAction: vi.fn().mockResolvedValue({ ai_req_id: "AIR-1", status: "accepted", module_override: null }),
+    loadPdfAnnotation: vi.fn().mockResolvedValue({ available: false, reason: "影印页尚未生成" }),
+    loadPdfPageBlob: vi.fn(async (file: string) => `blob:fake-${file}`),
     ...over,
   }
 }
@@ -145,6 +147,40 @@ describe("DocumentReview", () => {
     await wrapper.find('[data-testid="anno-AIR-9"]').trigger("click")
     expect(wrapper.findAll(".doc-block.in-span").length).toBe(0)
     expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("点左侧")
+  })
+
+  it("pdf original mode renders pages with clickable markers sharing the detail panel", async () => {
+    const client = makeClient({
+      loadPdfAnnotation: vi.fn().mockResolvedValue({
+        available: true,
+        pages: [{ page_number: 1, file: "page-0001.png", width: 595, height: 842 }],
+        requirement_markers: [{ req_id: "AIR-1", page: 1, rect: { left: 8, top: 12, width: 60, height: 4 } }],
+        omission_markers: [{ block_id: "B3", page: 1, rect: { left: 8, top: 30, width: 60, height: 4 } }],
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.find('[data-testid="pdf-paper"]').exists()).toBe(true)
+    expect(wrapper.find(".pdf-page img").attributes("src")).toContain("page-0001.png")
+    // 点批注标记 → 右栏详情(与文字模式共用,裁决可用)
+    await wrapper.find('[data-testid="pdf-marker-AIR-1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
+    expect(wrapper.find('[data-testid="dd-accept"]').exists()).toBe(true)
+    // 未覆盖标记 → 块级卡
+    await wrapper.find(".pdf-marker.marker-omission").trigger("click")
+    expect(wrapper.find('[data-testid="omission-card"]').exists()).toBe(true)
+  })
+
+  it("pdf mode shows honest hint when pages are not generated", async () => {
+    const client = makeClient()
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.find('[data-testid="pdf-unavailable"]').text()).toContain("影印页尚未生成")
   })
 
   it("guides the user when not connected to an output dir", async () => {

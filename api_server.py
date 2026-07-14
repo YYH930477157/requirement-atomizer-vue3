@@ -49,6 +49,31 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if not token_is_valid(self.local_token, self.headers, params):
             self.send_json({"error": "unauthorized"}, status=401)
             return
+        if parsed.path == "/document/pdf":
+            # 惰性反向导入（同 _clean_block_text 先例）：影印批注数据的唯一权威实现在导出侧,
+            # 应用内视图与分享 HTML 共用同一份几何/换算——双渲染器等价靠同源,不靠各写一份
+            from doc_annotation_export import build_pdf_annotation_payload
+            self.send_json(build_pdf_annotation_payload(self.output_dir))
+            return
+        if parsed.path.startswith("/document/pages/"):
+            filename = parsed.path.rsplit("/", 1)[-1]
+            # 文件名白名单（防路径穿越）：只放行导出侧生成的 page-NNNN.png
+            if not re.fullmatch(r"page-\d{4}\.png", filename):
+                self.send_json({"error": "invalid page name"}, status=403)
+                return
+            target = self.output_dir / "document_pages" / filename
+            if not target.is_file():
+                self.send_json({"error": "page not found"}, status=404)
+                return
+            raw = target.read_bytes()
+            self.send_response(200)
+            self.send_cors_headers()
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "max-age=3600")
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if parsed.path == "/manifest":
             self.send_file_json("manifest.json")
             return

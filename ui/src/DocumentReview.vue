@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
-import type { AiRequirement, DocumentBlock, RequirementApiClient } from "./api-client"
+import type { AiRequirement, DocumentBlock, PdfAnnotationPayload, PdfZoneRect, RequirementApiClient } from "./api-client"
 
 // 镜像后端 ai_extract.MODULE_VOCAB（受控模块词表）。改模块下拉用；taxonomy 变动时两边同步。
 const MODULE_VOCAB = [
@@ -15,7 +15,8 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 // 结构化子集（避免 class 私有成员 + ref 解包导致的名义类型不匹配）
-type DocClient = Pick<RequirementApiClient, "loadDocument" | "loadAiRequirements" | "applyAiReviewAction">
+type DocClient = Pick<RequirementApiClient,
+  "loadDocument" | "loadAiRequirements" | "applyAiReviewAction" | "loadPdfAnnotation" | "loadPdfPageBlob">
 const props = defineProps<{ client: DocClient | null; active: boolean }>()
 
 const blocks = ref<DocumentBlock[]>([])
@@ -106,6 +107,83 @@ function onBlockClick(b: DocumentBlock) {
   }
   if (isHeading(b) || b.noise || isTable(b) || !(b.text || "").trim()) return
   selectBlockCard(b)
+}
+
+// 原版影印模式（2026-07-14）：数据与分享 HTML 同源（几何缓存/百分比换算共用后端实现），
+// 右栏详情与裁决两种模式完全共用——双渲染器等价。页图缺失时提示先跑一次影印导出。
+const viewMode = ref<"text" | "pdf">("text")
+const pdfData = ref<PdfAnnotationPayload | null>(null)
+const pdfLoading = ref(false)
+const pdfPageUrls = ref<Record<string, string>>({})
+async function loadPdfPages(payload: PdfAnnotationPayload) {
+  // 顺序拉取页图(带鉴权头 fetch→blob;token 不进 URL——仓库安全锁);单页失败不阻断其余
+  for (const page of payload.pages || []) {
+    if (pdfPageUrls.value[page.file] || !props.client) continue
+    try {
+      const url = await props.client.loadPdfPageBlob(page.file)
+      pdfPageUrls.value = { ...pdfPageUrls.value, [page.file]: url }
+    } catch {
+      /* 页图缺失/网络抖动:保留占位框,不影响其它页 */
+    }
+  }
+}
+async function switchMode(mode: "text" | "pdf") {
+  viewMode.value = mode
+  if (mode === "pdf" && !pdfData.value && props.client && !pdfLoading.value) {
+    pdfLoading.value = true
+    try {
+      pdfData.value = await props.client.loadPdfAnnotation()
+      if (pdfData.value?.available) void loadPdfPages(pdfData.value)
+    } catch (error) {
+      pdfData.value = { available: false, reason: error instanceof Error ? error.message : "影印数据加载失败" }
+    } finally {
+      pdfLoading.value = false
+    }
+  }
+}
+type PdfMarker = { kind: "req" | "omission"; id: string; rect: PdfZoneRect; laneOffset: number }
+const pdfMarkersByPage = computed(() => {
+  const byPage = new Map<number, PdfMarker[]>()
+  const push = (page: number, kind: "req" | "omission", id: string, rect: PdfZoneRect) => {
+    const list = byPage.get(page) || []
+    list.push({ kind, id, rect, laneOffset: 0 })
+    byPage.set(page, list)
+  }
+  for (const m of pdfData.value?.requirement_markers || []) push(m.page, "req", m.req_id, m.rect)
+  for (const m of pdfData.value?.omission_markers || []) push(m.page, "omission", m.block_id, m.rect)
+  for (const list of byPage.values()) {
+    list.sort((a, b) => a.rect.top - b.rect.top)
+    let prevTop = -100
+    let lane = 0
+    for (const m of list) {   // 与导出 HTML 同规则：垂直间距 <2.6% 换道错开,防标记叠死
+      lane = m.rect.top - prevTop < 2.6 ? lane + 1 : 0
+      prevTop = m.rect.top
+      m.laneOffset = lane * 25
+    }
+  }
+  return byPage
+})
+function pdfMarkerClick(m: PdfMarker) {
+  if (m.kind === "req") {
+    const req = requirements.value.find((r) => r.ai_req_id === m.id)
+    if (req) select(req)
+    return
+  }
+  const block = blocks.value.find((b) => b.block_id === m.id)
+  if (block) selectBlockCard(block)
+}
+function pdfMarkerLabel(m: PdfMarker): string {
+  if (m.kind === "omission") return "!"
+  const req = requirements.value.find((r) => r.ai_req_id === m.id)
+  return req ? reqNumber(req) : "--"
+}
+function pdfMarkerSelected(m: PdfMarker): boolean {
+  return m.kind === "req" ? m.id === selectedId.value : m.id === selectedBlockId.value
+}
+function pdfSelectedZone(page: number): PdfZoneRect | null {
+  const markers = pdfMarkersByPage.value.get(page) || []
+  const hit = markers.find((m) => pdfMarkerSelected(m))
+  return hit ? hit.rect : null
 }
 // 只高亮选中的片段（锚点小段），不把整个章节跨度刷蓝
 const evidenceBlocks = computed(() => {
@@ -290,15 +368,49 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           疑似遗漏 <strong data-testid="doc-stat-omissions">{{ stats.omissions }}</strong>
         </span>
       </div>
-      <button class="button" type="button" data-testid="doc-reload" :disabled="loading" @click="load">
-        {{ loading ? "加载中" : "刷新" }}
-      </button>
+      <div class="doc-toolbar-actions">
+        <div class="mode-toggle">
+          <button type="button" :class="{ active: viewMode === 'text' }" data-testid="mode-text"
+                  @click="switchMode('text')">文字重排</button>
+          <button type="button" :class="{ active: viewMode === 'pdf' }" data-testid="mode-pdf"
+                  @click="switchMode('pdf')">原版影印</button>
+        </div>
+        <button class="button" type="button" data-testid="doc-reload" :disabled="loading" @click="load">
+          {{ loading ? "加载中" : "刷新" }}
+        </button>
+      </div>
     </header>
 
     <div v-if="message" class="doc-message" data-testid="doc-message">{{ message }}</div>
 
     <div class="doc-body">
-      <article class="doc-paper" data-testid="doc-paper">
+      <article v-if="viewMode === 'pdf'" class="doc-paper pdf-paper" data-testid="pdf-paper">
+        <div v-if="pdfLoading" class="doc-detail-empty">影印数据加载中…</div>
+        <div v-else-if="!pdfData || !pdfData.available" class="doc-detail-empty" data-testid="pdf-unavailable">
+          {{ pdfData?.reason || "影印数据不可用" }}
+        </div>
+        <template v-else>
+          <section v-for="p in pdfData.pages" :key="p.page_number" class="pdf-page"
+                   :style="{ aspectRatio: String(p.width / Math.max(1, p.height)) }">
+            <img v-if="pdfPageUrls[p.file]" :src="pdfPageUrls[p.file]"
+                 :alt="`PDF 第 ${p.page_number} 页`" decoding="async" />
+            <div v-else class="pdf-page-loading">第 {{ p.page_number }} 页加载中…</div>
+            <div class="pdf-overlay">
+              <span v-if="pdfSelectedZone(p.page_number)" class="pdf-zone"
+                    :style="{ left: pdfSelectedZone(p.page_number)!.left + '%', top: pdfSelectedZone(p.page_number)!.top + '%',
+                              width: pdfSelectedZone(p.page_number)!.width + '%', height: pdfSelectedZone(p.page_number)!.height + '%' }" />
+              <button v-for="m in (pdfMarkersByPage.get(p.page_number) || [])"
+                      :key="m.kind + m.id" type="button" class="pdf-marker"
+                      :class="[m.kind === 'omission' ? 'marker-omission' : 'marker-req', { sel: pdfMarkerSelected(m) }]"
+                      :style="{ top: `calc(${m.rect.top}% + ${m.laneOffset}px)` }"
+                      :data-testid="m.kind === 'req' ? `pdf-marker-${m.id}` : undefined"
+                      @click.stop="pdfMarkerClick(m)">{{ pdfMarkerLabel(m) }}</button>
+            </div>
+            <span class="pdf-page-label">{{ p.page_number }}</span>
+          </section>
+        </template>
+      </article>
+      <article v-else class="doc-paper" data-testid="doc-paper">
         <template v-for="(b, bi) in visibleBlocks" :key="b.block_id">
           <div v-if="pageBreakBefore(bi) !== null" class="page-break"><span>第 {{ pageBreakBefore(bi) }} 页</span></div>
           <div
@@ -486,6 +598,28 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .doc-message { padding: 6px 14px; font-size: 12px; color: #b45309; background: #fdf3e3; }
 .doc-body { display: grid; grid-template-columns: 1fr 360px; gap: 0; flex: 1; min-height: 0; }
 .doc-paper { overflow: auto; padding: 12px 18px; background: #ffffff; }
+.doc-toolbar-actions { display: flex; align-items: center; gap: 10px; }
+.mode-toggle { display: flex; gap: 2px; padding: 2px; background: #eef1f6; border-radius: 8px; }
+.mode-toggle button { border: 0; border-radius: 6px; padding: 4px 10px; font-size: 12px; color: #5c6675;
+  background: transparent; cursor: pointer; }
+.mode-toggle button.active { background: #ffffff; color: #1e41c9; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+/* 原版影印：页图 + 百分比批注覆盖层（与分享 HTML 同源数据） */
+.pdf-paper { background: #eceef2; padding: 16px; }
+.pdf-page { position: relative; margin: 0 auto 14px; max-width: 920px; background: #ffffff;
+  box-shadow: 0 2px 10px rgba(0,0,0,.10); border-radius: 4px; overflow: hidden; }
+.pdf-page img { display: block; width: 100%; height: auto; }
+.pdf-page-loading { position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; color: #98a1b3; font-size: 12px; }
+.pdf-overlay { position: absolute; inset: 0; }
+.pdf-zone { position: absolute; background: rgba(89,120,247,.14); outline: 2px solid rgba(89,120,247,.55);
+  border-radius: 2px; pointer-events: none; }
+.pdf-marker { position: absolute; right: 6px; min-width: 26px; height: 22px; border-radius: 11px;
+  border: 1px solid #cbd5e1; background: #ffffff; color: #1e41c9; font-size: 11px; font-weight: 700;
+  cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+.pdf-marker.marker-omission { color: #b45309; border-color: #ecd9ae; background: #fdf3e3; }
+.pdf-marker.sel { outline: 2px solid #5978f7; }
+.pdf-page-label { position: absolute; left: 8px; bottom: 6px; font-size: 10px; color: #98a1b3;
+  background: rgba(255,255,255,.85); border-radius: 6px; padding: 1px 6px; }
 .doc-block { display: grid; grid-template-columns: 108px 1fr; gap: 8px; padding: 1px 4px; margin-bottom: 0; border-left: 2px solid transparent; cursor: default; }
 .doc-block:not(.heading):not(.list-item) { margin-bottom: 6px; }
 .doc-block.list-item { margin-bottom: 1px; }

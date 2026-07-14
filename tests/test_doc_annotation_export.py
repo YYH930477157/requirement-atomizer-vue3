@@ -1041,3 +1041,61 @@ class PdfOriginalShareNoteTests(unittest.TestCase):
                             return_value=(out / "document_annotation.html", fake)):
                 payload = desktop_tasks.export_annotation_html_task(out)
             self.assertNotIn("对外分享", str(payload.get("note") or ""))
+
+
+class PdfAnnotationPayloadTests(unittest.TestCase):
+    """0714:应用内原版影印数据与分享 HTML 同源(几何/换算共用实现)。"""
+
+    def _seed(self, out: Path, *, with_pages: bool = True) -> None:
+        import shutil
+        fixture = Path(__file__).parent / "fixtures" / "sample_text_tables.pdf"
+        shutil.copy2(fixture, out / "doc.pdf")
+        (out / "manifest.json").write_text(json.dumps({"input": "doc.pdf"}), encoding="utf-8")
+        region = {"page_number": 1, "bbox": [50.0, 100.0, 400.0, 130.0],
+                  "page_width": 595.0, "page_height": 842.0}
+        blocks = [
+            {"block_id": "B1", "order": 1, "type": "paragraph",
+             "text": "The meter shall measure volume.", "section_path": ["4"],
+             "requirement_like": True, "noise": False, "page_number": 1, "pdf_regions": [region]},
+            {"block_id": "B2", "order": 2, "type": "paragraph",
+             "text": "An uncovered requirement shall hold.", "section_path": ["4"],
+             "requirement_like": True, "noise": False, "page_number": 1,
+             "pdf_regions": [{**region, "bbox": [50.0, 200.0, 400.0, 230.0]}]},
+        ]
+        (out / "blocks.jsonl").write_text(
+            "\n".join(json.dumps(b, ensure_ascii=False) for b in blocks) + "\n", encoding="utf-8")
+        (out / "ai_requirements.jsonl").write_text(json.dumps({
+            "ai_req_id": "AIR-1", "title": "计量", "description": "d", "module": "计量",
+            "source_quote": "The meter shall measure volume.",
+            "source_block_ids": ["B1"], "anchor_block_id": "B1"}, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        if with_pages:
+            pages_dir = out / dae.ANNOTATION_PAGES_DIR
+            pages_dir.mkdir()
+            (pages_dir / "page-0001.png").write_bytes(b"\x89PNG-fake")
+            (pages_dir / dae.ANNOTATION_PAGES_MANIFEST).write_text(json.dumps({
+                "version": 1, "source_sha256": "x", "dpi": 144,
+                "pages": [{"page_number": 1, "file": "page-0001.png",
+                           "width": 595.0, "height": 842.0}]}), encoding="utf-8")
+
+    def test_payload_available_with_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            payload = dae.build_pdf_annotation_payload(out)
+            self.assertTrue(payload["available"])
+            self.assertEqual(payload["pages"][0]["file"], "page-0001.png")
+            req_marker = payload["requirement_markers"][0]
+            self.assertEqual(req_marker["req_id"], "AIR-1")
+            self.assertEqual(req_marker["page"], 1)
+            for key in ("left", "top", "width", "height"):
+                self.assertIn(key, req_marker["rect"])
+            self.assertEqual(payload["omission_markers"][0]["block_id"], "B2")
+
+    def test_payload_unavailable_without_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out, with_pages=False)
+            payload = dae.build_pdf_annotation_payload(out)
+            self.assertFalse(payload["available"])
+            self.assertIn("导出批注HTML", payload["reason"])
