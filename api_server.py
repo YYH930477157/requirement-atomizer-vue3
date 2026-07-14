@@ -21,6 +21,85 @@ DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
 DEFAULT_ALLOWED_ORIGINS = {"http://127.0.0.1:8770", "http://localhost:8770"}
 TOKEN_HEADER = "X-Requirement-Atomizer-Token"
 
+# 裁决重建防抖（0714 批次二 S4）：此前每次裁决 POST 同步全量重建 merged_spec
+# （openpyxl 逐格 xlsx + 一致性报表 O(块×需求) 双向子串扫描）——评审员连续点
+# 接受/拒绝时每点一下卡一次。改为标脏 + 合并延迟重建：窗口内多次裁决只重建一次。
+# 批注视图读 ai_requirements.jsonl + 裁决状态（不读 merged），视图一致性不受影响；
+# CLI 导入裁决路径（desktop_tasks）仍同步重建。=0 恢复同步（测试/严格场景）。
+REBUILD_DEBOUNCE_ENV = "RATOMIZER_REBUILD_DEBOUNCE_S"
+DEFAULT_REBUILD_DEBOUNCE_S = 1.5
+
+
+def _resolve_rebuild_debounce() -> float:
+    import os
+    raw = os.environ.get(REBUILD_DEBOUNCE_ENV)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_REBUILD_DEBOUNCE_S
+    return max(0.0, min(30.0, value))
+
+
+class DeliverableRebuilder:
+    """裁决后交付物重建合并器：schedule() 标脏并（重）启动延迟定时器，窗口内的
+    连续裁决合并为一次 rebuild_merged_spec；delay<=0 时退化为同步重建（旧语义）。
+    重建失败仅记日志（与原实现一致——裁决状态本身已落盘，绝不因重建失败丢裁决）。"""
+
+    def __init__(self, delay_s: float | None = None):
+        import threading
+        self._delay = _resolve_rebuild_debounce() if delay_s is None else max(0.0, delay_s)
+        self._lock = threading.Lock()
+        self._timer: "threading.Timer | None" = None
+        self._pending: Path | None = None
+
+    def schedule(self, out_dir: Path) -> None:
+        if self._delay <= 0:
+            self._rebuild(out_dir)
+            return
+        import threading
+        with self._lock:
+            self._pending = out_dir
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(self._delay, self._fire)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def flush(self) -> None:
+        """立即排空待重建（测试/退出前用）。"""
+        with self._lock:
+            timer = self._timer
+        if timer is not None:
+            timer.cancel()
+        self._fire()
+
+    def _fire(self) -> None:
+        with self._lock:
+            out_dir = self._pending
+            self._pending = None
+            self._timer = None
+        if out_dir is not None:
+            self._rebuild(out_dir)
+
+    @staticmethod
+    def _rebuild(out_dir: Path) -> None:
+        try:
+            from ai_extract import rebuild_merged_spec
+            rebuild_merged_spec(out_dir)
+        except Exception as exc:  # pragma: no cover - 重建失败仅记日志
+            import logging
+            logging.getLogger("requirement_atomizer").warning("裁决后重建交付物失败：%s", exc)
+
+
+_REBUILDER: DeliverableRebuilder | None = None
+
+
+def _rebuilder() -> DeliverableRebuilder:
+    global _REBUILDER
+    if _REBUILDER is None:
+        _REBUILDER = DeliverableRebuilder()
+    return _REBUILDER
+
 
 class RequirementAPIHandler(BaseHTTPRequestHandler):
     output_dir: Path = DEFAULT_OUTPUT
@@ -188,14 +267,10 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=409)
             return
-        # 裁决即时回流交付物：重建 merged_spec（免 LLM，秒级）。失败不影响裁决本身。
+        # 裁决回流交付物：防抖合并重建（0714 批次二 S4）——连续裁决只重建一次,
+        # POST 即刻返回;批注视图不读 merged,不受延迟影响。失败不影响裁决本身。
         if (self.output_dir / "ai_requirements.jsonl").exists():
-            try:
-                from ai_extract import rebuild_merged_spec
-                rebuild_merged_spec(self.output_dir)
-            except Exception as exc:  # pragma: no cover - 重建失败仅记日志
-                import logging
-                logging.getLogger("requirement_atomizer").warning("裁决后重建交付物失败：%s", exc)
+            _rebuilder().schedule(self.output_dir)
         self.send_json(state)
 
     def read_json_body(self) -> dict | None:
