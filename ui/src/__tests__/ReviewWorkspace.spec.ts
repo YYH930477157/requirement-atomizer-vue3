@@ -1020,4 +1020,55 @@ describe("review workspace shell", () => {
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("backend exploded")
     })
   })
+
+  it("chain step transition marks previous stage done and keeps card percent from inner events", async () => {
+    // 真实反馈 2026-07-14:AI抽取卡在"运行中 14%"而后台已完成——链级百分比(2/7)被
+    // 写进阶段卡片、且完成的阶段没人翻绿。锁:步名变化→上一步翻绿;链百分比不进卡片。
+    const runPromise = new Promise<{ kind: string; out_dir: string }>(() => {})
+    type AnyEvent = { stage: string; step?: string; status?: string; completed?: number; total?: number; percent?: number }
+    let progressHandler: (event: AnyEvent) => void = () => {
+      throw new Error("progress handler was not registered")
+    }
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\input\doc.pdf"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\out\demo"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue(null),
+        runPipeline: vi.fn().mockReturnValue(runPromise),
+        onTaskProgress: vi.fn((handler: (event: AnyEvent) => void) => {
+          progressHandler = handler
+          return vi.fn()
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.onTaskProgress).toHaveBeenCalled()
+    })
+
+    progressHandler({ stage: "ai_extract", completed: 40, total: 100, percent: 40 })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="run-stage-ai-extract"]').text()).toContain("40%")
+    })
+    progressHandler({ stage: "chain", step: "ai-extract", completed: 1, total: 7, percent: 14 })
+    progressHandler({ stage: "chain", step: "functional-synthesis", completed: 1, total: 7, percent: 14 })
+    await vi.waitFor(() => {
+      const extractCard = wrapper.find('[data-testid="run-stage-ai-extract"]').text()
+      expect(extractCard).toContain("已完成")             // 步名变化 → 上一步翻绿
+      expect(extractCard).not.toContain("14%")            // 链百分比不覆盖卡片
+      const synthCard = wrapper.find('[data-testid="run-stage-functional-synthesis"]').text()
+      expect(synthCard).toContain("功能重组")
+      expect(synthCard).not.toContain("14%")
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("2/7")
+    })
+  })
 })

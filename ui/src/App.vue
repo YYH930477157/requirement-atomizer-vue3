@@ -747,7 +747,10 @@ function setRunStageState(key: string | undefined, patch: Partial<RunStageState>
   }
 }
 
+let lastChainStep = ""   // 链步跟踪:步名变化 → 上一阶段卡片翻绿(后端完成事件不带 status)
+
 function resetRunStageBoard() {
+  lastChainStep = ""
   const next = defaultStageStates()
   if (!runStages.value.llmReview) next["llm-review"] = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.aiExtract) {
@@ -1421,12 +1424,26 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
     return
   }
   if (event.stage === "chain") {
-    const label = CHAIN_STEP_LABELS[String(event.step || "")] || String(event.step || "交付物链")
+    const step = String(event.step || "")
+    const label = CHAIN_STEP_LABELS[step] || step || "交付物链"
+    // 真实反馈 2026-07-14：链步进入新阶段 → 上一阶段卡片翻绿。后端的完成事件与开始事件
+    // 同 step 名(只有 skipped 带 status),此前完成的阶段没人翻绿、卡在最后一次内部进度。
+    if (lastChainStep && lastChainStep !== step) {
+      setRunStageState(lastChainStep, { status: "ok", percent: 100, detail: "已完成" })
+    }
+    lastChainStep = step
     const status = event.status === "skipped" ? "skipped" : completed >= total && total > 0 ? "ok" : "running"
-    setRunStageState(event.step, { status, percent, detail: status === "skipped" ? "复用已有产物" : label })
+    if (status === "running") {
+      // 链级百分比是"第 N/共 M 步"(2/7≈14%),不是阶段内部进度——不写进卡片,
+      // 卡片百分比由链内细粒度事件(ai_extract/analyze)驱动(setRunStageState 是合并语义)
+      setRunStageState(step, { status, detail: label })
+    } else {
+      setRunStageState(step, { status, percent: 100, detail: status === "skipped" ? "复用已有产物" : "已完成" })
+    }
     runStage.value = total ? `交付物链 ${Math.min(completed + 1, total)}/${total}：${label}` : label
+    runProgress.value = percent   // 顶栏切到链视角(此前保留基础管线的 100%,出现"100% 但还在跑")
     runProgressDetail.value = `正在执行：${label}…`
-    return   // 总进度条由链内细粒度事件（ai_extract/analyze）驱动，这里不回跳
+    return
   }
   if (event.stage === "ai_extract") {
     setRunStageState("ai-extract", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 章节` : "逐章节调用 LLM" })
