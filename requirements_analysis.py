@@ -35,7 +35,7 @@ LOGGER = logging.getLogger("requirement_atomizer")
 ChatFn = Callable[[str, str], dict[str, Any]]
 
 SCHEMA_VERSION = "requirements-analysis/v1"
-ANALYZE_PROMPT_VERSION = "analyze-llm-v5"  # v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
+ANALYZE_PROMPT_VERSION = "analyze-llm-v6"  # v6：冻结归属注入 prompt（模型不再重判,只按给定归属定正文深度）；v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
 ANALYZE_MIN_MAX_TOKENS = 8192  # 连贯多段正文+更长输入;推理模型思维链挤占,低于下限 JSON 截断
 ANALYZE_ENRICH_CACHE = "analyze_enrich_cache.json"
 # W1 上下文注入帽：条款原文与 prompt/指纹/校验三处用同一字符串（单一构造点）
@@ -293,6 +293,11 @@ def run_requirements_analysis(
         _save_enrich_cache(out_dir, model, enrich_cache)
         if enriched_count > 0:
             executed_route = "openai_compatible"
+            if degraded_count > 0:
+                # 部分降级必须可见（0714 批次一）：此前只有"全灭"才提示,100/288 条静默退回
+                # 浅描述时 GUI 全绿,专家以为拿到的是 LLM 富化结果
+                note = (f"LLM 富化部分降级：{degraded_count}/{len(enrich_jobs)} 条回退确定性描述"
+                        "（逐条原因见 engineering_analysis.json 的 issues）")
         else:
             note = "LLM 富化结果均未被采纳，本次交付物仅包含确定性分析结果"
 
@@ -453,14 +458,19 @@ def _llm_enrich_item(
     from requirements_analysis_agent import slim_vocabulary
     slim_vocab = slim_vocabulary(vocabulary, str(source_req.get("module") or ""))
     # 指纹=注入 prompt 的实际内容（单一构造点纪律）：上下文/词表任何变化 → key 变 → 重富化
+    # 冻结归属注入（0714 评审跟进）：此前 prompt 要求模型输出 ownership 却看不到上游判定,
+    # 猜错即正文深度错配、理由被一致性 guard 丢弃;现在把冻结值随需求 JSON 给它,只写不判。
+    frozen_ownership = str(item.get("ownership") or "")
+    prompt_req = dict(source_req)
+    prompt_req["ownership"] = frozen_ownership
     context_basis = "".join([ctx.get(k, "") for k in (
         "template_refs", "exemplars", "answers", "doc_context", "section_context", "siblings"
-    )] + [json.dumps(slim_vocab, ensure_ascii=False)])
+    )] + [json.dumps(slim_vocab, ensure_ascii=False), frozen_ownership])
     key = _enrich_key(source_req, model, context_basis)
     with guard:
         llm_item = cache.get(key)
     if llm_item is None:
-        prompt = build_analysis_prompt([source_req], slim_vocab, ctx.get("template_refs", ""),
+        prompt = build_analysis_prompt([prompt_req], slim_vocab, ctx.get("template_refs", ""),
                                        exemplars=ctx.get("exemplars", ""),
                                        answers=ctx.get("answers", ""),
                                        doc_context=ctx.get("doc_context", ""),

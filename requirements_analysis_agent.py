@@ -29,7 +29,8 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
                   siblings]
     lines += [
         "请基于需求 JSON 和模板词表 JSON 输出 JSON 对象 {\"items\": [ ... ]}，items 与输入需求一一对应。",
-        "ownership 只能是 `software`、`hardware`、`co_design`。",
+        "每条需求 JSON 的 ownership 字段（software/hardware/co_design）已由规则与专家裁决**冻结**——"
+        "原样回填、绝不改判；你的任务是按给定归属写出深度匹配的正文，不是重新判定归属。",
         "hardware 需求只做简要说明。",
         "co_design 需求的软件侧必须详细说明，硬件依赖只做简要说明。",
         "不能只翻译原文；必须推导可研发、可验收的软件需求。",
@@ -48,7 +49,8 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         "  - hardware_dependency: 硬件依赖简述（software 类留空字符串）",
         "  - open_questions: 需澄清的问题数组（无则空数组）",
         "  - assumptions: 推导中不得不假设的、原文没有的前提数组——**一律记录在此，绝不无声编入正文**（无则空数组）",
-        "  - ownership_reason: 归属判断的一句话理由（引用原文关键词/依据）",
+        "  - ownership_reason: 解释**给定归属**为何成立的一句话理由（引用原文关键词/依据）——"
+        "不是重新判定；若你认为给定归属可疑，把疑问写进 open_questions，不要改 ownership",
         "模板词表 JSON:",
         json.dumps(vocabulary, ensure_ascii=False),
     ]

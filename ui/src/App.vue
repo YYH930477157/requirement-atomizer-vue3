@@ -1365,8 +1365,11 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         sampleNote = `；试抽样本 ${info?.sections ?? "?"}/${info?.total_sections ?? "?"} 章：` +
           `${Number(sample.count ?? 0)} 条` +
           (quality?.coverage_pct != null ? `、样本覆盖率 ${quality.coverage_pct}%` : "")
-        const a = objectValue(sample.analysis) as { analysis_count?: number; enriched?: number } | null
-        if (a) sampleNote += `；软件需求 ${Number(a.analysis_count ?? 0)} 条（富化 ${Number(a.enriched ?? 0)}）→ software_requirements.xlsx`
+        const a = objectValue(sample.analysis) as { analysis_count?: number; enriched?: number; enrich_degraded?: number } | null
+        if (a) {
+          const degraded = Number(a.enrich_degraded ?? 0)
+          sampleNote += `；软件需求 ${Number(a.analysis_count ?? 0)} 条（富化 ${Number(a.enriched ?? 0)}${degraded > 0 ? `、降级 ${degraded}` : ""}）→ software_requirements.xlsx`
+        }
         const w = objectValue(sample.template) as { appended_total?: number } | null
         if (w) sampleNote += `；成文 ${Number(w.appended_total ?? 0)} 行 → 软件需求列表-成文.xlsx`
         const r = objectValue(sample.readiness) as { verdict?: string } | null
