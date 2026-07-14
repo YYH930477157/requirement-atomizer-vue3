@@ -134,6 +134,11 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
         issues.append(f"fabricated code not in source: {code} (guidance)")
     for number in sorted(extract_ints(delivery_text) - extract_ints(guidance_basis) - context_ints):
         issues.append(f"fabricated number in guidance: {number}")
-    for number in sorted(extract_ints(priority_text) - extract_ints(analysis_text)):
+    # 遗漏分母的格式归一（2026-07-14,test18 实测 25 条警告几乎全是条款号/列表标号拆散的
+    # 小整数——真参数值遗漏被淹没）:剥除枚举标号与引用性编号(条款/附录/图表引用是"地址"
+    # 不是"数值")。这与"分母永不扩"防稀释纪律不冲突:不引入外部文本,只剥排版/引用数字。
+    from text_normalize import join_digit_groups, strip_enum_markers, strip_reference_numbers
+    missing_basis = join_digit_groups(strip_reference_numbers(strip_enum_markers(priority_text)))
+    for number in sorted(extract_ints(missing_basis) - extract_ints(join_digit_groups(analysis_text))):
         issues.append(f"source number {number} missing from analysis text")
     return issues

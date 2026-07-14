@@ -76,3 +76,32 @@ _ENUM_MARKER = re.compile(r"(?:(?<=^)|(?<=[\s;；:：,，、]))(\d{1,2})\s*[.、
 def strip_enum_markers(text: object) -> str:
     """剥除列表枚举标号本体,供漂移护栏数字提取用;编码扫描不得经此剥除(仍严格)。"""
     return _ENUM_MARKER.sub(" ", str(text or ""))
+
+# 引用性编号——条款号/附录号/图表类型引用,是"地址"不是"数值"。遗漏检测(source number
+# missing)的分母侧剥除:extract_ints 会把 "7.4.1" 拆成 7/4/1、"Clause 7" 贡献 7,
+# 这些小整数淹没真参数值遗漏(test18 实测 25 条警告几乎全是此类)。编向/正文侧不剥。
+# ≥2 个点才算条款号("10.5 m3/h" 这类小数是真值,不碰);字母头(C.9.2.1/B.2)整体剥。
+_CLAUSE_REF = re.compile(r"\d+(?:\.\d+){2,}")
+_LETTER_CLAUSE_REF = re.compile(r"[A-Z](?:\.\d+)+")
+_REF_WORD_NUM = re.compile(
+    r"(?<![A-Za-z])(?:subclause|clause|table|figure|annex|type|part|class|note|section|chapter)\s+\d{1,2}(?![0-9])",
+    re.IGNORECASE)
+
+
+def strip_reference_numbers(text: object) -> str:
+    """剥除引用性编号本体(条款/附录/图表引用),供遗漏检测分母用。"""
+    s = str(text or "")
+    s = _CLAUSE_REF.sub(" ", s)
+    s = _LETTER_CLAUSE_REF.sub(" ", s)
+    s = _REF_WORD_NUM.sub(" ", s)
+    return s
+
+
+# 千位分隔并组("4 000"/"4,000" → "4000")——遗漏比对两侧同步归一,
+# 否则源文 "4 000" 拆出的 4/000 对不上正文的 "4000"(假遗漏)
+_DIGIT_GROUP = re.compile(r"(?<=\d)[\s,](?=\d{3}(?:\D|$))")
+
+
+def join_digit_groups(text: object) -> str:
+    return _DIGIT_GROUP.sub("", str(text or ""))
+

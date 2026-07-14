@@ -491,3 +491,55 @@ class EnumMarkerGuardTests(unittest.TestCase):
         self.assertIn("4.9.3.2", strip_enum_markers("按 4.9.3.2 执行"))   # 条款号不剥
         self.assertIn("15", strip_enum_markers("保持 15 年"))             # 普通数字不剥
         self.assertNotIn("1.", strip_enum_markers("1. 关闭阀门"))          # 行首标号剥除
+
+
+class MissingNumberDenominatorTests(unittest.TestCase):
+    """0714:遗漏检测分母的格式归一——条款号/列表标号是"地址"不是"数值",不进遗漏分母;
+    真参数值遗漏仍必须报(防稀释纪律:分母不引入外部文本,只剥排版/引用数字)。"""
+
+    def test_clause_refs_do_not_trigger_missing(self) -> None:
+        source = {"source_quote": ("7.4.1 Requirement When tested in accordance with 7.4.2, "
+                                   "the AFD shall have no inadmissible influence."),
+                  "description": "", "requirement": ""}
+        item = {"software_requirement_text": "按 7.4.2 测试时,AFD 不得对计量特性产生不允许的影响。"}
+        issues = validate_llm_item(item, source)
+        self.assertFalse(any("missing" in i for i in issues), issues)
+
+    def test_annex_and_table_refs_do_not_trigger_missing(self) -> None:
+        source = {"source_quote": "When tested per C.9.2.1 and Clause 7, see Table 1.",
+                  "description": "", "requirement": ""}
+        item = {"software_requirement_text": "按附录要求检测电子指数并登记体积。"}
+        issues = validate_llm_item(item, source)
+        self.assertFalse(any("missing" in i for i in issues), issues)
+
+    def test_real_value_missing_still_reported(self) -> None:
+        source = {"source_quote": "The meter shall store 12 months of data at 100 mbar.",
+                  "description": "", "requirement": ""}
+        item = {"software_requirement_text": "存储周期性数据。"}
+        issues = validate_llm_item(item, source)
+        self.assertTrue(any("source number 12 missing" in i for i in issues))
+        self.assertTrue(any("source number 100 missing" in i for i in issues))
+
+    def test_enum_labels_do_not_trigger_missing(self) -> None:
+        source = {"source_quote": "1. close the valve; 2. record the event; 3. report.",
+                  "description": "", "requirement": ""}
+        item = {"software_requirement_text": "关闭阀门、记录事件并上报。"}
+        issues = validate_llm_item(item, source)
+        self.assertFalse(any("missing" in i for i in issues), issues)
+
+    def test_decimal_values_still_counted(self) -> None:
+        # "10.5 m3/h" 是真值(单点小数不是条款号),正文丢了要报
+        source = {"source_quote": "maximum flow of 10.5 m3/h applies.",
+                  "description": "", "requirement": ""}
+        item = {"software_requirement_text": "限定最大流量。"}
+        issues = validate_llm_item(item, source)
+        self.assertTrue(any("missing" in i for i in issues))
+
+    def test_digit_grouped_value_matches_across_formats(self) -> None:
+        # 源文 "4 000"(千位分隔) vs 正文 "4000":同一个值,不报遗漏;正文真丢了才报
+        source = {"source_quote": "the valve shall operate for 4 000 cycles.",
+                  "description": "", "requirement": ""}
+        ok_item = {"software_requirement_text": "阀门应运行 4000 次循环。"}
+        self.assertFalse(any("missing" in i for i in validate_llm_item(ok_item, source)))
+        bad_item = {"software_requirement_text": "阀门应可靠运行。"}
+        self.assertTrue(any("source number 4000 missing" in i for i in validate_llm_item(bad_item, source)))
