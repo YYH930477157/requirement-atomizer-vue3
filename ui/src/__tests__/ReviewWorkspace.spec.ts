@@ -716,7 +716,7 @@ describe("review workspace shell", () => {
           kind: "chain", count: 12,
           sampled: { sections: 10, total_sections: 54 },
           quality: { coverage_pct: 78.5 },
-          analysis: { analysis_count: 11, enriched: 9, route: "openai_compatible" },
+          analysis: { analysis_count: 11, enriched: 9, enrich_degraded: 2, route: "openai_compatible" },
           readiness: { verdict: "READY", reasons: [] }, questions: 3,
           results: {}, summary: {},
         }),
@@ -741,6 +741,7 @@ describe("review workspace shell", () => {
       expect(message).toContain("12 条")
       expect(message).toContain("78.5%")
       expect(message).toContain("软件需求 11 条")
+      expect(message).toContain("富化 9、降级 2")   // 部分降级可见（0714 批次一 E1a）
       expect(message).toContain("software_requirements.xlsx")
       expect(message).toContain("就绪判定 READY")
       expect(message).toContain("必答澄清 3 条")
