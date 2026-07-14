@@ -89,6 +89,18 @@ export type AiRequirement = Record<string, unknown> & {
   ownership_reason?: string
   ownership_source?: string
   review_state?: { status?: string; module_override?: string | null; ownership_override?: string | null; reason?: string } | null
+  // 功能合成产物（functional_requirements.json,后端按 AIR id 投影;缺失=字段不存在）
+  functional_requirement_id?: string
+  functional_title?: string
+  functional_objective?: string
+  functional_behaviors?: string[]
+  functional_preconditions?: string[]
+  functional_data_constraints?: string[]
+  functional_variants?: Array<{ name?: string; behavior?: string }>
+  functional_merge_method?: string
+  functional_merge_confidence?: number
+  functional_source_count?: number
+  functional_conflict_flags?: string[]
   // 需求分析富化产物（engineering_analysis.json,后端按 AIR id 合并;缺失=字段不存在,回退抽取内容）
   analysis_id?: string
   analysis_source?: string

@@ -289,6 +289,18 @@ function acceptanceOf(r: AiRequirement): string[] {
 function ownershipReasonOf(r: AiRequirement): string {
   return String(r.analysis_ownership_reason || r.ownership_reason || "")
 }
+// 跨章合并徽章（双渲染器契约字段——与 doc_annotation_export functionalMergeBadge 同语义,
+// 契约夹具锁文案）：单源不显示（置信恒 1.0 是噪声）;置信 < 0.9 提示核对（弱合并最易错并）
+function mergeBadgeOf(r: AiRequirement): string {
+  const count = Number(r.functional_source_count || 0)
+  const method = String(r.functional_merge_method || "")
+  if (!method || count < 2) return ""
+  const conf = Number(r.functional_merge_confidence == null ? 1 : r.functional_merge_confidence)
+  return `跨章合并 ${count} 条（${method}，置信 ${conf}）${conf < 0.9 ? "——建议核对合并是否恰当" : ""}`
+}
+function mergeWarnOf(r: AiRequirement): boolean {
+  return Number(r.functional_merge_confidence == null ? 1 : r.functional_merge_confidence) < 0.9
+}
 function ownershipOverrideNote(r: AiRequirement): string {
   const base = String(r.ownership || "")
   const effective = String(r.ownership_effective || base)
@@ -543,6 +555,31 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                 </tr>
               </tbody>
             </table>
+          </div>
+          <div class="dd-section" v-if="selectedReq.functional_requirement_id" data-testid="dd-functional">
+            <div class="dd-label">所属研发功能</div>
+            <div class="dd-body"><strong>{{ selectedReq.functional_title || selectedReq.functional_requirement_id }}</strong></div>
+            <div v-if="mergeBadgeOf(selectedReq)" :class="mergeWarnOf(selectedReq) ? 'dd-suspicion' : 'dd-consistency'"
+                 data-testid="dd-merge">⧉ {{ mergeBadgeOf(selectedReq) }}</div>
+            <div v-if="selectedReq.functional_objective" class="dd-body">{{ selectedReq.functional_objective }}</div>
+            <template v-if="(selectedReq.functional_behaviors || []).length">
+              <div class="dd-label">功能行为</div>
+              <ul class="dd-list"><li v-for="(b, i) in selectedReq.functional_behaviors" :key="i">{{ b }}</li></ul>
+            </template>
+            <template v-if="(selectedReq.functional_preconditions || []).length">
+              <div class="dd-label">前置条件</div>
+              <ul class="dd-list"><li v-for="(p, i) in selectedReq.functional_preconditions" :key="i">{{ p }}</li></ul>
+            </template>
+            <template v-if="(selectedReq.functional_data_constraints || []).length">
+              <div class="dd-label">数据约束</div>
+              <ul class="dd-list"><li v-for="(c, i) in selectedReq.functional_data_constraints" :key="i">{{ c }}</li></ul>
+            </template>
+            <template v-if="(selectedReq.functional_variants || []).length">
+              <div class="dd-label">功能变体</div>
+              <ul class="dd-list"><li v-for="(v, i) in selectedReq.functional_variants" :key="i"><strong>{{ v.name || "变体" }}</strong>：{{ v.behavior || "" }}</li></ul>
+            </template>
+            <div v-if="(selectedReq.functional_conflict_flags || []).length" class="dd-suspicion"
+                 data-testid="dd-conflict">待澄清冲突：{{ (selectedReq.functional_conflict_flags || []).join("；") }}</div>
           </div>
           <div class="dd-section" v-if="devGuidanceOf(selectedReq).length">
             <div class="dd-label">研发指引 / 落地实现

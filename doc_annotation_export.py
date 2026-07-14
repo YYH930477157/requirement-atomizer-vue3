@@ -1591,6 +1591,7 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .dd-title {{ margin: 10px 0 4px; font-size: 16px; font-weight: 650; color: var(--ink); line-height: 1.45; }}
 .dd-meta {{ font-size: 12px; color: var(--muted); margin-bottom: 13px; }}
 .dd-suspicion {{ font-size: 12px; color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 8px; margin-bottom: 10px; }}
+.dd-consistency {{ font-size: 12px; color: #1e41c9; background: #eef2ff; border-radius: 6px; padding: 4px 8px; margin-bottom: 10px; }}
 .dd-label {{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 15px 0 5px; }}
 .dd-body {{ font-size: 14px; line-height: 1.7; }}
 .dd-empty {{ color: var(--faint); }}
@@ -2137,8 +2138,20 @@ function selectSourceClassification(el) {{
     '</div>';
 }}
 
+// 跨章合并徽章（双渲染器契约字段——与 DocumentReview.vue mergeBadgeOf 同语义,契约夹具锁文案）：
+// 单源不显示（置信恒 1.0 是噪声）;置信 < 0.9 提示核对（0.75=仅同 key 弱合并,最易错并）
+function functionalMergeBadge(r) {{
+  const count = Number(r.functional_source_count || 0);
+  const method = String(r.functional_merge_method || "");
+  if (!method || count < 2) return "";
+  const conf = Number(r.functional_merge_confidence == null ? 1 : r.functional_merge_confidence);
+  return '跨章合并 '+count+' 条（'+method+'，置信 '+conf+'）'+(conf < 0.9 ? '——建议核对合并是否恰当' : '');
+}}
+
 function functionalMembershipHtml(r) {{
   if (!r.functional_requirement_id) return "";
+  const mergeBadge = functionalMergeBadge(r);
+  const mergeClass = Number(r.functional_merge_confidence == null ? 1 : r.functional_merge_confidence) < 0.9 ? "dd-suspicion" : "dd-consistency";
   const behaviors = (r.functional_behaviors||[]).map(value => '<li>'+esc(value)+'</li>').join("");
   const preconditions = (r.functional_preconditions||[]).map(value => '<li>'+esc(value)+'</li>').join("");
   const constraints = (r.functional_data_constraints||[]).map(value => '<li>'+esc(value)+'</li>').join("");
@@ -2146,6 +2159,7 @@ function functionalMembershipHtml(r) {{
   const conflicts = (r.functional_conflict_flags||[]).map(value => '<li>'+esc(value)+'</li>').join("");
   return '<div class="dd-section"><div class="dd-label">所属研发功能</div>'+
     '<div class="dd-body"><strong>'+esc(r.functional_title||r.functional_requirement_id)+'</strong></div>'+
+    (mergeBadge ? '<div class="'+mergeClass+'">⧉ '+esc(mergeBadge)+'</div>' : '')+
     (r.functional_objective ? '<div class="dd-body">'+esc(r.functional_objective)+'</div>' : '')+
     (behaviors ? '<div class="dd-label">功能行为</div><ul class="dd-list">'+behaviors+'</ul>' : '')+
     (preconditions ? '<div class="dd-label">前置条件</div><ul class="dd-list">'+preconditions+'</ul>' : '')+
@@ -2197,6 +2211,7 @@ function select(id) {{
       ? (r.source_page ? '<div class="dd-legend">原文位置 · PDF 第 '+esc(r.source_page)+' 页</div>' : '')
       : '<div class="dd-legend">正文标记：<span style="background:#ffe89a;padding:0 4px">黄=引用依据</span> · <span style="background:#eef4ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文（模型通读范围）</div>')+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
+    ((r.consistency_flags||[]).length ? '<div class="dd-consistency">⇄ 全文档一致性：'+esc((r.consistency_flags||[]).join("；"))+'</div>' : '')+
     analysisHtml+
     functionalMembershipHtml(r)+
     (dev ? '<div class="dd-label">研发指引 / 落地实现'+(useEnriched?' <span class="src-badge">富化(LLM)</span>':'')+'</div><ul class="dd-list">'+dev+'</ul>' : '')+

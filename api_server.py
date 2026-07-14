@@ -417,6 +417,8 @@ def _functional_membership(output_dir: Path) -> dict[str, dict]:
             "functional_related_dlms_objects": item.get("related_dlms_objects") or [],
             "functional_merge_method": item.get("merge_method"),
             "functional_merge_confidence": item.get("merge_confidence"),
+            # 合并规模（0714 批次一）：单源"合并"显示置信是噪声,徽章只在 ≥2 源时出现
+            "functional_source_count": len(item.get("source_ai_requirement_ids") or []),
             "functional_conflict_flags": item.get("conflict_flags") or [],
         }
         for source_id in item.get("source_ai_requirement_ids") or []:

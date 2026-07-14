@@ -48,6 +48,22 @@ describe("annotation renderer contract (Vue side)", () => {
     expect(firstRow).toEqual(fixture.expect.table_first_row)
   })
 
+  it("renders merge badge / consistency / conflict signals per contract", async () => {
+    // 0714 批次一（E1c）：三信号双渲染器同源——文案与夹具 expect 逐字一致
+    const wrapper = mount(DocumentReview, { props: { client: makeClient(), active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-merge"]').text()).toContain(fixture.expect.merge_badge_text)
+    expect(wrapper.find('[data-testid="dd-merge"]').classes()).toContain("dd-suspicion") // 置信 0.75 < 0.9 → 警示样式
+    expect(wrapper.find('[data-testid="dd-consistency"]').text()).toContain(fixture.expect.consistency_flag_text)
+    expect(wrapper.find('[data-testid="dd-conflict"]').text()).toContain(fixture.expect.conflict_flag_text)
+    expect(wrapper.find('[data-testid="dd-functional"]').text()).toContain("阀门关闭控制")
+    // AIR-2 无功能合成字段 → 三信号全部不出现（单源/无冲突不显示）
+    await wrapper.find('[data-testid="anno-AIR-2"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-merge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dd-functional"]').exists()).toBe(false)
+  })
+
   it("selecting AIR-1 lights the analyzed span and marks anchor evidence", async () => {
     const wrapper = mount(DocumentReview, { props: { client: makeClient(), active: true } })
     await flushPromises()

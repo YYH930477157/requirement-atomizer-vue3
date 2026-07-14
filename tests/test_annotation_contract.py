@@ -58,6 +58,25 @@ class HtmlSideContractTests(unittest.TestCase):
         # 表格块不得再输出扁平 text 段落
         self.assertNotIn("Symbol | Type | bytes", html)
 
+    def test_signal_fields_and_templates_present(self) -> None:
+        """0714 批次一（E1c 双渲染器信号补齐）：合并徽章/一致性标记/合成冲突三信号——
+        数据必须嵌入 REQS、渲染模板必须在位（选中时 JS 动态渲染,Vue 侧由
+        AnnotationContract.spec 锁实际渲染文案与夹具 expect 同源）。"""
+        html = self._render()
+        expect = self.fixture["expect"]
+        # 数据面：三信号字段随 REQS 嵌入静态页
+        self.assertIn('"functional_merge_confidence": 0.75', html)
+        self.assertIn('"functional_source_count": 2', html)
+        self.assertIn(expect["consistency_flag_text"], html)
+        self.assertIn(expect["conflict_flag_text"], html)
+        # 模板面：徽章构造函数与两条渲染分支在位（与 Vue 同语义的文案骨架）
+        self.assertIn("functionalMergeBadge", html)
+        self.assertIn("跨章合并 ", html)
+        self.assertIn("建议核对合并是否恰当", html)
+        self.assertIn("全文档一致性", html)
+        self.assertIn("待澄清冲突", html)
+        self.assertIn(".dd-consistency", html)   # 新样式类必须有 CSS 定义
+
     def test_select_behavior_matches_contract_via_jsdom_markers(self) -> None:
         """静态可断言的部分：markSpan 的选择器素材必须在（span 的 doc-block[data-block-id]
         与 sub chip 的 data-req）——运行时行为由既有 jsdom 冒烟覆盖。"""

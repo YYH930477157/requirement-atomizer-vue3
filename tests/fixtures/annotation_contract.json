@@ -1,138 +1,177 @@
 {
-  "blocks": [
-    {
-      "block_id": "H",
-      "order": 0,
-      "type": "heading",
-      "text": "4.6 AFD2",
-      "section_path": [
-        "4.6 AFD2"
-      ],
-      "requirement_like": false,
-      "noise": false,
-      "doc_region": "body"
-    },
-    {
-      "block_id": "B1",
-      "order": 1,
-      "type": "paragraph",
-      "text": "a) When tested the AFD shall have no influence.",
-      "section_path": [
-        "4.6 AFD2"
-      ],
-      "requirement_like": true,
-      "noise": false,
-      "doc_region": "body"
-    },
-    {
-      "block_id": "B2",
-      "order": 2,
-      "type": "paragraph",
-      "text": "b) Results shall be identical.",
-      "section_path": [
-        "4.6 AFD2"
-      ],
-      "requirement_like": true,
-      "noise": false,
-      "doc_region": "body"
-    },
-    {
-      "block_id": "B3",
-      "order": 3,
-      "type": "paragraph",
-      "text": "Second requirement lives here.",
-      "section_path": [
-        "4.7"
-      ],
-      "requirement_like": true,
-      "noise": false,
-      "doc_region": "body"
-    },
-    {
-      "block_id": "T1",
-      "order": 4,
-      "type": "table",
-      "text": "Symbol | Type | bytes",
-      "table_title": "Table C.1 — Types of Objects",
-      "table_source": "text_layout",
-      "header_rows": [
-        ["Symbol", "Type", "bytes"]
-      ],
-      "data_rows": [
-        ["U32", "Whole binary without sign", "4"],
-        ["String", "Sequence of bytes", "L"]
-      ],
-      "section_path": [
-        "4.7"
-      ],
-      "requirement_like": false,
-      "noise": false,
-      "doc_region": "body"
-    }
-  ],
-  "requirements": [
-    {
-      "ai_req_id": "AIR-1",
-      "title": "AFD2 要求",
-      "description": "d1",
-      "module": "附加功能",
-      "type": "functional",
-      "priority": "P1",
-      "source_section": "4.6",
-      "source_quote": "a) When tested the AFD shall have no influence.",
-      "source_block_ids": [
-        "B1",
-        "B2"
-      ],
-      "anchor_block_id": "B1",
-      "labels": [
-        "附加功能"
-      ],
-      "acceptance_criteria": [],
-      "sub_items": [
-        {
-          "label": "a",
-          "text": "无计量影响"
-        },
-        {
-          "label": "b",
-          "text": "结果一致"
-        }
-      ]
-    },
-    {
-      "ai_req_id": "AIR-2",
-      "title": "第二条",
-      "description": "d2",
-      "module": "附加功能",
-      "type": "functional",
-      "priority": "P1",
-      "source_section": "4.7",
-      "source_quote": "Second requirement lives here.",
-      "source_block_ids": [
-        "B3"
-      ],
-      "anchor_block_id": "B3",
-      "labels": [
-        "附加功能"
-      ],
-      "acceptance_criteria": []
-    }
-  ],
-  "expect": {
-    "parent_numbers": [
-      "01",
-      "02"
+ "blocks": [
+  {
+   "block_id": "H",
+   "order": 0,
+   "type": "heading",
+   "text": "4.6 AFD2",
+   "section_path": [
+    "4.6 AFD2"
+   ],
+   "requirement_like": false,
+   "noise": false,
+   "doc_region": "body"
+  },
+  {
+   "block_id": "B1",
+   "order": 1,
+   "type": "paragraph",
+   "text": "a) When tested the AFD shall have no influence.",
+   "section_path": [
+    "4.6 AFD2"
+   ],
+   "requirement_like": true,
+   "noise": false,
+   "doc_region": "body"
+  },
+  {
+   "block_id": "B2",
+   "order": 2,
+   "type": "paragraph",
+   "text": "b) Results shall be identical.",
+   "section_path": [
+    "4.6 AFD2"
+   ],
+   "requirement_like": true,
+   "noise": false,
+   "doc_region": "body"
+  },
+  {
+   "block_id": "B3",
+   "order": 3,
+   "type": "paragraph",
+   "text": "Second requirement lives here.",
+   "section_path": [
+    "4.7"
+   ],
+   "requirement_like": true,
+   "noise": false,
+   "doc_region": "body"
+  },
+  {
+   "block_id": "T1",
+   "order": 4,
+   "type": "table",
+   "text": "Symbol | Type | bytes",
+   "table_title": "Table C.1 — Types of Objects",
+   "table_source": "text_layout",
+   "header_rows": [
+    [
+     "Symbol",
+     "Type",
+     "bytes"
+    ]
+   ],
+   "data_rows": [
+    [
+     "U32",
+     "Whole binary without sign",
+     "4"
     ],
-    "sub_chip_labels": [
-      "01.a",
-      "01.b"
-    ],
-    "select_air1_span_blocks": 2,
-    "select_air1_evidence_blocks": 1,
-    "table_caption": "Table C.1 — Types of Objects",
-    "table_header_cells": ["Symbol", "Type", "bytes"],
-    "table_first_row": ["U32", "Whole binary without sign", "4"],
-    "table_badge": "无画线重建"
+    [
+     "String",
+     "Sequence of bytes",
+     "L"
+    ]
+   ],
+   "section_path": [
+    "4.7"
+   ],
+   "requirement_like": false,
+   "noise": false,
+   "doc_region": "body"
   }
+ ],
+ "requirements": [
+  {
+   "ai_req_id": "AIR-1",
+   "title": "AFD2 要求",
+   "description": "d1",
+   "module": "附加功能",
+   "type": "functional",
+   "priority": "P1",
+   "source_section": "4.6",
+   "source_quote": "a) When tested the AFD shall have no influence.",
+   "source_block_ids": [
+    "B1",
+    "B2"
+   ],
+   "anchor_block_id": "B1",
+   "labels": [
+    "附加功能"
+   ],
+   "acceptance_criteria": [],
+   "sub_items": [
+    {
+     "label": "a",
+     "text": "无计量影响"
+    },
+    {
+     "label": "b",
+     "text": "结果一致"
+    }
+   ],
+   "consistency_flags": [
+    "跨章重复×2"
+   ],
+   "functional_requirement_id": "FR-1",
+   "functional_title": "阀门关闭控制",
+   "functional_objective": "异常时关闭阀门",
+   "functional_behaviors": [
+    "检测异常",
+    "驱动阀门关闭"
+   ],
+   "functional_merge_method": "explicit_key",
+   "functional_merge_confidence": 0.75,
+   "functional_source_count": 2,
+   "functional_conflict_flags": [
+    "同一功能未限定参数冲突: 5s vs 10s"
+   ]
+  },
+  {
+   "ai_req_id": "AIR-2",
+   "title": "第二条",
+   "description": "d2",
+   "module": "附加功能",
+   "type": "functional",
+   "priority": "P1",
+   "source_section": "4.7",
+   "source_quote": "Second requirement lives here.",
+   "source_block_ids": [
+    "B3"
+   ],
+   "anchor_block_id": "B3",
+   "labels": [
+    "附加功能"
+   ],
+   "acceptance_criteria": []
+  }
+ ],
+ "expect": {
+  "parent_numbers": [
+   "01",
+   "02"
+  ],
+  "sub_chip_labels": [
+   "01.a",
+   "01.b"
+  ],
+  "select_air1_span_blocks": 2,
+  "select_air1_evidence_blocks": 1,
+  "table_caption": "Table C.1 — Types of Objects",
+  "table_header_cells": [
+   "Symbol",
+   "Type",
+   "bytes"
+  ],
+  "table_first_row": [
+   "U32",
+   "Whole binary without sign",
+   "4"
+  ],
+  "table_badge": "无画线重建",
+  "merge_badge_text": "跨章合并 2 条（explicit_key，置信 0.75）——建议核对合并是否恰当",
+  "consistency_flag_text": "跨章重复×2",
+  "conflict_flag_text": "同一功能未限定参数冲突: 5s vs 10s"
+ }
 }
