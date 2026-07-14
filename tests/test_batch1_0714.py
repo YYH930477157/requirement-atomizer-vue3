@@ -383,6 +383,123 @@ class BatchEnrichmentTests(unittest.TestCase):
             self.assertEqual(len(translations), 3)           # 槽位映射不串条
 
 
+class SpecEnrichBatchTests(unittest.TestCase):
+    """S1b：装配描述富化合批（无蓝皮书条目成批,带条款条目恒单发,护栏逐条）。"""
+
+    def _reqs(self, n: int) -> list[dict]:
+        return [{"id": f"REQ-{i}", "title": f"行为 {i}",
+                 "description": f"template desc {i}",
+                 "source_quote": f"The meter shall behave {i}.", "labels": ["事件记录"]}
+                for i in range(n)]
+
+    def test_plain_items_batched_after_fast_fail_sample(self) -> None:
+        import spec_enrich
+        from unittest.mock import patch
+        from llm_client import LLMClientConfig
+
+        calls: list[str] = []
+
+        def fake_chat(config, system, user):
+            calls.append(system)
+            if system == spec_enrich.SYSTEM_PROMPT_BATCH:
+                entries = json.loads(user)
+                return {"items": [{"enrich_slot": e["enrich_slot"],
+                                   "description": f"改写后的行为描述（{e['title']}）"}
+                                  for e in entries]}
+            return {"description": "改写后的单条描述"}
+
+        with tempfile.TemporaryDirectory() as td, \
+                patch("spec_enrich.chat_json", side_effect=fake_chat):
+            reqs = self._reqs(10)
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                reqs, config=LLMClientConfig(base_url="http://x", model="m"),
+                cache_path=Path(td) / "c.jsonl", concurrency=2)
+        self.assertEqual((enriched, rejected, failed), (10, 0, 0))
+        batch_calls = [s for s in calls if s == spec_enrich.SYSTEM_PROMPT_BATCH]
+        single_calls = [s for s in calls if s == spec_enrich.SYSTEM_PROMPT]
+        self.assertEqual(len(single_calls), 5)           # 快速失败探测样本保持单发
+        self.assertEqual(len(batch_calls), 1)            # 其余 5 条一批（batch=6 装得下）
+        for req in reqs[5:]:
+            self.assertIn("改写后的行为描述", req["description"])   # 槽位映射逐条落对
+
+    def test_batch_drift_rejected_per_item(self) -> None:
+        import spec_enrich
+        from unittest.mock import patch
+        from llm_client import LLMClientConfig
+
+        def fake_chat(config, system, user):
+            if system == spec_enrich.SYSTEM_PROMPT_BATCH:
+                entries = json.loads(user)
+                items = []
+                for e in entries:
+                    desc = (f"含无据数字 99999 的描述" if e["title"].endswith("5")
+                            else f"改写后的行为描述（{e['title']}）")
+                    items.append({"enrich_slot": e["enrich_slot"], "description": desc})
+                return {"items": items}
+            return {"description": "改写后的单条描述"}
+
+        with tempfile.TemporaryDirectory() as td, \
+                patch("spec_enrich.chat_json", side_effect=fake_chat):
+            reqs = self._reqs(8)
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                reqs, config=LLMClientConfig(base_url="http://x", model="m"),
+                cache_path=Path(td) / "c.jsonl", concurrency=1)
+        self.assertEqual(failed, 0)
+        self.assertEqual(rejected, 1)                    # 只有借数那条被拒
+        self.assertEqual(enriched, 7)
+        self.assertEqual(reqs[5]["description"], "template desc 5")   # 被拒保留模板
+        self.assertIn("漂移", str(reqs[5].get("notes")))
+
+    def test_missing_slot_falls_back_to_single_call(self) -> None:
+        import spec_enrich
+        from unittest.mock import patch
+        from llm_client import LLMClientConfig
+
+        calls: list[str] = []
+
+        def fake_chat(config, system, user):
+            calls.append(system)
+            if system == spec_enrich.SYSTEM_PROMPT_BATCH:
+                entries = json.loads(user)
+                return {"items": [{"enrich_slot": e["enrich_slot"],
+                                   "description": f"改写后的行为描述（{e['title']}）"}
+                                  for e in entries[:-1]]}   # 漏最后一槽
+            return {"description": "单条回退的改写描述"}
+
+        with tempfile.TemporaryDirectory() as td, \
+                patch("spec_enrich.chat_json", side_effect=fake_chat):
+            reqs = self._reqs(8)
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                reqs, config=LLMClientConfig(base_url="http://x", model="m"),
+                cache_path=Path(td) / "c.jsonl", concurrency=1)
+        self.assertEqual((enriched, rejected, failed), (8, 0, 0))
+        self.assertEqual(reqs[7]["description"], "单条回退的改写描述")
+        self.assertEqual(len([s for s in calls if s == spec_enrich.SYSTEM_PROMPT]), 6)  # 5 样本+1 回退
+
+    def test_batch_env_one_restores_per_item(self) -> None:
+        import os
+        import spec_enrich
+        from unittest.mock import patch
+        from llm_client import LLMClientConfig
+
+        calls: list[str] = []
+
+        def fake_chat(config, system, user):
+            calls.append(system)
+            return {"description": "改写后的单条描述"}
+
+        with tempfile.TemporaryDirectory() as td, \
+                patch("spec_enrich.chat_json", side_effect=fake_chat), \
+                patch.dict(os.environ, {"RATOMIZER_ENRICH_BATCH": "1"}):
+            reqs = self._reqs(8)
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                reqs, config=LLMClientConfig(base_url="http://x", model="m"),
+                cache_path=Path(td) / "c.jsonl", concurrency=1)
+        self.assertEqual((enriched, rejected, failed), (8, 0, 0))
+        self.assertEqual(calls.count(spec_enrich.SYSTEM_PROMPT), 8)   # 全部单发
+        self.assertNotIn(spec_enrich.SYSTEM_PROMPT_BATCH, calls)
+
+
 class CoverageGapMarkdownTests(unittest.TestCase):
     def test_markdown_renders_gap_section(self) -> None:
         import clarification_report as cr

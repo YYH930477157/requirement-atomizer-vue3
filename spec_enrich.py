@@ -36,17 +36,43 @@ from llm_pipeline import (
 )
 
 LOGGER = logging.getLogger("requirement_atomizer")
-ENRICH_PROMPT_VERSION = "enrich-v2"
+ENRICH_PROMPT_VERSION = "enrich-v3"   # v3：合批模式（0714 批次一 S1b）；v2：单条改写
 ENRICH_CACHE = "spec_enrich_cache.jsonl"
 # 推理模型（如 GLM-5.2）会把 max_tokens 大量花在 reasoning_content 上，content 可能空；
 # 富化给足下限，避免正文被推理预算挤空导致整批降级。
 ENRICH_MIN_MAX_TOKENS = 2048
+# 合批（0714 批次一 S1b）：无蓝皮书条款的普通条目合批改写——prompt 骨架/推理开销只花一遍
+# （EN 16314 实测装配富化 129 次调用累计 34.5 分钟）。带蓝皮书条款的条目保持单发
+# （条款文本长、出处校验逐条,合批收益低风险高）。1=回到逐条。
+ENRICH_BATCH_ENV = "RATOMIZER_ENRICH_BATCH"
+DEFAULT_ENRICH_BATCH = 6
+MAX_ENRICH_BATCH = 10
+
+
+def _resolve_enrich_batch(explicit: int | None = None) -> int:
+    import os
+    raw: Any = explicit if explicit is not None else os.environ.get(ENRICH_BATCH_ENV)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_ENRICH_BATCH
+    return max(1, min(MAX_ENRICH_BATCH, value))
+
 
 SYSTEM_PROMPT = (
     "你是 DLMS/COSEM 需求文档编辑。把给定需求的描述改写为更清晰、信息更丰富的中文叙述，"
     "面向研发团队、可据此实现计量软件。严禁新增或改动任何 OBIS 码、类 ID(CL)、访问权限位"
     "(RC/PC/SC/LC、R-/RW 等)、数字、十六进制、事件号——这些只能原样保留或不出现。"
     "不要编造原文没有的事实。只输出 JSON：{\"description\": \"…\"}"
+)
+
+SYSTEM_PROMPT_BATCH = (
+    "你是 DLMS/COSEM 需求文档编辑。输入是多条需求，把**每条**的描述改写为更清晰、信息更丰富的"
+    "中文叙述，面向研发团队、可据此实现计量软件。严禁新增或改动任何 OBIS 码、类 ID(CL)、"
+    "访问权限位(RC/PC/SC/LC、R-/RW 等)、数字、十六进制、事件号——这些只能原样保留或不出现；"
+    "每条只准使用本条自己 JSON 里出现的数值/编码，**绝不跨条借用**。不要编造原文没有的事实。"
+    "只输出 JSON：{\"items\":[{\"enrich_slot\": <原样回填输入的 enrich_slot>, \"description\": \"…\"}]}，"
+    "items 与输入一一对应。"
 )
 
 
@@ -198,6 +224,15 @@ def enrich_one(
     """调 LLM 改写并过漂移护栏。返回 (description, note)。可能抛 LLMError（由批处理捕获降级）。"""
     payload = chat_json(config, SYSTEM_PROMPT, build_user_prompt(req, blue_book_entry))
     new_desc = str(payload.get("description") or "").strip()
+    return _finalize_description(req, new_desc, blue_book_entry)
+
+
+def _finalize_description(
+    req: dict[str, Any],
+    new_desc: str,
+    blue_book_entry: dict[str, Any] | None,
+) -> tuple[str, str]:
+    """改写结果 → 护栏裁决（单条与合批共用）：空/出处/漂移检查与溯源标记语义不变。"""
     if not new_desc:
         return req.get("description") or "", "描述富化跳过：模型返回空"
     mismatch = citation_mismatch(new_desc, blue_book_entry)
@@ -227,6 +262,46 @@ def _ensure_citation(new_desc: str, blue_book_entry: dict[str, Any] | None) -> s
     if not section or f"§{section}" in new_desc:
         return new_desc
     return f"{new_desc.rstrip()}（依据 DLMS Blue Book Ed.16 §{section}）"
+
+
+def _build_batch_user_prompt(reqs: list[dict[str, Any]]) -> str:
+    entries = []
+    for slot, req in enumerate(reqs):
+        entries.append({
+            "enrich_slot": slot,
+            "title": req.get("title"),
+            "current_description": req.get("description"),
+            "source_quote": req.get("source_quote"),
+            "labels": req.get("labels"),
+            "threshold_table_summary": table_text(req)[:1200],
+        })
+    return json.dumps(entries, ensure_ascii=False, indent=2)
+
+
+def _enrich_batch_unit(
+    unit: list[tuple[dict[str, Any], str, dict[str, Any] | None]],
+    config: LLMClientConfig,
+) -> list[tuple[str, str] | None]:
+    """无蓝皮书条目的合批改写。返回与 unit 对齐的 (description, note) 列表；
+    槽位缺失的条目回退单条 enrich_one，单条再失败记 None（调用方计 failed，不进缓存）。
+    整批调用失败直接抛 LLMError——由调用方按单元降级并驱动熔断（语义同单条路径）。"""
+    reqs = [req for req, _fp, _bb in unit]
+    payload = chat_json(config, SYSTEM_PROMPT_BATCH, _build_batch_user_prompt(reqs))
+    from requirements_analysis import _map_batch_items   # 槽位映射与软需合批同一实现
+    mapped = _map_batch_items(payload, len(unit))
+    outcomes: list[tuple[str, str] | None] = []
+    for slot, (req, _fp, blue_book_entry) in enumerate(unit):
+        entry = mapped.get(slot)
+        new_desc = str((entry or {}).get("description") or "").strip()
+        if new_desc:
+            outcomes.append(_finalize_description(req, new_desc, blue_book_entry))
+            continue
+        try:
+            outcomes.append(enrich_one(req, config, blue_book_entry))   # 缺槽回退单条
+        except LLMError as exc:
+            append_note(req, f"描述富化失败：{exc}")
+            outcomes.append(None)
+    return outcomes
 
 
 # --- 批处理（镜像 llm_pipeline 的缓存/并发/快速失败/熔断/降级）------------------
@@ -327,35 +402,59 @@ def enrich_descriptions(
         append_cache(cache_path, new_rows)
         return enriched, rejected, failed + (total - len(sample))
 
-    # 3) 其余并发 + 熔断
+    # 3) 其余并发 + 熔断。合批（0714 批次一 S1b）：无蓝皮书条目按 RATOMIZER_ENRICH_BATCH
+    # 成批（默认 6）,带蓝皮书条目保持单发（条款长、出处校验逐条）;批与批之间仍并发。
     remaining = pending[FAST_FAIL_SAMPLE_SIZE:]
     if remaining:
+        batch_size = _resolve_enrich_batch()
+        units: list[list[tuple[dict[str, Any], str, dict[str, Any] | None]]] = []
+        if batch_size <= 1:
+            units = [[entry] for entry in remaining]
+        else:
+            plain = [entry for entry in remaining if entry[2] is None]
+            with_book = [entry for entry in remaining if entry[2] is not None]
+            units = [[entry] for entry in with_book]
+            units += [plain[k:k + batch_size] for k in range(0, len(plain), batch_size)]
+
+        def run_unit(unit: list[tuple[dict[str, Any], str, dict[str, Any] | None]]):
+            if len(unit) == 1:
+                req, _fp, blue_book_entry = unit[0]
+                return [enrich_one(req, config, blue_book_entry)]
+            return _enrich_batch_unit(unit, config)
+
         consecutive_conn_fail = 0
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
-            futures = {executor.submit(enrich_one, req, config, blue_book_entry): (req, fp) for req, fp, blue_book_entry in remaining}
+            futures = {executor.submit(run_unit, unit): unit for unit in units}
             for future in as_completed(futures):
-                req, fp = futures[future]
+                unit = futures[future]
                 try:
-                    desc, note = future.result()
+                    outcomes = future.result()
                 except LLMConnectionError as exc:
-                    failed += 1
+                    failed += len(unit)
                     consecutive_conn_fail += 1
-                    append_note(req, f"描述富化失败（服务不可达）：{exc}")
+                    for req, _fp, _bb in unit:
+                        append_note(req, f"描述富化失败（服务不可达）：{exc}")
                     if consecutive_conn_fail >= connection_failure_abort:
                         LOGGER.warning("描述富化：连续 %s 次连接失败，熔断", consecutive_conn_fail)
                         executor.shutdown(wait=False, cancel_futures=True)
                         break
                     continue
                 except LLMError as exc:
-                    failed += 1
+                    failed += len(unit)
                     consecutive_conn_fail = 0
-                    append_note(req, f"描述富化失败：{exc}")
+                    for req, _fp, _bb in unit:
+                        append_note(req, f"描述富化失败：{exc}")
                     continue
                 consecutive_conn_fail = 0
-                apply_and_record(req, fp, desc, note)
-                done += 1
-                if done % PROGRESS_INTERVAL == 0:
-                    LOGGER.info("spec enrich %s/%s", done, total)
+                for (req, fp, _bb), outcome in zip(unit, outcomes):
+                    if outcome is None:          # 批内单条回退仍失败：计失败,不进缓存
+                        failed += 1
+                        continue
+                    desc, note = outcome
+                    apply_and_record(req, fp, desc, note)
+                    done += 1
+                    if done % PROGRESS_INTERVAL == 0:
+                        LOGGER.info("spec enrich %s/%s", done, total)
 
     append_cache(cache_path, new_rows)
     return enriched, rejected, failed
@@ -371,6 +470,12 @@ def config_for_route(route: str | None, pipeline_path: Path = DEFAULT_PIPELINE_P
     config = llm_config_from_route(payload)
     from llm_client import apply_min_tokens
     config = apply_min_tokens(config, "enrich")
+    batch = _resolve_enrich_batch()
+    if batch > 1:
+        # 合批一次产多条描述：输出下限按批量抬（封顶 12288）,超时同步放宽
+        config = replace(config,
+                         max_tokens=max(config.max_tokens, min(12288, 2048 + 1024 * batch)),
+                         timeout_s=max(config.timeout_s, 30.0 * batch))
     return config, int(payload.get("concurrency", 1) or 1), int(payload.get("connection_failure_abort", 10) or 10)
 
 
