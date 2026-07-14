@@ -182,7 +182,7 @@ describe("Electron main helpers", () => {
       RATOMIZER_LLM_MAX_TOKENS: "2048",
       RATOMIZER_LLM_TIMEOUT_S: "15",
       RATOMIZER_LLM_MAX_RETRIES: "0",
-      RATOMIZER_LLM_CONCURRENCY: "4",
+      RATOMIZER_LLM_CONCURRENCY: "8",
       ZHIPU_API_KEY: "sk-secret",
     })
   })
