@@ -203,7 +203,10 @@ def review_requirements_with_openai(
     llm_review_limit: int = 0,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> ReviewBatchResult:
-    route_payload = dict(pipeline.model_routes.get("openai_compatible") or {})
+    # env 覆盖先行（真实反馈 2026-07-14：审核 33 分钟成瓶颈）——llm_config_from_route 内部
+    # 会对 model/base_url 应用覆盖,但 concurrency 此前从**原始 yaml** 读,GUI 设置的并发
+    # (RATOMIZER_LLM_CONCURRENCY)对审查阶段一直不生效,被 yaml 锁死。
+    route_payload = apply_llm_environment_overrides(dict(pipeline.model_routes.get("openai_compatible") or {}))
     client_config = llm_config_from_route(route_payload)
     scope_config = effective_review_scope(pipeline, scope)
     concurrency = max(1, int(route_payload.get("concurrency", 1) or 1))

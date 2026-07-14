@@ -523,3 +523,16 @@ class LLMPipelineRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewPipelineConcurrencyWiringTests(unittest.TestCase):
+    """0714 提速:审查管线的 concurrency 必须从 env 覆盖后的 payload 读——
+    此前 run_review_pipeline 读原始 yaml,GUI 并发设置对审核阶段恒不生效(33 分钟瓶颈)。"""
+
+    def test_run_review_pipeline_applies_env_overrides_before_concurrency_read(self) -> None:
+        import inspect
+        import llm_pipeline
+        src = inspect.getsource(llm_pipeline.review_requirements_with_openai)
+        self.assertIn("apply_llm_environment_overrides", src)
+        self.assertLess(src.index("apply_llm_environment_overrides"),
+                        src.index('route_payload.get("concurrency"'))

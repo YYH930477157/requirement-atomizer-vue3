@@ -632,7 +632,7 @@ const llmSettings = ref<LlmSettings>({
   maxTokens: 4096,
   timeoutS: 60,
   maxRetries: 3,
-  concurrency: 4,
+  concurrency: 8,
   selfCheck: true,
 })
 // 「运行」时依次执行的阶段（基础解析+审查后追加）。可选配置、localStorage 持久化。
