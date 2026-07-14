@@ -62,6 +62,28 @@ describe("DocumentReview", () => {
     )
   })
 
+  it("marks notes and list groups so paragraph rhythm is preserved", async () => {
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 5,
+        blocks: [
+          { block_id: "B1", order: 1, type: "paragraph", text: "NOTE Context for the scope.", noise: false },
+          { block_id: "B2", order: 2, type: "paragraph", text: "The following locations apply:", noise: false },
+          { block_id: "B3", order: 3, type: "paragraph", text: "- closed locations", noise: false },
+          { block_id: "B4", order: 4, type: "paragraph", text: "- open locations", noise: false },
+          { block_id: "B5", order: 5, type: "paragraph", text: "and in other locations.", noise: false },
+        ],
+      }),
+      loadAiRequirements: vi.fn().mockResolvedValue([]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.findAll(".doc-block.note")).toHaveLength(1)
+    expect(wrapper.findAll(".doc-block.list-item")).toHaveLength(2)
+    expect(wrapper.findAll(".doc-text.list-item")).toHaveLength(2)
+  })
+
   it("changing the module dropdown sends module_override on decide", async () => {
     const client = makeClient()
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
@@ -149,7 +171,10 @@ describe("DocumentReview", () => {
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
     await flushPromises()
 
-    await wrapper.find('[data-testid="omission-tag"]').trigger("click")
+    const inlineTag = wrapper.find('[data-testid="omission-block"] .doc-text [data-testid="omission-tag"]')
+    expect(inlineTag.exists()).toBe(true)
+    expect(inlineTag.text()).toBe("未覆盖")
+    await inlineTag.trigger("click")
     const card = wrapper.find('[data-testid="omission-card"]')
     expect(card.exists()).toBe(true)
     expect(card.text()).toContain("为什么标为未覆盖")                       // 第一段：原因

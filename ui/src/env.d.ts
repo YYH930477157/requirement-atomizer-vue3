@@ -52,6 +52,7 @@ declare global {
       startApiSession: (outDir: string) => Promise<RequirementAtomizerApiSession | null>
       getLlmSettings: () => Promise<{
         enabled: boolean
+        visionCapable: boolean
         baseUrl: string
         model: string
         apiKeyEnv: string
@@ -64,6 +65,7 @@ declare global {
       } | null>
       saveLlmSettings: (input: {
         enabled: boolean
+        visionCapable: boolean
         baseUrl: string
         model: string
         apiKeyEnv: string
@@ -76,6 +78,7 @@ declare global {
         selfCheck: boolean
       }) => Promise<{
         enabled: boolean
+        visionCapable: boolean
         baseUrl: string
         model: string
         apiKeyEnv: string
@@ -88,6 +91,7 @@ declare global {
       }>
       testLlmConnection: (input: {
         enabled: boolean
+        visionCapable: boolean
         baseUrl: string
         model: string
         apiKeyEnv: string
@@ -113,14 +117,14 @@ declare global {
       }) => Promise<RequirementAtomizerTaskPayload>
       getOutputSummary: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       aiExtract: (input: { outDir: string; llmRoute?: string; limitSections?: number; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
-      exportAnnotationHtml: (input: { outDir: string; route?: string }) => Promise<RequirementAtomizerTaskPayload>
+      exportAnnotationHtml: (input: { outDir: string; route?: string; layoutMode?: "optimized" | "pdf_original" }) => Promise<RequirementAtomizerTaskPayload>
       importAiDecisions: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       assembleSpec: (input: { outDir: string; enrichRoute?: string }) => Promise<RequirementAtomizerTaskPayload>
       composeEngineering: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       runRequirementsAnalysis: (input: { outDir: string; llmRoute?: string; templatePath?: string }) => Promise<RequirementAtomizerTaskPayload>
       writeTemplate: (input: { outDir: string; templatePath: string }) => Promise<RequirementAtomizerTaskPayload>
       clarificationReport: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
-      runChain: (input: { outDir: string; stages: string[]; llmRoute?: string; templatePath?: string; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
+      runChain: (input: { outDir: string; stages: string[]; llmRoute?: string; templatePath?: string; sampleRatio?: number; annotationLayoutMode?: "optimized" | "pdf_original" }) => Promise<RequirementAtomizerTaskPayload>
       importClarificationAnswers: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       selectTemplate: () => Promise<string>
       openLogsDir: () => Promise<{ dir: string }>

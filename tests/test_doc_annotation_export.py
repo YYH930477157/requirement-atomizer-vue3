@@ -9,18 +9,22 @@ from pathlib import Path
 from unittest.mock import patch
 
 import doc_annotation_export as dae
+from parsers.pdf_parser import extract_pdf
 
 
 def _seed(out: Path) -> None:
     (out / "blocks.jsonl").write_text(
         json.dumps({"block_id": "B1", "order": 1, "type": "heading", "text": "4 Requirements",
-                    "section_path": ["4 Requirements"], "requirement_like": False, "noise": False}) + "\n" +
+                    "section_path": ["4 Requirements"], "page_number": 1,
+                    "requirement_like": False, "noise": False}) + "\n" +
         json.dumps({"block_id": "B2", "order": 2, "type": "paragraph",
                     "text": "The meter shall measure volume < 5 & log it.",
-                    "section_path": ["4 Requirements"], "requirement_like": True, "noise": False}) + "\n" +
+                    "section_path": ["4 Requirements"], "page_number": 2,
+                    "requirement_like": True, "noise": False}) + "\n" +
         json.dumps({"block_id": "B3", "order": 3, "type": "paragraph",
                     "text": "An uncovered requirement shall hold.",
-                    "section_path": ["4 Requirements"], "requirement_like": True, "noise": False}) + "\n",
+                    "section_path": ["4 Requirements"], "page_number": 3,
+                    "requirement_like": True, "noise": False}) + "\n",
         encoding="utf-8")
     doc = {"requirements": [
         {"id": "REQ-001", "title": "体积计量", "description": "应计量体积", "module": "计量",
@@ -31,6 +35,109 @@ def _seed(out: Path) -> None:
 
 
 class DocAnnotationExportTests(unittest.TestCase):
+    def test_pdf_original_layout_renders_pages_with_clickable_annotation_overlays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            source_pdf = Path(__file__).parent / "fixtures" / "sample_text_tables.pdf"
+            blocks, _ = extract_pdf(source_pdf, knowledge_bases=[], document_profile=None)
+            for block in blocks:
+                block.pop("pdf_regions", None)  # 模拟升级前已经生成的旧输出
+            (out / "blocks.jsonl").write_text(
+                "".join(json.dumps(block, ensure_ascii=False) + "\n" for block in blocks),
+                encoding="utf-8",
+            )
+            anchor = next(block for block in blocks if block.get("requirement_like") and not block.get("noise"))
+            (out / "merged_spec_requirements.json").write_text(json.dumps({"requirements": [{
+                "id": "REQ-PDF-1",
+                "title": "PDF 坐标批注",
+                "description": "应按原文执行。",
+                "module": "其它",
+                "source_section": "5.1",
+                "source_quote": anchor["text"],
+                "source_block_ids": [anchor["block_id"]],
+                "labels": ["其它"],
+            }]}, ensure_ascii=False), encoding="utf-8")
+            (out / "manifest.json").write_text(
+                json.dumps({"input": str(source_pdf), "input_format": "pdf"}),
+                encoding="utf-8",
+            )
+
+            target, summary = dae.export_annotation_bundle(out, layout_mode="pdf_original")
+            rendered = target.read_text(encoding="utf-8")
+
+            self.assertTrue(summary["annotation_overlay"])
+            self.assertTrue((out / dae.ANNOTATION_PDF_GEOMETRY).is_file())
+            self.assertGreater(len(summary["page_files"]), 0)
+            self.assertTrue(all(Path(path).is_file() for path in summary["page_files"]))
+            self.assertIn('class="pdf-page"', rendered)
+            self.assertIn('class="pdf-marker marker-requirement', rendered)
+            self.assertIn('class="pdf-marker omission-tag marker-omission"', rendered)
+            self.assertIn('data-req="', rendered)
+            self.assertIn('data-omission-text="', rendered)
+            self.assertIn('function setPdfZoom', rendered)
+            self.assertIn('IntersectionObserver', rendered)
+            self.assertIn('className = "pdf-index-tabs"', rendered)
+            self.assertIn('if (pdfMarker) { select(pdfMarker.getAttribute("data-req")); return; }', rendered)
+            self.assertIn('function renderOmissionDetails', rendered)
+            self.assertNotIn('id="pdf-frame"', rendered)
+
+    def test_pdf_original_layout_copies_source_pdf_and_embeds_it_without_reflow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            _seed(out)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.7\noriginal-pdf-bytes\n%%EOF")
+            (out / "manifest.json").write_text(
+                json.dumps({"input": str(source_pdf), "input_format": "pdf"}),
+                encoding="utf-8",
+            )
+
+            target, summary = dae.export_annotation_bundle(out, layout_mode="pdf_original")
+            rendered = target.read_text(encoding="utf-8")
+
+            copied_pdf = out / dae.ANNOTATION_SOURCE_PDF
+            self.assertEqual(copied_pdf.read_bytes(), source_pdf.read_bytes())
+            self.assertEqual(summary["layout_mode_requested"], "pdf_original")
+            self.assertEqual(summary["layout_mode"], "pdf_original")
+            self.assertEqual(summary["source_pdf"], str(copied_pdf))
+            self.assertIn('class="reader-shell pdf-original"', rendered)
+            self.assertIn('id="pdf-frame"', rendered)
+            self.assertIn('const PDF_MODE = true;', rendered)
+            self.assertIn('const PDF_HREF = "document_source.pdf";', rendered)
+            self.assertIn('"source_page": 2', rendered)
+            self.assertIn('"annotation_number": 1', rendered)
+            self.assertIn('item.onclick = () => select(r.ai_req_id);', rendered)
+            self.assertIn('if (PDF_MODE) showPdfPage(r.source_page);', rendered)
+            self.assertIn('"#page=" + pageNumber + "&view=FitH"', rendered)
+            self.assertNotIn('class="doc-block', rendered)
+
+    def test_pdf_original_layout_falls_back_for_non_pdf_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            _seed(out)
+            source_docx = root / "source.docx"
+            source_docx.write_bytes(b"not-a-pdf")
+            (out / "manifest.json").write_text(
+                json.dumps({"input": str(source_docx), "input_format": "docx"}),
+                encoding="utf-8",
+            )
+
+            target, summary = dae.export_annotation_bundle(out, layout_mode="pdf_original")
+            rendered = target.read_text(encoding="utf-8")
+
+            self.assertEqual(summary["layout_mode_requested"], "pdf_original")
+            self.assertEqual(summary["layout_mode"], "optimized")
+            self.assertIsNone(summary["source_pdf"])
+            self.assertIn('class="reader-shell"', rendered)
+            self.assertIn('const PDF_MODE = false;', rendered)
+            self.assertIn('class="doc-block', rendered)
+
     def test_renders_self_contained_html_with_data_and_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -61,6 +168,55 @@ class DocAnnotationExportTests(unittest.TestCase):
             self.assertIn("annotation-index", html)
             self.assertNotIn("💬", html)
             self.assertNotIn("📋", html)
+
+    def test_uncovered_paragraph_uses_quiet_inline_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn(
+                'An uncovered requirement shall hold.<button class="omission-tag"',
+                rendered,
+            )
+            self.assertIn('>未覆盖</button>', rendered)
+            self.assertNotIn('<div class="omission-flag">', rendered)
+            self.assertNotIn('⚠ 未覆盖', rendered)
+            self.assertIn('.doc-block { margin-bottom: 0; }', rendered)
+            self.assertIn('font-family: var(--sans); font-size: 16px; line-height: 1.65;', rendered)
+
+    def test_reader_preserves_paragraph_list_and_note_rhythm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            blocks = [
+                {"block_id": "B1", "order": 1, "type": "paragraph",
+                 "text": "NOTE This paragraph provides context.", "section_path": ["1 Scope"],
+                 "requirement_like": False, "noise": False},
+                {"block_id": "B2", "order": 2, "type": "paragraph",
+                 "text": "The following locations apply:", "section_path": ["1 Scope"],
+                 "requirement_like": False, "noise": False},
+                {"block_id": "B3", "order": 3, "type": "paragraph",
+                 "text": "\uf8e7 closed locations", "section_path": ["1 Scope"],
+                 "requirement_like": False, "noise": False},
+                {"block_id": "B4", "order": 4, "type": "paragraph",
+                 "text": "- open locations", "section_path": ["1 Scope"],
+                 "requirement_like": False, "noise": False},
+                {"block_id": "B5", "order": 5, "type": "paragraph",
+                 "text": "and in locations with electromagnetic disturbances.",
+                 "section_path": ["1 Scope"], "requirement_like": False, "noise": False},
+            ]
+            (out / "blocks.jsonl").write_text(
+                "".join(json.dumps(block) + "\n" for block in blocks), encoding="utf-8")
+            (out / "ai_requirements.jsonl").write_text("", encoding="utf-8")
+
+            rendered = dae.render_annotation_html(out)
+
+            self.assertIn('class="doc-block note short"', rendered)
+            self.assertEqual(rendered.count('class="doc-block list-item short"'), 2)
+            self.assertIn('.doc-block.list-item + .doc-block:not(.list-item):not(.heading)', rendered)
+            self.assertIn('.doc-block.note .text', rendered)
+            self.assertIn('.doc-content { width: 100%; max-width: none;', rendered)
 
     def test_html_escapes_block_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

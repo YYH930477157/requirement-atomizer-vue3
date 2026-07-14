@@ -34,6 +34,7 @@ export type AiExtractTaskInput = {
 
 export type LlmSettingsInput = {
   enabled: boolean
+  visionCapable: boolean
   baseUrl: string
   model: string
   apiKeyEnv: string

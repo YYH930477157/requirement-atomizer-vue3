@@ -5,6 +5,8 @@ import path from "node:path"
 
 import {
   PROGRESS_PREFIX,
+  buildChainArgs,
+  buildExportAnnotationArgs,
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
@@ -17,6 +19,27 @@ import {
 } from "../main.helpers.cjs"
 
 describe("Electron main helpers", () => {
+  it("forwards annotation layout modes to standalone and chain commands", () => {
+    expect(buildExportAnnotationArgs({
+      outDir: "E:\\out\\abnt",
+      route: "openai_compatible",
+      layoutMode: "pdf_original",
+    })).toEqual([
+      "export-annotation-html", "--out", "E:\\out\\abnt",
+      "--route", "openai_compatible", "--layout-mode", "pdf_original",
+    ])
+
+    expect(buildChainArgs({
+      outDir: "E:\\out\\abnt",
+      stages: ["compose", "export-annotation-html"],
+      llmRoute: "stub",
+      annotationLayoutMode: "optimized",
+    })).toEqual([
+      "chain", "--out", "E:\\out\\abnt", "--stages", "compose,export-annotation-html",
+      "--llm-route", "stub", "--annotation-layout-mode", "optimized",
+    ])
+  })
+
   it("builds run pipeline args with ABNT preset inputs", () => {
     expect(buildRunPipelineArgs({
       inputPath: "C:\\input\\Appendix 9.docx",
@@ -179,6 +202,11 @@ describe("Electron main helpers", () => {
     expect(buildLlmEnvironment({})).toMatchObject({ RATOMIZER_AI_SELFCHECK: "1" })
   })
 
+  it("defaults legacy settings to a non-visual model and preserves an explicit visual capability", () => {
+    expect(normalizeLlmSettings({}).visionCapable).toBe(false)
+    expect(normalizeLlmSettings({ visionCapable: true }).visionCapable).toBe(true)
+  })
+
   it("persists OpenAI-compatible API settings in a config file with an encrypted API key", () => {
     const configDir = mkdtempSync(path.join(tmpdir(), "ratomizer-settings-"))
     const configPath = path.join(configDir, "llm-settings.json")
@@ -191,6 +219,7 @@ describe("Electron main helpers", () => {
     try {
       const saved = saveLlmSettingsConfig(configPath, {
         enabled: true,
+        visionCapable: true,
         baseUrl: " https://open.bigmodel.cn/api/paas/v4 ",
         model: " glm-4-plus ",
         apiKeyEnv: " ZHIPU_API_KEY ",
@@ -203,6 +232,7 @@ describe("Electron main helpers", () => {
 
       expect(saved.settings).toMatchObject({
         enabled: true,
+        visionCapable: true,
         baseUrl: "https://open.bigmodel.cn/api/paas/v4",
         model: "glm-4-plus",
         apiKeyEnv: "ZHIPU_API_KEY",
@@ -217,6 +247,7 @@ describe("Electron main helpers", () => {
 
       expect(loaded.settings).toMatchObject({
         enabled: true,
+        visionCapable: true,
         baseUrl: "https://open.bigmodel.cn/api/paas/v4",
         model: "glm-4-plus",
         apiKeyEnv: "ZHIPU_API_KEY",

@@ -439,6 +439,13 @@
                   <small>开启后，翻译、装配规格富化和后续 LLM 审查都使用 openai_compatible 配置。</small>
                 </span>
               </label>
+              <label class="settings-toggle">
+                <input v-model="llmSettings.visionCapable" type="checkbox" data-testid="settings-vision-capable" />
+                <span>
+                  <strong>模型具备视觉能力</strong>
+                  <small>PDF 批注：开启后使用优化排版；关闭后直接显示原 PDF，不改动正文版式。</small>
+                </span>
+              </label>
               <div class="settings-form-grid">
                 <label class="settings-field wide">
                   <span>Base URL</span>
@@ -549,6 +556,7 @@ type PhaseNavId = "run" | "review" | "document" | "settings"
 type StatFilter = "all" | "accepted" | "expert_pending" | "ambiguous"
 type LlmSettings = {
   enabled: boolean
+  visionCapable: boolean
   baseUrl: string
   model: string
   apiKeyEnv: string
@@ -616,6 +624,7 @@ const settingsStatus = ref("")
 const llmApiKey = ref("")
 const llmSettings = ref<LlmSettings>({
   enabled: false,
+  visionCapable: false,
   baseUrl: "http://127.0.0.1:11434/v1",
   model: "qwen2.5:14b",
   apiKeyEnv: "RATOMIZER_LLM_API_KEY",
@@ -1016,6 +1025,7 @@ function applyLlmSettings(payload: Partial<LlmSettings>) {
 function normalizeUiLlmSettings(payload: Partial<LlmSettings>): LlmSettings {
   return {
     enabled: Boolean(payload.enabled),
+    visionCapable: payload.visionCapable == null ? false : Boolean(payload.visionCapable),
     baseUrl: stringOr(payload.baseUrl, "http://127.0.0.1:11434/v1"),
     model: stringOr(payload.model, "qwen2.5:14b"),
     apiKeyEnv: stringOr(payload.apiKeyEnv, "RATOMIZER_LLM_API_KEY"),
@@ -1289,6 +1299,9 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           chainPayload = await bridge.runChain({
             outDir: finalOutDir, stages, llmRoute,
             templatePath: templatePath.value || undefined,
+            ...(stages.includes("export-annotation-html")
+              ? { annotationLayoutMode: llmSettings.value.visionCapable ? "optimized" : "pdf_original" }
+              : {}),
           })
         } catch (chainError) {
           throw new Error(`交付物链失败：${chainError instanceof Error ? chainError.message : chainError}`)
@@ -1453,6 +1466,7 @@ async function handleExportAnnotationHtml() {
     const payload = await window.ratomizerDesktop.exportAnnotationHtml({
       outDir: currentOutputDir.value,
       route: llmMode.value ? "openai_compatible" : undefined,
+      layoutMode: llmSettings.value.visionCapable ? "optimized" : "pdf_original",
     })
     if (payload.path) {
       await window.ratomizerDesktop.openPath?.(payload.path)

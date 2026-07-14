@@ -6,6 +6,8 @@ const path = require("node:path");
 const {
   DEFAULT_LLM_SETTINGS,
   appendBackendLog,
+  buildChainArgs,
+  buildExportAnnotationArgs,
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
@@ -156,16 +158,8 @@ ipcMain.handle("task:requirements-analysis", async (_event, input) => runDesktop
 ]));
 
 // 交付物链单命令编排（编排在后端，UI 只发一条命令 + 渲染进度）
-ipcMain.handle("task:chain", async (_event, input) => runDesktopTaskProcess([
-  "chain",
-  "--out",
-  input.outDir,
-  "--stages",
-  (input.stages || []).join(","),
-  ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
-  ...(input.templatePath ? ["--template", input.templatePath] : []),
-  ...(input.sampleRatio ? ["--sample-ratio", String(input.sampleRatio)] : []),
-]));
+ipcMain.handle("task:chain", async (_event, input) =>
+  runDesktopTaskProcess(buildChainArgs(input)));
 
 // 澄清清单：全链疑问信号聚合 + 就绪判定（确定性零 LLM）
 ipcMain.handle("task:clarification-report", async (_event, input) =>
@@ -189,8 +183,7 @@ ipcMain.handle("dialog:open-template", async () => {
 });
 
 ipcMain.handle("task:export-annotation-html", async (_event, input) =>
-  runDesktopTaskProcess(["export-annotation-html", "--out", input.outDir,
-    ...(input.route ? ["--route", input.route] : [])]));
+  runDesktopTaskProcess(buildExportAnnotationArgs(input)));
 
 ipcMain.handle("task:summary", async (_event, input) =>
   runDesktopTaskProcess(["summary", "--out", input.outDir]));

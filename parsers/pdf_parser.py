@@ -374,6 +374,8 @@ def _detect_text_tables(
                 tables.append({
                     "top": min(ln["top"] for ln in full_region),
                     "bottom": max(ln["bottom"] for ln in full_region),
+                    "x0": min(ln["x0"] for ln in full_region),
+                    "x1": max(ln["x1"] for ln in full_region),
                     "matrix": matrix,
                 })
                 consumed.update(region_idx)
@@ -447,6 +449,12 @@ def extract_pdf(
                         payload["text"],
                         order=order,
                         page_number=page_number,
+                        pdf_region=_pdf_region(
+                            page_number,
+                            (payload["x0"], payload["top"], payload["x1"], payload["bottom"]),
+                            page.width,
+                            page.height,
+                        ),
                         sections=sections,
                         knowledge_bases=knowledge_bases,
                         repeated_noise=repeated_noise,
@@ -456,10 +464,12 @@ def extract_pdf(
                     continue
                 if kind == "ruled":
                     matrix = payload[1]
+                    table_bbox = payload[0].bbox
                 else:
                     matrix = _clean_table_matrix(payload["matrix"])
                     if _skip_table_matrix(matrix):
                         continue
+                    table_bbox = (payload["x0"], payload["top"], payload["x1"], payload["bottom"])
                 table_count += 1
                 order += 1
                 table_id = f"TBL-{table_count:06d}"
@@ -474,10 +484,13 @@ def extract_pdf(
                     knowledge_bases=knowledge_bases,
                 )
                 table_block["page_number"] = page_number
+                table_block["pdf_regions"] = [
+                    _pdf_region(page_number, table_bbox, page.width, page.height)]
                 if kind == "text_table":
                     table_block["table_source"] = "text_layout"   # 溯源：无画线重建
                 for item in new_table_items:
                     item["page_number"] = page_number
+                    item["pdf_regions"] = list(table_block["pdf_regions"])
                 blocks.append(table_block)
                 table_items.extend(new_table_items)
                 last_caption = None
@@ -508,6 +521,11 @@ def _merge_continuation_blocks(
                 if prev.get("type") == "paragraph" and prev.get("text"):
                     target = prev
                 break
+        if (target is not None
+                and target.get("page_number") is not None
+                and block.get("page_number") is not None
+                and target.get("page_number") == block.get("page_number")):
+            target = None
         if target is not None:
             prev_text = str(target["text"]).rstrip()
             cur_text = str(block["text"])
@@ -527,6 +545,7 @@ def _merge_continuation_blocks(
                 target["kb_matches"] = match_knowledge(knowledge_bases, joined, section)
                 target["domain_tags"] = merge_tags(
                     tag_domains(joined, section), kb_domain_tags(target["kb_matches"]))
+                target.setdefault("pdf_regions", []).extend(block.get("pdf_regions") or [])
                 continue
         merged.append(block)
     return merged
@@ -657,6 +676,17 @@ def _merge_lines(lines: list[dict[str, Any]]) -> dict[str, Any]:
         "text": clean_text(text),
         "top": min(line["top"] for line in lines),
         "bottom": max(line["bottom"] for line in lines),
+        "x0": min(line["x0"] for line in lines),
+        "x1": max(line["x1"] for line in lines),
+    }
+
+
+def _pdf_region(page_number: int, bbox: Any, page_width: float, page_height: float) -> dict[str, Any]:
+    return {
+        "page_number": page_number,
+        "bbox": [round(float(value), 3) for value in bbox],
+        "page_width": round(float(page_width), 3),
+        "page_height": round(float(page_height), 3),
     }
 
 
@@ -684,6 +714,13 @@ def _starts_new_paragraph(
         # 0711 评审护栏：但若两行都像独立需求（都含 shall/must/should 等标志词），
         # 则判为新段——两条需求不应被误并成一条（会丢一条需求）。
         prev_text = previous["text"].rstrip()
+        previous_x0 = float(previous.get("x0", 0.0))
+        current_x0 = float(line.get("x0", previous_x0))
+        current_is_outdented = previous_x0 - current_x0 >= 8
+        previous_is_list_item = bool(_LIST_ITEM_RE.match(prev_text))
+        current_is_list_continuation = current_x0 - previous_x0 >= 8
+        if current_is_outdented or (previous_is_list_item and not current_is_list_continuation):
+            return True
         if (gap < 26 and prev_text and prev_text[-1] not in _SENTENCE_TERMINALS
                 and line["text"][:1].islower()
                 and not (_REQ_KEYWORD_RE.search(prev_text) and _REQ_KEYWORD_RE.search(line["text"]))):
@@ -743,6 +780,7 @@ def _append_text_block(
     *,
     order: int,
     page_number: int,
+    pdf_region: dict[str, Any] | None = None,
     sections: SectionState,
     knowledge_bases: KnowledgeRepository,
     repeated_noise: set[str],
@@ -787,6 +825,8 @@ def _append_text_block(
         "requirement_like": is_requirement_like(text),
         "noise": noise,
     }
+    if pdf_region:
+        block["pdf_regions"] = [pdf_region]
     if heading:
         block["heading_level"] = heading[0]
     blocks.append(block)
@@ -800,6 +840,7 @@ def _append_text_block(
         # 粘连标题拆出的正文，紧随标题追加为独立段落块
         return _append_text_block(
             blocks, trailing_body, order=order, page_number=page_number,
+            pdf_region=pdf_region,
             sections=sections, knowledge_bases=knowledge_bases,
             repeated_noise=repeated_noise, last_caption=last_caption, profile=profile)
     return order, last_caption

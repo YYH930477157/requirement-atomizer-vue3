@@ -106,6 +106,21 @@ class AiRequirementsEndpointTests(unittest.TestCase):
             self.assertEqual([b["block_id"] for b in result["blocks"]], ["BLK-1", "BLK-2"])  # 按 order
             self.assertNotIn("kb_matches", result["blocks"][0])  # 重负载字段被裁掉
 
+    def test_document_blocks_normalize_embedded_pdf_bullet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            blocks_path = out / "blocks.jsonl"
+            rows = [json.loads(line) for line in blocks_path.read_text(encoding="utf-8").splitlines()]
+            rows[0]["text"] = "\uf8e7 closed locations"
+            blocks_path.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+            result = api_server.build_document_blocks(out)
+
+            by_id = {block["block_id"]: block for block in result["blocks"]}
+            self.assertEqual(by_id["BLK-2"]["text"], "- closed locations")
+
     def test_anchor_block_id_precise_to_quote_paragraph(self) -> None:
         text_by_block = {
             "BLK-1": "Some intro paragraph without the requirement.",

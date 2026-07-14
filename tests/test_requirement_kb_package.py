@@ -62,6 +62,7 @@ class RequirementKBPackageTests(unittest.TestCase):
         pattern = compile_term_pattern(["register"])
 
         self.assertEqual(clean_text("Register\u3000object"), "Register object")
+        self.assertEqual(clean_text("\uf8e7 closed locations"), "- closed locations")
         self.assertEqual(find_matched_terms(pattern, "Registers shall be readable"), ["register"])
 
     def test_obsidian_compile_and_schema_validation_are_package_apis(self) -> None:

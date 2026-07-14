@@ -44,6 +44,13 @@ class ExtractPdfE2ETests(unittest.TestCase):
         self.assertIn("5.1 Security requirements", headings)
         self.assertTrue(all("page_number" in block for block in blocks))
         self.assertTrue(all("page_number" in item for item in table_items))
+        self.assertTrue(all(block.get("pdf_regions") for block in blocks))
+        for block in blocks:
+            region = block["pdf_regions"][0]
+            self.assertEqual(region["page_number"], block["page_number"])
+            self.assertEqual(len(region["bbox"]), 4)
+            self.assertGreater(region["page_width"], 0)
+            self.assertGreater(region["page_height"], 0)
 
         table_block = next(block for block in blocks if block["type"] == "table")
         self.assertEqual(table_block["table_title"], "Table 1 - Services xDLMS")
@@ -112,6 +119,7 @@ class ExtractPdfE2ETests(unittest.TestCase):
         self.assertGreater(manifest["counts"]["blocks"], 0)
         self.assertGreater(manifest["counts"]["table_items"], 0)
         self.assertTrue(all("page_number" in block for block in blocks))
+        self.assertTrue(all(block.get("pdf_regions") for block in blocks))
 
     def test_cli_scan_like_pdf_returns_input_error_with_docx_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

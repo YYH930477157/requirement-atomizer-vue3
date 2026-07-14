@@ -1,7 +1,8 @@
-"""把"文档批注审核"导出成一个自包含 HTML 文件（Notion 清爽文档风）。
+"""把"文档批注审核"导出成可离线分享的 HTML bundle。
 
-完全独立：文档原文 + AI 抽取需求数据直接嵌进 HTML，内联 CSS/JS，任意浏览器双击即开、
-不需 app/服务器。需求像批注挂在原文对应小段上（anchor_block_id 精确锚点），点开看
+优化模式把文档原文 + AI 抽取需求数据直接嵌进 HTML；原版模式把源 PDF 原字节复制为
+同目录 sidecar 并由浏览器直接显示。两种模式都不需 app/服务器。需求像批注挂在原文对应
+小段或 PDF 页索引上（anchor_block_id 精确锚点），点开看
 模块/需求分析/测试指引/原文引用；裁决（接受/拒绝/讨论/改模块/写意见）静默存浏览器
 localStorage（按 doc 命名空间隔离），一键「导出裁决 JSON」可回灌 app 合进交付物。
 未覆盖的 requirement_like 段标「未覆盖」，顶部给疑似遗漏计数。
@@ -14,18 +15,29 @@ localStorage（按 doc 命名空间隔离），一键「导出裁决 JSON」可�
 from __future__ import annotations
 
 import datetime
+import difflib
 import hashlib
 import html
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
 from api_server import (ANNOTATION_TRANSLATIONS, build_ai_requirements, build_document_blocks,
                         load_annotation_translations, translation_key)
+from requirement_kb.matching import clean_text as normalize_text
 
 ANNOTATION_HTML = "document_annotation.html"
+ANNOTATION_SOURCE_PDF = "document_source.pdf"
+ANNOTATION_PAGES_DIR = "document_pages"
+ANNOTATION_PAGES_MANIFEST = "manifest.json"
+ANNOTATION_PDF_GEOMETRY = "document_pdf_geometry.json"
+PDF_PAGE_RENDER_DPI = 144
+LAYOUT_OPTIMIZED = "optimized"
+LAYOUT_PDF_ORIGINAL = "pdf_original"
+ANNOTATION_LAYOUT_MODES = {LAYOUT_OPTIMIZED, LAYOUT_PDF_ORIGINAL}
 # 翻译缓存键/加载器的唯一实现在 api_server（两个渲染面共用防分叉）；生成侧在本模块。
 _TRANSLATION_BATCH = 8
 # 数字并组：千位空格/逗号分隔（"4 000"→"4000"），护栏基线用
@@ -145,6 +157,217 @@ def _doc_id(out_dir: Path) -> str:
     return hashlib.sha1(str(out_dir).encode("utf-8")).hexdigest()[:10]
 
 
+def _source_input_path(out_dir: Path) -> Path | None:
+    """读取原子化 manifest 中的源文档路径；相对路径按输出目录解析。"""
+    try:
+        manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw = str(manifest.get("input") or "").strip() if isinstance(manifest, dict) else ""
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = out_dir / path
+    try:
+        return path.resolve()
+    except OSError:
+        return path.absolute()
+
+
+def _source_pdf_path(out_dir: Path) -> Path | None:
+    source = _source_input_path(out_dir)
+    return source if source and source.suffix.casefold() == ".pdf" and source.is_file() else None
+
+
+def _normalize_layout_mode(layout_mode: str | None) -> str:
+    mode = str(layout_mode or LAYOUT_OPTIMIZED).strip().casefold()
+    if mode not in ANNOTATION_LAYOUT_MODES:
+        raise ValueError(
+            f"未知批注排版模式：{layout_mode}（可用：{', '.join(sorted(ANNOTATION_LAYOUT_MODES))}）")
+    return mode
+
+
+def _page_number(value: Any) -> int | None:
+    try:
+        page = int(value)
+    except (TypeError, ValueError):
+        return None
+    return page if page > 0 else None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _valid_pdf_regions(value: Any) -> list[dict[str, Any]]:
+    regions: list[dict[str, Any]] = []
+    for raw in value if isinstance(value, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        bbox = raw.get("bbox")
+        page = _page_number(raw.get("page_number"))
+        try:
+            coords = [float(item) for item in bbox] if isinstance(bbox, list) and len(bbox) == 4 else []
+            width = float(raw.get("page_width") or 0)
+            height = float(raw.get("page_height") or 0)
+        except (TypeError, ValueError):
+            continue
+        if page and len(coords) == 4 and width > 0 and height > 0:
+            regions.append({
+                "page_number": page,
+                "bbox": coords,
+                "page_width": width,
+                "page_height": height,
+            })
+    return regions
+
+
+def _geometry_match_text(value: Any) -> str:
+    text = normalize_text(str(value or ""))
+    text = re.sub(r"\bcolumn_\d+\b", " ", text, flags=re.IGNORECASE).replace("|", " ")
+    return " ".join(text.split())
+
+
+def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
+                          cache_path: Path | None = None) -> dict[str, list[dict[str, Any]]]:
+    """读取块坐标；旧输出无坐标时确定性重跑 PDF 文本解析，只回填几何数据。"""
+    block_signature = hashlib.sha256(json.dumps([
+        [block.get("block_id"), block.get("page_number"), block.get("text")]
+        for block in blocks
+    ], ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+    source_hash = _file_sha256(source_pdf)
+    if cache_path:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cached = {}
+        if (cached.get("version") == 2 and cached.get("source_sha256") == source_hash
+                and cached.get("block_signature") == block_signature
+                and isinstance(cached.get("geometry"), dict)):
+            return {
+                str(block_id): regions
+                for block_id, value in cached["geometry"].items()
+                if (regions := _valid_pdf_regions(value))
+            }
+    geometry = {
+        str(block.get("block_id") or ""): regions
+        for block in blocks
+        if (regions := _valid_pdf_regions(block.get("pdf_regions")))
+    }
+    missing = [block for block in blocks if str(block.get("block_id") or "") not in geometry]
+    if not missing:
+        return geometry
+
+    try:
+        from parsers.pdf_parser import extract_pdf
+        parsed_blocks, _ = extract_pdf(source_pdf, knowledge_bases=[], document_profile=None)
+    except Exception:
+        return geometry
+
+    parsed_by_id = {str(block.get("block_id") or ""): block for block in parsed_blocks}
+    parsed_by_text: dict[tuple[int | None, str], list[dict[str, Any]]] = {}
+    for block in parsed_blocks:
+        key = (_page_number(block.get("page_number")), _geometry_match_text(block.get("text")))
+        parsed_by_text.setdefault(key, []).append(block)
+
+    for block in missing:
+        block_id = str(block.get("block_id") or "")
+        candidate = parsed_by_id.get(block_id)
+        normalized = _geometry_match_text(block.get("text"))
+        if candidate and _geometry_match_text(candidate.get("text")) != normalized:
+            candidate = None
+        if candidate is None:
+            candidates = parsed_by_text.get((_page_number(block.get("page_number")), normalized)) or []
+            candidate = candidates[0] if len(candidates) == 1 else None
+        regions = _valid_pdf_regions(candidate.get("pdf_regions")) if candidate else []
+        if not regions and normalized:
+            same_page = [
+                item for item in parsed_blocks
+                if _page_number(item.get("page_number")) == _page_number(block.get("page_number"))
+            ]
+            contained = [
+                item for item in same_page
+                if len(_geometry_match_text(item.get("text"))) >= 16
+                and _geometry_match_text(item.get("text")) in normalized
+            ]
+            if contained:
+                for item in contained:
+                    regions.extend(_valid_pdf_regions(item.get("pdf_regions")))
+            elif same_page:
+                best = max(
+                    same_page,
+                    key=lambda item: difflib.SequenceMatcher(
+                        None, normalized, _geometry_match_text(item.get("text"))).ratio(),
+                )
+                ratio = difflib.SequenceMatcher(
+                    None, normalized, _geometry_match_text(best.get("text"))).ratio()
+                if ratio >= 0.72:
+                    regions = _valid_pdf_regions(best.get("pdf_regions"))
+        if regions:
+            geometry[block_id] = regions
+    if cache_path:
+        payload = {
+            "version": 2,
+            "source_sha256": source_hash,
+            "block_signature": block_signature,
+            "geometry": geometry,
+        }
+        tmp = cache_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, cache_path)
+    return geometry
+
+
+def _ensure_pdf_page_images(source_pdf: Path, out_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """把原 PDF 页缓存为原坐标比例 PNG，供 HTML 叠加独立批注层。"""
+    pages_dir = out_dir / ANNOTATION_PAGES_DIR
+    manifest_path = pages_dir / ANNOTATION_PAGES_MANIFEST
+    source_hash = _file_sha256(source_pdf)
+    expected = {"version": 1, "source_sha256": source_hash, "dpi": PDF_PAGE_RENDER_DPI}
+    try:
+        cached = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cached = {}
+    cached_pages = cached.get("pages") if isinstance(cached, dict) else None
+    if all(cached.get(key) == value for key, value in expected.items()) and isinstance(cached_pages, list):
+        files = [pages_dir / str(page.get("file") or "") for page in cached_pages if isinstance(page, dict)]
+        if files and all(path.is_file() and path.stat().st_size > 0 for path in files):
+            pages = [
+                {**page, "href": f"{ANNOTATION_PAGES_DIR}/{page['file']}"}
+                for page in cached_pages if isinstance(page, dict)
+            ]
+            return pages, [str(path) for path in files] + [str(manifest_path)]
+
+    import pdfplumber
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    pages: list[dict[str, Any]] = []
+    files: list[str] = []
+    with pdfplumber.open(source_pdf) as pdf:
+        for index, page in enumerate(pdf.pages, start=1):
+            filename = f"page-{index:04d}.png"
+            target = pages_dir / filename
+            page.to_image(resolution=PDF_PAGE_RENDER_DPI, antialias=True).save(target, format="PNG")
+            pages.append({
+                "page_number": index,
+                "file": filename,
+                "href": f"{ANNOTATION_PAGES_DIR}/{filename}",
+                "width": float(page.width),
+                "height": float(page.height),
+            })
+            files.append(str(target))
+    manifest = {**expected, "pages": [{k: v for k, v in page.items() if k != "href"} for page in pages]}
+    tmp = manifest_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, manifest_path)
+    files.append(str(manifest_path))
+    return pages, files
+
+
 def _covered_blocks(requirements: list[dict[str, Any]]) -> set[str]:
     covered: set[str] = set()
     for req in requirements:
@@ -156,6 +379,7 @@ def _covered_blocks(requirements: list[dict[str, Any]]) -> set[str]:
 def _clean_block_text(text: str) -> str:
     """渲染层文本清洁：剥离段内框线乱码片段、去 leader-dots/页码、折叠空白。纯符号行返回空。"""
     # 剥离段内嵌的框线乱码（正文 + 句末框线噪声，如 'When --``,``-- tested' → 'When tested'）
+    text = normalize_text(text)
     text = _INLINE_GARBAGE_RE.sub(" ", text)
     text = _LEADER_DOTS_RE.sub("", text)
     # 行中长点串（目录行被段落合并黏进正文时,点引导线出现在行中——真实截图:整屏点溢出）
@@ -260,6 +484,7 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
 
 
 _LIST_TEXT_RE = re.compile(r"^(?:[a-z0-9]{1,3}[).]|[•▪—–-])\s")
+_NOTE_TEXT_RE = re.compile(r"^NOTE(?:\s|$)", re.IGNORECASE)
 
 
 def _normalize_with_char_map(text: str) -> tuple[str, list[tuple[int, int]]]:
@@ -584,6 +809,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         cls.append("is-table")
     elif _LIST_TEXT_RE.match(text):
         cls.append("list-item")   # 悬挂缩进
+    if _NOTE_TEXT_RE.match(text):
+        cls.append("note")
     if len(text) < 160:
         cls.append("short")   # 短行不 justify（目录条目/落款,拉词距很丑——真实截图反馈）
     depth = min(len(path), 4) if path else 0
@@ -599,16 +826,17 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
             _collected_marker_texts.setdefault(key, ("omission", text))
         translation = _active_translations.get(key, "")
         note = _active_translation_notes.get(key, "")
-        omission_html = ('<div class="omission-flag"><button class="omission-tag" type="button" '
+        omission_html = ('<button class="omission-tag" type="button" '
                          f'data-omission-text="{html.escape(text)}" '
                          f'data-omission-translation="{html.escape(translation)}" '
                          f'data-omission-translation-note="{html.escape(note)}" '
-                         'title="疑似需求但未被任何抽取需求覆盖，点击查看说明">⚠ 未覆盖</button></div>')
+                         'title="疑似需求但未被任何抽取需求覆盖，点击查看说明">未覆盖</button>')
     if is_table and block is not None:
         table_html, placed_ids = _render_table_inner(block, anchored, numbers, state)
         fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
         sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
-        trailing = f'<span class="chips inline-chips">{fallback}{sub_chips}</span>' if fallback or sub_chips else ""
+        trailing_items = f'{fallback}{sub_chips}{omission_html}'
+        trailing = f'<span class="chips inline-chips">{trailing_items}</span>' if trailing_items else ""
         content = f'{table_html}{trailing}'
     else:
         text_html, placed_ids = _render_text_with_quote_markers(text, anchored, numbers, marker_state=state)
@@ -633,20 +861,25 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                 f' data-translation="{html.escape(_active_translations.get(key, ""))}"'
                 f' data-translation-note="{html.escape(_active_translation_notes.get(key, ""))}"')
         content = (f'<p class="text" data-block-id="{html.escape(bid)}"{translation_attrs}>'
-                   f'{text_html}{fallback}{sub_chips}</p>')
+                   f'{text_html}{fallback}{sub_chips}{omission_html}</p>')
     return (
         f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}"'
         f'{f" data-outline={outline_level}" if outline_level else ""} style="--depth:{depth}">'
         f'<div class="block-inner">'
-        f'{omission_html}'
         f'{content}'
         f'</div></div>'
     )
 
 
-def render_annotation_html(out_dir: Path) -> str:
+def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED,
+                           pdf_href: str | None = None,
+                           pdf_pages: list[dict[str, Any]] | None = None,
+                           pdf_geometry: dict[str, list[dict[str, Any]]] | None = None) -> str:
     global _active_unanalyzed_terms, _active_translations, _active_translation_notes
     out_dir = Path(out_dir).expanduser().resolve()
+    layout_mode = _normalize_layout_mode(layout_mode)
+    if layout_mode == LAYOUT_PDF_ORIGINAL and not pdf_href:
+        pdf_href = ANNOTATION_SOURCE_PDF
     _active_unanalyzed_terms = _load_annotation_terms(out_dir)   # 语料词表可覆盖（默认=内置）
     _active_translations, _active_translation_notes = _load_annotation_translations(out_dir)
     _collected_marker_texts.clear()
@@ -666,11 +899,22 @@ def render_annotation_html(out_dir: Path) -> str:
     # （二级批注 01.a/01.b…，与一级条款需求同色同点击目标）。
     block_order = {str(b.get("block_id") or ""): i for i, b in enumerate(blocks)}
     ordered = sorted(
-        (req for req in requirements
-         if str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")),
+        requirements,
         key=lambda r: block_order.get(
             str(r.get("anchor_block_id") or (r.get("source_block_ids") or [""])[0] or ""), 1 << 30))
     req_numbers = {str(r.get("ai_req_id")): i for i, r in enumerate(ordered, start=1)}
+    blocks_by_id = {str(block.get("block_id") or ""): block for block in blocks}
+    for req in requirements:
+        req_id = str(req.get("ai_req_id") or "")
+        req["annotation_number"] = req_numbers.get(req_id)
+        anchor = str(req.get("anchor_block_id") or "")
+        source_ids = [str(value) for value in (req.get("source_block_ids") or []) if str(value)]
+        page = None
+        for block_id in ([anchor] if anchor else []) + source_ids:
+            page = _page_number((blocks_by_id.get(block_id) or {}).get("page_number"))
+            if page is not None:
+                break
+        req["source_page"] = page
     sub_anchor_map: dict[str, list[tuple[dict[str, Any], str]]] = {}
     text_by_block = {str(b.get("block_id") or ""): str(b.get("text") or "") for b in blocks}
     for req in requirements:
@@ -683,13 +927,23 @@ def render_annotation_html(out_dir: Path) -> str:
             if m and m.group(1) in labels:
                 sub_anchor_map.setdefault(str(bid), []).append((req, m.group(1)))
 
-    omissions = sum(
-        1 for b in blocks
-        if b.get("requirement_like") and not b.get("noise") and str(b.get("block_id")) not in covered
-    )
-    blocks_html = _render_blocks(blocks, anchor_map, covered, req_numbers, sub_anchor_map)
+    omission_items = _omission_records(blocks, covered)
+    omissions = len(omission_items)
+    overlay_enabled = bool(layout_mode == LAYOUT_PDF_ORIGINAL and pdf_pages)
+    if overlay_enabled:
+        blocks_html = _render_pdf_page_stack(
+            pdf_pages or [], requirements, omission_items, req_numbers, pdf_geometry or {})
+    elif layout_mode == LAYOUT_PDF_ORIGINAL:
+        source = html.escape(str(pdf_href or ANNOTATION_SOURCE_PDF), quote=True)
+        blocks_html = (
+            f'<iframe id="pdf-frame" class="pdf-frame" src="{source}#view=FitH" '
+            'title="原始 PDF"></iframe>')
+    else:
+        blocks_html = _render_blocks(blocks, anchor_map, covered, req_numbers, sub_anchor_map)
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
+    omissions_json = json.dumps(omission_items, ensure_ascii=False).replace("</", "<\\/")
     vocab_json = json.dumps(_module_vocab(), ensure_ascii=False).replace("</", "<\\/")
+    pdf_href_json = json.dumps(str(pdf_href or ""), ensure_ascii=False).replace("</", "<\\/")
     generated_at = datetime.datetime.now().isoformat(timespec="seconds")
 
     return _TEMPLATE.format(
@@ -699,7 +953,14 @@ def render_annotation_html(out_dir: Path) -> str:
         req_count=len(requirements),
         omission_count=omissions,
         blocks_html=blocks_html,
+        layout_class=(" pdf-original pdf-annotated" if overlay_enabled else
+                      " pdf-original" if layout_mode == LAYOUT_PDF_ORIGINAL else ""),
+        pdf_mode="true" if layout_mode == LAYOUT_PDF_ORIGINAL else "false",
+        pdf_overlay_enabled="true" if overlay_enabled else "false",
+        pdf_page_count=len(pdf_pages or []),
+        pdf_href_json=pdf_href_json,
         requirements_json=reqs_json,
+        omissions_json=omissions_json,
         module_vocab_json=vocab_json,
     )
 
@@ -827,22 +1088,186 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
     return summary
 
 
-def export_annotation_bundle(out_dir: Path, *, route: str | None = None) -> tuple[Path, dict[str, Any]]:
+def _omission_records(blocks: list[dict[str, Any]], covered: set[str]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for block in blocks:
+        block_id = str(block.get("block_id") or "")
+        text = str(block.get("text") or "").strip()
+        if (not block.get("requirement_like") or block.get("noise") or block_id in covered or not text):
+            continue
+        key = _translation_key(text)
+        records.append({
+            "block_id": block_id,
+            "text": text,
+            "source_page": _page_number(block.get("page_number")),
+            "translation": _active_translations.get(key, ""),
+            "translation_note": _active_translation_notes.get(key, ""),
+        })
+    return records
+
+
+def _pdf_zone_style(region: dict[str, Any]) -> tuple[str, float]:
+    x0, top, x1, bottom = region["bbox"]
+    width = float(region["page_width"])
+    height = float(region["page_height"])
+    left = max(0.0, min(100.0, x0 / width * 100))
+    top_pct = max(0.0, min(98.0, top / height * 100))
+    zone_width = max(0.8, min(100.0 - left, (x1 - x0) / width * 100))
+    zone_height = max(0.8, min(100.0 - top_pct, (bottom - top) / height * 100))
+    return (
+        f"left:{left:.3f}%;top:{top_pct:.3f}%;width:{zone_width:.3f}%;height:{zone_height:.3f}%",
+        top_pct,
+    )
+
+
+def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[str, Any]],
+                           omissions: list[dict[str, Any]], req_numbers: dict[str, int],
+                           geometry: dict[str, list[dict[str, Any]]]) -> str:
+    markers: dict[int, list[dict[str, Any]]] = {}
+
+    for req in requirements:
+        req_id = str(req.get("ai_req_id") or "")
+        anchor = str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")
+        regions = geometry.get(anchor) or []
+        if not req_id or not regions:
+            continue
+        region = regions[0]
+        page = _page_number(region.get("page_number"))
+        if not page:
+            continue
+        owner = str(req.get("ownership_effective") or req.get("ownership") or "software")
+        if owner not in _OWNER_LABELS:
+            owner = "software"
+        zone_style, top_pct = _pdf_zone_style(region)
+        number = req_numbers.get(req_id, 0)
+        markers.setdefault(page, []).append({
+            "kind": "requirement",
+            "top": top_pct,
+            "zone": (
+                f'<span class="pdf-source-zone" data-zone-req="{html.escape(req_id, quote=True)}" '
+                f'style="{zone_style}"></span>'),
+            "button": (
+                f'<button class="pdf-marker marker-requirement owner-{html.escape(owner)}" type="button" '
+                f'data-req="{html.escape(req_id, quote=True)}" data-page="{page}" '
+                f'title="批注 {number:02d} · {html.escape(str(req.get("title") or "需求"), quote=True)}">'
+                f'{number:02d}</button>'),
+        })
+
+    for omission in omissions:
+        block_id = str(omission.get("block_id") or "")
+        for region in geometry.get(block_id) or []:
+            page = _page_number(region.get("page_number"))
+            if not page:
+                continue
+            zone_style, top_pct = _pdf_zone_style(region)
+            markers.setdefault(page, []).append({
+                "kind": "omission",
+                "top": top_pct,
+                "zone": (
+                    f'<span class="pdf-source-zone omission-zone" '
+                    f'data-zone-omission="{html.escape(block_id, quote=True)}" style="{zone_style}"></span>'),
+                "button": (
+                    '<button class="pdf-marker omission-tag marker-omission" type="button" '
+                    f'data-block-id="{html.escape(block_id, quote=True)}" data-page="{page}" '
+                    f'data-omission-text="{html.escape(str(omission.get("text") or ""), quote=True)}" '
+                    f'data-omission-translation="{html.escape(str(omission.get("translation") or ""), quote=True)}" '
+                    f'data-omission-translation-note="{html.escape(str(omission.get("translation_note") or ""), quote=True)}" '
+                    'title="疑似需求未覆盖">!</button>'),
+            })
+
+    page_html: list[str] = []
+    for page in pages:
+        page_number = int(page["page_number"])
+        page_markers = sorted(markers.get(page_number) or [], key=lambda item: item["top"])
+        previous_top = -100.0
+        lane = 0
+        rendered_markers: list[str] = []
+        for marker in page_markers:
+            lane = lane + 1 if marker["top"] - previous_top < 2.6 else 0
+            previous_top = marker["top"]
+            rendered_markers.append(marker["zone"])
+            rendered_markers.append(
+                marker["button"].replace(">", f' style="top:calc({marker["top"]:.3f}% + {lane * 25}px)">', 1))
+        aspect = float(page["width"]) / max(1.0, float(page["height"]))
+        page_html.append(
+            f'<section class="pdf-page" id="pdf-page-{page_number}" data-page="{page_number}" '
+            f'style="aspect-ratio:{aspect:.6f}">'
+            f'<img src="{html.escape(str(page["href"]), quote=True)}" alt="PDF 第 {page_number} 页" '
+            'loading="lazy" decoding="async" />'
+            f'<div class="pdf-page-overlay">{"".join(rendered_markers)}</div>'
+            f'<span class="pdf-page-label">{page_number}</span></section>')
+
+    return (
+        '<div class="pdf-renderer" id="pdf-renderer">'
+        '<div class="pdf-toolbar">'
+        '<div class="pdf-marker-legend"><span><i class="legend-annotation">01</i>批注</span>'
+        '<span><i class="legend-omission">!</i>未覆盖</span></div>'
+        '<div class="pdf-toolbar-actions">'
+        '<button id="pdf-zoom-out" type="button" title="缩小" aria-label="缩小">&#8722;</button>'
+        f'<span id="pdf-page-status">1 / {len(pages)}</span>'
+        '<button id="pdf-zoom-in" type="button" title="放大" aria-label="放大">+</button>'
+        f'<a href="{ANNOTATION_SOURCE_PDF}" target="_blank" title="打开原始 PDF">PDF</a>'
+        '</div></div>'
+        f'<div class="pdf-page-list" id="pdf-page-list">{"".join(page_html)}</div></div>')
+
+
+def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
+                             layout_mode: str = LAYOUT_OPTIMIZED) -> tuple[Path, dict[str, Any]]:
     out_dir = Path(out_dir).expanduser().resolve()
+    requested_mode = _normalize_layout_mode(layout_mode)
+    source_pdf = _source_pdf_path(out_dir) if requested_mode == LAYOUT_PDF_ORIGINAL else None
+    actual_mode = (LAYOUT_PDF_ORIGINAL
+                   if requested_mode == LAYOUT_PDF_ORIGINAL and source_pdf else LAYOUT_OPTIMIZED)
+    copied_pdf: Path | None = None
+    pdf_pages: list[dict[str, Any]] = []
+    page_files: list[str] = []
+    pdf_geometry: dict[str, list[dict[str, Any]]] = {}
+    pdf_render_error = ""
+    if actual_mode == LAYOUT_PDF_ORIGINAL and source_pdf is not None:
+        copied_pdf = out_dir / ANNOTATION_SOURCE_PDF
+        if source_pdf.resolve() != copied_pdf.resolve():
+            shutil.copyfile(source_pdf, copied_pdf)
+        try:
+            blocks = build_document_blocks(out_dir).get("blocks") or []
+            pdf_geometry = _resolve_pdf_geometry(
+                source_pdf, blocks, cache_path=out_dir / ANNOTATION_PDF_GEOMETRY)
+            pdf_pages, page_files = _ensure_pdf_page_images(source_pdf, out_dir)
+        except Exception as exc:
+            pdf_render_error = str(exc)
+
     target = out_dir / ANNOTATION_HTML
-    rendered = render_annotation_html(out_dir)
+    rendered = render_annotation_html(
+        out_dir,
+        layout_mode=actual_mode,
+        pdf_href=ANNOTATION_SOURCE_PDF if copied_pdf else None,
+        pdf_pages=pdf_pages,
+        pdf_geometry=pdf_geometry,
+    )
     summary: dict[str, Any] = {"route": "stub", "total_markers": len(_collected_marker_texts)}
-    if route and route != "stub":
+    if actual_mode == LAYOUT_PDF_ORIGINAL:
+        # PDF 原页模式不生成依赖文本重排的块级说明翻译。
+        summary.update({"route": route or "stub", "translation_skipped": "pdf_original"})
+    elif route and route != "stub":
         summary = generate_annotation_translations(out_dir, route=route,
                                                    texts=dict(_collected_marker_texts))
         if summary.get("translated") or summary.get("rejected"):
-            rendered = render_annotation_html(out_dir)   # 重渲染嵌入新译文或拒绝原因（毫秒级）
+            rendered = render_annotation_html(
+                out_dir, layout_mode=actual_mode)   # 重渲染嵌入新译文或拒绝原因（毫秒级）
+    summary.update({
+        "layout_mode_requested": requested_mode,
+        "layout_mode": actual_mode,
+        "source_pdf": str(copied_pdf) if copied_pdf else None,
+        "annotation_overlay": bool(pdf_pages and pdf_geometry),
+        "page_files": page_files,
+        "pdf_render_error": pdf_render_error or None,
+    })
     target.write_text(rendered, encoding="utf-8")
     return target, summary
 
 
-def export_annotation_html(out_dir: Path, route: str | None = None) -> Path:
-    return export_annotation_bundle(out_dir, route=route)[0]
+def export_annotation_html(out_dir: Path, route: str | None = None,
+                           layout_mode: str = LAYOUT_OPTIMIZED) -> Path:
+    return export_annotation_bundle(out_dir, route=route, layout_mode=layout_mode)[0]
 
 
 _TEMPLATE = r"""<!DOCTYPE html>
@@ -870,7 +1295,6 @@ _TEMPLATE = r"""<!DOCTYPE html>
   --st-accepted: #e6f0e8; --st-accepted-tx: #2f6842;
   --st-rejected: #f4e7e3; --st-rejected-tx: #9b3b32;
   --st-discussion: #f6efd8; --st-discussion-tx: #8a6417;
-  --omission-bg: #f8efd9;
 }}
 * {{ box-sizing: border-box; }}
 body {{ margin: 0; font-family: var(--sans);
@@ -878,6 +1302,52 @@ body {{ margin: 0; font-family: var(--sans);
 .reader-shell {{ min-height: 100vh; background:
   linear-gradient(90deg, rgba(255,255,255,.62), rgba(255,255,255,0) 18%, rgba(255,255,255,0) 82%, rgba(255,255,255,.5)),
   var(--page); }}
+.reader-shell.pdf-original .read-progress {{ display: none; }}
+.reader-shell.pdf-original .paper {{ padding: 0; overflow: auto; background: #3f4144; }}
+.reader-shell.pdf-original .doc-content {{ width: 100%; max-width: none; height: 100%; margin: 0; padding: 0;
+  border: 0; border-radius: 0; box-shadow: none; background: #525659; }}
+.pdf-frame {{ display: block; width: 100%; height: 100%; border: 0; background: #525659; }}
+.reader-shell.pdf-annotated .doc-content {{ height: auto; min-height: 100%; overflow: visible; background: #3f4144; }}
+.pdf-renderer {{ min-height: 100%; --pdf-page-width: 850px; }}
+.pdf-toolbar {{ position: sticky; top: 0; z-index: 7; height: 44px; display: flex; align-items: center;
+  justify-content: space-between; padding: 0 14px; color: #f4f4f4; background: rgba(38,39,41,.96);
+  border-bottom: 1px solid #5b5d60; font-family: var(--sans); }}
+.pdf-marker-legend, .pdf-toolbar-actions {{ display: flex; align-items: center; gap: 10px; }}
+.pdf-marker-legend span {{ display: inline-flex; align-items: center; gap: 5px; color: #d5d7da; font-size: 11px; }}
+.pdf-marker-legend i {{ width: 21px; height: 21px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-style: normal; font-size: 9px; font-weight: 700; }}
+.legend-annotation {{ color: #ffffff; background: #0f766e; }}
+.legend-omission {{ color: #474747; background: #ddd9d1; border: 1px solid #aaa59b; }}
+.pdf-toolbar-actions button, .pdf-toolbar-actions a {{ width: 28px; height: 28px; display: inline-flex;
+  align-items: center; justify-content: center; border: 0; border-radius: 4px; color: #f5f5f5;
+  background: transparent; text-decoration: none; cursor: pointer; font: 600 14px/1 var(--sans); }}
+.pdf-toolbar-actions button:hover, .pdf-toolbar-actions a:hover {{ background: #57595d; }}
+#pdf-page-status {{ min-width: 62px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; }}
+.pdf-page-list {{ display: flex; flex-direction: column; align-items: center; gap: 18px; width: max-content;
+  min-width: 100%; padding: 20px 48px 48px; }}
+.pdf-page {{ position: relative; width: var(--pdf-page-width); flex: 0 0 auto;
+  background: #ffffff; box-shadow: 0 2px 12px rgba(0,0,0,.38); overflow: visible; }}
+.pdf-page > img {{ display: block; width: 100%; height: 100%; object-fit: fill; }}
+.pdf-page-overlay {{ position: absolute; inset: 0; overflow: visible; pointer-events: none; }}
+.pdf-source-zone {{ position: absolute; z-index: 1; border: 1px solid transparent; background: transparent;
+  pointer-events: none; transition: background .12s, border-color .12s; }}
+.pdf-source-zone.selected {{ background: rgba(255, 232, 122, .32); border-color: rgba(15,118,110,.72); }}
+.pdf-source-zone.omission-zone.selected {{ background: rgba(236, 228, 207, .35); border-color: rgba(138,100,23,.65); }}
+.pdf-page .pdf-marker {{ position: absolute; right: -34px; z-index: 3; width: 25px; height: 25px; margin: 0;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0; border-radius: 50%;
+  border: 2px solid #ffffff; color: #ffffff; cursor: pointer; pointer-events: auto;
+  font: 700 9px/1 var(--sans); box-shadow: 0 2px 7px rgba(0,0,0,.32); opacity: .92; }}
+.pdf-page .pdf-marker:hover, .pdf-page .pdf-marker.sel {{ transform: scale(1.12); opacity: 1; }}
+.pdf-page .pdf-marker.owner-software {{ background: #0f766e; }}
+.pdf-page .pdf-marker.owner-hardware {{ background: #9a6700; }}
+.pdf-page .pdf-marker.owner-co_design {{ background: #315f72; }}
+.pdf-page .pdf-marker.owner-software_term {{ background: #6b7280; }}
+.pdf-page .pdf-marker.marker-omission {{ color: #5d5549; background: #ddd9d1; border: 1px solid #9f998e;
+  box-shadow: 0 1px 5px rgba(0,0,0,.2); opacity: .68; }}
+.pdf-page .pdf-marker.marker-omission:hover, .pdf-page .pdf-marker.marker-omission.sel {{ color: #7a5610;
+  background: #f3ead4; border-color: #a97a22; opacity: 1; }}
+.pdf-page-label {{ position: absolute; left: 50%; bottom: -17px; transform: translateX(-50%);
+  color: #d3d4d6; font: 10px/1 var(--sans); }}
 
 /* --- 顶栏 --- */
 .topbar {{ position: sticky; top: 0; z-index: 10; display: flex; justify-content: space-between; align-items: center;
@@ -886,7 +1356,7 @@ body {{ margin: 0; font-family: var(--sans);
 .topbar .brand {{ font-weight: 600; font-size: 14px; color: var(--ink); letter-spacing: .01em; }}
 .topbar .stats {{ display: flex; gap: 22px; font-size: 12px; color: var(--muted); }}
 .topbar .stats strong {{ color: var(--ink); font-weight: 600; }}
-.topbar .stats .warn strong {{ color: var(--st-discussion-tx); }}
+.topbar .stats .warn strong {{ color: var(--muted); }}
 .topbar button {{ background: var(--ink); color: #ffffff; border: 1px solid var(--ink); border-radius: 8px;
   padding: 7px 14px; cursor: pointer; font-size: 12px; font-weight: 600; font-family: var(--sans); }}
 .topbar button:hover {{ background: #333333; border-color: #333333; }}
@@ -918,32 +1388,46 @@ body {{ margin: 0; font-family: var(--sans);
 .outline .h2-item {{ padding-left: 28px; font-size: 12px; }}
 .outline .h3-item {{ padding-left: 44px; font-size: 12px; color: var(--faint); }}
 .outline .h2-item .toggle, .outline .h3-item .toggle {{ visibility: hidden; }}
+.outline .req-index-item {{ width: 100%; align-items: flex-start; gap: 7px; border: 0; background: transparent;
+  font: inherit; text-align: left; margin: 0 0 2px; }}
+.outline .req-index-number {{ min-width: 22px; color: var(--accent); font-variant-numeric: tabular-nums; }}
+.outline .req-index-copy {{ min-width: 0; display: flex; flex-direction: column; }}
+.outline .req-index-copy small {{ color: var(--faint); font-size: 10px; line-height: 1.4; }}
+.pdf-index-tabs {{ display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 0 6px 10px;
+  padding: 2px; background: #ebe8e1; border-radius: 4px; }}
+.pdf-index-tabs button {{ min-width: 0; border: 0; border-radius: 3px; padding: 5px 4px; color: var(--muted);
+  background: transparent; cursor: pointer; font: 600 11px/1.2 var(--sans); }}
+.pdf-index-tabs button.active {{ color: var(--ink); background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,.08); }}
+.outline .omission-index-item .req-index-number {{ color: #8a6417; }}
+.outline .omission-index-item {{ opacity: .82; }}
 
 /* --- 中：文档 --- */
-.paper {{ overflow-y: auto; padding: 46px 0 72px; }}
-.doc-content {{ max-width: 720px; margin: 0 auto; padding: 56px 64px 72px; background: var(--paper);
+.paper {{ overflow-y: auto; padding: 26px 0 48px; }}
+.doc-content {{ max-width: 720px; margin: 0 auto; padding: 40px 52px 52px; background: var(--paper);
   border: 1px solid var(--line); border-radius: 10px;
   box-shadow: 0 18px 50px rgba(23, 23, 23, 0.08);
-  font-family: var(--serif); font-size: 18px; line-height: 2.0; }}
+  font-family: var(--sans); font-size: 16px; line-height: 1.65; }}
 
-.doc-block {{ margin-bottom: 10px; }}
+.doc-block {{ margin-bottom: 0; }}
 .block-inner {{ position: relative; padding-left: calc(var(--depth, 0) * 16px); }}
-.doc-block .text {{ margin: 0; padding: 2px 0; }}
-.doc-block.heading .text {{ font-weight: 600; margin-top: 20px; }}
+.doc-block .text {{ margin: 0; padding: 1px 0; }}
+.doc-block:not(.heading):not(.noise):not(.list-item):not(.is-table) {{ margin-bottom: 9px; }}
+.doc-block.list-item {{ margin-bottom: 2px; }}
+.doc-block.list-item + .doc-block:not(.list-item):not(.heading) {{ margin-top: 7px; }}
+.doc-block.heading .text {{ font-weight: 600; margin-top: 14px; }}
 .doc-block.heading .text {{ line-height: 1.3; }}
 .doc-block.h1 .text {{ font-size: 32px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }}
 .doc-block.h2 .text {{ font-size: 23px; }}
 .doc-block.h2 .block-inner {{ border-left: 2px solid var(--accent-quiet); padding-left: 12px; margin-left: -14px; }}
 .doc-block.h3 .text {{ font-size: 19px; color: #3d3d3d; }}
 .doc-block.noise .text {{ opacity: 0.3; font-size: 13px; }}
-.doc-block.omission {{ background: linear-gradient(90deg, var(--omission-bg), rgba(248,239,217,.35)); border-radius: 4px; padding: 4px 8px; margin: 5px 0; }}
-.doc-block.omission .text {{ border-left: 2px solid #cda85c; padding-left: 9px; }}
+.doc-block.omission:hover {{ background: rgba(248,239,217,.2); }}
 .doc-block.anchored {{ cursor: pointer; border-radius: 4px; }}
 .doc-block.anchored:hover {{ background: var(--accent-soft); }}
 .doc-block.in-span {{ background: var(--accent-soft); border-radius: 4px; }}
 .text mark {{ background: linear-gradient(transparent 44%, var(--highlight) 44%); padding: 0 2px; border-radius: 0; }}
 mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 44%); padding: 0 2px; border-radius: 0; }}
-.page-break {{ display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #b8b2a4; font-size: 11px; }}
+.page-break {{ display: flex; align-items: center; gap: 10px; margin: 16px 0 10px; color: #b8b2a4; font-size: 11px; }}
 .page-break::before, .page-break::after {{ content: ""; flex: 1; border-top: 1px dashed #ddd6c8; }}
 
 /* --- 阅读排版（优于原版 PDF：正文两端对齐、列表悬挂缩进、真表格） --- */
@@ -951,7 +1435,8 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .doc-block:not(.heading):not(.short) .text {{ text-align: justify; hyphens: none; }}
 .doc-block.short .text {{ text-align: left; }}
 .doc-block.list-item .text {{ padding-left: 1.6em; text-indent: -1.6em; text-align: left; }}
-.doc-table {{ margin: 14px 0 18px; }}
+.doc-block.note .text {{ padding-left: 3.4em; text-indent: -3.4em; }}
+.doc-table {{ margin: 10px 0 12px; }}
 .doc-table figcaption {{ font-size: 12px; font-weight: 600; color: #6e7787; margin-bottom: 6px; letter-spacing: .02em; }}
 .doc-table .table-badge {{ font-size: 10px; font-weight: 500; color: #8a6417; background: rgba(248,239,217,.8);
   border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 7px; margin-left: 8px; vertical-align: 1px; }}
@@ -1006,10 +1491,12 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .chip.st-accepted {{ color: var(--st-accepted-tx); }}
 .chip.st-rejected {{ color: var(--st-rejected-tx); }}
 .chip.st-needs_discussion {{ color: var(--st-discussion-tx); }}
-.omission-flag {{ margin: 1px 0 2px; }}
-.omission-tag {{ font-size: 11px; color: var(--st-discussion-tx); background: rgba(248,239,217,.74);
-  border: 1px solid #e7d29a; border-radius: 999px; padding: 1px 8px; cursor: pointer; font-family: var(--sans); }}
-.omission-tag:hover, .omission-tag.sel {{ border-color: var(--st-discussion-tx); background: #f6e9c8; }}
+.omission-tag {{ display: inline-flex; margin-left: 6px; padding: 0 2px 1px; border: 0;
+  border-bottom: 1px dotted var(--line-strong); border-radius: 0; background: transparent;
+  color: var(--faint); font-size: 10px; line-height: 1; cursor: pointer; vertical-align: super;
+  font-family: var(--sans); transition: color .12s, border-color .12s, background .12s; }}
+.omission-tag:hover, .omission-tag.sel {{ color: var(--st-discussion-tx); border-color: var(--st-discussion-tx);
+  background: rgba(248,239,217,.45); }}
 
 /* 折叠区 */
 .region-collapse {{ margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; background: rgba(250,248,242,.62); }}
@@ -1055,12 +1542,29 @@ textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
 .saved-hint {{ font-size: 12px; color: var(--st-accepted-tx); margin-top: 8px; min-height: 16px; }}
 
 /* 窄屏：隐藏大纲 */
-@media (max-width: 1100px) {{ .layout {{ grid-template-columns: 1fr 340px; }} .outline {{ display: none; }} }}
-@media (max-width: 768px) {{ .layout {{ grid-template-columns: 1fr; }} .detail {{ display: none; }} }}
+@media (max-width: 1100px) {{ .layout {{ grid-template-columns: minmax(0, 1fr) 340px; }} .outline {{ display: none; }} }}
+@media (max-width: 768px) {{
+  .topbar {{ padding: 0 10px; gap: 8px; }}
+  .topbar .stats {{ display: none; }}
+  .topbar button {{ padding: 6px 9px; font-size: 11px; }}
+  .layout {{ grid-template-columns: minmax(0, 1fr); }}
+  .detail {{ display: none; }}
+  .paper {{ min-width: 0; padding: 16px 0 32px; }}
+  .doc-content {{ width: 100%; max-width: none; margin: 0; padding: 28px 18px 40px;
+    border-left: 0; border-right: 0; border-radius: 0; }}
+  .doc-block.h1 .text {{ font-size: 27px; }}
+  .doc-block.h2 .text {{ font-size: 21px; }}
+  .doc-block:not(.heading):not(.short) .text {{ text-align: left; }}
+  .block-inner {{ padding-left: calc(var(--depth, 0) * 8px); }}
+  .pdf-renderer {{ --pdf-page-width: calc(100vw - 60px); }}
+  .pdf-page-list {{ padding-left: 8px; padding-right: 40px; }}
+  .pdf-page .pdf-marker {{ right: -30px; }}
+  .pdf-marker-legend span {{ font-size: 0; gap: 0; }}
+}}
 </style>
 </head>
 <body>
-<div class="reader-shell">
+<div class="reader-shell{layout_class}">
 <div class="reader-topbar topbar">
   <div class="brand">{source}</div>
   <div class="stats">
@@ -1085,8 +1589,13 @@ textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
 const DOC_ID = "{doc_id}";
 const STORAGE_KEY = "ratomizer-decisions:" + DOC_ID;
 const REQUIREMENTS = {requirements_json};
+const PDF_OMISSIONS = {omissions_json};
 const MODULE_VOCAB = {module_vocab_json};
 const GENERATED_AT = "{generated_at}";
+const PDF_MODE = {pdf_mode};
+const PDF_OVERLAY_ENABLED = {pdf_overlay_enabled};
+const PDF_PAGE_COUNT = {pdf_page_count};
+const PDF_HREF = {pdf_href_json};
 const byId = {{}}; REQUIREMENTS.forEach(r => byId[r.ai_req_id] = r);
 const STATUS_LABELS = {{ draft:"待审", accepted:"已接受", rejected:"已拒绝", needs_discussion:"待讨论", expert_pending:"专家待定" }};
 
@@ -1130,9 +1639,90 @@ function paintChips() {{
   }});
 }}
 
+function showPdfPage(page) {{
+  if (!PDF_MODE) return;
+  const pageNumber = Number.parseInt(String(page || ""), 10);
+  if (!Number.isFinite(pageNumber) || pageNumber < 1) return;
+  if (PDF_OVERLAY_ENABLED) {{
+    const pageElement = document.getElementById("pdf-page-" + pageNumber);
+    if (pageElement) pageElement.scrollIntoView({{behavior:"smooth", block:"start"}});
+    const status = document.getElementById("pdf-page-status");
+    if (status) status.textContent = pageNumber + " / " + PDF_PAGE_COUNT;
+    return;
+  }}
+  if (!PDF_HREF) return;
+  const frame = document.getElementById("pdf-frame");
+  if (frame) frame.setAttribute("src", PDF_HREF + "#page=" + pageNumber + "&view=FitH");
+}}
+
 /* --- 左侧大纲：树形可折叠（h1 可展开/收起，h2/h3 嵌套） --- */
 function buildOutline() {{
   const nav = document.getElementById("outline");
+  if (PDF_MODE) {{
+    const title = nav.querySelector(".outline-title");
+    if (title) title.textContent = "批注索引";
+    const ownerLabels = {{software:"软件", hardware:"硬件", co_design:"软硬件协同"}};
+    const rows = REQUIREMENTS.slice().sort((a, b) =>
+      Number(a.annotation_number || 999999) - Number(b.annotation_number || 999999));
+    if (!rows.length && !PDF_OMISSIONS.length) {{ nav.style.display = "none"; return; }}
+    const tabs = document.createElement("div");
+    tabs.className = "pdf-index-tabs";
+    const list = document.createElement("div");
+    list.className = "pdf-index-list";
+
+    function renderIndex(kind) {{
+      tabs.querySelectorAll("button").forEach(button =>
+        button.classList.toggle("active", button.getAttribute("data-kind") === kind));
+      list.innerHTML = "";
+      if (kind === "annotations") {{
+        rows.forEach((r, index) => {{
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = "nav-item req-index-item";
+          item.setAttribute("data-req", r.ai_req_id || "");
+          const number = String(r.annotation_number || index + 1).padStart(2, "0");
+          const owner = ownerLabels[ownershipOf(r)] || "待分类";
+          const page = Number(r.source_page || 0);
+          const meta = owner + (page > 0 ? " · 第 " + page + " 页" : "");
+          item.innerHTML = '<span class="req-index-number">' + esc(number) + '</span>' +
+            '<span class="req-index-copy"><span class="label">' + esc(r.title || r.description || r.ai_req_id) +
+            '</span><small>' + esc(meta) + '</small></span>';
+          item.onclick = () => select(r.ai_req_id);
+          list.appendChild(item);
+        }});
+      }} else {{
+        PDF_OMISSIONS.forEach(row => {{
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = "nav-item req-index-item omission-index-item";
+          item.setAttribute("data-omission-block", row.block_id || "");
+          const page = Number(row.source_page || 0);
+          item.innerHTML = '<span class="req-index-number">!</span>' +
+            '<span class="req-index-copy"><span class="label">' + esc(row.text || "未覆盖原文") +
+            '</span><small>未覆盖' + (page > 0 ? " · 第 " + page + " 页" : "") + '</small></span>';
+          item.onclick = () => {{
+            showPdfPage(page);
+            const marker = document.querySelector('.marker-omission[data-block-id="' + row.block_id + '"]');
+            if (marker) selectOmission(marker); else selectOmissionRecord(row);
+          }};
+          list.appendChild(item);
+        }});
+      }}
+    }}
+
+    [["annotations", "批注 " + rows.length], ["omissions", "未覆盖 " + PDF_OMISSIONS.length]].forEach(entry => {{
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("data-kind", entry[0]);
+      button.textContent = entry[1];
+      button.onclick = () => renderIndex(entry[0]);
+      tabs.appendChild(button);
+    }});
+    nav.appendChild(tabs);
+    nav.appendChild(list);
+    renderIndex("annotations");
+    return;
+  }}
   // 文件目录（Python 侧权威判定 data-outline：章=1/节=2；印刷目录条目与深层条款不入）
   const headings = Array.from(document.querySelectorAll(".doc-block[data-outline]"));
   if (headings.length === 0) {{ nav.style.display = "none"; return; }}
@@ -1186,7 +1776,10 @@ function buildOutline() {{
 let selected = null;
 function markSpan() {{
   document.querySelectorAll(".doc-block.in-span").forEach(el => el.classList.remove("in-span", "evidence"));
+  document.querySelectorAll(".pdf-source-zone").forEach(el => el.classList.remove("selected"));
   const r = selected && byId[selected]; if (!r) return;
+  document.querySelectorAll('.pdf-source-zone[data-zone-req="' + selected + '"]').forEach(el =>
+    el.classList.add("selected"));
   const ids = (r.source_block_ids || []).concat([r.anchor_block_id]).filter(Boolean);
   ids.forEach(bid => {{
     const el = document.querySelector('.doc-block[data-block-id="' + bid + '"]');
@@ -1327,6 +1920,9 @@ function deselect() {{
   document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
   document.querySelectorAll(".source-classification").forEach(c => c.classList.remove("sel"));
   document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
+  document.querySelectorAll(".pdf-marker").forEach(marker => marker.classList.remove("sel"));
+  document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
+  document.querySelectorAll(".req-index-item").forEach(item => item.classList.remove("active"));
   document.querySelectorAll('.chip[data-inline-marker="1"].quote-selected').forEach(m => m.classList.remove("quote-selected"));
   document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
@@ -1381,34 +1977,53 @@ function markWholeTextNodes(container) {{
   }});
 }}
 
-function selectOmission(el) {{
+function renderOmissionDetails(text, translation, note, page) {{
+  const location = page ? '<div class="dd-meta">原文位置 · PDF 第 '+esc(page)+' 页</div>' : '';
+  const translationHtml = translation
+    ? '<div class="dd-label">原文翻译</div><div class="dd-body">'+esc(translation)+'</div>'
+    : note
+      ? '<div class="dd-label">原文翻译</div><div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(note)+'）</div>'
+      : PDF_MODE ? ''
+      : '<div class="dd-label">原文翻译</div><div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>';
+  document.getElementById("detail").innerHTML =
+    '<div class="annotation-card detail-card">'+
+    '<div class="dd-head"><span class="dd-module">未覆盖</span><span class="badge">说明</span></div>'+
+    '<div class="dd-title">为什么标为未覆盖</div>'+location+
+    '<div class="dd-body">'+esc(OMISSION_REASON)+'</div>'+translationHtml+
+    (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
+    '</div>';
+}}
+
+function selectOmissionRecord(row) {{
   selected = null;
   selectedContextBlock = null;
   document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
   document.querySelectorAll(".source-classification").forEach(c => c.classList.remove("sel"));
-  document.querySelectorAll(".omission-tag").forEach(t => t.classList.toggle("sel", t === el));
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
+  document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
+  document.querySelectorAll('.pdf-source-zone[data-zone-omission="' + row.block_id + '"]').forEach(zone =>
+    zone.classList.add("selected"));
   document.querySelectorAll(".doc-block").forEach(block => block.classList.remove("in-span", "evidence"));
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   clearSourceQuoteMarks();
+  renderOmissionDetails(row.text || "", row.translation || "", row.translation_note || "", row.source_page || 0);
+}}
+
+function selectOmission(el) {{
+  const row = {{
+    block_id: el.getAttribute("data-block-id") || "",
+    text: el.getAttribute("data-omission-text") || "",
+    translation: el.getAttribute("data-omission-translation") || "",
+    translation_note: el.getAttribute("data-omission-translation-note") || "",
+    source_page: Number(el.getAttribute("data-page") || 0),
+  }};
+  selectOmissionRecord(row);
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.toggle("sel", t === el));
   const block = el.closest(".doc-block");
   if (block) {{
     block.classList.add("in-span", "evidence");
     markWholeTextNodes(block.querySelector(".text"));   // 整段=引用本体 → 黄标,块底保持蓝
   }}
-  const text = el.getAttribute("data-omission-text") || "";
-  const translation = el.getAttribute("data-omission-translation") || "";
-  const note = el.getAttribute("data-omission-translation-note") || "";
-  document.getElementById("detail").innerHTML =
-    '<div class="annotation-card detail-card">'+
-    '<div class="dd-head"><span class="dd-module">未覆盖</span><span class="badge">说明</span></div>'+
-    '<div class="dd-title">为什么标为未覆盖</div>'+
-    '<div class="dd-body">'+esc(OMISSION_REASON)+'</div>'+
-    '<div class="dd-label">原文翻译</div>'+
-    (translation ? '<div class="dd-body">'+esc(translation)+'</div>'
-     : note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(note)+'）</div>'
-     : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>')+
-    (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
-    '</div>';
 }}
 
 function sourceClassificationReason(owner, text) {{
@@ -1475,7 +2090,12 @@ function select(id) {{
   document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
   clearSourceQuoteMarks();   // 说明标记的引用黄标不跨选中残留（td 容器不在 .text 清扫范围内）
   document.querySelectorAll(".chip").forEach(c => c.classList.toggle("sel", c.getAttribute("data-req") === id));
+  document.querySelectorAll(".pdf-marker").forEach(marker =>
+    marker.classList.toggle("sel", marker.getAttribute("data-req") === id));
   const r = byId[id]; if (!r) return;
+  document.querySelectorAll(".req-index-item").forEach(item =>
+    item.classList.toggle("active", item.getAttribute("data-req") === id));
+  if (PDF_MODE) showPdfPage(r.source_page);
   const d = decisionOf(id) || {{}};
   const st = statusOf(id);
   const isHardware = isHardwareRequirement(r);
@@ -1501,7 +2121,9 @@ function select(id) {{
     '<span class="badge st-'+st+'">'+esc(STATUS_LABELS[st]||st)+'</span></div>'+
     '<div class="dd-title">'+esc(r.title)+'</div>'+
     '<div class="dd-meta">'+esc(r.type)+' · '+esc(r.priority)+' · '+esc(r.source_section)+'</div>'+
-    '<div class="dd-legend">正文标记：<span style="background:#ffe89a;padding:0 4px">黄=引用依据</span> · <span style="background:#eef4ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文（模型通读范围）</div>'+
+    (PDF_MODE
+      ? (r.source_page ? '<div class="dd-legend">原文位置 · PDF 第 '+esc(r.source_page)+' 页</div>' : '')
+      : '<div class="dd-legend">正文标记：<span style="background:#ffe89a;padding:0 4px">黄=引用依据</span> · <span style="background:#eef4ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文（模型通读范围）</div>')+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
     analysisHtml+
     functionalMembershipHtml(r)+
@@ -1535,6 +2157,8 @@ function decide(id, status) {{
 
 document.getElementById("paper").addEventListener("click", e => {{
   const chip = e.target.closest(".chip"); if (chip) {{ select(chip.getAttribute("data-req")); return; }}
+  const pdfMarker = e.target.closest('.pdf-marker[data-req]');
+  if (pdfMarker) {{ select(pdfMarker.getAttribute("data-req")); return; }}
   const sourceMarker = e.target.closest(".source-classification"); if (sourceMarker) {{ selectSourceClassification(sourceMarker); return; }}
   const omission = e.target.closest(".omission-tag"); if (omission) {{ selectOmission(omission); return; }}
   const blk = e.target.closest(".doc-block.anchored");
@@ -1558,6 +2182,41 @@ document.getElementById("export-btn").onclick = () => {{
   a.download = "ai_decisions_" + DOC_ID + ".json"; a.click();
 }};
 
+let pdfPageWidth = 850;
+function setPdfZoom(width) {{
+  if (!PDF_OVERLAY_ENABLED) return;
+  pdfPageWidth = Math.max(520, Math.min(1500, Number(width) || 850));
+  const renderer = document.getElementById("pdf-renderer");
+  if (renderer) renderer.style.setProperty("--pdf-page-width", pdfPageWidth + "px");
+}}
+
+function initializePdfOverlay() {{
+  if (!PDF_OVERLAY_ENABLED) return;
+  const zoomOut = document.getElementById("pdf-zoom-out");
+  const zoomIn = document.getElementById("pdf-zoom-in");
+  if (zoomOut) zoomOut.onclick = () => setPdfZoom(pdfPageWidth - 100);
+  if (zoomIn) zoomIn.onclick = () => setPdfZoom(pdfPageWidth + 100);
+  const paper = document.getElementById("paper");
+  const status = document.getElementById("pdf-page-status");
+  if (!("IntersectionObserver" in window) || !paper || !status) return;
+  const visibility = new Map();
+  const observer = new IntersectionObserver(entries => {{
+    entries.forEach(entry => visibility.set(entry.target, entry.intersectionRatio));
+    let current = null;
+    let ratio = 0;
+    visibility.forEach((value, page) => {{ if (value > ratio) {{ current = page; ratio = value; }} }});
+    if (current) status.textContent = current.getAttribute("data-page") + " / " + PDF_PAGE_COUNT;
+  }}, {{root: paper, threshold: [0, .15, .35, .6, .9]}});
+  document.querySelectorAll(".pdf-page").forEach(page => observer.observe(page));
+  const linkedRequirement = new URLSearchParams(window.location.search).get("req");
+  if (linkedRequirement && byId[linkedRequirement]) {{
+    setTimeout(() => select(linkedRequirement), 80);
+    return;
+  }}
+  const initial = /(?:^#|&)page=(\d+)/.exec(window.location.hash || "");
+  if (initial) setTimeout(() => showPdfPage(Number(initial[1])), 80);
+}}
+
 // 阅读进度条:中栏滚动比例(Instapaper 式)
 (function () {{
   var paper = document.getElementById("paper");
@@ -1569,7 +2228,7 @@ document.getElementById("export-btn").onclick = () => {{
   }}, {{ passive: true }});
 }})();
 
-paintChips(); buildOutline(); refreshDecidedCount();
+paintChips(); buildOutline(); refreshDecidedCount(); initializePdfOverlay();
 </script>
 </body>
 </html>

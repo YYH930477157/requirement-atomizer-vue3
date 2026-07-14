@@ -170,6 +170,32 @@ class ReflowTests(unittest.TestCase):
         ])
         self.assertEqual(len(texts), 3)
 
+    def test_outdented_lowercase_transition_starts_a_new_paragraph(self) -> None:
+        """A lowercase transition after an indented list continuation keeps the PDF break."""
+        texts = self._group([
+            line(100, ("- closed locations with condensing or", 40, 320)),
+            line(112, ("with non-condensing humidity,", 60, 220)),
+            line(134, ("or, if specified by the manufacturer:", 40, 240)),
+        ])
+
+        self.assertEqual(texts, [
+            "- closed locations with condensing or with non-condensing humidity,",
+            "or, if specified by the manufacturer:",
+        ])
+
+    def test_body_after_short_list_item_starts_a_new_paragraph(self) -> None:
+        """A short list item followed by an aligned lowercase body line is not reflowed."""
+        texts = self._group([
+            line(100, ("- locations liable to temporary saturation,", 40, 250)),
+            line(122, ("and in locations with electromagnetic disturbances", 40, 330)),
+            line(134, ("corresponding to those likely to be found.", 40, 280)),
+        ])
+
+        self.assertEqual(texts, [
+            "- locations liable to temporary saturation,",
+            "and in locations with electromagnetic disturbances corresponding to those likely to be found.",
+        ])
+
     def test_hyphen_dehyphenation(self) -> None:
         texts = self._group([
             line(100, ("The require-", 70, 160)),
@@ -214,8 +240,10 @@ class HeadingRefineTests(unittest.TestCase):
 
 
 class ContinuationBlockMergeTests(unittest.TestCase):
-    def _block(self, bid: str, text: str, *, btype: str = "paragraph", noise: bool = False) -> dict:
+    def _block(self, bid: str, text: str, *, btype: str = "paragraph", noise: bool = False,
+               page_number: int | None = None) -> dict:
         return {"block_id": bid, "type": btype, "text": text, "noise": noise,
+                "page_number": page_number,
                 "section_path": ["4.1"], "requirement_like": False,
                 "domain_tags": [], "kb_matches": []}
 
@@ -223,13 +251,27 @@ class ContinuationBlockMergeTests(unittest.TestCase):
         """跨页断句：中间隔页脚噪声块也要接上（页内 gap 豁免够不着的场景）。"""
         kb = KnowledgeRepository.from_paths([])
         blocks = [
-            self._block("B1", "The device shall record the"),
-            self._block("N1", "UNI/TS 12007 © UNI Page 5", noise=True),
-            self._block("B2", "measurement in the event log."),
+            self._block("B1", "The device shall record the", page_number=1),
+            self._block("N1", "UNI/TS 12007 © UNI Page 5", noise=True, page_number=1),
+            self._block("B2", "measurement in the event log.", page_number=2),
         ]
         merged = _merge_continuation_blocks(blocks, kb)
         self.assertEqual(len(merged), 2)   # B2 并入 B1，噪声块保留
         self.assertEqual(merged[0]["text"], "The device shall record the measurement in the event log.")
+
+    def test_same_page_paragraph_break_is_not_merged_back(self) -> None:
+        kb = KnowledgeRepository.from_paths([])
+        blocks = [
+            self._block("B1", "- locations liable to temporary saturation,", page_number=6),
+            self._block("B2", "and in locations with electromagnetic disturbances.", page_number=6),
+        ]
+
+        merged = _merge_continuation_blocks(blocks, kb)
+
+        self.assertEqual([block["text"] for block in merged], [
+            "- locations liable to temporary saturation,",
+            "and in locations with electromagnetic disturbances.",
+        ])
 
     def test_heading_between_blocks_no_merge(self) -> None:
         kb = KnowledgeRepository.from_paths([])

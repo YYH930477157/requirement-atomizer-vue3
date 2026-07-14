@@ -142,11 +142,15 @@ const visibleBlocks = computed(() => blocks.value.filter((b) => !b.noise))
 
 // 表格块渲染真 <table>（旧 out_dir 无 data_rows 时回退扁平文字段落）
 const LIST_ITEM_RE = /^(?:[a-z0-9]{1,3}[).]|[•▪—–-])\s/
+const NOTE_RE = /^NOTE(?:\s|$)/i
 function isTable(b: DocumentBlock): boolean {
   return b.type === "table" && Boolean((b.data_rows || []).length || (b.header_rows || []).length)
 }
 function isListItem(b: DocumentBlock): boolean {
   return LIST_ITEM_RE.test(b.text || "")
+}
+function isNote(b: DocumentBlock): boolean {
+  return NOTE_RE.test(b.text || "")
 }
 function padRow(b: DocumentBlock, row: string[]): string[] {
   const ncols = Math.max(...[...(b.header_rows || []), ...(b.data_rows || [])].map((r) => r.length), 0)
@@ -299,7 +303,8 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           <div v-if="pageBreakBefore(bi) !== null" class="page-break"><span>第 {{ pageBreakBefore(bi) }} 页</span></div>
           <div
             :class="['doc-block',
-                     { heading: isHeading(b), omission: isOmission(b),
+                     { heading: isHeading(b), omission: isOmission(b), note: isNote(b),
+                       'list-item': isListItem(b),
                        anchored: anchorByBlock.get(b.block_id)?.length,
                        'in-span': selectedSpan.has(b.block_id) || b.block_id === selectedBlockId,
                        evidence: evidenceBlocks.has(b.block_id) || b.block_id === selectedBlockId }]"
@@ -317,15 +322,6 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                 :title="`${moduleOf(r)} · ${r.title}`"
                 @click.stop="select(r)"
               >{{ reqNumber(r) }} · {{ moduleOf(r) }}</button>
-              <button
-                v-if="isOmission(b)"
-                class="omission-tag"
-                :class="{ sel: b.block_id === selectedBlockId }"
-                type="button"
-                data-testid="omission-tag"
-                title="疑似需求但未被任何抽取需求覆盖，点击查看说明"
-                @click.stop="selectBlockCard(b)"
-              >⚠ 未覆盖</button>
             </div>
             <figure v-if="isTable(b)" class="doc-table" data-testid="doc-table">
               <figcaption v-if="b.table_title">{{ b.table_title }}<span v-if="b.table_source === 'text_layout'" class="table-badge">无画线重建</span></figcaption>
@@ -339,9 +335,27 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                   </tbody>
                 </table>
               </div>
+              <button
+                v-if="isOmission(b)"
+                class="omission-tag table-omission-tag"
+                :class="{ sel: b.block_id === selectedBlockId }"
+                type="button"
+                data-testid="omission-tag"
+                title="疑似需求但未被任何抽取需求覆盖，点击查看说明"
+                @click.stop="selectBlockCard(b)"
+              >未覆盖</button>
             </figure>
             <p v-else class="doc-text" :class="{ 'list-item': isListItem(b) }">
               <template v-for="(seg, i) in segments(b)" :key="i"><mark v-if="seg.mark">{{ seg.text }}</mark><span v-else>{{ seg.text }}</span></template>
+              <button
+                v-if="isOmission(b)"
+                class="omission-tag"
+                :class="{ sel: b.block_id === selectedBlockId }"
+                type="button"
+                data-testid="omission-tag"
+                title="疑似需求但未被任何抽取需求覆盖，点击查看说明"
+                @click.stop="selectBlockCard(b)"
+              >未覆盖</button>
             </p>
           </div>
         </template>
@@ -468,20 +482,24 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .doc-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid #e6e9f0; }
 .doc-stats { display: flex; gap: 18px; font-size: 13px; color: #5c6675; }
 .doc-stats strong { color: #1a2233; }
-.omission-stat.warn strong { color: #b45309; }
+.omission-stat.warn strong { color: #5c6675; }
 .doc-message { padding: 6px 14px; font-size: 12px; color: #b45309; background: #fdf3e3; }
 .doc-body { display: grid; grid-template-columns: 1fr 360px; gap: 0; flex: 1; min-height: 0; }
-.doc-paper { overflow: auto; padding: 18px 22px; background: #ffffff; }
-.doc-block { display: grid; grid-template-columns: 130px 1fr; gap: 10px; padding: 3px 6px; border-left: 3px solid transparent; cursor: default; }
-.doc-block.heading .doc-text { font-weight: 700; color: #1a2233; margin-top: 8px; }
+.doc-paper { overflow: auto; padding: 12px 18px; background: #ffffff; }
+.doc-block { display: grid; grid-template-columns: 108px 1fr; gap: 8px; padding: 1px 4px; margin-bottom: 0; border-left: 2px solid transparent; cursor: default; }
+.doc-block:not(.heading):not(.list-item) { margin-bottom: 6px; }
+.doc-block.list-item { margin-bottom: 1px; }
+.doc-block.list-item + .doc-block:not(.list-item):not(.heading) { margin-top: 5px; }
+.doc-block.heading .doc-text { font-weight: 700; color: #1a2233; margin-top: 6px; }
 .doc-block.anchored { cursor: pointer; border-left-color: #5978f7; background: #fafbfd; }
-.page-break { display: flex; align-items: center; gap: 10px; margin: 22px 0 14px; color: #98a1b3; font-size: 11px; }
+.page-break { display: flex; align-items: center; gap: 10px; margin: 16px 0 10px; color: #98a1b3; font-size: 11px; }
 .page-break::before, .page-break::after { content: ""; flex: 1; border-top: 1px dashed #e6e9f0; }
 
 /* 阅读排版：正文两端对齐、列表悬挂缩进、真表格（与自包含 HTML 同视觉） */
 .doc-block:not(.heading) .doc-text { text-align: justify; hyphens: none; }
 .doc-text.list-item { padding-left: 1.6em; text-indent: -1.6em; text-align: left; }
-.doc-table { margin: 14px 0 18px; }
+.doc-block.note .doc-text { padding-left: 3.4em; text-indent: -3.4em; }
+.doc-table { margin: 10px 0 12px; }
 .doc-table figcaption { font-size: 12px; font-weight: 600; color: #7a8496; margin-bottom: 6px; letter-spacing: .02em; }
 .doc-table .table-badge { font-size: 10px; font-weight: 500; color: #b06f12; background: #fdf3e3;
   border: 1px solid #f3d9a0; border-radius: 999px; padding: 1px 7px; margin-left: 8px; vertical-align: 1px; }
@@ -497,18 +515,20 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .doc-block.in-span { box-shadow: inset 3px 0 0 #c7d3fc; }
 .doc-block.in-span.evidence { background: #eef2ff; box-shadow: none; }
 .dd-legend { font-size: 11px; color: #98a1b3; margin: 4px 0 8px; }
-.doc-block.omission { border-left-color: #cc8925; border-left-style: dashed; }
+.doc-block.omission:hover { background: #fcfbf7; }
 .doc-gutter { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
-.doc-text { margin: 0; font-size: 13px; line-height: 1.55; color: #3f4a61; white-space: pre-wrap; }
+.doc-text { margin: 0; font-size: 13px; line-height: 1.48; color: #3f4a61; white-space: pre-wrap; }
 .doc-text mark { background: #f3d9a0; padding: 0 1px; }
 .anno-chip { font-size: 11px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 1px 7px; background: #ffffff; cursor: pointer; max-width: 124px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .anno-chip.sel { outline: 2px solid #5978f7; }
 .anno-chip.st-accepted { border-color: #1d8a5c; color: #1d8a5c; }
 .anno-chip.st-rejected { border-color: #d63a40; color: #d63a40; }
 .anno-chip.st-needs_discussion { border-color: #b06f12; color: #b06f12; }
-.omission-tag { font-size: 10px; color: #b45309; background: #fdf3e3; border: 1px solid #ecd9ae;
-  border-radius: 10px; padding: 1px 7px; cursor: pointer; }
-.omission-tag:hover, .omission-tag.sel { border-color: #b45309; background: #f9e8c6; }
+.omission-tag { display: inline-flex; margin-left: 6px; padding: 0 2px 1px; border: 0;
+  border-bottom: 1px dotted #cbd5e1; border-radius: 0; background: transparent; color: #98a1b3;
+  font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
+.omission-tag:hover, .omission-tag.sel { color: #b06f12; border-color: #b06f12; background: #fff9ec; }
+.table-omission-tag { margin-top: 4px; vertical-align: baseline; }
 .dd-empty { color: #98a1b3; }
 .dd-prewrap { white-space: pre-wrap; }
 .src-badge { font-size: 10px; text-transform: none; color: #1e41c9; background: #eef2ff;

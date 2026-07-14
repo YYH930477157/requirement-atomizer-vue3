@@ -14,6 +14,7 @@ from ai_review_actions import apply_ai_review_action, read_ai_review_states, sou
 from io_utils import read_jsonl
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
+from requirement_kb.matching import clean_text as normalize_text
 
 
 DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
@@ -313,13 +314,15 @@ def build_document_blocks(output_dir: Path) -> dict:
     blocks = read_jsonl(output_dir / "blocks.jsonl")
     trimmed = [{k: b.get(k) for k in _BLOCK_FIELDS} for b in blocks]
     translations, notes = load_annotation_translations(output_dir)
-    if translations or notes:
-        for block in trimmed:
-            key = translation_key(block.get("text"))
+    for block in trimmed:
+        original_text = block.get("text")
+        if translations or notes:
+            key = translation_key(original_text)
             if key in translations:
                 block["translation"] = translations[key]
             elif key in notes:
                 block["translation_note"] = notes[key]
+        block["text"] = normalize_text(original_text)
     trimmed.sort(key=lambda b: b.get("order") or 0)
     return {"blocks": trimmed, "count": len(trimmed)}
 

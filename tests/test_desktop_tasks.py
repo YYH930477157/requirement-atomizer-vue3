@@ -629,6 +629,29 @@ class DesktopTaskTests(unittest.TestCase):
             self.assertEqual(states[rid]["status"], "accepted")
             self.assertEqual(states[rid]["module_override"], "计量精度")
 
+    def test_export_annotation_html_cli_forwards_layout_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with patch("desktop_tasks.export_annotation_html_task") as task:
+                task.return_value = {
+                    "kind": "annotation_html",
+                    "out_dir": str(out),
+                    "path": str(out / "document_annotation.html"),
+                    "written": [],
+                }
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = desktop_tasks.main([
+                        "export-annotation-html",
+                        "--out",
+                        str(out),
+                        "--layout-mode",
+                        "pdf_original",
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        task.assert_called_once_with(out, route=None, layout_mode="pdf_original")
+
     def test_import_ai_decisions_preserves_ownership_override(self) -> None:
         import desktop_tasks
         import ai_review_actions
@@ -688,13 +711,14 @@ class ChainAndManifestTests(unittest.TestCase):
 
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
         expected = {
-            "atomize": "atomize+impl-v3",
+            "atomize": "atomize+impl-v4",
             "ai-extract": "ai-extract-v15+impl-v3",
             "assemble": "assemble_spec/v1+impl-v2",
             "functional-synthesis": "functional-synthesis-v5+impl-v2",
             "requirements-analysis": "analyze-llm-v5+impl-v2",
             "template-write": "template_writer/v1+impl-v2",
             "clarification-report": "clarification/v2-tiered+impl-v3",
+            "export-annotation-html": "doc_annotation_export/v5",
         }
         self.assertEqual(
             {stage: desktop_tasks.stage_producer(stage) for stage in expected},
@@ -719,6 +743,16 @@ class ChainAndManifestTests(unittest.TestCase):
             second = desktop_tasks.stage_input_fingerprint(out, "requirements-analysis")
 
         self.assertNotEqual(first, second)
+
+    def test_annotation_fingerprint_tracks_layout_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            optimized = desktop_tasks.stage_input_fingerprint(
+                out, "export-annotation-html", config={"layout_mode": "optimized"})
+            original = desktop_tasks.stage_input_fingerprint(
+                out, "export-annotation-html", config={"layout_mode": "pdf_original"})
+
+        self.assertNotEqual(optimized, original)
 
     def test_manifest_with_old_producer_is_not_reusable(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -804,6 +838,28 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertEqual(manifest["stages"]["ai-extract"]["status"], "ok")
             self.assertEqual(manifest["stages"]["ai-extract"]["producer"],
                              desktop_tasks.stage_producer("ai-extract"))
+
+    def test_chain_forwards_annotation_layout_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            with mock.patch.object(
+                desktop_tasks,
+                "export_annotation_html_task",
+                return_value={
+                    "kind": "annotation_html",
+                    "path": str(out / "document_annotation.html"),
+                    "written": [],
+                },
+            ) as export_task:
+                desktop_tasks.chain_task(
+                    out,
+                    stages=["export-annotation-html"],
+                    route="stub",
+                    annotation_layout_mode="pdf_original",
+                )
+
+        export_task.assert_called_once_with(
+            out.resolve(), route="stub", layout_mode="pdf_original")
 
     def test_chain_unknown_stage_and_missing_template_fail_fast(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -20,8 +20,34 @@ function buildRunPipelineArgs(input) {
   ];
 }
 
+function buildChainArgs(input) {
+  return [
+    "chain",
+    "--out",
+    input.outDir,
+    "--stages",
+    (input.stages || []).join(","),
+    ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
+    ...(input.templatePath ? ["--template", input.templatePath] : []),
+    ...(input.sampleRatio ? ["--sample-ratio", String(input.sampleRatio)] : []),
+    ...(input.annotationLayoutMode
+      ? ["--annotation-layout-mode", input.annotationLayoutMode] : []),
+  ];
+}
+
+function buildExportAnnotationArgs(input) {
+  return [
+    "export-annotation-html",
+    "--out",
+    input.outDir,
+    ...(input.route ? ["--route", input.route] : []),
+    ...(input.layoutMode ? ["--layout-mode", input.layoutMode] : []),
+  ];
+}
+
 const DEFAULT_LLM_SETTINGS = {
   enabled: false,
+  visionCapable: false,
   baseUrl: "http://127.0.0.1:11434/v1",
   model: "qwen2.5:14b",
   apiKeyEnv: "RATOMIZER_LLM_API_KEY",
@@ -40,6 +66,8 @@ const SECRET_PREFIX = "safeStorage:v1:";
 function normalizeLlmSettings(input = {}) {
   return {
     enabled: Boolean(input.enabled),
+    visionCapable: input.visionCapable == null
+      ? DEFAULT_LLM_SETTINGS.visionCapable : Boolean(input.visionCapable),
     baseUrl: stringValue(input.baseUrl, DEFAULT_LLM_SETTINGS.baseUrl),
     model: stringValue(input.model, DEFAULT_LLM_SETTINGS.model),
     apiKeyEnv: stringValue(input.apiKeyEnv, DEFAULT_LLM_SETTINGS.apiKeyEnv),
@@ -249,6 +277,8 @@ module.exports = {
   appendBackendLog,
   backendLogPath,
   buildLlmEnvironment,
+  buildChainArgs,
+  buildExportAnnotationArgs,
   buildRunPipelineArgs,
   drainProgressLines,
   loadLlmSettingsConfig,

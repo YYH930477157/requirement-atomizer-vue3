@@ -138,6 +138,7 @@ describe("review workspace shell", () => {
         getApiSession: vi.fn().mockResolvedValue(null),
         getLlmSettings: vi.fn().mockResolvedValue({
           enabled: false,
+          visionCapable: false,
           baseUrl: "http://127.0.0.1:11434/v1",
           model: "qwen2.5:14b",
           apiKeyEnv: "RATOMIZER_LLM_API_KEY",
@@ -148,6 +149,7 @@ describe("review workspace shell", () => {
         }),
         saveLlmSettings: vi.fn().mockResolvedValue({
           enabled: true,
+          visionCapable: true,
           baseUrl: "https://open.bigmodel.cn/api/paas/v4",
           model: "glm-4-plus",
           apiKeyEnv: "ZHIPU_API_KEY",
@@ -168,6 +170,7 @@ describe("review workspace shell", () => {
     })
 
     await wrapper.find('[data-testid="settings-llm-mode"]').setValue(true)
+    await wrapper.find('[data-testid="settings-vision-capable"]').setValue(true)
     await wrapper.find('[data-testid="settings-base-url"]').setValue("https://open.bigmodel.cn/api/paas/v4")
     await wrapper.find('[data-testid="settings-model"]').setValue("glm-4-plus")
     await wrapper.find('[data-testid="settings-api-key-env"]').setValue("ZHIPU_API_KEY")
@@ -181,6 +184,7 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="settings-save"]').trigger("click")
     expect(window.ratomizerDesktop?.saveLlmSettings).toHaveBeenCalledWith({
       enabled: true,
+      visionCapable: true,
       baseUrl: "https://open.bigmodel.cn/api/paas/v4",
       model: "glm-4-plus",
       apiKeyEnv: "ZHIPU_API_KEY",
@@ -196,6 +200,7 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="settings-test"]').trigger("click")
     expect(window.ratomizerDesktop?.testLlmConnection).toHaveBeenCalledWith({
       enabled: true,
+      visionCapable: true,
       baseUrl: "https://open.bigmodel.cn/api/paas/v4",
       model: "glm-4-plus",
       apiKeyEnv: "ZHIPU_API_KEY",
@@ -209,6 +214,36 @@ describe("review workspace shell", () => {
     })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="settings-status"]').text()).toContain("调用成功")
+    })
+  })
+
+  it("uses optimized annotation layout when the configured model is visual", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        getLlmSettings: vi.fn().mockResolvedValue({ enabled: false, visionCapable: true }),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        exportAnnotationHtml: vi.fn().mockResolvedValue({
+          kind: "annotation_html",
+          path: "E:\\out\\abnt\\document_annotation.html",
+        }),
+        openPath: vi.fn(),
+      },
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await wrapper.find('[data-testid="nav-文档批注"]').trigger("click")
+    await wrapper.find('[data-testid="action-export-html"]').trigger("click")
+
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.exportAnnotationHtml).toHaveBeenCalledWith({
+        outDir: "E:\\out\\abnt",
+        route: undefined,
+        layoutMode: "optimized",
+      })
     })
   })
 
@@ -559,6 +594,7 @@ describe("review workspace shell", () => {
         stages: ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "clarification-report", "compose", "export-annotation-html"],
         // bridge 提供已保存 enabled 设置 → onMounted 恢复（审计 A2）→ 真 LLM 路由 + 分析阶段过门控
         llmRoute: "openai_compatible", templatePath: undefined,
+        annotationLayoutMode: "pdf_original",
       }))
     await vi.waitFor(() =>
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))

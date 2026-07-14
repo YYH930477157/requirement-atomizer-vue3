@@ -371,7 +371,7 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 
 
 STAGE_IMPLEMENTATION_REVISIONS = {
-    "atomize": "v3",
+    "atomize": "v4",
     "ai-extract": "v3",
     "assemble": "v2",
     "functional-synthesis": "v2",
@@ -386,7 +386,7 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v2-tiered",
     "compose": "engineering_composer/v1",
-    "export-annotation-html": "doc_annotation_export/v2",
+    "export-annotation-html": "doc_annotation_export/v5",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
@@ -623,7 +623,8 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
 def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                template_path: Path | None = None,
                sample_ratio: float | None = None,
-               limit_sections: int | None = None) -> dict[str, Any]:
+               limit_sections: int | None = None,
+               annotation_layout_mode: str = "optimized") -> dict[str, Any]:
     """交付物链的后端单命令编排（F1：编排从 App.vue 搬回后端——headless/批量/CI 的地基）。
 
     阶段按 CHAIN_ORDER 归一排序去重；template-write 无模板路径时前置报错（不跑一半才死）；
@@ -663,7 +664,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         "template-write": lambda: template_write_task(out_dir, template_path),
         "clarification-report": lambda: clarification_report_task(out_dir),
         "compose": lambda: compose_task(out_dir),
-        "export-annotation-html": lambda: export_annotation_html_task(out_dir, route=route),
+        "export-annotation-html": lambda: export_annotation_html_task(
+            out_dir, route=route, layout_mode=annotation_layout_mode),
     }
 
     results: dict[str, Any] = {}
@@ -676,8 +678,12 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                        "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
         stage_route = route if stage in llm_stages else None
         stage_template = template_path if stage in {"requirements-analysis", "template-write"} else None
-        stage_config = ({"sample_ratio": sample_ratio, "limit_sections": limit_sections}
-                        if stage == "ai-extract" else None)
+        if stage == "ai-extract":
+            stage_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
+        elif stage == "export-annotation-html":
+            stage_config = {"layout_mode": annotation_layout_mode}
+        else:
+            stage_config = None
         if stage_is_reusable(out_dir, stage, route=stage_route, template_path=stage_template,
                              config=stage_config):
             stage_payload = skipped_stage_payload(out_dir, stage)
@@ -745,17 +751,27 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     return payload
 
 
-def export_annotation_html_task(out_dir: Path, route: str | None = None) -> dict[str, Any]:
-    """生成自包含文档批注 HTML（独立、可分享、内含 localStorage 裁决 + 导出 JSON）。
+def export_annotation_html_task(out_dir: Path, route: str | None = None,
+                                layout_mode: str = "optimized") -> dict[str, Any]:
+    """生成可分享的文档批注 HTML bundle（内含 localStorage 裁决 + 导出 JSON）。
 
     route=openai_compatible 时补齐块级"说明"标记的原文中文翻译（内容哈希缓存
     annotation_translations.json，重导出零调用）；渲染本体保持确定性。"""
     import doc_annotation_export
     out_dir = out_dir.expanduser().resolve()
-    path, translations = doc_annotation_export.export_annotation_bundle(out_dir, route=route)
+    path, translations = doc_annotation_export.export_annotation_bundle(
+        out_dir, route=route, layout_mode=layout_mode)
+    written = [str(path)]
+    if translations.get("source_pdf"):
+        written.append(str(translations["source_pdf"]))
+    written.extend(str(item) for item in (translations.get("page_files") or []))
     payload = {"kind": "annotation_html", "out_dir": str(out_dir),
                "path": str(path), "route": str(translations.get("route") or "stub"),
-               "translations": translations, "written": [str(path)]}
+               "layout_mode_requested": translations.get("layout_mode_requested"),
+               "layout_mode": translations.get("layout_mode"),
+               "source_pdf": translations.get("source_pdf"),
+               "annotation_overlay": bool(translations.get("annotation_overlay")),
+               "translations": translations, "written": written}
     notes: list[str] = []
     if route and route != "stub" and payload["route"] != "openai_compatible":
         notes.append("LLM 不可用，块级说明未翻译（原文照排，开启后重导出自动补齐）")
@@ -763,6 +779,8 @@ def export_annotation_html_task(out_dir: Path, route: str | None = None) -> dict
         notes.append(f"{translations['rejected']} 条翻译含无据编码/数字被拒（保留原文）")
     if translations.get("failed_calls"):
         notes.append(f"{translations['failed_calls']} 批翻译调用失败（重新导出自动补齐）")
+    if translations.get("pdf_render_error"):
+        notes.append("PDF 批注覆盖层生成失败，已回退浏览器原版查看器")
     if notes:
         payload["note"] = "；".join(notes)
     return payload
@@ -895,6 +913,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     chain_parser.add_argument("--template", type=Path, default=None)
     chain_parser.add_argument("--sample-ratio", type=float, default=None)
     chain_parser.add_argument("--limit-sections", type=int, default=None)
+    chain_parser.add_argument("--annotation-layout-mode", choices=["optimized", "pdf_original"],
+                              default="optimized")
 
     clarification_parser = subparsers.add_parser("clarification-report")
     clarification_parser.add_argument("--out", type=Path, required=True)
@@ -921,6 +941,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     anno_parser.add_argument("--out", type=Path, required=True)
     anno_parser.add_argument("--route", choices=["stub", "openai_compatible"], default=None,
                              help="openai_compatible 时补齐块级说明标记的中文翻译（缓存复用）")
+    anno_parser.add_argument("--layout-mode", choices=["optimized", "pdf_original"],
+                             default="optimized")
 
     import_parser = subparsers.add_parser("import-ai-decisions")
     import_parser.add_argument("--out", type=Path, required=True)
@@ -937,6 +959,7 @@ def _manifest_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
         context["route"] = getattr(args, "enrich_route", None) or None
     elif command == "export-annotation-html":
         context["route"] = getattr(args, "route", None) or None
+        context["config"] = {"layout_mode": getattr(args, "layout_mode", "optimized")}
     if command in {"requirements-analysis", "template-write"}:
         context["template_path"] = getattr(args, "template", None)
     if command == "ai-extract":
@@ -1032,7 +1055,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = chain_task(args.out, stages=[x.strip() for x in args.stages.split(",") if x.strip()],
                                  route=args.llm_route, template_path=args.template,
                                  sample_ratio=args.sample_ratio or None,
-                                 limit_sections=args.limit_sections or None)
+                                 limit_sections=args.limit_sections or None,
+                                 annotation_layout_mode=args.annotation_layout_mode)
         elif args.command == "clarification-report":
             payload = clarification_report_task(args.out)
         elif args.command == "template-write":
@@ -1044,7 +1068,11 @@ def main(argv: list[str] | None = None) -> int:
                                       limit_sections=args.limit_sections or None,
                                       sample_ratio=args.sample_ratio or None)
         elif args.command == "export-annotation-html":
-            payload = export_annotation_html_task(args.out, route=getattr(args, "route", None))
+            payload = export_annotation_html_task(
+                args.out,
+                route=getattr(args, "route", None),
+                layout_mode=args.layout_mode,
+            )
         elif args.command == "import-ai-decisions":
             payload = import_ai_decisions_task(args.out, args.file)
         else:
@@ -1064,6 +1092,8 @@ def main(argv: list[str] | None = None) -> int:
         actual_route = str(payload.get("route") or "").strip() if isinstance(payload, dict) else ""
         if actual_route:
             manifest_context["route"] = actual_route
+        if args.command == "export-annotation-html" and isinstance(payload, dict):
+            manifest_context["outputs"] = payload.get("written") or None
         update_run_manifest(args.out, args.command, "ok", **manifest_context)
     print_json_payload(payload)
     return 0
