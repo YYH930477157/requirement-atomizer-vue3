@@ -148,7 +148,7 @@ class CoverageGapClarificationTests(unittest.TestCase):
             self._seed(out, {"coverage": {
                 "measured": True, "uncovered_count": 2,
                 "uncovered_samples": [
-                    {"block_id": "BLK-1", "section": "4.5", "text": "The AFD shall close the valve."},
+                    {"block_id": "BLK-1", "section": "4.5", "text": "The XDEV shall close the valve."},
                     {"block_id": "BLK-2", "section": "", "text": "All meters shall meet this."},
                 ]}})
             entries = cr.collect_questions(out)
@@ -156,7 +156,7 @@ class CoverageGapClarificationTests(unittest.TestCase):
         self.assertEqual(len(gap), 2)
         self.assertEqual(gap[0]["source_id"], "BLK-1")     # 溯源可回链批注视图
         self.assertEqual(gap[0]["section"], "4.5")
-        self.assertIn("AFD shall close", gap[0]["quote"])
+        self.assertIn("XDEV shall close", gap[0]["quote"])
         self.assertTrue(all(e["audience"] == cr.AUDIENCE_INTERNAL for e in gap))
 
     def test_legacy_plain_string_samples_tolerated(self) -> None:
@@ -203,14 +203,14 @@ class CoverageGapClarificationTests(unittest.TestCase):
             self._seed(out, {"coverage": {"measured": True, "uncovered_count": 1,
                                           "uncovered_samples": [
                                               {"block_id": "B1", "section": "4.5",
-                                               "text": "The AFD shall close the valve."}]}})
+                                               "text": "The XDEV shall close the valve."}]}})
             cr.run_report(out)
             wb = load_workbook(out / cr.REPORT_XLSX, read_only=True)
             try:
                 self.assertIn("遗漏候选(内部核对)", wb.sheetnames)
                 gap_rows = list(wb["遗漏候选(内部核对)"].iter_rows(min_row=2, values_only=True))
                 self.assertEqual(len(gap_rows), 1)
-                self.assertIn("AFD shall close", str(gap_rows[0][4]))
+                self.assertIn("XDEV shall close", str(gap_rows[0][4]))
                 self.assertEqual(list(wb["必答-问客户"].iter_rows(min_row=2, values_only=True)), [])
             finally:
                 wb.close()
@@ -504,14 +504,14 @@ class CoverageGapMarkdownTests(unittest.TestCase):
     def test_markdown_renders_gap_section(self) -> None:
         import clarification_report as cr
         entries = [
-            cr._entry(cr.CAT_MISSING, "该段疑似含需求但未被覆盖", quote="The AFD shall act.",
+            cr._entry(cr.CAT_MISSING, "该段疑似含需求但未被覆盖", quote="The XDEV shall act.",
                       source_id="B1", signal="consistency:uncovered",
                       tier=cr.TIER_GAP, audience=cr.AUDIENCE_INTERNAL),
         ]
         md = cr.render_markdown(entries, {"verdict": "READY", "reasons": [], "questions": 0})
         self.assertIn("遗漏候选（1）", md)
         self.assertIn("遗漏候选 1 条", md)
-        self.assertIn("The AFD shall act.", md)
+        self.assertIn("The XDEV shall act.", md)
 
 
 if __name__ == "__main__":

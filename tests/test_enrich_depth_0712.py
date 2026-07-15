@@ -63,7 +63,7 @@ class W1PromptTests(unittest.TestCase):
         prompt = build_analysis_prompt(
             [{"ai_req_id": "AI-1", "module": "时钟"}], slim_vocabulary(vocab, "时钟"),
             doc_context="【文档背景】表计类型:燃气表。",
-            section_context="4.5 AFD1 Requirements ...", siblings="- 时钟同步需求")
+            section_context="4.5 XDEV1 Requirements ...", siblings="- 时钟同步需求")
         user = prompt["user"]
         self.assertIn("【文档背景】", user)
         self.assertIn("【所在条款原文", user)
@@ -499,9 +499,9 @@ class MissingNumberDenominatorTests(unittest.TestCase):
 
     def test_clause_refs_do_not_trigger_missing(self) -> None:
         source = {"source_quote": ("7.4.1 Requirement When tested in accordance with 7.4.2, "
-                                   "the AFD shall have no inadmissible influence."),
+                                   "the XDEV shall have no inadmissible influence."),
                   "description": "", "requirement": ""}
-        item = {"software_requirement_text": "按 7.4.2 测试时,AFD 不得对计量特性产生不允许的影响。"}
+        item = {"software_requirement_text": "按 7.4.2 测试时,XDEV 不得对计量特性产生不允许的影响。"}
         issues = validate_llm_item(item, source)
         self.assertFalse(any("missing" in i for i in issues), issues)
 

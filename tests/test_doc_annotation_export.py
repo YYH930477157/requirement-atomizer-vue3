@@ -247,7 +247,7 @@ class DocAnnotationExportTests(unittest.TestCase):
     def test_annotation_number_is_inline_inside_table_cell(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
-            quote = "Data that the GdM must collect, record locally and transmit remotely."
+            quote = "Data that the MGW must collect, record locally and transmit remotely."
             (out / "blocks.jsonl").write_text(
                 json.dumps({
                     "block_id": "T1",
@@ -352,7 +352,7 @@ class DocAnnotationExportTests(unittest.TestCase):
             out = Path(tmp)
             title = "Dispositivo walk by"
             quote = ('Device with mobile data concentrator function. It allows the management '
-                     'of GdMs in "modalità walk by" o "drive by"')
+                     'of MGWs in "modalità walk by" o "drive by"')
             (out / "blocks.jsonl").write_text(
                 json.dumps({
                     "block_id": "T1",
@@ -383,7 +383,7 @@ class DocAnnotationExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             title = "significant event"
-            quote = "Event or report in the GdM, which can affect its functioning or alter its data in its contents."
+            quote = "Event or report in the MGW, which can affect its functioning or alter its data in its contents."
             (out / "blocks.jsonl").write_text(
                 json.dumps({
                     "block_id": "T1",
@@ -415,9 +415,9 @@ class DocAnnotationExportTests(unittest.TestCase):
     def test_inline_markers_number_requirements_and_classifications_in_source_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
-            req_a = "The GdM shall record measurement data."
+            req_a = "The MGW shall record measurement data."
             hardware = "The manufacturer shall place its trademark on the device."
-            req_b = "The GdM shall transmit data remotely."
+            req_b = "The MGW shall transmit data remotely."
             (out / "blocks.jsonl").write_text(
                 json.dumps({
                     "block_id": "T1",

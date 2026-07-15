@@ -50,7 +50,7 @@ class AtomizeTableTests(unittest.TestCase):
     def test_profile_permission_sentence_is_requirement_like(self) -> None:
         text = (
             "PM1 profile transmission media and protocols can be used for the communication "
-            "between class A, B, C GdMs and the Concentrators."
+            "between class A, B, C MGWs and the Concentrators."
         )
 
         self.assertTrue(is_requirement_like(text))
@@ -70,7 +70,7 @@ class AtomizeTableTests(unittest.TestCase):
 
     def test_range_detection_weak_obligation_is_requirement_like(self) -> None:
         text = (
-            "At least the GdM-AFD1s highlight and record if the water temperature "
+            "At least the MGW-XDEV1s highlight and record if the water temperature "
             "is out of range from the range corresponding to the temperature class."
         )
 

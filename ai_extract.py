@@ -585,7 +585,7 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
     """raw LLM 需求 → 归一 + 分级漂移护栏。抽取与完整性自检共用（补的也过同一套护栏）。
 
     context_ints：文档背景（画像/术语表）里出现过的普通整数。LLM 引用背景里的标准号
-    （如"依据 EN 16314"）属合理行为，不软标为数字漂移——否则每条都是假阳性，稀释真漂移信号。
+    （如"依据 EN 12345"这类背景标准号）属合理行为，不软标为数字漂移——否则每条都是假阳性，稀释真漂移信号。
     受保护编码（OBIS/事件号/十六进制）**不豁免**：仍只认当前章节原文。
     """
     source = section.get("drift_source") or section.get("text", "")

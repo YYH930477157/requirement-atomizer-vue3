@@ -42,8 +42,8 @@ class ExtractExemplarRenderTests(unittest.TestCase):
 
 
 class ExtractExemplarInjectionTests(unittest.TestCase):
-    SECTION = {"section_id": "S1", "heading": "4.6 AFD2",
-               "text": "The AFD shall close the valve.", "block_ids": []}
+    SECTION = {"section_id": "S1", "heading": "4.6 XDEV2",
+               "text": "The XDEV shall close the valve.", "block_ids": []}
 
     def _chat_capture(self, captured: list) -> object:
         def chat(system: str, user: str) -> dict:
@@ -88,7 +88,7 @@ class ExtractExemplarInjectionTests(unittest.TestCase):
             captured.append(user)
             return {"requirements": [{
                 "title": "阀门关闭", "description": "写入对象 0-0:96.3.10.255 关闭阀门。",
-                "source_quote": "The AFD shall close the valve.",
+                "source_quote": "The XDEV shall close the valve.",
                 "type": "functional", "priority": "P1", "module": "阀门控制", "labels": ["阀门"],
             }]}
 
@@ -171,7 +171,7 @@ class PdfBlockZoneTests(unittest.TestCase):
     BLOCKS = [
         {"block_id": "B1", "type": "paragraph", "text": "The meter shall measure volume.",
          "requirement_like": True, "noise": False, "doc_region": "body"},          # 锚点 → req
-        {"block_id": "B2", "type": "paragraph", "text": "The AFD shall stay closed forever.",
+        {"block_id": "B2", "type": "paragraph", "text": "The XDEV shall stay closed forever.",
          "requirement_like": True, "noise": False, "doc_region": "body"},          # 未覆盖 → omission
         {"block_id": "B3", "type": "paragraph", "text": "Background prose paragraph.",
          "requirement_like": False, "noise": False, "doc_region": "body"},         # → context
@@ -261,7 +261,7 @@ class AnchorFallbackTests(unittest.TestCase):
     是最易错锚的路径却零覆盖。"""
 
     BLOCKS = {"B1": "Intro paragraph about scope.",
-              "B2": "The AFD shall close the valve within 5 s after detection.",
+              "B2": "The XDEV shall close the valve within 5 s after detection.",
               "B3": "Following exposure the meter shall be inspected."}
 
     def _anchor(self, quote: str, span: list[str]) -> str:
@@ -271,20 +271,20 @@ class AnchorFallbackTests(unittest.TestCase):
 
     def test_exact_quote_lands_on_containing_block(self) -> None:
         self.assertEqual(
-            self._anchor("The AFD shall close the valve within 5 s after detection.",
+            self._anchor("The XDEV shall close the valve within 5 s after detection.",
                          ["B1", "B2", "B3"]),
             "B2")
 
     def test_whitespace_and_case_normalized(self) -> None:
         self.assertEqual(
-            self._anchor("the afd  SHALL close the valve within 5 s after detection.",
+            self._anchor("the xdev  SHALL close the valve within 5 s after detection.",
                          ["B1", "B2"]),
             "B2")
 
     def test_tail_deviation_falls_back_to_prefix(self) -> None:
         # LLM 引用尾部偏差（改写了句尾）→ 前 40 字前缀仍应锚对块
         self.assertEqual(
-            self._anchor("The AFD shall close the valve within 5 seconds of any tamper event",
+            self._anchor("The XDEV shall close the valve within 5 seconds of any tamper event",
                          ["B1", "B2", "B3"]),
             "B2")
 
@@ -311,7 +311,7 @@ class SoftwareXlsxContentLockTests(unittest.TestCase):
         "assumptions": ["假定阀门驱动电路由硬件保证时序"],
         "open_questions": ["关闭失败的重试次数上限是多少？"],
         "enrichment_warnings": ["fabricated number in guidance: 99"],
-        "source_quote": "The AFD shall close the valve.",
+        "source_quote": "The XDEV shall close the valve.",
         "source_requirement_ids": ["AIR-1"],
     }
 
@@ -336,7 +336,7 @@ class SoftwareXlsxContentLockTests(unittest.TestCase):
         self.assertIn("待确认：关闭失败的重试次数上限是多少？", text)   # open_questions
         self.assertIn("⚠ 富化待核：fabricated number in guidance: 99", text)   # 软标随行(B1)
         self.assertIn("归属判定：软件（依据：阀门控制逻辑由软件实现，LLM 判定）", text)
-        self.assertIn("原文：The AFD shall close the valve.", text)   # 溯源随行
+        self.assertIn("原文：The XDEV shall close the valve.", text)   # 溯源随行
 
 
 if __name__ == "__main__":

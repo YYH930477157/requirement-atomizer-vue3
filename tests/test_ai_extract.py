@@ -71,8 +71,8 @@ class ClauseFamilyGroupingTests(unittest.TestCase):
         # 两节各 ~120 字，target=150 时纯贪心会拆开（120+120>150）；
         # 条款族上限放宽到 2×target=300 → 保持同单元
         sections = [
-            self._sec("4.6.1 Requirements", "a) The AFD shall have no influence." * 3),
-            self._sec("4.6.2 Test", "a) Fit the AFD and undertake tests." * 3),
+            self._sec("4.6.1 Requirements", "a) The XDEV shall have no influence." * 3),
+            self._sec("4.6.2 Test", "a) Fit the XDEV and undertake tests." * 3),
         ]
         units = ai_extract.merge_sections(sections, target_chars=150)
         self.assertEqual(len(units), 1)                                # 同族合一
@@ -82,10 +82,10 @@ class ClauseFamilyGroupingTests(unittest.TestCase):
     def test_complete_families_may_share_unit_but_never_split(self) -> None:
         # 0715 目录子树打包:意图升级——旧规则"异族不拼"针对的是族中间切一刀;
         # 新规则:**完整**小族可同箱(整子树优先,省调用),族本体绝不被切开
-        sections = [self._sec("4.5 AFD1", "short a."), self._sec("4.6 AFD2", "short b.")]
+        sections = [self._sec("4.5 XDEV1", "short a."), self._sec("4.6 XDEV2", "short b.")]
         units = ai_extract.merge_sections(sections, target_chars=2800)
         self.assertEqual(len(units), 1)                                # 完整小族同箱
-        big = [self._sec("4.5 AFD1", "a" * 3000), self._sec("4.6 AFD2", "b" * 3000)]
+        big = [self._sec("4.5 XDEV1", "a" * 3000), self._sec("4.6 XDEV2", "b" * 3000)]
         units = ai_extract.merge_sections(big, target_chars=2800)     # 6000 > 2×2800
         self.assertEqual(len(units), 2)                                # 装不下则各自成箱,不腰斩
 
@@ -155,7 +155,7 @@ class ChapterUnitModeTests(unittest.TestCase):
         sections = [
             self._sec("4.6.1 Requirements", "a) req." * 40),
             self._sec("4.6.2 Test", "a) test." * 40),
-            self._sec("4.14.1 Requirement", "The AFD shall withstand." * 20),
+            self._sec("4.14.1 Requirement", "The XDEV shall withstand." * 20),
             self._sec("5.1 Marking", "Marking text." * 10),
         ]
         units = ai_extract.merge_sections(sections, unit_mode="chapter")
@@ -192,9 +192,9 @@ class SelfCheckClauseAlignmentTests(unittest.TestCase):
 
     def _existing(self) -> list[dict]:
         return [{
-            "title": "AFD抗不当处理（跌落）测试要求",
+            "title": "XDEV抗不当处理（跌落）测试要求",
             "description": "d", "source_quote":
-                "The AFD shall withstand the handling required during its transport and installation. "
+                "The XDEV shall withstand the handling required during its transport and installation. "
                 "Before testing in accordance with 4.14.2, the meter under test shall conform.",
             "sub_items": [{"label": c, "text": f"子项{c}"} for c in "abcde"],
             "acceptance_criteria": ["按 4.14.2 跌落后功能正常"],
@@ -208,7 +208,7 @@ class SelfCheckClauseAlignmentTests(unittest.TestCase):
             return {"requirements": []}
 
         section = {"section_id": "4.14", "heading": "4.14", "block_ids": [],
-                   "text": "The AFD shall withstand the handling required."}
+                   "text": "The XDEV shall withstand the handling required."}
         ai_extract.critique_section(section, self._existing(), chat)
         self.assertIn("子项:a,b,c,d,e", captured[0])            # 结构摘要可见
         self.assertIn("验收 1 条", captured[0])
@@ -218,15 +218,15 @@ class SelfCheckClauseAlignmentTests(unittest.TestCase):
     def test_prefix_substring_duplicate_dropped(self) -> None:
         """自检补的"新"条目引句是已抽引句前缀（真实 #2）→ 包含式去重拦下。"""
         section = {"section_id": "4.14", "heading": "4.14", "block_ids": [],
-                   "text": ("The AFD shall withstand the handling required during its transport "
+                   "text": ("The XDEV shall withstand the handling required during its transport "
                             "and installation. Before testing in accordance with 4.14.2, "
                             "the meter under test shall conform.")}
 
         def chat(system: str, user: str) -> dict:
             return {"requirements": [{
-                "title": "AFD应能承受运输和安装中的正常处理", "description": "重复碎片",
+                "title": "XDEV应能承受运输和安装中的正常处理", "description": "重复碎片",
                 "type": "functional", "priority": "P1", "labels": ["附加功能"],
-                "source_quote": "The AFD shall withstand the handling required during "
+                "source_quote": "The XDEV shall withstand the handling required during "
                                 "its transport and installation."}]}
 
         extra, _sup = ai_extract.critique_section(section, self._existing(), chat)
@@ -234,7 +234,7 @@ class SelfCheckClauseAlignmentTests(unittest.TestCase):
 
     def test_genuinely_new_requirement_still_accepted(self) -> None:
         section = {"section_id": "4.14", "heading": "4.14", "block_ids": [],
-                   "text": ("The AFD shall withstand handling. "
+                   "text": ("The XDEV shall withstand handling. "
                             "The display shall remain readable after the drop test.")}
 
         def chat(system: str, user: str) -> dict:
@@ -250,7 +250,7 @@ class SelfCheckClauseAlignmentTests(unittest.TestCase):
         """a)/b) 枚举行已在某需求 sub_items 里 → 不再进"未覆盖"清单（定向自检不再追打）。"""
         blocks = {
             "B1": {"block_id": "B1", "requirement_like": True, "noise": False,
-                   "text": "a) the AFD shall function as specified by the manufacturer;"},
+                   "text": "a) the XDEV shall function as specified by the manufacturer;"},
             "B2": {"block_id": "B2", "requirement_like": True, "noise": False,
                    "text": "f) some other uncovered requirement line entirely."},
         }
@@ -777,18 +777,18 @@ class DriftSeverityTests(unittest.TestCase):
         section = {
             "section_id": "3.8",
             "heading": "3.8 measurement data",
-            "text": "Data that the GdM must collect, record locally and transmit remotely.",
+            "text": "Data that the MGW must collect, record locally and transmit remotely.",
             "block_ids": ["B1"],
         }
 
         def chat(system: str, user: str) -> dict:
             return {"requirements": [{
-                "title": "GdM测量数据采集、本地记录与远程传输",
-                "description": "GdM必须采集、记录并远程传输测量数据。",
+                "title": "MGW测量数据采集、本地记录与远程传输",
+                "description": "MGW必须采集、记录并远程传输测量数据。",
                 "type": "functional",
                 "priority": "P1",
                 "labels": ["计量"],
-                "source_quote": "Data that the GdM must collect, record locally and transmit remotely.",
+                "source_quote": "Data that the MGW must collect, record locally and transmit remotely.",
                 "acceptance_criteria": [
                     "本地存储中至少可查询最近24小时/30天的原始测量数据",
                     "中心系统可远程读取已记录的测量数据",
@@ -814,16 +814,16 @@ class EnsureDomainLabelsTests(unittest.TestCase):
     def test_free_labels_get_a_metering_domain_prepended(self) -> None:
         from spec_excel import METERING_DOMAINS
         reqs = [{"title": "固件升级安全", "description": "固件升级须认证并保证安全。",
-                 "source_quote": "firmware upgrade authentication", "labels": ["AFD", "firmware"]}]
+                 "source_quote": "firmware upgrade authentication", "labels": ["XDEV", "firmware"]}]
         ai_extract.ensure_domain_labels(reqs)
         self.assertTrue(any(l in set(METERING_DOMAINS) for l in reqs[0]["labels"]))
         # 原自由标签保留
-        self.assertIn("AFD", reqs[0]["labels"])
+        self.assertIn("XDEV", reqs[0]["labels"])
 
     def test_existing_domain_label_untouched(self) -> None:
-        reqs = [{"title": "x", "description": "y", "source_quote": "z", "labels": ["计量", "AFD"]}]
+        reqs = [{"title": "x", "description": "y", "source_quote": "z", "labels": ["计量", "XDEV"]}]
         ai_extract.ensure_domain_labels(reqs)
-        self.assertEqual(reqs[0]["labels"], ["计量", "AFD"])
+        self.assertEqual(reqs[0]["labels"], ["计量", "XDEV"])
 
 
 class MergeRequirementsTests(unittest.TestCase):
@@ -882,7 +882,7 @@ class ModuleClassificationTests(unittest.TestCase):
         self.assertIn("gas meter", reqs[0]["labels"])          # 自由标签保留为补充
 
     def test_other_module_respected_not_remapped(self) -> None:
-        reqs = [{"module": "其它", "labels": ["AFD"],
+        reqs = [{"module": "其它", "labels": ["XDEV"],
                  "title": "mechanical connector", "description": "", "source_quote": ""}]
         ai_extract.ensure_domain_labels(reqs)
         self.assertEqual(reqs[0]["labels"][0], "其它")         # 尊重 LLM "无贴切"，不塞通信协议
@@ -906,7 +906,7 @@ class ContextEngineeringTests(unittest.TestCase):
         return [
             {"block_id": "B1", "section_path": ["1 Scope"], "text": "The scope."},
             {"block_id": "B2", "section_path": ["3 Terms and definitions"],
-             "text": "AFD additional functionality device"},
+             "text": "XDEV additional functionality device"},
             {"block_id": "B3", "section_path": ["4 Requirements"],
              "text": "The meter shall measure gas volume."},
         ]

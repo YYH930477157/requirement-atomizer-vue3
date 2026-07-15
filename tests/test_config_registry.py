@@ -8,7 +8,7 @@ from pathlib import Path
 from config import ENV_NAMES
 
 REPO = Path(__file__).resolve().parent.parent
-_ENV_RE = re.compile(r"RATOMIZER_[A-Z_]+")
+_ENV_RE = re.compile(r"RATOMIZER_[A-Z0-9_]+")   # 含数字(防截断误报)
 # 非环境变量的同前缀标识符（协议前缀等）
 _EXCLUDED = {"RATOMIZER_PROGRESS__", "RATOMIZER_PROGRESS", "RATOMIZER_",
              "RATOMIZER_LLM_"}   # llm_pipeline 里的动态前缀拼接，非独立变量

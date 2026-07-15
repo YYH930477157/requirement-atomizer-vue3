@@ -91,19 +91,19 @@
       "kind": "catalog",
       "requirements": [
         {
-          "ai_req_id": "AI-PM1",
-          "title": "PM1点对多点协议配置文件要求",
+          "ai_req_id": "AI-PV1",
+          "title": "PV1点对多点协议配置文件要求",
           "module": "通信协议",
-          "description": "支持PM1配置。",
+          "description": "支持PV1配置。",
           "source_quote": "",
           "source_section": "",
           "source_block_ids": []
         },
         {
-          "ai_req_id": "AI-PM2",
-          "title": "PM2点对多点协议配置文件要求",
+          "ai_req_id": "AI-PV2",
+          "title": "PV2点对多点协议配置文件要求",
           "module": "通信协议",
-          "description": "支持PM2配置。",
+          "description": "支持PV2配置。",
           "source_quote": "",
           "source_section": "",
           "source_block_ids": []
@@ -113,17 +113,17 @@
         "functional_count": 1,
         "groups": [
           [
-            "AI-PM1",
-            "AI-PM2"
+            "AI-PV1",
+            "AI-PV2"
           ]
         ],
         "variants": [
-          "PM1",
-          "PM2"
+          "PV1",
+          "PV2"
         ],
         "protected_values": [
-          "PM1",
-          "PM2"
+          "PV1",
+          "PV2"
         ]
       }
     },
@@ -250,7 +250,7 @@
       "requirements": [
         {
           "ai_req_id": "AI-NR",
-          "title": "不可更换电池GdM的电池寿命要求",
+          "title": "不可更换电池MGW的电池寿命要求",
           "module": "环境可靠性",
           "description": "不可更换电池寿命要求。",
           "source_quote": "",
@@ -259,7 +259,7 @@
         },
         {
           "ai_req_id": "AI-R",
-          "title": "可更换电池GdM的电池寿命要求",
+          "title": "可更换电池MGW的电池寿命要求",
           "module": "环境可靠性",
           "description": "可更换电池寿命要求。",
           "source_quote": "",
@@ -390,7 +390,7 @@
       "requirements": [
         {
           "ai_req_id": "AI-C1",
-          "title": "GdM时钟同步要求",
+          "title": "MGW时钟同步要求",
           "module": "时钟",
           "description": "",
           "source_quote": "",
@@ -884,15 +884,15 @@
       "requirements": [
         {
           "title": "采集存储并远传数据",
-          "description": "GdM必须采集、本地记录并远程传输数据。",
-          "source_quote": "The GdM shall collect, record locally and transmit the data remotely.",
+          "description": "MGW必须采集、本地记录并远程传输数据。",
+          "source_quote": "The MGW shall collect, record locally and transmit the data remotely.",
           "module": "通信",
           "dev_guidance": [
             "采用FIFO队列解耦本地记录与远程发送"
           ]
         }
       ],
-      "source_text": "The GdM shall collect, record locally and transmit the data remotely.",
+      "source_text": "The MGW shall collect, record locally and transmit the data remotely.",
       "expected": {
         "normative_guidance_count": 0,
         "design_options": [
@@ -907,14 +907,14 @@
         {
           "title": "本地记录数据",
           "description": "本地记录数据。",
-          "source_quote": "The GdM shall record data locally.",
+          "source_quote": "The MGW shall record data locally.",
           "module": "存储",
           "dev_guidance": [
             "至少保存10000条记录"
           ]
         }
       ],
-      "source_text": "The GdM shall record data locally.",
+      "source_text": "The MGW shall record data locally.",
       "expected": {
         "forbidden_delivery_values": [
           "10000"

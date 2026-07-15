@@ -59,22 +59,22 @@ class ModalInflationTests(unittest.TestCase):
 
 
 class ForeignStandardRefTests(unittest.TestCase):
-    BASE = "Conformity shall be declared according to EN 16314 and EN 60529."
+    BASE = "Conformity shall be declared according to EN 54321 and EN 60529."
 
     def test_reference_absent_from_section_flagged(self) -> None:
-        req = {"title": "符合性声明", "description": "制造商须声明符合 EN 14236 的要求。",
+        req = {"title": "符合性声明", "description": "制造商须声明符合 EN 99999 的要求。",
                "source_quote": "Conformity shall be declared."}
         foreign = _foreign_standard_refs(req, self.BASE)
-        self.assertEqual([f.replace(" ", "") for f in foreign], ["EN14236"])
+        self.assertEqual([f.replace(" ", "") for f in foreign], ["EN99999"])
 
     def test_reference_present_in_section_clean(self) -> None:
-        req = {"title": "符合性声明", "description": "符合 EN 16314 与 EN 60529 的要求。",
+        req = {"title": "符合性声明", "description": "符合 EN 54321 与 EN 60529 的要求。",
                "source_quote": "Conformity shall be declared."}
         self.assertEqual(_foreign_standard_refs(req, self.BASE), [])
 
     def test_spacing_variants_normalized(self) -> None:
-        req = {"description": "依据 EN16314。", "title": "", "source_quote": ""}
-        self.assertEqual(_foreign_standard_refs(req, self.BASE), [])   # EN 16314 同号
+        req = {"description": "依据 EN54321。", "title": "", "source_quote": ""}
+        self.assertEqual(_foreign_standard_refs(req, self.BASE), [])   # EN 54321 同号
 
     def test_pipeline_appends_suspicion(self) -> None:
         section = {"section_id": "S", "heading": "9.1 General", "block_ids": [],
@@ -82,7 +82,7 @@ class ForeignStandardRefTests(unittest.TestCase):
 
         def chat(system: str, user: str) -> dict:
             return {"requirements": [{
-                "title": "符合性声明", "description": "制造商须声明符合 EN 14236。",
+                "title": "符合性声明", "description": "制造商须声明符合 EN 99999。",
                 "source_quote": "Conformity shall be declared.",
                 "type": "constraint", "priority": "P1", "labels": ["法规合规"]}]}
 

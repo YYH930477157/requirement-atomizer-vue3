@@ -118,10 +118,26 @@ _EVALUATORS = {
 }
 
 
+TEST18_SAMPLE_ENV = "RATOMIZER_HISTORICAL_SAMPLE"
+
+
+def _resolve_historical_sample(path: Path | None) -> Path | None:
+    if path is not None:
+        return Path(path)
+    import os
+    raw = os.environ.get(TEST18_SAMPLE_ENV, "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
 def evaluate_historical_corpus(path: Path | None = None) -> dict[str, Any]:
     from functional_catalog import build_function_catalog
 
-    fixture = path or (Path(__file__).resolve().parent / "tests" / "fixtures" / "test18_functional_synthesis_sample.json")
+    # 真实历史抽取样本是客户数据,不进公开仓(0715 用户裁定,与蓝皮书/模板同纪律)——
+    # 外置资产经 env 指路;缺失如实上报 available=false,不计违规也不装作跑过
+    fixture = _resolve_historical_sample(path)
+    if fixture is None or not fixture.is_file():
+        return {"available": False, "fixture": str(fixture) if fixture else "",
+                "critical_violations": 0}
     payload = json.loads(Path(fixture).read_text(encoding="utf-8"))
     rows = payload.get("rows") or []
     items = build_function_catalog(rows)
@@ -145,6 +161,7 @@ def evaluate_historical_corpus(path: Path | None = None) -> dict[str, Any]:
     )
     violations = sum((not assigned_once, not groups_preserved, not battery_split))
     return {
+        "available": True,
         "fixture": str(fixture),
         "source_requirements": len(rows),
         "functional_requirements": len(items),

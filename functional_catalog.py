@@ -15,10 +15,14 @@ _ACTION_TERMS = (
     "远传", "发送", "通知", "执行", "控制", "查询", "读取", "获取", "保留", "触发",
 )
 _GENERIC_TERMS = (
-    "the", "a", "an", "device", "gdm", "meter", "system", "shall", "must", "should",
+    "the", "a", "an", "device", "meter", "system", "shall", "must", "should",
     "设备", "系统", "应", "必须", "须", "可", "相关", "数据对象", "及", "与", "和", "并", "将",
 )
-_PROFILE_RE = re.compile(r"(?<![A-Za-z0-9])(PM|PP)\s*[-_]?\s*(\d+)(?![A-Za-z0-9])", re.IGNORECASE)
+# 档位/型号变体识别(0715 通用化):原硬编码 (PM|PP) 是单一语料的档位前缀——用户禁令
+# "不做单文档补丁"。通用形态=大写字母短前缀+数字(PM1/PV2/AFD3 类型号),紧贴或连字符
+# (不允许空格分隔,防 "PAGE 3" 类误匹配);合并键仍是 模块+前缀+剥词概念 三重同值,
+# 不同前缀/不同概念绝不跨并。
+_PROFILE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{1,4})[-_]?(\d{1,3})(?![A-Za-z0-9])")
 _PERIOD_RE = re.compile(
     r"(?<![A-Za-z0-9])(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>分钟|分|小时|时|天|日|个月|月|秒|s|sec(?:ond)?s?|min(?:ute)?s?|h(?:our)?s?|days?|months?)",
     re.IGNORECASE,
@@ -89,8 +93,11 @@ def _event_subject(text: str) -> str:
 
 def _variant_tokens(row: dict[str, Any]) -> list[str]:
     text = _source_text(row)
+    # 档位/型号 token 只认标题(0715 通用化):标题里的型号是归组信号,
+    # 正文里的字母数字组合(频率/模式/表格代号)是噪声
+    title = str(row.get("title") or "") or text
     values: list[str] = []
-    for prefix, number in _PROFILE_RE.findall(text):
+    for prefix, number in _PROFILE_RE.findall(title):
         values.append(f"{prefix.upper()}{number}")
     for match in _PERIOD_RE.finditer(text):
         values.append(f"{match.group('value')} {match.group('unit')}")
@@ -108,7 +115,7 @@ def _protected_tokens(row: dict[str, Any]) -> list[str]:
 def _legacy_family(row: dict[str, Any]) -> tuple[str, str]:
     text = _source_text(row)
     module = normalize_key(row.get("module") or (_as_list(row.get("labels")) or [""])[0])
-    profiles = _PROFILE_RE.findall(text)
+    profiles = _PROFILE_RE.findall(str(row.get("title") or "") or text)
     if profiles:
         prefixes = {prefix.upper() for prefix, _ in profiles}
         profile_family = sorted(prefixes)[0] if len(prefixes) == 1 else "PROFILE"
@@ -295,8 +302,8 @@ def _catalog_title(rows: list[dict[str, Any]], method: str) -> str:
         subject = _event_subject(" ".join(str(row.get("title") or "") for row in rows))
         return f"{subject}管理" if subject else str(rows[0].get("title") or "事件管理")
     if method == "protocol_profile_variant":
-        prefix = _PROFILE_RE.search(_source_text(rows[0]))
-        return f"{prefix.group(1).upper()} 点对多点协议配置" if prefix else "通信协议配置"
+        prefix = _PROFILE_RE.search(str(rows[0].get("title") or "") or _source_text(rows[0]))
+        return f"{prefix.group(1).upper()} 档位变体配置" if prefix else "协议档位配置"
     if method == "period_variant":
         title = _PERIOD_RE.sub("", str(rows[0].get("title") or "周期数据归档"))
         title = _WS_RE.sub(" ", title).strip(" -_/：:")
@@ -461,7 +468,7 @@ def _llm_group_is_safe(rows: list[dict[str, Any]]) -> bool:
 
 
 def _llm_render_method(rows: list[dict[str, Any]]) -> str:
-    profile_tokens = [_PROFILE_RE.findall(_source_text(row)) for row in rows]
+    profile_tokens = [_PROFILE_RE.findall(str(row.get("title") or "") or _source_text(row)) for row in rows]
     if len(rows) > 1 and all(tokens for tokens in profile_tokens):
         prefixes = {prefix.upper() for tokens in profile_tokens for prefix, _ in tokens}
         if len(prefixes) == 1:

@@ -303,7 +303,7 @@ class LLMClientTests(unittest.TestCase):
 
 class AdaptiveRateGateTests(unittest.TestCase):
     """429 自适应闸门（0714 批次一 S2）：全局冷却 + 在飞上限 AIMD。
-    真实数据:EN 16314 全量跑并发 4 时 164/781 次 429,各线程独立退避互不通气。"""
+    真实数据:EN 54321 全量跑并发 4 时 164/781 次 429,各线程独立退避互不通气。"""
 
     def setUp(self) -> None:
         from llm_client import _reset_rate_gates

@@ -984,7 +984,7 @@ def _translate_marker_batch(chat: Any, batch: list[tuple[str, str, str]]) -> dic
         "把下列标准原文逐条忠实翻译成中文。规则：",
         "- 逐条对应，不合并、不拆分、不遗漏；",
         "- 忠实原文：不得新增原文没有的数字、编号、协议代码、单位或任何建议/解释；",
-        "- 专有名词与缩写（如 AFD、M-Bus、GdM）保留原文；",
+        "- 专有名词与缩写（如 M-Bus、DLMS、OBIS 及设备/机构缩写）保留原文；",
         "- 只输出 JSON 对象 {\"items\":[{\"id\":1,\"translation\":\"...\"}]}。",
         "原文条目 JSON:",
         json.dumps(numbered, ensure_ascii=False),

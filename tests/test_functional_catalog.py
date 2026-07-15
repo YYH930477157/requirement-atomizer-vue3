@@ -58,9 +58,9 @@ class FunctionalCatalogClusteringTests(unittest.TestCase):
         from functional_catalog import build_function_catalog
 
         rows = [
-            {"ai_req_id": "AI-NR", "title": "不可更换电池GdM的电池寿命要求",
+            {"ai_req_id": "AI-NR", "title": "不可更换电池MGW的电池寿命要求",
              "description": "不可更换电池的设备应满足规定寿命。", "module": "环境可靠性"},
-            {"ai_req_id": "AI-R", "title": "可更换电池GdM的电池寿命要求",
+            {"ai_req_id": "AI-R", "title": "可更换电池MGW的电池寿命要求",
              "description": "可更换电池的设备应满足规定寿命。", "module": "环境可靠性"},
         ]
 

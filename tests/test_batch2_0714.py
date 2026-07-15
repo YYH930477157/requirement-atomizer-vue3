@@ -245,7 +245,7 @@ class CoverageCandidateTests(unittest.TestCase):
     def test_real_shall_statement_kept(self) -> None:
         from merged_consistency import is_coverage_candidate
         self.assertTrue(is_coverage_candidate(
-            self._b("The AFD shall be connected to the meter during all tests.")))
+            self._b("The XDEV shall be connected to the meter during all tests.")))
 
     def test_false_positives_excluded(self) -> None:
         from merged_consistency import is_coverage_candidate
@@ -264,7 +264,7 @@ class CoverageCandidateTests(unittest.TestCase):
         from merged_consistency import is_coverage_candidate
         # 编号开头但是完整句子（多词+句号）——不是标题,必须保留
         self.assertTrue(is_coverage_candidate(
-            self._b("4.6.1 The AFD shall close the valve within 5 s.")))
+            self._b("4.6.1 The XDEV shall close the valve within 5 s.")))
 
     def test_document_blocks_payload_carries_candidate_flag(self) -> None:
         import api_server
