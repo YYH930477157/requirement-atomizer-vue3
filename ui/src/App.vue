@@ -181,6 +181,12 @@
                 <b>注意</b>
                 <span>{{ lastStageNotes.join("；") }}</span>
               </div>
+              <div v-if="reviewInsights.length" class="note-insight" data-testid="review-insights">
+                <b>裁决复盘建议（{{ reviewInsights.length }}）</b>
+                <ul class="insight-list">
+                  <li v-for="(s, i) in reviewInsights" :key="i">{{ s }}</li>
+                </ul>
+              </div>
             </div>
           </div>
         </section>
@@ -442,8 +448,8 @@
               <label class="settings-toggle">
                 <input v-model="llmSettings.visionCapable" type="checkbox" data-testid="settings-vision-capable" />
                 <span>
-                  <strong>模型具备视觉能力</strong>
-                  <small>PDF 批注：开启后使用优化排版；关闭后直接显示原 PDF，不改动正文版式。</small>
+                  <strong>批注排版：优化重排</strong>
+                  <small>开启=文字重排版式（单文件、只含抽取片段）；关闭=原版 PDF 影印批注（文件夹,含完整原文档）。纯本地渲染,任何模式都不会把文档发给模型。</small>
                 </span>
               </label>
               <div class="settings-form-grid">
@@ -582,6 +588,8 @@ const runOverview = ref<{ atoms: number | null; aiReqs: number | null; selfCheck
   atoms: null, aiReqs: null, selfCheck: null, coverage: null, chapters: "", questions: null, verdict: "",
 })
 const lastStageNotes = ref<string[]>([])
+// 裁决复盘建议（E5）：专家改判模式 ≥3 次提炼的规则改进建议——此前产物零消费者
+const reviewInsights = ref<string[]>([])
 const reviewPreviewRows = computed(() => requirementRows.value.slice(0, 4))
 const DELIVERABLE_FILES = [
   { key: "software", icon: "XLS", tone: "xls", name: "软件需求列表-成文.xlsx", hint: "V2.3.x 模板成文（B 轨主交付物）" },
@@ -632,7 +640,7 @@ const llmSettings = ref<LlmSettings>({
   maxTokens: 4096,
   timeoutS: 60,
   maxRetries: 3,
-  concurrency: 4,
+  concurrency: 8,
   selfCheck: true,
 })
 // 「运行」时依次执行的阶段（基础解析+审查后追加）。可选配置、localStorage 持久化。
@@ -747,7 +755,10 @@ function setRunStageState(key: string | undefined, patch: Partial<RunStageState>
   }
 }
 
+let lastChainStep = ""   // 链步跟踪:步名变化 → 上一阶段卡片翻绿(后端完成事件不带 status)
+
 function resetRunStageBoard() {
+  lastChainStep = ""
   const next = defaultStageStates()
   if (!runStages.value.llmReview) next["llm-review"] = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.aiExtract) {
@@ -1362,8 +1373,11 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         sampleNote = `；试抽样本 ${info?.sections ?? "?"}/${info?.total_sections ?? "?"} 章：` +
           `${Number(sample.count ?? 0)} 条` +
           (quality?.coverage_pct != null ? `、样本覆盖率 ${quality.coverage_pct}%` : "")
-        const a = objectValue(sample.analysis) as { analysis_count?: number; enriched?: number } | null
-        if (a) sampleNote += `；软件需求 ${Number(a.analysis_count ?? 0)} 条（富化 ${Number(a.enriched ?? 0)}）→ software_requirements.xlsx`
+        const a = objectValue(sample.analysis) as { analysis_count?: number; enriched?: number; enrich_degraded?: number } | null
+        if (a) {
+          const degraded = Number(a.enrich_degraded ?? 0)
+          sampleNote += `；软件需求 ${Number(a.analysis_count ?? 0)} 条（富化 ${Number(a.enriched ?? 0)}${degraded > 0 ? `、降级 ${degraded}` : ""}）→ software_requirements.xlsx`
+        }
         const w = objectValue(sample.template) as { appended_total?: number } | null
         if (w) sampleNote += `；成文 ${Number(w.appended_total ?? 0)} 行 → 软件需求列表-成文.xlsx`
         const r = objectValue(sample.readiness) as { verdict?: string } | null
@@ -1386,7 +1400,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       const differ = Number(consistency?.obis_values_differ || 0)
       const uncovered = Number(consistency?.uncovered_requirement_like || 0)
       const warn = dup || differ || uncovered
-        ? `；一致性：疑似跨章重复 ${dup} 组、OBIS 数值待核 ${differ}、覆盖缺口 ${uncovered}（批注视图已标记）`
+        ? `；一致性：疑似跨章重复 ${dup} 组、OBIS 数值待核 ${differ}、覆盖缺口 ${uncovered}（批注视图已标记，遗漏候选已列入澄清清单）`
         : ""
       const apiWarn = apiReconnectWarning
         ? `；${apiReconnectWarning}`
@@ -1421,12 +1435,26 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
     return
   }
   if (event.stage === "chain") {
-    const label = CHAIN_STEP_LABELS[String(event.step || "")] || String(event.step || "交付物链")
+    const step = String(event.step || "")
+    const label = CHAIN_STEP_LABELS[step] || step || "交付物链"
+    // 真实反馈 2026-07-14：链步进入新阶段 → 上一阶段卡片翻绿。后端的完成事件与开始事件
+    // 同 step 名(只有 skipped 带 status),此前完成的阶段没人翻绿、卡在最后一次内部进度。
+    if (lastChainStep && lastChainStep !== step) {
+      setRunStageState(lastChainStep, { status: "ok", percent: 100, detail: "已完成" })
+    }
+    lastChainStep = step
     const status = event.status === "skipped" ? "skipped" : completed >= total && total > 0 ? "ok" : "running"
-    setRunStageState(event.step, { status, percent, detail: status === "skipped" ? "复用已有产物" : label })
+    if (status === "running") {
+      // 链级百分比是"第 N/共 M 步"(2/7≈14%),不是阶段内部进度——不写进卡片,
+      // 卡片百分比由链内细粒度事件(ai_extract/analyze)驱动(setRunStageState 是合并语义)
+      setRunStageState(step, { status, detail: label })
+    } else {
+      setRunStageState(step, { status, percent: 100, detail: status === "skipped" ? "复用已有产物" : "已完成" })
+    }
     runStage.value = total ? `交付物链 ${Math.min(completed + 1, total)}/${total}：${label}` : label
+    runProgress.value = percent   // 顶栏切到链视角(此前保留基础管线的 100%,出现"100% 但还在跑")
     runProgressDetail.value = `正在执行：${label}…`
-    return   // 总进度条由链内细粒度事件（ai_extract/analyze）驱动，这里不回跳
+    return
   }
   if (event.stage === "ai_extract") {
     setRunStageState("ai-extract", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 章节` : "逐章节调用 LLM" })
@@ -1527,6 +1555,14 @@ async function loadFromSession(session: { baseUrl: string; token: string; output
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "需求加载失败"
     throw error
+  }
+  try {
+    // 复盘建议为附属信息：加载失败/老目录缺文件不影响连接流程
+    const insights = await client.loadReviewInsights()
+    reviewInsights.value = Array.isArray(insights?.suggestions)
+      ? insights.suggestions.map((s) => String(s)) : []
+  } catch {
+    reviewInsights.value = []
   }
 }
 
@@ -2858,6 +2894,18 @@ tbody tr.selected {
 }
 
 .note-warn b { font-weight: 650; flex: none; }
+
+.note-insight {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  margin-top: 12px;
+  background: #eef2ff;
+  color: #1e41c9;
+}
+
+.note-insight b { font-weight: 650; }
+.insight-list { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
 
 /* 流水线格子:样机形态(左色条 + 底部细进度条) */
 .run-stage-board .run-stage-card { position: relative; }

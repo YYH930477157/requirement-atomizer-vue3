@@ -297,6 +297,9 @@ describe("review workspace shell", () => {
           json: async () => ({ requirement_id: "SREQ-UI-1", status: "accepted" }),
         } as Response
       }
+      if (String(input).endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
       throw new Error(`Unexpected request: ${String(input)}`)
     })
 
@@ -317,7 +320,7 @@ describe("review workspace shell", () => {
       expect(wrapper.find('[data-testid="detail-status"]').text()).toContain("已接受")
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)   // requirements + review-insights + action
   })
 
   it("translates the selected requirement through the local API", async () => {
@@ -369,6 +372,9 @@ describe("review workspace shell", () => {
           }),
         } as Response
       }
+      if (String(input).endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
       throw new Error(`Unexpected request: ${String(input)}`)
     })
 
@@ -383,7 +389,7 @@ describe("review workspace shell", () => {
       expect(wrapper.find('[data-testid="translation-text"]').text()).toContain("读取客户端应支持 xDLMS 服务")
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)   // requirements + review-insights + action
   })
 
   it("clears mock rows when the connected API session has no requirements", async () => {
@@ -648,6 +654,39 @@ describe("review workspace shell", () => {
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
   })
 
+  it("surfaces review insights suggestions after session load", async () => {
+    // E5（0714 批次二）：裁决复盘建议上屏——此前 review_insights.json 零消费者
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770", token: "t", outputDir: "E:\\out\\abnt",
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes("/review-insights")) {
+        return {
+          ok: true,
+          json: async () => ({
+            available: true,
+            suggestions: ["模块「时钟」被专家改为「预付费」共 3 次——考虑调整关键词边界。"],
+          }),
+        } as Response
+      }
+      return { ok: true, json: async () => [] } as Response
+    })
+
+    const wrapper = mount(App)
+    await vi.waitFor(() => {
+      const panel = wrapper.find('[data-testid="review-insights"]')
+      expect(panel.exists()).toBe(true)
+      expect(panel.text()).toContain("预付费")
+      expect(panel.text()).toContain("裁决复盘建议（1）")
+    })
+  })
+
   it("runs a limited LLM test pass from the test button", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
@@ -716,7 +755,7 @@ describe("review workspace shell", () => {
           kind: "chain", count: 12,
           sampled: { sections: 10, total_sections: 54 },
           quality: { coverage_pct: 78.5 },
-          analysis: { analysis_count: 11, enriched: 9, route: "openai_compatible" },
+          analysis: { analysis_count: 11, enriched: 9, enrich_degraded: 2, route: "openai_compatible" },
           readiness: { verdict: "READY", reasons: [] }, questions: 3,
           results: {}, summary: {},
         }),
@@ -741,6 +780,7 @@ describe("review workspace shell", () => {
       expect(message).toContain("12 条")
       expect(message).toContain("78.5%")
       expect(message).toContain("软件需求 11 条")
+      expect(message).toContain("富化 9、降级 2")   // 部分降级可见（0714 批次一 E1a）
       expect(message).toContain("software_requirements.xlsx")
       expect(message).toContain("就绪判定 READY")
       expect(message).toContain("必答澄清 3 条")
@@ -1018,6 +1058,57 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("backend exploded")
+    })
+  })
+
+  it("chain step transition marks previous stage done and keeps card percent from inner events", async () => {
+    // 真实反馈 2026-07-14:AI抽取卡在"运行中 14%"而后台已完成——链级百分比(2/7)被
+    // 写进阶段卡片、且完成的阶段没人翻绿。锁:步名变化→上一步翻绿;链百分比不进卡片。
+    const runPromise = new Promise<{ kind: string; out_dir: string }>(() => {})
+    type AnyEvent = { stage: string; step?: string; status?: string; completed?: number; total?: number; percent?: number }
+    let progressHandler: (event: AnyEvent) => void = () => {
+      throw new Error("progress handler was not registered")
+    }
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\input\doc.pdf"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\out\demo"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue(null),
+        runPipeline: vi.fn().mockReturnValue(runPromise),
+        onTaskProgress: vi.fn((handler: (event: AnyEvent) => void) => {
+          progressHandler = handler
+          return vi.fn()
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.onTaskProgress).toHaveBeenCalled()
+    })
+
+    progressHandler({ stage: "ai_extract", completed: 40, total: 100, percent: 40 })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="run-stage-ai-extract"]').text()).toContain("40%")
+    })
+    progressHandler({ stage: "chain", step: "ai-extract", completed: 1, total: 7, percent: 14 })
+    progressHandler({ stage: "chain", step: "functional-synthesis", completed: 1, total: 7, percent: 14 })
+    await vi.waitFor(() => {
+      const extractCard = wrapper.find('[data-testid="run-stage-ai-extract"]').text()
+      expect(extractCard).toContain("已完成")             // 步名变化 → 上一步翻绿
+      expect(extractCard).not.toContain("14%")            // 链百分比不覆盖卡片
+      const synthCard = wrapper.find('[data-testid="run-stage-functional-synthesis"]').text()
+      expect(synthCard).toContain("功能重组")
+      expect(synthCard).not.toContain("14%")
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("2/7")
     })
   })
 })

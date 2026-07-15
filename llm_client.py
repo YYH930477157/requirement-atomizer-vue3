@@ -36,6 +36,91 @@ def apply_min_tokens(config, purpose: str):
 
 RATE_LIMIT_MIN_ATTEMPTS = 8
 
+# --- 429 自适应闸门（0714 批次一 S2）--------------------------------------------
+# 真实数据（EN 16314 全量跑）：并发 4 时抽取轨 781 次调用有 164 次 429——各线程各自
+# 退避重试、其余线程照常轰端点，有效并发只剩 3.2；并发调 8 只会加剧限流。闸门跨线程
+# 共享（按 base_url 一门）：任一线程命中 429 → ①全局冷却（其它线程的**新**请求等冷却期
+# 过后再发,不是各睡各的）②在飞上限砍半（AIMD：连续成功缓慢 +1 恢复,封顶 32）。
+# 默认开；RATOMIZER_LLM_ADAPTIVE=0 关闭（行为回到各线程独立退避）。
+ADAPTIVE_ENV = "RATOMIZER_LLM_ADAPTIVE"
+GATE_CEILING = 32
+GATE_RECOVERY_SUCCESSES = 8   # 连续成功 N 次,在飞上限 +1
+
+
+class _AdaptiveRateGate:
+    def __init__(self, ceiling: int = GATE_CEILING, now_fn=time.monotonic):
+        self._cv = threading.Condition()
+        self._now = now_fn
+        self._ceiling = ceiling
+        self._limit: int | None = None   # None=尚未限流,不设上限（由各阶段线程池自然限定）
+        self._active = 0
+        self._successes = 0
+        self._pause_until = 0.0
+
+    def acquire(self) -> None:
+        with self._cv:
+            while True:
+                wait = self._pause_until - self._now()
+                if wait > 0:
+                    self._cv.wait(min(wait, 1.0))
+                    continue
+                if self._limit is None or self._active < self._limit:
+                    self._active += 1
+                    return
+                self._cv.wait(1.0)
+
+    def release(self) -> None:
+        with self._cv:
+            self._active = max(0, self._active - 1)
+            self._cv.notify_all()
+
+    def on_rate_limited(self, delay: float) -> None:
+        with self._cv:
+            base = self._active if self._limit is None else self._limit
+            self._limit = max(1, min(base, self._ceiling) // 2)
+            self._successes = 0
+            self._pause_until = max(self._pause_until, self._now() + max(0.0, delay))
+            self._cv.notify_all()
+
+    def on_success(self) -> None:
+        with self._cv:
+            if self._limit is None:
+                return
+            self._successes += 1
+            if self._successes >= GATE_RECOVERY_SUCCESSES:
+                self._successes = 0
+                if self._limit < self._ceiling:
+                    self._limit += 1
+                    self._cv.notify_all()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._cv:
+            return {"limit": self._limit, "active": self._active, "pause_until": self._pause_until}
+
+
+_GATES: dict[str, _AdaptiveRateGate] = {}
+_GATES_LOCK = threading.Lock()
+
+
+def _adaptive_enabled() -> bool:
+    return os.environ.get(ADAPTIVE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _gate_for(base_url: str) -> _AdaptiveRateGate:
+    key = str(base_url or "").rstrip("/")
+    with _GATES_LOCK:
+        gate = _GATES.get(key)
+        if gate is None:
+            gate = _AdaptiveRateGate()
+            _GATES[key] = gate
+        return gate
+
+
+def _reset_rate_gates() -> None:
+    """仅测试用：清空按端点的闸门单例。"""
+    with _GATES_LOCK:
+        _GATES.clear()
+
 # LLM 消息级追踪：set_trace_path() 启用后，每次 HTTP 调用（含 JSON 修复回路）在
 # llm_trace.jsonl 追加一行完整收发——messages 原文 + 响应全文（含 usage token 用量、
 # 推理模型的 reasoning_content）。排查"为什么被拒/为什么 0 条/为什么慢"看这里。
@@ -136,11 +221,27 @@ def chat_json_messages(config: LLMClientConfig, messages: list[dict[str, str]]) 
             raise LLMResponseError(f"LLM response is not a JSON object after repair: {second_error}") from second_error
 
 
-JSON_MODE_ENV = "RATOMIZER_LLM_JSON_SCHEMA"   # =1 请求 response_format=json_object（端点须支持）
+JSON_MODE_ENV = "RATOMIZER_LLM_JSON_SCHEMA"   # 默认开;=0 关闭（0714 批次二 S6）
+
+# 端点不支持 response_format 的记忆（按 base_url|model）：此前每次调用都探测,
+# 不支持的端点每次白发一遍 4xx（调用翻倍）。命中一次 4xx 即记住,本进程后续直发无 JSON 模式。
+_JSON_MODE_UNSUPPORTED: set[str] = set()
+_JSON_MODE_LOCK = threading.Lock()
 
 
 def _json_mode_enabled() -> bool:
-    return os.environ.get(JSON_MODE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    raw = os.environ.get(JSON_MODE_ENV)
+    if raw is None or not raw.strip():
+        # 默认开（0714 批次二 S6）：mimo 双模型探针已验证 json_object;开着能基本消灭
+        # "解析失败→修复重发"的调用翻倍。不支持的端点 4xx 一次后被记住并降级。
+        return True
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _reset_json_mode_memory() -> None:
+    """仅测试用。"""
+    with _JSON_MODE_LOCK:
+        _JSON_MODE_UNSUPPORTED.clear()
 
 
 def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> str:
@@ -150,13 +251,19 @@ def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> st
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
     }
-    if _json_mode_enabled():
-        # JSON 强制模式：端点支持时基本消灭"解析失败重修"（每轮 1-2 个失败单元的来源）。
-        # 端点不支持会 4xx——失败一次即去掉该字段重发（探针式降级，不影响本次调用结果）。
+    endpoint_key = f"{config.base_url}|{config.model}"
+    with _JSON_MODE_LOCK:
+        endpoint_supported = endpoint_key not in _JSON_MODE_UNSUPPORTED
+    if _json_mode_enabled() and endpoint_supported:
         payload["response_format"] = {"type": "json_object"}
         try:
             response = _post_json(config, payload)
-        except LLMError:
+        except LLMResponseError:
+            # 只有"响应类"4xx 才判定端点不支持并降级重发;连接类错误（401/403/429 打光/
+            # 5xx/网络）原样抛出——重发无 JSON 模式救不了真故障,只会调用翻倍。
+            with _JSON_MODE_LOCK:
+                _JSON_MODE_UNSUPPORTED.add(endpoint_key)
+            LOGGER.warning("端点疑似不支持 response_format=json_object,已记住并降级重发: %s", endpoint_key)
             payload.pop("response_format", None)
             response = _post_json(config, payload)
     else:
@@ -185,10 +292,13 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
     # 429 限流单独预算：并发跑时限流是常态（test7 实测 140 次 429、3 次重试打光 → 10 个
     # 章节整体失败=文档 17% 内容丢失）。限流≠服务坏了，值得更耐心：独立预算 + 更长退避。
     rate_limit_budget = max(RATE_LIMIT_MIN_ATTEMPTS, max_attempts * 2)
+    gate = _gate_for(config.base_url) if _adaptive_enabled() else None
     attempt = 0
     rate_hits = 0
     while attempt < max_attempts:
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        if gate is not None:
+            gate.acquire()   # 冷却期内阻塞新请求;在飞数受 AIMD 上限约束
         started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
@@ -203,6 +313,8 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                               "dur_s": round(duration, 1), "attempt": attempt + 1,
                               "messages": _truncate_for_trace(payload.get("messages")),
                               "response": _truncate_for_trace(parsed)})
+                if gate is not None:
+                    gate.on_success()
                 return parsed
         except urllib.error.HTTPError as exc:
             raw = _read_error_body(exc)
@@ -218,7 +330,10 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                 rate_hits += 1
                 if rate_hits < rate_limit_budget:
                     # 尊重 Retry-After；没有就按限流命中次数指数退避（封顶 30s）——不占普通重试预算
-                    time.sleep(_retry_delay(min(rate_hits, 5), exc.headers.get("Retry-After")))
+                    delay = _retry_delay(min(rate_hits, 5), exc.headers.get("Retry-After"))
+                    if gate is not None:
+                        gate.on_rate_limited(delay)   # 全局冷却+在飞上限砍半,其它线程一起收敛
+                    time.sleep(delay)
                     continue
                 raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
             if _is_retryable_status(exc.code):
@@ -237,6 +352,9 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                 time.sleep(_retry_delay(attempt - 1, None))
                 continue
             raise LLMConnectionError(f"LLM service is unavailable: {exc}") from exc
+        finally:
+            if gate is not None:
+                gate.release()
     raise LLMConnectionError("LLM service is unavailable")
 
 

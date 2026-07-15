@@ -27,6 +27,7 @@ from typing import Any
 
 from api_server import (ANNOTATION_TRANSLATIONS, build_ai_requirements, build_document_blocks,
                         load_annotation_translations, translation_key)
+from io_utils import read_jsonl
 from requirement_kb.matching import clean_text as normalize_text
 
 ANNOTATION_HTML = "document_annotation.html"
@@ -459,7 +460,10 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
             prev_page = page_no
         is_heading = b.get("type") == "heading" or (bool(path) and text == str(path[-1]))
         is_noise = bool(b.get("noise"))
-        is_omission = bool(b.get("requirement_like")) and not is_noise and bid not in covered
+        # 覆盖/遗漏统一口径（E3b）：payload 带 coverage_candidate 用之;旧数据回退宽口径
+        candidate = (bool(b.get("coverage_candidate")) if "coverage_candidate" in b
+                     else bool(b.get("requirement_like")) and not is_noise)
+        is_omission = candidate and bid not in covered
         anchored = anchor_map.get(bid) or []
 
         # 渲染单个 block 的 HTML（表格块带 data_rows 时渲染真表格，旧 out_dir 无该字段回退扁平文字）
@@ -1089,11 +1093,12 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
 
 
 def _omission_records(blocks: list[dict[str, Any]], covered: set[str]) -> list[dict[str, Any]]:
+    from merged_consistency import is_coverage_candidate
     records: list[dict[str, Any]] = []
     for block in blocks:
         block_id = str(block.get("block_id") or "")
         text = str(block.get("text") or "").strip()
-        if (not block.get("requirement_like") or block.get("noise") or block_id in covered or not text):
+        if not is_coverage_candidate(block) or block_id in covered or not text:
             continue
         key = _translation_key(text)
         records.append({
@@ -1106,7 +1111,8 @@ def _omission_records(blocks: list[dict[str, Any]], covered: set[str]) -> list[d
     return records
 
 
-def _pdf_zone_style(region: dict[str, Any]) -> tuple[str, float]:
+def _pdf_zone_rect(region: dict[str, Any]) -> dict[str, float]:
+    """块坐标 → 页面百分比矩形（导出 HTML 与应用内视图共用的唯一换算实现）。"""
     x0, top, x1, bottom = region["bbox"]
     width = float(region["page_width"])
     height = float(region["page_height"])
@@ -1114,9 +1120,15 @@ def _pdf_zone_style(region: dict[str, Any]) -> tuple[str, float]:
     top_pct = max(0.0, min(98.0, top / height * 100))
     zone_width = max(0.8, min(100.0 - left, (x1 - x0) / width * 100))
     zone_height = max(0.8, min(100.0 - top_pct, (bottom - top) / height * 100))
+    return {"left": round(left, 3), "top": round(top_pct, 3),
+            "width": round(zone_width, 3), "height": round(zone_height, 3)}
+
+
+def _pdf_zone_style(region: dict[str, Any]) -> tuple[str, float]:
+    rect = _pdf_zone_rect(region)
     return (
-        f"left:{left:.3f}%;top:{top_pct:.3f}%;width:{zone_width:.3f}%;height:{zone_height:.3f}%",
-        top_pct,
+        f"left:{rect['left']:.3f}%;top:{rect['top']:.3f}%;width:{rect['width']:.3f}%;height:{rect['height']:.3f}%",
+        rect["top"],
     )
 
 
@@ -1209,6 +1221,71 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
         f'<a href="{ANNOTATION_SOURCE_PDF}" target="_blank" title="打开原始 PDF">PDF</a>'
         '</div></div>'
         f'<div class="pdf-page-list" id="pdf-page-list">{"".join(page_html)}</div></div>')
+
+
+def build_pdf_annotation_payload(out_dir: Path) -> dict[str, Any]:
+    """应用内「原版影印」批注数据（与导出 HTML 同源：同几何缓存/页图/百分比换算——
+    双渲染器等价靠共用本模块实现,不是各写一份）。
+
+    只读现成 sidecar：页图缺失时不现场渲染（首次生成走「导出批注HTML·原版影印」,
+    之后常驻复用）,返回 available=False + reason 供前端提示。标记只带数据
+    （req_id/block_id + 页码 + 百分比矩形）,编号/文案由前端用它自己的编号器渲染。"""
+    out_dir = Path(out_dir).expanduser().resolve()
+    source_pdf = _source_pdf_path(out_dir)
+    if source_pdf is None:
+        return {"available": False, "reason": "非 PDF 输入或缺少源文档，无原版影印模式"}
+    pages_dir = out_dir / ANNOTATION_PAGES_DIR
+    try:
+        manifest = json.loads((pages_dir / ANNOTATION_PAGES_MANIFEST).read_text(encoding="utf-8"))
+        manifest_pages = manifest.get("pages") if isinstance(manifest, dict) else None
+    except (OSError, json.JSONDecodeError):
+        manifest_pages = None
+    pages: list[dict[str, Any]] = []
+    for page in manifest_pages or []:
+        if not isinstance(page, dict):
+            continue
+        filename = str(page.get("file") or "")
+        target = pages_dir / filename
+        if filename and target.is_file() and target.stat().st_size > 0:
+            pages.append({"page_number": int(page.get("page_number") or 0),
+                          "file": filename,
+                          "width": float(page.get("width") or 0.0),
+                          "height": float(page.get("height") or 0.0)})
+    if not pages:
+        return {"available": False,
+                "reason": "影印页尚未生成——先用「导出批注HTML」的原版影印模式生成一次（之后常驻复用）"}
+
+    blocks = read_jsonl(out_dir / "blocks.jsonl")
+    requirements = build_ai_requirements(out_dir)
+    geometry = _resolve_pdf_geometry(source_pdf, blocks,
+                                     cache_path=out_dir / ANNOTATION_PDF_GEOMETRY)
+    requirement_markers: list[dict[str, Any]] = []
+    for req in requirements:
+        req_id = str(req.get("ai_req_id") or "")
+        anchor = str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")
+        regions = geometry.get(anchor) or []
+        if not req_id or not regions:
+            continue
+        page = _page_number(regions[0].get("page_number"))
+        if not page:
+            continue
+        requirement_markers.append({"req_id": req_id, "page": page,
+                                    "rect": _pdf_zone_rect(regions[0])})
+    covered = _covered_blocks(requirements)
+    from merged_consistency import is_coverage_candidate
+    omission_markers: list[dict[str, Any]] = []
+    for block in blocks:
+        block_id = str(block.get("block_id") or "")
+        if (not is_coverage_candidate(block)
+                or block_id in covered or not str(block.get("text") or "").strip()):
+            continue
+        for region in geometry.get(block_id) or []:
+            page = _page_number(region.get("page_number"))
+            if page:
+                omission_markers.append({"block_id": block_id, "page": page,
+                                         "rect": _pdf_zone_rect(region)})
+    return {"available": True, "pages": pages, "pages_dir": ANNOTATION_PAGES_DIR,
+            "requirement_markers": requirement_markers, "omission_markers": omission_markers}
 
 
 def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
@@ -1519,6 +1596,7 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .dd-title {{ margin: 10px 0 4px; font-size: 16px; font-weight: 650; color: var(--ink); line-height: 1.45; }}
 .dd-meta {{ font-size: 12px; color: var(--muted); margin-bottom: 13px; }}
 .dd-suspicion {{ font-size: 12px; color: #92400e; background: #fef3c7; border-radius: 6px; padding: 4px 8px; margin-bottom: 10px; }}
+.dd-consistency {{ font-size: 12px; color: #1e41c9; background: #eef2ff; border-radius: 6px; padding: 4px 8px; margin-bottom: 10px; }}
 .dd-label {{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 15px 0 5px; }}
 .dd-body {{ font-size: 14px; line-height: 1.7; }}
 .dd-empty {{ color: var(--faint); }}
@@ -2065,8 +2143,20 @@ function selectSourceClassification(el) {{
     '</div>';
 }}
 
+// 跨章合并徽章（双渲染器契约字段——与 DocumentReview.vue mergeBadgeOf 同语义,契约夹具锁文案）：
+// 单源不显示（置信恒 1.0 是噪声）;置信 < 0.9 提示核对（0.75=仅同 key 弱合并,最易错并）
+function functionalMergeBadge(r) {{
+  const count = Number(r.functional_source_count || 0);
+  const method = String(r.functional_merge_method || "");
+  if (!method || count < 2) return "";
+  const conf = Number(r.functional_merge_confidence == null ? 1 : r.functional_merge_confidence);
+  return '跨章合并 '+count+' 条（'+method+'，置信 '+conf+'）'+(conf < 0.9 ? '——建议核对合并是否恰当' : '');
+}}
+
 function functionalMembershipHtml(r) {{
   if (!r.functional_requirement_id) return "";
+  const mergeBadge = functionalMergeBadge(r);
+  const mergeClass = Number(r.functional_merge_confidence == null ? 1 : r.functional_merge_confidence) < 0.9 ? "dd-suspicion" : "dd-consistency";
   const behaviors = (r.functional_behaviors||[]).map(value => '<li>'+esc(value)+'</li>').join("");
   const preconditions = (r.functional_preconditions||[]).map(value => '<li>'+esc(value)+'</li>').join("");
   const constraints = (r.functional_data_constraints||[]).map(value => '<li>'+esc(value)+'</li>').join("");
@@ -2074,6 +2164,7 @@ function functionalMembershipHtml(r) {{
   const conflicts = (r.functional_conflict_flags||[]).map(value => '<li>'+esc(value)+'</li>').join("");
   return '<div class="dd-section"><div class="dd-label">所属研发功能</div>'+
     '<div class="dd-body"><strong>'+esc(r.functional_title||r.functional_requirement_id)+'</strong></div>'+
+    (mergeBadge ? '<div class="'+mergeClass+'">⧉ '+esc(mergeBadge)+'</div>' : '')+
     (r.functional_objective ? '<div class="dd-body">'+esc(r.functional_objective)+'</div>' : '')+
     (behaviors ? '<div class="dd-label">功能行为</div><ul class="dd-list">'+behaviors+'</ul>' : '')+
     (preconditions ? '<div class="dd-label">前置条件</div><ul class="dd-list">'+preconditions+'</ul>' : '')+
@@ -2125,6 +2216,7 @@ function select(id) {{
       ? (r.source_page ? '<div class="dd-legend">原文位置 · PDF 第 '+esc(r.source_page)+' 页</div>' : '')
       : '<div class="dd-legend">正文标记：<span style="background:#ffe89a;padding:0 4px">黄=引用依据</span> · <span style="background:#eef4ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文（模型通读范围）</div>')+
     ((r.suspicion_reasons||[]).length ? '<div class="dd-suspicion">⚠ 建议优先复核：'+esc((r.suspicion_reasons||[]).join("、"))+'</div>' : '')+
+    ((r.consistency_flags||[]).length ? '<div class="dd-consistency">⇄ 全文档一致性：'+esc((r.consistency_flags||[]).join("；"))+'</div>' : '')+
     analysisHtml+
     functionalMembershipHtml(r)+
     (dev ? '<div class="dd-label">研发指引 / 落地实现'+(useEnriched?' <span class="src-badge">富化(LLM)</span>':'')+'</div><ul class="dd-list">'+dev+'</ul>' : '')+

@@ -62,7 +62,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v15"  # v15：缺失功能键保持为空，由文档级目录安全推导
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v16"  # v16：functional_key 构造规则+priority 判级基准（0714 批次三 E7）；v15：缺失功能键保持为空，由文档级目录安全推导
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -71,7 +71,7 @@ DOC_CONTEXT_GLOSSARY_MAX = 1800   # 术语表注入上限（控 token 成本）
 DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
-DEFAULT_CONCURRENCY = 4
+DEFAULT_CONCURRENCY = 8   # 4→8（2026-07-14 提速）：IO 等待型并发,mimo 端点 8 并发实测稳定
 MAX_CONCURRENCY = 16
 CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
 # 推理模型（如 deepseek-v4-flash / GLM-5.2）会先花大量 token 在隐藏 reasoning 上，
@@ -125,8 +125,13 @@ VALID_PRIORITIES = {"P0", "P1", "P2"}
 SYSTEM_PROMPT = (
     "你是表计行业（电表/水表/气表）需求分析师。读给定的标准/规范文本，抽取其中的需求条目。"
     "把同一功能的零散语句**合并成一条功能需求**，不要逐句拆；表格类规范化为一条带说明的需求。"
-    "每条需求输出：title（不超过 80 字）、functional_key（跨章节同一研发功能使用完全相同的稳定中文短语）、description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
-    "type（functional/non_functional/constraint/business_rule）、priority（P0/P1/P2，按重要性区分）、"
+    "每条需求输出：title（不超过 80 字）、"
+    "functional_key（跨章节合并的连接键——构造规则：「对象/主题＋动作」的受控中文名词短语，"
+    "2-6 个词，不含数值/编码/章节号/标点；跨章节属同一研发功能时必须**逐字相同**。"
+    "正例：「阀门关闭控制」「远程固件升级」「事件记录存储」；反例：「4.6 的 AFD2 要求」「阀门在 5s 内关闭」）、"
+    "description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
+    "type（functional/non_functional/constraint/business_rule）、"
+    "priority（判级基准：P0=安全/计量准确性/法规强制项；P1=核心功能与协议一致性；P2=辅助/诊断/可选功能）、"
     "module（该需求归属的模块，**必须原样照抄下面清单里的一个词**，按需求实质语义选最贴切的；"
     "确实都不贴切时才填\"" + OTHER_MODULE + "\"）：" + "、".join(MODULE_VOCAB) + "。"
     "labels（额外的细分标签，至少一个，可自由）、source_quote（原文逐字引用，不可改写）、"
@@ -185,6 +190,36 @@ def section_fingerprint(section: dict[str, Any], model: str, context_key: str = 
         f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{context_key}\n{refs_key}".encode("utf-8")
     ).hexdigest()
     return digest[:24]
+
+
+EXTRACT_EXEMPLARS_MAX = 8
+
+
+def render_extract_exemplars(bank: dict[str, Any]) -> str:
+    """裁决样本 → 抽取轨 few-shot（0714 批次三 E6）。
+
+    此前裁决只反哺 analyze 富化,专家对**抽取粒度/模块判断**的验收从不回灌抽取——
+    抽取质量不随使用积累。只用「模块+标题」（不携描述/数值,最小化搬运面）;
+    每模块最多 2 条、总量 8 条（模块多样性优先）;按 rid 排序确定性可复现。
+    """
+    accepted = bank.get("accepted") or {}
+    by_module: dict[str, list[str]] = {}
+    for rid in sorted(accepted):
+        entry = accepted.get(rid) or {}
+        module = str(entry.get("module") or "").strip()
+        title = str(entry.get("title") or "").strip()
+        if not module or not title:
+            continue
+        titles = by_module.setdefault(module, [])
+        if len(titles) < 2:
+            titles.append(title[:60])
+    lines: list[str] = []
+    for module in sorted(by_module):
+        for title in by_module[module]:
+            lines.append(f"-【{module}】{title}")
+            if len(lines) >= EXTRACT_EXEMPLARS_MAX:
+                return "\n".join(lines)
+    return "\n".join(lines)
 
 
 def build_section_prompt(section: dict[str, Any]) -> str:
@@ -705,7 +740,8 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
 def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "",
                     self_check: bool = False,
                     block_info: dict[str, dict[str, Any]] | None = None,
-                    self_check_rounds: int | None = None) -> list[dict[str, Any]]:
+                    self_check_rounds: int | None = None,
+                    exemplars: str = "") -> list[dict[str, Any]]:
     """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。doc_context 注入文档全局背景。
 
     self_check：抽完**收敛式**查漏补缺——每轮对着当前已抽集重算未覆盖清单再补，直到某轮零新增
@@ -714,8 +750,18 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
     清单）；全覆盖则提前停。无 block_info 回退全量盲查，靠"零新增"收敛。自检失败不致命——保留已抽。
     """
     user = build_section_prompt(section)
+    prefix_parts: list[str] = []
     if doc_context:
-        user = f"{doc_context}\n\n---\n以下是待抽取的**当前章节**（需求内容与 source_quote 只能来自这段原文）：\n{user}"
+        prefix_parts.append(doc_context)
+    if exemplars:
+        # 裁决回灌（0714 批次三 E6）：专家已验收范例作模块判定/粒度 few-shot。软背景不进
+        # 章节指纹（S3 同理）;漂移基线仍是章节原文——范例里的编码/数值被搬运即照常拦截。
+        prefix_parts.append(
+            "【专家已验收范例——模块判定与需求粒度基准,仅供对齐;"
+            "范例中的数值/编码/内容一律不得搬运进本章节需求】\n" + exemplars)
+    if prefix_parts:
+        joined = "\n\n".join(prefix_parts)
+        user = f"{joined}\n\n---\n以下是待抽取的**当前章节**（需求内容与 source_quote 只能来自这段原文）：\n{user}"
     context_ints = frozenset(extract_ints(doc_context)) if doc_context else frozenset()
     payload = chat(SYSTEM_PROMPT, user)
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
@@ -792,6 +838,7 @@ def extract_all(
     self_check: bool = False,
     self_check_rounds: int | None = None,
     block_info: dict[str, dict[str, Any]] | None = None,
+    exemplars: str = "",
 ) -> list[dict[str, Any]]:
     """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。
 
@@ -837,7 +884,8 @@ def extract_all(
         idx, section, fp = item
         try:
             return idx, fp, extract_section(section, chat, doc_context, self_check, block_info,
-                                            self_check_rounds=rounds or None), True
+                                            self_check_rounds=rounds or None,
+                                            exemplars=exemplars), True
         except LLMError as exc:  # 最佳努力：该章节降级、不崩、不缓存（留待重跑）
             LOGGER.warning("AI 抽取章节失败：%s", exc)
             return idx, fp, [], False
@@ -1009,8 +1057,9 @@ def _write_consistency_report(out_dir: Path, merged: dict[str, Any]) -> Path:
     """P1 全局一致性 critic：跨章去重 + OBIS 共引 + 覆盖缺口（确定性，非破坏，只标记）。"""
     import merged_consistency
     blocks = read_jsonl(out_dir / "blocks.jsonl")
-    req_like = ([b for b in blocks if b.get("requirement_like") and not b.get("noise") and clean_block_text(b)]
-                if blocks else None)  # 纯目录块不进覆盖分母
+    # 覆盖分母统一口径（E3b）：剔除标题/引用书目/非正文假阳性,详见 is_coverage_candidate
+    req_like = ([b for b in merged_consistency.coverage_denominator_blocks(blocks) if clean_block_text(b)]
+                if blocks else None)
     report = merged_consistency.analyze_consistency(merged.get("requirements") or [], req_like)
     path = out_dir / "consistency_report.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1111,6 +1160,13 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         if term_map:   # 中英术语对照：全文统一译法（折进 context_key → 指纹自动失效）
             doc_context = f"{doc_context}\n{term_map}" if doc_context else term_map
         block_info = {str(b.get("block_id")): b for b in blocks if b.get("block_id")}  # 定向自检/覆盖率用
+        # 裁决回灌（E6）：样本库 few-shot 注入抽取（软背景不进指纹,加载失败零注入不阻断）
+        try:
+            from adjudication_bank import load_bank, resolve_bank_path
+            bank_exemplars = render_extract_exemplars(load_bank(resolve_bank_path()))
+        except Exception as exc:  # pragma: no cover - 样本库异常不影响抽取
+            LOGGER.warning("裁决样本库加载失败（抽取零注入）：%s", exc)
+            bank_exemplars = ""
         extract_stats: dict[str, Any] = {}
         requirements = extract_all(sections, chat, model=config.model,
                                    cache_path=out_dir / AI_EXTRACT_CACHE,
@@ -1119,7 +1175,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                                    stats=extract_stats,
                                    doc_context=doc_context,
                                    self_check=resolve_self_check(self_check),
-                                   block_info=block_info)
+                                   block_info=block_info,
+                                   exemplars=bank_exemplars)
         ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
         code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
         int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
@@ -1135,9 +1192,10 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                 f.write(json.dumps(req, ensure_ascii=False) + "\n")
         written.append(target.name)
 
-        # 质量报表：这轮抽取的可核指标（覆盖率/漂移/自检补充/模块分布），落盘供追溯
-        req_like = [b for b in block_info.values()
-                    if b.get("requirement_like") and not b.get("noise") and clean_block_text(b)]
+        # 质量报表：这轮抽取的可核指标（覆盖率/漂移/自检补充/模块分布），落盘供追溯。
+        # 覆盖分母统一口径（E3b）：与 consistency/批注/澄清同用 is_coverage_candidate
+        from merged_consistency import coverage_denominator_blocks
+        req_like = [b for b in coverage_denominator_blocks(block_info.values()) if clean_block_text(b)]
         if sampled:  # 试抽模式：覆盖率分母只算样本章节的块，否则数字必然假低
             sampled_ids = {str(bid) for s in sections for bid in (s.get("block_ids") or [])}
             req_like = [b for b in req_like if str(b.get("block_id")) in sampled_ids]

@@ -15,21 +15,30 @@ def slim_vocabulary(vocabulary: dict[str, Any], module: str) -> dict[str, Any]:
 def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[str, Any],
                           template_refs: str = "", *, exemplars: str = "",
                           answers: str = "", doc_context: str = "",
-                          section_context: str = "", siblings: str = "") -> dict[str, str]:
+                          section_context: str = "", siblings: str = "",
+                          per_item_fields: bool = False) -> dict[str, str]:
     system = "你是电表软件需求分析工程师。你的任务不是翻译原文，而是基于可追溯的抽取结果推导软件研发需求。"
-    lines: list[str] = []
-    if doc_context:
-        lines += [doc_context,
-                  "（以上文档背景仅供术语与模块一致性参考，勿据此编造原文没有的编码/数字。）"]
-    if section_context:
-        lines += ["【所在条款原文——客户文档内容，引用其中的数值/编码视为有据】",
-                  section_context]
-    if siblings:
-        lines += ["【同模块相邻需求标题——仅供避免重复/保持粒度一致，不得从中引用编码或数值】",
-                  siblings]
-    lines += [
+    # 前缀缓存友好排序（0714 批次二 S6）：按稳定性降序——固定指令（全局同一）→ 文档背景
+    # （全文档同一）→ 词表/范例/相邻标题（模块级）→ 答复/模板参考/条款原文（条级）→ 需求 JSON。
+    # 此前条级内容排最前,服务端 KV 前缀缓存每次调用全 miss;语义内容一字不改,只动顺序。
+    lines: list[str] = [
         "请基于需求 JSON 和模板词表 JSON 输出 JSON 对象 {\"items\": [ ... ]}，items 与输入需求一一对应。",
-        "ownership 只能是 `software`、`hardware`、`co_design`。",
+    ]
+    if per_item_fields:
+        # 合批模式（0714 批次一 S1）：条级上下文随条嵌进需求 JSON——护栏语义与单条完全一致,
+        # 尤其"只能用于本条"是防跨条借数的关键指令（validate 仍逐条按本条基线硬拒/软标）
+        lines += [
+            "本次输入为同模块多条需求（合批）。每条需求 JSON 可能带以下随行字段：",
+            "  - enrich_slot: 批内序号——每个输出 item 必须原样回填对应输入的 enrich_slot；",
+            "  - section_context: 该需求所在条款原文（客户文档内容，引用其中数值/编码视为有据）"
+            "——**只能用于本条，绝不跨条借用其它需求的条款原文**；",
+            "  - template_refs: 该条的公司标准做法参考——数值/编码只准来自客户原文，"
+            "样本默认值绝不写入需求正文；通用做法进 developer_guidance 并以「公司通用做法：」前缀标注；",
+            "  - clarification_answers_text: 该条的客户澄清答复（权威输入，其中数值/结论视为有据，应吸收进正文）。",
+        ]
+    lines += [
+        "每条需求 JSON 的 ownership 字段（software/hardware/co_design）已由规则与专家裁决**冻结**——"
+        "原样回填、绝不改判；你的任务是按给定归属写出深度匹配的正文，不是重新判定归属。",
         "hardware 需求只做简要说明。",
         "co_design 需求的软件侧必须详细说明，硬件依赖只做简要说明。",
         "不能只翻译原文；必须推导可研发、可验收的软件需求。",
@@ -38,7 +47,7 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         "  - source_requirement_ids: 原样回填输入需求的 ai_req_id（用于对齐）",
         "  - software_requirement_text: 软件需求正文——**连贯的自然段成文（2-4 段）**，依次覆盖："
         "输入/触发条件 → 处理逻辑（关键步骤、状态变化、数据流）→ 输出/状态变化 → 边界条件与异常处理"
-        "（掉电、并发、越界、时序等落到具体场景）。禁止只写一句话或短语碎片罗列；术语采用上方对照表的统一译法。",
+        "（掉电、并发、越界、时序等落到具体场景）。禁止只写一句话或短语碎片罗列；术语采用文档背景中英对照表的统一译法。",
         "  - developer_guidance: 研发落地要点数组——每条**具体可执行**（点名涉及的对象/属性/接口/时序/存储布局），"
         "由原文/客户答复直接支持；公司标准做法可吸收但须以「公司通用做法：」前缀标注",
         "  - design_options: 原文未指定但可供研发选型的实现候选数组（队列/缓存/接口分层等）——"
@@ -48,7 +57,13 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         "  - hardware_dependency: 硬件依赖简述（software 类留空字符串）",
         "  - open_questions: 需澄清的问题数组（无则空数组）",
         "  - assumptions: 推导中不得不假设的、原文没有的前提数组——**一律记录在此，绝不无声编入正文**（无则空数组）",
-        "  - ownership_reason: 归属判断的一句话理由（引用原文关键词/依据）",
+        "  - ownership_reason: 解释**给定归属**为何成立的一句话理由（引用原文关键词/依据）——"
+        "不是重新判定；若你认为给定归属可疑，把疑问写进 open_questions，不要改 ownership",
+    ]
+    if doc_context:
+        lines += [doc_context,
+                  "（以上文档背景仅供术语与模块一致性参考，勿据此编造原文没有的编码/数字。）"]
+    lines += [
         "模板词表 JSON:",
         json.dumps(vocabulary, ensure_ascii=False),
     ]
@@ -57,6 +72,9 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
             "【专家已验收的同模块范例——粒度/写法基准，内容不得搬运进本需求】",
             exemplars,
         ]
+    if siblings:
+        lines += ["【同模块相邻需求标题——仅供避免重复/保持粒度一致，不得从中引用编码或数值】",
+                  siblings]
     if answers:
         lines += [
             "【客户澄清答复——权威输入：其中的数值/结论视为有据，应吸收进软件需求正文】",
@@ -70,6 +88,9 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
             "样本里的默认值绝不写入需求正文；样本\"说明\"里的通用做法/宏定义/选项枚举应吸收进 "
             "developer_guidance，并以「公司通用做法：」前缀标注；写法上模仿样本的粒度与术语。",
         ]
+    if section_context:
+        lines += ["【所在条款原文——客户文档内容，引用其中的数值/编码视为有据】",
+                  section_context]
     lines += [
         "需求 JSON:",
         json.dumps(requirements, ensure_ascii=False),
@@ -130,10 +151,22 @@ def validate_llm_item(item: dict[str, Any], source: dict[str, Any],
         issues.append(f"fabricated code not in source: {code}")
     for number in sorted(extract_ints(analysis_text) - extract_ints(union_text) - context_ints):
         issues.append(f"fabricated number not in source: {number}")
-    for code in sorted(extract_codes(delivery_text) - extract_codes(guidance_basis)):
+    union_codes = extract_codes(union_text)
+    template_codes = extract_codes(template_text or "")
+    for code in sorted(extract_codes(delivery_text) - union_codes - template_codes):
         issues.append(f"fabricated code not in source: {code} (guidance)")
+    # 收紧（0714 批次二 E4）：guidance 的受保护编码此前以"源文∪模板"为基线**无声放行**——
+    # 模板里的 OBIS 可被搬进源文没有该码的需求指引,研发照错码实现无从察觉。改软标随行
+    # （不硬拒:公司通用做法的宏/码本就允许进指引,但必须可见可核）;正文侧基线不变仍硬拒。
+    for code in sorted((extract_codes(delivery_text) & template_codes) - union_codes):
+        issues.append(f"template-sourced code in guidance: {code}（公司模板来源，请核对适用性）")
     for number in sorted(extract_ints(delivery_text) - extract_ints(guidance_basis) - context_ints):
         issues.append(f"fabricated number in guidance: {number}")
-    for number in sorted(extract_ints(priority_text) - extract_ints(analysis_text)):
+    # 遗漏分母的格式归一（2026-07-14,test18 实测 25 条警告几乎全是条款号/列表标号拆散的
+    # 小整数——真参数值遗漏被淹没）:剥除枚举标号与引用性编号(条款/附录/图表引用是"地址"
+    # 不是"数值")。这与"分母永不扩"防稀释纪律不冲突:不引入外部文本,只剥排版/引用数字。
+    from text_normalize import join_digit_groups, strip_enum_markers, strip_reference_numbers
+    missing_basis = join_digit_groups(strip_reference_numbers(strip_enum_markers(priority_text)))
+    for number in sorted(extract_ints(missing_basis) - extract_ints(join_digit_groups(analysis_text))):
         issues.append(f"source number {number} missing from analysis text")
     return issues

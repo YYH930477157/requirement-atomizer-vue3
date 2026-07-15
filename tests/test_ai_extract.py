@@ -1340,7 +1340,13 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("不得给默认建议值", ai_extract.SYSTEM_PROMPT)          # v12：无来源数字不得进入交付字段
         self.assertIn("术语定义中的固定起止规则", ai_extract.SYSTEM_PROMPT)
         self.assertIn("1, 2, 3, 4, 6, 12 months", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v15")
+        # v16（0714 批次三 E7）：functional_key 构造规则（跨章合并连接键含糊→错并/漏并）
+        # + priority 判级基准（此前无 rubric,逐章漂移打分）
+        self.assertIn("跨章节合并的连接键", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("阀门关闭控制", ai_extract.SYSTEM_PROMPT)          # 正例
+        self.assertIn("判级基准", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("P0=安全/计量准确性/法规强制项", ai_extract.SYSTEM_PROMPT)
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v16")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}

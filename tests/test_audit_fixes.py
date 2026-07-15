@@ -24,14 +24,16 @@ class GuidanceDriftGuardTests(unittest.TestCase):
         issues = validate_llm_item(item, self._source())
         self.assertTrue(any(i.startswith("fabricated code") and "(guidance)" in i for i in issues))
 
-    def test_template_codes_in_guidance_allowed(self) -> None:
-        """模板注入的公司做法进 guidance 是设计意图——基线含 template_text 不误杀。"""
+    def test_template_codes_in_guidance_allowed_but_soft_flagged(self) -> None:
+        """模板注入的公司做法进 guidance 是设计意图——不硬拒;但受保护编码不再无声放行,
+        软标「template-sourced」随行可核（0714 批次二 E4 收紧,原无声放行契约作废）。"""
         from requirements_analysis_agent import validate_llm_item
         item = {"requirement": "Record events.",
                 "developer_guidance": ["公司通用做法：事件对象 0-0:96.11.0.255，宏 EVT_STD"]}
         template = "模板说明：标准事件对象 0-0:96.11.0.255 宏 EVT_STD"
         issues = validate_llm_item(item, self._source(), template_text=template)
-        self.assertFalse(any("guidance" in i for i in issues))
+        self.assertFalse(any(i.startswith("fabricated code") for i in issues))   # 不硬拒
+        self.assertTrue(any(i.startswith("template-sourced code in guidance") for i in issues))
 
     def test_fabricated_number_in_guidance_is_soft(self) -> None:
         from requirements_analysis_agent import validate_llm_item

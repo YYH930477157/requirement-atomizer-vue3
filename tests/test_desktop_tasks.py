@@ -712,12 +712,12 @@ class ChainAndManifestTests(unittest.TestCase):
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
         expected = {
             "atomize": "atomize+impl-v4",
-            "ai-extract": "ai-extract-v15+impl-v3",
+            "ai-extract": "ai-extract-v16+impl-v3",   # v16: functional_key 规则+priority 判级(0714 批次三)
             "assemble": "assemble_spec/v1+impl-v2",
             "functional-synthesis": "functional-synthesis-v5+impl-v2",
-            "requirements-analysis": "analyze-llm-v5+impl-v2",
+            "requirements-analysis": "analyze-llm-v6+impl-v2",   # v6: 冻结归属注入(0714 批次一)
             "template-write": "template_writer/v1+impl-v2",
-            "clarification-report": "clarification/v2-tiered+impl-v3",
+            "clarification-report": "clarification/v3-gap-tier+impl-v3",   # v3: 遗漏候选档(0714 批次一)
             "export-annotation-html": "doc_annotation_export/v5",
         }
         self.assertEqual(

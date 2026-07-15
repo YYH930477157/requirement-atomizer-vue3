@@ -55,7 +55,7 @@ const DEFAULT_LLM_SETTINGS = {
   maxTokens: 4096,
   timeoutS: 60,
   maxRetries: 3,
-  concurrency: 4,
+  concurrency: 8,
   selfCheck: true,
 };
 

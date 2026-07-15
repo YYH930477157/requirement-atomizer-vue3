@@ -36,6 +36,7 @@ export type DocumentBlock = {
   section_path?: string[]
   page_number?: number
   requirement_like?: boolean
+  coverage_candidate?: boolean   // 覆盖/遗漏统一口径(E3b,服务端计算);旧后端缺省→前端回退宽口径
   noise?: boolean
   doc_region?: string
   // 表格块（type="table"）：批注视图渲染真表格；旧 out_dir 无 data_rows 回退扁平文字
@@ -51,6 +52,16 @@ export type DocumentBlock = {
 export type DocumentPayload = {
   blocks: DocumentBlock[]
   count: number
+}
+
+// 原版影印批注数据（/document/pdf,与分享 HTML 同源）
+export type PdfZoneRect = { left: number; top: number; width: number; height: number }
+export type PdfAnnotationPayload = {
+  available: boolean
+  reason?: string
+  pages?: Array<{ page_number: number; file: string; width: number; height: number }>
+  requirement_markers?: Array<{ req_id: string; page: number; rect: PdfZoneRect }>
+  omission_markers?: Array<{ block_id: string; page: number; rect: PdfZoneRect }>
 }
 
 export type AiRequirement = Record<string, unknown> & {
@@ -79,6 +90,18 @@ export type AiRequirement = Record<string, unknown> & {
   ownership_reason?: string
   ownership_source?: string
   review_state?: { status?: string; module_override?: string | null; ownership_override?: string | null; reason?: string } | null
+  // 功能合成产物（functional_requirements.json,后端按 AIR id 投影;缺失=字段不存在）
+  functional_requirement_id?: string
+  functional_title?: string
+  functional_objective?: string
+  functional_behaviors?: string[]
+  functional_preconditions?: string[]
+  functional_data_constraints?: string[]
+  functional_variants?: Array<{ name?: string; behavior?: string }>
+  functional_merge_method?: string
+  functional_merge_confidence?: number
+  functional_source_count?: number
+  functional_conflict_flags?: string[]
   // 需求分析富化产物（engineering_analysis.json,后端按 AIR id 合并;缺失=字段不存在,回退抽取内容）
   analysis_id?: string
   analysis_source?: string
@@ -95,6 +118,14 @@ export type AiRequirement = Record<string, unknown> & {
   analysis_ownership_reason_source?: string
   hardware_translation?: string
   hardware_summary?: string
+}
+
+export type ReviewInsightsPayload = {
+  available?: boolean
+  suggestions?: string[]
+  decided_states?: number
+  module_transitions?: Array<{ from?: string; to?: string; count?: number }>
+  ownership_transitions?: Array<{ from?: string; to?: string; count?: number }>
 }
 
 export type AiReviewActionInput = {
@@ -155,8 +186,34 @@ export class RequirementApiClient {
     return this.request<DocumentPayload>("/document")
   }
 
+  // 原版影印批注数据（后端与分享 HTML 同源:同几何缓存/百分比换算——双渲染器等价）
+  async loadPdfAnnotation(): Promise<PdfAnnotationPayload> {
+    return this.request<PdfAnnotationPayload>("/document/pdf")
+  }
+
+  // 页图走带鉴权头的 fetch → blob URL。仓库安全锁:token 绝不进 URL/查询参数
+  // (test_platform_scaffold 锁定查询 token 必须拒绝——防 token 落日志/历史)。
+  async loadPdfPageBlob(file: string): Promise<string> {
+    const headers: Record<string, string> = {}
+    if (this.token) {
+      headers["X-Requirement-Atomizer-Token"] = this.token
+    }
+    const response = await this.fetchImpl.call(
+      globalThis, `${this.baseUrl}/document/pages/${encodeURIComponent(file)}`, { headers })
+    if (!response.ok) {
+      throw new Error(`页图加载失败(${response.status})`)
+    }
+    const blob = await response.blob()
+    return URL.createObjectURL(blob)
+  }
+
   async loadAiRequirements(): Promise<AiRequirement[]> {
     return this.request<AiRequirement[]>("/ai-requirements")
+  }
+
+  // 裁决复盘建议（review_insights.json,专家改判模式→规则改进建议）——E5:此前零消费者
+  async loadReviewInsights(): Promise<ReviewInsightsPayload> {
+    return this.request<ReviewInsightsPayload>("/review-insights")
   }
 
   async applyAiReviewAction(input: AiReviewActionInput): Promise<AiReviewStatePayload> {

@@ -130,7 +130,7 @@ def run_pipeline_task(
         "input": str(input_path),
         "manifest": manifest,
         "review": review,
-        "summary": build_output_summary(out_dir),
+        "summary": _stage_summary(out_dir),
     }
 
 
@@ -141,7 +141,7 @@ def export_task(out_dir: Path, formats: list[str]) -> dict[str, Any]:
         "kind": "export",
         "out_dir": str(out_dir),
         "written": written,
-        "summary": build_output_summary(out_dir),
+        "summary": _stage_summary(out_dir),
     }
 
 
@@ -200,7 +200,7 @@ def assemble_task(
         # 出处追溯：本次装配用了哪个蓝皮书索引（None=未注入，行为与 P2 之前一致）
         "blue_book_index": str(blue_book_index_path) if blue_book_index_path else None,
         "written": written,
-        "summary": build_output_summary(out_dir),
+        "summary": _stage_summary(out_dir),
     }
 
 
@@ -220,7 +220,7 @@ def compose_task(out_dir: Path) -> dict[str, Any]:
         "count": int(analysis.get("requirement_functions") or len(model.get("requirement_functions", []))),
         "analysis": analysis,
         "written": written,
-        "summary": build_output_summary(out_dir),
+        "summary": _stage_summary(out_dir),
     }
 
 
@@ -245,7 +245,7 @@ def requirements_analysis_task(
         "out_dir": str(out_dir),
         "analysis": analysis,
         "written": written,
-        "summary": build_output_summary(out_dir),
+        "summary": _stage_summary(out_dir),
     }
 
 
@@ -274,7 +274,7 @@ def clarification_report_task(out_dir: Path) -> dict[str, Any]:
         "readiness": report["readiness"],
         "written": [str(out_dir / name) for name in report.get("written") or []
                     if (out_dir / name).exists()],
-        "summary": build_output_summary(out_dir),
+        "summary": _stage_summary(out_dir),
     }
 
 
@@ -290,7 +290,7 @@ def template_write_task(out_dir: Path, template_path: Path) -> dict[str, Any]:
         "report": report,
         "written": [str(out_dir / name) for name in report.get("written") or []
                     if (out_dir / name).exists()],
-        "summary": build_output_summary(out_dir),
+        "summary": _stage_summary(out_dir),
     }
 
 
@@ -320,7 +320,7 @@ def ai_extract_task(out_dir: Path, *, route: str | None, limit_sections: int | N
         "sampled": result.get("sampled"),
         "consistency": result.get("consistency", {}),
         "written": [str(out_dir / name) for name in result.get("written", [])],
-        "summary": build_output_summary(out_dir),
+        "summary": _stage_summary(out_dir),
     }
 
 
@@ -384,7 +384,7 @@ _STAGE_BASE_PRODUCERS = {
     "atomize": "atomize",
     "assemble": "assemble_spec/v1",
     "template-write": "template_writer/v1",
-    "clarification-report": "clarification/v2-tiered",
+    "clarification-report": "clarification/v3-gap-tier",
     "compose": "engineering_composer/v1",
     "export-annotation-html": "doc_annotation_export/v5",
     "run": "pipeline/v1",
@@ -495,6 +495,8 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
             "RATOMIZER_LLM_BASE_URL", "RATOMIZER_LLM_MODEL", "RATOMIZER_LLM_MAX_TOKENS",
             "RATOMIZER_LLM_TEMPERATURE", "RATOMIZER_AI_UNIT_MODE", "RATOMIZER_AI_SELFCHECK",
             "RATOMIZER_AI_SELFCHECK_ROUNDS",
+            # 合批条数改变 prompt 形状 → 产物可能不同 → 指纹必须失效（0714 批次二）
+            "RATOMIZER_ANALYZE_BATCH", "RATOMIZER_ENRICH_BATCH",
         )},
     }
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
@@ -557,6 +559,18 @@ def stage_is_reusable(out_dir: Path, stage: str, *,
         if Path(str(manifest.get("input") or "")).expanduser().resolve() != Path(input_path).expanduser().resolve():
             return False
     return True
+
+
+# 链内跳过各阶段 summary（0714 批次二 S7）：8 个阶段各算一遍 build_output_summary
+# （三份 jsonl 全量读+遍历）然后被 chain 逐个 pop 丢弃,链尾统一算一份即可。
+# chain 单线程顺序跑,module 级布尔够用（desktop 任务本就每命令独立进程）。
+_CHAIN_ACTIVE = False
+
+
+def _stage_summary(out_dir: Path) -> dict[str, Any]:
+    if _CHAIN_ACTIVE:
+        return {}
+    return build_output_summary(out_dir)
 
 
 def skipped_stage_payload(out_dir: Path, stage: str) -> dict[str, Any]:
@@ -671,82 +685,87 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     results: dict[str, Any] = {}
     skipped_stages: list[str] = []
     payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
-    llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis",
-                  "export-annotation-html"}
-    for index, stage in enumerate(ordered, start=1):
-        emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
-                       "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
-        stage_route = route if stage in llm_stages else None
-        stage_template = template_path if stage in {"requirements-analysis", "template-write"} else None
-        if stage == "ai-extract":
-            stage_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
-        elif stage == "export-annotation-html":
-            stage_config = {"layout_mode": annotation_layout_mode}
-        else:
-            stage_config = None
-        if stage_is_reusable(out_dir, stage, route=stage_route, template_path=stage_template,
-                             config=stage_config):
-            stage_payload = skipped_stage_payload(out_dir, stage)
-            skipped_stages.append(stage)
-            existing_stages = read_run_manifest(out_dir).get("stages", {})
-            existing_entry = existing_stages.get(stage, {}) if isinstance(existing_stages, dict) else {}
-            preserved_route = str(existing_entry.get("route") or stage_route or "") or None
-            update_run_manifest(out_dir, stage, "ok", route=preserved_route,
-                                outputs=stage_payload.get("written") or _stage_outputs(stage), action="skipped",
-                                input_fingerprint=str(existing_entry.get("input_fingerprint") or "") or None,
-                                template_path=stage_template, config=stage_config)
-            emit_progress({"stage": "chain", "step": stage, "status": "skipped",
-                           "completed": index, "total": len(ordered),
-                           "percent": int(index * 100 / len(ordered))})
-        else:
-            update_run_manifest(out_dir, stage, "running")
-            try:
-                stage_payload = runners[stage]()
-            except Exception as exc:
-                update_run_manifest(out_dir, stage, "failed", error=str(exc))
-                raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc
-            stage_outputs = stage_payload.get("written") if isinstance(stage_payload, dict) else None
-            actual_route = (str(stage_payload.get("route") or "").strip()
-                            if isinstance(stage_payload, dict) else "") or stage_route
-            update_run_manifest(out_dir, stage, "ok", route=actual_route,
-                                outputs=stage_outputs or _stage_outputs(stage), action="ran",
-                                template_path=stage_template, config=stage_config)
-        stage_payload = dict(stage_payload or {})
-        stage_payload.pop("summary", None)   # 各阶段的 summary 体积大且重复，链尾统一给一份
-        results[stage] = stage_payload
-        # 顶层聚合：GUI 消息只看这几个键，不必翻 results
-        if stage == "ai-extract":
-            for key in ("consistency", "sampled", "quality", "count"):
-                if stage_payload.get(key) is not None:
-                    payload[key] = stage_payload[key]
-        elif stage == "requirements-analysis":
-            payload["analysis"] = stage_payload.get("analysis")
-        elif stage == "template-write":
-            payload["template"] = stage_payload.get("report")
-        elif stage == "clarification-report":
-            payload["readiness"] = stage_payload.get("readiness")
-            payload["questions"] = stage_payload.get("questions")
-        # 阶段降级/告警上提（2026-07-08 审计 2-C）：此前 note 埋在 results 里，
-        # stub 降级/部分章节失败时 GUI 一律显示「运行完成」全绿
-        note = stage_payload.get("note")
-        analysis = stage_payload.get("analysis")
-        if not note and isinstance(analysis, dict):
-            note = analysis.get("note")
-        if note:
-            payload.setdefault("stage_notes", []).append(f"{stage}: {note}")
-        if stage not in skipped_stages:
-            emit_progress({"stage": "chain", "step": stage, "completed": index,
-                           "total": len(ordered), "percent": int(index * 100 / len(ordered))})
+    global _CHAIN_ACTIVE
+    _CHAIN_ACTIVE = True   # 链内各阶段跳过 summary;finally 复位,失败路径不污染后续任务
+    try:
+        llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis",
+                      "export-annotation-html"}
+        for index, stage in enumerate(ordered, start=1):
+            emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
+                           "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
+            stage_route = route if stage in llm_stages else None
+            stage_template = template_path if stage in {"requirements-analysis", "template-write"} else None
+            if stage == "ai-extract":
+                stage_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
+            elif stage == "export-annotation-html":
+                stage_config = {"layout_mode": annotation_layout_mode}
+            else:
+                stage_config = None
+            if stage_is_reusable(out_dir, stage, route=stage_route, template_path=stage_template,
+                                 config=stage_config):
+                stage_payload = skipped_stage_payload(out_dir, stage)
+                skipped_stages.append(stage)
+                existing_stages = read_run_manifest(out_dir).get("stages", {})
+                existing_entry = existing_stages.get(stage, {}) if isinstance(existing_stages, dict) else {}
+                preserved_route = str(existing_entry.get("route") or stage_route or "") or None
+                update_run_manifest(out_dir, stage, "ok", route=preserved_route,
+                                    outputs=stage_payload.get("written") or _stage_outputs(stage), action="skipped",
+                                    input_fingerprint=str(existing_entry.get("input_fingerprint") or "") or None,
+                                    template_path=stage_template, config=stage_config)
+                emit_progress({"stage": "chain", "step": stage, "status": "skipped",
+                               "completed": index, "total": len(ordered),
+                               "percent": int(index * 100 / len(ordered))})
+            else:
+                update_run_manifest(out_dir, stage, "running")
+                try:
+                    stage_payload = runners[stage]()
+                except Exception as exc:
+                    update_run_manifest(out_dir, stage, "failed", error=str(exc))
+                    raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc
+                stage_outputs = stage_payload.get("written") if isinstance(stage_payload, dict) else None
+                actual_route = (str(stage_payload.get("route") or "").strip()
+                                if isinstance(stage_payload, dict) else "") or stage_route
+                update_run_manifest(out_dir, stage, "ok", route=actual_route,
+                                    outputs=stage_outputs or _stage_outputs(stage), action="ran",
+                                    template_path=stage_template, config=stage_config)
+            stage_payload = dict(stage_payload or {})
+            stage_payload.pop("summary", None)   # 各阶段的 summary 体积大且重复，链尾统一给一份
+            results[stage] = stage_payload
+            # 顶层聚合：GUI 消息只看这几个键，不必翻 results
+            if stage == "ai-extract":
+                for key in ("consistency", "sampled", "quality", "count"):
+                    if stage_payload.get(key) is not None:
+                        payload[key] = stage_payload[key]
+            elif stage == "requirements-analysis":
+                payload["analysis"] = stage_payload.get("analysis")
+            elif stage == "template-write":
+                payload["template"] = stage_payload.get("report")
+            elif stage == "clarification-report":
+                payload["readiness"] = stage_payload.get("readiness")
+                payload["questions"] = stage_payload.get("questions")
+            # 阶段降级/告警上提（2026-07-08 审计 2-C）：此前 note 埋在 results 里，
+            # stub 降级/部分章节失败时 GUI 一律显示「运行完成」全绿
+            note = stage_payload.get("note")
+            analysis = stage_payload.get("analysis")
+            if not note and isinstance(analysis, dict):
+                note = analysis.get("note")
+            if note:
+                payload.setdefault("stage_notes", []).append(f"{stage}: {note}")
+            if stage not in skipped_stages:
+                emit_progress({"stage": "chain", "step": stage, "completed": index,
+                               "total": len(ordered), "percent": int(index * 100 / len(ordered))})
 
-    from adjudication_bank import resolve_bank_path, update_bank
-    bank_path = resolve_bank_path()
-    if bank_path and "requirements-analysis" in ordered:
-        try:   # 收割失败不影响链结果
-            payload["adjudication_bank"] = update_bank(bank_path, out_dir)
-        except Exception as exc:  # pragma: no cover
-            LOGGER.warning("裁决样本库收割失败（忽略）：%s", exc)
-    payload["results"] = results
-    payload["skipped_stages"] = skipped_stages
+        from adjudication_bank import resolve_bank_path, update_bank
+        bank_path = resolve_bank_path()
+        if bank_path and "requirements-analysis" in ordered:
+            try:   # 收割失败不影响链结果
+                payload["adjudication_bank"] = update_bank(bank_path, out_dir)
+            except Exception as exc:  # pragma: no cover
+                LOGGER.warning("裁决样本库收割失败（忽略）：%s", exc)
+        payload["results"] = results
+        payload["skipped_stages"] = skipped_stages
+    finally:
+        _CHAIN_ACTIVE = False
     payload["summary"] = build_output_summary(out_dir)
     return payload
 
@@ -781,6 +800,10 @@ def export_annotation_html_task(out_dir: Path, route: str | None = None,
         notes.append(f"{translations['failed_calls']} 批翻译调用失败（重新导出自动补齐）")
     if translations.get("pdf_render_error"):
         notes.append("PDF 批注覆盖层生成失败，已回退浏览器原版查看器")
+    if str(translations.get("layout_mode") or "") == "pdf_original":
+        # 数据处置提醒（0714 评审）：原版影印 bundle 内含完整原始 PDF + 整页影印图,
+        # 数据面与优化模式（仅抽取片段）完全不同——分享文件夹=分享整份客户文档
+        notes.append("原版影印导出为文件夹（含完整原始 PDF 与整页影印图），对外分享前请确认可提供整份文档")
     if notes:
         payload["note"] = "；".join(notes)
     return payload

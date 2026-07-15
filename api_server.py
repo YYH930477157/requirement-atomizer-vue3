@@ -21,6 +21,85 @@ DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
 DEFAULT_ALLOWED_ORIGINS = {"http://127.0.0.1:8770", "http://localhost:8770"}
 TOKEN_HEADER = "X-Requirement-Atomizer-Token"
 
+# 裁决重建防抖（0714 批次二 S4）：此前每次裁决 POST 同步全量重建 merged_spec
+# （openpyxl 逐格 xlsx + 一致性报表 O(块×需求) 双向子串扫描）——评审员连续点
+# 接受/拒绝时每点一下卡一次。改为标脏 + 合并延迟重建：窗口内多次裁决只重建一次。
+# 批注视图读 ai_requirements.jsonl + 裁决状态（不读 merged），视图一致性不受影响；
+# CLI 导入裁决路径（desktop_tasks）仍同步重建。=0 恢复同步（测试/严格场景）。
+REBUILD_DEBOUNCE_ENV = "RATOMIZER_REBUILD_DEBOUNCE_S"
+DEFAULT_REBUILD_DEBOUNCE_S = 1.5
+
+
+def _resolve_rebuild_debounce() -> float:
+    import os
+    raw = os.environ.get(REBUILD_DEBOUNCE_ENV)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_REBUILD_DEBOUNCE_S
+    return max(0.0, min(30.0, value))
+
+
+class DeliverableRebuilder:
+    """裁决后交付物重建合并器：schedule() 标脏并（重）启动延迟定时器，窗口内的
+    连续裁决合并为一次 rebuild_merged_spec；delay<=0 时退化为同步重建（旧语义）。
+    重建失败仅记日志（与原实现一致——裁决状态本身已落盘，绝不因重建失败丢裁决）。"""
+
+    def __init__(self, delay_s: float | None = None):
+        import threading
+        self._delay = _resolve_rebuild_debounce() if delay_s is None else max(0.0, delay_s)
+        self._lock = threading.Lock()
+        self._timer: "threading.Timer | None" = None
+        self._pending: Path | None = None
+
+    def schedule(self, out_dir: Path) -> None:
+        if self._delay <= 0:
+            self._rebuild(out_dir)
+            return
+        import threading
+        with self._lock:
+            self._pending = out_dir
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(self._delay, self._fire)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def flush(self) -> None:
+        """立即排空待重建（测试/退出前用）。"""
+        with self._lock:
+            timer = self._timer
+        if timer is not None:
+            timer.cancel()
+        self._fire()
+
+    def _fire(self) -> None:
+        with self._lock:
+            out_dir = self._pending
+            self._pending = None
+            self._timer = None
+        if out_dir is not None:
+            self._rebuild(out_dir)
+
+    @staticmethod
+    def _rebuild(out_dir: Path) -> None:
+        try:
+            from ai_extract import rebuild_merged_spec
+            rebuild_merged_spec(out_dir)
+        except Exception as exc:  # pragma: no cover - 重建失败仅记日志
+            import logging
+            logging.getLogger("requirement_atomizer").warning("裁决后重建交付物失败：%s", exc)
+
+
+_REBUILDER: DeliverableRebuilder | None = None
+
+
+def _rebuilder() -> DeliverableRebuilder:
+    global _REBUILDER
+    if _REBUILDER is None:
+        _REBUILDER = DeliverableRebuilder()
+    return _REBUILDER
+
 
 class RequirementAPIHandler(BaseHTTPRequestHandler):
     output_dir: Path = DEFAULT_OUTPUT
@@ -48,6 +127,31 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if not token_is_valid(self.local_token, self.headers, params):
             self.send_json({"error": "unauthorized"}, status=401)
+            return
+        if parsed.path == "/document/pdf":
+            # 惰性反向导入（同 _clean_block_text 先例）：影印批注数据的唯一权威实现在导出侧,
+            # 应用内视图与分享 HTML 共用同一份几何/换算——双渲染器等价靠同源,不靠各写一份
+            from doc_annotation_export import build_pdf_annotation_payload
+            self.send_json(build_pdf_annotation_payload(self.output_dir))
+            return
+        if parsed.path.startswith("/document/pages/"):
+            filename = parsed.path.rsplit("/", 1)[-1]
+            # 文件名白名单（防路径穿越）：只放行导出侧生成的 page-NNNN.png
+            if not re.fullmatch(r"page-\d{4}\.png", filename):
+                self.send_json({"error": "invalid page name"}, status=403)
+                return
+            target = self.output_dir / "document_pages" / filename
+            if not target.is_file():
+                self.send_json({"error": "page not found"}, status=404)
+                return
+            raw = target.read_bytes()
+            self.send_response(200)
+            self.send_cors_headers()
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "max-age=3600")
+            self.end_headers()
+            self.wfile.write(raw)
             return
         if parsed.path == "/manifest":
             self.send_file_json("manifest.json")
@@ -83,6 +187,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/ai-requirements":
             self.send_json(build_ai_requirements(self.output_dir))
+            return
+        if parsed.path == "/review-insights":
+            self.send_json(load_review_insights(self.output_dir))
             return
         self.send_error(404, "Unknown endpoint")
 
@@ -163,14 +270,10 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=409)
             return
-        # 裁决即时回流交付物：重建 merged_spec（免 LLM，秒级）。失败不影响裁决本身。
+        # 裁决回流交付物：防抖合并重建（0714 批次二 S4）——连续裁决只重建一次,
+        # POST 即刻返回;批注视图不读 merged,不受延迟影响。失败不影响裁决本身。
         if (self.output_dir / "ai_requirements.jsonl").exists():
-            try:
-                from ai_extract import rebuild_merged_spec
-                rebuild_merged_spec(self.output_dir)
-            except Exception as exc:  # pragma: no cover - 重建失败仅记日志
-                import logging
-                logging.getLogger("requirement_atomizer").warning("裁决后重建交付物失败：%s", exc)
+            _rebuilder().schedule(self.output_dir)
         self.send_json(state)
 
     def read_json_body(self) -> dict | None:
@@ -307,24 +410,99 @@ def load_annotation_translations(output_dir: Path) -> tuple[dict[str, str], dict
 
 
 def build_document_blocks(output_dir: Path) -> dict:
-    """供文档批注视图：blocks 按 order 排序、只留渲染需要的字段（去掉 kb_matches 等重负载）。
+    """供文档批注视图（源文件签名 memo,见 _memoized）。"""
+    resolved = Path(output_dir).expanduser().resolve()
+    return _memoized("document", resolved, _DOC_MEMO_SOURCES,
+                     lambda: _build_document_blocks_impl(resolved))
+
+
+def _build_document_blocks_impl(output_dir: Path) -> dict:
+    """blocks 按 order 排序、只留渲染需要的字段（去掉 kb_matches 等重负载）。
 
     附带块级中文翻译（内容哈希查缓存）：未覆盖段/说明标记的三段式卡片（原因/翻译/引用）
     在应用内视图与导出 HTML 同语义。"""
     blocks = read_jsonl(output_dir / "blocks.jsonl")
-    trimmed = [{k: b.get(k) for k in _BLOCK_FIELDS} for b in blocks]
+    from merged_consistency import is_coverage_candidate
+    trimmed = []
+    for b in blocks:
+        row = {k: b.get(k) for k in _BLOCK_FIELDS}
+        # 覆盖/遗漏统一口径（E3b）：服务端算好,双渲染器与澄清清单同源消费
+        row["coverage_candidate"] = is_coverage_candidate(b)
+        trimmed.append(row)
     translations, notes = load_annotation_translations(output_dir)
+    clean_block_text = None
+    if translations or notes:
+        # 键同源（0714 评审跟进）：导出侧写缓存的键 = 渲染清洗后文本的哈希;此前 API 只按
+        # 原始文本取键,含 leader-dots/私用字形的块在应用内查不到译文（两评审面译文有无不一致）。
+        # 惰性反向导入写侧的唯一权威实现（doc_annotation_export 顶层 import 本模块,函数级
+        # 导入在运行期无环）;先按原始键查（旧缓存兼容）,未命中再按清洗键查。
+        from doc_annotation_export import _clean_block_text as clean_block_text
     for block in trimmed:
         original_text = block.get("text")
         if translations or notes:
-            key = translation_key(original_text)
-            if key in translations:
-                block["translation"] = translations[key]
-            elif key in notes:
-                block["translation_note"] = notes[key]
+            keys = [translation_key(original_text)]
+            if clean_block_text is not None:
+                cleaned_key = translation_key(clean_block_text(str(original_text or "")))
+                if cleaned_key != keys[0]:
+                    keys.append(cleaned_key)
+            for key in keys:
+                if key in translations:
+                    block["translation"] = translations[key]
+                    break
+                if key in notes:
+                    block["translation_note"] = notes[key]
+                    break
         block["text"] = normalize_text(original_text)
     trimmed.sort(key=lambda b: b.get("order") or 0)
     return {"blocks": trimmed, "count": len(trimmed)}
+
+
+# 请求级重算备忘（0714 批次三 S7b）：GUI 每次刷新都全量重读+重 join（2000 块翻译匹配、
+# 300 需求锚点/一致性/富化合并）,无任何进程内缓存。按源文件 (mtime_ns, size) 签名 memo：
+# 裁决/翻译写入改动源文件 → 签名变化自然失效,无需显式失效钩子。命中返回 deepcopy
+# （消费方可能原地改行——缓存本体绝不外借,防跨请求串改）。
+import copy as _copy
+import threading as _threading
+
+_MEMO_LOCK = _threading.Lock()
+_MEMO: dict[tuple[str, str], tuple[tuple, object]] = {}
+
+_DOC_MEMO_SOURCES = ("blocks.jsonl", "annotation_translations.json")
+_REQ_MEMO_SOURCES = ("merged_spec_requirements.json", "ai_requirements_doc.json",
+                     "ai_requirements.jsonl", "ai_review_states.jsonl",
+                     "functional_requirements.json", "engineering_analysis.json",
+                     "consistency_report.json", "blocks.jsonl")
+
+
+def _source_signature(output_dir: Path, names: tuple[str, ...]) -> tuple:
+    signature = []
+    for name in names:
+        path = output_dir / name
+        try:
+            st = path.stat()
+            signature.append((name, st.st_mtime_ns, st.st_size))
+        except OSError:
+            signature.append((name, None, None))
+    return tuple(signature)
+
+
+def _memoized(kind: str, output_dir: Path, names: tuple[str, ...], builder):
+    key = (kind, str(output_dir))
+    signature = _source_signature(output_dir, names)
+    with _MEMO_LOCK:
+        hit = _MEMO.get(key)
+        if hit is not None and hit[0] == signature:
+            return _copy.deepcopy(hit[1])
+    value = builder()
+    with _MEMO_LOCK:
+        _MEMO[key] = (signature, _copy.deepcopy(value))
+    return value
+
+
+def _reset_payload_memo() -> None:
+    """仅测试用。"""
+    with _MEMO_LOCK:
+        _MEMO.clear()
 
 
 _WS_RE = re.compile(r"\s+")
@@ -378,6 +556,8 @@ def _functional_membership(output_dir: Path) -> dict[str, dict]:
             "functional_related_dlms_objects": item.get("related_dlms_objects") or [],
             "functional_merge_method": item.get("merge_method"),
             "functional_merge_confidence": item.get("merge_confidence"),
+            # 合并规模（0714 批次一）：单源"合并"显示置信是噪声,徽章只在 ≥2 源时出现
+            "functional_source_count": len(item.get("source_ai_requirement_ids") or []),
             "functional_conflict_flags": item.get("conflict_flags") or [],
         }
         for source_id in item.get("source_ai_requirement_ids") or []:
@@ -437,7 +617,14 @@ def _analysis_enrichment(output_dir: Path) -> dict[str, dict]:
 
 
 def build_ai_requirements(output_dir: Path) -> list[dict]:
-    """供文档批注视图：merged_spec 需求 + 内容稳定 ai_req_id + 精确锚点 + 当前裁决态。
+    """供文档批注视图（源文件签名 memo,见 _memoized）。"""
+    resolved = Path(output_dir).expanduser().resolve()
+    return _memoized("ai-requirements", resolved, _REQ_MEMO_SOURCES,
+                     lambda: _build_ai_requirements_impl(resolved))
+
+
+def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
+    """merged_spec 需求 + 内容稳定 ai_req_id + 精确锚点 + 当前裁决态。
 
     优先读 merged_spec_requirements.json（双引擎交付物），回退 ai_requirements_doc.json /
     ai_requirements.jsonl。anchor_block_id = 含 source_quote 的具体段落（段落级精确）。
@@ -489,6 +676,27 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
             row["consistency_flags"] = flags
         enriched.append(row)
     return enriched
+
+
+def load_review_insights(output_dir: Path) -> dict:
+    """裁决复盘建议（review_insights.json,裁决回流自动刷新）——0714 批次二 E5。
+
+    此前该产物全链零消费者:专家改判提炼的规则改进建议(≥3 次同模式)永远躺磁盘,
+    裁决学习回路事实断开。缺失/损坏 → available=false（老输出目录/未裁决时的正常态）。"""
+    path = output_dir / "review_insights.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"available": False, "suggestions": []}
+    if not isinstance(payload, dict):
+        return {"available": False, "suggestions": []}
+    return {
+        "available": True,
+        "suggestions": [str(s) for s in payload.get("suggestions") or []],
+        "decided_states": payload.get("decided_states"),
+        "module_transitions": payload.get("module_transitions") or [],
+        "ownership_transitions": payload.get("ownership_transitions") or [],
+    }
 
 
 def _consistency_markers(output_dir: Path) -> tuple[dict[str, int], set[str]]:
