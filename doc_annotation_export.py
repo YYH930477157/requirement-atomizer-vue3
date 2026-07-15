@@ -934,9 +934,13 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
     omission_items = _omission_records(blocks, covered)
     omissions = len(omission_items)
     overlay_enabled = bool(layout_mode == LAYOUT_PDF_ORIGINAL and pdf_pages)
+    pdf_context_map: dict[str, dict[str, Any]] = {}
     if overlay_enabled:
+        block_zones = _pdf_block_zones(blocks, requirements, pdf_geometry or {}, covered)
+        pdf_context_map = _pdf_context_records(blocks, block_zones)
         blocks_html = _render_pdf_page_stack(
-            pdf_pages or [], requirements, omission_items, req_numbers, pdf_geometry or {})
+            pdf_pages or [], requirements, omission_items, req_numbers, pdf_geometry or {},
+            block_zones=block_zones)
     elif layout_mode == LAYOUT_PDF_ORIGINAL:
         source = html.escape(str(pdf_href or ANNOTATION_SOURCE_PDF), quote=True)
         blocks_html = (
@@ -946,6 +950,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
         blocks_html = _render_blocks(blocks, anchor_map, covered, req_numbers, sub_anchor_map)
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
     omissions_json = json.dumps(omission_items, ensure_ascii=False).replace("</", "<\\/")
+    pdf_context_json = json.dumps(pdf_context_map, ensure_ascii=False).replace("</", "<\\/")
     vocab_json = json.dumps(_module_vocab(), ensure_ascii=False).replace("</", "<\\/")
     pdf_href_json = json.dumps(str(pdf_href or ""), ensure_ascii=False).replace("</", "<\\/")
     generated_at = datetime.datetime.now().isoformat(timespec="seconds")
@@ -965,6 +970,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
         pdf_href_json=pdf_href_json,
         requirements_json=reqs_json,
         omissions_json=omissions_json,
+        pdf_context_json=pdf_context_json,
         module_vocab_json=vocab_json,
     )
 
@@ -1132,9 +1138,82 @@ def _pdf_zone_style(region: dict[str, Any]) -> tuple[str, float]:
     )
 
 
+def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, Any]],
+                     geometry: dict[str, list[dict[str, Any]]],
+                     covered: set[str]) -> list[dict[str, Any]]:
+    """影印模式全段落热区（0714「点一段出翻译和解析」）——双渲染器共用的唯一语义源。
+
+    kind 路由与重排模式的块点击语义一一对应：
+    - req: 该块是某需求锚点 → 点击选中需求（多需求同锚取首个,与重排 anchored[0] 同）;
+    - omission: 覆盖口径疑似遗漏（is_coverage_candidate 且未覆盖）→ 遗漏卡;
+    - context: 普通正文段 → 背景说明卡（原因/翻译/引用）;
+    - 标题/表格/噪声不给热区（重排同样不可点;锚在表格/标题上的需求经 req 热区仍可达）。
+    """
+    from merged_consistency import is_coverage_candidate
+    anchor_to_req: dict[str, str] = {}
+    for req in requirements:
+        req_id = str(req.get("ai_req_id") or "")
+        anchor = str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")
+        if req_id and anchor and anchor not in anchor_to_req:
+            anchor_to_req[anchor] = req_id
+    zones: list[dict[str, Any]] = []
+    for block in blocks:
+        block_id = str(block.get("block_id") or "")
+        text = str(block.get("text") or "").strip()
+        if not block_id or not text or block.get("noise"):
+            continue
+        req_id = anchor_to_req.get(block_id)
+        if req_id:
+            kind = "req"
+        elif is_coverage_candidate(block) and block_id not in covered:
+            kind = "omission"
+        elif str(block.get("type") or "") in ("heading", "table"):
+            continue
+        else:
+            kind = "context"
+        for region in geometry.get(block_id) or []:
+            page = _page_number(region.get("page_number"))
+            if not page:
+                continue
+            zone: dict[str, Any] = {"block_id": block_id, "page": page,
+                                    "rect": _pdf_zone_rect(region), "kind": kind}
+            if req_id:
+                zone["req_id"] = req_id
+            zones.append(zone)
+    return zones
+
+
+def _pdf_context_records(blocks: list[dict[str, Any]],
+                         zones: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """静态影印页的背景段卡片数据（block_id → 原文/翻译/页码）。
+
+    翻译键双查（键同源纪律）：先原始文本键（旧缓存兼容）,未命中再清洗键。"""
+    context_ids = {z["block_id"] for z in zones if z.get("kind") == "context"}
+    page_by_block = {z["block_id"]: z["page"] for z in reversed(zones)}
+    records: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        block_id = str(block.get("block_id") or "")
+        if block_id not in context_ids:
+            continue
+        text = str(block.get("text") or "").strip()
+        translation = ""
+        note = ""
+        for key in (_translation_key(text), _translation_key(_clean_block_text(text))):
+            if key in _active_translations:
+                translation = _active_translations[key]
+                break
+            if not note and key in _active_translation_notes:
+                note = _active_translation_notes[key]
+        records[block_id] = {"text": text, "translation": translation,
+                             "translation_note": note,
+                             "page": page_by_block.get(block_id, 0)}
+    return records
+
+
 def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[str, Any]],
                            omissions: list[dict[str, Any]], req_numbers: dict[str, int],
-                           geometry: dict[str, list[dict[str, Any]]]) -> str:
+                           geometry: dict[str, list[dict[str, Any]]],
+                           block_zones: list[dict[str, Any]] | None = None) -> str:
     markers: dict[int, list[dict[str, Any]]] = {}
 
     for req in requirements:
@@ -1187,6 +1266,23 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
                     'title="疑似需求未覆盖">!</button>'),
             })
 
+    # 全段落热区（0714）：透明可点矩形铺满每个块——点一段出翻译和解析。渲染在标记
+    # 之前（DOM 序即层序,标记浮在热区上,两者都可点）
+    zones_by_page: dict[int, list[str]] = {}
+    for zone in block_zones or []:
+        rect = zone.get("rect") or {}
+        style = (f"left:{rect.get('left', 0):.3f}%;top:{rect.get('top', 0):.3f}%;"
+                 f"width:{rect.get('width', 0):.3f}%;height:{rect.get('height', 0):.3f}%")
+        kind = str(zone.get("kind") or "context")
+        title = {"req": "查看需求批注", "omission": "疑似需求未覆盖·点击查看"}.get(kind, "查看该段翻译与解析")
+        req_attr = (f' data-req="{html.escape(str(zone.get("req_id") or ""), quote=True)}"'
+                    if zone.get("req_id") else "")
+        zones_by_page.setdefault(int(zone["page"]), []).append(
+            f'<button class="pdf-block-zone zone-{kind}" type="button" '
+            f'data-zone-kind="{kind}" data-block-id="{html.escape(str(zone["block_id"]), quote=True)}"'
+            f'{req_attr} data-page="{int(zone["page"])}" style="{style}" '
+            f'title="{title}"></button>')
+
     page_html: list[str] = []
     for page in pages:
         page_number = int(page["page_number"])
@@ -1206,7 +1302,7 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
             f'style="aspect-ratio:{aspect:.6f}">'
             f'<img src="{html.escape(str(page["href"]), quote=True)}" alt="PDF 第 {page_number} 页" '
             'loading="lazy" decoding="async" />'
-            f'<div class="pdf-page-overlay">{"".join(rendered_markers)}</div>'
+            f'<div class="pdf-page-overlay">{"".join(zones_by_page.get(page_number, []))}{"".join(rendered_markers)}</div>'
             f'<span class="pdf-page-label">{page_number}</span></section>')
 
     return (
@@ -1285,7 +1381,9 @@ def build_pdf_annotation_payload(out_dir: Path) -> dict[str, Any]:
                 omission_markers.append({"block_id": block_id, "page": page,
                                          "rect": _pdf_zone_rect(region)})
     return {"available": True, "pages": pages, "pages_dir": ANNOTATION_PAGES_DIR,
-            "requirement_markers": requirement_markers, "omission_markers": omission_markers}
+            "requirement_markers": requirement_markers, "omission_markers": omission_markers,
+            # 全段落热区（0714）：点一段出翻译和解析——语义与静态影印同源（_pdf_block_zones）
+            "block_zones": _pdf_block_zones(blocks, requirements, geometry, covered)}
 
 
 def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
@@ -1410,6 +1508,14 @@ body {{ margin: 0; font-family: var(--sans);
   pointer-events: none; transition: background .12s, border-color .12s; }}
 .pdf-source-zone.selected {{ background: rgba(255, 232, 122, .32); border-color: rgba(15,118,110,.72); }}
 .pdf-source-zone.omission-zone.selected {{ background: rgba(236, 228, 207, .35); border-color: rgba(138,100,23,.65); }}
+/* 全段落热区（0714）：透明可点,悬停淡蓝提示——点一段出翻译和解析 */
+.pdf-block-zone {{ position: absolute; z-index: 2; margin: 0; padding: 0; border: 1px solid transparent;
+  background: transparent; cursor: pointer; border-radius: 3px;
+  transition: background .12s, border-color .12s; }}
+.pdf-block-zone:hover {{ background: rgba(89, 120, 247, .08); border-color: rgba(89, 120, 247, .5); }}
+.pdf-block-zone.selected {{ background: rgba(89, 120, 247, .12); border-color: rgba(89, 120, 247, .85); }}
+.pdf-block-zone.zone-omission:hover {{ background: rgba(204, 137, 37, .10); border-color: rgba(204, 137, 37, .55); }}
+.pdf-block-zone.zone-omission.selected {{ background: rgba(204, 137, 37, .14); border-color: rgba(180, 83, 9, .8); }}
 .pdf-page .pdf-marker {{ position: absolute; right: -34px; z-index: 3; width: 25px; height: 25px; margin: 0;
   display: inline-flex; align-items: center; justify-content: center; padding: 0; border-radius: 50%;
   border: 2px solid #ffffff; color: #ffffff; cursor: pointer; pointer-events: auto;
@@ -1668,6 +1774,7 @@ const DOC_ID = "{doc_id}";
 const STORAGE_KEY = "ratomizer-decisions:" + DOC_ID;
 const REQUIREMENTS = {requirements_json};
 const PDF_OMISSIONS = {omissions_json};
+const PDF_CONTEXT = {pdf_context_json};
 const MODULE_VOCAB = {module_vocab_json};
 const GENERATED_AT = "{generated_at}";
 const PDF_MODE = {pdf_mode};
@@ -2000,6 +2107,7 @@ function deselect() {{
   document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
   document.querySelectorAll(".pdf-marker").forEach(marker => marker.classList.remove("sel"));
   document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
+  paintZoneSelection("");
   document.querySelectorAll(".req-index-item").forEach(item => item.classList.remove("active"));
   document.querySelectorAll('.chip[data-inline-marker="1"].quote-selected').forEach(m => m.classList.remove("quote-selected"));
   document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
@@ -2084,7 +2192,38 @@ function selectOmissionRecord(row) {{
   document.querySelectorAll(".doc-block").forEach(block => block.classList.remove("in-span", "evidence"));
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   clearSourceQuoteMarks();
+  paintZoneSelection(row.block_id || "");
   renderOmissionDetails(row.text || "", row.translation || "", row.translation_note || "", row.source_page || 0);
+}}
+
+// 全段落热区选中高亮（0714）：req 热区随 select() 走 data-req,块级热区按 block_id 走这里
+function paintZoneSelection(blockId) {{
+  document.querySelectorAll(".pdf-block-zone").forEach(z => z.classList.remove("selected"));
+  if (blockId) document.querySelectorAll('.pdf-block-zone[data-block-id="' + blockId + '"]')
+    .forEach(z => z.classList.add("selected"));
+}}
+
+function selectPdfContextRecord(blockId, info) {{
+  if (selectedContextBlock === blockId) {{ selectedContextBlock = null; deselect(); return; }}
+  selected = null;
+  selectedContextBlock = blockId;
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
+  document.querySelectorAll(".pdf-marker").forEach(marker => marker.classList.remove("sel"));
+  document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
+  paintZoneSelection(blockId);
+  document.getElementById("detail").innerHTML =
+    '<div class="annotation-card detail-card">'+
+    '<div class="dd-head"><span class="dd-module">背景/上下文</span><span class="badge">说明</span></div>'+
+    '<div class="dd-title">为什么没有生成研发需求</div>'+
+    (info.page ? '<div class="dd-meta">原文位置 · PDF 第 '+esc(info.page)+' 页</div>' : '')+
+    '<div class="dd-body">'+esc(CONTEXT_REASON)+'</div>'+
+    '<div class="dd-label">原文翻译</div>'+
+    (info.translation ? '<div class="dd-body">'+esc(info.translation)+'</div>'
+     : info.translation_note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(info.translation_note)+'）</div>'
+     : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>')+
+    (info.text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(info.text)+'</div>' : '')+
+    '</div>';
 }}
 
 function selectOmission(el) {{
@@ -2183,6 +2322,8 @@ function select(id) {{
   document.querySelectorAll(".chip").forEach(c => c.classList.toggle("sel", c.getAttribute("data-req") === id));
   document.querySelectorAll(".pdf-marker").forEach(marker =>
     marker.classList.toggle("sel", marker.getAttribute("data-req") === id));
+  document.querySelectorAll(".pdf-block-zone").forEach(zone =>
+    zone.classList.toggle("selected", zone.getAttribute("data-req") === id));
   const r = byId[id]; if (!r) return;
   document.querySelectorAll(".req-index-item").forEach(item =>
     item.classList.toggle("active", item.getAttribute("data-req") === id));
@@ -2251,6 +2392,20 @@ document.getElementById("paper").addEventListener("click", e => {{
   const chip = e.target.closest(".chip"); if (chip) {{ select(chip.getAttribute("data-req")); return; }}
   const pdfMarker = e.target.closest('.pdf-marker[data-req]');
   if (pdfMarker) {{ select(pdfMarker.getAttribute("data-req")); return; }}
+  // 全段落热区（0714）：影印页任意段落可点——req→需求卡 / omission→遗漏卡 / context→背景卡
+  const zone = e.target.closest(".pdf-block-zone");
+  if (zone) {{
+    const kind = zone.getAttribute("data-zone-kind");
+    const bid = zone.getAttribute("data-block-id") || "";
+    if (kind === "req") {{ select(zone.getAttribute("data-req")); return; }}
+    if (kind === "omission") {{
+      const row = PDF_OMISSIONS.find(r => r.block_id === bid);
+      if (row) {{ selectOmissionRecord(row); return; }}
+    }}
+    const info = PDF_CONTEXT[bid];
+    if (info) {{ selectPdfContextRecord(bid, info); return; }}
+    return;
+  }}
   const sourceMarker = e.target.closest(".source-classification"); if (sourceMarker) {{ selectSourceClassification(sourceMarker); return; }}
   const omission = e.target.closest(".omission-tag"); if (omission) {{ selectOmission(omission); return; }}
   const blk = e.target.closest(".doc-block.anchored");

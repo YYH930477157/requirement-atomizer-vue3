@@ -174,6 +174,65 @@ describe("DocumentReview", () => {
     expect(wrapper.find('[data-testid="omission-card"]').exists()).toBe(true)
   })
 
+  it("pdf mode full-block zones: click any paragraph for translation/analysis card", async () => {
+    // 0714「点一段出翻译和解析」：影印页全段落热区——req→需求卡,context→背景三段式卡
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 2,
+        blocks: [
+          { block_id: "B1", order: 1, type: "paragraph", text: "The meter shall measure volume.",
+            section_path: ["4"], requirement_like: true, noise: false, coverage_candidate: true,
+            translation: "" },
+          { block_id: "B2", order: 2, type: "paragraph", text: "Background prose paragraph.",
+            section_path: ["4"], requirement_like: false, noise: false, coverage_candidate: false,
+            translation: "背景说明段的中文翻译。" },
+        ],
+      }),
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        { ai_req_id: "AIR-1", title: "计量", description: "d", module: "计量", module_effective: "计量",
+          type: "functional", priority: "P1", status: "draft", source_section: "4",
+          source_quote: "The meter shall measure volume.",
+          source_block_ids: ["B1"], anchor_block_id: "B1",
+          acceptance_criteria: [], labels: ["计量"], review_state: null },
+      ]),
+      loadPdfAnnotation: vi.fn().mockResolvedValue({
+        available: true,
+        pages: [{ page_number: 1, file: "page-0001.png", width: 595, height: 842 }],
+        requirement_markers: [{ req_id: "AIR-1", page: 1, rect: { left: 8, top: 12, width: 60, height: 4 } }],
+        omission_markers: [],
+        block_zones: [
+          { block_id: "B1", page: 1, rect: { left: 8, top: 12, width: 60, height: 4 },
+            kind: "req", req_id: "AIR-1" },
+          { block_id: "B2", page: 1, rect: { left: 8, top: 40, width: 60, height: 4 },
+            kind: "context" },
+        ],
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
+    await flushPromises()
+
+    // 背景段热区 → 三段式说明卡（原因/翻译/引用）
+    await wrapper.find('[data-testid="pdf-zone-B2"]').trigger("click")
+    const card = wrapper.find('[data-testid="context-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain("为什么没有生成研发需求")
+    expect(card.text()).toContain("背景说明段的中文翻译。")
+    expect(card.text()).toContain("Background prose paragraph.")
+    expect(wrapper.find('[data-testid="pdf-zone-B2"]').classes()).toContain("sel")
+
+    // 需求锚点热区 → 需求详情卡（与标记同路由）
+    await wrapper.find('[data-testid="pdf-zone-B1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
+    expect(wrapper.find('[data-testid="pdf-zone-B1"]').classes()).toContain("sel")
+
+    // 再点一下背景段 → 打开;再点同段 → 取消（与重排块点击同语义）
+    await wrapper.find('[data-testid="pdf-zone-B2"]').trigger("click")
+    await wrapper.find('[data-testid="pdf-zone-B2"]').trigger("click")
+    expect(wrapper.find('[data-testid="context-card"]').exists()).toBe(false)
+  })
+
   it("pdf mode shows honest hint when pages are not generated", async () => {
     const client = makeClient()
     const wrapper = mount(DocumentReview, { props: { client, active: true } })

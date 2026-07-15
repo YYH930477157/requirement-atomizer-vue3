@@ -163,6 +163,37 @@ const pdfMarkersByPage = computed(() => {
   }
   return byPage
 })
+// 全段落热区（0714「点一段出翻译和解析」）：kind 语义由后端 _pdf_block_zones 唯一定义,
+// 这里只做渲染与路由——req→需求卡 / omission·context→块级卡（卡种由 selectedBlockKind 判定）
+type PdfBlockZone = { block_id: string; page: number; rect: PdfZoneRect
+                      kind: "req" | "omission" | "context"; req_id?: string }
+const pdfZonesByPage = computed(() => {
+  const byPage = new Map<number, PdfBlockZone[]>()
+  for (const z of pdfData.value?.block_zones || []) {
+    const list = byPage.get(z.page) || []
+    list.push(z)
+    byPage.set(z.page, list)
+  }
+  return byPage
+})
+function pdfZoneClick(z: PdfBlockZone) {
+  if (z.kind === "req" && z.req_id) {
+    const req = requirements.value.find((r) => r.ai_req_id === z.req_id)
+    if (req) select(req)
+    return
+  }
+  const block = blocks.value.find((b) => b.block_id === z.block_id)
+  if (block) selectBlockCard(block)
+}
+function pdfZoneSelected(z: PdfBlockZone): boolean {
+  if (z.kind === "req") return !!z.req_id && z.req_id === selectedId.value
+  return z.block_id === selectedBlockId.value
+}
+function pdfZoneTitle(z: PdfBlockZone): string {
+  if (z.kind === "req") return "查看需求批注"
+  return z.kind === "omission" ? "疑似需求未覆盖·点击查看" : "查看该段翻译与解析"
+}
+
 function pdfMarkerClick(m: PdfMarker) {
   if (m.kind === "req") {
     const req = requirements.value.find((r) => r.ai_req_id === m.id)
@@ -416,6 +447,14 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                  :alt="`PDF 第 ${p.page_number} 页`" decoding="async" />
             <div v-else class="pdf-page-loading">第 {{ p.page_number }} 页加载中…</div>
             <div class="pdf-overlay">
+              <button v-for="(z, zi) in (pdfZonesByPage.get(p.page_number) || [])"
+                      :key="'z-' + z.block_id + '-' + zi" type="button"
+                      class="pdf-block-zone" :class="['zone-' + z.kind, { sel: pdfZoneSelected(z) }]"
+                      :style="{ left: z.rect.left + '%', top: z.rect.top + '%',
+                                width: z.rect.width + '%', height: z.rect.height + '%' }"
+                      :data-testid="`pdf-zone-${z.block_id}`"
+                      :title="pdfZoneTitle(z)"
+                      @click.stop="pdfZoneClick(z)" />
               <span v-if="pdfSelectedZone(p.page_number)" class="pdf-zone"
                     :style="{ left: pdfSelectedZone(p.page_number)!.left + '%', top: pdfSelectedZone(p.page_number)!.top + '%',
                               width: pdfSelectedZone(p.page_number)!.width + '%', height: pdfSelectedZone(p.page_number)!.height + '%' }" />
@@ -660,9 +699,17 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
   border-radius: 2px; pointer-events: none; }
 .pdf-marker { position: absolute; right: 6px; min-width: 26px; height: 22px; border-radius: 11px;
   border: 1px solid #cbd5e1; background: #ffffff; color: #1e41c9; font-size: 11px; font-weight: 700;
-  cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+  cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.14); z-index: 3; }
 .pdf-marker.marker-omission { color: #b45309; border-color: #ecd9ae; background: #fdf3e3; }
 .pdf-marker.sel { outline: 2px solid #5978f7; }
+/* 全段落热区（0714）：透明可点,悬停淡蓝提示——点一段出翻译和解析;标记浮在热区上层 */
+.pdf-block-zone { position: absolute; z-index: 1; margin: 0; padding: 0; border: 1px solid transparent;
+  background: transparent; cursor: pointer; border-radius: 3px;
+  transition: background .12s, border-color .12s; }
+.pdf-block-zone:hover { background: rgba(89, 120, 247, .08); border-color: rgba(89, 120, 247, .5); }
+.pdf-block-zone.sel { background: rgba(89, 120, 247, .12); border-color: rgba(89, 120, 247, .85); }
+.pdf-block-zone.zone-omission:hover { background: rgba(204, 137, 37, .10); border-color: rgba(204, 137, 37, .55); }
+.pdf-block-zone.zone-omission.sel { background: rgba(204, 137, 37, .14); border-color: rgba(180, 83, 9, .8); }
 .pdf-page-label { position: absolute; left: 8px; bottom: 6px; font-size: 10px; color: #98a1b3;
   background: rgba(255,255,255,.85); border-radius: 6px; padding: 1px 6px; }
 .doc-block { display: grid; grid-template-columns: 108px 1fr; gap: 8px; padding: 1px 4px; margin-bottom: 0; border-left: 2px solid transparent; cursor: default; }
