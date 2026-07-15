@@ -111,6 +111,87 @@ def _unit_values(text: str) -> dict[str, set[str]]:
     return values
 
 
+_NUM_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def _num_multiset(text: str) -> tuple[str, ...]:
+    """文本里全部数值 token 的多重集(小数点归一)——近重复判定的数字守卫。"""
+    return tuple(sorted(t.replace(",", ".") for t in _NUM_TOKEN_RE.findall(str(text or ""))))
+
+
+def _gram_jaccard(a: str, b: str, n: int = 3) -> float:
+    """去空白字符 n-gram Jaccard。短文本(<2n)退回精确比较,不给假高分。"""
+    na = re.sub(r"\s+", "", str(a or ""))
+    nb = re.sub(r"\s+", "", str(b or ""))
+    if len(na) < 2 * n or len(nb) < 2 * n:
+        return 1.0 if na and na == nb else 0.0
+    ga = {na[i:i + n] for i in range(len(na) - n + 1)}
+    gb = {nb[i:i + n] for i in range(len(nb) - n + 1)}
+    return len(ga & gb) / max(1, len(ga | gb))
+
+
+# 中文引用词+编号(表8/条款4.9.2/附录D…)——产出侧是中文,text_normalize 只剥英文引用词
+_CN_REF_RE = re.compile(r"(?:表|图|条款|章节|附录|第)\s*[0-9A-Z]+(?:\.\d+)*\s*(?:节|章|条)?")
+
+
+def strip_produced_refs(text: str) -> str:
+    """剥除产出文本里的引用性编号(条款/标准号/表图号),供**交付字段整移判定**分母用。
+
+    v5 审计:验收行因带 EN 标准号示例被"无依据数字"整行误移进 notes,把核心阈值
+    (≤1/3 MPE)一起带走——引用编号是"地址"不是"数值",不该触发整移。
+    数字漂移**软标**仍按原文本计算不剥(引用号抄错也值得一个待核标)。"""
+    from text_normalize import strip_reference_numbers
+    s = strip_reference_numbers(text)
+    s = _STANDARD_REF_RE.sub(" ", s)
+    s = _CN_REF_RE.sub(" ", s)
+    return s
+
+
+def _threshold_desc_mismatch(req: dict[str, Any]) -> list[str]:
+    """正文/验收与自身 threshold_table 的单元格级一致性核对(确定性,只标不拦)。
+
+    v5 实测:表通道可靠(6 处展开 5 对 1 错),错的都在自然语言通道——Type 1 阀门
+    1 l/h 被正文写成 5 l/h,而同条目的表写的是对的。句子提及行键(Type 1/1型)与
+    某列条件数值时,该行该列的单元格数值必须出现在句中,否则记一处不一致。"""
+    tt = req.get("threshold_table") or {}
+    rows = tt.get("rows") or []
+    cols = [str(c) for c in (tt.get("columns") or [])]
+    if not rows or len(cols) < 2:
+        return []
+    text = " ".join([str(req.get("description") or "")]
+                    + [str(x) for x in (req.get("acceptance_criteria") or [])])
+    findings: list[str] = []
+    for sent in re.split(r"[。;；\n]", text):
+        if not _NUM_TOKEN_RE.search(sent):
+            continue
+        for row in rows:
+            cells = [str(c) for c in (row if isinstance(row, list) else [row])]
+            if not cells:
+                continue
+            key = cells[0].strip()
+            key_digits = re.findall(r"\d+", key)
+            key_res = [rf"(?:type\s*{kd}|{kd}\s*型|类型\s*{kd}|class\s*{kd}|{kd}\s*级)"
+                       for kd in key_digits[:1]]
+            mentioned = bool(key) and (key.casefold() in sent.casefold() or any(
+                re.search(kr, sent, re.IGNORECASE) for kr in key_res))
+            if not mentioned:
+                continue
+            # 只掩掉"键的提及文本"再取数——单元格值可能与键数字相同(Type 1 的限值恰为 1),
+            # 整集扣除键数字会把合法的一致数值一起扣掉,制造假阳性
+            masked = sent.replace(key, " ") if key else sent
+            for kr in key_res:
+                masked = re.sub(kr, " ", masked, flags=re.IGNORECASE)
+            sent_nums = {t.replace(",", ".") for t in _NUM_TOKEN_RE.findall(masked)}
+            for ci in range(1, min(len(cells), len(cols))):
+                cond = [t.replace(",", ".") for t in _NUM_TOKEN_RE.findall(cols[ci])]
+                cell = [t.replace(",", ".") for t in _NUM_TOKEN_RE.findall(cells[ci])]
+                if not cond or not cell:
+                    continue
+                if cond[0] in sent_nums and not set(cell) & sent_nums:
+                    findings.append(f"{key}@{cols[ci][:20]}={cells[ci]}")
+    return list(dict.fromkeys(findings))
+
+
 def _multi_value_pairing_risk(req: dict[str, Any], source: str) -> list[str]:
     """返回产出与原文都出现 ≥2 档数值的单位清单(配对调包风险区);有参数表的不标
     (表格逐格照抄,配对由表结构承载)。"""

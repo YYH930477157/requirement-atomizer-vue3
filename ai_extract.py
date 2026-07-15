@@ -57,13 +57,14 @@ from extract_units import (  # noqa: F401 —— F3 拆分门面：旧名保持�
 )
 from extract_guards import (  # noqa: F401
     _LEFT_BEHIND_MIN, _LEFT_BEHIND_WINDOW, _TESTABLE_HINT_RE, _VAGUE_PHRASES,
-    _foreign_standard_refs, _is_definition_stub, _modal_inflation, _multi_value_pairing_risk,
-    _norm_ws, _produced_text, _req_key, _vague_acceptance, _values_left_behind,
+    _foreign_standard_refs, _gram_jaccard, _is_definition_stub, _modal_inflation,
+    _multi_value_pairing_risk, _norm_ws, _num_multiset, _produced_text, _req_key,
+    _threshold_desc_mismatch, _vague_acceptance, _values_left_behind, strip_produced_refs,
 )
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v17"  # v17：忠实性判据+测试装置排除（0715 重构,内容审计 29 处误读）；v16：functional_key 构造规则+priority 判级基准；v15：缺失功能键保持为空
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v18"  # v18：免责从句保向+量符号下标+单位词不猜译（0715 v5 审计）；v17：忠实性判据+测试装置排除；v16：functional_key 构造规则+priority 判级基准
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -173,6 +174,15 @@ SYSTEM_PROMPT = (
     "**忠实性**：描述必须与引句同向——不得升格约束强度（should/宜/建议 ≠ 必须），"
     "不得反转方向或互换主客体，不得添加原文没有的适用条件或限定词；"
     "引用标准号只能照抄本章节原文里出现的，绝不凭印象归属。"
+    "**免责/例外从句保向**：unless/without/except/provided that 这类从句表达的是例外或"
+    "免责条件（如\"不得漂移超过 X——除非显示了错误标志\"意为超限时须报警才合规），"
+    "绝不能改写成禁止项或独立义务（写成\"不得显示错误标志\"就是反向误读）。"
+    "**量符号下标**：原文里 \"Q max\"\"Q min\"\"P max\" 这类拆开的写法是同一量符号的"
+    "下标排版（Qmax/Qmin/Pmax），按一个符号理解，不得当作独立单词或把系数误读成倍率"
+    "（\"0.25 Q max\" 是流量点 0.25·Qmax，不是\"额定流量的0.25倍\"这类另起炉灶的换算）。"
+    "**单位/等级词不猜译**：grade、mesh、class 等粒度/等级/量纲词拿不准中文对应时，"
+    "保留英文原词并括注说明，不得猜一个具体中文单位（把 \"300 to 400 grade dust\" 猜译成"
+    "\"300-400目\"会让研发配错试验材料）。"
     "**条款族=一条需求**：输入单元若是条款族（如 X.Y 条款含 X.Y.1 Requirements 与 X.Y.2 Test 子节）："
     "以条款为单位产出**一条**需求——Requirements 的枚举项 a)b)c)d) 逐项写进 sub_items，"
     "对应的 Test 项按 a↔a、b↔b 对应写进 acceptance_criteria；**Test/测试方法不单独抽成需求**。"
@@ -194,7 +204,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v2"
+EXTRACT_GUARDS_VERSION = "guards-v3"  # v3:资料性区段降级+溯源校正+元话语剥除+表文一致性+去重加固
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -499,7 +509,9 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
         kept: list[str] = []
         for raw in req.get(field) or []:
             text = str(raw).strip()
-            unsupported = produced_ints(text) - allowed
+            # 整移判定剥引用编号(条款/标准号/表图号是"地址"不是"数值"):v5 审计里验收行
+            # 因带 EN 标准号示例被整行误移,把核心阈值一起带走。软标漂移仍按原文本计算。
+            unsupported = produced_ints(strip_produced_refs(text)) - allowed
             unsupported_codes = extract_codes(text) - allowed_codes
             unsupported_terms = _unsupported_implementation_terms(text, source_text)
             if unsupported or unsupported_terms or unsupported_codes:
@@ -607,6 +619,11 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             continue
         req = normalize_requirement(raw, section)
         _map_requirement_source(req, section)
+        _correct_source_section(req, section)   # 原文标题是硬证据,LLM 标错节号以它为准
+        cleaned_desc = _strip_meta_text(req["description"])
+        if cleaned_desc != req["description"]:   # 自检旁白泄漏进正文:句级剥除留痕
+            req["description"] = cleaned_desc
+            _append_note(req, "已剥除流程元话语（自检旁白不进交付正文）")
         if not req["description"] and not req["source_quote"]:
             continue
         if _is_reference_stub(req):
@@ -653,12 +670,20 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             suspicion.append("验收不可测")
             note = f"验收不可测（空话验收 {len(vague)} 条，如「{vague[0][:40]}」，请给出可判定条件）"
             _append_note(req, note)
-        # 资料性来源标记（0715 v2 审计:Annex B(informative)/「not a priority」整批被
-        # 升格成 P0/P1 强制需求——资料性内容对设备无强制力,升格即误导研发排期）
-        origin = " ".join([str(section.get("heading") or ""), str(section.get("text") or "")[:300]])
-        if re.search(r"informative|资料性附录", origin, re.IGNORECASE) and str(req.get("priority")) in ("P0", "P1"):
-            suspicion.append("资料性来源待核")
-            _append_note(req, "资料性来源待核（本单元为 informative 附录/资料性内容,标成 P0/P1 强制需求请人工确认）")
+        # 资料性来源（v5 审计最大病灶:Annex B(informative) 对照表被升格成 9 条 P1/P2
+        # 强制需求——资料性内容对设备无强制力,升格即误导研发排期）。位置判据优先
+        # (跨单元状态机,治混装/续表单元);无标注时退回单元级 heading/前 300 字判据。
+        if _in_informative_range(req, section):
+            if str(req.get("priority")) in ("P0", "P1"):
+                req["priority"] = "P2"
+                _append_note(req, "资料性附录来源:优先级已降为 P2（原文为 informative 附录,不构成强制义务）")
+            suspicion.append("资料性附录来源")
+            _append_note(req, "资料性附录来源（引句位于 informative 附录区段,默认不升格为义务,待专家裁定）")
+        else:
+            origin = " ".join([str(section.get("heading") or ""), str(section.get("text") or "")[:300]])
+            if re.search(r"informative|资料性附录", origin, re.IGNORECASE) and str(req.get("priority")) in ("P0", "P1"):
+                suspicion.append("资料性来源待核")
+                _append_note(req, "资料性来源待核（本单元为 informative 附录/资料性内容,标成 P0/P1 强制需求请人工确认）")
         # 忠实性守恒（0715 内容审计:29 处误读全数绕过旧护栏——旧护栏只看编码/数字）
         if _modal_inflation(req):
             suspicion.append("情态升格待核")
@@ -671,6 +696,12 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
         if pairing:
             suspicion.append("数值配对待核")
             _append_note(req, f"数值配对待核（{'、'.join(pairing[:3])} 存在多档数值,请对照原文核对数值与适用条件的配对）")
+        # 表文一致性(v5 审计:表通道可靠,自然语言通道抄错——Type 1 阀门 1 l/h 被正文
+        # 写成 5 l/h,同条目的表是对的且因"有表豁免"漏标)。单元格级核对,以表为准待核。
+        table_mismatch = _threshold_desc_mismatch(req)
+        if table_mismatch:
+            suspicion.append("表文数值不一致")
+            _append_note(req, f"表文数值不一致（正文/验收与自身阈值表不符,以表为准待核：{'; '.join(table_mismatch[:3])}）")
         if suspicion:
             req["suspicion_reasons"] = suspicion
         results.append(req)
@@ -727,7 +758,9 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         "supplements 里已存在于该需求 sub_items/验收里的内容**不要重复回填**。"
         "**数值配对复核**（同样走 faithfulness_note）：原文同一单位出现多档数值时"
         "（如不同型号/压力条件各有限值），逐条核对已抽需求里数值与其适用条件的配对"
-        "是否与原文一致——张冠李戴（甲条件配了乙限值）是最严重的一类错误。")
+        "是否与原文一致——张冠李戴（甲条件配了乙限值）是最严重的一类错误。"
+        "**步骤编号配对复核**：已抽需求引用\"步骤 n)\"/\"step n\"时，逐字对照原文的步骤"
+        "编号——比较基准错位（原文与步骤3比较、产出写成与步骤1比较）会让合格品被误判。")
     parts.append(f"当前章节：\n{build_section_prompt(section)}")
     parts.append(f"已抽取（勿重复）：\n{summaries}")
     if focus_lines:
@@ -765,13 +798,22 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
 
 
 def _near_dup(text: str, existing: list[str]) -> bool:
-    """近重复判定(0715 v2 审计:并入的同义复述堆叠 2-4 遍)——归一后互含即重复。"""
+    """近重复判定(0715 v2 审计:并入的同义复述堆叠 2-4 遍)——归一后互含即重复。
+
+    v5 校准加固:互含拦不住换词复述("温度曲线"↔"温度分布"),但纯相似度阈值也不可行
+    (实测语义不同的两档判据 J=0.57 高于部分真复读的 0.40)——J≥0.5 **且数字多重集
+    相同**才判重:数字守卫恰好保住 1型/2型、20/75 mbar 这类关键差异。"""
     t = _norm_ws(text)
     if not t:
         return True
+    nums = _num_multiset(text)
     for e in existing:
         en = _norm_ws(e)
-        if en and (t in en or en in t):
+        if not en:
+            continue
+        if t in en or en in t:
+            return True
+        if _gram_jaccard(t, en) >= 0.5 and nums == _num_multiset(e):
             return True
     return False
 
@@ -799,6 +841,22 @@ def _supplement_clause_mismatch(sup_text: str, section_text: str, target_section
     if not re.match(r"^\d+(?:\.\d+)*$", tgt):
         return False
     return not (nearest.startswith(tgt) or tgt.startswith(nearest))
+
+
+# 自检流程元话语(管线自述词面,客户需求正文不会出现):v5 审计 6+ 处自检旁白整段
+# 泄漏进交付正文("本条已抽需求聚焦…""故不单独成需求""可作为本需求的背景或扩展")。
+# 词表只收多字强标记——"自检/查漏/补漏/已覆盖"等短词是计量领域真实需求词面,不进表
+_META_DISCOURSE_RE = re.compile(
+    r"已抽需求|已抽取的需求|不单独成需求|不再单独成|查漏补缺|补漏内容|"
+    r"整合进需求|已在后续条款|已在验收标准|本需求的背景|作为背景或扩展|"
+    r"自检(?:补充|并入|复核)")
+
+
+def _strip_meta_text(text: str) -> str:
+    """句级剥除流程元话语,保留正常需求句;整段皆元话语则返回空。"""
+    parts = re.split(r"(?<=[。;；!?\n])", str(text or ""))
+    kept = [p for p in parts if p.strip() and not _META_DISCOURSE_RE.search(p)]
+    return "".join(kept).strip()
 
 
 def _locate_verbatim(fragment: str, section_text: str) -> str:
@@ -830,6 +888,15 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
     for sup in raw_supplements:
         if not isinstance(sup, dict):
             continue
+        # 元话语消毒(v5 审计:自检旁白整段泄漏进交付正文):append 句级剥除;
+        # 子项/验收是单判据,含元话语整条丢弃(半句残留没有交付价值)
+        sup = dict(sup)
+        sup["description_append"] = _strip_meta_text(sup.get("description_append"))
+        sup["sub_items"] = [s for s in (sup.get("sub_items") or [])
+                            if isinstance(s, dict)
+                            and not _META_DISCOURSE_RE.search(str(s.get("text") or ""))]
+        sup["acceptance_criteria"] = [x for x in (sup.get("acceptance_criteria") or [])
+                                      if not _META_DISCOURSE_RE.search(str(x))]
         target = by_title.get(_norm_ws(sup.get("target_title")))
         if target is None:
             # v3 召回修正:未匹配不再直接丢——内容能在原文逐字定位的,转为独立需求原料
@@ -959,6 +1026,105 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
             continue   # 该枚举项已被某条需求的 sub_items 覆盖
         uncovered.append(cleaned[:200])
     return uncovered
+
+
+# Annex 标题独占行(EN 惯例:字母+资料性/规范性标记独占一行,标题在下一行);
+# 行文里的 "given in Annex A" 提及不匹配(行锚定+行尾)
+_ANNEX_HEAD_RE = re.compile(
+    r"(?m)^\s*(Annex\s+[A-Z])\s*(\((?:informative|normative)\))\s*$", re.IGNORECASE)
+
+
+def _annotate_annex_scopes(sections: list[dict[str, Any]]) -> None:
+    """文档级资料性区段标注(跨单元携带状态):给每个 section 写 informative_ranges。
+
+    v5 审计最大病灶:Annex B (informative) 的对照表被升格成 9 条 P1/P2 强制需求——
+    单元级 heading/前 300 字判据探不到(打包单元混装资料性 B 表与规范性 C 正文,
+    且续表单元里根本没有标记,标记在上一单元)。状态机按文档顺序扫 Annex 标题行,
+    informative 状态跨单元携带,直到下一个 normative 标记为止。"""
+    state_informative = False
+    for section in sections:
+        text = str(section.get("text") or "")
+        ranges: list[tuple[int, int]] = []
+        open_start = 0 if state_informative else None
+        for m in _ANNEX_HEAD_RE.finditer(text):
+            informative = "informative" in m.group(2).casefold()
+            if informative and open_start is None:
+                open_start = m.start()
+            elif not informative and open_start is not None:
+                ranges.append((open_start, m.start()))
+                open_start = None
+            state_informative = informative
+        if open_start is not None:
+            ranges.append((open_start, len(text)))
+        section["informative_ranges"] = ranges
+
+
+def _in_informative_range(req: dict[str, Any], section: dict[str, Any]) -> bool:
+    ranges = section.get("informative_ranges")
+    if not ranges:
+        return False
+    text = str(section.get("text") or "")
+    quote = str(req.get("source_quote") or "")
+    pos = text.find(quote) if quote else -1
+    if pos < 0 and quote:
+        located = _locate_verbatim(quote, text)
+        pos = text.find(located) if located else -1
+    if pos < 0:
+        # 引句定位不到:整单元均为资料性时仍判定(续表单元常无可定位标题行)
+        return len(ranges) == 1 and ranges[0][0] == 0 and ranges[0][1] >= len(text)
+    return any(s <= pos < e for s, e in ranges)
+
+
+_HEADING_ANCHOR_RE = re.compile(
+    r"(?m)^(?:##+\s*(\d+(?:\.\d+)*)\s*(.*)|\s*(Annex\s+[A-Z])\s*(\((?:informative|normative)\))\s*)$",
+    re.IGNORECASE)
+
+
+def _derive_source_section(quote: str, section_text: str) -> str:
+    """由引句在原文中的位置取最近前置小节标题——溯源节号的确定性证据。
+
+    v5 审计:某单元 5 条 source_section 全被 LLM 标成邻近章节号(quote 本身逐字正确),
+    原文标题是硬证据,以它为准。定位不到引句/引句前无标题行 → 返回空(不裁)。"""
+    quote = str(quote or "").strip()
+    text = str(section_text or "")
+    if not quote:
+        return ""
+    pos = text.find(quote)
+    if pos < 0:
+        located = _locate_verbatim(quote, text)
+        pos = text.find(located) if located else -1
+    if pos < 0:
+        return ""
+    best = ""
+    for m in _HEADING_ANCHOR_RE.finditer(text):
+        if m.start() >= pos:
+            break
+        if m.group(1):
+            best = f"{m.group(1)} {(m.group(2) or '').strip()}".strip()
+        else:
+            best = f"{m.group(3)} {(m.group(4) or '').strip()}".strip()
+    return best[:100]
+
+
+def _correct_source_section(req: dict[str, Any], section: dict[str, Any]) -> None:
+    derived = _derive_source_section(req.get("source_quote"), section.get("text"))
+    if not derived:
+        return
+    claimed = str(req.get("source_section") or "").strip()
+    m_d = _CLAUSE_TAIL_RE.match(derived)
+    m_c = _CLAUSE_TAIL_RE.match(claimed)
+    if m_d and m_c:
+        dn, cn = m_d.group(1), m_c.group(1)
+        if dn == cn or dn.startswith(cn + ".") or cn.startswith(dn + "."):
+            return   # 一致或互为前缀(粗细粒度差异):不动
+    else:
+        d_ann = re.match(r"(?i)\s*annex\s+([A-Z])", derived)
+        c_ann = re.match(r"(?i)\s*annex\s+([A-Z])", claimed)
+        if d_ann and c_ann and d_ann.group(1).casefold() == c_ann.group(1).casefold():
+            return   # 同一附录,不动
+    req["source_section"] = derived
+    if claimed:
+        _append_note(req, f"溯源节号按原文校正：{claimed[:40]} → {derived[:60]}")
 
 
 _CLAUSE_TAIL_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)\s*(.*)$")
@@ -1423,6 +1589,7 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                                   unit_mode=resolved_mode)
     resolve_section_refs(all_sections)  # 跨章节引用注入（须在采样前，被引条款可能不在样本里）
     attach_term_definitions(all_sections, collect_term_entries(all_sections))  # 术语定向注入
+    _annotate_annex_scopes(all_sections)  # 资料性附录区段标注（跨单元状态机,须在采样前）
     if not limit_sections and sample_ratio and 0 < sample_ratio < 1:
         limit_sections = max(1, round(len(all_sections) * sample_ratio))
     sections, sampled = sample_sections(all_sections, limit_sections)

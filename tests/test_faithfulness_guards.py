@@ -627,5 +627,179 @@ class FoldTestSiblingTests(unittest.TestCase):
         self.assertIn("数值配对待核", out[0]["suspicion_reasons"])
 
 
+class AnnexScopeTests(unittest.TestCase):
+    """资料性附录区段(v5 审计最大病灶:informative 对照表升格成 9 条强制需求)。
+    状态机跨单元携带——续表单元无标记,标记在上一单元。"""
+
+    def _sections(self) -> list[dict]:
+        return [
+            {"section_id": "A", "heading": "10 Env",
+             "text": "Annex A (informative)\nGuidance text.\nAnnex B (informative)\nTable rows 1-2."},
+            {"section_id": "B", "heading": "10 Env",
+             "text": "Table rows 3-6 continued here.\nAnnex C (normative)\nC.1 The device shall X."},
+        ]
+
+    def test_scopes_carry_across_units(self) -> None:
+        secs = self._sections()
+        ai_extract._annotate_annex_scopes(secs)
+        self.assertEqual(secs[0]["informative_ranges"], [(0, len(secs[0]["text"]))])
+        (s, e), = secs[1]["informative_ranges"]
+        self.assertEqual(s, 0)
+        self.assertLess(e, len(secs[1]["text"]))
+        self.assertIn("Table rows 3-6", secs[1]["text"][s:e])
+        self.assertNotIn("shall X", secs[1]["text"][s:e])
+
+    def test_mention_in_prose_does_not_transition(self) -> None:
+        secs = [{"section_id": "5", "heading": "5 Security",
+                 "text": "A typical routine is given in Annex A.\nThe device shall log events."}]
+        ai_extract._annotate_annex_scopes(secs)
+        self.assertEqual(secs[0]["informative_ranges"], [])
+
+    def test_informative_entry_demoted_and_flagged(self) -> None:
+        secs = self._sections()
+        ai_extract._annotate_annex_scopes(secs)
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "续表功能项", "description": "设备须支持续表所列功能配置能力。",
+                "source_quote": "Table rows 3-6 continued here.",
+                "type": "functional", "priority": "P1", "labels": []}]}
+
+        req = ai_extract.extract_section(secs[1], chat, self_check=False)[0]
+        self.assertEqual(req["priority"], "P2")
+        self.assertIn("资料性附录来源", req.get("suspicion_reasons") or [])
+
+    def test_normative_entry_untouched(self) -> None:
+        secs = self._sections()
+        ai_extract._annotate_annex_scopes(secs)
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "设备行为X", "description": "设备必须执行 X 行为并可验证。",
+                "source_quote": "C.1 The device shall X.",
+                "type": "functional", "priority": "P1", "labels": []}]}
+
+        req = ai_extract.extract_section(secs[1], chat, self_check=False)[0]
+        self.assertEqual(req["priority"], "P1")
+        self.assertNotIn("资料性附录来源", req.get("suspicion_reasons") or [])
+
+
+class SourceSectionCorrectionTests(unittest.TestCase):
+    """溯源节号确定性回填(v5 审计:一个单元 5 条全被标成邻近章节号,quote 却逐字正确)。"""
+
+    SECTION = {"section_id": "7.6", "heading": "7.6 Input to AFD", "block_ids": [],
+               "text": ("## 7.6 Input to AFD\n## 7.6.1 General\nIntro words here.\n"
+                        "## 7.6.2 Requirement\nThe input shall be volume pulses or data streams.")}
+
+    def _extract(self, source_section: str) -> dict:
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "输入形式", "description": "输入须为体积脉冲或数据流。",
+                "source_section": source_section,
+                "source_quote": "The input shall be volume pulses or data streams.",
+                "type": "functional", "priority": "P1", "labels": []}]}
+        return ai_extract.extract_section(self.SECTION, chat, self_check=False)[0]
+
+    def test_wrong_clause_number_corrected(self) -> None:
+        req = self._extract("7.4 Metrological influence")
+        self.assertTrue(req["source_section"].startswith("7.6.2"))
+        self.assertIn("溯源节号按原文校正", req["notes"])
+
+    def test_prefix_relation_left_alone(self) -> None:
+        req = self._extract("7.6 Input to AFD")   # 粗粒度前缀:不动
+        self.assertEqual(req["source_section"], "7.6 Input to AFD")
+
+
+class MetaDiscourseTests(unittest.TestCase):
+    """自检元话语剥除(v5 审计:自检旁白整段泄漏进交付正文,6+ 处)。"""
+
+    def test_strip_meta_sentences_keeps_normal_text(self) -> None:
+        text = ("表计须耐受 200 mT 永久磁场。本条已抽需求聚焦永久磁场,4.12.1 可作为背景或扩展。"
+                "当前条款为概括性要求,故不单独成需求。制造商声明的功能必须保持可操作。")
+        out = ai_extract._strip_meta_text(text)
+        self.assertIn("200 mT", out)
+        self.assertIn("保持可操作", out)
+        self.assertNotIn("已抽需求", out)
+        self.assertNotIn("不单独成需求", out)
+
+    def test_domain_words_not_stripped(self) -> None:
+        text = "表计应支持自检功能并在检测到泄漏时报警。测试已覆盖全部流量点。"
+        self.assertEqual(ai_extract._strip_meta_text(text), text)
+
+    def test_supplement_meta_append_filtered(self) -> None:
+        section = {"section_id": "4", "heading": "4.12 EMC", "block_ids": [],
+                   "text": "The meter shall withstand a magnetic field of 200 mT."}
+        existing = [{"title": "磁场耐受", "description": "表计须耐受 200 mT 磁场。",
+                     "source_section": "4.12", "source_quote": "withstand a magnetic field of 200 mT",
+                     "sub_items": [], "acceptance_criteria": [], "notes": ""}]
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "磁场耐受",
+                "description_append": "本条已抽需求聚焦磁场,故不单独成需求。"}]}
+
+        extra, applied = ai_extract.critique_section(section, existing, chat)
+        self.assertEqual((extra, applied), ([], 0))          # 纯元话语 append 被剥空,不并入
+        self.assertNotIn("不单独成需求", existing[0]["description"])
+
+
+class NearDupUpgradeTests(unittest.TestCase):
+    """去重加固校准(v5 实测:互含拦不住换词复述;纯相似度阈值会误杀 1型/2型 两档判据)。"""
+
+    def test_paraphrase_with_same_numbers_is_dup(self) -> None:
+        a = "根据制造商声明,使用声明的温度曲线和所有频率输入的最大值进行测试,确认电池寿命支持所有功能"
+        b = "根据制造商声明,使用其声明的温度曲线和所有频率输入的最大值进行测试,确认可更换电池支持所有功能的寿命"
+        self.assertTrue(ai_extract._near_dup(a, [b]))
+
+    def test_different_type_values_not_dup(self) -> None:
+        a = "对于1型阀门,在20 mbar、75 mbar及150 mbar测试压力下的最大泄漏率均不超限"
+        b = "对于2型阀门,在20 mbar、75 mbar及150 mbar测试压力下的最大泄漏率均不超限"
+        self.assertFalse(ai_extract._near_dup(a, [b]))
+
+
+class ThresholdTableConsistencyTests(unittest.TestCase):
+    """表文一致性(v5 差评:表写对 Type 1=1 l/h,正文写成 5 l/h,因"有表豁免"漏标)。"""
+
+    TT = {"columns": ["阀门类型", "20 mbar 最大泄漏率 (l/h)", "75 mbar 最大泄漏率 (l/h)"],
+          "rows": [["Type 1", "1", "1"], ["Type 2", "5", "5"]]}
+
+    def test_mismatched_value_flagged(self) -> None:
+        from extract_guards import _threshold_desc_mismatch
+        req = {"description": "对于1型阀门,在20 mbar测试压力下最大泄漏率为5 l/h。",
+               "acceptance_criteria": [], "threshold_table": self.TT}
+        self.assertTrue(_threshold_desc_mismatch(req))
+
+    def test_consistent_value_clean(self) -> None:
+        from extract_guards import _threshold_desc_mismatch
+        req = {"description": "对于1型阀门,在20 mbar测试压力下最大泄漏率为1 l/h。",
+               "acceptance_criteria": [], "threshold_table": self.TT}
+        self.assertEqual(_threshold_desc_mismatch(req), [])
+
+    def test_no_numbers_no_flag(self) -> None:
+        from extract_guards import _threshold_desc_mismatch
+        req = {"description": "对于1型阀门,泄漏限值见阈值表。",
+               "acceptance_criteria": [], "threshold_table": self.TT}
+        self.assertEqual(_threshold_desc_mismatch(req), [])
+
+
+class MoveExemptionTests(unittest.TestCase):
+    """整移判定剥引用编号(v5 审计:验收行带 EN 标准号示例被整行误移,核心阈值一起丢)。"""
+
+    def test_standard_ref_in_acceptance_not_moved(self) -> None:
+        section = {"section_id": "4", "heading": "4.12 ESD", "block_ids": [],
+                   "text": "The error shall not exceed 1/3 MPE during the discharge test."}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "静电放电误差限值", "description": "放电试验中误差不得超过 1/3 MPE。",
+                "source_quote": "The error shall not exceed 1/3 MPE during the discharge test.",
+                "acceptance_criteria": ["放电试验后误差不超过 1/3 MPE（对应仪表标准如 EN 12405 的方法）"],
+                "type": "functional", "priority": "P1", "labels": []}]}
+
+        req = ai_extract.extract_section(section, chat, self_check=False)[0]
+        self.assertEqual(len(req["acceptance_criteria"]), 1)   # 标准号是地址不是数值,不整移
+        self.assertIn("1/3 MPE", req["acceptance_criteria"][0])
+
+
 if __name__ == "__main__":
     unittest.main()
