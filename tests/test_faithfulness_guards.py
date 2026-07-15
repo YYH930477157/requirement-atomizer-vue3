@@ -449,5 +449,87 @@ class SupplementHardeningTests(unittest.TestCase):
         self.assertIn("自检复核:描述与引句疑似矛盾", existing[0]["suspicion_reasons"])
 
 
+class SupplementConversionTests(unittest.TestCase):
+    """v3 召回修正(五刀):未匹配的补充若能在原文逐字定位 → 转独立需求(同护栏同去重),
+    不再直接丢弃——自检契约偏并入曾把真新需求塞错目标而流失(v3 漏抽 4→8 的根因)。"""
+
+    SECTION = {"section_id": "7", "heading": "7 Functions",
+               "text": ("## 7.4 Metrological influence\n"
+                        "7.4 The module shall not influence measurement.\n"
+                        "## 7.9 Display readability\n"
+                        "The display shall remain readable without tools at arm distance.")}
+
+    def _existing(self) -> list[dict]:
+        return [{"title": "计量无影响", "description": "模块不得影响计量。",
+                 "source_section": "7.4",
+                 "source_quote": "The module shall not influence measurement.",
+                 "sub_items": [], "acceptance_criteria": [], "notes": ""}]
+
+    def test_unmatched_supplement_with_locatable_text_converted(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "显示可读性",     # 不存在的目标
+                "description_append": "显示应在臂距内免工具清晰可读。",
+                "sub_items": [{"label": "",
+                                "text": "The display shall remain readable without tools at arm distance."}]}]}
+
+        extra, _applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(len(extra), 1)                          # 转成独立需求,不丢
+        self.assertEqual(extra[0]["title"], "显示可读性")
+        self.assertIn("readable without tools", extra[0]["source_quote"])   # 逐字引句已定位
+        self.assertIn("自检补充转独立（原目标未匹配,请核归属）",
+                      extra[0]["suspicion_reasons"])             # 可见可核
+
+    def test_unlocatable_unmatched_supplement_still_dropped(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "不存在的目标",
+                "description_append": "一段原文里根本找不到对应的凭空内容描述。"}]}
+
+        extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual((extra, applied), ([], 0))              # 定位不到→仍丢弃(宁缺勿错)
+
+
+class ValuePairingRiskTests(unittest.TestCase):
+    """五刀:调包类误读(两个数字都在原文,漂移拦不住)——多档同单位软标路由注意力。"""
+
+    SOURCE = ("For Type 1 at 75 mbar the leakage shall not exceed 1 l/h. "
+              "For Type 2 at 20 mbar the leakage shall not exceed 5 l/h.")
+
+    def test_multi_value_same_unit_flagged(self) -> None:
+        from extract_guards import _multi_value_pairing_risk
+        req = {"title": "泄漏限值", "description": "Type 1 泄漏不超过 5 l/h,Type 2 不超过 1 l/h。",
+               "source_quote": self.SOURCE}
+        self.assertIn("l/h", _multi_value_pairing_risk(req, self.SOURCE))
+
+    def test_threshold_table_exempt(self) -> None:
+        from extract_guards import _multi_value_pairing_risk
+        req = {"title": "泄漏限值", "description": "限值见参数表。", "source_quote": self.SOURCE,
+               "threshold_table": {"columns": ["型号", "限值"], "rows": [["Type 1", "1 l/h"], ["Type 2", "5 l/h"]]}}
+        self.assertEqual(_multi_value_pairing_risk(req, self.SOURCE), [])
+
+    def test_single_value_not_flagged(self) -> None:
+        from extract_guards import _multi_value_pairing_risk
+        req = {"title": "泄漏限值", "description": "泄漏不超过 1 l/h。",
+               "source_quote": "the leakage shall not exceed 1 l/h"}
+        self.assertEqual(_multi_value_pairing_risk(req, "the leakage shall not exceed 1 l/h"), [])
+
+    def test_pipeline_appends_suspicion(self) -> None:
+        section = {"section_id": "S", "heading": "7.13 Valve", "block_ids": [], "text": self.SOURCE}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "泄漏限值", "description": "Type 1 不超过 1 l/h,Type 2 不超过 5 l/h。",
+                "source_quote": self.SOURCE,
+                "type": "functional", "priority": "P1", "labels": ["阀门控制"]}]}
+
+        req = ai_extract.extract_section(section, chat)[0]
+        self.assertIn("数值配对待核", req.get("suspicion_reasons") or [])
+
+
 if __name__ == "__main__":
     unittest.main()

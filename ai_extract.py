@@ -57,7 +57,7 @@ from extract_units import (  # noqa: F401 —— F3 拆分门面：旧名保持�
 )
 from extract_guards import (  # noqa: F401
     _LEFT_BEHIND_MIN, _LEFT_BEHIND_WINDOW, _TESTABLE_HINT_RE, _VAGUE_PHRASES,
-    _foreign_standard_refs, _is_definition_stub, _modal_inflation,
+    _foreign_standard_refs, _is_definition_stub, _modal_inflation, _multi_value_pairing_risk,
     _norm_ws, _produced_text, _req_key, _vague_acceptance, _values_left_behind,
 )
 
@@ -660,6 +660,10 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
         if foreign_refs:
             suspicion.append("标准号待核")
             _append_note(req, f"标准号待核（{', '.join(foreign_refs[:3])} 不在本节原文,请核对是否张冠李戴）")
+        pairing = _multi_value_pairing_risk(req, source)
+        if pairing:
+            suspicion.append("数值配对待核")
+            _append_note(req, f"数值配对待核（{'、'.join(pairing[:3])} 存在多档数值,请对照原文核对数值与适用条件的配对）")
         if suspicion:
             req["suspicion_reasons"] = suspicion
         results.append(req)
@@ -697,8 +701,10 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         "【查漏补缺任务】下面是一个章节的原文 + 已抽取的需求结构摘要。找出章节里**尚未被覆盖**的"
         "需求/约束/可测语句。输出 JSON 对象，含两个数组："
         "{\"requirements\": [...], \"supplements\": [...]}，都可为空。"
-        "**优先并入,不要新开**（0715 降碎纪律）：遗漏语句若属于某条已抽需求的范围"
-        "（同一条款/同一功能的枚举项、条件、参数、验收判据）——放进 supplements："
+        "**归属判定**（0715 降碎+v3 召回修正）：遗漏语句**确定**属于某条已抽需求的范围"
+        "（同一条款/同一功能的枚举项、条件、参数、验收判据）——放进 supplements；"
+        "**吃不准从属关系时,宁可作为独立需求输出到 requirements,不要硬塞 supplements**"
+        "（塞错目标会被守卫丢弃,反而丢失内容）。放进 supplements 的格式："
         "{\"target_title\": \"<该已抽需求的 title 原样回填>\", \"sub_items\": [{\"label\": \"c\", \"text\": \"…\"}], "
         "\"acceptance_criteria\": [\"…\"], \"description_append\": \"<可选的一句补充>\"}；"
         "只有与全部已抽需求都无从属关系的**独立功能点**才进 requirements（同样的 JSON schema、"
@@ -711,7 +717,10 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         "无据添加适用条件），在 supplements 里回填该 target_title 并给 "
         "\"faithfulness_note\": \"<必须同时逐字引出描述片段与引句片段来证明矛盾>\"——"
         "没有可引证的具体矛盾就不要报（空泛怀疑是噪声），不要改写原需求。"
-        "supplements 里已存在于该需求 sub_items/验收里的内容**不要重复回填**。")
+        "supplements 里已存在于该需求 sub_items/验收里的内容**不要重复回填**。"
+        "**数值配对复核**（同样走 faithfulness_note）：原文同一单位出现多档数值时"
+        "（如不同型号/压力条件各有限值），逐条核对已抽需求里数值与其适用条件的配对"
+        "是否与原文一致——张冠李戴（甲条件配了乙限值）是最严重的一类错误。")
     parts.append(f"当前章节：\n{build_section_prompt(section)}")
     parts.append(f"已抽取（勿重复）：\n{summaries}")
     if focus_lines:
@@ -719,10 +728,12 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         parts.append(f"重点核查以下原文语句是否含被遗漏的需求（解析层判定疑似需求但尚无需求覆盖）：\n{hints}")
     payload = chat(SYSTEM_PROMPT, "\n\n".join(parts))
     raw = payload.get("requirements") if isinstance(payload, dict) else None
-    supplements_applied = _apply_supplements(
+    supplements_applied, converted = _apply_supplements(
         payload.get("supplements") if isinstance(payload, dict) else None,
         existing, section)
-    if not isinstance(raw, list):
+    converted_titles = {_norm_ws(c.get("title")) for c in converted}
+    raw = (list(raw) if isinstance(raw, list) else []) + converted
+    if not raw:
         return [], supplements_applied
     seen = {_req_key(r) for r in existing}
     # 包含式去重基底：真实案例里自检补的"新"条目引句是已抽引句的**前缀子串**（精确匹配拦不住）
@@ -740,6 +751,8 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
             existing_quotes.append(quote)
         req["self_check_added"] = True  # 初抽遗漏、自检补回——审核时优先看
         req["suspicion_reasons"] = list(req.get("suspicion_reasons") or []) + ["自检补充（初抽遗漏）"]
+        if _norm_ws(req.get("title")) in converted_titles:
+            req["suspicion_reasons"].append("自检补充转独立（原目标未匹配,请核归属）")
         extra.append(req)
     return extra, supplements_applied
 
@@ -781,8 +794,18 @@ def _supplement_clause_mismatch(sup_text: str, section_text: str, target_section
     return not (nearest.startswith(tgt) or tgt.startswith(nearest))
 
 
+def _locate_verbatim(fragment: str, section_text: str) -> str:
+    """在单元原文里定位片段(空白弹性),返回原文原样子串——供转换需求当逐字引句。"""
+    frag = str(fragment or "").strip()
+    if len(frag) < 20:
+        return ""
+    pattern = re.compile(r"\s+".join(re.escape(w) for w in frag.split()[:24]), re.IGNORECASE)
+    m = pattern.search(section_text or "")
+    return m.group(0) if m else ""
+
+
 def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
-                       section: dict[str, Any]) -> int:
+                       section: dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
     """自检并入（0715 降碎）：把补漏内容并进已有需求的 sub_items/验收,不新开碎条。
 
     护栏不放宽:补充文本过同一套漂移检查(编码硬拒该条补充、整数软标随行);
@@ -791,17 +814,36 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
     堆叠)、跨条款越界并入丢弃、忠实性复核须有可锚定证据才挂 suspicion。
     """
     if not isinstance(raw_supplements, list):
-        return 0
+        return 0, []
     source = section.get("drift_source") or section.get("text", "")
     section_text = section.get("text", "")
     by_title = {_norm_ws(r.get("title")): r for r in existing if str(r.get("title") or "").strip()}
     applied = 0
+    converted: list[dict[str, Any]] = []
     for sup in raw_supplements:
         if not isinstance(sup, dict):
             continue
         target = by_title.get(_norm_ws(sup.get("target_title")))
         if target is None:
-            LOGGER.info("自检补充目标未匹配,丢弃：%s", str(sup.get("target_title") or "")[:40])
+            # v3 召回修正:未匹配不再直接丢——内容能在原文逐字定位的,转为独立需求原料
+            # (走同一套 _process 护栏与去重;定位不到的仍丢弃留痕,宁缺勿错)
+            texts = [str(s.get("text") or "") for s in (sup.get("sub_items") or [])
+                     if isinstance(s, dict)] + [str(x) for x in (sup.get("acceptance_criteria") or [])]
+            quote = next((q for q in (_locate_verbatim(t, section.get("text", "")) for t in texts) if q), "")
+            # 正文取第一个够长的候选:短 append + 长子项是常态,append 过短不应整条丢弃
+            body = next((b.strip() for b in [str(sup.get("description_append") or "")] + texts
+                         if len(b.strip()) >= 20), "")
+            if quote and body:
+                converted.append({
+                    "title": str(sup.get("target_title") or "")[:80] or body[:40],
+                    "description": body, "source_quote": quote,
+                    "sub_items": [s for s in (sup.get("sub_items") or []) if isinstance(s, dict)],
+                    "acceptance_criteria": [str(x) for x in (sup.get("acceptance_criteria") or [])],
+                    "type": "functional", "priority": "P2", "labels": [],
+                })
+                LOGGER.info("自检补充目标未匹配,转独立需求：%s", str(sup.get("target_title") or "")[:40])
+            else:
+                LOGGER.info("自检补充目标未匹配且无法定位,丢弃：%s", str(sup.get("target_title") or "")[:40])
             continue
         pseudo = {"title": "", "description": str(sup.get("description_append") or ""),
                   "source_quote": "",
@@ -864,7 +906,7 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
         if changed:
             _append_note(target, "自检并入：补漏内容已并入本需求（未新开条目）")
             applied += 1
-    return applied
+    return applied, converted
 
 
 def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[str, Any]],

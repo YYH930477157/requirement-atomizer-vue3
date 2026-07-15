@@ -95,6 +95,34 @@ def produced_ints(text: str) -> set[str]:
     return set(extract_ints(join_digit_groups(str(text or ""))))
 
 
+# 数值配对待核(0715 五刀):调包类误读(甲条件配乙限值,如 1↔5 l/h 对调)两个数字都在
+# 原文里,漂移检测原理上拦不住。确定性能做的是**路由注意力**:无参数表兜底、且产出与
+# 原文同单位都出现多档数值 → 软标提醒核对"数值-条件配对"。深度复核走自检定向指令。
+_VALUE_UNIT_RE = re.compile(
+    r"(?<![A-Za-z0-9])(\d+(?:[.,]\d+)?)\s*"
+    r"(l/h|m3/h|m³/h|mbar|bar|kPa|Pa|MHz|kHz|Hz|mm|cm|kg|g|ms|min|%|°C|℃|V|mA|A|mT|h|s)"
+    r"(?![A-Za-z])")
+
+
+def _unit_values(text: str) -> dict[str, set[str]]:
+    values: dict[str, set[str]] = {}
+    for value, unit in _VALUE_UNIT_RE.findall(str(text or "")):
+        values.setdefault(unit.casefold(), set()).add(value.replace(",", "."))
+    return values
+
+
+def _multi_value_pairing_risk(req: dict[str, Any], source: str) -> list[str]:
+    """返回产出与原文都出现 ≥2 档数值的单位清单(配对调包风险区);有参数表的不标
+    (表格逐格照抄,配对由表结构承载)。"""
+    if req.get("threshold_table"):
+        return []
+    produced = _unit_values(_produced_text(req))
+    src_units = _unit_values(source)
+    risky = [unit for unit, vals in produced.items()
+             if len(vals) >= 2 and len(src_units.get(unit) or ()) >= 2]
+    return sorted(risky)
+
+
 # --- 忠实性守恒(0715 抽取质量重构,通用规则)---------------------------------
 # 双线内容审计:186 条全量审出 29 处误读——现有护栏只看编码/数字,语义方向全盲。
 # 可确定性化的两类在此拦截(软标不硬拒,自动判语义有误伤风险):
