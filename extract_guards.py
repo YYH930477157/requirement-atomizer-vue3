@@ -35,7 +35,11 @@ def _values_left_behind(req: dict[str, Any], source: str) -> int:
 
 _VAGUE_PHRASES = ("符合要求", "满足要求", "正常工作", "工作正常", "运行正常", "表现良好",
                   "适当", "合理", "正确处理", "妥善处理", "gracefully", "properly",
-                  "reasonable", "as expected", "correctly", "appropriately")
+                  "reasonable", "as expected", "correctly", "appropriately",
+                  # 0715 内容审计扩面:全量审出 10 处空话验收漏网,词面补齐(通用短语)
+                  "满足标准", "符合规定", "符合标准", "无异常", "正确运行", "保持正常",
+                  "功能完好", "无误", "按规定", "满足本标准", "as specified", "as required",
+                  "functions normally", "works as intended", "without issue")
 
 
 _TESTABLE_HINT_RE = re.compile(r"[0-9０-９]|≥|≤|>|<|＝|=|不超过|不少于|不小于|不大于|之内|以内|以上|以下")
@@ -51,6 +55,70 @@ def _vague_acceptance(req: dict[str, Any]) -> list[str]:
                 and not extract_codes(text):
             vague.append(text[:80])
     return vague
+
+
+# --- 忠实性守恒(0715 抽取质量重构,通用规则)---------------------------------
+# 双线内容审计:186 条全量审出 29 处误读——现有护栏只看编码/数字,语义方向全盲。
+# 可确定性化的两类在此拦截(软标不硬拒,自动判语义有误伤风险):
+# ①情态升格:引句 should/recommended(建议) → 正文"必须/严禁/不得"(强制);
+# ②标准号张冠李戴:正文引用的标准号不在本节基线里(利用了背景整数豁免的漏洞)。
+
+_SOURCE_WEAK_MODAL_RE = re.compile(r"\bshould\b|\brecommended\b|\bmay\b", re.IGNORECASE)
+_SOURCE_STRONG_MODAL_RE = re.compile(r"\bshall\b|\bmust\b|\brequired\b", re.IGNORECASE)
+_PRODUCED_STRONG_RE = re.compile(r"必须|严禁|不得|禁止")
+_STANDARD_REF_RE = re.compile(
+    r"\b(?:EN|IEC|ISO|CEN|CENELEC|IEEE|ITU|NBR|ABNT|WELMEC|OIML)(?:\s?ISO)?\s?\d{2,6}(?:-\d{1,3})*\b",
+    re.IGNORECASE)
+
+
+def _modal_inflation(req: dict[str, Any]) -> bool:
+    """引句只有建议性情态(should/may,无 shall/must),正文却用了强制表述 → 升格待核。"""
+    quote = str(req.get("source_quote") or "")
+    if not quote or not _SOURCE_WEAK_MODAL_RE.search(quote) or _SOURCE_STRONG_MODAL_RE.search(quote):
+        return False
+    produced = " ".join([str(req.get("title") or ""), str(req.get("description") or "")]
+                        + [str(s.get("text") or "") for s in req.get("sub_items") or []])
+    return bool(_PRODUCED_STRONG_RE.search(produced))
+
+
+def _norm_standard_ref(token: str) -> str:
+    return re.sub(r"\s+", "", token).upper()
+
+
+def _foreign_standard_refs(req: dict[str, Any], baseline: str) -> list[str]:
+    """正文里出现、但本节基线(原文+被引条款+术语定义)没有的标准号——张冠李戴待核。
+
+    背景整数豁免(context_ints)会放行标准号数字部分,误归属由此漏网(实证:本标准
+    被写成 EN 14236)——标准号按\"前缀+号\"整体核,不吃整数豁免。"""
+    produced = _produced_text(req)
+    base_refs = {_norm_standard_ref(m.group(0)) for m in _STANDARD_REF_RE.finditer(baseline or "")}
+    foreign = []
+    for m in _STANDARD_REF_RE.finditer(produced):
+        token = _norm_standard_ref(m.group(0))
+        if token not in base_refs and token not in foreign:
+            foreign.append(m.group(0))
+    return foreign
+
+
+# 纯术语定义后筛(0715):术语章条目无任何约束力标记 → 不是需求(内容审计:14 条
+# "定义X术语"是单一最大噪声源)。带固定规则/取值/限值的定义仍保留(prompt 本有此意,
+# 模型守不住 → 确定性兜底)。
+_TERMS_SECTION_RE = re.compile(r"terms?\b|definitions?\b|abbreviat|术语|定义", re.IGNORECASE)
+_CONSTRAINT_MARK_RE = re.compile(
+    r"[0-9０-９]|\bshall\b|\bmust\b|\bshould\b|\bonly\b|\bat least\b|\bnot exceed\b|"
+    r"\bvalid for\b|\balways\b|必须|不得|只能|仅限|至少|不超过|应当|须", re.IGNORECASE)
+
+
+def _is_definition_stub(req: dict[str, Any], section: dict[str, Any]) -> bool:
+    context = " ".join([str(section.get("heading") or ""), str(section.get("section_id") or "")])
+    if not _TERMS_SECTION_RE.search(context):
+        return False
+    if req.get("threshold_table"):
+        return False
+    produced = " ".join([str(req.get("title") or ""), str(req.get("description") or ""),
+                         str(req.get("source_quote") or "")]
+                        + [str(s.get("text") or "") for s in req.get("sub_items") or []])
+    return not _CONSTRAINT_MARK_RE.search(produced)
 
 
 def _req_key(req: dict[str, Any]) -> str:

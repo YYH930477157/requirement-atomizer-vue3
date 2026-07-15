@@ -57,12 +57,13 @@ from extract_units import (  # noqa: F401 —— F3 拆分门面：旧名保持�
 )
 from extract_guards import (  # noqa: F401
     _LEFT_BEHIND_MIN, _LEFT_BEHIND_WINDOW, _TESTABLE_HINT_RE, _VAGUE_PHRASES,
+    _foreign_standard_refs, _is_definition_stub, _modal_inflation,
     _norm_ws, _produced_text, _req_key, _vague_acceptance, _values_left_behind,
 )
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v16"  # v16：functional_key 构造规则+priority 判级基准（0714 批次三 E7）；v15：缺失功能键保持为空，由文档级目录安全推导
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v17"  # v17：忠实性判据+测试装置排除（0715 重构,内容审计 29 处误读）；v16：functional_key 构造规则+priority 判级基准；v15：缺失功能键保持为空
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -164,7 +165,12 @@ SYSTEM_PROMPT = (
     "acceptance_criteria 和 dev_guidance 同样不得引入原文没有的容量、周期、协议编号或默认数值；"
     "若实现需要容量/保留期等设计参数，只写“由产品配置/相关条款确定、需澄清”，不得给默认建议值。"
     "**不要输出**：目录/标题行、参考文献条目、范围声明（This standard specifies/applies to…）、"
-    "仅引用其他标准编号而无本设备行为要求的语句——这些不是需求。"
+    "仅引用其他标准编号而无本设备行为要求的语句、"
+    "测试装置/夹具/图例说明（仅描述试验器材构成与操作步骤、对设备本身无行为约束的内容——"
+    "试验中体现的设备限值/合格判据要归入对应需求的验收，不单独成需求）——这些不是需求。"
+    "**忠实性**：描述必须与引句同向——不得升格约束强度（should/宜/建议 ≠ 必须），"
+    "不得反转方向或互换主客体，不得添加原文没有的适用条件或限定词；"
+    "引用标准号只能照抄本章节原文里出现的，绝不凭印象归属。"
     "**条款族=一条需求**：输入单元若是条款族（如 4.6 AFD2 含 4.6.1 Requirements 与 4.6.2 Test）："
     "以条款为单位产出**一条**需求——Requirements 的枚举项 a)b)c)d) 逐项写进 sub_items，"
     "对应的 Test 项按 a↔a、b↔b 对应写进 acceptance_criteria；**Test/测试方法不单独抽成需求**。"
@@ -596,6 +602,12 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             LOGGER.info("剔除引用/范围声明条目：%s | quote=%s",
                         req.get("title", "")[:40], req.get("source_quote", "")[:60])
             continue
+        if _is_definition_stub(req, section):
+            # 纯术语定义不是需求（0715 内容审计:14 条"定义X术语"是单一最大噪声源）;
+            # 带固定规则/取值的定义有约束力标记,不会命中此筛
+            LOGGER.info("剔除纯术语定义条目：%s | quote=%s",
+                        req.get("title", "")[:40], req.get("source_quote", "")[:60])
+            continue
         removed_ints, removed_codes = _move_unsupported_delivery_items(req, source)
         codes = sorted(set(code_drift(req, source)) | removed_codes)
         ints = sorted(set(i for i in int_drift(req, source) if i not in context_ints) | removed_ints)
@@ -629,6 +641,14 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             suspicion.append("验收不可测")
             note = f"验收不可测（空话验收 {len(vague)} 条，如「{vague[0][:40]}」，请给出可判定条件）"
             _append_note(req, note)
+        # 忠实性守恒（0715 内容审计:29 处误读全数绕过旧护栏——旧护栏只看编码/数字）
+        if _modal_inflation(req):
+            suspicion.append("情态升格待核")
+            _append_note(req, "情态升格待核（引句为 should/建议性表述,正文用了必须/不得等强制表述——请核对约束强度）")
+        foreign_refs = _foreign_standard_refs(req, source)
+        if foreign_refs:
+            suspicion.append("标准号待核")
+            _append_note(req, f"标准号待核（{', '.join(foreign_refs[:3])} 不在本节原文,请核对是否张冠李戴）")
         if suspicion:
             req["suspicion_reasons"] = suspicion
         results.append(req)

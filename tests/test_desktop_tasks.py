@@ -712,7 +712,7 @@ class ChainAndManifestTests(unittest.TestCase):
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
         expected = {
             "atomize": "atomize+impl-v4",
-            "ai-extract": "ai-extract-v16+impl-v3",   # v16: functional_key 规则+priority 判级(0714 批次三)
+            "ai-extract": "ai-extract-v17+impl-v3",   # v17: 忠实性判据+装置排除(0715 重构)
             "assemble": "assemble_spec/v1+impl-v2",
             "functional-synthesis": "functional-synthesis-v5+impl-v2",
             "requirements-analysis": "analyze-llm-v6+impl-v2",   # v6: 冻结归属注入(0714 批次一)

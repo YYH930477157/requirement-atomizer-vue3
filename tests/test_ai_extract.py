@@ -1357,7 +1357,11 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("阀门关闭控制", ai_extract.SYSTEM_PROMPT)          # 正例
         self.assertIn("判级基准", ai_extract.SYSTEM_PROMPT)
         self.assertIn("P0=安全/计量准确性/法规强制项", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v16")
+        # v17（0715 重构）:忠实性判据(内容审计 29 处误读)+测试装置排除(附录噪声)
+        self.assertIn("忠实性", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("不得升格约束强度", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("测试装置/夹具/图例说明", ai_extract.SYSTEM_PROMPT)
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v17")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}
