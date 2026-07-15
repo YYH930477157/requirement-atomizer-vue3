@@ -4,9 +4,9 @@
    "block_id": "H",
    "order": 0,
    "type": "heading",
-   "text": "4.6 AFD2",
+   "text": "4.6 XDEV2",
    "section_path": [
-    "4.6 AFD2"
+    "4.6 XDEV2"
    ],
    "requirement_like": false,
    "noise": false,
@@ -16,9 +16,9 @@
    "block_id": "B1",
    "order": 1,
    "type": "paragraph",
-   "text": "a) When tested the AFD shall have no influence.",
+   "text": "a) When tested the XDEV shall have no influence.",
    "section_path": [
-    "4.6 AFD2"
+    "4.6 XDEV2"
    ],
    "requirement_like": true,
    "noise": false,
@@ -30,7 +30,7 @@
    "type": "paragraph",
    "text": "b) Results shall be identical.",
    "section_path": [
-    "4.6 AFD2"
+    "4.6 XDEV2"
    ],
    "requirement_like": true,
    "noise": false,
@@ -85,13 +85,13 @@
  "requirements": [
   {
    "ai_req_id": "AIR-1",
-   "title": "AFD2 要求",
+   "title": "XDEV2 要求",
    "description": "d1",
    "module": "附加功能",
    "type": "functional",
    "priority": "P1",
    "source_section": "4.6",
-   "source_quote": "a) When tested the AFD shall have no influence.",
+   "source_quote": "a) When tested the XDEV shall have no influence.",
    "source_block_ids": [
     "B1",
     "B2"

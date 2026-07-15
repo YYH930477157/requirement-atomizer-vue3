@@ -225,7 +225,7 @@ class HeadingRefineTests(unittest.TestCase):
 
     def test_glued_heading_split(self) -> None:
         """标题+正文粘连（机翻高频）→ 拆成标题块 + 段落块。"""
-        raw = ("4.2.7 Service: Software Update The service must allow the GdM software "
+        raw = ("4.2.7 Service: Software Update The service must allow the MGW software "
                "to be updated remotely and record every attempt")
         heading, title, body = self._refine(raw)
         self.assertIsNotNone(heading)

@@ -194,16 +194,16 @@ class DesignOptionRegressionTests(unittest.TestCase):
         section = {
             "section_id": "S1",
             "heading": "Data collection",
-            "text": "The GdM shall collect, record locally and transmit the data remotely.",
+            "text": "The MGW shall collect, record locally and transmit the data remotely.",
             "block_ids": ["B-1"],
             "source_blocks": [{
                 "block_id": "B-1",
-                "text": "The GdM shall collect, record locally and transmit the data remotely.",
+                "text": "The MGW shall collect, record locally and transmit the data remotely.",
             }],
         }
         raw = [{
             "title": "采集、存储并远传数据",
-            "description": "GdM 须采集数据、在本地记录并远程传输。",
+            "description": "MGW 须采集数据、在本地记录并远程传输。",
             "source_quote": section["text"],
             "module": "通信",
             "type": "functional",

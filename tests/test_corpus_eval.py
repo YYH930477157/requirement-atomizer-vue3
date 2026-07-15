@@ -21,10 +21,10 @@ def seed(tmp: Path, reqs: list[dict], quality: dict | None = None) -> None:
 class CorpusEvalTests(unittest.TestCase):
     def test_metrics_computed(self) -> None:
         reqs = [
-            {"title": "A", "source_quote": "The AFD shall withstand the handling required during transport.",
+            {"title": "A", "source_quote": "The XDEV shall withstand the handling required during transport.",
              "sub_items": [{"label": "a", "text": "x"}], "threshold_table": {"rows": [[1]]}},
             # 引句为上一条前缀 → 重复对 1（真实 4.14 形态）
-            {"title": "B", "source_quote": "The AFD shall withstand the handling required",
+            {"title": "B", "source_quote": "The XDEV shall withstand the handling required",
              "self_check_added": True, "suspicion_reasons": ["自检补充（初抽遗漏）"]},
             {"title": "C", "source_quote": "unrelated quote about the display readability test",
              "suspicion_reasons": ["原文数值未带全"]},

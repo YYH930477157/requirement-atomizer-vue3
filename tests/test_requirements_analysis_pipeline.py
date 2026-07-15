@@ -682,7 +682,7 @@ class LlmEnrichmentTests(unittest.TestCase):
                     "ai_req_id": "AI-HW",
                     "title": "Dispositivo walk by",
                     "description": "Device with mobile data concentrator function.",
-                    "source_quote": 'Device with mobile data concentrator function. It allows GdMs in "walk by" mode.',
+                    "source_quote": 'Device with mobile data concentrator function. It allows MGWs in "walk by" mode.',
                     "source_block_ids": ["B-1"],
                     "module": "communication",
                     "dev_guidance": ["实现移动采集协议流程"],

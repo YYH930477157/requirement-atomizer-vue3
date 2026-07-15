@@ -57,12 +57,14 @@ from extract_units import (  # noqa: F401 —— F3 拆分门面：旧名保持�
 )
 from extract_guards import (  # noqa: F401
     _LEFT_BEHIND_MIN, _LEFT_BEHIND_WINDOW, _TESTABLE_HINT_RE, _VAGUE_PHRASES,
-    _norm_ws, _produced_text, _req_key, _vague_acceptance, _values_left_behind,
+    _foreign_standard_refs, _gram_jaccard, _is_definition_stub, _modal_inflation,
+    _multi_value_pairing_risk, _norm_ws, _num_multiset, _produced_text, _req_key,
+    _threshold_desc_mismatch, _vague_acceptance, _values_left_behind, strip_produced_refs,
 )
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v16"  # v16：functional_key 构造规则+priority 判级基准（0714 批次三 E7）；v15：缺失功能键保持为空，由文档级目录安全推导
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v18"  # v18：免责从句保向+量符号下标+单位词不猜译（0715 v5 审计）；v17：忠实性判据+测试装置排除；v16：functional_key 构造规则+priority 判级基准
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -128,10 +130,12 @@ SYSTEM_PROMPT = (
     "每条需求输出：title（不超过 80 字）、"
     "functional_key（跨章节合并的连接键——构造规则：「对象/主题＋动作」的受控中文名词短语，"
     "2-6 个词，不含数值/编码/章节号/标点；跨章节属同一研发功能时必须**逐字相同**。"
-    "正例：「阀门关闭控制」「远程固件升级」「事件记录存储」；反例：「4.6 的 AFD2 要求」「阀门在 5s 内关闭」）、"
+    "正例：「阀门关闭控制」「远程固件升级」「事件记录存储」；反例：「4.6 的设备要求」（带章节号）、「阀门在 5s 内关闭」（带数值））、"
     "description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
     "type（functional/non_functional/constraint/business_rule）、"
-    "priority（判级基准：P0=安全/计量准确性/法规强制项；P1=核心功能与协议一致性；P2=辅助/诊断/可选功能）、"
+    "priority（判级基准：P0=安全/计量准确性/法规强制项；P1=核心功能与协议一致性；P2=辅助/诊断/可选功能。"
+    "**资料性内容不升格**：informative 附录、标注 not a priority/optional/推荐 的内容最高只到 P2——"
+    "『某项不适用』是排除声明,不得反写成禁止实现的需求）、"
     "module（该需求归属的模块，**必须原样照抄下面清单里的一个词**，按需求实质语义选最贴切的；"
     "确实都不贴切时才填\"" + OTHER_MODULE + "\"）：" + "、".join(MODULE_VOCAB) + "。"
     "labels（额外的细分标签，至少一个，可自由）、source_quote（原文逐字引用，不可改写）、"
@@ -164,8 +168,22 @@ SYSTEM_PROMPT = (
     "acceptance_criteria 和 dev_guidance 同样不得引入原文没有的容量、周期、协议编号或默认数值；"
     "若实现需要容量/保留期等设计参数，只写“由产品配置/相关条款确定、需澄清”，不得给默认建议值。"
     "**不要输出**：目录/标题行、参考文献条目、范围声明（This standard specifies/applies to…）、"
-    "仅引用其他标准编号而无本设备行为要求的语句——这些不是需求。"
-    "**条款族=一条需求**：输入单元若是条款族（如 4.6 AFD2 含 4.6.1 Requirements 与 4.6.2 Test）："
+    "仅引用其他标准编号而无本设备行为要求的语句、"
+    "测试装置/夹具/图例说明（仅描述试验器材构成与操作步骤、对设备本身无行为约束的内容——"
+    "试验中体现的设备限值/合格判据要归入对应需求的验收，不单独成需求）——这些不是需求。"
+    "**忠实性**：描述必须与引句同向——不得升格约束强度（should/宜/建议 ≠ 必须），"
+    "不得反转方向或互换主客体，不得添加原文没有的适用条件或限定词；"
+    "引用标准号只能照抄本章节原文里出现的，绝不凭印象归属。"
+    "**免责/例外从句保向**：unless/without/except/provided that 这类从句表达的是例外或"
+    "免责条件（如\"不得漂移超过 X——除非显示了错误标志\"意为超限时须报警才合规），"
+    "绝不能改写成禁止项或独立义务（写成\"不得显示错误标志\"就是反向误读）。"
+    "**量符号下标**：原文里 \"Q max\"\"Q min\"\"P max\" 这类拆开的写法是同一量符号的"
+    "下标排版（Qmax/Qmin/Pmax），按一个符号理解，不得当作独立单词或把系数误读成倍率"
+    "（\"0.25 Q max\" 是流量点 0.25·Qmax，不是\"额定流量的0.25倍\"这类另起炉灶的换算）。"
+    "**单位/等级词不猜译**：grade、mesh、class 等粒度/等级/量纲词拿不准中文对应时，"
+    "保留英文原词并括注说明，不得猜一个具体中文单位（把 \"300 to 400 grade dust\" 猜译成"
+    "\"300-400目\"会让研发配错试验材料）。"
+    "**条款族=一条需求**：输入单元若是条款族（如 X.Y 条款含 X.Y.1 Requirements 与 X.Y.2 Test 子节）："
     "以条款为单位产出**一条**需求——Requirements 的枚举项 a)b)c)d) 逐项写进 sub_items，"
     "对应的 Test 项按 a↔a、b↔b 对应写进 acceptance_criteria；**Test/测试方法不单独抽成需求**。"
     "**数值必须落地**：原文列出的数值清单（粒径/成分百分比/档位/限值/容差）必须**逐项完整**"
@@ -183,11 +201,18 @@ SYSTEM_PROMPT = (
 
 # --- 抽取与防幻觉护栏 -----------------------------------------------------
 
+# 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
+# prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
+# 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
+EXTRACT_GUARDS_VERSION = "guards-v4"  # v4:锚点质量门+指代符豁免+情态软化+去重标点底座;v3:资料性区段降级+溯源校正+元话语剥除+表文一致性
+
+
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
     refs = (section.get("ref_texts") or []) + (section.get("term_defs") or [])
     refs_key = hashlib.sha256(json.dumps(refs, ensure_ascii=False).encode("utf-8")).hexdigest()[:12] if refs else ""
     digest = hashlib.sha256(
-        f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{context_key}\n{refs_key}".encode("utf-8")
+        f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{EXTRACT_GUARDS_VERSION}"
+        f"\n{context_key}\n{refs_key}".encode("utf-8")
     ).hexdigest()
     return digest[:24]
 
@@ -371,8 +396,10 @@ def code_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
 
 
 def int_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
-    """普通整数漂移：需求里出现、源文没有的数字（软标）。"""
-    return sorted(extract_ints(_produced_text(requirement)) - extract_ints(source_text))
+    """普通整数漂移：需求里出现、源文没有的数字（软标）。
+    两侧同口径(0715):基线含英文数词折算与千分位并组;产出侧同样并组。"""
+    from extract_guards import produced_ints, source_int_baseline
+    return sorted(produced_ints(_produced_text(requirement)) - source_int_baseline(source_text))
 
 
 def extract_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
@@ -471,7 +498,8 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
     整数后在源文里几乎必然全部存在，只查 extract_ints 拦不住假 OBIS。
     返回 (漂移整数集, 漂移编码集)——编码并入 code_drift 走硬标（draft+拦截注）。
     """
-    allowed = extract_ints(source_text)
+    from extract_guards import produced_ints, source_int_baseline
+    allowed = source_int_baseline(source_text)   # 含数词折算+千分位并组,防有据验收被剥
     allowed_codes = extract_codes(source_text)
     drifted: set[str] = set()
     drifted_codes: set[str] = set()
@@ -481,7 +509,9 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
         kept: list[str] = []
         for raw in req.get(field) or []:
             text = str(raw).strip()
-            unsupported = extract_ints(text) - allowed
+            # 整移判定剥引用编号(条款/标准号/表图号是"地址"不是"数值"):v5 审计里验收行
+            # 因带 EN 标准号示例被整行误移,把核心阈值一起带走。软标漂移仍按原文本计算。
+            unsupported = produced_ints(strip_produced_refs(text)) - allowed
             unsupported_codes = extract_codes(text) - allowed_codes
             unsupported_terms = _unsupported_implementation_terms(text, source_text)
             if unsupported or unsupported_terms or unsupported_codes:
@@ -579,7 +609,7 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
     """raw LLM 需求 → 归一 + 分级漂移护栏。抽取与完整性自检共用（补的也过同一套护栏）。
 
     context_ints：文档背景（画像/术语表）里出现过的普通整数。LLM 引用背景里的标准号
-    （如"依据 EN 16314"）属合理行为，不软标为数字漂移——否则每条都是假阳性，稀释真漂移信号。
+    （如"依据 EN 12345"这类背景标准号）属合理行为，不软标为数字漂移——否则每条都是假阳性，稀释真漂移信号。
     受保护编码（OBIS/事件号/十六进制）**不豁免**：仍只认当前章节原文。
     """
     source = section.get("drift_source") or section.get("text", "")
@@ -589,11 +619,22 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             continue
         req = normalize_requirement(raw, section)
         _map_requirement_source(req, section)
+        _correct_source_section(req, section)   # 原文标题是硬证据,LLM 标错节号以它为准
+        cleaned_desc = _strip_meta_text(req["description"])
+        if cleaned_desc != req["description"]:   # 自检旁白泄漏进正文:句级剥除留痕
+            req["description"] = cleaned_desc
+            _append_note(req, "已剥除流程元话语（自检旁白不进交付正文）")
         if not req["description"] and not req["source_quote"]:
             continue
         if _is_reference_stub(req):
             # 纯标准引用/范围声明不是设备需求（用户裁定当前阶段忽略）：剔除并留痕
             LOGGER.info("剔除引用/范围声明条目：%s | quote=%s",
+                        req.get("title", "")[:40], req.get("source_quote", "")[:60])
+            continue
+        if _is_definition_stub(req, section):
+            # 纯术语定义不是需求（0715 内容审计:14 条"定义X术语"是单一最大噪声源）;
+            # 带固定规则/取值的定义有约束力标记,不会命中此筛
+            LOGGER.info("剔除纯术语定义条目：%s | quote=%s",
                         req.get("title", "")[:40], req.get("source_quote", "")[:60])
             continue
         removed_ints, removed_codes = _move_unsupported_delivery_items(req, source)
@@ -629,6 +670,46 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             suspicion.append("验收不可测")
             note = f"验收不可测（空话验收 {len(vague)} 条，如「{vague[0][:40]}」，请给出可判定条件）"
             _append_note(req, note)
+        # 资料性来源（v5 审计最大病灶:Annex B(informative) 对照表被升格成 9 条 P1/P2
+        # 强制需求——资料性内容对设备无强制力,升格即误导研发排期）。位置判据优先
+        # (跨单元状态机,治混装/续表单元);无标注时退回单元级 heading/前 300 字判据。
+        if _in_informative_range(req, section):
+            if str(req.get("priority")) in ("P0", "P1"):
+                req["priority"] = "P2"
+                _append_note(req, "资料性附录来源:优先级已降为 P2（原文为 informative 附录,不构成强制义务）")
+            suspicion.append("资料性附录来源")
+            _append_note(req, "资料性附录来源（引句位于 informative 附录区段,默认不升格为义务,待专家裁定）")
+        else:
+            origin = " ".join([str(section.get("heading") or ""), str(section.get("text") or "")[:300]])
+            if re.search(r"informative|资料性附录", origin, re.IGNORECASE) and str(req.get("priority")) in ("P0", "P1"):
+                suspicion.append("资料性来源待核")
+                _append_note(req, "资料性来源待核（本单元为 informative 附录/资料性内容,标成 P0/P1 强制需求请人工确认）")
+        # 忠实性守恒（0715 内容审计:29 处误读全数绕过旧护栏——旧护栏只看编码/数字）
+        if _modal_inflation(req):
+            # v6 审计:should→必须 升格反复出现,prompt 约束挡不住(u36 差评);引句
+            # should-only 时强制措辞是确定性可证的误译——按引句软化(必须→宜),
+            # 软标保留供人工复核
+            from extract_guards import _soften_modals
+            req["title"] = _soften_modals(req["title"])
+            req["description"] = _soften_modals(req["description"])
+            for item in req.get("sub_items") or []:
+                item["text"] = _soften_modals(item.get("text"))
+            suspicion.append("情态升格待核")
+            _append_note(req, "情态已按引句校正（引句为 should/建议性表述,强制措辞已软化为「宜」,请复核约束强度）")
+        foreign_refs = _foreign_standard_refs(req, source)
+        if foreign_refs:
+            suspicion.append("标准号待核")
+            _append_note(req, f"标准号待核（{', '.join(foreign_refs[:3])} 不在本节原文,请核对是否张冠李戴）")
+        pairing = _multi_value_pairing_risk(req, source)
+        if pairing:
+            suspicion.append("数值配对待核")
+            _append_note(req, f"数值配对待核（{'、'.join(pairing[:3])} 存在多档数值,请对照原文核对数值与适用条件的配对）")
+        # 表文一致性(v5 审计:表通道可靠,自然语言通道抄错——Type 1 阀门 1 l/h 被正文
+        # 写成 5 l/h,同条目的表是对的且因"有表豁免"漏标)。单元格级核对,以表为准待核。
+        table_mismatch = _threshold_desc_mismatch(req)
+        if table_mismatch:
+            suspicion.append("表文数值不一致")
+            _append_note(req, f"表文数值不一致（正文/验收与自身阈值表不符,以表为准待核：{'; '.join(table_mismatch[:3])}）")
         if suspicion:
             req["suspicion_reasons"] = suspicion
         results.append(req)
@@ -664,12 +745,30 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         parts.append("---")
     parts.append(
         "【查漏补缺任务】下面是一个章节的原文 + 已抽取的需求结构摘要。找出章节里**尚未被覆盖**的"
-        "需求/约束/可测语句，只输出这些**遗漏项**（同样的 JSON schema、同样的 module 受控清单）；"
-        "已覆盖的不要重复；原文没有的绝不编造；若无遗漏，输出 {\"requirements\": []}。"
+        "需求/约束/可测语句。输出 JSON 对象，含两个数组："
+        "{\"requirements\": [...], \"supplements\": [...]}，都可为空。"
+        "**归属判定**（0715 降碎+v3 召回修正）：遗漏语句**确定**属于某条已抽需求的范围"
+        "（同一条款/同一功能的枚举项、条件、参数、验收判据）——放进 supplements；"
+        "**吃不准从属关系时,宁可作为独立需求输出到 requirements,不要硬塞 supplements**"
+        "（塞错目标会被守卫丢弃,反而丢失内容）。放进 supplements 的格式："
+        "{\"target_title\": \"<该已抽需求的 title 原样回填>\", \"sub_items\": [{\"label\": \"c\", \"text\": \"…\"}], "
+        "\"acceptance_criteria\": [\"…\"], \"description_append\": \"<可选的一句补充>\"}；"
+        "只有与全部已抽需求都无从属关系的**独立功能点**才进 requirements（同样的 JSON schema、"
+        "同样的 module 受控清单）。"
+        "已覆盖的不要重复；原文没有的绝不编造；若无遗漏，两个数组都为空。"
         "**覆盖判定**：已抽需求的 sub_items（枚举子项 a/b/c…）与 acceptance_criteria 覆盖的语句"
         "算已覆盖——条款的枚举项、测试前/后判据、测试方法是该条款需求的组成部分，"
-        "**不要**把它们拆成新需求，也不要输出与已抽需求同源的重复表述"
-        "（条款族=一条需求的原则对遗漏项同样适用）。")
+        "**不要**把它们拆成新需求（条款族=一条需求的原则对遗漏项同样适用）。"
+        "**顺带复核**：若发现已抽需求的描述与其引句矛盾（约束强度升格、方向/主客体反转、"
+        "无据添加适用条件），在 supplements 里回填该 target_title 并给 "
+        "\"faithfulness_note\": \"<必须同时逐字引出描述片段与引句片段来证明矛盾>\"——"
+        "没有可引证的具体矛盾就不要报（空泛怀疑是噪声），不要改写原需求。"
+        "supplements 里已存在于该需求 sub_items/验收里的内容**不要重复回填**。"
+        "**数值配对复核**（同样走 faithfulness_note）：原文同一单位出现多档数值时"
+        "（如不同型号/压力条件各有限值），逐条核对已抽需求里数值与其适用条件的配对"
+        "是否与原文一致——张冠李戴（甲条件配了乙限值）是最严重的一类错误。"
+        "**步骤编号配对复核**：已抽需求引用\"步骤 n)\"/\"step n\"时，逐字对照原文的步骤"
+        "编号——比较基准错位（原文与步骤3比较、产出写成与步骤1比较）会让合格品被误判。")
     parts.append(f"当前章节：\n{build_section_prompt(section)}")
     parts.append(f"已抽取（勿重复）：\n{summaries}")
     if focus_lines:
@@ -677,8 +776,13 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         parts.append(f"重点核查以下原文语句是否含被遗漏的需求（解析层判定疑似需求但尚无需求覆盖）：\n{hints}")
     payload = chat(SYSTEM_PROMPT, "\n\n".join(parts))
     raw = payload.get("requirements") if isinstance(payload, dict) else None
-    if not isinstance(raw, list):
-        return []
+    supplements_applied, converted = _apply_supplements(
+        payload.get("supplements") if isinstance(payload, dict) else None,
+        existing, section)
+    converted_titles = {_norm_ws(c.get("title")) for c in converted}
+    raw = (list(raw) if isinstance(raw, list) else []) + converted
+    if not raw:
+        return [], supplements_applied
     seen = {_req_key(r) for r in existing}
     # 包含式去重基底：真实案例里自检补的"新"条目引句是已抽引句的**前缀子串**（精确匹配拦不住）
     existing_quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in existing) if len(q) >= 20]
@@ -695,8 +799,196 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
             existing_quotes.append(quote)
         req["self_check_added"] = True  # 初抽遗漏、自检补回——审核时优先看
         req["suspicion_reasons"] = list(req.get("suspicion_reasons") or []) + ["自检补充（初抽遗漏）"]
+        if _norm_ws(req.get("title")) in converted_titles:
+            req["suspicion_reasons"].append("自检补充转独立（原目标未匹配,请核归属）")
         extra.append(req)
-    return extra
+    return extra, supplements_applied
+
+
+def _near_dup(text: str, existing: list[str]) -> bool:
+    """近重复判定(0715 v2 审计:并入的同义复述堆叠 2-4 遍)——归一后互含即重复。
+
+    v5 校准加固:互含拦不住换词复述("温度曲线"↔"温度分布"),但纯相似度阈值也不可行
+    (实测语义不同的两档判据 J=0.57 高于部分真复读的 0.40)——J≥0.5 **且数字多重集
+    相同**才判重:数字守卫恰好保住 1型/2型、20/75 mbar 这类关键差异。"""
+    t = _norm_ws(text)
+    if not t:
+        return True
+    nums = _num_multiset(text)
+    for e in existing:
+        en = _norm_ws(e)
+        if not en:
+            continue
+        if t in en or en in t:
+            return True
+        if _gram_jaccard(t, en) >= 0.5 and nums == _num_multiset(e):
+            return True
+    return False
+
+
+_CLAUSE_MARK_RE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)+)(?![\d.])")
+
+
+def _supplement_clause_mismatch(sup_text: str, section_text: str, target_section: str) -> bool:
+    """跨条款越界并入守卫(0715 v2 审计:7.6 的义务被并进 7.4 的需求)。
+
+    在单元原文里定位补充文本,取其前方最近的条款号;与 target 的 source_section
+    互为前缀才放行。定位不到/无条款号 → 不判(宁放勿错杀,单元多为同条款族)。"""
+    frag = _norm_ws(sup_text)[:80]
+    if not frag or not target_section:
+        return False
+    hay = _norm_ws(section_text)
+    pos = hay.find(frag)
+    if pos < 0:
+        return False
+    marks = [(m.start(), m.group(1)) for m in _CLAUSE_MARK_RE.finditer(hay[:pos])]
+    if not marks:
+        return False
+    nearest = marks[-1][1]
+    tgt = str(target_section).strip().split()[0]
+    if not re.match(r"^\d+(?:\.\d+)*$", tgt):
+        return False
+    return not (nearest.startswith(tgt) or tgt.startswith(nearest))
+
+
+# 自检流程元话语(管线自述词面,客户需求正文不会出现):v5 审计 6+ 处自检旁白整段
+# 泄漏进交付正文("本条已抽需求聚焦…""故不单独成需求""可作为本需求的背景或扩展")。
+# 词表只收多字强标记——"自检/查漏/补漏/已覆盖"等短词是计量领域真实需求词面,不进表
+_META_DISCOURSE_RE = re.compile(
+    r"已抽需求|已抽取的需求|不单独成需求|不再单独成|查漏补缺|补漏内容|"
+    r"整合[进至]|已在后续条款|已在验收标准|本需求的背景|作为背景或扩展|"
+    r"自检(?:补充|并入|复核)|需求应明确|描述已覆盖|已覆盖要求|无补充")
+
+
+def _strip_meta_text(text: str) -> str:
+    """句级剥除流程元话语,保留正常需求句;整段皆元话语则返回空。"""
+    parts = re.split(r"(?<=[。;；!?\n])", str(text or ""))
+    kept = [p for p in parts if p.strip() and not _META_DISCOURSE_RE.search(p)]
+    return "".join(kept).strip()
+
+
+def _locate_verbatim(fragment: str, section_text: str) -> str:
+    """在单元原文里定位片段(空白弹性),返回原文原样子串——供转换需求当逐字引句。"""
+    frag = str(fragment or "").strip()
+    if len(frag) < 20:
+        return ""
+    pattern = re.compile(r"\s+".join(re.escape(w) for w in frag.split()[:24]), re.IGNORECASE)
+    m = pattern.search(section_text or "")
+    return m.group(0) if m else ""
+
+
+def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
+                       section: dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
+    """自检并入（0715 降碎）：把补漏内容并进已有需求的 sub_items/验收,不新开碎条。
+
+    护栏不放宽:补充文本过同一套漂移检查(编码硬拒该条补充、整数软标随行);
+    target_title 匹配不上就丢弃留痕(宁缺勿错,下一轮自检可再补)。返回采纳的补充数。
+    v2 审计加固:同标签子项不重复加(标签在需求内唯一)、近重复文本不加(同义复述
+    堆叠)、跨条款越界并入丢弃、忠实性复核须有可锚定证据才挂 suspicion。
+    """
+    if not isinstance(raw_supplements, list):
+        return 0, []
+    source = section.get("drift_source") or section.get("text", "")
+    section_text = section.get("text", "")
+    by_title = {_norm_ws(r.get("title")): r for r in existing if str(r.get("title") or "").strip()}
+    applied = 0
+    converted: list[dict[str, Any]] = []
+    for sup in raw_supplements:
+        if not isinstance(sup, dict):
+            continue
+        # 元话语消毒(v5 审计:自检旁白整段泄漏进交付正文):append 句级剥除;
+        # 子项/验收是单判据,含元话语整条丢弃(半句残留没有交付价值)
+        sup = dict(sup)
+        sup["description_append"] = _strip_meta_text(sup.get("description_append"))
+        sup["sub_items"] = [s for s in (sup.get("sub_items") or [])
+                            if isinstance(s, dict)
+                            and not _META_DISCOURSE_RE.search(str(s.get("text") or ""))]
+        sup["acceptance_criteria"] = [x for x in (sup.get("acceptance_criteria") or [])
+                                      if not _META_DISCOURSE_RE.search(str(x))]
+        target = by_title.get(_norm_ws(sup.get("target_title")))
+        if target is None:
+            # v3 召回修正:未匹配不再直接丢——内容能在原文逐字定位的,转为独立需求原料
+            # (走同一套 _process 护栏与去重;定位不到的仍丢弃留痕,宁缺勿错)
+            texts = [str(s.get("text") or "") for s in (sup.get("sub_items") or [])
+                     if isinstance(s, dict)] + [str(x) for x in (sup.get("acceptance_criteria") or [])]
+            quote = next((q for q in (_locate_verbatim(t, section.get("text", "")) for t in texts) if q), "")
+            # 正文取第一个够长的候选:短 append + 长子项是常态,append 过短不应整条丢弃
+            body = next((b.strip() for b in [str(sup.get("description_append") or "")] + texts
+                         if len(b.strip()) >= 20), "")
+            if quote and body:
+                converted.append({
+                    "title": str(sup.get("target_title") or "")[:80] or body[:40],
+                    "description": body, "source_quote": quote,
+                    "sub_items": [s for s in (sup.get("sub_items") or []) if isinstance(s, dict)],
+                    "acceptance_criteria": [str(x) for x in (sup.get("acceptance_criteria") or [])],
+                    "type": "functional", "priority": "P2", "labels": [],
+                })
+                LOGGER.info("自检补充目标未匹配,转独立需求：%s", str(sup.get("target_title") or "")[:40])
+            else:
+                LOGGER.info("自检补充目标未匹配且无法定位,丢弃：%s", str(sup.get("target_title") or "")[:40])
+            continue
+        pseudo = {"title": "", "description": str(sup.get("description_append") or ""),
+                  "source_quote": "",
+                  "sub_items": [s for s in (sup.get("sub_items") or []) if isinstance(s, dict)],
+                  "acceptance_criteria": [str(x) for x in (sup.get("acceptance_criteria") or [])]}
+        codes = code_drift(pseudo, source)
+        if codes:
+            LOGGER.info("自检补充编码漂移,拒绝并入：%s", ", ".join(sorted(codes)[:4]))
+            continue
+        probe_text = " ".join([str(s.get("text") or "") for s in pseudo["sub_items"]]
+                              + pseudo["acceptance_criteria"]) or pseudo["description"]
+        if _supplement_clause_mismatch(probe_text, section_text,
+                                       str(target.get("source_section") or "")):
+            LOGGER.info("自检补充跨条款越界,丢弃：target=%s", str(target.get("title") or "")[:30])
+            continue
+        changed = False
+        have_labels = {_norm_ws(s.get("label")) for s in target.get("sub_items") or []}
+        have_labels.discard("")
+        have_sub_texts = [str(s.get("text") or "") for s in target.get("sub_items") or []]
+        for item in pseudo["sub_items"]:
+            label = str(item.get("label") or "").strip()
+            text = str(item.get("text") or "").strip()
+            if not text or _near_dup(text, have_sub_texts):
+                continue
+            if label and _norm_ws(label) in have_labels:
+                continue   # 标签在需求内唯一:同标签重复=模型复读,不并
+            target.setdefault("sub_items", []).append({"label": label, "text": text})
+            have_sub_texts.append(text)
+            if label:
+                have_labels.add(_norm_ws(label))
+            changed = True
+        have_acc = [str(x) for x in target.get("acceptance_criteria") or []]
+        for text in pseudo["acceptance_criteria"]:
+            if text.strip() and not _near_dup(text, have_acc):
+                target.setdefault("acceptance_criteria", []).append(text.strip())
+                have_acc.append(text)
+                changed = True
+        append = str(sup.get("description_append") or "").strip()
+        if append and not _near_dup(append, [str(target.get("description") or "")]):
+            target["description"] = (str(target.get("description") or "").rstrip() + "\n" + append).strip()
+            changed = True
+        note = str(sup.get("faithfulness_note") or "").strip()
+        if note:
+            # 证据锚定(v2 审计:5 处复核标记全为空泛误报):note 里须含能在原文/引句里
+            # 找到的 ≥8 字片段才挂 suspicion;无锚定证据的只记 note 不标复核
+            anchor_ok = any(
+                _norm_ws(note[i:i + 12]) and _norm_ws(note[i:i + 12]) in _norm_ws(
+                    section_text + " " + str(target.get("source_quote") or ""))
+                for i in range(0, max(1, len(note) - 11), 6))
+            if anchor_ok:
+                target["suspicion_reasons"] = list(dict.fromkeys(
+                    list(target.get("suspicion_reasons") or []) + ["自检复核:描述与引句疑似矛盾"]))
+                _append_note(target, f"自检复核：{note[:120]}")
+                changed = True
+            else:
+                LOGGER.info("自检复核缺锚定证据,不挂标记：%s", note[:60])
+        ints = sorted(int_drift(pseudo, source))
+        if ints and changed:
+            _append_note(target, f"自检补充含数字漂移（待核）：{', '.join(ints[:6])}")
+        if changed:
+            _append_note(target, "自检并入：补漏内容已并入本需求（未新开条目）")
+            applied += 1
+    return applied, converted
 
 
 def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[str, Any]],
@@ -714,6 +1006,13 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
     sub_labels = {str(s.get("label") or "").strip().lower()
                   for r in existing for s in (r.get("sub_items") or [])}
     sub_labels.discard("")
+    # 子项文本也算覆盖(0715 自检并入):supplements 并进来的无标签子项/验收要能消掉
+    # 对应未覆盖行,否则收敛循环轮轮追打同一句
+    covered_texts = [t for t in (
+        [_norm_ws(s.get("text")) for r in existing for s in (r.get("sub_items") or [])]
+        + [_norm_ws(x) for r in existing for x in (r.get("acceptance_criteria") or [])])
+        if len(t) >= 20]
+    quotes = quotes + covered_texts
     section_text = _norm_ws(section.get("text"))
     uncovered: list[str] = []
     seen: set[str] = set()
@@ -735,6 +1034,196 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
             continue   # 该枚举项已被某条需求的 sub_items 覆盖
         uncovered.append(cleaned[:200])
     return uncovered
+
+
+# Annex 标题独占行(EN 惯例:字母+资料性/规范性标记独占一行,标题在下一行);
+# 行文里的 "given in Annex A" 提及不匹配(行锚定+行尾)
+_ANNEX_HEAD_RE = re.compile(
+    r"(?m)^\s*(Annex\s+[A-Z])\s*(\((?:informative|normative)\))\s*$", re.IGNORECASE)
+
+
+def _annotate_annex_scopes(sections: list[dict[str, Any]]) -> None:
+    """文档级资料性区段标注(跨单元携带状态):给每个 section 写 informative_ranges。
+
+    v5 审计最大病灶:Annex B (informative) 的对照表被升格成 9 条 P1/P2 强制需求——
+    单元级 heading/前 300 字判据探不到(打包单元混装资料性 B 表与规范性 C 正文,
+    且续表单元里根本没有标记,标记在上一单元)。状态机按文档顺序扫 Annex 标题行,
+    informative 状态跨单元携带,直到下一个 normative 标记为止。"""
+    state_informative = False
+    for section in sections:
+        text = str(section.get("text") or "")
+        ranges: list[tuple[int, int]] = []
+        open_start = 0 if state_informative else None
+        for m in _ANNEX_HEAD_RE.finditer(text):
+            informative = "informative" in m.group(2).casefold()
+            if informative and open_start is None:
+                open_start = m.start()
+            elif not informative and open_start is not None:
+                ranges.append((open_start, m.start()))
+                open_start = None
+            state_informative = informative
+        if open_start is not None:
+            ranges.append((open_start, len(text)))
+        section["informative_ranges"] = ranges
+
+
+def _in_informative_range(req: dict[str, Any], section: dict[str, Any]) -> bool:
+    ranges = section.get("informative_ranges")
+    if not ranges:
+        return False
+    text = str(section.get("text") or "")
+    quote = str(req.get("source_quote") or "")
+    pos = text.find(quote) if quote else -1
+    if pos < 0 and quote:
+        located = _locate_verbatim(quote, text)
+        pos = text.find(located) if located else -1
+    if pos < 0:
+        # 引句定位不到:整单元均为资料性时仍判定(续表单元常无可定位标题行)
+        return len(ranges) == 1 and ranges[0][0] == 0 and ranges[0][1] >= len(text)
+    return any(s <= pos < e for s, e in ranges)
+
+
+# 锚点质量门(v6 回归教训:PDF 把正文编号行/图注标成标题块——"## 3 % by gaseous
+# volume…"被当"第 3 章"覆盖了正确的 D.3.3):数字锚点必须带点(裸整数=章号与图注
+# 无法区分,不作覆盖证据);支持字母条款(D.3.3);标题尾 ≤60 字(超长=正文行)
+_HEADING_ANCHOR_RE = re.compile(
+    r"(?m)^(?:##+\s*((?:\d+(?:\.\d+)+|[A-Z]\.\d+(?:\.\d+)*))\s*(.{0,60})"
+    r"|\s*(Annex\s+[A-Z])\s*(\((?:informative|normative)\))\s*)$",
+    re.IGNORECASE)
+
+
+def _derive_source_section(quote: str, section_text: str) -> str:
+    """由引句在原文中的位置取最近前置小节标题——溯源节号的确定性证据。
+
+    v5 审计:某单元 5 条 source_section 全被 LLM 标成邻近章节号(quote 本身逐字正确),
+    原文标题是硬证据,以它为准。定位不到引句/引句前无合格标题行 → 返回空(不裁)。"""
+    quote = str(quote or "").strip()
+    text = str(section_text or "")
+    if not quote:
+        return ""
+    pos = text.find(quote)
+    if pos < 0:
+        located = _locate_verbatim(quote, text)
+        pos = text.find(located) if located else -1
+    if pos < 0:
+        return ""
+    best = ""
+    for m in _HEADING_ANCHOR_RE.finditer(text):
+        if m.start() >= pos:
+            break
+        if m.group(1):
+            best = f"{m.group(1)} {(m.group(2) or '').strip()}".strip()
+        else:
+            best = f"{m.group(3)} {(m.group(4) or '').strip()}".strip()
+    return best[:100]
+
+
+def _sec_anchor_key(s: str) -> tuple[str, str] | None:
+    """节号语义键:数字/字母条款号 或 附录字母。识别不出返回 None(不作证据)。"""
+    s = str(s or "").strip()
+    m = re.match(r"(\d+(?:\.\d+)*|[A-Z]\.\d+(?:\.\d+)*)\b", s)
+    if m:
+        return ("clause", m.group(1))
+    m = re.match(r"(?i)annex\s+([A-Z])\b", s)
+    if m:
+        return ("annex", m.group(1).upper())
+    return None
+
+
+def _correct_source_section(req: dict[str, Any], section: dict[str, Any]) -> None:
+    derived = _derive_source_section(req.get("source_quote"), section.get("text"))
+    if not derived:
+        return
+    dk = _sec_anchor_key(derived)
+    if dk is None:
+        return   # 派生结果本身不像节号:不作证据(宁缺勿错)
+    claimed = str(req.get("source_section") or "").strip()
+    ck = _sec_anchor_key(claimed)
+    if ck is not None:
+        if dk == ck:
+            return
+        if dk[0] == ck[0] == "clause":
+            dn, cn = dk[1], ck[1]
+            if dn.startswith(cn + ".") or cn.startswith(dn + "."):
+                return   # 互为前缀(粗细粒度差异):不动
+        # 字母条款与同字母附录互认(claimed=D.3.3 与 derived=Annex D 一致,保留更细的 claimed)
+        if dk[0] == "annex" and ck[0] == "clause" and ck[1][:1].upper() == dk[1]:
+            return
+        if ck[0] == "annex" and dk[0] == "clause" and dk[1][:1].upper() == ck[1]:
+            pass   # claimed 只给了附录字母,derived 更细:覆盖
+    req["source_section"] = derived
+    if claimed:
+        _append_note(req, f"溯源节号按原文校正：{claimed[:40]} → {derived[:60]}")
+
+
+_CLAUSE_TAIL_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)\s*(.*)$")
+# 纯测试类标题尾(整尾匹配,防"Test interface"这类实体名误折)
+_PURE_TEST_TAIL_RE = re.compile(
+    r"^(?:tests?|test\s+methods?|test\s+procedures?|verifications?|试验|测试|检验|验证)"
+    r"(?:\s*(?:methods?|procedures?|方法|程序))?\s*$", re.IGNORECASE)
+# 纯要求类标题尾:多个非测试兄弟平票时的结构裁决(X.Y.1 Requirement + X.Y.2 Test 惯例)
+_PURE_REQ_TAIL_RE = re.compile(r"^(?:requirements?|要求)\s*$", re.IGNORECASE)
+
+
+def _fold_test_siblings(reqs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """条款族=一条需求的确定性兜底：`X.Y.n Test` 独立条并回同族 Requirement 条的验收。
+
+    prompt（v9 起）已约束 Test→验收,但 LLM 采样方差偶发拆条（v4 实测 3 处、v3 1 处）。
+    判据纯结构：条款号 + 纯测试类标题尾；目标=同父唯一非测试兄弟条目,无兄弟时取父条款
+    条目；候选歧义（≥2 兄弟）不动——并错目标比拆条更糟,宁缺勿错。
+    """
+    parsed: list[tuple[str, str]] = []
+    by_num: dict[str, list[int]] = {}
+    for i, r in enumerate(reqs):
+        m = _CLAUSE_TAIL_RE.match(str(r.get("source_section") or ""))
+        num, tail = (m.group(1), m.group(2)) if m else ("", "")
+        parsed.append((num, tail))
+        if num:
+            by_num.setdefault(num, []).append(i)
+    drop: set[int] = set()
+    for i, r in enumerate(reqs):
+        num, tail = parsed[i]
+        if not num or "." not in num or not _PURE_TEST_TAIL_RE.match(tail):
+            continue
+        parent = num.rsplit(".", 1)[0]
+        siblings = [j for j, (n2, t2) in enumerate(parsed)
+                    if j != i and j not in drop and n2 and n2 != num
+                    and n2.rsplit(".", 1)[0] == parent
+                    and not _PURE_TEST_TAIL_RE.match(t2)]
+        if len(siblings) == 1:
+            tgt = reqs[siblings[0]]
+        elif len(siblings) > 1:
+            # 平票裁决:恰有一个纯"Requirement"尾的兄弟(X.Y.1 Requirement + X.Y.2 Test 惯例)
+            req_tail = [j for j in siblings if _PURE_REQ_TAIL_RE.match(parsed[j][1])]
+            if len(req_tail) != 1:
+                continue
+            tgt = reqs[req_tail[0]]
+        else:
+            parents = [j for j in by_num.get(parent, []) if j != i and j not in drop]
+            if len(parents) != 1:
+                continue
+            tgt = reqs[parents[0]]
+        lines = [str(x).strip() for x in (r.get("acceptance_criteria") or []) if str(x).strip()]
+        if not lines and str(r.get("description") or "").strip():
+            lines = [str(r["description"]).strip()]
+        lines += [str(s.get("text") or "").strip() for s in (r.get("sub_items") or [])
+                  if isinstance(s, dict) and str(s.get("text") or "").strip()]
+        have = [str(x) for x in (tgt.get("acceptance_criteria") or [])]
+        for ln in lines:
+            if not _near_dup(ln, have):
+                tgt.setdefault("acceptance_criteria", []).append(ln)
+                have.append(ln)
+        if r.get("threshold_table") and not tgt.get("threshold_table"):
+            tgt["threshold_table"] = r["threshold_table"]
+        carried = [s for s in (r.get("suspicion_reasons") or [])]
+        if carried:
+            tgt["suspicion_reasons"] = list(dict.fromkeys(
+                list(tgt.get("suspicion_reasons") or []) + carried))
+        _append_note(tgt, f"同族 Test 条款已并入验收：{num}（条款族=一条需求）")
+        drop.add(i)
+    if not drop:
+        return reqs
+    return [r for i, r in enumerate(reqs) if i not in drop]
 
 
 def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "",
@@ -767,7 +1256,7 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
     results = _process_raw_requirements(raw_reqs, section, context_ints) if isinstance(raw_reqs, list) else []
     if not self_check:
-        return results
+        return _fold_test_siblings(results)
 
     # 收敛循环只在**定向模式**（有 block_info，确定性覆盖信号）多轮：每轮针对仍未覆盖的
     # requirement_like 语句补，覆盖清单随之缩小，直到全覆盖/零新增/触顶。有些遗漏要等前几条
@@ -783,21 +1272,22 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
                         section.get("section_id"), round_no)
             break
         try:
-            extra = critique_section(section, results, chat, doc_context, context_ints,
-                                     focus_lines=uncovered or None)
+            extra, supplements = critique_section(section, results, chat, doc_context, context_ints,
+                                                  focus_lines=uncovered or None)
         except LLMError as exc:  # 自检失败不致命，保留已抽（含前几轮成果）
             LOGGER.warning("完整性自检第 %d 轮失败（保留已抽）：%s", round_no, exc)
             break
-        if not extra:  # 零新增 → 已收敛，无需再问
+        if not extra and not supplements:  # 零新增且零并入 → 已收敛，无需再问
             LOGGER.info("自检收敛（零新增，章节 %s，第 %d 轮）", section.get("section_id"), round_no)
             break
         results = results + extra
         added_total += len(extra)
-        LOGGER.info("完整性自检第 %d 轮补充 %d 条（章节 %s）", round_no, len(extra), section.get("section_id"))
+        LOGGER.info("完整性自检第 %d 轮补充 %d 条、并入 %d 处（章节 %s）",
+                    round_no, len(extra), supplements, section.get("section_id"))
         if round_no == max_rounds:  # 触顶仍有新增：记一笔，未必已穷尽（防发散优先）
             LOGGER.info("自检触顶 %d 轮仍有新增（章节 %s，累计补 %d 条）",
                         max_rounds, section.get("section_id"), added_total)
-    return results
+    return _fold_test_siblings(results)
 
 
 # --- 缓存 + 批处理 --------------------------------------------------------
@@ -1128,6 +1618,7 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                                   unit_mode=resolved_mode)
     resolve_section_refs(all_sections)  # 跨章节引用注入（须在采样前，被引条款可能不在样本里）
     attach_term_definitions(all_sections, collect_term_entries(all_sections))  # 术语定向注入
+    _annotate_annex_scopes(all_sections)  # 资料性附录区段标注（跨单元状态机,须在采样前）
     if not limit_sections and sample_ratio and 0 < sample_ratio < 1:
         limit_sections = max(1, round(len(all_sections) * sample_ratio))
     sections, sampled = sample_sections(all_sections, limit_sections)

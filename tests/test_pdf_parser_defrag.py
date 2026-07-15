@@ -34,7 +34,7 @@ class DefragTests(unittest.TestCase):
             self.assertEqual(defragment_text(text), text)
 
     def test_normal_text_untouched(self) -> None:
-        text = "The AFD shall withstand a drop from 0,5 m as given in Table 6."
+        text = "The XDEV shall withstand a drop from 0,5 m as given in Table 6."
         self.assertEqual(defragment_text(text), text)
 
     def test_threshold_documented(self) -> None:
