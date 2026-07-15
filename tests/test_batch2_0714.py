@@ -286,6 +286,30 @@ class CoverageCandidateTests(unittest.TestCase):
         self.assertFalse(by_id["B2"]["coverage_candidate"])   # 编号短标题不再标"未覆盖"
 
 
+class WatermarkStripTests(unittest.TestCase):
+    """E3a：文字层版权水印串（IHS 类,反引号/逗号/破折号长串）确定性清除,防误伤。"""
+
+    def test_real_watermark_sample_removed(self) -> None:
+        from parsers.pdf_parser import _strip_watermark_runs
+        sample = ("When --`,``,```,`,,```,`,`,,,```,,,-`-`,,`,,`,`,,`--- the manufacturer "
+                  "declares that the meter is suitable")
+        cleaned = _strip_watermark_runs(sample)
+        self.assertNotIn("`", cleaned)
+        self.assertIn("When", cleaned)
+        self.assertIn("the manufacturer declares", cleaned)
+
+    def test_whole_line_watermark_becomes_blank(self) -> None:
+        from parsers.pdf_parser import _strip_watermark_runs
+        self.assertEqual(_strip_watermark_runs("--`,``,```,`,,```,`,`,,,```,,,-`-`,,`,,`,`,,`---").strip(), "")
+
+    def test_dash_rules_and_commas_untouched(self) -> None:
+        from parsers.pdf_parser import _strip_watermark_runs
+        self.assertEqual(_strip_watermark_runs("------------------"), "------------------")   # 纯破折号分隔线
+        self.assertEqual(_strip_watermark_runs("a, b, c, d, e, f, g"), "a, b, c, d, e, f, g")
+        self.assertEqual(_strip_watermark_runs("val -`, x"), "val -`, x")                     # 短串不动
+        self.assertEqual(_strip_watermark_runs("IP67, class B - see 4.9"), "IP67, class B - see 4.9")
+
+
 class PromptPrefixOrderTests(unittest.TestCase):
     """S6b：分析 prompt 按稳定性降序——固定指令在前,条级内容后移(服务端前缀缓存)。"""
 

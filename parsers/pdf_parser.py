@@ -161,7 +161,8 @@ def _split_line_cells(words: list[dict[str, Any]], *, defrag: bool = False) -> l
             groups[-1].append(right)
     cells = []
     for group in groups:
-        text = clean_text(" ".join(str(w["text"]) for w in group))
+        # 水印串同样会落进无画线表格的格文本（E3a 残留实证:浪涌表格一格）——同一清洗
+        text = clean_text(_strip_watermark_runs(" ".join(str(w["text"]) for w in group)))
         if defrag:
             text = defragment_text(text)
         cells.append({"text": text, "x0": float(group[0]["x0"]), "x1": float(group[-1]["x1"])})
@@ -470,6 +471,10 @@ def extract_pdf(
                     if _skip_table_matrix(matrix):
                         continue
                     table_bbox = (payload["x0"], payload["top"], payload["x1"], payload["bottom"])
+                # 水印串终点兜底（E3a）：多行续接的格文本拼完才超过清洗阈值,在矩阵定稿处
+                # 统一再过一遍（词行/切格两处早清扫不掉的拼接产物在此归零）
+                matrix = [[(_strip_watermark_runs(cell) if isinstance(cell, str) else cell)
+                           for cell in row] for row in matrix]
                 table_count += 1
                 order += 1
                 table_id = f"TBL-{table_count:06d}"
@@ -643,7 +648,7 @@ def _word_lines(words: list[dict[str, Any]], *, defrag: bool = False) -> list[di
 
 def _merge_words(words: list[dict[str, Any]], *, defrag: bool = False) -> dict[str, Any]:
     ordered = sorted(words, key=lambda word: float(word["x0"]))
-    text = clean_text(" ".join(str(word["text"]) for word in ordered))
+    text = clean_text(_strip_watermark_runs(" ".join(str(word["text"]) for word in ordered)))
     if defrag:
         text = defragment_text(text)
     return {
@@ -654,6 +659,19 @@ def _merge_words(words: list[dict[str, Any]], *, defrag: bool = False) -> dict[s
         "x1": max(float(word["x1"]) for word in ordered),
         "words": ordered,   # 词级坐标保留给无画线表格检测（切格用）
     }
+
+
+# 版权水印噪声（0714 批次二 E3a）：IHS 类拷贝保护在文字层嵌入的长串反引号/逗号/破折号组合
+# （"--`,``,```,`,,```…---"，EN 16314 实测整段混进正文块,污染抽取/翻译/批注展示）。
+# 只清确定形态：≥12 字符、仅由 ` ' , - 与空白组成、且含 ≥3 个反引号——纯破折号分隔线/
+# 纯逗号串不动（防误伤真实内容）;确定性替换,非启发式猜测。
+_WATERMARK_RUN = re.compile(r"[`',\-\s]{12,}")
+
+
+def _strip_watermark_runs(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        return " " if match.group(0).count("`") >= 3 else match.group(0)
+    return _WATERMARK_RUN.sub(repl, text)
 
 
 _LIST_ITEM_RE = re.compile(r"^(?:[a-z]|\d{1,2}|[ivx]{1,4})[).]\s|^[•▪]\s|^[—–-]\s")
