@@ -310,6 +310,48 @@ class WatermarkStripTests(unittest.TestCase):
         self.assertEqual(_strip_watermark_runs("IP67, class B - see 4.9"), "IP67, class B - see 4.9")
 
 
+class ReviewInsightsEndpointTests(unittest.TestCase):
+    """E5：裁决复盘建议接通消费端——此前 review_insights.json 全链零消费者。"""
+
+    def test_missing_file_reports_unavailable(self) -> None:
+        import api_server
+        with tempfile.TemporaryDirectory() as td:
+            payload = api_server.load_review_insights(Path(td))
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["suggestions"], [])
+
+    def test_suggestions_surfaced(self) -> None:
+        import api_server
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "review_insights.json").write_text(json.dumps({
+                "suggestions": ["模块「时钟」被专家改为「预付费」共 3 次——考虑调整关键词边界。"],
+                "decided_states": 12,
+                "module_transitions": [{"from": "时钟", "to": "预付费", "count": 3}],
+            }, ensure_ascii=False), encoding="utf-8")
+            payload = api_server.load_review_insights(out)
+        self.assertTrue(payload["available"])
+        self.assertEqual(len(payload["suggestions"]), 1)
+        self.assertIn("预付费", payload["suggestions"][0])
+        self.assertEqual(payload["decided_states"], 12)
+
+    def test_broken_json_tolerated(self) -> None:
+        import api_server
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "review_insights.json").write_text("{broken", encoding="utf-8")
+            payload = api_server.load_review_insights(out)
+        self.assertFalse(payload["available"])
+
+    def test_get_route_wired(self) -> None:
+        import inspect
+
+        import api_server
+        src = inspect.getsource(api_server.RequirementAPIHandler.do_GET)
+        self.assertIn('"/review-insights"', src)
+        self.assertIn("load_review_insights", src)
+
+
 class PromptPrefixOrderTests(unittest.TestCase):
     """S6b：分析 prompt 按稳定性降序——固定指令在前,条级内容后移(服务端前缀缓存)。"""
 

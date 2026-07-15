@@ -297,6 +297,9 @@ describe("review workspace shell", () => {
           json: async () => ({ requirement_id: "SREQ-UI-1", status: "accepted" }),
         } as Response
       }
+      if (String(input).endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
       throw new Error(`Unexpected request: ${String(input)}`)
     })
 
@@ -317,7 +320,7 @@ describe("review workspace shell", () => {
       expect(wrapper.find('[data-testid="detail-status"]').text()).toContain("已接受")
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)   // requirements + review-insights + action
   })
 
   it("translates the selected requirement through the local API", async () => {
@@ -369,6 +372,9 @@ describe("review workspace shell", () => {
           }),
         } as Response
       }
+      if (String(input).endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
       throw new Error(`Unexpected request: ${String(input)}`)
     })
 
@@ -383,7 +389,7 @@ describe("review workspace shell", () => {
       expect(wrapper.find('[data-testid="translation-text"]').text()).toContain("读取客户端应支持 xDLMS 服务")
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)   // requirements + review-insights + action
   })
 
   it("clears mock rows when the connected API session has no requirements", async () => {
@@ -646,6 +652,39 @@ describe("review workspace shell", () => {
         })))
     await vi.waitFor(() =>
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("软件需求分析"))
+  })
+
+  it("surfaces review insights suggestions after session load", async () => {
+    // E5（0714 批次二）：裁决复盘建议上屏——此前 review_insights.json 零消费者
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770", token: "t", outputDir: "E:\\out\\abnt",
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes("/review-insights")) {
+        return {
+          ok: true,
+          json: async () => ({
+            available: true,
+            suggestions: ["模块「时钟」被专家改为「预付费」共 3 次——考虑调整关键词边界。"],
+          }),
+        } as Response
+      }
+      return { ok: true, json: async () => [] } as Response
+    })
+
+    const wrapper = mount(App)
+    await vi.waitFor(() => {
+      const panel = wrapper.find('[data-testid="review-insights"]')
+      expect(panel.exists()).toBe(true)
+      expect(panel.text()).toContain("预付费")
+      expect(panel.text()).toContain("裁决复盘建议（1）")
+    })
   })
 
   it("runs a limited LLM test pass from the test button", async () => {

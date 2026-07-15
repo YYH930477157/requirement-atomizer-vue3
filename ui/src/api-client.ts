@@ -120,6 +120,14 @@ export type AiRequirement = Record<string, unknown> & {
   hardware_summary?: string
 }
 
+export type ReviewInsightsPayload = {
+  available?: boolean
+  suggestions?: string[]
+  decided_states?: number
+  module_transitions?: Array<{ from?: string; to?: string; count?: number }>
+  ownership_transitions?: Array<{ from?: string; to?: string; count?: number }>
+}
+
 export type AiReviewActionInput = {
   aiReqId: string
   status: ReviewStatus
@@ -201,6 +209,11 @@ export class RequirementApiClient {
 
   async loadAiRequirements(): Promise<AiRequirement[]> {
     return this.request<AiRequirement[]>("/ai-requirements")
+  }
+
+  // 裁决复盘建议（review_insights.json,专家改判模式→规则改进建议）——E5:此前零消费者
+  async loadReviewInsights(): Promise<ReviewInsightsPayload> {
+    return this.request<ReviewInsightsPayload>("/review-insights")
   }
 
   async applyAiReviewAction(input: AiReviewActionInput): Promise<AiReviewStatePayload> {

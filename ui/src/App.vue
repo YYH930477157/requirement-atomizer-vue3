@@ -181,6 +181,12 @@
                 <b>注意</b>
                 <span>{{ lastStageNotes.join("；") }}</span>
               </div>
+              <div v-if="reviewInsights.length" class="note-insight" data-testid="review-insights">
+                <b>裁决复盘建议（{{ reviewInsights.length }}）</b>
+                <ul class="insight-list">
+                  <li v-for="(s, i) in reviewInsights" :key="i">{{ s }}</li>
+                </ul>
+              </div>
             </div>
           </div>
         </section>
@@ -582,6 +588,8 @@ const runOverview = ref<{ atoms: number | null; aiReqs: number | null; selfCheck
   atoms: null, aiReqs: null, selfCheck: null, coverage: null, chapters: "", questions: null, verdict: "",
 })
 const lastStageNotes = ref<string[]>([])
+// 裁决复盘建议（E5）：专家改判模式 ≥3 次提炼的规则改进建议——此前产物零消费者
+const reviewInsights = ref<string[]>([])
 const reviewPreviewRows = computed(() => requirementRows.value.slice(0, 4))
 const DELIVERABLE_FILES = [
   { key: "software", icon: "XLS", tone: "xls", name: "软件需求列表-成文.xlsx", hint: "V2.3.x 模板成文（B 轨主交付物）" },
@@ -1547,6 +1555,14 @@ async function loadFromSession(session: { baseUrl: string; token: string; output
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "需求加载失败"
     throw error
+  }
+  try {
+    // 复盘建议为附属信息：加载失败/老目录缺文件不影响连接流程
+    const insights = await client.loadReviewInsights()
+    reviewInsights.value = Array.isArray(insights?.suggestions)
+      ? insights.suggestions.map((s) => String(s)) : []
+  } catch {
+    reviewInsights.value = []
   }
 }
 
@@ -2878,6 +2894,18 @@ tbody tr.selected {
 }
 
 .note-warn b { font-weight: 650; flex: none; }
+
+.note-insight {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  margin-top: 12px;
+  background: #eef2ff;
+  color: #1e41c9;
+}
+
+.note-insight b { font-weight: 650; }
+.insight-list { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
 
 /* 流水线格子:样机形态(左色条 + 底部细进度条) */
 .run-stage-board .run-stage-card { position: relative; }

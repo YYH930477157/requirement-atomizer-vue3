@@ -188,6 +188,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/ai-requirements":
             self.send_json(build_ai_requirements(self.output_dir))
             return
+        if parsed.path == "/review-insights":
+            self.send_json(load_review_insights(self.output_dir))
+            return
         self.send_error(404, "Unknown endpoint")
 
     def do_POST(self) -> None:
@@ -611,6 +614,27 @@ def build_ai_requirements(output_dir: Path) -> list[dict]:
             row["consistency_flags"] = flags
         enriched.append(row)
     return enriched
+
+
+def load_review_insights(output_dir: Path) -> dict:
+    """裁决复盘建议（review_insights.json,裁决回流自动刷新）——0714 批次二 E5。
+
+    此前该产物全链零消费者:专家改判提炼的规则改进建议(≥3 次同模式)永远躺磁盘,
+    裁决学习回路事实断开。缺失/损坏 → available=false（老输出目录/未裁决时的正常态）。"""
+    path = output_dir / "review_insights.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"available": False, "suggestions": []}
+    if not isinstance(payload, dict):
+        return {"available": False, "suggestions": []}
+    return {
+        "available": True,
+        "suggestions": [str(s) for s in payload.get("suggestions") or []],
+        "decided_states": payload.get("decided_states"),
+        "module_transitions": payload.get("module_transitions") or [],
+        "ownership_transitions": payload.get("ownership_transitions") or [],
+    }
 
 
 def _consistency_markers(output_dir: Path) -> tuple[dict[str, int], set[str]]:
