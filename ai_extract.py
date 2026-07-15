@@ -62,7 +62,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v15"  # v15：缺失功能键保持为空，由文档级目录安全推导
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v16"  # v16：functional_key 构造规则+priority 判级基准（0714 批次三 E7）；v15：缺失功能键保持为空，由文档级目录安全推导
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -125,8 +125,13 @@ VALID_PRIORITIES = {"P0", "P1", "P2"}
 SYSTEM_PROMPT = (
     "你是表计行业（电表/水表/气表）需求分析师。读给定的标准/规范文本，抽取其中的需求条目。"
     "把同一功能的零散语句**合并成一条功能需求**，不要逐句拆；表格类规范化为一条带说明的需求。"
-    "每条需求输出：title（不超过 80 字）、functional_key（跨章节同一研发功能使用完全相同的稳定中文短语）、description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
-    "type（functional/non_functional/constraint/business_rule）、priority（P0/P1/P2，按重要性区分）、"
+    "每条需求输出：title（不超过 80 字）、"
+    "functional_key（跨章节合并的连接键——构造规则：「对象/主题＋动作」的受控中文名词短语，"
+    "2-6 个词，不含数值/编码/章节号/标点；跨章节属同一研发功能时必须**逐字相同**。"
+    "正例：「阀门关闭控制」「远程固件升级」「事件记录存储」；反例：「4.6 的 AFD2 要求」「阀门在 5s 内关闭」）、"
+    "description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
+    "type（functional/non_functional/constraint/business_rule）、"
+    "priority（判级基准：P0=安全/计量准确性/法规强制项；P1=核心功能与协议一致性；P2=辅助/诊断/可选功能）、"
     "module（该需求归属的模块，**必须原样照抄下面清单里的一个词**，按需求实质语义选最贴切的；"
     "确实都不贴切时才填\"" + OTHER_MODULE + "\"）：" + "、".join(MODULE_VOCAB) + "。"
     "labels（额外的细分标签，至少一个，可自由）、source_quote（原文逐字引用，不可改写）、"
