@@ -136,8 +136,9 @@ class FinalizeAndToggleTests(unittest.TestCase):
                     "type": "functional", "priority": "P1", "labels": []}]}
             return {"findings": []}
 
-        reqs = ai_extract.extract_section(SECTION, chat, self_check=False, verify=True)
-        self.assertEqual(len(calls), 2)          # 抽取 1 + 复核 1
+        reqs = ai_extract.extract_section(SECTION, chat, self_check=False, verify=True,
+                                          verify_rounds=1)
+        self.assertEqual(len(calls), 2)          # 抽取 1 + 复核 1(轮数=1 显式)
         self.assertEqual(len(reqs), 1)
 
     def test_extract_section_verify_off_single_call(self) -> None:
@@ -161,6 +162,52 @@ class FinalizeAndToggleTests(unittest.TestCase):
 
         reqs = ai_extract.extract_section(SECTION, chat, self_check=False, verify=True)
         self.assertEqual(len(reqs), 1)           # 复核崩了,抽取产出保留
+
+    def test_multi_round_union_of_findings(self) -> None:
+        # 单轮命中率 ~1/3(实测):多轮并集是机制性提召回。两轮各报不同发现 → 都采纳
+        results = [_entry()]
+        rounds_seen = []
+
+        def chat(system: str, user: str) -> dict:
+            rounds_seen.append(1)
+            if len(rounds_seen) == 1:
+                return {"findings": []}                       # 第一轮空手
+            return {"findings": [_finding()]}                 # 第二轮命中
+
+        applied = ai_extract._verify_section(SECTION, results, chat, rounds=2)
+        self.assertEqual(len(rounds_seen), 2)
+        self.assertEqual(applied, 1)
+        self.assertIn("二遍复核:方向或上下限反转", results[0]["suspicion_reasons"])
+
+    def test_multi_round_dedup_same_kind(self) -> None:
+        results = [_entry()]
+
+        def chat(system: str, user: str) -> dict:
+            return {"findings": [_finding()]}                 # 每轮都报同一发现
+
+        applied = ai_extract._verify_section(SECTION, results, chat, rounds=3)
+        self.assertEqual(applied, 1)                          # (title,kind) 跨轮去重
+        self.assertEqual(results[0]["notes"].count("二遍复核（方向或上下限反转）"), 1)
+
+    def test_first_round_failure_does_not_kill_later_rounds(self) -> None:
+        results = [_entry()]
+        calls = []
+
+        def chat(system: str, user: str) -> dict:
+            calls.append(1)
+            if len(calls) == 1:
+                raise ai_extract.LLMError("round1 boom")
+            return {"findings": [_finding()]}
+
+        applied = ai_extract._verify_section(SECTION, results, chat, rounds=2)
+        self.assertEqual(applied, 1)                          # 首轮失败,次轮照常
+
+    def test_resolve_verify_rounds(self) -> None:
+        with mock.patch.dict(os.environ, {"RATOMIZER_AI_VERIFY_ROUNDS": ""}):
+            self.assertEqual(ai_extract.resolve_verify_rounds(), 2)
+        with mock.patch.dict(os.environ, {"RATOMIZER_AI_VERIFY_ROUNDS": "9"}):
+            self.assertEqual(ai_extract.resolve_verify_rounds(), 4)   # 夹逼上限
+        self.assertEqual(ai_extract.resolve_verify_rounds(1), 1)
 
     def test_resolve_verify_enabled_env(self) -> None:
         with mock.patch.dict(os.environ, {"RATOMIZER_AI_VERIFY": ""}):
