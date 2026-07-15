@@ -551,6 +551,19 @@ class ValuePairingRiskTests(unittest.TestCase):
         self.assertIn("数值配对待核", req.get("suspicion_reasons") or [])
 
 
+class GuardVersionCacheTests(unittest.TestCase):
+    """缓存指纹必须随护栏版本变化——缓存存终处理结果,指纹不含护栏版本时
+    护栏升级被旧缓存整体绕过(v5 实测 wall=0s 新护栏零生效)。"""
+
+    def test_fingerprint_sensitive_to_guards_version(self) -> None:
+        from unittest import mock
+        section = {"text": "some section text"}
+        fp1 = ai_extract.section_fingerprint(section, "model-x")
+        with mock.patch.object(ai_extract, "EXTRACT_GUARDS_VERSION", "guards-vNEXT"):
+            fp2 = ai_extract.section_fingerprint(section, "model-x")
+        self.assertNotEqual(fp1, fp2)
+
+
 class FoldTestSiblingTests(unittest.TestCase):
     """条款族=一条需求的确定性兜底:`X.Y.2 Test` 独立条并回 Requirement 条验收。
     (v4 实测 3 处拆条,prompt 约束挡不住采样方差 → 结构判据零词面兜底)"""
@@ -581,12 +594,21 @@ class FoldTestSiblingTests(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertIn("按测试程序执行。", out[0]["acceptance_criteria"])
 
-    def test_ambiguous_siblings_left_alone(self) -> None:
+    def test_ambiguous_siblings_resolved_by_requirement_tail(self) -> None:
+        # 多兄弟平票:恰有一个纯"Requirement"尾 → 折进它(X.Y.1 Requirement + X.Y.2 Test 惯例)
         reqs = [self._req("4.6.1 Requirement", "要求甲"),
+                self._req("4.6.3 Marking", "标识乙"),
+                self._req("4.6.2 Test", "测试丙", acceptance_criteria=["测试步骤。"])]
+        out = ai_extract._fold_test_siblings(reqs)
+        self.assertEqual(len(out), 2)
+        self.assertIn("测试步骤。", out[0]["acceptance_criteria"])
+
+    def test_ambiguous_siblings_without_requirement_tail_left_alone(self) -> None:
+        reqs = [self._req("4.6.1 Design", "设计甲"),
                 self._req("4.6.3 Marking", "标识乙"),
                 self._req("4.6.2 Test", "测试丙")]
         out = ai_extract._fold_test_siblings(reqs)
-        self.assertEqual(len(out), 3)   # 两个非测试兄弟=歧义,宁缺勿错不折
+        self.assertEqual(len(out), 3)   # 无"Requirement"尾可裁 → 歧义,宁缺勿错不折
 
     def test_entity_named_test_section_not_folded(self) -> None:
         reqs = [self._req("7.9.1 Requirement", "接口要求"),

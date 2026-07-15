@@ -191,11 +191,18 @@ SYSTEM_PROMPT = (
 
 # --- 抽取与防幻觉护栏 -----------------------------------------------------
 
+# 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
+# prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
+# 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
+EXTRACT_GUARDS_VERSION = "guards-v2"
+
+
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
     refs = (section.get("ref_texts") or []) + (section.get("term_defs") or [])
     refs_key = hashlib.sha256(json.dumps(refs, ensure_ascii=False).encode("utf-8")).hexdigest()[:12] if refs else ""
     digest = hashlib.sha256(
-        f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{context_key}\n{refs_key}".encode("utf-8")
+        f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{EXTRACT_GUARDS_VERSION}"
+        f"\n{context_key}\n{refs_key}".encode("utf-8")
     ).hexdigest()
     return digest[:24]
 
@@ -959,6 +966,8 @@ _CLAUSE_TAIL_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)\s*(.*)$")
 _PURE_TEST_TAIL_RE = re.compile(
     r"^(?:tests?|test\s+methods?|test\s+procedures?|verifications?|试验|测试|检验|验证)"
     r"(?:\s*(?:methods?|procedures?|方法|程序))?\s*$", re.IGNORECASE)
+# 纯要求类标题尾:多个非测试兄弟平票时的结构裁决(X.Y.1 Requirement + X.Y.2 Test 惯例)
+_PURE_REQ_TAIL_RE = re.compile(r"^(?:requirements?|要求)\s*$", re.IGNORECASE)
 
 
 def _fold_test_siblings(reqs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -988,9 +997,15 @@ def _fold_test_siblings(reqs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     and not _PURE_TEST_TAIL_RE.match(t2)]
         if len(siblings) == 1:
             tgt = reqs[siblings[0]]
+        elif len(siblings) > 1:
+            # 平票裁决:恰有一个纯"Requirement"尾的兄弟(X.Y.1 Requirement + X.Y.2 Test 惯例)
+            req_tail = [j for j in siblings if _PURE_REQ_TAIL_RE.match(parsed[j][1])]
+            if len(req_tail) != 1:
+                continue
+            tgt = reqs[req_tail[0]]
         else:
             parents = [j for j in by_num.get(parent, []) if j != i and j not in drop]
-            if siblings or len(parents) != 1:
+            if len(parents) != 1:
                 continue
             tgt = reqs[parents[0]]
         lines = [str(x).strip() for x in (r.get("acceptance_criteria") or []) if str(x).strip()]
