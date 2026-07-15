@@ -181,8 +181,12 @@ def _foreign_standard_refs(req: dict[str, Any], baseline: str) -> list[str]:
 # 模型守不住 → 确定性兜底)。
 _TERMS_SECTION_RE = re.compile(r"terms?\b|definitions?\b|abbreviat|术语|定义", re.IGNORECASE)
 _CONSTRAINT_MARK_RE = re.compile(
-    r"[0-9０-９]|\bshall\b|\bmust\b|\bshould\b|\bonly\b|\bat least\b|\bnot exceed\b|"
+    r"\bshall\b|\bmust\b|\bshould\b|\bonly\b|\bat least\b|\bnot exceed\b|"
     r"\bvalid for\b|\balways\b|必须|不得|只能|仅限|至少|不超过|应当|须", re.IGNORECASE)
+# 数字只在带比较语境时才算约束证据(带单位另由 _VALUE_UNIT_RE 判)——术语章里条款号/
+# 型号枚举(Type 1、缩写+序号)是裸数字最大来源,v4 实测 4 条定义条目全靠裸数字混过桩判定
+_CONSTRAINT_VALUE_RE = re.compile(
+    r"(?:[≤≥<>±=]|max\w*|min\w*|最大|最小|上限|下限)\s*[0-9０-９]", re.IGNORECASE)
 
 
 def _is_definition_stub(req: dict[str, Any], section: dict[str, Any]) -> bool:
@@ -194,7 +198,12 @@ def _is_definition_stub(req: dict[str, Any], section: dict[str, Any]) -> bool:
     produced = " ".join([str(req.get("title") or ""), str(req.get("description") or ""),
                          str(req.get("source_quote") or "")]
                         + [str(s.get("text") or "") for s in req.get("sub_items") or []])
-    return not _CONSTRAINT_MARK_RE.search(produced)
+    if _CONSTRAINT_MARK_RE.search(produced):
+        return False
+    # 带单位的数值 / 比较语境里的数字 = 定义携带固定规则,保留
+    if _unit_values(produced) or _CONSTRAINT_VALUE_RE.search(produced):
+        return False
+    return True
 
 
 def _req_key(req: dict[str, Any]) -> str:

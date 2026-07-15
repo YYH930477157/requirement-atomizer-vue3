@@ -954,6 +954,68 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
     return uncovered
 
 
+_CLAUSE_TAIL_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)\s*(.*)$")
+# 纯测试类标题尾(整尾匹配,防"Test interface"这类实体名误折)
+_PURE_TEST_TAIL_RE = re.compile(
+    r"^(?:tests?|test\s+methods?|test\s+procedures?|verifications?|试验|测试|检验|验证)"
+    r"(?:\s*(?:methods?|procedures?|方法|程序))?\s*$", re.IGNORECASE)
+
+
+def _fold_test_siblings(reqs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """条款族=一条需求的确定性兜底：`X.Y.n Test` 独立条并回同族 Requirement 条的验收。
+
+    prompt（v9 起）已约束 Test→验收,但 LLM 采样方差偶发拆条（v4 实测 3 处、v3 1 处）。
+    判据纯结构：条款号 + 纯测试类标题尾；目标=同父唯一非测试兄弟条目,无兄弟时取父条款
+    条目；候选歧义（≥2 兄弟）不动——并错目标比拆条更糟,宁缺勿错。
+    """
+    parsed: list[tuple[str, str]] = []
+    by_num: dict[str, list[int]] = {}
+    for i, r in enumerate(reqs):
+        m = _CLAUSE_TAIL_RE.match(str(r.get("source_section") or ""))
+        num, tail = (m.group(1), m.group(2)) if m else ("", "")
+        parsed.append((num, tail))
+        if num:
+            by_num.setdefault(num, []).append(i)
+    drop: set[int] = set()
+    for i, r in enumerate(reqs):
+        num, tail = parsed[i]
+        if not num or "." not in num or not _PURE_TEST_TAIL_RE.match(tail):
+            continue
+        parent = num.rsplit(".", 1)[0]
+        siblings = [j for j, (n2, t2) in enumerate(parsed)
+                    if j != i and j not in drop and n2 and n2 != num
+                    and n2.rsplit(".", 1)[0] == parent
+                    and not _PURE_TEST_TAIL_RE.match(t2)]
+        if len(siblings) == 1:
+            tgt = reqs[siblings[0]]
+        else:
+            parents = [j for j in by_num.get(parent, []) if j != i and j not in drop]
+            if siblings or len(parents) != 1:
+                continue
+            tgt = reqs[parents[0]]
+        lines = [str(x).strip() for x in (r.get("acceptance_criteria") or []) if str(x).strip()]
+        if not lines and str(r.get("description") or "").strip():
+            lines = [str(r["description"]).strip()]
+        lines += [str(s.get("text") or "").strip() for s in (r.get("sub_items") or [])
+                  if isinstance(s, dict) and str(s.get("text") or "").strip()]
+        have = [str(x) for x in (tgt.get("acceptance_criteria") or [])]
+        for ln in lines:
+            if not _near_dup(ln, have):
+                tgt.setdefault("acceptance_criteria", []).append(ln)
+                have.append(ln)
+        if r.get("threshold_table") and not tgt.get("threshold_table"):
+            tgt["threshold_table"] = r["threshold_table"]
+        carried = [s for s in (r.get("suspicion_reasons") or [])]
+        if carried:
+            tgt["suspicion_reasons"] = list(dict.fromkeys(
+                list(tgt.get("suspicion_reasons") or []) + carried))
+        _append_note(tgt, f"同族 Test 条款已并入验收：{num}（条款族=一条需求）")
+        drop.add(i)
+    if not drop:
+        return reqs
+    return [r for i, r in enumerate(reqs) if i not in drop]
+
+
 def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "",
                     self_check: bool = False,
                     block_info: dict[str, dict[str, Any]] | None = None,
@@ -984,7 +1046,7 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
     results = _process_raw_requirements(raw_reqs, section, context_ints) if isinstance(raw_reqs, list) else []
     if not self_check:
-        return results
+        return _fold_test_siblings(results)
 
     # 收敛循环只在**定向模式**（有 block_info，确定性覆盖信号）多轮：每轮针对仍未覆盖的
     # requirement_like 语句补，覆盖清单随之缩小，直到全覆盖/零新增/触顶。有些遗漏要等前几条
@@ -1015,7 +1077,7 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
         if round_no == max_rounds:  # 触顶仍有新增：记一笔，未必已穷尽（防发散优先）
             LOGGER.info("自检触顶 %d 轮仍有新增（章节 %s，累计补 %d 条）",
                         max_rounds, section.get("section_id"), added_total)
-    return results
+    return _fold_test_siblings(results)
 
 
 # --- 缓存 + 批处理 --------------------------------------------------------

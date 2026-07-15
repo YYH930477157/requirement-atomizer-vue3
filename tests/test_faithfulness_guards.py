@@ -112,6 +112,26 @@ class DefinitionStubTests(unittest.TestCase):
         req = {"title": "无数字的描述", "description": "设备的一般说明。", "source_quote": "text"}
         self.assertFalse(_is_definition_stub(req, section))
 
+    def test_bare_digits_do_not_rescue_definition(self) -> None:
+        # v4 实测:术语章条目靠型号枚举/条款号里的裸数字混过桩判定——数字必须带
+        # 单位或比较语境才算约束证据
+        req = {"title": "定义设备类型",
+               "description": "标准定义了三种设备类型:XDEV1 为出厂集成,XDEV2 为直接附着,XDEV3 为现场连接。",
+               "source_quote": "3.1.4 additional device Type 1 factory fitted"}
+        self.assertTrue(_is_definition_stub(req, self.TERMS_SECTION))
+
+    def test_digits_with_unit_kept(self) -> None:
+        req = {"title": "标称流量定义",
+               "description": "标称流量为 1,6 m3/h 的固定取值。",
+               "source_quote": "nominal flow equal to 1,6 m3/h"}
+        self.assertFalse(_is_definition_stub(req, self.TERMS_SECTION))
+
+    def test_digits_with_comparator_kept(self) -> None:
+        req = {"title": "分级阈值定义",
+               "description": "该等级要求参数 ≥3 档配置。",
+               "source_quote": "class with parameter ≥3 levels"}
+        self.assertFalse(_is_definition_stub(req, self.TERMS_SECTION))
+
     def test_pipeline_drops_definition_stub(self) -> None:
         def chat(system: str, user: str) -> dict:
             return {"requirements": [
@@ -529,6 +549,60 @@ class ValuePairingRiskTests(unittest.TestCase):
 
         req = ai_extract.extract_section(section, chat)[0]
         self.assertIn("数值配对待核", req.get("suspicion_reasons") or [])
+
+
+class FoldTestSiblingTests(unittest.TestCase):
+    """条款族=一条需求的确定性兜底:`X.Y.2 Test` 独立条并回 Requirement 条验收。
+    (v4 实测 3 处拆条,prompt 约束挡不住采样方差 → 结构判据零词面兜底)"""
+
+    def _req(self, sec: str, title: str, **kw) -> dict:
+        base = {"title": title, "description": f"{title}的内容。", "source_section": sec,
+                "source_quote": "quote", "sub_items": [], "acceptance_criteria": [], "notes": ""}
+        base.update(kw)
+        return base
+
+    def test_test_entry_folds_into_requirement_sibling(self) -> None:
+        reqs = [self._req("7.13.4.6.1 Requirement", "阀门开启要求",
+                          acceptance_criteria=["入口压力下应能开启。"]),
+                self._req("7.13.4.6.2 Test", "阀门开启测试程序",
+                          acceptance_criteria=["按规定压力测试三次。", "全部循环均应开启。"])]
+        out = ai_extract._fold_test_siblings(reqs)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["title"], "阀门开启要求")
+        self.assertIn("按规定压力测试三次。", out[0]["acceptance_criteria"])
+        self.assertIn("同族 Test 条款已并入验收：7.13.4.6.2", out[0]["notes"])
+
+    def test_test_entry_folds_into_parent_when_no_sibling(self) -> None:
+        reqs = [self._req("7.13.4.5 Valve closing", "阀门关闭泄漏限值",
+                          acceptance_criteria=["泄漏不超过限值。"]),
+                self._req("7.13.4.5.2 Test", "泄漏测试",
+                          acceptance_criteria=["按测试程序执行。"])]
+        out = ai_extract._fold_test_siblings(reqs)
+        self.assertEqual(len(out), 1)
+        self.assertIn("按测试程序执行。", out[0]["acceptance_criteria"])
+
+    def test_ambiguous_siblings_left_alone(self) -> None:
+        reqs = [self._req("4.6.1 Requirement", "要求甲"),
+                self._req("4.6.3 Marking", "标识乙"),
+                self._req("4.6.2 Test", "测试丙")]
+        out = ai_extract._fold_test_siblings(reqs)
+        self.assertEqual(len(out), 3)   # 两个非测试兄弟=歧义,宁缺勿错不折
+
+    def test_entity_named_test_section_not_folded(self) -> None:
+        reqs = [self._req("7.9.1 Requirement", "接口要求"),
+                self._req("7.9.2 Test interface", "测试接口功能")]   # 实体名非纯测试尾
+        out = ai_extract._fold_test_siblings(reqs)
+        self.assertEqual(len(out), 2)
+
+    def test_suspicions_and_threshold_table_carried(self) -> None:
+        tt = {"columns": ["项", "值"], "rows": [["压力", "75 mbar"]]}
+        reqs = [self._req("5.2.1 Requirement", "要求"),
+                self._req("5.2.2 Test", "测试", threshold_table=tt,
+                          suspicion_reasons=["数值配对待核"])]
+        out = ai_extract._fold_test_siblings(reqs)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["threshold_table"], tt)
+        self.assertIn("数值配对待核", out[0]["suspicion_reasons"])
 
 
 if __name__ == "__main__":
