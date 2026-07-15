@@ -121,6 +121,35 @@ def resolve_self_check_rounds(explicit: int | None = None) -> int:
         value = DEFAULT_SELF_CHECK_MAX_ROUNDS
     return max(1, min(MAX_SELF_CHECK_ROUNDS, value))
 
+
+VERIFY_ENV = "RATOMIZER_AI_VERIFY"  # 二遍语义复核开关（默认开；=0/false/off 关）
+VERIFY_ROUNDS_ENV = "RATOMIZER_AI_VERIFY_ROUNDS"  # 复核投票轮数（默认 2,1..4）
+AI_VERIFY_PROMPT_VERSION = "ai-verify-v1"
+DEFAULT_VERIFY_ROUNDS = 2
+MAX_VERIFY_ROUNDS = 4
+
+
+def resolve_verify_enabled(explicit: bool | None = None) -> bool:
+    """二遍语义复核开关：显式参数优先，否则 env RATOMIZER_AI_VERIFY;默认开。"""
+    if explicit is not None:
+        return bool(explicit)
+    raw = os.environ.get(VERIFY_ENV, "").strip().lower()
+    if not raw:
+        return True
+    return raw not in ("0", "false", "no", "off")
+
+
+def resolve_verify_rounds(explicit: int | None = None) -> int:
+    """复核投票轮数:单轮对细微语义错误命中率实测仅 ~1/3(温度方向探针 1/3,
+    单条聚焦同样 1/3——是模型判断随机性不是注意力稀释),N 轮取并集是机制性
+    提召回手段(2 轮≈55%、3 轮≈70%)。锚定采纳门不随轮数放宽,精度不掉。"""
+    raw: Any = explicit if explicit is not None else os.environ.get(VERIFY_ROUNDS_ENV)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_VERIFY_ROUNDS
+    return max(1, min(MAX_VERIFY_ROUNDS, value))
+
 VALID_TYPES = {"functional", "non_functional", "constraint", "business_rule"}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
 
@@ -1226,17 +1255,158 @@ def _fold_test_siblings(reqs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [r for i, r in enumerate(reqs) if i not in drop]
 
 
+# --- 二遍语义复核(0715:v6 审计残余差评全是语义理解错误,确定性护栏无法核验,
+# prompt v18 针对性约束实证挡不住——独立对抗性核查视角是剩下的机制层手段) ----
+
+_VERIFY_KINDS = {
+    "exemption_reversal": "免责从句反转",
+    "direction": "方向或上下限反转",
+    "quantifier": "数量词范围改写",
+    "subject": "主体或受试对象错置",
+    "value_pairing": "数值条件配对",
+    "step_ref": "步骤编号错位",
+    "attribution": "条款或标准归属",
+}
+
+VERIFY_SYSTEM_PROMPT = (
+    "你是需求抽取的语义复核员。对照【章节原文】逐条核查【已抽需求】,只查七类语义错误:"
+    "① 免责/例外从句方向(unless/without/except/provided that——豁免条件被写成禁止项或独立义务,"
+    "如\"不得漂移超限——除非显示错误标志\"被写成\"不得显示错误标志\");"
+    "② 范围/方向(\"at least X to Y\"的覆盖语义:声明范围须覆盖[X,Y]即下限≤X 且上限≥Y;"
+    "不小于/不大于、上下限方向);"
+    "③ 数量词(one or more/any/all/each 与产出的\"全部/任一/至少\"是否对应,"
+    "\"one or more of the following\"写成\"全部必备\"是典型错误);"
+    "④ 主体/受试对象错置(原文约束甲对象,产出写成乙对象);"
+    "⑤ 数值与适用条件配对(型号/压力/温度档张冠李戴:甲条件配了乙限值);"
+    "⑥ 步骤编号引用(产出引用\"步骤 n\"时与原文该步骤内容是否对应,比较基准错位会误判合格品);"
+    "⑦ 条款/标准号归属(产出引用的编号是否确属原文所述标准/条款)。"
+    "**只报实错**:每个发现必须同时给出原文逐字片段(evidence_source,从章节原文原样复制)"
+    "与产出逐字片段(evidence_produced,从该需求文本原样复制),两者对照能直接看出矛盾;"
+    "吃不准/需要推测的不报;表述风格、翻译措辞、粒度、遗漏问题都不报(不在本职责内)。"
+    "correction 可选:给出把 evidence_produced 改正后的最小替换文本——只改错的部分,"
+    "不新增原文没有的内容,数值/编码只准来自原文。"
+    "只输出 JSON:{\"findings\": [{\"title\": \"<该需求 title 原样回填>\", \"kind\": "
+    "\"exemption_reversal|direction|quantifier|subject|value_pairing|step_ref|attribution\", "
+    "\"evidence_source\": \"…\", \"evidence_produced\": \"…\", \"correction\": \"<可选>\"}]}"
+    "。无发现输出 {\"findings\": []}。"
+)
+
+
+def _anchored(fragment: str, hay: str, min_len: int = 8) -> bool:
+    """全剥空白后的包含式锚定(证据片段必须逐字可定位;短于 min_len 不算证据)。
+
+    剥空白而非归并:CJK 产出无空格,模型复制证据时插入的空格不该导致锚定失败。"""
+    frag = re.sub(r"\s+", "", str(fragment or ""))
+    return len(frag) >= min_len and frag.casefold() in re.sub(r"\s+", "", str(hay or "")).casefold()
+
+
+def _entry_produced_text(req: dict[str, Any]) -> str:
+    return " ".join([str(req.get("title") or ""), str(req.get("description") or "")]
+                    + [str(s.get("text") or "") for s in req.get("sub_items") or []]
+                    + [str(x) for x in req.get("acceptance_criteria") or []])
+
+
+def _verify_section(section: dict[str, Any], results: list[dict[str, Any]], chat: ChatFn,
+                    rounds: int = 1) -> int:
+    """对本章节最终条目做 N 轮语义复核投票,并集采纳双侧锚定的发现。返回采纳数。
+
+    多轮取并集:单轮对细微语义错误命中率实测 ~1/3(模型判断随机性),并集是
+    机制性提召回;锚定门不随轮数放宽(精度不掉)。同(title,kind)跨轮去重,
+    发现全部收集完再统一采纳(轮间无顺序效应)。
+    契约:复核**绝不新增**内容;锚定成立 → 软标+双证据留痕;correction 仅当
+    evidence_produced 是 description 精确子串且修正过漂移守卫(无新编码/无据数字)
+    才定点替换,否则只标不改(标错比不标更糟,宁缺勿错)。"""
+    if not results:
+        return 0
+    entries = []
+    for i, r in enumerate(results, 1):
+        subs = "; ".join(str(s.get("text") or "") for s in r.get("sub_items") or [])[:400]
+        acc = "; ".join(str(x) for x in r.get("acceptance_criteria") or [])[:600]
+        entries.append(
+            f"[{i}] title: {r.get('title', '')}\n描述: {str(r.get('description') or '')[:800]}"
+            + (f"\n子项: {subs}" if subs else "")
+            + (f"\n验收: {acc}" if acc else "")
+            + f"\n引句: {str(r.get('source_quote') or '')[:300]}")
+    user = ("【章节原文】\n" + str(section.get("text") or "")
+            + "\n\n【已抽需求】\n" + "\n\n".join(entries))
+    by_title = {_norm_ws(r.get("title")): r for r in results if str(r.get("title") or "").strip()}
+    # 收集期:N 轮调用,锚定过滤,(title,kind) 去重——首个锚定证据胜出
+    accepted: dict[tuple[str, str], dict[str, str]] = {}
+    for round_no in range(max(1, rounds)):
+        try:
+            payload = chat(VERIFY_SYSTEM_PROMPT, user)
+        except LLMError as exc:  # 单轮失败不吞掉其他轮(首轮失败仍尝试后续轮)
+            LOGGER.warning("二遍复核第 %d 轮失败：%s", round_no + 1, exc)
+            continue
+        findings = payload.get("findings") if isinstance(payload, dict) else None
+        if not isinstance(findings, list):
+            continue
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            title_key = _norm_ws(f.get("title"))
+            req = by_title.get(title_key)
+            kind = _VERIFY_KINDS.get(str(f.get("kind") or "").strip())
+            src_ev = str(f.get("evidence_source") or "").strip()
+            prod_ev = str(f.get("evidence_produced") or "").strip()
+            if req is None or kind is None or (title_key, kind) in accepted:
+                continue
+            # 双侧锚定:原文侧在章节原文、产出侧在该条目文本,都逐字可定位才算证据
+            if not _anchored(src_ev, section.get("text", "")) or not _anchored(prod_ev, _entry_produced_text(req)):
+                LOGGER.info("二遍复核发现无锚定证据,丢弃：%s(%s)", str(f.get("title") or "")[:30], kind)
+                continue
+            accepted[(title_key, kind)] = {"src": src_ev, "prod": prod_ev,
+                                           "corr": str(f.get("correction") or "").strip()}
+    # 采纳期:统一应用(修正的精确子串检查在应用时对当前 description 现算)
+    source = section.get("drift_source") or section.get("text", "")
+    applied = 0
+    for (title_key, kind), ev in accepted.items():
+        req = by_title[title_key]
+        req["suspicion_reasons"] = list(dict.fromkeys(
+            list(req.get("suspicion_reasons") or []) + [f"二遍复核:{kind}"]))
+        _append_note(req, f"二遍复核（{kind}）：原文「{ev['src'][:80]}」vs 产出「{ev['prod'][:80]}」")
+        applied += 1
+        corr, prod_ev = ev["corr"], ev["prod"]
+        if corr and corr != prod_ev and prod_ev in str(req.get("description") or ""):
+            from extract_guards import produced_ints, source_int_baseline, strip_produced_refs
+            pseudo = {"title": "", "description": corr, "source_quote": "",
+                      "sub_items": [], "acceptance_criteria": []}
+            fabricated = produced_ints(strip_produced_refs(corr)) - source_int_baseline(source)
+            if not code_drift(pseudo, source) and not fabricated:
+                req["description"] = str(req["description"]).replace(prod_ev, corr, 1)
+                _append_note(req, f"二遍复核改写：「{prod_ev[:60]}」→「{corr[:60]}」")
+            else:
+                LOGGER.info("二遍复核修正含漂移,拒改只标：%s", title_key[:30])
+    return applied
+
+
+def _finalize_section(section: dict[str, Any], results: list[dict[str, Any]],
+                      chat: ChatFn, verify: bool, verify_rounds: int = 1) -> list[dict[str, Any]]:
+    results = _fold_test_siblings(results)
+    if verify and results:
+        try:
+            n = _verify_section(section, results, chat, rounds=verify_rounds)
+            if n:
+                LOGGER.info("二遍复核采纳 %d 处（章节 %s）", n, section.get("section_id"))
+        except LLMError as exc:  # 复核失败非致命:保留未复核产出
+            LOGGER.warning("二遍语义复核失败（保留未复核产出）：%s", exc)
+    return results
+
+
 def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "",
                     self_check: bool = False,
                     block_info: dict[str, dict[str, Any]] | None = None,
                     self_check_rounds: int | None = None,
-                    exemplars: str = "") -> list[dict[str, Any]]:
+                    exemplars: str = "",
+                    verify: bool = False,
+                    verify_rounds: int | None = None) -> list[dict[str, Any]]:
     """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。doc_context 注入文档全局背景。
 
     self_check：抽完**收敛式**查漏补缺——每轮对着当前已抽集重算未覆盖清单再补，直到某轮零新增
     /全覆盖/触顶为止。单趟只能补"第一层可见"的遗漏；有些遗漏要等前几条补进去、覆盖清单缩小后才
     暴露，收敛循环才抓得到。有 block_info 时**定向**（未覆盖 requirement_like 语句作重点核查
     清单）；全覆盖则提前停。无 block_info 回退全量盲查，靠"零新增"收敛。自检失败不致命——保留已抽。
+    verify：末尾一次二遍语义复核调用（七类误读清单,双侧锚定采纳,失败非致命）。
     """
     user = build_section_prompt(section)
     prefix_parts: list[str] = []
@@ -1256,7 +1426,8 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
     results = _process_raw_requirements(raw_reqs, section, context_ints) if isinstance(raw_reqs, list) else []
     if not self_check:
-        return _fold_test_siblings(results)
+        return _finalize_section(section, results, chat, verify,
+                             resolve_verify_rounds(verify_rounds))
 
     # 收敛循环只在**定向模式**（有 block_info，确定性覆盖信号）多轮：每轮针对仍未覆盖的
     # requirement_like 语句补，覆盖清单随之缩小，直到全覆盖/零新增/触顶。有些遗漏要等前几条
@@ -1287,7 +1458,8 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
         if round_no == max_rounds:  # 触顶仍有新增：记一笔，未必已穷尽（防发散优先）
             LOGGER.info("自检触顶 %d 轮仍有新增（章节 %s，累计补 %d 条）",
                         max_rounds, section.get("section_id"), added_total)
-    return _fold_test_siblings(results)
+    return _finalize_section(section, results, chat, verify,
+                             resolve_verify_rounds(verify_rounds))
 
 
 # --- 缓存 + 批处理 --------------------------------------------------------
@@ -1339,9 +1511,13 @@ def extract_all(
     self_check_rounds：自检收敛轮数上限（None 走默认/env）；计入指纹，改轮数→缓存失效重抽。
     """
     rounds = resolve_self_check_rounds(self_check_rounds) if self_check else 0
+    verify = resolve_verify_enabled()
+    verify_rounds = resolve_verify_rounds() if verify else 0
     context_key = (hashlib.sha256(doc_context.encode("utf-8")).hexdigest()[:12] if doc_context else "")
     if self_check:  # 自检开/关 + 轮数不同 → 产出不同，计入指纹，缓存不串
         context_key += f"|selfcheck{rounds}"
+    if verify:  # 复核开关+版本+轮数 → 产出不同,计入指纹(缓存教训:后处理状态必须进键)
+        context_key += f"|verify:{AI_VERIFY_PROMPT_VERSION}:r{verify_rounds}"
     cache = read_cache(cache_path)
     results: list[list[dict[str, Any]] | None] = [None] * len(sections)
     pending: list[tuple[int, dict[str, Any], str]] = []
@@ -1375,7 +1551,8 @@ def extract_all(
         try:
             return idx, fp, extract_section(section, chat, doc_context, self_check, block_info,
                                             self_check_rounds=rounds or None,
-                                            exemplars=exemplars), True
+                                            exemplars=exemplars, verify=verify,
+                                            verify_rounds=verify_rounds or None), True
         except LLMError as exc:  # 最佳努力：该章节降级、不崩、不缓存（留待重跑）
             LOGGER.warning("AI 抽取章节失败：%s", exc)
             return idx, fp, [], False

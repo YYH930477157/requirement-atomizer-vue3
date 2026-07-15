@@ -520,8 +520,9 @@ class CacheReproducibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "c.jsonl"
             first = ai_extract.extract_all(sections, chat, model="m", cache_path=cache)
+            after_first = calls["n"]   # 二遍复核默认开:首跑调用数=抽取+复核,不锁死具体值
             second = ai_extract.extract_all(sections, chat, model="m", cache_path=cache)
-            self.assertEqual(calls["n"], 1)  # 第二次命中缓存，未再调 LLM
+            self.assertEqual(calls["n"], after_first)  # 第二次命中缓存，未再调 LLM
             self.assertEqual(first, second)   # 同输入同输出（稳定）
 
 
@@ -958,8 +959,9 @@ class ContextEngineeringTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "c.jsonl"
             first = ai_extract.extract_all(sections, chat, model="m", cache_path=cache, doc_context="CTX")
+            after_first = calls["n"]   # 二遍复核默认开:不锁死首跑调用数
             second = ai_extract.extract_all(sections, chat, model="m", cache_path=cache, doc_context="CTX")
-            self.assertEqual(calls["n"], 1)   # 含背景仍逐字缓存、第二次命中
+            self.assertEqual(calls["n"], after_first)   # 含背景仍逐字缓存、第二次命中
             self.assertEqual(first, second)
 
 
