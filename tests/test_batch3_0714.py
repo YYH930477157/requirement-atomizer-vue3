@@ -100,5 +100,66 @@ class ExtractExemplarInjectionTests(unittest.TestCase):
         self.assertIn("结构漂移已拦截", notes)          # 编码硬拦,不因范例注入而放行
 
 
+class ApiPayloadMemoTests(unittest.TestCase):
+    """S7b：GUI 装配路径按源文件签名 memo——刷新不再全量重读重 join;写入自然失效。"""
+
+    def setUp(self) -> None:
+        import api_server
+        api_server._reset_payload_memo()
+
+    tearDown = setUp
+
+    def _seed(self, out: Path) -> None:
+        (out / "blocks.jsonl").write_text(json.dumps({
+            "block_id": "B1", "order": 1, "text": "The meter shall log events.",
+            "requirement_like": True, "noise": False, "type": "paragraph",
+            "doc_region": "body", "section_path": ["4"]}, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        (out / "ai_requirements.jsonl").write_text(json.dumps({
+            "ai_req_id": "AIR-1", "title": "事件记录", "module": "事件记录",
+            "source_quote": "The meter shall log events.", "source_block_ids": ["B1"]},
+            ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def test_repeat_calls_hit_memo(self) -> None:
+        from unittest.mock import patch
+
+        import api_server
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out)
+            with patch.object(api_server, "_build_ai_requirements_impl",
+                              wraps=api_server._build_ai_requirements_impl) as impl:
+                first = api_server.build_ai_requirements(out)
+                second = api_server.build_ai_requirements(out)
+            self.assertEqual(impl.call_count, 1)          # 第二次命中 memo
+            self.assertEqual(first, second)
+
+    def test_source_write_invalidates(self) -> None:
+        from unittest.mock import patch
+
+        import api_server
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out)
+            with patch.object(api_server, "_build_ai_requirements_impl",
+                              wraps=api_server._build_ai_requirements_impl) as impl:
+                api_server.build_ai_requirements(out)
+                with (out / "ai_review_states.jsonl").open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"ai_req_id": "AIR-1", "status": "accepted"}) + "\n")
+                rows = api_server.build_ai_requirements(out)
+            self.assertEqual(impl.call_count, 2)          # 裁决写入 → 签名变化 → 重算
+            self.assertEqual(rows[0]["status"], "accepted")
+
+    def test_returned_payload_mutation_isolated(self) -> None:
+        import api_server
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed(out)
+            first = api_server.build_document_blocks(out)
+            first["blocks"][0]["text"] = "被消费方原地改了"
+            second = api_server.build_document_blocks(out)
+            self.assertEqual(second["blocks"][0]["text"], "The meter shall log events.")
+
+
 if __name__ == "__main__":
     unittest.main()

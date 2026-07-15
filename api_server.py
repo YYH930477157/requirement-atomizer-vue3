@@ -410,7 +410,14 @@ def load_annotation_translations(output_dir: Path) -> tuple[dict[str, str], dict
 
 
 def build_document_blocks(output_dir: Path) -> dict:
-    """供文档批注视图：blocks 按 order 排序、只留渲染需要的字段（去掉 kb_matches 等重负载）。
+    """供文档批注视图（源文件签名 memo,见 _memoized）。"""
+    resolved = Path(output_dir).expanduser().resolve()
+    return _memoized("document", resolved, _DOC_MEMO_SOURCES,
+                     lambda: _build_document_blocks_impl(resolved))
+
+
+def _build_document_blocks_impl(output_dir: Path) -> dict:
+    """blocks 按 order 排序、只留渲染需要的字段（去掉 kb_matches 等重负载）。
 
     附带块级中文翻译（内容哈希查缓存）：未覆盖段/说明标记的三段式卡片（原因/翻译/引用）
     在应用内视图与导出 HTML 同语义。"""
@@ -448,6 +455,54 @@ def build_document_blocks(output_dir: Path) -> dict:
         block["text"] = normalize_text(original_text)
     trimmed.sort(key=lambda b: b.get("order") or 0)
     return {"blocks": trimmed, "count": len(trimmed)}
+
+
+# 请求级重算备忘（0714 批次三 S7b）：GUI 每次刷新都全量重读+重 join（2000 块翻译匹配、
+# 300 需求锚点/一致性/富化合并）,无任何进程内缓存。按源文件 (mtime_ns, size) 签名 memo：
+# 裁决/翻译写入改动源文件 → 签名变化自然失效,无需显式失效钩子。命中返回 deepcopy
+# （消费方可能原地改行——缓存本体绝不外借,防跨请求串改）。
+import copy as _copy
+import threading as _threading
+
+_MEMO_LOCK = _threading.Lock()
+_MEMO: dict[tuple[str, str], tuple[tuple, object]] = {}
+
+_DOC_MEMO_SOURCES = ("blocks.jsonl", "annotation_translations.json")
+_REQ_MEMO_SOURCES = ("merged_spec_requirements.json", "ai_requirements_doc.json",
+                     "ai_requirements.jsonl", "ai_review_states.jsonl",
+                     "functional_requirements.json", "engineering_analysis.json",
+                     "consistency_report.json", "blocks.jsonl")
+
+
+def _source_signature(output_dir: Path, names: tuple[str, ...]) -> tuple:
+    signature = []
+    for name in names:
+        path = output_dir / name
+        try:
+            st = path.stat()
+            signature.append((name, st.st_mtime_ns, st.st_size))
+        except OSError:
+            signature.append((name, None, None))
+    return tuple(signature)
+
+
+def _memoized(kind: str, output_dir: Path, names: tuple[str, ...], builder):
+    key = (kind, str(output_dir))
+    signature = _source_signature(output_dir, names)
+    with _MEMO_LOCK:
+        hit = _MEMO.get(key)
+        if hit is not None and hit[0] == signature:
+            return _copy.deepcopy(hit[1])
+    value = builder()
+    with _MEMO_LOCK:
+        _MEMO[key] = (signature, _copy.deepcopy(value))
+    return value
+
+
+def _reset_payload_memo() -> None:
+    """仅测试用。"""
+    with _MEMO_LOCK:
+        _MEMO.clear()
 
 
 _WS_RE = re.compile(r"\s+")
@@ -562,7 +617,14 @@ def _analysis_enrichment(output_dir: Path) -> dict[str, dict]:
 
 
 def build_ai_requirements(output_dir: Path) -> list[dict]:
-    """供文档批注视图：merged_spec 需求 + 内容稳定 ai_req_id + 精确锚点 + 当前裁决态。
+    """供文档批注视图（源文件签名 memo,见 _memoized）。"""
+    resolved = Path(output_dir).expanduser().resolve()
+    return _memoized("ai-requirements", resolved, _REQ_MEMO_SOURCES,
+                     lambda: _build_ai_requirements_impl(resolved))
+
+
+def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
+    """merged_spec 需求 + 内容稳定 ai_req_id + 精确锚点 + 当前裁决态。
 
     优先读 merged_spec_requirements.json（双引擎交付物），回退 ai_requirements_doc.json /
     ai_requirements.jsonl。anchor_block_id = 含 source_quote 的具体段落（段落级精确）。
