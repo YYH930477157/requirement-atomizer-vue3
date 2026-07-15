@@ -23,34 +23,34 @@ from extract_guards import (
 
 class ModalInflationTests(unittest.TestCase):
     def test_should_upgraded_to_mandatory_flagged(self) -> None:
-        req = {"source_quote": "The AFD should be mounted according to the manual.",
-               "title": "安装方式", "description": "附加功能设备必须按手册安装。"}
+        req = {"source_quote": "The module should be mounted according to the manual.",
+               "title": "安装方式", "description": "设备模块必须按手册安装。"}
         self.assertTrue(_modal_inflation(req))
 
     def test_shall_source_not_flagged(self) -> None:
-        req = {"source_quote": "The AFD shall be mounted according to the manual.",
-               "description": "附加功能设备必须按手册安装。"}
+        req = {"source_quote": "The module shall be mounted according to the manual.",
+               "description": "设备模块必须按手册安装。"}
         self.assertFalse(_modal_inflation(req))
 
     def test_should_kept_advisory_not_flagged(self) -> None:
-        req = {"source_quote": "The AFD should be mounted according to the manual.",
-               "description": "宜按手册安装附加功能设备。"}
+        req = {"source_quote": "The module should be mounted according to the manual.",
+               "description": "宜按手册安装设备模块。"}
         self.assertFalse(_modal_inflation(req))
 
     def test_mixed_modal_source_not_flagged(self) -> None:
         # 引句同时含 shall 与 should:强制表述可能对应 shall 部分,不误标
-        req = {"source_quote": "The AFD shall close. The display should refresh.",
+        req = {"source_quote": "The unit shall close the valve. The display should refresh.",
                "description": "必须关闭阀门。"}
         self.assertFalse(_modal_inflation(req))
 
     def test_pipeline_appends_suspicion(self) -> None:
-        section = {"section_id": "S", "heading": "4.5 AFD1", "block_ids": [],
-                   "text": "The AFD should be mounted according to the manual."}
+        section = {"section_id": "S", "heading": "4.5 Module A", "block_ids": [],
+                   "text": "The module should be mounted according to the manual."}
 
         def chat(system: str, user: str) -> dict:
             return {"requirements": [{
-                "title": "安装方式", "description": "附加功能设备必须按手册安装。",
-                "source_quote": "The AFD should be mounted according to the manual.",
+                "title": "安装方式", "description": "设备模块必须按手册安装。",
+                "source_quote": "The module should be mounted according to the manual.",
                 "type": "functional", "priority": "P2", "labels": ["机械结构"]}]}
 
         req = ai_extract.extract_section(section, chat)[0]
@@ -108,7 +108,7 @@ class DefinitionStubTests(unittest.TestCase):
         self.assertFalse(_is_definition_stub(req, self.TERMS_SECTION))
 
     def test_non_terms_section_never_stub(self) -> None:
-        section = {"section_id": "4.5 AFD1", "heading": "4.5 AFD1", "text": "..."}
+        section = {"section_id": "4.5 Module A", "heading": "4.5 Module A", "text": "..."}
         req = {"title": "无数字的描述", "description": "设备的一般说明。", "source_quote": "text"}
         self.assertFalse(_is_definition_stub(req, section))
 
@@ -147,14 +147,14 @@ class VagueAcceptanceExpansionTests(unittest.TestCase):
 class SelfCheckSupplementTests(unittest.TestCase):
     """自检降碎(0715 第三刀):补漏并入已有需求而非新开碎条;护栏不放宽;并入算收敛进度。"""
 
-    SECTION = {"section_id": "4.6", "heading": "4.6 AFD2", "block_ids": [],
-               "text": ("The AFD2 shall have no influence on metrology. "
-                        "c) a protective seal shall be possible between AFD2 and meter. "
+    SECTION = {"section_id": "4.6", "heading": "4.6 Module B", "block_ids": [],
+               "text": ("The device module shall have no influence on measurement. "
+                        "c) a protective seal shall be possible between the module and the unit. "
                         "After test the readings shall be identical.")}
 
     def _existing(self) -> list[dict]:
-        return [{"title": "AFD2 要求族", "description": "AFD2 相关要求。",
-                 "source_quote": "The AFD2 shall have no influence on metrology.",
+        return [{"title": "设备模块要求族", "description": "设备模块相关要求。",
+                 "source_quote": "The device module shall have no influence on measurement.",
                  "sub_items": [{"label": "a", "text": "无计量影响"}],
                  "acceptance_criteria": ["测试后读数一致"], "notes": ""}]
 
@@ -163,8 +163,8 @@ class SelfCheckSupplementTests(unittest.TestCase):
 
         def chat(system: str, user: str) -> dict:
             return {"requirements": [], "supplements": [{
-                "target_title": "AFD2 要求族",
-                "sub_items": [{"label": "c", "text": "AFD2 与表计间可加保护铅封"}],
+                "target_title": "设备模块要求族",
+                "sub_items": [{"label": "c", "text": "模块与主机间可加保护铅封"}],
                 "acceptance_criteria": ["铅封施加后不影响读数"],
             }]}
 
@@ -193,7 +193,7 @@ class SelfCheckSupplementTests(unittest.TestCase):
 
         def chat(system: str, user: str) -> dict:
             return {"requirements": [], "supplements": [{
-                "target_title": "AFD2 要求族",
+                "target_title": "设备模块要求族",
                 "sub_items": [{"label": "c", "text": "写入对象 0-0:96.3.10.255"}]}]}
 
         extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
@@ -205,7 +205,7 @@ class SelfCheckSupplementTests(unittest.TestCase):
 
         def chat(system: str, user: str) -> dict:
             return {"requirements": [], "supplements": [{
-                "target_title": "AFD2 要求族",
+                "target_title": "设备模块要求族",
                 "sub_items": [{"label": "a", "text": "无计量影响"}],
                 "acceptance_criteria": ["测试后读数一致"]}]}
 
@@ -219,7 +219,7 @@ class SelfCheckSupplementTests(unittest.TestCase):
 
         def chat(system: str, user: str) -> dict:
             return {"requirements": [], "supplements": [{
-                "target_title": "AFD2 要求族",
+                "target_title": "设备模块要求族",
                 "faithfulness_note": "引句为 should,描述用了必须"}]}
 
         extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
@@ -232,21 +232,21 @@ class SelfCheckSupplementTests(unittest.TestCase):
         calls = {"n": 0}
         block_info = {
             "B1": {"block_id": "B1", "requirement_like": True, "noise": False,
-                   "text": "c) a protective seal shall be possible between AFD2 and meter."}}
+                   "text": "c) a protective seal shall be possible between the module and the unit."}}
         section = dict(self.SECTION, block_ids=["B1"])
 
         def chat(system: str, user: str) -> dict:
             calls["n"] += 1
             if calls["n"] == 1:
                 return {"requirements": [{
-                    "title": "AFD2 要求族", "description": "AFD2 相关要求。",
+                    "title": "设备模块要求族", "description": "设备模块相关要求。",
                     "type": "functional", "priority": "P1", "labels": ["附加功能"],
-                    "source_quote": "The AFD2 shall have no influence on metrology.",
+                    "source_quote": "The device module shall have no influence on measurement.",
                     "sub_items": [{"label": "a", "text": "无计量影响"}]}]}
             return {"requirements": [], "supplements": [{
-                "target_title": "AFD2 要求族",
+                "target_title": "设备模块要求族",
                 "sub_items": [{"label": "c",
-                                "text": "a protective seal shall be possible between AFD2 and meter."}]}]}
+                                "text": "a protective seal shall be possible between the module and the unit."}]}]}
 
         results = ai_extract.extract_section(section, chat, self_check=True,
                                              block_info=block_info, self_check_rounds=3)
@@ -267,12 +267,12 @@ class SelfCheckSupplementTests(unittest.TestCase):
             calls["n"] += 1
             if calls["n"] == 1:
                 return {"requirements": [{
-                    "title": "AFD2 要求族", "description": "AFD2 相关要求。",
+                    "title": "设备模块要求族", "description": "设备模块相关要求。",
                     "type": "functional", "priority": "P1", "labels": ["附加功能"],
-                    "source_quote": "The AFD2 shall have no influence on metrology."}]}
+                    "source_quote": "The device module shall have no influence on measurement."}]}
             if calls["n"] == 2:      # 第 1 轮:只有并入(短文本,盖不住未覆盖行)→ 算进度
                 return {"requirements": [], "supplements": [{
-                    "target_title": "AFD2 要求族",
+                    "target_title": "设备模块要求族",
                     "acceptance_criteria": ["跌落后显示可读"]}]}
             return {"requirements": [], "supplements": []}       # 第 2 轮:零进度 → 收敛
 

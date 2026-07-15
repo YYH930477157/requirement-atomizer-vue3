@@ -123,7 +123,7 @@ class CompatibilityTests(unittest.TestCase):
 
     def test_merge_sections_clause_mode_uses_outline_packing(self) -> None:
         sections = [
-            sec("4.6 AFD2", 40),
+            sec("4.6 Clause B", 40),
             sec("4.6.1 Requirements", 2000),
             sec("4.6.2 Test", 2000),
         ]
