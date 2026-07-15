@@ -84,6 +84,181 @@ def clause_key(section: dict[str, Any]) -> str | None:
     return ".".join(parts[:2])
 
 
+# --- 目录子树打包（0715 抽取质量重构,通用规则非章节号硬编码）---------------------
+# 双线对比实证:两级族键 + 族内纯字数贪心会把深层 Requirements/Test 兄弟节切进不同
+# 单元(EN 16314:4.12.3.2 Test/7.18.3.2.2 Test 成了孤立单元 → 模型对孤立测试片段
+# 过度演绎,附录/测试章节内容缺陷率 58% vs 主体 18%)。改为:沿编号层级树自底向上装箱,
+# 整子树能装就整体一单元;装不下才下钻;"要求+测试"语义兄弟(标题词面分类,任意语言的
+# 标准文档通用结构)绑成原子,允许放宽到 2×target 也不拆。
+
+_OUTLINE_NUM_RE = re.compile(r"^(?:Annex\s+([A-Z])\b|([A-Z])\.(\d+(?:\.\d+)*)|(\d+(?:\.\d+)*))",
+                             re.IGNORECASE)
+# 标题语义分类（通用词面）:测试/验证类标题绑到前一个兄弟(其要求节)
+_TEST_HEADING_RE = re.compile(
+    r"\btests?\b|\btest\s+methods?\b|\bverifications?\b|试验|测试|验证|检验", re.IGNORECASE)
+
+
+def outline_path(section: dict[str, Any]) -> tuple | None:
+    """标题 → 层级路径元组："7.13.4.3.1 Test"→(7,13,4,3,1);"A.1.2"→('A',1,2);
+    "Annex A"→('A',);无编号 → None(走旧贪心,兼容散文/标题乱码文档)。"""
+    heading = str(section.get("heading") or section.get("section_id") or "").strip()
+    m = _OUTLINE_NUM_RE.match(heading)
+    if not m:
+        return None
+    if m.group(1):
+        return (m.group(1).upper(),)
+    if m.group(2):
+        return (m.group(2).upper(), *(int(x) for x in m.group(3).split(".")))
+    return tuple(int(x) for x in m.group(4).split("."))
+
+
+def _is_test_heading(section: dict[str, Any]) -> bool:
+    return bool(_TEST_HEADING_RE.search(str(section.get("heading") or "")))
+
+
+def _piece_len(section: dict[str, Any]) -> int:
+    return len(section.get("text") or "") + len(section.get("heading") or "") + 4
+
+
+def _pack_outline_run(run: list[tuple[tuple, dict[str, Any]]], depth: int,
+                      target_chars: int) -> list[list[dict[str, Any]]]:
+    """一段连续同前缀章节 → 原子序列(每个原子=必须同单元的章节列表)。
+
+    规则(按序):①整段 ≤2×target → 整体一个原子(整子树优先);②按 depth+1 前缀切子组,
+    测试类子组绑到前一子组(要求+测试原子);③原子仍超 2×target → 递归下钻;
+    ④相邻小原子在同一父下贪心并到 ≤target(装箱经济性,不跨父)。"""
+    total = sum(_piece_len(s) for _p, s in run)
+    if total <= target_chars * CLAUSE_FAMILY_MAX_FACTOR:
+        return [[s for _p, s in run]]
+
+    child_groups: list[list[tuple[tuple, dict[str, Any]]]] = []
+    for item in run:
+        path, _sec = item
+        key = path[:depth + 1]
+        if child_groups and child_groups[-1][0][0][:depth + 1] == key:
+            child_groups[-1].append(item)
+        else:
+            child_groups.append([item])
+
+    # 测试类子组绑前一子组:整组标题全为测试/验证类 → 与其要求节同原子
+    bound: list[list[tuple[tuple, dict[str, Any]]]] = []
+    for group in child_groups:
+        heads = [s for _p, s in group]
+        if bound and heads and all(_is_test_heading(s) for s in heads):
+            bound[-1].extend(group)
+        else:
+            bound.append(group)
+
+    atoms: list[list[dict[str, Any]]] = []
+    for group in bound:
+        gsize = sum(_piece_len(s) for _p, s in group)
+        deeper = any(len(p) > depth + 1 for p, _s in group)
+        if gsize <= target_chars * CLAUSE_FAMILY_MAX_FACTOR or not deeper or len(group) == 1:
+            atoms.append([s for _p, s in group])
+        else:
+            atoms.extend(_pack_outline_run(group, depth + 1, target_chars))
+
+    # 相邻原子贪心并箱(≤target;超大原子单独成箱,交给 _pack_sections 内部拆)
+    coalesced: list[list[dict[str, Any]]] = []
+    cur: list[dict[str, Any]] = []
+    cur_len = 0
+    for atom in atoms:
+        asize = sum(_piece_len(s) for s in atom)
+        if cur and cur_len + asize > target_chars:
+            coalesced.append(cur)
+            cur, cur_len = [], 0
+        cur.extend(atom)
+        cur_len += asize
+    if cur:
+        coalesced.append(cur)
+    return coalesced
+
+
+# 插入伪标题免疫:脚注/图例/水印行被解析成"标题"会打断章节 run 与兄弟相邻
+# (实证:水印行成"16 章"插在 4.12.2.1/4.12.2.2 之间 → Test 孤立)。三明治判据:
+# 断点处向前看 ≤LOOKAHEAD 节,若能回到当前顶层前缀且夹层各节都小 → 夹层随前节吸收。
+_INTERLOPER_MAX_CHARS = 400
+_INTERLOPER_LOOKAHEAD = 3
+# 微单元折叠:打包尾部残留的孤立小单元(伪标题/空壳章节头)并入前一单元,减少碎单元
+_MIN_UNIT_CHARS = 120
+
+
+def _absorb_interlopers(sections: list[dict[str, Any]], start: int,
+                        top: tuple) -> tuple[list[tuple[tuple, dict[str, Any]]], int]:
+    """从 start 收集同顶层前缀 run,夹层伪标题按三明治判据随前节吸收(挂前节 path)。"""
+    run: list[tuple[tuple, dict[str, Any]]] = []
+    j = start
+    while j < len(sections):
+        p = outline_path(sections[j])
+        if p is not None and p[:1] == top:
+            run.append((p, sections[j]))
+            j += 1
+            continue
+        # 断点:向前看能否回到 top,且夹层各节都足够小
+        k = j
+        small = True
+        while k < len(sections) and k - j < _INTERLOPER_LOOKAHEAD:
+            pk = outline_path(sections[k])
+            if pk is not None and pk[:1] == top:
+                break
+            if _piece_len(sections[k]) > _INTERLOPER_MAX_CHARS:
+                small = False
+                break
+            k += 1
+        resumed = (small and k < len(sections) and k - j < _INTERLOPER_LOOKAHEAD
+                   and run)
+        if not resumed:
+            break
+        anchor_path = run[-1][0]
+        for m in range(j, k):
+            run.append((anchor_path, sections[m]))   # 夹层挂前节 path,内容原位保留
+        j = k
+    return run, j
+
+
+def _fold_tiny_units(units: list[dict[str, Any]], target_chars: int) -> list[dict[str, Any]]:
+    # 阈值随 target 缩放:小 target(测试夹具/特殊配置)下不误折正常单元
+    threshold = min(_MIN_UNIT_CHARS, max(1, target_chars // 4))
+    folded: list[dict[str, Any]] = []
+    for u in units:
+        if folded and len(u.get("text") or "") < threshold:
+            prev = folded[-1]
+            prev["text"] = (prev.get("text") or "") + "\n\n" + (u.get("text") or "")
+            prev["block_ids"] = list(prev.get("block_ids") or []) + list(u.get("block_ids") or [])
+            prev["source_blocks"] = list(prev.get("source_blocks") or []) + list(u.get("source_blocks") or [])
+            prev["drift_source"] = (prev.get("drift_source") or prev["text"]) + "\n" + \
+                (u.get("drift_source") or u.get("text") or "")
+            continue
+        folded.append(u)
+    return folded
+
+
+def pack_by_outline(sections: list[dict[str, Any]], *,
+                    target_chars: int = DEFAULT_MERGE_CHARS) -> list[dict[str, Any]]:
+    """章节 → LLM 输入单元(目录子树打包)。编号章节走层级树装箱;无编号连续段落
+    沿用旧贪心(_pack_sections)。输出结构/顺序契约与 merge_sections 一致。"""
+    units: list[dict[str, Any]] = []
+    i = 0
+    while i < len(sections):
+        path = outline_path(sections[i])
+        if path is None:
+            j = i
+            while j < len(sections) and outline_path(sections[j]) is None:
+                j += 1
+            units.extend(_pack_sections(sections[i:j], target_chars=target_chars,
+                                        split_chars=target_chars))
+            i = j
+            continue
+        run, j = _absorb_interlopers(sections, i, path[:1])
+        for atom in _pack_outline_run(run, 1, target_chars):
+            # 原子内可能仍超限(单节超大):交给 _pack_sections,其 target 放宽到族上限,
+            # 单节超限走原 _split_text 拆分(drift_source 保整章语义不变)
+            units.extend(_pack_sections(atom, target_chars=target_chars * CLAUSE_FAMILY_MAX_FACTOR,
+                                        split_chars=target_chars))
+        i = j
+    return _fold_tiny_units(units, target_chars)
+
+
 CLAUSE_FAMILY_MAX_FACTOR = 2
 
 
@@ -105,13 +280,19 @@ def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAUL
     旧贪心合并（向后兼容散文/标题乱码文档）。
     """
     chapter_mode = unit_mode == "chapter"
+    if not chapter_mode:
+        # 0715 重构:clause 模式改目录子树打包——整子树优先、要求/测试语义绑定、
+        # 下钻不跨父贪心。旧两级族键+族内纯字数贪心会把深层 Requirements/Test 拆开
+        # (双线对比实证:孤立 Test 单元 → 内容缺陷率 58%)。
+        return pack_by_outline(sections, target_chars=target_chars)
+
     groups: list[tuple[str | None, list[dict[str, Any]]]] = []
     for sec in sections:
         key = clause_key(sec)
-        if chapter_mode and key is not None:
+        if key is not None:
             key = key.split(".")[0]   # 整章：4.14.1 → "4"（同章条款全部同单元）
         if groups and groups[-1][0] == key and key is not None:
-            groups[-1][1].append(sec)      # 同条款族 → 同组
+            groups[-1][1].append(sec)      # 同章 → 同组
         elif groups and groups[-1][0] is None and key is None:
             groups[-1][1].append(sec)      # 连续无编号 → 同组（旧贪心处理）
         else:
@@ -119,13 +300,8 @@ def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAUL
 
     units: list[dict[str, Any]] = []
     for key, group in groups:
-        if chapter_mode:
-            limit = CHAPTER_MAX_CHARS if key is not None else target_chars
-            split = CHAPTER_MAX_CHARS if key is not None else target_chars
-        else:
-            limit = target_chars * CLAUSE_FAMILY_MAX_FACTOR if key is not None else target_chars
-            split = target_chars
-        units.extend(_pack_sections(group, target_chars=limit, split_chars=split))
+        limit = CHAPTER_MAX_CHARS if key is not None else target_chars
+        units.extend(_pack_sections(group, target_chars=limit, split_chars=limit if key is not None else target_chars))
     return units
 
 

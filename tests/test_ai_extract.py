@@ -79,10 +79,15 @@ class ClauseFamilyGroupingTests(unittest.TestCase):
         self.assertIn("4.6.1", units[0]["text"])
         self.assertIn("4.6.2", units[0]["text"])
 
-    def test_different_clauses_never_merged(self) -> None:
+    def test_complete_families_may_share_unit_but_never_split(self) -> None:
+        # 0715 目录子树打包:意图升级——旧规则"异族不拼"针对的是族中间切一刀;
+        # 新规则:**完整**小族可同箱(整子树优先,省调用),族本体绝不被切开
         sections = [self._sec("4.5 AFD1", "short a."), self._sec("4.6 AFD2", "short b.")]
         units = ai_extract.merge_sections(sections, target_chars=2800)
-        self.assertEqual(len(units), 2)                                # 4.5 与 4.6 异族不拼
+        self.assertEqual(len(units), 1)                                # 完整小族同箱
+        big = [self._sec("4.5 AFD1", "a" * 3000), self._sec("4.6 AFD2", "b" * 3000)]
+        units = ai_extract.merge_sections(big, target_chars=2800)     # 6000 > 2×2800
+        self.assertEqual(len(units), 2)                                # 装不下则各自成箱,不腰斩
 
     def test_numberless_sections_use_legacy_greedy_merge(self) -> None:
         sections = [self._sec("Alpha", "x" * 40), self._sec("Beta", "y" * 40)]
@@ -159,10 +164,16 @@ class ChapterUnitModeTests(unittest.TestCase):
         self.assertIn("4.14.1", units[0]["text"])                # 跨条款族同章合并
         self.assertIn("5.1", units[1]["text"])
 
-    def test_clause_mode_unchanged_by_default(self) -> None:
-        sections = [self._sec("4.6.1 R", "x" * 50), self._sec("4.14.1 R", "y" * 50)]
-        default_units = ai_extract.merge_sections(sections)
-        self.assertEqual(len(default_units), 2)                  # 默认仍条款族分组
+    def test_clause_mode_respects_double_target_cap(self) -> None:
+        # 0715 后默认(clause)=目录子树打包:上限 2×target,与整章模式(24k 帽)判然有别
+        sections = [self._sec("4.6.1 R", "x" * 3000), self._sec("4.14.1 R", "y" * 3000),
+                    self._sec("4.15.1 R", "z" * 3000)]
+        default_units = ai_extract.merge_sections(sections, target_chars=2800)
+        self.assertGreater(len(default_units), 1)                # clause 不整章吞
+        for u in default_units:
+            self.assertLessEqual(len(u["text"]), 2800 * 2 + 100)
+        chapter_units = ai_extract.merge_sections(sections, unit_mode="chapter")
+        self.assertEqual(len(chapter_units), 1)                  # chapter 模式仍整章
 
     def test_oversize_chapter_splits_at_member_boundary(self) -> None:
         big = ai_extract.CHAPTER_MAX_CHARS // 2 + 100
