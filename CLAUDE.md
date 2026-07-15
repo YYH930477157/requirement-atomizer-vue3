@@ -1,7 +1,7 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
-> 状态快照截至 2026-07-04，里程碑推进后请同步更新本文件。
+> 状态快照截至 2026-07-14，里程碑推进后请同步更新本文件。
 
 ## 项目是什么
 
@@ -26,7 +26,7 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 真实测试文档：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.docx`（机器相关路径，换机器需调整）
 - 真实测试 PDF：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.pdf`（同目录文字层 PDF；旧 `D:\Codex\abnt_converted.pdf` 已失效）
 - **Blue Book Ed.16 两 PDF**（P2 行为 RAG 语料，版权文件不进仓）：同目录 `Blue-Book-Ed-16-part-{1,2}-V1.0.pdf`；索引编译 `python -m blue_book_ingest --pdf <p1> --pdf <p2> --out out/bluebook`（约 2 分钟，产物 gitignored）
-- 测试命令：`python -m unittest discover -s tests`（2026-07-04：**651 tests 0 skip**；venv 在 `.venv/`，Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时 GUI 测试 skip）
+- 测试命令：`python -m unittest discover -s tests`（2026-07-14：**1082 tests 0 skip** + ui `vitest 77` + vue-tsc；Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时 GUI 测试 skip）
 - golden 基线输出 `out/abnt_nbr_16968_atomizer_v5/` 已于 2026-07-04 重新生成（真实 ABNT docx + **三个 --kb + domain-pack**，缺 KB 会假漂移）；测试用例只做 unittest.TestCase（**pytest 未装**，模块级 `def test_*` 会被静默跳过）
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
@@ -61,6 +61,14 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **LLM 端点（本机）**：小米 MiMo `https://token-plan-cn.xiaomimimo.com/v1`（`mimo-v2.5`/`mimo-v2.5-pro`，推理模型）；**该端点只认 `x-api-key` 头**——`llm_client` 已双头同发兼容。密钥经 GUI 设置面板 safeStorage 加密存、内存解密注入 env，绝不落盘。
 - **双轨行为需求分工（建议已记录，终局待用户拍板）**：`assemble`（A 轨：atoms+llm_review，P1-P5）= **DLMS profile 类文档**的结构规格主交付物（蓝皮书行为富化挂此轨）；`merged_spec`+`analyze`（B 轨：AI 抽取+批注裁决）= **非 DLMS 剖面类文档**（散文型标准，无 COSEM 对象表，如 AFD/SM-CG 附加功能标准）的行为/软件需求主交付物。两轨并存各司其职，交付时按文档类型选主件。
 - **有据缓建（实测量化为零收益，勿投机重启）**：① analyze 接蓝皮书——B 轨需求无接口类名可匹配（test5 多词类名 0/288）；② OBIS→class 连接提升蓝皮书覆盖——ABNT 行为 atom 正文 0 个 OBIS 形码（码全在表格→P1）；③ 类名归一化/别名——ABNT 未命中全是抽取噪声或 Green Book 领域引用，归一化救回 0 条；④ Part1 OBIS 节（70 节已摄入）——留给将来 OBIS 语义富化，暂无消费者。重启任一项前先在新语料上重跑探针。
+
+## 重大更新（2026-07-14）——整体 review 三批次：速度与效果 25 笔（已合 main）
+
+- **量化依据（EN 16314 全量真实 trace）**：一轮 ~1030 次 LLM 调用累计 5.5h 模型时间;审查 371 次/147min 最大单项;抽取轨 164/781 次 429 限流(有效并发 3.2/4);富化两轨 66+34.5min 逐条调用。
+- **速度**：审查并发接通 GUI 设置+全局默认 4→8;**富化合批**(软需同模块 `RATOMIZER_ANALYZE_BATCH`=4、硬件×2、装配无蓝皮书条目 `RATOMIZER_ENRICH_BATCH`=6;enrich_slot 槽位映射宁缺勿错、失败回退单条;缓存 key 逐条与批组成无关;护栏逐条不放宽——真 mimo 验收零串条);**429 自适应闸门**(`RATOMIZER_LLM_ADAPTIVE`,按端点全局冷却+在飞上限 AIMD);JSON 模式默认开(端点不支持 4xx 一次记住降级);分析 prompt 按稳定性降序重排吃 KV 前缀缓存;**缓存 key 收窄**(软背景 doc_context/siblings/exemplars 进 prompt 不进 key——背景漂移不再整库报废);裁决重建防抖(`RATOMIZER_REBUILD_DEBOUNCE_S`=1.5s);api_server 装配路径按源文件签名 memo(deepcopy 防串改);链内 8 阶段 summary 白算跳过。
+- **效果**：冻结归属注入富化 prompt(analyze-llm-v6,模型只写不判);富化部分降级上屏(note+样本消息);**遗漏候选进澄清清单**(uncovered_samples 带 block_id 溯源,TIER_GAP 独立档不进就绪门,clarification/v3-gap-tier);**双渲染器信号补齐**(应用内补「所属研发功能」整块+跨章合并置信徽章≥2源/<0.9 警示;静态 HTML 补 consistency_flags;契约夹具锁三信号);**覆盖/遗漏统一口径** `merged_consistency.is_coverage_candidate`(剔除标题/引用书目/非正文假阳性;requirement_like 候选生成宽口径不动);**PDF 水印串确定性清除**(三清洗点;ABNT A/B 逐字节零变化、EN16314 61→0);guidance 模板编码软标 template-sourced(无声放行契约作废);review_insights 接通消费端(GET /review-insights+工作台「裁决复盘建议」卡);**裁决样本回灌抽取**(accepted→「模块+标题」few-shot,软背景不进指纹);functional_key 构造规则+priority 判级基准(ai-extract-v16,真实小样 P0/P1/P2 分级生效)。
+- **数据否决记入有据缓建（勿投机重启,重启前重跑探针）**：⑤ 零 requirement_like 章节跳 LLM——省 35% 抽取调用但真实 158 条需求有 16 条(10%)完全来自这些单元(定义类条款规则认不出);⑥ assemble 内同文件读 2-4 遍去重——动 5 个 golden 邻接模块换每链 1-2s。
+- 测试规模 **1082 unittest + 77 vitest**;新增回归集中在 `tests/test_batch{1,2,3}_0714.py`。
 
 ## 重大更新（2026-07-06）——TODO 全量清扫（架构债+组件增强）与深测裁决
 
