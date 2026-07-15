@@ -192,6 +192,36 @@ def section_fingerprint(section: dict[str, Any], model: str, context_key: str = 
     return digest[:24]
 
 
+EXTRACT_EXEMPLARS_MAX = 8
+
+
+def render_extract_exemplars(bank: dict[str, Any]) -> str:
+    """裁决样本 → 抽取轨 few-shot（0714 批次三 E6）。
+
+    此前裁决只反哺 analyze 富化,专家对**抽取粒度/模块判断**的验收从不回灌抽取——
+    抽取质量不随使用积累。只用「模块+标题」（不携描述/数值,最小化搬运面）;
+    每模块最多 2 条、总量 8 条（模块多样性优先）;按 rid 排序确定性可复现。
+    """
+    accepted = bank.get("accepted") or {}
+    by_module: dict[str, list[str]] = {}
+    for rid in sorted(accepted):
+        entry = accepted.get(rid) or {}
+        module = str(entry.get("module") or "").strip()
+        title = str(entry.get("title") or "").strip()
+        if not module or not title:
+            continue
+        titles = by_module.setdefault(module, [])
+        if len(titles) < 2:
+            titles.append(title[:60])
+    lines: list[str] = []
+    for module in sorted(by_module):
+        for title in by_module[module]:
+            lines.append(f"-【{module}】{title}")
+            if len(lines) >= EXTRACT_EXEMPLARS_MAX:
+                return "\n".join(lines)
+    return "\n".join(lines)
+
+
 def build_section_prompt(section: dict[str, Any]) -> str:
     payload = {"heading": section.get("heading"), "text": section.get("text", "")[:12000]}
     base = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -710,7 +740,8 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
 def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = "",
                     self_check: bool = False,
                     block_info: dict[str, dict[str, Any]] | None = None,
-                    self_check_rounds: int | None = None) -> list[dict[str, Any]]:
+                    self_check_rounds: int | None = None,
+                    exemplars: str = "") -> list[dict[str, Any]]:
     """对一个章节调 chat 抽取需求，归一 + 分级漂移护栏。doc_context 注入文档全局背景。
 
     self_check：抽完**收敛式**查漏补缺——每轮对着当前已抽集重算未覆盖清单再补，直到某轮零新增
@@ -719,8 +750,18 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
     清单）；全覆盖则提前停。无 block_info 回退全量盲查，靠"零新增"收敛。自检失败不致命——保留已抽。
     """
     user = build_section_prompt(section)
+    prefix_parts: list[str] = []
     if doc_context:
-        user = f"{doc_context}\n\n---\n以下是待抽取的**当前章节**（需求内容与 source_quote 只能来自这段原文）：\n{user}"
+        prefix_parts.append(doc_context)
+    if exemplars:
+        # 裁决回灌（0714 批次三 E6）：专家已验收范例作模块判定/粒度 few-shot。软背景不进
+        # 章节指纹（S3 同理）;漂移基线仍是章节原文——范例里的编码/数值被搬运即照常拦截。
+        prefix_parts.append(
+            "【专家已验收范例——模块判定与需求粒度基准,仅供对齐;"
+            "范例中的数值/编码/内容一律不得搬运进本章节需求】\n" + exemplars)
+    if prefix_parts:
+        joined = "\n\n".join(prefix_parts)
+        user = f"{joined}\n\n---\n以下是待抽取的**当前章节**（需求内容与 source_quote 只能来自这段原文）：\n{user}"
     context_ints = frozenset(extract_ints(doc_context)) if doc_context else frozenset()
     payload = chat(SYSTEM_PROMPT, user)
     raw_reqs = payload.get("requirements") if isinstance(payload, dict) else None
@@ -797,6 +838,7 @@ def extract_all(
     self_check: bool = False,
     self_check_rounds: int | None = None,
     block_info: dict[str, dict[str, Any]] | None = None,
+    exemplars: str = "",
 ) -> list[dict[str, Any]]:
     """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。
 
@@ -842,7 +884,8 @@ def extract_all(
         idx, section, fp = item
         try:
             return idx, fp, extract_section(section, chat, doc_context, self_check, block_info,
-                                            self_check_rounds=rounds or None), True
+                                            self_check_rounds=rounds or None,
+                                            exemplars=exemplars), True
         except LLMError as exc:  # 最佳努力：该章节降级、不崩、不缓存（留待重跑）
             LOGGER.warning("AI 抽取章节失败：%s", exc)
             return idx, fp, [], False
@@ -1117,6 +1160,13 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         if term_map:   # 中英术语对照：全文统一译法（折进 context_key → 指纹自动失效）
             doc_context = f"{doc_context}\n{term_map}" if doc_context else term_map
         block_info = {str(b.get("block_id")): b for b in blocks if b.get("block_id")}  # 定向自检/覆盖率用
+        # 裁决回灌（E6）：样本库 few-shot 注入抽取（软背景不进指纹,加载失败零注入不阻断）
+        try:
+            from adjudication_bank import load_bank, resolve_bank_path
+            bank_exemplars = render_extract_exemplars(load_bank(resolve_bank_path()))
+        except Exception as exc:  # pragma: no cover - 样本库异常不影响抽取
+            LOGGER.warning("裁决样本库加载失败（抽取零注入）：%s", exc)
+            bank_exemplars = ""
         extract_stats: dict[str, Any] = {}
         requirements = extract_all(sections, chat, model=config.model,
                                    cache_path=out_dir / AI_EXTRACT_CACHE,
@@ -1125,7 +1175,8 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                                    stats=extract_stats,
                                    doc_context=doc_context,
                                    self_check=resolve_self_check(self_check),
-                                   block_info=block_info)
+                                   block_info=block_info,
+                                   exemplars=bank_exemplars)
         ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
         code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
         int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
