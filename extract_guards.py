@@ -120,9 +120,12 @@ def _num_multiset(text: str) -> tuple[str, ...]:
 
 
 def _gram_jaccard(a: str, b: str, n: int = 3) -> float:
-    """去空白字符 n-gram Jaccard。短文本(<2n)退回精确比较,不给假高分。"""
-    na = re.sub(r"\s+", "", str(a or ""))
-    nb = re.sub(r"\s+", "", str(b or ""))
+    """去空白+标点字符 n-gram Jaccard。短文本(<2n)退回精确比较,不给假高分。
+
+    v6 校准:标点/下划线剥离后真复读(P_max↔Pmax、≤↔不超过格式变体)J=0.53-0.67,
+    语义不同对 0.41(异档数值对靠数字守卫另拦)——0.5 阈值可分离。"""
+    na = re.sub(r"[\W_]+", "", str(a or ""))
+    nb = re.sub(r"[\W_]+", "", str(b or ""))
     if len(na) < 2 * n or len(nb) < 2 * n:
         return 1.0 if na and na == nb else 0.0
     ga = {na[i:i + n] for i in range(len(na) - n + 1)}
@@ -132,10 +135,13 @@ def _gram_jaccard(a: str, b: str, n: int = 3) -> float:
 
 # 中文引用词+编号(表8/条款4.9.2/附录D…)——产出侧是中文,text_normalize 只剥英文引用词
 _CN_REF_RE = re.compile(r"(?:表|图|条款|章节|附录|第)\s*[0-9A-Z]+(?:\.\d+)*\s*(?:节|章|条)?")
+# 型号/接口指代符(RS232/RS-232/IP54/JTAG2…):字母≥2 后紧跟数字≥2 是命名不是数值。
+# 数值+单位是数字在前(20mA),不会误伤。v6 实测:验收因枚举 RS232 被整行误杀清空
+_DESIGNATOR_RE = re.compile(r"\b[A-Za-z]{2,}-?\d{2,}\b")
 
 
 def strip_produced_refs(text: str) -> str:
-    """剥除产出文本里的引用性编号(条款/标准号/表图号),供**交付字段整移判定**分母用。
+    """剥除产出文本里的引用性编号(条款/标准号/表图号/型号指代符),供**交付字段整移判定**分母用。
 
     v5 审计:验收行因带 EN 标准号示例被"无依据数字"整行误移进 notes,把核心阈值
     (≤1/3 MPE)一起带走——引用编号是"地址"不是"数值",不该触发整移。
@@ -144,6 +150,7 @@ def strip_produced_refs(text: str) -> str:
     s = strip_reference_numbers(text)
     s = _STANDARD_REF_RE.sub(" ", s)
     s = _CN_REF_RE.sub(" ", s)
+    s = _DESIGNATOR_RE.sub(" ", s)
     return s
 
 
@@ -226,6 +233,20 @@ def _modal_inflation(req: dict[str, Any]) -> bool:
     produced = " ".join([str(req.get("title") or ""), str(req.get("description") or "")]
                         + [str(s.get("text") or "") for s in req.get("sub_items") or []])
     return bool(_PRODUCED_STRONG_RE.search(produced))
+
+
+_MODAL_SOFTEN_MAP = [("必须", "宜"), ("严禁", "不宜"), ("不得", "不宜"), ("禁止", "不宜")]
+
+
+def _soften_modals(text: str) -> str:
+    """把强制情态词软化为建议级(should→宜)——仅在情态升格实锤时由调用方使用。
+
+    v6 审计:should→必须 升格反复出现且 prompt 约束挡不住(u36 差评);引句是
+    should-only 时强制措辞是确定性可证的误译,按引句校正比只挂软标更诚实。"""
+    s = str(text or "")
+    for hard, soft in _MODAL_SOFTEN_MAP:
+        s = s.replace(hard, soft)
+    return s
 
 
 def _norm_standard_ref(token: str) -> str:

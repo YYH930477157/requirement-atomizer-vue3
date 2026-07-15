@@ -55,7 +55,9 @@ class ModalInflationTests(unittest.TestCase):
 
         req = ai_extract.extract_section(section, chat)[0]
         self.assertIn("情态升格待核", req.get("suspicion_reasons") or [])
-        self.assertIn("情态升格待核", req["notes"])
+        # 七刀合同升级:只挂"待核"→确定性软化+留痕(v6 审计 should→必须反复出现,prompt 挡不住)
+        self.assertIn("情态已按引句校正", req["notes"])
+        self.assertNotIn("必须", req["description"])
 
 
 class ForeignStandardRefTests(unittest.TestCase):
@@ -780,6 +782,125 @@ class ThresholdTableConsistencyTests(unittest.TestCase):
         req = {"description": "对于1型阀门,泄漏限值见阈值表。",
                "acceptance_criteria": [], "threshold_table": self.TT}
         self.assertEqual(_threshold_desc_mismatch(req), [])
+
+
+class AnchorQualityTests(unittest.TestCase):
+    """溯源锚点质量门(v6 回归教训:正文编号行被 PDF 标成标题块,"## 3 % by gaseous
+    volume…"当成"第 3 章"覆盖了正确的 D.3.3)。"""
+
+    def test_bare_integer_heading_not_used_as_override(self) -> None:
+        section = {"section_id": "D", "heading": "Annex D", "block_ids": [],
+                   "text": ("## 3 % by gaseous volume of a toluene mixture for 42 days\n"
+                            "After the exposure the valve shall pass the leakage test.")}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "暴露后泄漏测试", "description": "化学暴露后阀门必须通过泄漏测试。",
+                "source_section": "D.3.3 Test 2",
+                "source_quote": "After the exposure the valve shall pass the leakage test.",
+                "type": "functional", "priority": "P1", "labels": []}]}
+
+        req = ai_extract.extract_section(section, chat, self_check=False)[0]
+        self.assertEqual(req["source_section"], "D.3.3 Test 2")   # 裸整数锚点不覆盖
+        self.assertNotIn("溯源节号按原文校正", req["notes"])
+
+    def test_letter_clause_heading_supported(self) -> None:
+        section = {"section_id": "D", "heading": "Annex D", "block_ids": [],
+                   "text": ("## D.3.3 Test 2\n"
+                            "After the exposure the valve shall pass the leakage test.")}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "暴露后泄漏测试", "description": "化学暴露后阀门必须通过泄漏测试。",
+                "source_section": "7.4 Metrological influence",
+                "source_quote": "After the exposure the valve shall pass the leakage test.",
+                "type": "functional", "priority": "P1", "labels": []}]}
+
+        req = ai_extract.extract_section(section, chat, self_check=False)[0]
+        self.assertTrue(req["source_section"].startswith("D.3.3"))
+
+    def test_letter_clause_claim_kept_under_same_annex(self) -> None:
+        # claimed=D.3.3(细) vs derived=Annex D(粗):同附录,保留更细的 claimed
+        self.assertEqual(ai_extract._sec_anchor_key("D.3.3 Test 2"), ("clause", "D.3.3"))
+        self.assertEqual(ai_extract._sec_anchor_key("Annex D (normative)"), ("annex", "D"))
+
+
+class ModalSofteningTests(unittest.TestCase):
+    """情态升格确定性软化(v6 差评 u36:should→必须,prompt 约束挡不住)。"""
+
+    def test_should_quote_softens_produced_must(self) -> None:
+        section = {"section_id": "7", "heading": "7.13 Firmware", "block_ids": [],
+                   "text": "Special consideration should be made for the control of the valve."}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "固件升级阀门控制考虑", "description": "固件升级过程必须对阀门控制给予特殊考虑。",
+                "source_quote": "Special consideration should be made for the control of the valve.",
+                "type": "constraint", "priority": "P1", "labels": []}]}
+
+        req = ai_extract.extract_section(section, chat, self_check=False)[0]
+        self.assertNotIn("必须", req["description"])
+        self.assertIn("宜", req["description"])
+        self.assertIn("情态已按引句校正", req["notes"])
+
+    def test_shall_quote_untouched(self) -> None:
+        section = {"section_id": "7", "heading": "7.13 Valve", "block_ids": [],
+                   "text": "The valve shall close within 5 s."}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "阀门关闭时限", "description": "阀门必须在 5 s 内关闭。",
+                "source_quote": "The valve shall close within 5 s.",
+                "type": "functional", "priority": "P0", "labels": []}]}
+
+        req = ai_extract.extract_section(section, chat, self_check=False)[0]
+        self.assertIn("必须", req["description"])   # shall 引句:强制措辞合法,不动
+
+
+class DesignatorExemptionTests(unittest.TestCase):
+    """型号指代符豁免(v6 实测:验收因枚举 RS232 被"无依据数字"整行误杀清空)。"""
+
+    def test_rs232_in_acceptance_not_moved(self) -> None:
+        section = {"section_id": "5", "heading": "5.2 Sealing", "block_ids": [],
+                   "text": "All ports shall be protected by a physical seal."}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "端口封印保护", "description": "所有端口必须有物理封印保护。",
+                "source_quote": "All ports shall be protected by a physical seal.",
+                "acceptance_criteria": ["检查 USB、RS232、JTAG 等全部物理接口均被封印覆盖"],
+                "type": "functional", "priority": "P1", "labels": []}]}
+
+        req = ai_extract.extract_section(section, chat, self_check=False)[0]
+        self.assertEqual(len(req["acceptance_criteria"]), 1)
+        self.assertIn("RS232", req["acceptance_criteria"][0])
+
+    def test_fabricated_value_still_moved(self) -> None:
+        section = {"section_id": "5", "heading": "5.2 Sealing", "block_ids": [],
+                   "text": "All ports shall be protected by a physical seal."}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "端口封印保护", "description": "所有端口必须有物理封印保护。",
+                "source_quote": "All ports shall be protected by a physical seal.",
+                "acceptance_criteria": ["封印耐受 500 N 拉力不脱落"],   # 500 N 无据
+                "type": "functional", "priority": "P1", "labels": []}]}
+
+        req = ai_extract.extract_section(section, chat, self_check=False)[0]
+        self.assertEqual(req["acceptance_criteria"], [])   # 编造数值仍整移
+        self.assertIn("500", req["notes"])
+
+
+class MetaDiscourseBroadeningTests(unittest.TestCase):
+    """元话语词表扩充(v6 泄漏实句:整合进/整合至/需求应明确/描述已覆盖…无补充)。"""
+
+    def test_v6_leak_sentences_stripped(self) -> None:
+        for leak in ("需将表3中的具体测试条件与性能准则整合进该需求的描述和验收中。",
+                     "子项b的适用范围条件需整合至需求描述中。",
+                     "需求应明确累计器的功能逻辑必须考虑预测的能量使用。",
+                     "描述已覆盖要求，无补充。"):
+            out = ai_extract._strip_meta_text("表计须在 5 s 内关阀。" + leak)
+            self.assertEqual(out, "表计须在 5 s 内关阀。", leak)
 
 
 class MoveExemptionTests(unittest.TestCase):

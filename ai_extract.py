@@ -204,7 +204,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v3"  # v3:资料性区段降级+溯源校正+元话语剥除+表文一致性+去重加固
+EXTRACT_GUARDS_VERSION = "guards-v4"  # v4:锚点质量门+指代符豁免+情态软化+去重标点底座;v3:资料性区段降级+溯源校正+元话语剥除+表文一致性
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -686,8 +686,16 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
                 _append_note(req, "资料性来源待核（本单元为 informative 附录/资料性内容,标成 P0/P1 强制需求请人工确认）")
         # 忠实性守恒（0715 内容审计:29 处误读全数绕过旧护栏——旧护栏只看编码/数字）
         if _modal_inflation(req):
+            # v6 审计:should→必须 升格反复出现,prompt 约束挡不住(u36 差评);引句
+            # should-only 时强制措辞是确定性可证的误译——按引句软化(必须→宜),
+            # 软标保留供人工复核
+            from extract_guards import _soften_modals
+            req["title"] = _soften_modals(req["title"])
+            req["description"] = _soften_modals(req["description"])
+            for item in req.get("sub_items") or []:
+                item["text"] = _soften_modals(item.get("text"))
             suspicion.append("情态升格待核")
-            _append_note(req, "情态升格待核（引句为 should/建议性表述,正文用了必须/不得等强制表述——请核对约束强度）")
+            _append_note(req, "情态已按引句校正（引句为 should/建议性表述,强制措辞已软化为「宜」,请复核约束强度）")
         foreign_refs = _foreign_standard_refs(req, source)
         if foreign_refs:
             suspicion.append("标准号待核")
@@ -848,8 +856,8 @@ def _supplement_clause_mismatch(sup_text: str, section_text: str, target_section
 # 词表只收多字强标记——"自检/查漏/补漏/已覆盖"等短词是计量领域真实需求词面,不进表
 _META_DISCOURSE_RE = re.compile(
     r"已抽需求|已抽取的需求|不单独成需求|不再单独成|查漏补缺|补漏内容|"
-    r"整合进需求|已在后续条款|已在验收标准|本需求的背景|作为背景或扩展|"
-    r"自检(?:补充|并入|复核)")
+    r"整合[进至]|已在后续条款|已在验收标准|本需求的背景|作为背景或扩展|"
+    r"自检(?:补充|并入|复核)|需求应明确|描述已覆盖|已覆盖要求|无补充")
 
 
 def _strip_meta_text(text: str) -> str:
@@ -1075,8 +1083,12 @@ def _in_informative_range(req: dict[str, Any], section: dict[str, Any]) -> bool:
     return any(s <= pos < e for s, e in ranges)
 
 
+# 锚点质量门(v6 回归教训:PDF 把正文编号行/图注标成标题块——"## 3 % by gaseous
+# volume…"被当"第 3 章"覆盖了正确的 D.3.3):数字锚点必须带点(裸整数=章号与图注
+# 无法区分,不作覆盖证据);支持字母条款(D.3.3);标题尾 ≤60 字(超长=正文行)
 _HEADING_ANCHOR_RE = re.compile(
-    r"(?m)^(?:##+\s*(\d+(?:\.\d+)*)\s*(.*)|\s*(Annex\s+[A-Z])\s*(\((?:informative|normative)\))\s*)$",
+    r"(?m)^(?:##+\s*((?:\d+(?:\.\d+)+|[A-Z]\.\d+(?:\.\d+)*))\s*(.{0,60})"
+    r"|\s*(Annex\s+[A-Z])\s*(\((?:informative|normative)\))\s*)$",
     re.IGNORECASE)
 
 
@@ -1084,7 +1096,7 @@ def _derive_source_section(quote: str, section_text: str) -> str:
     """由引句在原文中的位置取最近前置小节标题——溯源节号的确定性证据。
 
     v5 审计:某单元 5 条 source_section 全被 LLM 标成邻近章节号(quote 本身逐字正确),
-    原文标题是硬证据,以它为准。定位不到引句/引句前无标题行 → 返回空(不裁)。"""
+    原文标题是硬证据,以它为准。定位不到引句/引句前无合格标题行 → 返回空(不裁)。"""
     quote = str(quote or "").strip()
     text = str(section_text or "")
     if not quote:
@@ -1106,22 +1118,39 @@ def _derive_source_section(quote: str, section_text: str) -> str:
     return best[:100]
 
 
+def _sec_anchor_key(s: str) -> tuple[str, str] | None:
+    """节号语义键:数字/字母条款号 或 附录字母。识别不出返回 None(不作证据)。"""
+    s = str(s or "").strip()
+    m = re.match(r"(\d+(?:\.\d+)*|[A-Z]\.\d+(?:\.\d+)*)\b", s)
+    if m:
+        return ("clause", m.group(1))
+    m = re.match(r"(?i)annex\s+([A-Z])\b", s)
+    if m:
+        return ("annex", m.group(1).upper())
+    return None
+
+
 def _correct_source_section(req: dict[str, Any], section: dict[str, Any]) -> None:
     derived = _derive_source_section(req.get("source_quote"), section.get("text"))
     if not derived:
         return
+    dk = _sec_anchor_key(derived)
+    if dk is None:
+        return   # 派生结果本身不像节号:不作证据(宁缺勿错)
     claimed = str(req.get("source_section") or "").strip()
-    m_d = _CLAUSE_TAIL_RE.match(derived)
-    m_c = _CLAUSE_TAIL_RE.match(claimed)
-    if m_d and m_c:
-        dn, cn = m_d.group(1), m_c.group(1)
-        if dn == cn or dn.startswith(cn + ".") or cn.startswith(dn + "."):
-            return   # 一致或互为前缀(粗细粒度差异):不动
-    else:
-        d_ann = re.match(r"(?i)\s*annex\s+([A-Z])", derived)
-        c_ann = re.match(r"(?i)\s*annex\s+([A-Z])", claimed)
-        if d_ann and c_ann and d_ann.group(1).casefold() == c_ann.group(1).casefold():
-            return   # 同一附录,不动
+    ck = _sec_anchor_key(claimed)
+    if ck is not None:
+        if dk == ck:
+            return
+        if dk[0] == ck[0] == "clause":
+            dn, cn = dk[1], ck[1]
+            if dn.startswith(cn + ".") or cn.startswith(dn + "."):
+                return   # 互为前缀(粗细粒度差异):不动
+        # 字母条款与同字母附录互认(claimed=D.3.3 与 derived=Annex D 一致,保留更细的 claimed)
+        if dk[0] == "annex" and ck[0] == "clause" and ck[1][:1].upper() == dk[1]:
+            return
+        if ck[0] == "annex" and dk[0] == "clause" and dk[1][:1].upper() == ck[1]:
+            pass   # claimed 只给了附录字母,derived 更细:覆盖
     req["source_section"] = derived
     if claimed:
         _append_note(req, f"溯源节号按原文校正：{claimed[:40]} → {derived[:60]}")
