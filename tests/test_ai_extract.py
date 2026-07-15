@@ -229,7 +229,7 @@ class SelfCheckClauseAlignmentTests(unittest.TestCase):
                 "source_quote": "The AFD shall withstand the handling required during "
                                 "its transport and installation."}]}
 
-        extra = ai_extract.critique_section(section, self._existing(), chat)
+        extra, _sup = ai_extract.critique_section(section, self._existing(), chat)
         self.assertEqual(extra, [])                              # 同源重复被弃
 
     def test_genuinely_new_requirement_still_accepted(self) -> None:
@@ -243,7 +243,7 @@ class SelfCheckClauseAlignmentTests(unittest.TestCase):
                 "type": "functional", "priority": "P1", "labels": ["显示"],
                 "source_quote": "The display shall remain readable after the drop test."}]}
 
-        extra = ai_extract.critique_section(section, self._existing(), chat)
+        extra, _sup = ai_extract.critique_section(section, self._existing(), chat)
         self.assertEqual(len(extra), 1)                          # 真遗漏不受影响
 
     def test_uncovered_lines_credit_sub_item_labels(self) -> None:

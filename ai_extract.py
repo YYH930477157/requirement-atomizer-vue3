@@ -684,12 +684,21 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         parts.append("---")
     parts.append(
         "【查漏补缺任务】下面是一个章节的原文 + 已抽取的需求结构摘要。找出章节里**尚未被覆盖**的"
-        "需求/约束/可测语句，只输出这些**遗漏项**（同样的 JSON schema、同样的 module 受控清单）；"
-        "已覆盖的不要重复；原文没有的绝不编造；若无遗漏，输出 {\"requirements\": []}。"
+        "需求/约束/可测语句。输出 JSON 对象，含两个数组："
+        "{\"requirements\": [...], \"supplements\": [...]}，都可为空。"
+        "**优先并入,不要新开**（0715 降碎纪律）：遗漏语句若属于某条已抽需求的范围"
+        "（同一条款/同一功能的枚举项、条件、参数、验收判据）——放进 supplements："
+        "{\"target_title\": \"<该已抽需求的 title 原样回填>\", \"sub_items\": [{\"label\": \"c\", \"text\": \"…\"}], "
+        "\"acceptance_criteria\": [\"…\"], \"description_append\": \"<可选的一句补充>\"}；"
+        "只有与全部已抽需求都无从属关系的**独立功能点**才进 requirements（同样的 JSON schema、"
+        "同样的 module 受控清单）。"
+        "已覆盖的不要重复；原文没有的绝不编造；若无遗漏，两个数组都为空。"
         "**覆盖判定**：已抽需求的 sub_items（枚举子项 a/b/c…）与 acceptance_criteria 覆盖的语句"
         "算已覆盖——条款的枚举项、测试前/后判据、测试方法是该条款需求的组成部分，"
-        "**不要**把它们拆成新需求，也不要输出与已抽需求同源的重复表述"
-        "（条款族=一条需求的原则对遗漏项同样适用）。")
+        "**不要**把它们拆成新需求（条款族=一条需求的原则对遗漏项同样适用）。"
+        "**顺带复核**：若发现已抽需求的描述与其引句矛盾（约束强度升格、方向/主客体反转、"
+        "无据添加适用条件），在 supplements 里回填该 target_title 并给 "
+        "\"faithfulness_note\": \"<一句指出矛盾点>\"，不要改写原需求。")
     parts.append(f"当前章节：\n{build_section_prompt(section)}")
     parts.append(f"已抽取（勿重复）：\n{summaries}")
     if focus_lines:
@@ -697,8 +706,11 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         parts.append(f"重点核查以下原文语句是否含被遗漏的需求（解析层判定疑似需求但尚无需求覆盖）：\n{hints}")
     payload = chat(SYSTEM_PROMPT, "\n\n".join(parts))
     raw = payload.get("requirements") if isinstance(payload, dict) else None
+    supplements_applied = _apply_supplements(
+        payload.get("supplements") if isinstance(payload, dict) else None,
+        existing, section)
     if not isinstance(raw, list):
-        return []
+        return [], supplements_applied
     seen = {_req_key(r) for r in existing}
     # 包含式去重基底：真实案例里自检补的"新"条目引句是已抽引句的**前缀子串**（精确匹配拦不住）
     existing_quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in existing) if len(q) >= 20]
@@ -716,7 +728,67 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         req["self_check_added"] = True  # 初抽遗漏、自检补回——审核时优先看
         req["suspicion_reasons"] = list(req.get("suspicion_reasons") or []) + ["自检补充（初抽遗漏）"]
         extra.append(req)
-    return extra
+    return extra, supplements_applied
+
+
+def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
+                       section: dict[str, Any]) -> int:
+    """自检并入（0715 降碎）：把补漏内容并进已有需求的 sub_items/验收,不新开碎条。
+
+    护栏不放宽:补充文本过同一套漂移检查(编码硬拒该条补充、整数软标随行);
+    target_title 匹配不上就丢弃留痕(宁缺勿错,下一轮自检可再补)。返回采纳的补充数。
+    """
+    if not isinstance(raw_supplements, list):
+        return 0
+    source = section.get("drift_source") or section.get("text", "")
+    by_title = {_norm_ws(r.get("title")): r for r in existing if str(r.get("title") or "").strip()}
+    applied = 0
+    for sup in raw_supplements:
+        if not isinstance(sup, dict):
+            continue
+        target = by_title.get(_norm_ws(sup.get("target_title")))
+        if target is None:
+            LOGGER.info("自检补充目标未匹配,丢弃：%s", str(sup.get("target_title") or "")[:40])
+            continue
+        pseudo = {"title": "", "description": str(sup.get("description_append") or ""),
+                  "source_quote": "",
+                  "sub_items": [s for s in (sup.get("sub_items") or []) if isinstance(s, dict)],
+                  "acceptance_criteria": [str(x) for x in (sup.get("acceptance_criteria") or [])]}
+        codes = code_drift(pseudo, source)
+        if codes:
+            LOGGER.info("自检补充编码漂移,拒绝并入：%s", ", ".join(sorted(codes)[:4]))
+            continue
+        changed = False
+        have_subs = {(_norm_ws(s.get("label")), _norm_ws(s.get("text")))
+                     for s in target.get("sub_items") or []}
+        for item in pseudo["sub_items"]:
+            label = str(item.get("label") or "").strip()
+            text = str(item.get("text") or "").strip()
+            if text and (_norm_ws(label), _norm_ws(text)) not in have_subs:
+                target.setdefault("sub_items", []).append({"label": label, "text": text})
+                changed = True
+        have_acc = {_norm_ws(x) for x in target.get("acceptance_criteria") or []}
+        for text in pseudo["acceptance_criteria"]:
+            if text.strip() and _norm_ws(text) not in have_acc:
+                target.setdefault("acceptance_criteria", []).append(text.strip())
+                changed = True
+        append = str(sup.get("description_append") or "").strip()
+        if append and append not in str(target.get("description") or ""):
+            target["description"] = (str(target.get("description") or "").rstrip() + "\n" + append).strip()
+            changed = True
+        note = str(sup.get("faithfulness_note") or "").strip()
+        if note:
+            target["suspicion_reasons"] = list(dict.fromkeys(
+                list(target.get("suspicion_reasons") or []) + ["自检复核:描述与引句疑似矛盾"]))
+            _append_note(target, f"自检复核：{note[:120]}")
+            changed = True
+        ints = sorted(int_drift(pseudo, source))
+        if ints and changed:
+            _append_note(target, f"自检补充含数字漂移（待核）：{', '.join(ints[:6])}")
+        if changed:
+            _append_note(target, "自检并入：补漏内容已并入本需求（未新开条目）")
+            applied += 1
+    return applied
 
 
 def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[str, Any]],
@@ -734,6 +806,13 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
     sub_labels = {str(s.get("label") or "").strip().lower()
                   for r in existing for s in (r.get("sub_items") or [])}
     sub_labels.discard("")
+    # 子项文本也算覆盖(0715 自检并入):supplements 并进来的无标签子项/验收要能消掉
+    # 对应未覆盖行,否则收敛循环轮轮追打同一句
+    covered_texts = [t for t in (
+        [_norm_ws(s.get("text")) for r in existing for s in (r.get("sub_items") or [])]
+        + [_norm_ws(x) for r in existing for x in (r.get("acceptance_criteria") or [])])
+        if len(t) >= 20]
+    quotes = quotes + covered_texts
     section_text = _norm_ws(section.get("text"))
     uncovered: list[str] = []
     seen: set[str] = set()
@@ -803,17 +882,18 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
                         section.get("section_id"), round_no)
             break
         try:
-            extra = critique_section(section, results, chat, doc_context, context_ints,
-                                     focus_lines=uncovered or None)
+            extra, supplements = critique_section(section, results, chat, doc_context, context_ints,
+                                                  focus_lines=uncovered or None)
         except LLMError as exc:  # 自检失败不致命，保留已抽（含前几轮成果）
             LOGGER.warning("完整性自检第 %d 轮失败（保留已抽）：%s", round_no, exc)
             break
-        if not extra:  # 零新增 → 已收敛，无需再问
+        if not extra and not supplements:  # 零新增且零并入 → 已收敛，无需再问
             LOGGER.info("自检收敛（零新增，章节 %s，第 %d 轮）", section.get("section_id"), round_no)
             break
         results = results + extra
         added_total += len(extra)
-        LOGGER.info("完整性自检第 %d 轮补充 %d 条（章节 %s）", round_no, len(extra), section.get("section_id"))
+        LOGGER.info("完整性自检第 %d 轮补充 %d 条、并入 %d 处（章节 %s）",
+                    round_no, len(extra), supplements, section.get("section_id"))
         if round_no == max_rounds:  # 触顶仍有新增：记一笔，未必已穷尽（防发散优先）
             LOGGER.info("自检触顶 %d 轮仍有新增（章节 %s，累计补 %d 条）",
                         max_rounds, section.get("section_id"), added_total)
