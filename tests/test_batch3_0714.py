@@ -161,6 +161,101 @@ class ApiPayloadMemoTests(unittest.TestCase):
             self.assertEqual(second["blocks"][0]["text"], "The meter shall log events.")
 
 
+class PdfBlockZoneTests(unittest.TestCase):
+    """影印全段落热区（0714「点一段出翻译和解析」）：kind 路由与重排块点击语义同源。"""
+
+    GEOMETRY = {bid: [{"page_number": 1, "bbox": [10, 100 + i * 30, 500, 118 + i * 30],
+                       "page_width": 595, "page_height": 842}]
+                for i, bid in enumerate(["B1", "B2", "B3", "B4", "B5", "B6"])}
+
+    BLOCKS = [
+        {"block_id": "B1", "type": "paragraph", "text": "The meter shall measure volume.",
+         "requirement_like": True, "noise": False, "doc_region": "body"},          # 锚点 → req
+        {"block_id": "B2", "type": "paragraph", "text": "The AFD shall stay closed forever.",
+         "requirement_like": True, "noise": False, "doc_region": "body"},          # 未覆盖 → omission
+        {"block_id": "B3", "type": "paragraph", "text": "Background prose paragraph.",
+         "requirement_like": False, "noise": False, "doc_region": "body"},         # → context
+        {"block_id": "B4", "type": "heading", "text": "4 General requirements",
+         "requirement_like": False, "noise": False, "doc_region": "body"},         # 标题 → 无热区
+        {"block_id": "B5", "type": "table", "text": "col | col",
+         "requirement_like": False, "noise": False, "doc_region": "body"},         # 表格 → 无热区
+        {"block_id": "B6", "type": "paragraph", "text": "Repeated footer noise",
+         "requirement_like": False, "noise": True, "doc_region": "body"},          # 噪声 → 无热区
+    ]
+    REQS = [{"ai_req_id": "AIR-1", "anchor_block_id": "B1", "source_block_ids": ["B1"],
+             "source_quote": "The meter shall measure volume."}]
+
+    def _zones(self):
+        import doc_annotation_export as dae
+        covered = dae._covered_blocks(self.REQS)
+        return dae._pdf_block_zones(self.BLOCKS, self.REQS, self.GEOMETRY, covered)
+
+    def test_kind_routing_matches_reflow_semantics(self) -> None:
+        zones = {z["block_id"]: z for z in self._zones()}
+        self.assertEqual(zones["B1"]["kind"], "req")
+        self.assertEqual(zones["B1"]["req_id"], "AIR-1")
+        self.assertEqual(zones["B2"]["kind"], "omission")
+        self.assertEqual(zones["B3"]["kind"], "context")
+        for excluded in ("B4", "B5", "B6"):                  # 标题/表格/噪声不给热区
+            self.assertNotIn(excluded, zones)
+        for zone in zones.values():                          # 百分比矩形齐全
+            self.assertEqual(zone["page"], 1)
+            self.assertEqual(sorted(zone["rect"]), ["height", "left", "top", "width"])
+
+    def test_payload_carries_block_zones(self) -> None:
+        import doc_annotation_export as dae
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "document_source.pdf").write_bytes(b"%PDF-1.4 fake")
+            (out / "manifest.json").write_text(
+                json.dumps({"input": "document_source.pdf"}), encoding="utf-8")
+            pages_dir = out / dae.ANNOTATION_PAGES_DIR
+            pages_dir.mkdir()
+            (pages_dir / "page-0001.png").write_bytes(b"\x89PNG fake")
+            (pages_dir / dae.ANNOTATION_PAGES_MANIFEST).write_text(json.dumps({
+                "version": 1, "pages": [{"page_number": 1, "file": "page-0001.png",
+                                          "width": 595, "height": 842}]}), encoding="utf-8")
+            (out / dae.ANNOTATION_PDF_GEOMETRY).write_text(json.dumps({
+                "version": 2, "blocks": {}}), encoding="utf-8")
+            _write_blocks = [dict(b) for b in self.BLOCKS]
+            (out / "blocks.jsonl").write_text(
+                "\n".join(json.dumps(b, ensure_ascii=False) for b in _write_blocks) + "\n",
+                encoding="utf-8")
+            (out / "ai_requirements.jsonl").write_text(
+                json.dumps(dict(self.REQS[0], title="计量", module="计量"), ensure_ascii=False) + "\n",
+                encoding="utf-8")
+            from unittest.mock import patch
+            with patch.object(dae, "_resolve_pdf_geometry", return_value=self.GEOMETRY):
+                payload = dae.build_pdf_annotation_payload(out)
+        self.assertTrue(payload["available"])
+        kinds = {z["block_id"]: z["kind"] for z in payload["block_zones"]}
+        self.assertEqual(kinds.get("B1"), "req")
+        self.assertEqual(kinds.get("B3"), "context")
+
+    def test_static_pdf_stack_renders_zones_and_context_data(self) -> None:
+        import doc_annotation_export as dae
+        zones = self._zones()
+        html_out = dae._render_pdf_page_stack(
+            [{"page_number": 1, "href": "document_pages/page-0001.png", "width": 595, "height": 842}],
+            self.REQS, [], {"AIR-1": 1}, self.GEOMETRY, block_zones=zones)
+        self.assertIn('class="pdf-block-zone zone-req"', html_out)
+        self.assertIn('class="pdf-block-zone zone-context"', html_out)
+        self.assertIn('data-block-id="B3"', html_out)
+        self.assertIn('data-req="AIR-1"', html_out)
+        self.assertIn("查看该段翻译与解析", html_out)
+        context = dae._pdf_context_records(self.BLOCKS, zones)
+        self.assertIn("B3", context)                          # 背景卡数据随包
+        self.assertEqual(context["B3"]["text"], "Background prose paragraph.")
+        self.assertNotIn("B1", context)                       # req/omission 不进背景卡数据
+
+    def test_static_template_wires_zone_click_and_context_card(self) -> None:
+        import doc_annotation_export as dae
+        self.assertIn("selectPdfContextRecord", dae._TEMPLATE)
+        self.assertIn("PDF_CONTEXT", dae._TEMPLATE)
+        self.assertIn('closest(".pdf-block-zone")', dae._TEMPLATE)
+        self.assertIn(".pdf-block-zone:hover", dae._TEMPLATE)
+
+
 class AnchorFallbackTests(unittest.TestCase):
     """锚定回退路径回归（review 测试缺口）：此前只有 exact 路径有测,前缀兜底/首块回退
     是最易错锚的路径却零覆盖。"""
