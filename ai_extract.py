@@ -132,7 +132,9 @@ SYSTEM_PROMPT = (
     "正例：「阀门关闭控制」「远程固件升级」「事件记录存储」；反例：「4.6 的设备要求」（带章节号）、「阀门在 5s 内关闭」（带数值））、"
     "description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
     "type（functional/non_functional/constraint/business_rule）、"
-    "priority（判级基准：P0=安全/计量准确性/法规强制项；P1=核心功能与协议一致性；P2=辅助/诊断/可选功能）、"
+    "priority（判级基准：P0=安全/计量准确性/法规强制项；P1=核心功能与协议一致性；P2=辅助/诊断/可选功能。"
+    "**资料性内容不升格**：informative 附录、标注 not a priority/optional/推荐 的内容最高只到 P2——"
+    "『某项不适用』是排除声明,不得反写成禁止实现的需求）、"
     "module（该需求归属的模块，**必须原样照抄下面清单里的一个词**，按需求实质语义选最贴切的；"
     "确实都不贴切时才填\"" + OTHER_MODULE + "\"）：" + "、".join(MODULE_VOCAB) + "。"
     "labels（额外的细分标签，至少一个，可自由）、source_quote（原文逐字引用，不可改写）、"
@@ -377,8 +379,10 @@ def code_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
 
 
 def int_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
-    """普通整数漂移：需求里出现、源文没有的数字（软标）。"""
-    return sorted(extract_ints(_produced_text(requirement)) - extract_ints(source_text))
+    """普通整数漂移：需求里出现、源文没有的数字（软标）。
+    两侧同口径(0715):基线含英文数词折算与千分位并组;产出侧同样并组。"""
+    from extract_guards import produced_ints, source_int_baseline
+    return sorted(produced_ints(_produced_text(requirement)) - source_int_baseline(source_text))
 
 
 def extract_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
@@ -477,7 +481,8 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
     整数后在源文里几乎必然全部存在，只查 extract_ints 拦不住假 OBIS。
     返回 (漂移整数集, 漂移编码集)——编码并入 code_drift 走硬标（draft+拦截注）。
     """
-    allowed = extract_ints(source_text)
+    from extract_guards import produced_ints, source_int_baseline
+    allowed = source_int_baseline(source_text)   # 含数词折算+千分位并组,防有据验收被剥
     allowed_codes = extract_codes(source_text)
     drifted: set[str] = set()
     drifted_codes: set[str] = set()
@@ -487,7 +492,7 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
         kept: list[str] = []
         for raw in req.get(field) or []:
             text = str(raw).strip()
-            unsupported = extract_ints(text) - allowed
+            unsupported = produced_ints(text) - allowed
             unsupported_codes = extract_codes(text) - allowed_codes
             unsupported_terms = _unsupported_implementation_terms(text, source_text)
             if unsupported or unsupported_terms or unsupported_codes:
@@ -641,6 +646,12 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             suspicion.append("验收不可测")
             note = f"验收不可测（空话验收 {len(vague)} 条，如「{vague[0][:40]}」，请给出可判定条件）"
             _append_note(req, note)
+        # 资料性来源标记（0715 v2 审计:Annex B(informative)/「not a priority」整批被
+        # 升格成 P0/P1 强制需求——资料性内容对设备无强制力,升格即误导研发排期）
+        origin = " ".join([str(section.get("heading") or ""), str(section.get("text") or "")[:300]])
+        if re.search(r"informative|资料性附录", origin, re.IGNORECASE) and str(req.get("priority")) in ("P0", "P1"):
+            suspicion.append("资料性来源待核")
+            _append_note(req, "资料性来源待核（本单元为 informative 附录/资料性内容,标成 P0/P1 强制需求请人工确认）")
         # 忠实性守恒（0715 内容审计:29 处误读全数绕过旧护栏——旧护栏只看编码/数字）
         if _modal_inflation(req):
             suspicion.append("情态升格待核")
@@ -698,7 +709,9 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         "**不要**把它们拆成新需求（条款族=一条需求的原则对遗漏项同样适用）。"
         "**顺带复核**：若发现已抽需求的描述与其引句矛盾（约束强度升格、方向/主客体反转、"
         "无据添加适用条件），在 supplements 里回填该 target_title 并给 "
-        "\"faithfulness_note\": \"<一句指出矛盾点>\"，不要改写原需求。")
+        "\"faithfulness_note\": \"<必须同时逐字引出描述片段与引句片段来证明矛盾>\"——"
+        "没有可引证的具体矛盾就不要报（空泛怀疑是噪声），不要改写原需求。"
+        "supplements 里已存在于该需求 sub_items/验收里的内容**不要重复回填**。")
     parts.append(f"当前章节：\n{build_section_prompt(section)}")
     parts.append(f"已抽取（勿重复）：\n{summaries}")
     if focus_lines:
@@ -731,16 +744,56 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
     return extra, supplements_applied
 
 
+def _near_dup(text: str, existing: list[str]) -> bool:
+    """近重复判定(0715 v2 审计:并入的同义复述堆叠 2-4 遍)——归一后互含即重复。"""
+    t = _norm_ws(text)
+    if not t:
+        return True
+    for e in existing:
+        en = _norm_ws(e)
+        if en and (t in en or en in t):
+            return True
+    return False
+
+
+_CLAUSE_MARK_RE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)+)(?![\d.])")
+
+
+def _supplement_clause_mismatch(sup_text: str, section_text: str, target_section: str) -> bool:
+    """跨条款越界并入守卫(0715 v2 审计:7.6 的义务被并进 7.4 的需求)。
+
+    在单元原文里定位补充文本,取其前方最近的条款号;与 target 的 source_section
+    互为前缀才放行。定位不到/无条款号 → 不判(宁放勿错杀,单元多为同条款族)。"""
+    frag = _norm_ws(sup_text)[:80]
+    if not frag or not target_section:
+        return False
+    hay = _norm_ws(section_text)
+    pos = hay.find(frag)
+    if pos < 0:
+        return False
+    marks = [(m.start(), m.group(1)) for m in _CLAUSE_MARK_RE.finditer(hay[:pos])]
+    if not marks:
+        return False
+    nearest = marks[-1][1]
+    tgt = str(target_section).strip().split()[0]
+    if not re.match(r"^\d+(?:\.\d+)*$", tgt):
+        return False
+    return not (nearest.startswith(tgt) or tgt.startswith(nearest))
+
+
 def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
                        section: dict[str, Any]) -> int:
     """自检并入（0715 降碎）：把补漏内容并进已有需求的 sub_items/验收,不新开碎条。
 
     护栏不放宽:补充文本过同一套漂移检查(编码硬拒该条补充、整数软标随行);
     target_title 匹配不上就丢弃留痕(宁缺勿错,下一轮自检可再补)。返回采纳的补充数。
+    v2 审计加固:同标签子项不重复加(标签在需求内唯一)、近重复文本不加(同义复述
+    堆叠)、跨条款越界并入丢弃、忠实性复核须有可锚定证据才挂 suspicion。
     """
     if not isinstance(raw_supplements, list):
         return 0
     source = section.get("drift_source") or section.get("text", "")
+    section_text = section.get("text", "")
     by_title = {_norm_ws(r.get("title")): r for r in existing if str(r.get("title") or "").strip()}
     applied = 0
     for sup in raw_supplements:
@@ -758,30 +811,53 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
         if codes:
             LOGGER.info("自检补充编码漂移,拒绝并入：%s", ", ".join(sorted(codes)[:4]))
             continue
+        probe_text = " ".join([str(s.get("text") or "") for s in pseudo["sub_items"]]
+                              + pseudo["acceptance_criteria"]) or pseudo["description"]
+        if _supplement_clause_mismatch(probe_text, section_text,
+                                       str(target.get("source_section") or "")):
+            LOGGER.info("自检补充跨条款越界,丢弃：target=%s", str(target.get("title") or "")[:30])
+            continue
         changed = False
-        have_subs = {(_norm_ws(s.get("label")), _norm_ws(s.get("text")))
-                     for s in target.get("sub_items") or []}
+        have_labels = {_norm_ws(s.get("label")) for s in target.get("sub_items") or []}
+        have_labels.discard("")
+        have_sub_texts = [str(s.get("text") or "") for s in target.get("sub_items") or []]
         for item in pseudo["sub_items"]:
             label = str(item.get("label") or "").strip()
             text = str(item.get("text") or "").strip()
-            if text and (_norm_ws(label), _norm_ws(text)) not in have_subs:
-                target.setdefault("sub_items", []).append({"label": label, "text": text})
-                changed = True
-        have_acc = {_norm_ws(x) for x in target.get("acceptance_criteria") or []}
+            if not text or _near_dup(text, have_sub_texts):
+                continue
+            if label and _norm_ws(label) in have_labels:
+                continue   # 标签在需求内唯一:同标签重复=模型复读,不并
+            target.setdefault("sub_items", []).append({"label": label, "text": text})
+            have_sub_texts.append(text)
+            if label:
+                have_labels.add(_norm_ws(label))
+            changed = True
+        have_acc = [str(x) for x in target.get("acceptance_criteria") or []]
         for text in pseudo["acceptance_criteria"]:
-            if text.strip() and _norm_ws(text) not in have_acc:
+            if text.strip() and not _near_dup(text, have_acc):
                 target.setdefault("acceptance_criteria", []).append(text.strip())
+                have_acc.append(text)
                 changed = True
         append = str(sup.get("description_append") or "").strip()
-        if append and append not in str(target.get("description") or ""):
+        if append and not _near_dup(append, [str(target.get("description") or "")]):
             target["description"] = (str(target.get("description") or "").rstrip() + "\n" + append).strip()
             changed = True
         note = str(sup.get("faithfulness_note") or "").strip()
         if note:
-            target["suspicion_reasons"] = list(dict.fromkeys(
-                list(target.get("suspicion_reasons") or []) + ["自检复核:描述与引句疑似矛盾"]))
-            _append_note(target, f"自检复核：{note[:120]}")
-            changed = True
+            # 证据锚定(v2 审计:5 处复核标记全为空泛误报):note 里须含能在原文/引句里
+            # 找到的 ≥8 字片段才挂 suspicion;无锚定证据的只记 note 不标复核
+            anchor_ok = any(
+                _norm_ws(note[i:i + 12]) and _norm_ws(note[i:i + 12]) in _norm_ws(
+                    section_text + " " + str(target.get("source_quote") or ""))
+                for i in range(0, max(1, len(note) - 11), 6))
+            if anchor_ok:
+                target["suspicion_reasons"] = list(dict.fromkeys(
+                    list(target.get("suspicion_reasons") or []) + ["自检复核:描述与引句疑似矛盾"]))
+                _append_note(target, f"自检复核：{note[:120]}")
+                changed = True
+            else:
+                LOGGER.info("自检复核缺锚定证据,不挂标记：%s", note[:60])
         ints = sorted(int_drift(pseudo, source))
         if ints and changed:
             _append_note(target, f"自检补充含数字漂移（待核）：{', '.join(ints[:6])}")

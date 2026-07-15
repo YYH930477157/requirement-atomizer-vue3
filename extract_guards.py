@@ -18,7 +18,11 @@ _LEFT_BEHIND_WINDOW = 800  # 引句起往后看的窗口（枚举清单/成分�
 
 def _values_left_behind(req: dict[str, Any], source: str) -> int:
     """确定性漏值检测：引句附近的数值清单没进需求（真实案例：粉尘粒径/成分百分比全被
-    "规定的范围"指代吞掉，threshold_table=None——研发拿不到数值等于没写）。只标记不拦截。"""
+    "规定的范围"指代吞掉，threshold_table=None——研发拿不到数值等于没写）。只标记不拦截。
+
+    分母格式归一（0715 v2 审计:误报多为窗口里的条款号/枚举标号/页码）:与 0714
+    analyze 侧遗漏分母同一套剥法——条款/引用号是"地址"不是"数值"。"""
+    from text_normalize import join_digit_groups, strip_enum_markers, strip_reference_numbers
     quote = str(req.get("source_quote") or "")
     if not quote:
         return 0
@@ -26,9 +30,10 @@ def _values_left_behind(req: dict[str, Any], source: str) -> int:
     if pos < 0:
         return 0
     window = source[pos:pos + max(len(quote), _LEFT_BEHIND_WINDOW)]
-    captured = extract_ints(" ".join([
+    window = join_digit_groups(strip_reference_numbers(strip_enum_markers(window)))
+    captured = extract_ints(join_digit_groups(" ".join([
         _produced_text(req), json.dumps(req.get("threshold_table") or {}),
-    ]))
+    ])))
     left = extract_ints(window) - captured
     return len(left) if len(left) >= _LEFT_BEHIND_MIN else 0
 
@@ -55,6 +60,39 @@ def _vague_acceptance(req: dict[str, Any]) -> list[str]:
                 and not extract_codes(text):
             vague.append(text[:80])
     return vague
+
+
+# 英文数词/序数并入整数基线(0715 v2 审计实证:原文 "three times",正文 "3 倍"——
+# 基线只认阿拉伯数字,把有据验收当漂移剥掉,核心计量判据丢失。通用映射非文档词汇)
+_SPELLED_NUMBERS = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+    "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14", "fifteen": "15",
+    "sixteen": "16", "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20",
+    "first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5",
+    "sixth": "6", "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10",
+}
+_SPELLED_NUM_RE = re.compile(
+    r"\b(" + "|".join(sorted(_SPELLED_NUMBERS, key=len, reverse=True)) + r")\b", re.IGNORECASE)
+
+
+def source_int_baseline(text: str) -> set[str]:
+    """整数基线 = 阿拉伯数字 ∪ 千分位并组("3,200"/"1 008"→3200/1008) ∪ 英文数词折算。
+
+    千分位(0715 v2 审计):原文 "3,200 cycles" 被拆成 3/200,正文 "3200" 判无据,
+    关键验收被剥空——与 0714 遗漏分母同一病灶,基线侧并组补齐。"""
+    from text_normalize import join_digit_groups
+    raw = str(text or "")
+    ints = set(extract_ints(raw)) | set(extract_ints(join_digit_groups(raw)))
+    for m in _SPELLED_NUM_RE.finditer(raw):
+        ints.add(_SPELLED_NUMBERS[m.group(1).casefold()])
+    return ints
+
+
+def produced_ints(text: str) -> set[str]:
+    """产出侧整数提取(千分位并组,与基线同口径——产出写 "3,200" 同样并成 3200)。"""
+    from text_normalize import join_digit_groups
+    return set(extract_ints(join_digit_groups(str(text or ""))))
 
 
 # --- 忠实性守恒(0715 抽取质量重构,通用规则)---------------------------------
@@ -85,17 +123,27 @@ def _norm_standard_ref(token: str) -> str:
     return re.sub(r"\s+", "", token).upper()
 
 
+def _standard_ref_root(token: str) -> str:
+    m = re.search(r"\d{2,6}", token)
+    return m.group(0) if m else ""
+
+
 def _foreign_standard_refs(req: dict[str, Any], baseline: str) -> list[str]:
     """正文里出现、但本节基线(原文+被引条款+术语定义)没有的标准号——张冠李戴待核。
 
     背景整数豁免(context_ints)会放行标准号数字部分,误归属由此漏网(实证:本标准
-    被写成 EN 14236)——标准号按\"前缀+号\"整体核,不吃整数豁免。"""
+    被写成 EN 14236)——标准号按\"前缀+号\"整体核,不吃整数豁免。
+    比对按**号根**(0715 v2 审计:\"ISO 6270\" vs 基线 \"EN ISO 6270-1\" 前缀变体全是
+    误报)——同一主号即同一标准,机构前缀写法差异不定罪。"""
     produced = _produced_text(req)
-    base_refs = {_norm_standard_ref(m.group(0)) for m in _STANDARD_REF_RE.finditer(baseline or "")}
+    base_roots = {_standard_ref_root(m.group(0)) for m in _STANDARD_REF_RE.finditer(baseline or "")}
+    base_roots.discard("")
     foreign = []
+    seen: set[str] = set()
     for m in _STANDARD_REF_RE.finditer(produced):
-        token = _norm_standard_ref(m.group(0))
-        if token not in base_refs and token not in foreign:
+        root = _standard_ref_root(m.group(0))
+        if root and root not in base_roots and root not in seen:
+            seen.add(root)
             foreign.append(m.group(0))
     return foreign
 

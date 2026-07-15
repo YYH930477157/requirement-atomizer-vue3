@@ -215,17 +215,18 @@ class SelfCheckSupplementTests(unittest.TestCase):
         self.assertEqual(len(existing[0]["acceptance_criteria"]), 1)
 
     def test_faithfulness_note_flags_target(self) -> None:
+        # 契约升级(v2 审计:空泛复核 5 处全误报):note 必须含可在原文/引句锚定的片段
         existing = self._existing()
 
         def chat(system: str, user: str) -> dict:
             return {"requirements": [], "supplements": [{
                 "target_title": "设备模块要求族",
-                "faithfulness_note": "引句为 should,描述用了必须"}]}
+                "faithfulness_note": '引句为 "shall have no influence on measurement" 而描述反向表述'}]}
 
         extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
         self.assertEqual(applied, 1)
         self.assertIn("自检复核:描述与引句疑似矛盾", existing[0]["suspicion_reasons"])
-        self.assertIn("引句为 should", existing[0]["notes"])
+        self.assertIn("自检复核", existing[0]["notes"])
 
     def test_supplement_covering_uncovered_line_converges_without_extra_call(self) -> None:
         """并入的带标签子项直接消掉未覆盖行 → 下一轮覆盖检查免调用收敛(最优路径)。"""
@@ -280,6 +281,172 @@ class SelfCheckSupplementTests(unittest.TestCase):
                                              block_info=block_info, self_check_rounds=3)
         self.assertEqual(len(results), 1)
         self.assertEqual(calls["n"], 3)                          # 并入算进度:又查了一轮才停
+
+
+class SpelledNumberBaselineTests(unittest.TestCase):
+    """0715 v2 审计:原文 "three times" → 正文 "3 倍" 被当无据数字剥掉验收——误伤修复。"""
+
+    def test_spelled_numbers_join_baseline(self) -> None:
+        from extract_guards import source_int_baseline
+        ints = source_int_baseline("the error shall not exceed three times the MPE, one third applies")
+        self.assertIn("3", ints)
+        self.assertIn("1", ints)
+
+    def test_acceptance_with_spelled_source_number_not_stripped(self) -> None:
+        source = "When tested, the error shall not exceed three times the maximum permissible error."
+        req = {"title": "误差限值", "description": "误差不得超过最大允许误差的 3 倍。",
+               "source_quote": source,
+               "acceptance_criteria": ["测试后误差 ≤ 3 倍最大允许误差"], "dev_guidance": []}
+        removed_ints, _codes = ai_extract._move_unsupported_delivery_items(req, source)
+        self.assertEqual(removed_ints, set())
+        self.assertEqual(req["acceptance_criteria"], ["测试后误差 ≤ 3 倍最大允许误差"])   # 有据验收保留
+
+    def test_int_drift_respects_spelled_numbers(self) -> None:
+        req = {"title": "", "description": "重复 3 次测试。", "source_quote": ""}
+        self.assertEqual(ai_extract.int_drift(req, "repeat the test three times"), [])
+
+
+class ThousandSeparatorBaselineTests(unittest.TestCase):
+    """0715 v2 审计:原文 "3,200 cycles"/"1 008 h" 千分位写法被拆碎,有据验收被剥空。"""
+
+    def test_grouped_numbers_join_baseline(self) -> None:
+        from extract_guards import source_int_baseline
+        ints = source_int_baseline("endurance of 3,200 cycles and 1 008 h exposure")
+        self.assertIn("3200", ints)
+        self.assertIn("1008", ints)
+
+    def test_acceptance_with_grouped_source_number_kept(self) -> None:
+        source = "The valve shall withstand 3,200 operating cycles."
+        req = {"title": "耐久", "description": "阀门须承受 3200 次操作循环。",
+               "source_quote": source,
+               "acceptance_criteria": ["完成 3200 次循环后阀门功能正常,泄漏达标"],
+               "dev_guidance": []}
+        removed_ints, _ = ai_extract._move_unsupported_delivery_items(req, source)
+        self.assertEqual(removed_ints, set())
+        self.assertEqual(len(req["acceptance_criteria"]), 1)     # 有据验收不被剥
+
+    def test_produced_grouped_form_also_normalized(self) -> None:
+        req = {"title": "", "description": "承受 3,200 次循环。", "source_quote": ""}
+        self.assertEqual(ai_extract.int_drift(req, "withstand 3200 cycles"), [])
+
+
+class InformativeSourceFlagTests(unittest.TestCase):
+    """0715 v2 审计:informative 附录内容被升格为 P0/P1 强制需求(9 处)——软标待核。"""
+
+    def _extract(self, priority: str, heading: str = "Annex B (informative) Functions") -> dict:
+        section = {"section_id": heading, "heading": heading, "block_ids": [],
+                   "text": "Peak consumption recording may be provided."}
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [{
+                "title": "峰值用量记录", "description": "记录峰值用量。",
+                "source_quote": "Peak consumption recording may be provided.",
+                "type": "functional", "priority": priority, "labels": ["数据存储"]}]}
+
+        return ai_extract.extract_section(section, chat)[0]
+
+    def test_informative_annex_p1_flagged(self) -> None:
+        req = self._extract("P1")
+        self.assertIn("资料性来源待核", req.get("suspicion_reasons") or [])
+
+    def test_informative_annex_p2_clean(self) -> None:
+        req = self._extract("P2")
+        self.assertNotIn("资料性来源待核", req.get("suspicion_reasons") or [])
+
+    def test_normative_section_not_flagged(self) -> None:
+        req = self._extract("P1", heading="7.8 Data storage")
+        self.assertNotIn("资料性来源待核", req.get("suspicion_reasons") or [])
+
+
+class StandardRefRootTests(unittest.TestCase):
+    def test_prefix_variants_not_flagged(self) -> None:
+        # "ISO 6270" vs 基线 "EN ISO 6270-1":同一主号,机构前缀写法差异不定罪
+        req = {"title": "", "description": "依据 ISO 6270 进行冷凝试验。", "source_quote": ""}
+        self.assertEqual(_foreign_standard_refs(req, "tested per EN ISO 6270-1 procedures"), [])
+
+    def test_truly_foreign_root_still_flagged(self) -> None:
+        req = {"title": "", "description": "依据 EN 99999。", "source_quote": ""}
+        foreign = _foreign_standard_refs(req, "tested per EN ISO 6270-1")
+        self.assertEqual(len(foreign), 1)
+
+
+class SupplementHardeningTests(unittest.TestCase):
+    """0715 v2 审计的并入副作用修复:同标签复读/同义堆叠/跨条款越界/空泛复核。"""
+
+    SECTION = {"section_id": "7", "heading": "7 Functions",
+               "text": ("## 7.4 Metrological influence\n"
+                        "7.4 The module shall not influence measurement.\n"
+                        "## 7.6 Input to module\n"
+                        "7.6 The input shall accept pulse signals from the unit.")}
+
+    def _existing(self) -> list[dict]:
+        return [{"title": "计量无影响", "description": "模块不得影响计量。",
+                 "source_section": "7.4",
+                 "source_quote": "The module shall not influence measurement.",
+                 "sub_items": [{"label": "a", "text": "运行中不影响计量精度"}],
+                 "acceptance_criteria": ["测试前后计量误差一致"], "notes": ""}]
+
+    def test_same_label_resend_skipped(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "计量无影响",
+                "sub_items": [{"label": "a", "text": "换一种说法的同一子项内容表述"}]}]}
+
+        _extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(applied, 0)
+        self.assertEqual(len(existing[0]["sub_items"]), 1)       # 同标签复读不并
+
+    def test_near_duplicate_acceptance_skipped(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "计量无影响",
+                "acceptance_criteria": ["测试前后计量误差一致（复述）"]}]}
+
+        _extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(applied, 0)                             # 互含近重复不并
+        self.assertEqual(len(existing[0]["acceptance_criteria"]), 1)
+
+    def test_cross_clause_supplement_dropped(self) -> None:
+        existing = self._existing()   # target 属 7.4
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "计量无影响",
+                "sub_items": [{"label": "b",
+                                "text": "The input shall accept pulse signals from the unit."}]}]}
+
+        _extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(applied, 0)                             # 7.6 的义务不并进 7.4
+        self.assertEqual(len(existing[0]["sub_items"]), 1)
+
+    def test_unanchored_faithfulness_note_not_flagged(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "计量无影响",
+                "faithfulness_note": "感觉描述可能有点问题需要人再看看确认一下"}]}
+
+        _extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(applied, 0)                             # 空泛怀疑不挂标记
+        self.assertNotIn("自检复核:描述与引句疑似矛盾",
+                         existing[0].get("suspicion_reasons") or [])
+
+    def test_anchored_faithfulness_note_still_flags(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "计量无影响",
+                "faithfulness_note": '引句为 "shall not influence measurement" 而描述写成了允许影响'}]}
+
+        _extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(applied, 1)
+        self.assertIn("自检复核:描述与引句疑似矛盾", existing[0]["suspicion_reasons"])
 
 
 if __name__ == "__main__":
