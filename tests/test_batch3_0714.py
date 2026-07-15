@@ -161,5 +161,88 @@ class ApiPayloadMemoTests(unittest.TestCase):
             self.assertEqual(second["blocks"][0]["text"], "The meter shall log events.")
 
 
+class AnchorFallbackTests(unittest.TestCase):
+    """锚定回退路径回归（review 测试缺口）：此前只有 exact 路径有测,前缀兜底/首块回退
+    是最易错锚的路径却零覆盖。"""
+
+    BLOCKS = {"B1": "Intro paragraph about scope.",
+              "B2": "The AFD shall close the valve within 5 s after detection.",
+              "B3": "Following exposure the meter shall be inspected."}
+
+    def _anchor(self, quote: str, span: list[str]) -> str:
+        import api_server
+        return api_server.anchor_block_id(
+            {"source_quote": quote, "source_block_ids": span}, dict(self.BLOCKS))
+
+    def test_exact_quote_lands_on_containing_block(self) -> None:
+        self.assertEqual(
+            self._anchor("The AFD shall close the valve within 5 s after detection.",
+                         ["B1", "B2", "B3"]),
+            "B2")
+
+    def test_whitespace_and_case_normalized(self) -> None:
+        self.assertEqual(
+            self._anchor("the afd  SHALL close the valve within 5 s after detection.",
+                         ["B1", "B2"]),
+            "B2")
+
+    def test_tail_deviation_falls_back_to_prefix(self) -> None:
+        # LLM 引用尾部偏差（改写了句尾）→ 前 40 字前缀仍应锚对块
+        self.assertEqual(
+            self._anchor("The AFD shall close the valve within 5 seconds of any tamper event",
+                         ["B1", "B2", "B3"]),
+            "B2")
+
+    def test_unmatchable_quote_falls_back_to_first_span_block(self) -> None:
+        self.assertEqual(self._anchor("完全对不上的引用文本", ["B3", "B2"]), "B3")
+
+    def test_empty_span_returns_empty(self) -> None:
+        self.assertEqual(self._anchor("anything", []), "")
+
+
+class SoftwareXlsxContentLockTests(unittest.TestCase):
+    """B 轨交付物内容锁（review 测试缺口）：富化字段必须真的落 software_requirements.xlsx
+    的说明列——此前只锁版式/注入,\"软标随行\"等 B1 不变量在 xlsx 层无锁。"""
+
+    ITEM = {
+        "analysis_id": "SRA-001", "module": "阀门控制", "submodule": "阀门控制",
+        "template_match": "matched", "ownership": "software",
+        "ownership_reason": "阀门控制逻辑由软件实现", "ownership_reason_source": "llm",
+        "description": "阀门关闭控制",
+        "software_requirement_text": "检测到异常后 5 s 内驱动阀门关闭。",
+        "developer_guidance": ["实现阀门驱动接口与超时监控"],
+        "design_options": ["队列化关闭指令以支持重试"],
+        "acceptance_criteria": ["注入异常后 5 s 内阀门状态变为关闭"],
+        "assumptions": ["假定阀门驱动电路由硬件保证时序"],
+        "open_questions": ["关闭失败的重试次数上限是多少？"],
+        "enrichment_warnings": ["fabricated number in guidance: 99"],
+        "source_quote": "The AFD shall close the valve.",
+        "source_requirement_ids": ["AIR-1"],
+    }
+
+    def test_enriched_fields_land_in_notes_column(self) -> None:
+        from openpyxl import load_workbook
+
+        from requirements_analysis_excel import write_software_requirements_xlsx
+        with tempfile.TemporaryDirectory() as td:
+            path = write_software_requirements_xlsx([dict(self.ITEM)], Path(td) / "s.xlsx")
+            wb = load_workbook(path, read_only=True)
+            try:
+                text = "\n".join(
+                    str(cell) for ws in wb.worksheets
+                    for row in ws.iter_rows(values_only=True) for cell in row if cell)
+            finally:
+                wb.close()
+        self.assertIn("检测到异常后 5 s 内驱动阀门关闭。", text)       # 富化正文
+        self.assertIn("实现阀门驱动接口与超时监控", text)              # developer_guidance
+        self.assertIn("设计候选（非规范约束）：队列化关闭指令以支持重试", text)
+        self.assertIn("验收建议：注入异常后 5 s 内阀门状态变为关闭", text)
+        self.assertIn("假设：假定阀门驱动电路由硬件保证时序", text)
+        self.assertIn("待确认：关闭失败的重试次数上限是多少？", text)   # open_questions
+        self.assertIn("⚠ 富化待核：fabricated number in guidance: 99", text)   # 软标随行(B1)
+        self.assertIn("归属判定：软件（依据：阀门控制逻辑由软件实现，LLM 判定）", text)
+        self.assertIn("原文：The AFD shall close the valve.", text)   # 溯源随行
+
+
 if __name__ == "__main__":
     unittest.main()
