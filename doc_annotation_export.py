@@ -419,7 +419,8 @@ def _block_region_label(region: str) -> str:
 def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict[str, Any]]],
                    covered: set[str],
                    req_numbers: dict[str, int] | None = None,
-                   sub_anchor_map: dict[str, list] | None = None) -> str:
+                   sub_anchor_map: dict[str, list] | None = None,
+                   echo_map: dict[str, dict[str, Any]] | None = None) -> str:
     """渲染文档块：正文正常，非正文区折叠，noise 灰显，纯符号行跳过。"""
     parts: list[str] = []
     collapse_open = False
@@ -472,7 +473,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         block_html = _render_one_block(bid, text, path, region, is_heading, is_noise, is_omission, anchored,
                                        req_numbers or {}, (sub_anchor_map or {}).get(bid) or [],
                                        block=b, marker_state=marker_state,
-                                       outline_level=outline_map.get(bid))
+                                       outline_level=outline_map.get(bid),
+                                       echo_req=(echo_map or {}).get(bid))
 
         # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
         if region in _COLLAPSIBLE_REGIONS:
@@ -799,7 +801,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                       anchored: list, req_numbers: dict[str, int] | None = None,
                       sub_anchors: list | None = None, block: dict | None = None,
                       marker_state: dict[str, Any] | None = None,
-                      outline_level: int | None = None) -> str:
+                      outline_level: int | None = None,
+                      echo_req: dict[str, Any] | None = None) -> str:
     cls = ["doc-block"]
     if is_heading:
         cls.append("heading")
@@ -837,11 +840,22 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                          f'data-omission-translation="{html.escape(translation)}" '
                          f'data-omission-translation-note="{html.escape(note)}" '
                          'title="疑似需求但未被任何抽取需求覆盖，点击查看说明">未覆盖</button>')
+    echo_html = ""
+    if echo_req is not None and not anchored:
+        # 回声段轻量标记(0716 用户裁定:批注不过度显示——重复段不挂完整批注,
+        # 只给指向汇总条目的"重复"角标;段落点击卡片另给本段翻译+汇总指引)
+        rid = str(echo_req.get("ai_req_id") or "")
+        num = (req_numbers or {}).get(rid)
+        label = f"重复·见{num:02d}" if num else "重复段"
+        echo_html = (f'<button class="echo-tag" type="button" data-echo-req="{html.escape(rid)}" '
+                     f'data-echo-number="{num or ""}" '
+                     'title="本段与该需求的来源段落内容重复，解析已汇总至该条目，点击跳转">'
+                     f'{html.escape(label)}</button>')
     if is_table and block is not None:
         table_html, placed_ids = _render_table_inner(block, anchored, numbers, state)
         fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
         sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
-        trailing_items = f'{fallback}{sub_chips}{omission_html}'
+        trailing_items = f'{fallback}{sub_chips}{omission_html}{echo_html}'
         trailing = f'<span class="chips inline-chips">{trailing_items}</span>' if trailing_items else ""
         content = f'{table_html}{trailing}'
     else:
@@ -867,7 +881,7 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                 f' data-translation="{html.escape(_active_translations.get(key, ""))}"'
                 f' data-translation-note="{html.escape(_active_translation_notes.get(key, ""))}"')
         content = (f'<p class="text" data-block-id="{html.escape(bid)}"{translation_attrs}>'
-                   f'{text_html}{fallback}{sub_chips}{omission_html}</p>')
+                   f'{text_html}{fallback}{sub_chips}{omission_html}{echo_html}</p>')
     return (
         f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}"'
         f'{f" data-outline={outline_level}" if outline_level else ""} style="--depth:{depth}">'
@@ -899,8 +913,12 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
         anchor = str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")
         if anchor:
             anchor_map.setdefault(anchor, []).append(req)
-        for echo in req.get("echo_block_ids") or []:   # 回声段挂同一枚批注(同号,点击同条)
-            anchor_map.setdefault(str(echo), []).append(req)
+    # 回声段不重复挂完整批注(用户裁定 0716:批注不过度显示,汇总层才归并)——
+    # 只给轻量"重复段"标记:指向该条目,点击跳转;段落卡片给本段翻译+汇总指引
+    echo_map: dict[str, dict[str, Any]] = {}
+    for req in requirements:
+        for echo in req.get("echo_block_ids") or []:
+            echo_map.setdefault(str(echo), req)
 
     # 全文连续编号（按锚点块在文档中的出现顺序）——此前每块内部从 01 重数，满屏"01"无层级感。
     # 子项锚：需求带 sub_items 时，把各子项挂到其 source_block_ids 里以 "a)" 开头的段落
@@ -951,7 +969,8 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
             f'<iframe id="pdf-frame" class="pdf-frame" src="{source}#view=FitH" '
             'title="原始 PDF"></iframe>')
     else:
-        blocks_html = _render_blocks(blocks, anchor_map, covered, req_numbers, sub_anchor_map)
+        blocks_html = _render_blocks(blocks, anchor_map, covered, req_numbers, sub_anchor_map,
+                                     echo_map=echo_map)
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
     omissions_json = json.dumps(omission_items, ensure_ascii=False).replace("</", "<\\/")
     pdf_context_json = json.dumps(pdf_context_map, ensure_ascii=False).replace("</", "<\\/")
@@ -1160,9 +1179,6 @@ def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, 
         anchor = str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")
         if req_id and anchor and anchor not in anchor_to_req:
             anchor_to_req[anchor] = req_id
-        for echo in req.get("echo_block_ids") or []:   # 回声段热区同样跳到该条目
-            if req_id and str(echo) not in anchor_to_req:
-                anchor_to_req[str(echo)] = req_id
     zones: list[dict[str, Any]] = []
     for block in blocks:
         block_id = str(block.get("block_id") or "")
@@ -1687,6 +1703,12 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
   font-family: var(--sans); transition: color .12s, border-color .12s, background .12s; }}
 .omission-tag:hover, .omission-tag.sel {{ color: var(--st-discussion-tx); border-color: var(--st-discussion-tx);
   background: rgba(248,239,217,.45); }}
+.echo-tag {{ display: inline-flex; margin-left: 6px; padding: 0 2px 1px; border: 0;
+  border-bottom: 1px dashed var(--line-strong); border-radius: 0; background: transparent;
+  color: var(--faint); font-size: 10px; line-height: 1; cursor: pointer; vertical-align: super;
+  font-family: var(--sans); transition: color .12s, border-color .12s; }}
+.echo-tag:hover {{ color: var(--ink); border-color: var(--ink); }}
+.echo-jump {{ color: var(--st-accepted-tx, #1d8a5c); text-decoration: underline dotted; cursor: pointer; }}
 
 /* 折叠区 */
 .region-collapse {{ margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; background: rgba(250,248,242,.62); }}
@@ -2126,6 +2148,7 @@ function deselect() {{
 // 与 DocumentReview.vue 同文案（双渲染器契约）：未覆盖=疑似需求但无任何抽取需求覆盖
 const OMISSION_REASON = "该段含规范性措辞（shall/must/应…），被判为疑似需求，但没有任何已抽取需求的来源范围覆盖它。可能原因：抽取遗漏（自检未补回）或该句实为背景说明。确属需求请反馈补抽；背景说明可忽略。";
 const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），被判定为背景/说明性内容，因此没有生成研发需求；其信息会作为上下文供相邻需求的分析使用。如认为该段实际包含需求，请反馈补抽。";
+const ECHO_REASON = "该段与已抽取需求的来源段落内容重复（同文多次出现）。解析已汇总至对应需求条目，本段不重复挂批注；点击「重复·见」角标或下方链接可跳转查看该条目。";
 let selectedContextBlock = null;
 
 function selectContextBlock(blk) {{
@@ -2145,15 +2168,36 @@ function selectContextBlock(blk) {{
   const text = p ? p.textContent : "";
   const translation = p ? (p.getAttribute("data-translation") || "") : "";
   const note = p ? (p.getAttribute("data-translation-note") || "") : "";
+  const echoTag = blk.querySelector(".echo-tag");
+  const translationHtml = '<div class="dd-label">原文翻译</div>'+
+    (translation ? '<div class="dd-body">'+esc(translation)+'</div>'
+     : note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(note)+'）</div>'
+     : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>');
+  if (echoTag) {{
+    // 重复段卡片：本段解析（翻译/引用）+ 汇总指引（跳转到聚合条目）
+    const rid = echoTag.getAttribute("data-echo-req") || "";
+    const num = echoTag.getAttribute("data-echo-number") || "";
+    const target = byId[rid];
+    document.getElementById("detail").innerHTML =
+      '<div class="annotation-card detail-card">'+
+      '<div class="dd-head"><span class="dd-module">重复段</span><span class="badge">说明</span></div>'+
+      '<div class="dd-title">该段解析已汇总</div>'+
+      '<div class="dd-body">'+esc(ECHO_REASON)+'</div>'+
+      (target ? '<div class="dd-body"><a href="javascript:void(0)" class="echo-jump" data-echo-req="'+esc(rid)+'">'+
+        '查看批注 '+esc(num ? String(num).padStart(2, "0") : "")+'《'+esc(target.title || "")+'》</a></div>' : '')+
+      translationHtml+
+      (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
+      '</div>';
+    const jump = document.querySelector("#detail .echo-jump");
+    if (jump) jump.addEventListener("click", () => select(jump.getAttribute("data-echo-req")));
+    return;
+  }}
   document.getElementById("detail").innerHTML =
     '<div class="annotation-card detail-card">'+
     '<div class="dd-head"><span class="dd-module">背景/上下文</span><span class="badge">说明</span></div>'+
     '<div class="dd-title">为什么没有生成研发需求</div>'+
     '<div class="dd-body">'+esc(CONTEXT_REASON)+'</div>'+
-    '<div class="dd-label">原文翻译</div>'+
-    (translation ? '<div class="dd-body">'+esc(translation)+'</div>'
-     : note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(note)+'）</div>'
-     : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>')+
+    translationHtml+
     (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
     '</div>';
 }}
@@ -2415,6 +2459,8 @@ document.getElementById("paper").addEventListener("click", e => {{
   }}
   const sourceMarker = e.target.closest(".source-classification"); if (sourceMarker) {{ selectSourceClassification(sourceMarker); return; }}
   const omission = e.target.closest(".omission-tag"); if (omission) {{ selectOmission(omission); return; }}
+  const echoTag = e.target.closest(".echo-tag");
+  if (echoTag) {{ select(echoTag.getAttribute("data-echo-req")); return; }}
   const blk = e.target.closest(".doc-block.anchored");
   if (blk) {{ const c = blk.querySelector(".chip"); if (c) select(c.getAttribute("data-req")); return; }}
   // 全文每段都有分析结果：无批注/无标记的正文段落点击 → 背景说明卡（原因/翻译/引用）

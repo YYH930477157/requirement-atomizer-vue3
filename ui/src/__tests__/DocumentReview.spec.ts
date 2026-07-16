@@ -64,8 +64,9 @@ describe("DocumentReview", () => {
     )
   })
 
-  it("echo blocks carry the same annotation and stop counting as omissions", async () => {
-    // 回声锚点(0715 电表招标实证):同一段文字重复出现,第二处此前显示"未覆盖"
+  it("echo blocks show a lightweight echo card instead of a duplicated chip", async () => {
+    // 回声段(0715 电表招标实证 + 0716 用户裁定):同文重复出现处不再显示"未覆盖",
+    // 也不重复挂完整批注——点击给"重复段"卡片,链接跳到汇总条目
     const client = makeClient({
       loadAiRequirements: vi.fn().mockResolvedValue([
         {
@@ -82,10 +83,16 @@ describe("DocumentReview", () => {
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
     await flushPromises()
 
-    // B3 有回声锚 → 不再计为遗漏;两处段落都挂着同一条目的批注 chip
+    // 不计遗漏;chip 只在锚点段一枚(不过度显示)
     expect(wrapper.find('[data-testid="doc-stat-omissions"]').text()).toBe("0")
-    const chips = wrapper.findAll(".anno-chip")
-    expect(chips.length).toBe(2)
+    expect(wrapper.findAll(".anno-chip").length).toBe(1)
+
+    // 点击回声段 → "重复段"卡片(本段解析) + 跳转链接 → 选中汇总条目
+    const echoBlock = wrapper.findAll(".doc-block").find((b) => b.text().includes("An uncovered requirement"))
+    await echoBlock!.trigger("click")
+    expect(wrapper.find('[data-testid="echo-card"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="echo-jump"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toBe("计量")   // 已跳到需求卡
   })
 
   it("marks notes and list groups so paragraph rhythm is preserved", async () => {
