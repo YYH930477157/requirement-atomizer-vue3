@@ -64,6 +64,37 @@ describe("DocumentReview", () => {
     )
   })
 
+  it("echo blocks show a lightweight echo card instead of a duplicated chip", async () => {
+    // 回声段(0715 电表招标实证 + 0716 用户裁定):同文重复出现处不再显示"未覆盖",
+    // 也不重复挂完整批注——点击给"重复段"卡片,链接跳到汇总条目
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        {
+          ai_req_id: "AIR-1", title: "体积计量", description: "应计量体积", module: "计量",
+          module_effective: "计量", type: "functional", priority: "P1", status: "draft",
+          source_section: "4", source_quote: "The meter shall measure volume.",
+          source_block_ids: ["B2"], anchor_block_id: "B2",
+          echo_block_ids: ["B3"],                       // B3 = 同文重复出现处
+          acceptance_criteria: [], dev_guidance: [], labels: ["计量"],
+          ownership: "software", ownership_effective: "software", review_state: null,
+        },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    // 不计遗漏;chip 只在锚点段一枚(不过度显示)
+    expect(wrapper.find('[data-testid="doc-stat-omissions"]').text()).toBe("0")
+    expect(wrapper.findAll(".anno-chip").length).toBe(1)
+
+    // 点击回声段 → "重复段"卡片(本段解析) + 跳转链接 → 选中汇总条目
+    const echoBlock = wrapper.findAll(".doc-block").find((b) => b.text().includes("An uncovered requirement"))
+    await echoBlock!.trigger("click")
+    expect(wrapper.find('[data-testid="echo-card"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="echo-jump"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toBe("计量")   // 已跳到需求卡
+  })
+
   it("marks notes and list groups so paragraph rhythm is preserved", async () => {
     const client = makeClient({
       loadDocument: vi.fn().mockResolvedValue({

@@ -44,6 +44,21 @@ class HtmlSideContractTests(unittest.TestCase):
             html)
         self.assertEqual(sub_labels, expect["sub_chip_labels"])
 
+    def test_echo_block_gets_tag_not_duplicate_chip(self) -> None:
+        """回声段契约(0716 用户裁定:批注不过度显示):同文重复段只给轻量"重复·见"
+        角标指向汇总条目,不重复挂完整批注 chip;卡片文案两渲染器同源。
+        HTML 侧 echo 由 build_ai_requirements 现算——夹具 E1/E2 是真实回声对,
+        计算结果必须与夹具声明的 echo_block_ids 一致(两侧数据同源的锁)。"""
+        html = self._render()
+        expect = self.fixture["expect"]
+        # parent_numbers 已锁 chip 总数(回声若挂 chip 会多出重复编号)
+        self.assertIn(f'data-echo-req="{expect["echo_req"]}"', html)
+        self.assertIn("重复·见03", html)
+        self.assertIn(expect["echo_reason"], html)
+        # 回声段不显示"未覆盖"(已被条目覆盖)
+        e2_seg = html[html.find('data-block-id="E2"'):][:800]
+        self.assertNotIn("omission-tag", e2_seg)
+
     def test_table_block_renders_real_table(self) -> None:
         """表格块按契约渲染真 <table>：题注/表头/数据格/无画线重建徽章（2026-07-07）。"""
         html = self._render()

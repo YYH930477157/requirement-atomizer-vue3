@@ -141,6 +141,68 @@ class AiRequirementsEndpointTests(unittest.TestCase):
         # 无 quote/无 span → 空
         self.assertEqual(api_server.anchor_block_id({}, text_by_block), "")
 
+    def test_echo_block_ids_for_duplicated_text(self) -> None:
+        """回声锚点(0715 电表招标实证):同一段产品描述在 Scope 与 3.1 各出现一次,
+        条目锚在首次出现,第二次出现在批注视图显示"未覆盖"——用户误判整段没解析出。
+        碎词拆点不同("G SM" vs "GSM"),匹配必须用全剥空白底座。"""
+        long_desc = ("Static three-phase alternating current meter with GSM modem 4G/LTE "
+                     "for indirect measurement of active and reactive consumption")
+        blocks = [
+            {"block_id": "BLK-1", "text": "1 Scope of validity"},
+            {"block_id": "BLK-2",
+             "text": "Static three-phase alternating current meter with G SM modem 4G/LTE "
+                     "for i ndirect measurement of active a nd reactive consumption"},
+            {"block_id": "BLK-3", "text": "3.1 Electrical requirements"},
+            {"block_id": "BLK-4",   # 第二次出现:碎词拆点不同
+             "text": "Static three-phase a lternating current meter with GSM modem 4G/LTE "
+                     "for indirect measurement of a ctive and reactive consumption"},
+            {"block_id": "BLK-5", "text": "Voltage 110000/100 V", "noise": False},
+            {"block_id": "BLK-6", "text": long_desc, "noise": True},   # 噪声块不回声
+        ]
+        req = {"source_quote": long_desc,
+               "source_block_ids": ["BLK-2"], "anchor_block_id": "BLK-2"}
+        echoes = api_server.compute_echo_block_ids(req, blocks)
+        self.assertEqual(echoes, ["BLK-4"])   # 命中重复段;跳过锚点自身/噪声块/无关块
+
+    def test_echo_near_duplicate_with_wording_drift(self) -> None:
+        """真实形态(0715 电表招标):原文两次出现本身有措辞微差("measurement of"↔
+        "measuring"),LLM 引句尾部又意译——引句互含路失效,靠锚点原文近重复路
+        (J≥0.8+数字守卫)兜住。"""
+        occ1 = ("Static three-phase alternating current meter with GSM modem 4G/LTE for "
+                "indirect measurement of load profiles Q1, Q2, Q3, Q4, S and measurement "
+                "of quality profiles.")
+        occ2 = ("Static three-phase a lternating current meter with GSM modem 4G/LTE for "
+                "i ndirect measurement of load profiles Q1, Q2, Q3, Q4, S a nd measuring "
+                "quality profiles")
+        blocks = [{"block_id": "BLK-1", "text": occ1},
+                  {"block_id": "BLK-2", "text": occ2},
+                  {"block_id": "BLK-3", "text": "Voltage transfer 110000/100 V and current 100/1 A."}]
+        req = {"source_quote": occ1.replace("measurement of quality", "measurement of the quality"),
+               "source_block_ids": ["BLK-1"], "anchor_block_id": "BLK-1"}   # 引句非逐字
+        self.assertEqual(api_server.compute_echo_block_ids(req, blocks), ["BLK-2"])
+
+    def test_echo_number_guard_blocks_template_rows(self) -> None:
+        # 同版式不同数值的模板句:数字多重集守卫拦截(不回声)
+        a = "The register shall record values every 15 minutes with a capacity of 60 days."
+        b = "The register shall record values every 30 minutes with a capacity of 90 days."
+        blocks = [{"block_id": "BLK-1", "text": a}, {"block_id": "BLK-2", "text": b}]
+        req = {"source_quote": a, "source_block_ids": ["BLK-1"], "anchor_block_id": "BLK-1"}
+        self.assertEqual(api_server.compute_echo_block_ids(req, blocks), [])
+
+    def test_echo_short_quote_never_matches(self) -> None:
+        blocks = [{"block_id": "BLK-1", "text": "The meter shall work."},
+                  {"block_id": "BLK-2", "text": "The meter shall work."}]
+        req = {"source_quote": "The meter shall work.",   # 剥空白后 <30 字
+               "source_block_ids": ["BLK-1"], "anchor_block_id": "BLK-1"}
+        self.assertEqual(api_server.compute_echo_block_ids(req, blocks), [])
+
+    def test_build_ai_requirements_carries_echo_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            rows = api_server.build_ai_requirements(out)
+            self.assertIn("echo_block_ids", rows[0])      # 字段恒在(空列表也在,契约稳定)
+
     def test_view_prefers_raw_ai_requirements_over_merged(self) -> None:
         """merged 会剔除 rejected（裁决回流交付物），批注视图须读原始文件——被拒条目仍可见、可反悔。"""
         with tempfile.TemporaryDirectory() as tmp:

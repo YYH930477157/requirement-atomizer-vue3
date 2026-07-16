@@ -75,10 +75,23 @@ const anchorByBlock = computed(() => {
   return map
 })
 
-// 被任意需求覆盖的块集合（含整段 source_block_ids），用于遗漏判定。
+// 回声段（同文重复出现的其他段落）：不重复挂批注（0716 用户裁定:批注不过度显示,
+// 汇总层才归并）——只用于免遗漏判定 + 点击时给"重复段"卡片指向汇总条目。
+const echoByBlock = computed(() => {
+  const map = new Map<string, AiRequirement>()
+  for (const req of requirements.value)
+    for (const echo of req.echo_block_ids || [])
+      if (!map.has(echo)) map.set(echo, req)
+  return map
+})
+
+// 被任意需求覆盖的块集合（含整段 source_block_ids 与回声段），用于遗漏判定。
 const coveredBlocks = computed(() => {
   const s = new Set<string>()
-  for (const req of requirements.value) for (const b of req.source_block_ids || []) s.add(b)
+  for (const req of requirements.value) {
+    for (const b of req.source_block_ids || []) s.add(b)
+    for (const b of req.echo_block_ids || []) s.add(b)
+  }
   return s
 })
 
@@ -88,9 +101,23 @@ const selectedReq = computed(() => requirements.value.find((r) => r.ai_req_id ==
 // 目标：全文每一段都有分析结果——需求段有批注,其余段点开能看到为什么没生成需求+翻译+引用。
 const OMISSION_REASON = "该段含规范性措辞（shall/must/应…），被判为疑似需求，但没有任何已抽取需求的来源范围覆盖它。可能原因：抽取遗漏（自检未补回）或该句实为背景说明。确属需求请反馈补抽；背景说明可忽略。"
 const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），被判定为背景/说明性内容，因此没有生成研发需求；其信息会作为上下文供相邻需求的分析使用。如认为该段实际包含需求，请反馈补抽。"
+// 与导出 HTML 同文案（双渲染器契约）
+const ECHO_REASON = "该段与已抽取需求的来源段落内容重复（同文多次出现）。解析已汇总至对应需求条目，本段不重复挂批注；点击「重复·见」角标或下方链接可跳转查看该条目。"
 const selectedBlockId = ref("")
 const selectedBlock = computed(() => blocks.value.find((b) => b.block_id === selectedBlockId.value) || null)
-const selectedBlockKind = computed(() => (selectedBlock.value && isOmission(selectedBlock.value) ? "omission" : "context"))
+const selectedBlockKind = computed(() => {
+  if (!selectedBlock.value) return "context"
+  if (echoByBlock.value.has(selectedBlock.value.block_id)) return "echo"
+  return isOmission(selectedBlock.value) ? "omission" : "context"
+})
+const selectedEchoReq = computed(() =>
+  (selectedBlock.value && echoByBlock.value.get(selectedBlock.value.block_id)) || null)
+function jumpToEchoReq() {
+  const req = selectedEchoReq.value
+  if (!req) return
+  selectedBlockId.value = ""
+  selectedId.value = req.ai_req_id   // 直接选中(不走 select 的再点取消语义)
+}
 function selectBlockCard(b: DocumentBlock) {
   if (selectedBlockId.value === b.block_id) {  // 再点一下 → 取消选中
     selectedBlockId.value = ""
@@ -535,13 +562,17 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
       <aside class="doc-detail" data-testid="doc-detail">
         <div v-if="!selectedReq && !selectedBlock" class="doc-detail-empty">点左侧 💬 批注查看需求详情</div>
         <div v-else-if="selectedBlock" class="doc-detail-card"
-             :data-testid="selectedBlockKind === 'omission' ? 'omission-card' : 'context-card'">
+             :data-testid="selectedBlockKind === 'omission' ? 'omission-card' : (selectedBlockKind === 'echo' ? 'echo-card' : 'context-card')">
           <div class="dd-head">
-            <span class="dd-module">{{ selectedBlockKind === "omission" ? "未覆盖" : "背景/上下文" }}</span>
+            <span class="dd-module">{{ selectedBlockKind === "omission" ? "未覆盖" : (selectedBlockKind === "echo" ? "重复段" : "背景/上下文") }}</span>
             <span class="dd-status">说明</span>
           </div>
-          <h3 class="dd-title">{{ selectedBlockKind === "omission" ? "为什么标为未覆盖" : "为什么没有生成研发需求" }}</h3>
-          <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "omission" ? OMISSION_REASON : CONTEXT_REASON }}</div></div>
+          <h3 class="dd-title">{{ selectedBlockKind === "omission" ? "为什么标为未覆盖" : (selectedBlockKind === "echo" ? "该段解析已汇总" : "为什么没有生成研发需求") }}</h3>
+          <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "omission" ? OMISSION_REASON : (selectedBlockKind === "echo" ? ECHO_REASON : CONTEXT_REASON) }}</div></div>
+          <div v-if="selectedBlockKind === 'echo' && selectedEchoReq" class="dd-section">
+            <a class="echo-jump" data-testid="echo-jump" href="javascript:void(0)"
+               @click.stop="jumpToEchoReq()">查看需求《{{ selectedEchoReq.title }}》</a>
+          </div>
           <div class="dd-section">
             <div class="dd-label">原文翻译</div>
             <div v-if="selectedBlock.translation" class="dd-body" data-testid="omission-translation">{{ selectedBlock.translation }}</div>

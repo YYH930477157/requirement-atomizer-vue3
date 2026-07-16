@@ -970,6 +970,13 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
                                        str(target.get("source_section") or "")):
             LOGGER.info("自检补充跨条款越界,丢弃：target=%s", str(target.get("title") or "")[:30])
             continue
+        # 交付字段护栏同构(专家审核 0715):此路径此前只软注 int 漂移——无据数字可经
+        # 并入直进 target 的验收标准,绕过第一类通道的整移护栏。复用同一护栏:验收行
+        # 含无据数字/编码/实现假设 → 不并入,审计留痕转挂 target(与直抽条目同待遇)。
+        pseudo.setdefault("design_options", [])
+        _move_unsupported_delivery_items(pseudo, source)
+        if str(pseudo.get("notes") or "").strip():
+            _append_note(target, f"自检补充经交付护栏筛除部分内容——{pseudo['notes']}")
         changed = False
         have_labels = {_norm_ws(s.get("label")) for s in target.get("sub_items") or []}
         have_labels.discard("")

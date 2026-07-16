@@ -80,6 +80,30 @@
    "requirement_like": false,
    "noise": false,
    "doc_region": "body"
+  },
+  {
+   "block_id": "E1",
+   "order": 5,
+   "type": "paragraph",
+   "text": "The device shall provide remote firmware upgrade with signed images and automatic rollback on failure within 60 seconds.",
+   "section_path": [
+    "4.8"
+   ],
+   "requirement_like": true,
+   "noise": false,
+   "doc_region": "body"
+  },
+  {
+   "block_id": "E2",
+   "order": 6,
+   "type": "paragraph",
+   "text": "The d evice shall p rovide remote firmware upgrade with s igned images and automatic rollback o n failure within 6 0 seconds.",
+   "section_path": [
+    "5.2"
+   ],
+   "requirement_like": true,
+   "noise": false,
+   "doc_region": "body"
   }
  ],
  "requirements": [
@@ -145,12 +169,35 @@
     "附加功能"
    ],
    "acceptance_criteria": []
+  },
+  {
+   "ai_req_id": "AIR-3",
+   "title": "远程固件升级",
+   "description": "支持签名镜像远程升级,失败 60 秒内自动回滚。",
+   "module": "升级",
+   "type": "functional",
+   "priority": "P1",
+   "source_section": "4.8",
+   "source_quote": "The device shall provide remote firmware upgrade with signed images and automatic rollback on failure within 60 seconds.",
+   "source_block_ids": [
+    "E1"
+   ],
+   "anchor_block_id": "E1",
+   "labels": [
+    "升级"
+   ],
+   "acceptance_criteria": [],
+   "sub_items": [],
+   "echo_block_ids": [
+    "E2"
+   ]
   }
  ],
  "expect": {
   "parent_numbers": [
    "01",
-   "02"
+   "02",
+   "03"
   ],
   "sub_chip_labels": [
    "01.a",
@@ -172,6 +219,9 @@
   "table_badge": "无画线重建",
   "merge_badge_text": "跨章合并 2 条（explicit_key，置信 0.75）——建议核对合并是否恰当",
   "consistency_flag_text": "跨章重复×2",
-  "conflict_flag_text": "同一功能未限定参数冲突: 5s vs 10s"
+  "conflict_flag_text": "同一功能未限定参数冲突: 5s vs 10s",
+  "echo_block": "E2",
+  "echo_req": "AIR-3",
+  "echo_reason": "该段与已抽取需求的来源段落内容重复（同文多次出现）。解析已汇总至对应需求条目，本段不重复挂批注；点击「重复·见」角标或下方链接可跳转查看该条目。"
  }
 }

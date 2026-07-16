@@ -471,6 +471,50 @@ class SupplementHardeningTests(unittest.TestCase):
         self.assertIn("自检复核:描述与引句疑似矛盾", existing[0]["suspicion_reasons"])
 
 
+class SupplementDeliveryGuardTests(unittest.TestCase):
+    """并入路径复用交付字段护栏(专家审核 0715:此前只软注 int 漂移——无据数字
+    可经自检并入直进 target 验收标准,绕过第一类通道的整移护栏)。"""
+
+    SECTION = {"section_id": "7.4", "heading": "7.4 Battery", "block_ids": [],
+               "text": ("## 7.4 Battery\n"
+                        "The battery shall support all functions for the declared lifetime. "
+                        "The lifetime shall be greater than 5 years.")}
+
+    def _existing(self) -> list[dict]:
+        return [{"title": "电池寿命", "description": "电池寿命须大于 5 年。",
+                 "source_section": "7.4",
+                 "source_quote": "The lifetime shall be greater than 5 years.",
+                 "sub_items": [], "acceptance_criteria": [], "notes": ""}]
+
+    def test_fabricated_number_in_supplement_acceptance_blocked(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "电池寿命",
+                "acceptance_criteria": ["电池容量不低于 3600 mAh 方可判定合格",   # 3600 无据
+                                        "按声明的温度曲线测试后寿命大于 5 年"]}]}   # 5 有据
+
+        extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        acc = existing[0]["acceptance_criteria"]
+        self.assertNotIn("电池容量不低于 3600 mAh 方可判定合格", acc)   # 无据行被拦
+        self.assertIn("按声明的温度曲线测试后寿命大于 5 年", acc)        # 有据行照并
+        self.assertIn("3600", existing[0]["notes"])                     # 审计留痕
+        self.assertIn("无依据数字", existing[0]["notes"])
+
+    def test_supplement_with_only_clean_lines_merges_without_guard_note(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "电池寿命",
+                "acceptance_criteria": ["按声明的温度曲线测试后寿命大于 5 年"]}]}
+
+        extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(applied, 1)
+        self.assertNotIn("交付护栏筛除", existing[0]["notes"])
+
+
 class SupplementConversionTests(unittest.TestCase):
     """v3 召回修正(五刀):未匹配的补充若能在原文逐字定位 → 转独立需求(同护栏同去重),
     不再直接丢弃——自检契约偏并入曾把真新需求塞错目标而流失(v3 漏抽 4→8 的根因)。"""
