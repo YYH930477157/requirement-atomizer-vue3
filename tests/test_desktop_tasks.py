@@ -712,7 +712,9 @@ class ChainAndManifestTests(unittest.TestCase):
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
         expected = {
             "atomize": "atomize+impl-v4",
-            "ai-extract": "ai-extract-v18+impl-v3",   # v18: 免责从句保向+量符号下标+单位词不猜译(0715 v5 审计)
+            # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
+            # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
+            "ai-extract": "ai-extract-v18+guards-v4+ai-verify-v1+impl-v3",
             "assemble": "assemble_spec/v1+impl-v2",
             "functional-synthesis": "functional-synthesis-v5+impl-v2",
             "requirements-analysis": "analyze-llm-v6+impl-v2",   # v6: 冻结归属注入(0714 批次一)
@@ -724,6 +726,25 @@ class ChainAndManifestTests(unittest.TestCase):
             {stage: desktop_tasks.stage_producer(stage) for stage in expected},
             expected,
         )
+
+    def test_ai_extract_fingerprint_tracks_verify_toggles(self) -> None:
+        # 专家审核 0715:verify 开关/轮数不进阶段指纹 → 改设置后 chain 续跑
+        # 直接跳过 ai-extract,新设置静默零生效
+        import os
+        import unittest.mock as mock
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            with mock.patch.dict(os.environ, {"RATOMIZER_AI_VERIFY": "1",
+                                              "RATOMIZER_AI_VERIFY_ROUNDS": "2"}):
+                base = desktop_tasks.stage_input_fingerprint(out, "ai-extract")
+            with mock.patch.dict(os.environ, {"RATOMIZER_AI_VERIFY": "0",
+                                              "RATOMIZER_AI_VERIFY_ROUNDS": "2"}):
+                toggled = desktop_tasks.stage_input_fingerprint(out, "ai-extract")
+            with mock.patch.dict(os.environ, {"RATOMIZER_AI_VERIFY": "1",
+                                              "RATOMIZER_AI_VERIFY_ROUNDS": "3"}):
+                rounds = desktop_tasks.stage_input_fingerprint(out, "ai-extract")
+        self.assertNotEqual(base, toggled)
+        self.assertNotEqual(base, rounds)
 
     def test_requirements_analysis_fingerprint_tracks_term_map(self) -> None:
         with tempfile.TemporaryDirectory() as td:

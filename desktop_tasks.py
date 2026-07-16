@@ -397,8 +397,12 @@ def stage_producer(stage: str) -> str:
     producer = _STAGE_BASE_PRODUCERS.get(stage, stage)
     try:
         if stage == "ai-extract":
-            from ai_extract import AI_EXTRACT_PROMPT_VERSION
-            producer = AI_EXTRACT_PROMPT_VERSION
+            # 版本戳必须覆盖全部影响产物的代码层(专家审核 0715:verify 版本缺席使
+            # 复核变更后续跑直接跳过;guards 版本此前同样缺席——护栏 v2→v4 三次升级
+            # 均未失效阶段指纹,与缓存指纹同族的洞,一次补齐)
+            from ai_extract import (AI_EXTRACT_PROMPT_VERSION, AI_VERIFY_PROMPT_VERSION,
+                                    EXTRACT_GUARDS_VERSION)
+            producer = f"{AI_EXTRACT_PROMPT_VERSION}+{EXTRACT_GUARDS_VERSION}+{AI_VERIFY_PROMPT_VERSION}"
         elif stage == "requirements-analysis":
             from requirements_analysis import ANALYZE_PROMPT_VERSION
             producer = ANALYZE_PROMPT_VERSION
@@ -495,6 +499,9 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
             "RATOMIZER_LLM_BASE_URL", "RATOMIZER_LLM_MODEL", "RATOMIZER_LLM_MAX_TOKENS",
             "RATOMIZER_LLM_TEMPERATURE", "RATOMIZER_AI_UNIT_MODE", "RATOMIZER_AI_SELFCHECK",
             "RATOMIZER_AI_SELFCHECK_ROUNDS",
+            # 二遍复核开关/轮数改变产物 → 指纹必须失效（专家审核 0715:缺席使复核
+            # 变更后 chain 续跑直接跳过 ai-extract,新设置静默零生效）
+            "RATOMIZER_AI_VERIFY", "RATOMIZER_AI_VERIFY_ROUNDS",
             # 合批条数改变 prompt 形状 → 产物可能不同 → 指纹必须失效（0714 批次二）
             "RATOMIZER_ANALYZE_BATCH", "RATOMIZER_ENRICH_BATCH",
         )},
