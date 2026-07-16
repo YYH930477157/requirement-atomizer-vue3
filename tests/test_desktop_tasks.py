@@ -714,7 +714,7 @@ class ChainAndManifestTests(unittest.TestCase):
             "atomize": "atomize+impl-v4",
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
-            "ai-extract": "ai-extract-v18+guards-v5+ai-verify-v2+impl-v3",
+            "ai-extract": "ai-extract-v19+guards-v5+ai-verify-v2+impl-v3",
             "assemble": "assemble_spec/v1+impl-v2",
             "functional-synthesis": "functional-synthesis-v5+impl-v2",
             "requirements-analysis": "analyze-llm-v6+impl-v3",   # v3: 富化默认关闭并保留显式开关

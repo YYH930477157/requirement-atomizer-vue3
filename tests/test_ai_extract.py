@@ -1363,7 +1363,7 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("忠实性", ai_extract.SYSTEM_PROMPT)
         self.assertIn("不得升格约束强度", ai_extract.SYSTEM_PROMPT)
         self.assertIn("测试装置/夹具/图例说明", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v18")
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v19")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}

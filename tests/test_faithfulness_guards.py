@@ -542,6 +542,78 @@ class SupplementDeliveryGuardTests(unittest.TestCase):
         self.assertNotIn("交付护栏筛除", existing[0]["notes"])
 
 
+class SupplementSlotTests(unittest.TestCase):
+    """自检补充 target_slot 编号定位(0716 专家审核补:同名条目 by_title 覆盖会并错目标;
+    镜像 verify_slot——slot 优先,title 回退仅当唯一,同名歧义不裁走未匹配路径)。"""
+
+    SECTION = {"section_id": "4.9", "heading": "4.9 Temperature", "block_ids": [],
+               "text": ("## 4.9 Temperature\n"
+                        "For an AFD1 the range shall be at least -25 C to +55 C with margin checks. "
+                        "For an AFD3 the range shall be at least +5 C to +30 C with margin checks.")}
+
+    def _existing(self) -> list[dict]:
+        return [
+            {"title": "环境温度范围要求", "description": "AFD1 范围覆盖 -25 至 +55。",
+             "source_section": "4.9", "source_quote": "For an AFD1 the range shall be at least -25 C to +55 C",
+             "sub_items": [], "acceptance_criteria": [], "notes": ""},
+            {"title": "环境温度范围要求", "description": "AFD3 范围覆盖 +5 至 +30。",
+             "source_section": "4.9", "source_quote": "For an AFD3 the range shall be at least +5 C to +30 C",
+             "sub_items": [], "acceptance_criteria": [], "notes": ""},
+        ]
+
+    def test_slot_targets_exact_requirement_despite_duplicate_titles(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            self.assertIn("[target_slot 1]", user)      # 摘要带编号
+            self.assertIn("target_slot", system) if "查漏" in system else None
+            return {"requirements": [], "supplements": [{
+                "target_slot": 2, "target_title": "环境温度范围要求",
+                "acceptance_criteria": ["范围边界按声明值核查(margin checks)"]}]}
+
+        extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(applied, 1)
+        self.assertEqual(existing[0]["acceptance_criteria"], [])        # slot1 未被误并
+        self.assertEqual(len(existing[1]["acceptance_criteria"]), 1)   # 并进 slot2
+
+    def test_duplicate_title_without_slot_never_merges_blindly(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "环境温度范围要求",   # 同名歧义,无 slot
+                "acceptance_criteria": ["范围边界按声明值核查"]}]}
+
+        extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(applied, 0)                                    # 不裁 → 不并入任何一条
+        self.assertEqual(existing[0]["acceptance_criteria"], [])
+        self.assertEqual(existing[1]["acceptance_criteria"], [])
+
+    def test_unique_title_fallback_still_works(self) -> None:
+        existing = [self._existing()[0]]
+        existing[0]["title"] = "AFD1温度范围"
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "AFD1温度范围",       # 无 slot,唯一 title 回退
+                "acceptance_criteria": ["范围边界按声明值核查(margin checks)"]}]}
+
+        extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(applied, 1)
+        self.assertEqual(len(existing[0]["acceptance_criteria"]), 1)
+
+    def test_prompt_carries_slot_contract(self) -> None:
+        captured: dict = {}
+
+        def chat(system: str, user: str) -> dict:
+            captured["user"] = user
+            return {"requirements": [], "supplements": []}
+
+        ai_extract.critique_section(self.SECTION, self._existing(), chat)
+        self.assertIn("target_slot", captured["user"])
+        self.assertIn("[target_slot 2]", captured["user"])
+
+
 class SupplementConversionTests(unittest.TestCase):
     """v3 召回修正(五刀):未匹配的补充若能在原文逐字定位 → 转独立需求(同护栏同去重),
     不再直接丢弃——自检契约偏并入曾把真新需求塞错目标而流失(v3 漏抽 4→8 的根因)。"""

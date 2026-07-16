@@ -64,7 +64,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v18"  # v18：免责从句保向+量符号下标+单位词不猜译（0715 v5 审计）；v17：忠实性判据+测试装置排除；v16：functional_key 构造规则+priority 判级基准
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v19"  # v19：自检补充 target_slot 编号定位（同名并错目标,专家审核 0716）；v18：免责从句保向+量符号下标+单位词不猜译；v17：忠实性判据+测试装置排除
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -761,13 +761,17 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
     # 给模型看**结构摘要**而非裸标题：真实案例（4.14）——初抽按条款族正确合成一条（子项
     # a-e + 验收），自检只见标题、看不见 a-e 已在 sub_items 里 → 判"遗漏"又拆回 4 条碎片，
     # 一个条款 18 个批注点。摘要必须暴露子项与验收，让"已覆盖"判断有据。
+    # target_slot 编号定位(0716 补,镜像 verify_slot):同名条目 by_title 会并错目标。
+    # 摘要行必须带描述片段——真实探针:两条同题条目只给标题时,模型选 slot 靠猜,
+    # 把 AFD1 义务填进了 AFD3 的 slot(slot 只解决"传输保真",判据得喂给模型)
     summaries = "\n".join(
-        f"- {r.get('title', '')}"
+        f"- [target_slot {i}] {r.get('title', '')}"
+        + f"｜描述:{_norm_ws(r.get('description'))[:48]}"
         + (f"｜子项:{','.join(str(s.get('label') or '·') for s in r.get('sub_items') or [])}"
            if r.get("sub_items") else "")
         + (f"｜验收 {len(r.get('acceptance_criteria') or [])} 条"
            if r.get("acceptance_criteria") else "")
-        for r in existing) or "（无）"
+        for i, r in enumerate(existing, 1)) or "（无）"
     parts: list[str] = []
     if doc_context:
         parts.append(doc_context)
@@ -780,7 +784,9 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         "（同一条款/同一功能的枚举项、条件、参数、验收判据）——放进 supplements；"
         "**吃不准从属关系时,宁可作为独立需求输出到 requirements,不要硬塞 supplements**"
         "（塞错目标会被守卫丢弃,反而丢失内容）。放进 supplements 的格式："
-        "{\"target_title\": \"<该已抽需求的 title 原样回填>\", \"sub_items\": [{\"label\": \"c\", \"text\": \"…\"}], "
+        "{\"target_slot\": <该已抽需求的 target_slot 编号原样回填>, "
+        "\"target_title\": \"<该已抽需求的 title 原样回填,仅作辅助核对>\", "
+        "\"sub_items\": [{\"label\": \"c\", \"text\": \"…\"}], "
         "\"acceptance_criteria\": [\"…\"], \"description_append\": \"<可选的一句补充>\"}；"
         "只有与全部已抽需求都无从属关系的**独立功能点**才进 requirements（同样的 JSON schema、"
         "同样的 module 受控清单）。"
@@ -789,7 +795,7 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         "算已覆盖——条款的枚举项、测试前/后判据、测试方法是该条款需求的组成部分，"
         "**不要**把它们拆成新需求（条款族=一条需求的原则对遗漏项同样适用）。"
         "**顺带复核**：若发现已抽需求的描述与其引句矛盾（约束强度升格、方向/主客体反转、"
-        "无据添加适用条件），在 supplements 里回填该 target_title 并给 "
+        "无据添加适用条件），在 supplements 里回填该 target_slot/target_title 并给 "
         "\"faithfulness_note\": \"<必须同时逐字引出描述片段与引句片段来证明矛盾>\"——"
         "没有可引证的具体矛盾就不要报（空泛怀疑是噪声），不要改写原需求。"
         "supplements 里已存在于该需求 sub_items/验收里的内容**不要重复回填**。"
@@ -911,7 +917,9 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
     """自检并入（0715 降碎）：把补漏内容并进已有需求的 sub_items/验收,不新开碎条。
 
     护栏不放宽:补充文本过同一套漂移检查(编码硬拒该条补充、整数软标随行);
-    target_title 匹配不上就丢弃留痕(宁缺勿错,下一轮自检可再补)。返回采纳的补充数。
+    目标定位 slot 优先(0716 补,镜像 verify_slot——专家审核:同名条目 by_title
+    覆盖会并错目标):target_slot 有效直接用;否则 title 回退但**仅当唯一**,
+    同名歧义不裁走未匹配路径(转独立/丢弃留痕,宁缺勿错)。返回采纳的补充数。
     v2 审计加固:同标签子项不重复加(标签在需求内唯一)、近重复文本不加(同义复述
     堆叠)、跨条款越界并入丢弃、忠实性复核须有可锚定证据才挂 suspicion。
     """
@@ -919,7 +927,28 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
         return 0, []
     source = section.get("drift_source") or section.get("text", "")
     section_text = section.get("text", "")
-    by_title = {_norm_ws(r.get("title")): r for r in existing if str(r.get("title") or "").strip()}
+    by_slot = {i: r for i, r in enumerate(existing, 1)}
+    slots_by_title: dict[str, list[int]] = {}
+    for slot, req in by_slot.items():
+        title_key = _norm_ws(req.get("title"))
+        if title_key:
+            slots_by_title.setdefault(title_key, []).append(slot)
+
+    def _resolve_target(sup: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            slot = int(sup.get("target_slot"))
+        except (TypeError, ValueError):
+            slot = 0
+        if slot in by_slot:
+            return by_slot[slot]
+        title_slots = slots_by_title.get(_norm_ws(sup.get("target_title"))) or []
+        if len(title_slots) == 1:
+            return by_slot[title_slots[0]]
+        if len(title_slots) > 1:
+            LOGGER.info("自检补充目标同名歧义(%d 条同题)且无有效 slot,不裁：%s",
+                        len(title_slots), str(sup.get("target_title") or "")[:40])
+        return None
+
     applied = 0
     converted: list[dict[str, Any]] = []
     for sup in raw_supplements:
@@ -944,7 +973,7 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
         # 防止无据数字、编码或实现假设借 supplements 绕过首轮处理。
         sup["acceptance_criteria"] = list(pseudo["acceptance_criteria"])
         guard_note = str(pseudo.get("notes") or "")
-        target = by_title.get(_norm_ws(sup.get("target_title")))
+        target = _resolve_target(sup)
         if target is None:
             # v3 召回修正:未匹配不再直接丢——内容能在原文逐字定位的,转为独立需求原料
             # (走同一套 _process 护栏与去重;定位不到的仍丢弃留痕,宁缺勿错)
