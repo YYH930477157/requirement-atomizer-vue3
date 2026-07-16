@@ -65,20 +65,27 @@ watch(() => props.active, (on) => { if (on && (!loadedOnce || !requirements.valu
 // 回退 source_block_ids 首块。批注钉在需求实际所在的小段，不分散到整章节。
 const anchorByBlock = computed(() => {
   const map = new Map<string, AiRequirement[]>()
+  const put = (bid: string | undefined, req: AiRequirement) => {
+    if (!bid) return
+    const list = map.get(bid) || []
+    if (!list.includes(req)) list.push(req)
+    map.set(bid, list)
+  }
   for (const req of requirements.value) {
-    const anchor = req.anchor_block_id || (req.source_block_ids || [])[0]
-    if (!anchor) continue
-    const list = map.get(anchor) || []
-    list.push(req)
-    map.set(anchor, list)
+    put(req.anchor_block_id || (req.source_block_ids || [])[0], req)
+    // 回声锚点（同文重复出现的其他段落）：挂同一枚批注，避免重复段显示"未覆盖"
+    for (const echo of req.echo_block_ids || []) put(echo, req)
   }
   return map
 })
 
-// 被任意需求覆盖的块集合（含整段 source_block_ids），用于遗漏判定。
+// 被任意需求覆盖的块集合（含整段 source_block_ids 与回声段），用于遗漏判定。
 const coveredBlocks = computed(() => {
   const s = new Set<string>()
-  for (const req of requirements.value) for (const b of req.source_block_ids || []) s.add(b)
+  for (const req of requirements.value) {
+    for (const b of req.source_block_ids || []) s.add(b)
+    for (const b of req.echo_block_ids || []) s.add(b)
+  }
   return s
 })
 

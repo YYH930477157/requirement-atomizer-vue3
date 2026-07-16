@@ -512,6 +512,54 @@ def _norm_text(s: object) -> str:
     return _WS_RE.sub(" ", str(s or "")).strip().lower()
 
 
+def _strip_ws(s: object) -> str:
+    return _WS_RE.sub("", str(s or "")).casefold()
+
+
+def compute_echo_block_ids(req: dict, blocks: list[dict]) -> list[str]:
+    """同文重复出现的回声锚点(视图层专用字段,**不进** source_block_ids 溯源数据)。
+
+    真实案例(0715 电表招标):同一段产品描述在 Scope 与 3.1 各出现一次,条目锚在
+    首次出现,批注视图里第二次出现无任何标注 → 用户以为整段没解析出。
+    两条匹配路:① 引句互含(全剥空白底座——PDF 碎词两次出现拆点不同,保留空白的
+    归一化对不上;引句 ≥30 字);② 锚点原文对原文近重复(原文两次出现本身就有措辞
+    微差:"measurement of"↔"measuring",且 LLM 引句尾部意译时路①失效)——剥空白
+    相等,或 J≥0.8+数字多重集守卫(真实文档全对探针:目标对 0.97/真重复 0.84 保住,
+    0.72 的跨章节相似句排除)。防噪:参照块与候选块剥空白后均 ≥60 字;跳过噪声块
+    与已在 source_block_ids/anchor 里的块。"""
+    from extract_guards import _gram_jaccard, _num_multiset
+    quote = _strip_ws(req.get("source_quote"))
+    have = {str(b) for b in (req.get("source_block_ids") or [])}
+    have.add(str(req.get("anchor_block_id") or ""))
+    text_of = {str(b.get("block_id") or ""): str(b.get("text") or "") for b in blocks}
+    refs = []   # (原文, 剥空白, 数字多重集) —— 条目源块里够长的段落
+    for bid in have:
+        raw = text_of.get(bid, "")
+        stripped = _strip_ws(raw)
+        if len(stripped) >= 60:
+            refs.append((raw, stripped, _num_multiset(raw)))
+    echoes: list[str] = []
+    for block in blocks:
+        bid = str(block.get("block_id") or "")
+        if not bid or bid in have or block.get("noise"):
+            continue
+        raw = str(block.get("text") or "")
+        stripped = _strip_ws(raw)
+        if len(stripped) < 30:
+            continue
+        if len(quote) >= 30 and (quote in stripped or stripped in quote):
+            echoes.append(bid)
+            continue
+        if len(stripped) < 60:
+            continue
+        for ref_raw, ref_stripped, ref_nums in refs:
+            if stripped == ref_stripped or (
+                    _num_multiset(raw) == ref_nums and _gram_jaccard(raw, ref_raw) >= 0.8):
+                echoes.append(bid)
+                break
+    return echoes
+
+
 def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
     """需求精确锚点：含其 source_quote 原句的那一小段（段落级），否则回退 source_block_ids 首块。
 
@@ -633,8 +681,8 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
     states = read_ai_review_states(output_dir)
     membership = _functional_membership(output_dir)
     analysis_map = _analysis_enrichment(output_dir)
-    text_by_block = {str(b.get("block_id")): (b.get("text") or "")
-                     for b in read_jsonl(output_dir / "blocks.jsonl")}
+    block_rows = read_jsonl(output_dir / "blocks.jsonl")
+    text_by_block = {str(b.get("block_id")): (b.get("text") or "") for b in block_rows}
     from requirements_analysis_rules import classify_ownership  # 规则初判（确定性、零 LLM）
     dup_quotes, differ_codes = _consistency_markers(output_dir)
 
@@ -647,6 +695,8 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
         row.update(membership.get(rid, {}))
         row.update(analysis_map.get(rid, {}))   # 富化正文/归属原因上墙（缺失=空 merge）
         row["anchor_block_id"] = anchor_block_id(req, text_by_block)
+        # 回声锚点(0715 电表招标实证:同文重复出现的第二处显示"未覆盖",用户误判整段没解析)
+        row["echo_block_ids"] = compute_echo_block_ids(row, block_rows)
         row["review_state"] = state
         # 专家改过模块则以 override 为准（module 字段保持原值供追溯）
         if state and state.get("module_override"):

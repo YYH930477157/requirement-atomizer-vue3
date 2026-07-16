@@ -374,6 +374,8 @@ def _covered_blocks(requirements: list[dict[str, Any]]) -> set[str]:
     for req in requirements:
         for bid in req.get("source_block_ids") or []:
             covered.add(str(bid))
+        for bid in req.get("echo_block_ids") or []:   # 回声段有条目覆盖,不算遗漏/背景
+            covered.add(str(bid))
     return covered
 
 
@@ -897,6 +899,8 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
         anchor = str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")
         if anchor:
             anchor_map.setdefault(anchor, []).append(req)
+        for echo in req.get("echo_block_ids") or []:   # 回声段挂同一枚批注(同号,点击同条)
+            anchor_map.setdefault(str(echo), []).append(req)
 
     # 全文连续编号（按锚点块在文档中的出现顺序）——此前每块内部从 01 重数，满屏"01"无层级感。
     # 子项锚：需求带 sub_items 时，把各子项挂到其 source_block_ids 里以 "a)" 开头的段落
@@ -1156,6 +1160,9 @@ def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, 
         anchor = str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")
         if req_id and anchor and anchor not in anchor_to_req:
             anchor_to_req[anchor] = req_id
+        for echo in req.get("echo_block_ids") or []:   # 回声段热区同样跳到该条目
+            if req_id and str(echo) not in anchor_to_req:
+                anchor_to_req[str(echo)] = req_id
     zones: list[dict[str, Any]] = []
     for block in blocks:
         block_id = str(block.get("block_id") or "")
@@ -1965,7 +1972,7 @@ function markSpan() {{
   const r = selected && byId[selected]; if (!r) return;
   document.querySelectorAll('.pdf-source-zone[data-zone-req="' + selected + '"]').forEach(el =>
     el.classList.add("selected"));
-  const ids = (r.source_block_ids || []).concat([r.anchor_block_id]).filter(Boolean);
+  const ids = (r.source_block_ids || []).concat(r.echo_block_ids || []).concat([r.anchor_block_id]).filter(Boolean);
   ids.forEach(bid => {{
     const el = document.querySelector('.doc-block[data-block-id="' + bid + '"]');
     if (el) el.classList.add("in-span");

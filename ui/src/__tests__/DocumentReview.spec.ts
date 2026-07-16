@@ -64,6 +64,30 @@ describe("DocumentReview", () => {
     )
   })
 
+  it("echo blocks carry the same annotation and stop counting as omissions", async () => {
+    // 回声锚点(0715 电表招标实证):同一段文字重复出现,第二处此前显示"未覆盖"
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        {
+          ai_req_id: "AIR-1", title: "体积计量", description: "应计量体积", module: "计量",
+          module_effective: "计量", type: "functional", priority: "P1", status: "draft",
+          source_section: "4", source_quote: "The meter shall measure volume.",
+          source_block_ids: ["B2"], anchor_block_id: "B2",
+          echo_block_ids: ["B3"],                       // B3 = 同文重复出现处
+          acceptance_criteria: [], dev_guidance: [], labels: ["计量"],
+          ownership: "software", ownership_effective: "software", review_state: null,
+        },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    // B3 有回声锚 → 不再计为遗漏;两处段落都挂着同一条目的批注 chip
+    expect(wrapper.find('[data-testid="doc-stat-omissions"]').text()).toBe("0")
+    const chips = wrapper.findAll(".anno-chip")
+    expect(chips.length).toBe(2)
+  })
+
   it("marks notes and list groups so paragraph rhythm is preserved", async () => {
     const client = makeClient({
       loadDocument: vi.fn().mockResolvedValue({
