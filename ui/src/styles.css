@@ -1,16 +1,20 @@
-﻿html,
+html,
 body,
 #app {
   margin: 0;
   width: 100%;
   min-height: 100%;
-  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
-  background: #f6f7fa;
-  color: #1a2233;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI Variable", "Microsoft YaHei UI", sans-serif;
+  background: #f1f3f7;
+  color: #1d1d1f;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(60, 60, 67, 0.24) transparent;
 }
 
 button,
@@ -18,4 +22,44 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+button,
+label,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(10, 132, 255, 0.24);
+  outline-offset: 2px;
+}
+
+::selection {
+  color: #10233b;
+  background: rgba(10, 132, 255, 0.2);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgba(60, 60, 67, 0.24);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(60, 60, 67, 0.36);
+  background-clip: padding-box;
 }

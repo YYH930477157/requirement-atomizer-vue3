@@ -16,8 +16,10 @@ describe("review workspace shell", () => {
   })
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.useRealTimers()
     Reflect.deleteProperty(window, "ratomizerDesktop")
     localStorage.clear()
+    window.history.replaceState({}, "", "/")
   })
 
   it("renders the Phase 1 Chinese dashboard structure", async () => {
@@ -92,6 +94,44 @@ describe("review workspace shell", () => {
 
     expect(wrapper.find('[data-testid="run-stage-atomize"]').text()).toContain("已完成")
     expect(wrapper.find('[data-testid="run-stage-llm-review"]').text()).toContain("50%")
+    expect(wrapper.find('[data-testid="run-stage-llm-review"]').attributes("aria-current")).toBe("step")
+    expect(wrapper.find('[data-testid="run-stage-llm-review"] .stage-signal').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-relay-atomize"]').classes()).toContain("relay-handoff")
+    expect(wrapper.find('[data-testid="run-relay-llm-review"]').classes()).toContain("relay-bypass")
+
+    progressHandler({ stage: "llm_review", completed: 2, total: 2, percent: 100 })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="run-relay-atomize"]').classes()).toContain("relay-complete")
+  })
+
+  it("previews moving stage progress from the demo URL without a backend task", async () => {
+    vi.useFakeTimers()
+    window.history.replaceState({}, "", "/?demoProgress=1")
+    const getApiSession = vi.fn().mockResolvedValue(null)
+    const getLlmSettings = vi.fn().mockResolvedValue(null)
+    const runPipeline = vi.fn()
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: { getApiSession, getLlmSettings, runPipeline },
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+
+    const atomize = wrapper.find('[data-testid="run-stage-atomize"]')
+    expect(atomize.classes()).toContain("stage-running")
+    expect(atomize.find(".stage-bar").classes()).toContain("is-indeterminate")
+    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("动效演示 1/10")
+    expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("0%")
+    expect(getApiSession).not.toHaveBeenCalled()
+    expect(getLlmSettings).not.toHaveBeenCalled()
+    expect(runPipeline).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(300)
+    await flushPromises()
+    expect(atomize.find(".stage-bar").classes()).not.toContain("is-indeterminate")
+    expect(atomize.text()).toContain("24%")
+
+    wrapper.unmount()
   })
 
   it("updates the selected requirement status from review decisions", async () => {
@@ -1042,6 +1082,16 @@ describe("review workspace shell", () => {
   })
 
   it("surfaces desktop task failures without leaving the UI silent", async () => {
+    type ProgressHandler = (event: { stage: string; step?: string; status?: string; percent?: number }) => void
+    let progressHandler: ProgressHandler = () => {
+      throw new Error("progress handler was not registered")
+    }
+    let rejectPipeline: (error: Error) => void = () => {
+      throw new Error("pipeline reject handler was not registered")
+    }
+    const pipelineResult = new Promise<never>((_resolve, reject) => {
+      rejectPipeline = reject
+    })
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
@@ -1049,16 +1099,32 @@ describe("review workspace shell", () => {
         openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
         openOutput: vi.fn(),
         openPath: vi.fn(),
-        runPipeline: vi.fn().mockRejectedValue(new Error("backend exploded")),
+        runPipeline: vi.fn().mockReturnValue(pipelineResult),
+        onTaskProgress: vi.fn((handler: ProgressHandler) => {
+          progressHandler = handler
+          return () => undefined
+        }),
       },
     })
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
-    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.onTaskProgress).toHaveBeenCalled()
+    })
+    progressHandler({ stage: "pipeline_stage", step: "atomize", status: "running", percent: 35 })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="run-stage-atomize"]').classes()).toContain("stage-running")
+    expect(wrapper.find('[data-testid="run-relay-atomize"]').classes()).toContain("relay-ready")
+
+    rejectPipeline(new Error("backend exploded"))
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="api-message"]').text()).toContain("backend exploded")
     })
+    expect(wrapper.find('[data-testid="run-stage-atomize"]').classes()).toContain("stage-failed")
+    expect(wrapper.find('[data-testid="run-stage-atomize"]').attributes("aria-current")).toBeUndefined()
+    expect(wrapper.find('[data-testid="run-relay-atomize"]').classes()).toContain("relay-blocked")
   })
 
   it("chain step transition marks previous stage done and keeps card percent from inner events", async () => {

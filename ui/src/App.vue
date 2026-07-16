@@ -3,7 +3,7 @@
     <div class="shell">
       <aside class="side-nav">
         <div class="side-brand">
-          <div class="brand-mark">标</div>
+          <div class="brand-mark" aria-hidden="true"><ScanSearch :size="19" :stroke-width="2.1" /></div>
           <div class="brand-text">
             <div class="brand-name">标准需求抽取与审查平台</div>
             <div class="brand-sub">Requirement Atomizer</div>
@@ -20,20 +20,20 @@
             type="button"
             @click="handleNavAction(item.id)"
           >
-            <span class="nav-icon">{{ item.icon }}</span>
+            <component :is="item.icon" class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" />
             <span>{{ item.label }}</span>
           </button>
         </nav>
         <nav class="nav-group">
           <p class="nav-title">交付物</p>
           <button class="nav-button" type="button" data-testid="nav-实现规格" @click="openDeliverable('dlms_cosem_spec_requirements.json')">
-            <span class="nav-icon">▦</span><span>实现规格</span>
+            <Braces class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>实现规格</span>
           </button>
           <button class="nav-button" type="button" data-testid="nav-软件需求列表" @click="openDeliverable('软件需求列表-成文.xlsx')">
-            <span class="nav-icon">▤</span><span>软件需求列表</span>
+            <FileSpreadsheet class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>软件需求列表</span>
           </button>
           <button class="nav-button" type="button" data-testid="nav-澄清清单" @click="openDeliverable('clarification_questions.xlsx')">
-            <span class="nav-icon">◔</span><span>澄清清单</span>
+            <CircleHelp class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" /><span>澄清清单</span>
           </button>
         </nav>
         <div class="nav-spacer"></div>
@@ -47,12 +47,12 @@
             type="button"
             @click="handleNavAction(item.id)"
           >
-            <span class="nav-icon">{{ item.icon }}</span>
+            <component :is="item.icon" class="nav-icon" :size="17" :stroke-width="1.9" aria-hidden="true" />
             <span>{{ item.label }}</span>
           </button>
         </nav>
         <div class="side-user">
-          <div class="side-avatar">专</div>
+          <div class="side-avatar" aria-hidden="true"><UserRound :size="15" :stroke-width="2" /></div>
           <div><b>需求评审专家</b><span>GUI Phase 1</span></div>
         </div>
       </aside>
@@ -61,30 +61,32 @@
         <header class="app-bar">
           <div class="page-title-area">
             <h3 class="page-title">{{ activeNavLabel }}</h3>
-            <span class="doc-chip" :title="documentDisplayName">{{ documentDisplayName }}</span>
+            <span class="doc-chip" :title="documentDisplayName"><FileText :size="13" aria-hidden="true" />{{ documentDisplayName }}</span>
           </div>
 
           <div class="app-actions">
-            <button class="button" type="button" data-testid="action-open-document" @click="handleOpenDocument">导入文档</button>
-            <button class="button" type="button" data-testid="action-select-output-dir" @click="handleOpenOutput">选择输出目录</button>
+            <button class="button" type="button" data-testid="action-open-document" @click="handleOpenDocument"><FolderOpen :size="15" aria-hidden="true" /><span class="button-label">导入文档</span></button>
+            <button class="button" type="button" data-testid="action-select-output-dir" @click="handleOpenOutput"><FolderOutput :size="15" aria-hidden="true" /><span class="button-label">选择输出目录</span></button>
             <label class="llm-toggle">
               <input v-model="llmMode" type="checkbox" data-testid="llm-mode-toggle" />
               <span class="llm-track" aria-hidden="true"></span>
-              <span>LLM 富化</span>
+              <Sparkles :size="14" aria-hidden="true" /><span>LLM 富化</span>
             </label>
-            <button class="button" type="button" data-testid="action-test-pipeline" :disabled="isRunning" @click="handleRunPipeline({ llmReviewLimit: TEST_LLM_REVIEW_LIMIT })">测试运行</button>
+            <button class="button" type="button" data-testid="action-test-pipeline" :disabled="isRunning" @click="handleRunPipeline({ llmReviewLimit: TEST_LLM_REVIEW_LIMIT })"><FlaskConical :size="15" aria-hidden="true" /><span class="button-label">测试运行</span></button>
             <button class="button primary" type="button" data-testid="action-run-pipeline" :disabled="isRunning" @click="() => handleRunPipeline()">
-              {{ isRunning ? "运行中" : "▶ 运行" }}
+              <RefreshCw v-if="isRunning" class="spin" :size="15" aria-hidden="true" />
+              <Play v-else :size="15" fill="currentColor" aria-hidden="true" />
+              <span>{{ isRunning ? "运行中" : "运行" }}</span>
             </button>
-            <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-export-html" @click="handleExportAnnotationHtml">导出批注HTML</button>
-            <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-import-decisions" @click="handleImportDecisions">导入裁决</button>
-            <button v-if="activeNav === 'document'" class="button" type="button" data-testid="action-import-answers" @click="handleImportAnswers">导入澄清答复</button>
+            <button v-if="activeNav === 'document'" class="button icon-tool" type="button" data-testid="action-export-html" aria-label="导出批注 HTML" title="导出批注 HTML" @click="handleExportAnnotationHtml"><Download :size="16" aria-hidden="true" /></button>
+            <button v-if="activeNav === 'document'" class="button icon-tool" type="button" data-testid="action-import-decisions" aria-label="导入裁决" title="导入裁决" @click="handleImportDecisions"><Upload :size="16" aria-hidden="true" /></button>
+            <button v-if="activeNav === 'document'" class="button icon-tool" type="button" data-testid="action-import-answers" aria-label="导入澄清答复" title="导入澄清答复" @click="handleImportAnswers"><MessageSquareReply :size="16" aria-hidden="true" /></button>
           </div>
         </header>
 
         <!-- 统一消息 testid:与审查页 api-message 互斥渲染,任意页面都能拿到运行反馈 -->
         <div v-if="apiMessage && activeNav !== 'review'" class="global-message" data-testid="api-message"
-             role="status" @click="apiMessage = ''">{{ apiMessage }}<span class="global-message-close">✕</span></div>
+             role="status" @click="apiMessage = ''"><CircleHelp :size="15" aria-hidden="true" />{{ apiMessage }}<X class="global-message-close" :size="14" aria-hidden="true" /></div>
 
         <section v-if="activeNav === 'run'" class="run-home" data-testid="run-paths-panel">
           <div class="ov-stats">
@@ -128,18 +130,37 @@
                 <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
               </div>
             </div>
-            <div class="run-stage-board" data-testid="run-stage-board">
+            <div class="run-stage-board" data-testid="run-stage-board" role="list" aria-label="交付物流水线阶段">
               <div
                 v-for="card in runStageCards"
                 :key="card.key"
                 class="run-stage-card"
                 :class="`stage-${card.status}`"
                 :data-testid="`run-stage-${card.key}`"
+                role="listitem"
+                :aria-current="card.status === 'running' ? 'step' : undefined"
+                :aria-label="`${card.label}，${card.statusText}，${card.detail}`"
               >
-                <span class="stage-name">{{ card.label }}</span>
+                <span class="stage-title-row">
+                  <span class="stage-name">{{ card.label }}</span>
+                  <span class="stage-signal" aria-hidden="true"></span>
+                </span>
                 <strong class="stage-status">{{ card.statusText }}</strong>
                 <small class="stage-detail">{{ card.detail }}</small>
-                <span class="stage-bar"><i :style="{ width: `${card.status === 'ok' || card.status === 'skipped' ? 100 : card.percent}%` }"></i></span>
+                <span
+                  class="stage-bar"
+                  :class="{ 'is-indeterminate': card.status === 'running' && card.percent <= 0 }"
+                >
+                  <i :style="{ width: `${card.status === 'ok' || card.status === 'skipped' ? 100 : card.percent}%` }"></i>
+                  <span class="stage-indeterminate-runner" aria-hidden="true"></span>
+                </span>
+                <span
+                  v-if="card.relayStatus"
+                  class="stage-relay"
+                  :class="`relay-${card.relayStatus}`"
+                  :data-testid="`run-relay-${card.key}`"
+                  aria-hidden="true"
+                ><i class="stage-relay-baton"></i></span>
               </div>
             </div>
           </div>
@@ -148,7 +169,7 @@
             <div class="panel-card">
               <div class="board-head">
                 <h4>需求审查 · 待裁决</h4>
-                <button class="link-button" type="button" @click="handleNavAction('review')">进入工作台 →</button>
+                <button class="link-button" type="button" @click="handleNavAction('review')">进入工作台 <ChevronRight :size="14" aria-hidden="true" /></button>
               </div>
               <div class="preview-wrap">
                 <table class="preview-table">
@@ -172,9 +193,9 @@
               </div>
               <div class="dl-files" data-testid="deliverable-html">
                 <div v-for="f in DELIVERABLE_FILES" :key="f.key" class="dl-file">
-                  <span class="dl-icon" :class="f.tone">{{ f.icon }}</span>
+                  <span class="dl-icon" :class="f.tone"><component :is="f.icon" :size="16" :stroke-width="1.9" aria-hidden="true" /></span>
                   <span class="dl-name"><strong>{{ f.name }}</strong><small>{{ f.hint }}</small></span>
-                  <button class="deliverable-open" type="button" @click="openDeliverable(f.name)">打开</button>
+                  <button class="deliverable-open" type="button" :aria-label="`打开 ${f.name}`" :title="`打开 ${f.name}`" @click="openDeliverable(f.name)"><ExternalLink :size="15" aria-hidden="true" /></button>
                 </div>
               </div>
               <div v-if="lastStageNotes.length" class="note-warn">
@@ -364,10 +385,10 @@
               </section>
 
               <div class="detail-actions">
-                <button class="button" type="button" :disabled="isSubmitting" data-testid="decision-accepted" @click="updateStatus('accepted')">接受</button>
-                <button class="button" type="button" :disabled="isSubmitting" data-testid="decision-rejected" @click="updateStatus('rejected')">拒绝</button>
-                <button class="button" type="button" :disabled="isSubmitting" @click="updateStatus('needs_discussion')">讨论</button>
-                <button class="button" type="button" :disabled="isSubmitting" @click="updateStatus('expert_pending')">专家</button>
+                <button class="button decision-accept" type="button" :disabled="isSubmitting" data-testid="decision-accepted" @click="updateStatus('accepted')"><Check :size="15" aria-hidden="true" />接受</button>
+                <button class="button decision-reject" type="button" :disabled="isSubmitting" data-testid="decision-rejected" @click="updateStatus('rejected')"><Ban :size="15" aria-hidden="true" />拒绝</button>
+                <button class="button" type="button" :disabled="isSubmitting" @click="updateStatus('needs_discussion')"><MessagesSquare :size="15" aria-hidden="true" />讨论</button>
+                <button class="button" type="button" :disabled="isSubmitting" @click="updateStatus('expert_pending')"><UserRound :size="15" aria-hidden="true" />专家</button>
               </div>
               <textarea v-model="reviewComment" class="comment-box" placeholder="请输入审查意见" />
               <div v-if="apiMessage" class="api-message" data-testid="api-message">{{ apiMessage }}</div>
@@ -379,10 +400,11 @@
 
         <footer class="status-bar">
           <span>输出目录：{{ currentOutputDir || "尚未选择输出目录" }}</span>
-          <span class="kbd-hints">快捷键：A 接受 · R 拒绝 · D 讨论 · P 固定</span>
+          <span class="kbd-hints"><ShieldCheck :size="13" aria-hidden="true" />本地审查会话</span>
         </footer>
       </main>
 
+      <Transition name="sheet">
       <div
         v-if="showSettingsPanel"
         class="settings-overlay"
@@ -398,7 +420,7 @@
               <div class="settings-title">设置</div>
               <div class="settings-subtitle">本地运行、LLM 富化和 ABNT 预设</div>
             </div>
-            <button class="icon-button" type="button" data-testid="settings-close" aria-label="关闭设置" @click="closeSettingsPanel">×</button>
+            <button class="icon-button" type="button" data-testid="settings-close" aria-label="关闭设置" title="关闭设置" @click="closeSettingsPanel"><X :size="18" aria-hidden="true" /></button>
           </header>
 
           <div class="settings-body">
@@ -431,8 +453,8 @@
               <div class="template-row">
                 <span class="field-label">需求列表模板（xlsx，选填）</span>
                 <input :value="templatePath" readonly placeholder="未设置——设置后分析结果按公司模板格式成文" data-testid="template-path" />
-                <button class="button" type="button" data-testid="template-pick" @click="handleSelectTemplate">选择</button>
-                <button class="button" type="button" :disabled="!templatePath" @click="templatePath = ''">清除</button>
+                <button class="button" type="button" data-testid="template-pick" @click="handleSelectTemplate"><FolderOpen :size="15" aria-hidden="true" />选择</button>
+                <button class="button" type="button" :disabled="!templatePath" @click="templatePath = ''"><Trash2 :size="15" aria-hidden="true" />清除</button>
               </div>
               <p class="settings-hint">LLM 富化跟随上方「LLM 富化」开关：开→AI 抽取/装配/分析走 openai_compatible，关→纯确定性。</p>
             </section>
@@ -499,12 +521,12 @@
               </label>
               <div class="settings-actions">
                 <button class="button primary" type="button" data-testid="settings-save" :disabled="isSavingSettings" @click="handleSaveLlmSettings">
-                  {{ isSavingSettings ? "保存中" : "保存配置" }}
+                  <RefreshCw v-if="isSavingSettings" class="spin" :size="15" aria-hidden="true" /><Save v-else :size="15" aria-hidden="true" />{{ isSavingSettings ? "保存中" : "保存配置" }}
                 </button>
                 <button class="button" type="button" data-testid="settings-test" :disabled="isTestingSettings" @click="handleTestLlmConnection">
-                  {{ isTestingSettings ? "测试中" : "测试连接" }}
+                  <RefreshCw v-if="isTestingSettings" class="spin" :size="15" aria-hidden="true" /><PlugZap v-else :size="15" aria-hidden="true" />{{ isTestingSettings ? "测试中" : "测试连接" }}
                 </button>
-                <button class="button" type="button" data-testid="settings-open-logs" @click="handleOpenLogs">打开日志目录</button>
+                <button class="button" type="button" data-testid="settings-open-logs" @click="handleOpenLogs"><FolderOpen :size="15" aria-hidden="true" />打开日志目录</button>
                 <span class="settings-status" data-testid="settings-status">{{ settingsStatus }}</span>
               </div>
             </section>
@@ -545,13 +567,43 @@
           </div>
         </section>
       </div>
+      </Transition>
     </div>
   </n-config-provider>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue"
+import { computed, onMounted, onUnmounted, ref, watch, type Component } from "vue"
 import { NConfigProvider } from "naive-ui"
+import {
+  Ban,
+  Braces,
+  Check,
+  ChevronRight,
+  CircleHelp,
+  ClipboardCheck,
+  Download,
+  ExternalLink,
+  FileSpreadsheet,
+  FileText,
+  FlaskConical,
+  FolderOpen,
+  FolderOutput,
+  MessageSquareReply,
+  MessagesSquare,
+  Play,
+  PlugZap,
+  RefreshCw,
+  Save,
+  ScanSearch,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  Upload,
+  UserRound,
+  X,
+} from "@lucide/vue"
 import { RequirementApiClient } from "./api-client"
 import DocumentReview from "./DocumentReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
@@ -574,11 +626,11 @@ type LlmSettings = {
   selfCheck: boolean
 }
 
-const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: string }> = [
-  { id: "run", label: "运行", icon: "▶" },
-  { id: "review", label: "审查工作台", icon: "▣" },
-  { id: "document", label: "文档批注", icon: "▤" },
-  { id: "settings", label: "设置", icon: "⚙" },
+const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: Component }> = [
+  { id: "run", label: "运行", icon: Play },
+  { id: "review", label: "审查工作台", icon: ClipboardCheck },
+  { id: "document", label: "文档批注", icon: FileText },
+  { id: "settings", label: "设置", icon: Settings },
 ]
 
 const activeNav = ref<PhaseNavId>("run")
@@ -592,10 +644,10 @@ const lastStageNotes = ref<string[]>([])
 const reviewInsights = ref<string[]>([])
 const reviewPreviewRows = computed(() => requirementRows.value.slice(0, 4))
 const DELIVERABLE_FILES = [
-  { key: "software", icon: "XLS", tone: "xls", name: "软件需求列表-成文.xlsx", hint: "V2.3.x 模板成文（B 轨主交付物）" },
-  { key: "annotation", icon: "HTM", tone: "htm", name: "document_annotation.html", hint: "批注视图 · 分享给专家离线裁决" },
-  { key: "clarification", icon: "XLS", tone: "xls", name: "clarification_questions.xlsx", hint: "必答澄清 · 问客户/内部核对" },
-  { key: "manifest", icon: "JSN", tone: "jsn", name: "run_manifest.json", hint: "阶段台账 · 路由与续跑依据" },
+  { key: "software", icon: FileSpreadsheet, tone: "xls", name: "软件需求列表-成文.xlsx", hint: "V2.3.x 模板成文（B 轨主交付物）" },
+  { key: "annotation", icon: FileText, tone: "htm", name: "document_annotation.html", hint: "批注视图 · 分享给专家离线裁决" },
+  { key: "clarification", icon: CircleHelp, tone: "xls", name: "clarification_questions.xlsx", hint: "必答澄清 · 问客户/内部核对" },
+  { key: "manifest", icon: Braces, tone: "jsn", name: "run_manifest.json", hint: "阶段台账 · 路由与续跑依据" },
 ] as const
 async function openDeliverable(name: string) {
   if (!currentOutputDir.value) {
@@ -703,6 +755,7 @@ const latestTaskSummary = ref<Record<string, unknown> | null>(null)
 
 type RunStageStatus = "pending" | "running" | "ok" | "skipped" | "failed" | "disabled"
 type RunStageState = { status: RunStageStatus; percent: number; detail: string }
+type RelayConnectorStatus = "idle" | "ready" | "handoff" | "complete" | "bypass" | "blocked"
 const RUN_STAGE_DEFS = [
   { key: "atomize", label: "原子化" },
   { key: "llm-review", label: "LLM审核" },
@@ -725,12 +778,26 @@ function defaultStageStates(): Record<RunStageKey, RunStageState> {
 }
 
 const runStageStates = ref<Record<RunStageKey, RunStageState>>(defaultStageStates())
-const runStageCards = computed(() => RUN_STAGE_DEFS.map((item) => {
+const isCompletedStage = (status: RunStageStatus) => status === "ok" || status === "skipped"
+
+function relayConnectorStatus(current: RunStageState, next: RunStageState): RelayConnectorStatus {
+  if (current.status === "failed") return "blocked"
+  if (next.status === "running" && (isCompletedStage(current.status) || current.status === "disabled")) return "handoff"
+  if (current.status === "disabled" || next.status === "disabled") return "bypass"
+  if (isCompletedStage(current.status) && isCompletedStage(next.status)) return "complete"
+  if (current.status === "running" || isCompletedStage(current.status)) return "ready"
+  return "idle"
+}
+
+const runStageCards = computed(() => RUN_STAGE_DEFS.map((item, index) => {
   const state = runStageStates.value[item.key]
+  const nextDefinition = RUN_STAGE_DEFS[index + 1]
+  const nextState = nextDefinition ? runStageStates.value[nextDefinition.key] : null
   return {
     ...item,
     ...state,
     statusText: stageStatusText(state),
+    relayStatus: nextState ? relayConnectorStatus(state, nextState) : null,
   }
 }))
 
@@ -755,6 +822,18 @@ function setRunStageState(key: string | undefined, patch: Partial<RunStageState>
   }
 }
 
+function failRunningStages(detail: string) {
+  let changed = false
+  const next = { ...runStageStates.value }
+  for (const item of RUN_STAGE_DEFS) {
+    const state = next[item.key]
+    if (state.status !== "running") continue
+    next[item.key] = { ...state, status: "failed", detail }
+    changed = true
+  }
+  if (changed) runStageStates.value = next
+}
+
 let lastChainStep = ""   // 链步跟踪:步名变化 → 上一阶段卡片翻绿(后端完成事件不带 status)
 
 function resetRunStageBoard() {
@@ -777,6 +856,62 @@ function resetRunStageBoard() {
   if (!runStages.value.compose) next.compose = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.annotationHtml) next["export-annotation-html"] = { status: "disabled", percent: 0, detail: "未启用" }
   runStageStates.value = next
+}
+
+const DEMO_PROGRESS_TICK_MS = 100
+const DEMO_PROGRESS_STEP = 8
+let progressDemoTimer: number | undefined
+
+function stopProgressDemo() {
+  if (progressDemoTimer === undefined) return
+  window.clearInterval(progressDemoTimer)
+  progressDemoTimer = undefined
+}
+
+function startProgressDemo() {
+  stopProgressDemo()
+  lastChainStep = ""
+  runStageStates.value = defaultStageStates()
+  runProgress.value = 0
+  runProgressDetail.value = "仅预览界面动效，不调用后端"
+  isRunning.value = true
+
+  let stageIndex = 0
+  let stagePercent = 0
+  const firstStage = RUN_STAGE_DEFS[stageIndex]
+  setRunStageState(firstStage.key, { status: "running", percent: 0, detail: "演示进度" })
+  runStage.value = `动效演示 1/${RUN_STAGE_DEFS.length}：${firstStage.label}`
+
+  const reducedMotion = typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  const tickMs = reducedMotion ? 600 : DEMO_PROGRESS_TICK_MS
+  const step = reducedMotion ? 100 : DEMO_PROGRESS_STEP
+
+  progressDemoTimer = window.setInterval(() => {
+    const current = RUN_STAGE_DEFS[stageIndex]
+    stagePercent = Math.min(100, stagePercent + step)
+    setRunStageState(current.key, {
+      status: stagePercent >= 100 ? "ok" : "running",
+      percent: stagePercent,
+      detail: stagePercent >= 100 ? "演示完成" : "演示进度",
+    })
+    runProgress.value = Math.round(((stageIndex + stagePercent / 100) / RUN_STAGE_DEFS.length) * 100)
+
+    if (stagePercent < 100) return
+    stageIndex += 1
+    if (stageIndex >= RUN_STAGE_DEFS.length) {
+      stopProgressDemo()
+      isRunning.value = false
+      runStage.value = "动效演示完成"
+      runProgressDetail.value = "全部阶段已完成接力"
+      return
+    }
+
+    stagePercent = 0
+    const next = RUN_STAGE_DEFS[stageIndex]
+    setRunStageState(next.key, { status: "running", percent: 0, detail: "演示进度" })
+    runStage.value = `动效演示 ${stageIndex + 1}/${RUN_STAGE_DEFS.length}：${next.label}`
+  }, tickMs)
 }
 
 function applyRunManifestSummary(summary: Record<string, unknown> | null) {
@@ -949,11 +1084,17 @@ const knowledgeMatches = computed(() => {
 })
 
 onMounted(() => {
+  if (new URLSearchParams(window.location.search).get("demoProgress") === "1") {
+    startProgressDemo()
+    return
+  }
   loadInitialApiSession()
   // 恢复已保存的 LLM 开关/端点：此前只在打开设置面板时才加载——重启后 llmMode 恒 false，
   // 整条 AI 交付物轨静默降级 stub（2026-07-08 审计 A2）
   void loadLlmSettings()
 })
+
+onUnmounted(stopProgressDemo)
 
 function handleNavAction(item: PhaseNavId) {
   if (item === "settings") {
@@ -1215,6 +1356,10 @@ async function handleOpenOutput() {
 }
 
 async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
+  if (progressDemoTimer !== undefined) {
+    stopProgressDemo()
+    isRunning.value = false
+  }
   if (isRunning.value) return
   let stopProgress: (() => void) | undefined
   try {
@@ -1384,7 +1529,9 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         if (r?.verdict) sampleNote += `；就绪判定 ${r.verdict}，必答澄清 ${Number(sample.questions ?? 0)} 条`
         apiReconnectWarning ||= await refreshAfterDesktopTask(finalOutDir)
       } catch (sampleError) {
-        sampleNote = `；样本链失败：${sampleError instanceof Error ? sampleError.message : sampleError}`
+        const detail = sampleError instanceof Error ? sampleError.message : String(sampleError)
+        failRunningStages(detail)
+        sampleNote = `；样本链失败：${detail}`
       }
     }
 
@@ -1409,9 +1556,11 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       apiMessage.value = `运行完成：抽取与审查${tail}${warn}${readinessNote}${apiWarn}`
     }
   } catch (error) {
+    const detail = error instanceof Error ? error.message : "抽取与审查失败"
+    failRunningStages(detail)
     runStage.value = "运行失败"
     runProgressDetail.value = "请查看错误信息"
-    apiMessage.value = error instanceof Error ? error.message : "抽取与审查失败"
+    apiMessage.value = detail
   } finally {
     stopProgress?.()
     isRunning.value = false
@@ -1430,8 +1579,12 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
   const total = Math.max(0, Number(event.total || 0))
   const percent = Number.isFinite(Number(event.percent)) ? Math.max(0, Math.min(100, Number(event.percent))) : 0
   if (event.stage === "pipeline_stage") {
-    const status = event.status === "skipped" ? "skipped" : event.status === "ok" ? "ok" : "running"
-    setRunStageState(event.step, { status, percent, detail: status === "skipped" ? "复用已有产物" : "基础解析产物" })
+    const status: RunStageStatus = event.status === "skipped" ? "skipped"
+      : event.status === "ok" ? "ok"
+        : event.status === "failed" ? "failed" : "running"
+    const detail = status === "skipped" ? "复用已有产物"
+      : status === "failed" ? "阶段执行失败" : "基础解析产物"
+    setRunStageState(event.step, { status, percent, detail })
     return
   }
   if (event.stage === "chain") {
@@ -2397,7 +2550,7 @@ tbody tr.selected {
   line-height: 1.7;
   font-size: 13px;
 }
-@media (max-width: 1480px) {
+@media (max-width: 1120px) {
   .shell {
     grid-template-columns: 64px minmax(0, 1fr);
   }
@@ -2653,7 +2806,7 @@ tbody tr.selected {
   color: #1a2233;
   font-size: 19px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   white-space: nowrap;
 }
 
@@ -2731,7 +2884,7 @@ tbody tr.selected {
 .ov-stat .v {
   font-size: 24px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   font-variant-numeric: tabular-nums;
   margin-top: 2px;
   color: #1a2233;
@@ -3280,7 +3433,7 @@ tbody tr.selected {
   margin-top: 5px;
   color: #1a2233;
   font-size: 24px;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   font-variant-numeric: tabular-nums;
   line-height: 1;
   font-weight: 700;
@@ -3967,6 +4120,997 @@ tbody tr:hover td {
 
   .workspace {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* iOS / iPadOS inspired visual system: quiet, translucent, and work-focused. */
+.shell {
+  --ios-blue: #0a84ff;
+  --ios-blue-strong: #0071e3;
+  --ios-green: #30a46c;
+  --ios-red: #e5484d;
+  --ios-amber: #d58a18;
+  --ios-ink: #1d1d1f;
+  --ios-secondary: #6e6e73;
+  --ios-tertiary: #98989d;
+  --ios-border: rgba(60, 60, 67, 0.14);
+  --ios-border-strong: rgba(60, 60, 67, 0.2);
+  --ios-glass: rgba(255, 255, 255, 0.76);
+  --ios-glass-strong: rgba(255, 255, 255, 0.9);
+  --ios-fill: rgba(118, 118, 128, 0.1);
+  --ios-shadow: 0 12px 34px rgba(31, 35, 48, 0.08), 0 2px 8px rgba(31, 35, 48, 0.04);
+  --ios-motion: cubic-bezier(0.22, 1, 0.36, 1);
+  grid-template-columns: 236px minmax(0, 1fr);
+  background: #f1f3f7;
+  color: var(--ios-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI Variable", "Microsoft YaHei UI", sans-serif;
+}
+
+.side-nav {
+  position: relative;
+  z-index: 20;
+  background: rgba(248, 249, 252, 0.76);
+  border-right: 1px solid var(--ios-border);
+  box-shadow: inset -1px 0 rgba(255, 255, 255, 0.58);
+  backdrop-filter: blur(28px) saturate(175%);
+  -webkit-backdrop-filter: blur(28px) saturate(175%);
+  padding: 14px 12px 12px;
+  gap: 14px;
+}
+
+.side-brand {
+  gap: 11px;
+  padding: 4px 8px 10px;
+}
+
+.brand-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--ios-blue);
+  box-shadow: 0 7px 16px rgba(10, 132, 255, 0.24), inset 0 1px rgba(255, 255, 255, 0.28);
+}
+
+.brand-name {
+  color: var(--ios-ink);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.brand-sub,
+.nav-title,
+.side-user span {
+  color: var(--ios-tertiary);
+}
+
+.nav-title {
+  margin-bottom: 5px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.nav-button {
+  min-height: 40px;
+  gap: 10px;
+  border-radius: 8px;
+  color: #5b6070;
+  padding: 9px 10px;
+  font-size: 13px;
+  font-weight: 560;
+  transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease, transform 240ms var(--ios-motion);
+}
+
+.nav-button:hover {
+  color: var(--ios-ink);
+  background: rgba(255, 255, 255, 0.72);
+  transform: translateX(2px);
+}
+
+.nav-button:active {
+  transform: scale(0.975);
+}
+
+.nav-button.active {
+  color: var(--ios-blue-strong);
+  background: rgba(10, 132, 255, 0.11);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.08);
+  font-weight: 650;
+}
+
+.nav-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  opacity: 0.92;
+}
+
+.side-user {
+  gap: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.54);
+  padding: 9px;
+  box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.04);
+}
+
+.side-avatar {
+  width: 32px;
+  height: 32px;
+  color: var(--ios-blue-strong);
+  background: rgba(10, 132, 255, 0.11);
+}
+
+.main {
+  background: #f1f3f7;
+}
+
+.app-bar {
+  position: relative;
+  z-index: 12;
+  min-height: 66px;
+  padding: 12px 20px;
+  gap: 18px;
+  background: rgba(255, 255, 255, 0.8);
+  border-bottom: 1px solid var(--ios-border);
+  box-shadow: 0 1px rgba(255, 255, 255, 0.7), 0 8px 24px rgba(31, 35, 48, 0.035);
+  backdrop-filter: blur(26px) saturate(180%);
+  -webkit-backdrop-filter: blur(26px) saturate(180%);
+}
+
+.page-title {
+  color: var(--ios-ink);
+  font-size: 20px;
+  font-weight: 720;
+  letter-spacing: 0;
+}
+
+.doc-chip {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ios-secondary);
+  background: rgba(118, 118, 128, 0.08);
+  border: 1px solid rgba(60, 60, 67, 0.08);
+  border-radius: 8px;
+  padding: 5px 9px;
+}
+
+.app-actions {
+  gap: 8px;
+}
+
+.button,
+.mini-button {
+  min-height: 35px;
+  border: 1px solid var(--ios-border);
+  border-radius: 8px;
+  color: #30313a;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 1px 2px rgba(31, 35, 48, 0.045), inset 0 1px rgba(255, 255, 255, 0.74);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 180ms ease, transform 220ms var(--ios-motion);
+}
+
+.button:hover:not(:disabled),
+.mini-button:hover:not(:disabled) {
+  color: var(--ios-ink);
+  border-color: var(--ios-border-strong);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 5px 14px rgba(31, 35, 48, 0.08), inset 0 1px rgba(255, 255, 255, 0.88);
+  transform: translateY(-1px);
+}
+
+.button:active:not(:disabled),
+.mini-button:active:not(:disabled),
+.deliverable-open:active,
+.link-button:active {
+  transform: scale(0.965);
+}
+
+.button.primary {
+  color: #fff;
+  border-color: rgba(0, 94, 214, 0.72);
+  background: var(--ios-blue);
+  box-shadow: 0 7px 16px rgba(10, 132, 255, 0.22), inset 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.button.icon-tool {
+  width: 35px;
+  min-width: 35px;
+  padding: 0;
+}
+
+.button.primary:hover:not(:disabled) {
+  color: #fff;
+  border-color: var(--ios-blue-strong);
+  background: var(--ios-blue-strong);
+  box-shadow: 0 9px 20px rgba(10, 132, 255, 0.25);
+}
+
+.decision-accept { color: #167d4c; }
+.decision-reject { color: #c7373d; }
+
+.llm-toggle {
+  min-height: 35px;
+  gap: 7px;
+  border: 1px solid rgba(60, 60, 67, 0.08);
+  border-radius: 8px;
+  background: rgba(118, 118, 128, 0.07);
+  padding: 5px 9px;
+  color: var(--ios-secondary);
+  cursor: pointer;
+}
+
+.llm-track {
+  width: 36px;
+  height: 22px;
+  background: #c7c7cc;
+  transition: background 180ms ease, box-shadow 180ms ease;
+}
+
+.llm-track::after {
+  width: 18px;
+  height: 18px;
+  box-shadow: 0 2px 5px rgba(31, 35, 48, 0.24);
+  transition: transform 260ms var(--ios-motion);
+}
+
+.llm-toggle input:checked + .llm-track {
+  background: #34c759;
+  box-shadow: inset 0 0 0 1px rgba(25, 130, 55, 0.12);
+}
+
+.llm-toggle input:checked + .llm-track::after {
+  left: 2px;
+  transform: translateX(14px);
+}
+
+.run-home {
+  padding: 16px 20px 22px;
+  gap: 12px;
+  background: transparent;
+}
+
+.ov-stats {
+  gap: 10px;
+}
+
+.ov-stat,
+.flow-card,
+.panel-card,
+.stat-card {
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 8px;
+  background: var(--ios-glass);
+  box-shadow: var(--ios-shadow), inset 0 0 0 1px rgba(60, 60, 67, 0.075);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+}
+
+.ov-stat {
+  min-height: 88px;
+  padding: 13px 15px 12px;
+  transition: transform 260ms var(--ios-motion), box-shadow 200ms ease;
+}
+
+.ov-stat:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 34px rgba(31, 35, 48, 0.1), inset 0 0 0 1px rgba(60, 60, 67, 0.08);
+}
+
+.ov-stat .k,
+.board-head span,
+.path-hint,
+.panel-subtitle,
+.stat-label {
+  color: var(--ios-tertiary);
+}
+
+.ov-stat .v,
+.board-head h4,
+.panel-title,
+.stat-value {
+  color: var(--ios-ink);
+}
+
+.flow-card,
+.panel-card {
+  padding: 15px 17px;
+}
+
+.run-meter {
+  border: 1px solid rgba(10, 132, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(10, 132, 255, 0.075);
+}
+
+.run-meter-track,
+.stage-bar {
+  background: rgba(118, 118, 128, 0.13);
+}
+
+.run-meter-fill,
+.stage-bar i {
+  background: var(--ios-blue);
+  transition: width 420ms var(--ios-motion);
+}
+
+.run-stage-board {
+  gap: 16px;
+  padding: 8px 4px 10px;
+  scroll-padding-inline: 4px;
+  scrollbar-width: thin;
+}
+
+.run-stage-card {
+  min-height: 88px;
+  isolation: isolate;
+  border: 0;
+  border-left: 3px solid #c7c7cc;
+  border-radius: 7px;
+  background: rgba(118, 118, 128, 0.055);
+  box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.08);
+  transition: background 180ms ease, transform 220ms var(--ios-motion), box-shadow 180ms ease;
+}
+
+.run-stage-card:hover {
+  background: rgba(255, 255, 255, 0.72);
+  transform: translateY(-1px);
+}
+
+.run-stage-card.stage-running {
+  border-left-color: var(--ios-blue);
+  background: rgba(10, 132, 255, 0.075);
+  box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.12), 0 5px 14px rgba(10, 132, 255, 0.08);
+  animation: stage-card-live 2.4s ease-in-out infinite;
+}
+
+.run-stage-card.stage-ok { border-left-color: var(--ios-green); }
+.run-stage-card.stage-failed { border-left-color: var(--ios-red); }
+
+.stage-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.stage-title-row .stage-name {
+  min-width: 0;
+  flex: 1;
+}
+
+.stage-signal {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border: 1px solid rgba(60, 60, 67, 0.2);
+  border-radius: 50%;
+  background: rgba(118, 118, 128, 0.16);
+}
+
+.stage-running .stage-signal {
+  border-color: rgba(10, 132, 255, 0.34);
+  background: var(--ios-blue);
+  animation: stage-signal-pulse 1.8s ease-out infinite;
+}
+
+.stage-ok .stage-signal {
+  border-color: rgba(29, 138, 92, 0.26);
+  background: var(--ios-green);
+}
+
+.stage-skipped .stage-signal {
+  border-color: rgba(118, 118, 128, 0.26);
+  background: #8e8e93;
+}
+
+.stage-failed .stage-signal {
+  border-color: rgba(214, 58, 64, 0.3);
+  background: var(--ios-red);
+}
+
+.stage-disabled .stage-signal {
+  border-style: dashed;
+  background: transparent;
+}
+
+.stage-running .stage-bar i {
+  position: relative;
+  min-width: 12px;
+  max-width: 100%;
+  overflow: hidden;
+  background: linear-gradient(90deg, var(--ios-blue-strong), #52adff);
+  box-shadow: 0 0 8px rgba(10, 132, 255, 0.25);
+}
+
+.stage-running .stage-bar i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 58%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.82), transparent);
+  animation: stage-progress-sweep 1.35s ease-in-out infinite;
+}
+
+.stage-bar {
+  position: relative;
+}
+
+.stage-bar.is-indeterminate > i {
+  min-width: 0;
+  opacity: 0;
+  transition: none;
+}
+
+.stage-indeterminate-runner {
+  display: none;
+}
+
+.stage-bar.is-indeterminate .stage-indeterminate-runner {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  display: block;
+  width: 34%;
+  border-radius: inherit;
+  overflow: hidden;
+  background: linear-gradient(90deg, var(--ios-blue-strong), #52adff);
+  box-shadow: 0 0 8px rgba(10, 132, 255, 0.25);
+  animation: stage-progress-travel 1.25s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+}
+
+.stage-bar.is-indeterminate .stage-indeterminate-runner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+}
+
+.stage-relay {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  z-index: 3;
+  width: 16px;
+  height: 12px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.stage-relay::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 5px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(118, 118, 128, 0.18);
+}
+
+.stage-relay-baton {
+  position: absolute;
+  left: 2px;
+  top: 3px;
+  width: 6px;
+  height: 6px;
+  box-sizing: border-box;
+  border: 2px solid var(--ios-blue);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.1), 0 0 8px rgba(10, 132, 255, 0.38);
+  opacity: 0;
+}
+
+.relay-ready::before {
+  background: linear-gradient(90deg, rgba(10, 132, 255, 0.46), rgba(118, 118, 128, 0.16));
+}
+
+.relay-ready .stage-relay-baton {
+  background: var(--ios-blue);
+  opacity: 0.52;
+  transform: scale(0.72);
+}
+
+.relay-handoff::before {
+  background: linear-gradient(90deg, rgba(29, 138, 92, 0.62), rgba(10, 132, 255, 0.72));
+}
+
+.relay-handoff .stage-relay-baton {
+  animation: stage-relay-pass 1.45s var(--ios-motion) infinite;
+}
+
+.relay-complete::before {
+  background: rgba(29, 138, 92, 0.48);
+}
+
+.relay-bypass::before {
+  background: repeating-linear-gradient(90deg, rgba(118, 118, 128, 0.28) 0 3px, transparent 3px 5px);
+}
+
+.relay-blocked::before {
+  background: rgba(214, 58, 64, 0.46);
+}
+
+@keyframes stage-relay-pass {
+  0%, 24% { opacity: 0; transform: translateX(0) scale(0.7); }
+  36% { opacity: 1; transform: translateX(0) scale(1); }
+  74% { opacity: 1; transform: translateX(8px) scale(1); }
+  90%, 100% { opacity: 0; transform: translateX(8px) scale(0.7); }
+}
+
+@keyframes stage-signal-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.32); }
+  72%, 100% { box-shadow: 0 0 0 7px rgba(10, 132, 255, 0); }
+}
+
+@keyframes stage-progress-sweep {
+  from { transform: translateX(-125%); }
+  to { transform: translateX(225%); }
+}
+
+@keyframes stage-progress-travel {
+  0% { opacity: 0; transform: translateX(-115%); }
+  16% { opacity: 1; }
+  84% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(300%); }
+}
+
+@keyframes stage-card-live {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.12), 0 5px 14px rgba(10, 132, 255, 0.07); }
+  50% { box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.2), 0 8px 18px rgba(10, 132, 255, 0.13); }
+}
+
+.preview-table th,
+thead th {
+  background: rgba(118, 118, 128, 0.045);
+}
+
+.preview-table tbody tr:hover td,
+tbody tr:hover td {
+  background: rgba(10, 132, 255, 0.055);
+}
+
+tbody tr.selected td {
+  background: rgba(10, 132, 255, 0.085);
+}
+
+.link-button,
+.deliverable-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ios-blue-strong);
+  transition: background 160ms ease, transform 220ms var(--ios-motion);
+}
+
+.link-button {
+  gap: 2px;
+}
+
+.deliverable-open {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(10, 132, 255, 0.08);
+}
+
+.deliverable-open:hover,
+.link-button:hover {
+  background: rgba(10, 132, 255, 0.12);
+}
+
+.dl-file {
+  border-bottom-color: rgba(60, 60, 67, 0.09);
+}
+
+.dl-icon {
+  border-radius: 8px;
+}
+
+.stat-strip,
+.filter-bar,
+.status-bar {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: var(--ios-border);
+  backdrop-filter: blur(22px) saturate(165%);
+  -webkit-backdrop-filter: blur(22px) saturate(165%);
+}
+
+.stat-strip {
+  gap: 12px;
+  padding: 14px 20px;
+}
+
+.stat-card {
+  height: 78px;
+  padding: 12px 14px;
+  transition: border-color 160ms ease, background 160ms ease, transform 220ms var(--ios-motion), box-shadow 180ms ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+}
+
+.stat-card.active {
+  border-color: rgba(10, 132, 255, 0.22);
+  background: rgba(10, 132, 255, 0.085);
+  box-shadow: 0 10px 28px rgba(10, 132, 255, 0.09), inset 0 0 0 1px rgba(10, 132, 255, 0.08);
+}
+
+.filter-bar {
+  gap: 9px;
+  padding: 11px 20px;
+}
+
+.filter-select,
+.search-input,
+.comment-box,
+.settings-field input,
+.template-row input {
+  border: 1px solid var(--ios-border);
+  border-radius: 8px;
+  color: var(--ios-ink);
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: inset 0 1px 2px rgba(31, 35, 48, 0.025);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.filter-select:focus,
+.search-input:focus,
+.comment-box:focus,
+.settings-field input:focus,
+.template-row input:focus {
+  outline: 0;
+  border-color: rgba(10, 132, 255, 0.5);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.12);
+}
+
+.workspace {
+  background: transparent;
+}
+
+.table-panel,
+.detail-panel {
+  background: rgba(255, 255, 255, 0.66);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+
+.table-panel,
+.panel-head,
+.readonly-card,
+.mini-row,
+.review-box,
+.metadata {
+  border-color: var(--ios-border);
+}
+
+.detail-content {
+  background: rgba(241, 243, 247, 0.64);
+}
+
+.readonly-card,
+.mini-row,
+.review-box,
+.metadata,
+.settings-section {
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 4px 14px rgba(31, 35, 48, 0.035);
+}
+
+.readonly-head,
+.mini-head {
+  background: rgba(118, 118, 128, 0.045);
+}
+
+.settings-overlay {
+  background: rgba(42, 44, 52, 0.22);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+.settings-dialog {
+  width: min(760px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 12px;
+  background: rgba(249, 250, 253, 0.88);
+  box-shadow: 0 30px 80px rgba(24, 28, 38, 0.2), inset 0 0 0 1px rgba(60, 60, 67, 0.08);
+  backdrop-filter: blur(34px) saturate(180%);
+  -webkit-backdrop-filter: blur(34px) saturate(180%);
+}
+
+.settings-head,
+.settings-body {
+  background: transparent;
+}
+
+.settings-section,
+.settings-toggle {
+  border-color: var(--ios-border);
+}
+
+.settings-toggle {
+  border-radius: 8px;
+  background: rgba(118, 118, 128, 0.045);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.settings-toggle:hover {
+  border-color: rgba(10, 132, 255, 0.22);
+  background: rgba(10, 132, 255, 0.045);
+}
+
+.settings-toggle input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  flex: 0 0 38px;
+  border: 0;
+  border-radius: 999px;
+  background: #c7c7cc;
+  box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.08);
+  cursor: pointer;
+  transition: background 180ms ease, box-shadow 180ms ease;
+}
+
+.settings-toggle input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 5px rgba(31, 35, 48, 0.24);
+  transition: transform 260ms var(--ios-motion);
+}
+
+.settings-toggle input:checked {
+  background: #34c759;
+  box-shadow: inset 0 0 0 1px rgba(25, 130, 55, 0.12);
+}
+
+.settings-toggle input:checked::after {
+  transform: translateX(16px);
+}
+
+.settings-toggle input:focus-visible {
+  outline: 3px solid rgba(10, 132, 255, 0.22);
+  outline-offset: 2px;
+}
+
+.icon-button {
+  border-color: var(--ios-border);
+  border-radius: 50%;
+  background: rgba(118, 118, 128, 0.08);
+  transition: background 160ms ease, color 160ms ease, transform 220ms var(--ios-motion);
+}
+
+.icon-button:hover {
+  color: var(--ios-ink);
+  border-color: transparent;
+  background: rgba(118, 118, 128, 0.14);
+  transform: rotate(4deg) scale(1.04);
+}
+
+.global-message,
+.api-message {
+  border-color: rgba(10, 132, 255, 0.18);
+  border-radius: 8px;
+  color: var(--ios-blue-strong);
+  background: rgba(236, 246, 255, 0.84);
+  box-shadow: 0 8px 24px rgba(10, 132, 255, 0.08);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+
+.global-message-close {
+  color: currentColor;
+}
+
+.status-bar {
+  color: var(--ios-secondary);
+  font-weight: 560;
+}
+
+.kbd-hints {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ios-tertiary);
+}
+
+.switch-label {
+  min-height: 38px;
+  border: 1px solid var(--ios-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.62);
+  padding: 0 10px;
+}
+
+.switch-label input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #c7c7cc;
+  cursor: pointer;
+  transition: background 180ms ease;
+}
+
+.switch-label input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(31, 35, 48, 0.22);
+  transition: transform 240ms var(--ios-motion);
+}
+
+.switch-label input:checked { background: #34c759; }
+.switch-label input:checked::after { transform: translateX(14px); }
+
+.run-home,
+.stat-strip,
+.filter-bar,
+.workspace,
+.doc-review {
+  animation: view-enter 360ms var(--ios-motion) both;
+}
+
+.spin {
+  animation: spin 900ms linear infinite;
+}
+
+.sheet-enter-active,
+.sheet-leave-active {
+  transition: opacity 220ms ease;
+}
+
+.sheet-enter-active .settings-dialog,
+.sheet-leave-active .settings-dialog {
+  transition: opacity 220ms ease, transform 320ms var(--ios-motion);
+}
+
+.sheet-enter-from,
+.sheet-leave-to,
+.sheet-enter-from .settings-dialog,
+.sheet-leave-to .settings-dialog {
+  opacity: 0;
+}
+
+.sheet-enter-from .settings-dialog,
+.sheet-leave-to .settings-dialog {
+  transform: translateY(18px) scale(0.975);
+}
+
+@keyframes view-enter {
+  from { opacity: 0; transform: translateY(7px) scale(0.997); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1120px) {
+  .shell { grid-template-columns: 72px minmax(0, 1fr); }
+  .side-nav { padding-inline: 9px; }
+  .nav-button { min-height: 42px; }
+}
+
+@media (max-width: 980px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 64px;
+  }
+
+  .main {
+    grid-column: 1;
+    grid-row: 1;
+    height: calc(100vh - 64px);
+  }
+
+  .side-nav {
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 64px;
+    overflow: hidden;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border-right: 0;
+    border-top: 1px solid var(--ios-border);
+    padding: 8px 12px;
+  }
+
+  .side-brand,
+  .side-user,
+  .side-nav > .nav-group:nth-of-type(2),
+  .nav-spacer,
+  .nav-title {
+    display: none;
+  }
+
+  .side-nav > .nav-group {
+    flex-direction: row;
+  }
+
+  .side-nav > .nav-group:first-of-type,
+  .side-nav > .nav-group:last-of-type {
+    display: flex;
+  }
+
+  .nav-button {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .nav-button:hover { transform: translateY(-1px); }
+  .run-grid { grid-template-columns: minmax(0, 1fr); }
+  .ov-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  .app-bar { min-height: 58px; padding: 9px 10px; }
+  .page-title { font-size: 17px; }
+  .doc-chip { max-width: 160px; }
+  .app-actions { flex-wrap: nowrap; overflow-x: auto; }
+  .button { flex: 0 0 auto; padding-inline: 9px; }
+  .button-label,
+  .llm-toggle > svg,
+  .llm-toggle > span:last-child { display: none; }
+  .llm-toggle { padding-inline: 7px; }
+  .run-home { padding: 12px; }
+  .stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 10px 12px; }
+  .filter-bar { padding: 9px 12px; overflow-x: auto; flex-wrap: nowrap; }
+  .filter-select { min-width: 140px; }
+  .search-input { min-width: 220px; }
+  .settings-overlay { padding: 10px; }
+  .settings-dialog { max-height: calc(100vh - 20px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .stage-bar.is-indeterminate .stage-indeterminate-runner {
+    width: 32% !important;
+    opacity: 1 !important;
+    transform: none !important;
+    animation: none !important;
   }
 }
 </style>

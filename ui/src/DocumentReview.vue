@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue"
+import { Ban, Check, Image, MessageSquareText, MessagesSquare, RefreshCw, Rows3 } from "@lucide/vue"
 import type { AiRequirement, DocumentBlock, PdfAnnotationPayload, PdfZoneRect, RequirementApiClient } from "./api-client"
 
 // 镜像后端 ai_extract.MODULE_VOCAB（受控模块词表）。改模块下拉用；taxonomy 变动时两边同步。
@@ -485,12 +486,12 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
       <div class="doc-toolbar-actions">
         <div class="mode-toggle">
           <button type="button" :class="{ active: viewMode === 'text' }" data-testid="mode-text"
-                  @click="switchMode('text')">文字重排</button>
+                  @click="switchMode('text')"><Rows3 :size="14" aria-hidden="true" />文字重排</button>
           <button type="button" :class="{ active: viewMode === 'pdf' }" data-testid="mode-pdf"
-                  @click="switchMode('pdf')">原版影印</button>
+                  @click="switchMode('pdf')"><Image :size="14" aria-hidden="true" />原版影印</button>
         </div>
         <button class="button" type="button" data-testid="doc-reload" :disabled="loading" @click="load">
-          {{ loading ? "加载中" : "刷新" }}
+          <RefreshCw :class="{ spin: loading }" :size="14" aria-hidden="true" />{{ loading ? "加载中" : "刷新" }}
         </button>
       </div>
     </header>
@@ -614,7 +615,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
       </article>
 
       <aside class="doc-detail" data-testid="doc-detail">
-        <div v-if="!selectedReq && !selectedBlock" class="doc-detail-empty">点左侧 💬 批注查看需求详情</div>
+        <div v-if="!selectedReq && !selectedBlock" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点左侧批注查看需求详情</span></div>
         <div v-else-if="selectedBlock" class="doc-detail-card"
              :data-testid="selectedBlockKind === 'omission' ? 'omission-card' : (selectedBlockKind === 'echo' ? 'echo-card' : 'context-card')">
           <div class="dd-head">
@@ -740,9 +741,9 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
           <textarea v-model="comment" class="dd-comment" data-testid="dd-comment" placeholder="审查意见（可选）" />
           <div class="dd-actions">
-            <button class="button primary" type="button" data-testid="dd-accept" :disabled="isSaving" @click="decide('accepted')">接受</button>
-            <button class="button" type="button" data-testid="dd-reject" :disabled="isSaving" @click="decide('rejected')">拒绝</button>
-            <button class="button" type="button" data-testid="dd-discuss" :disabled="isSaving" @click="decide('needs_discussion')">讨论</button>
+            <button class="button primary" type="button" data-testid="dd-accept" :disabled="isSaving" @click="decide('accepted')"><Check :size="14" aria-hidden="true" />接受</button>
+            <button class="button reject" type="button" data-testid="dd-reject" :disabled="isSaving" @click="decide('rejected')"><Ban :size="14" aria-hidden="true" />拒绝</button>
+            <button class="button" type="button" data-testid="dd-discuss" :disabled="isSaving" @click="decide('needs_discussion')"><MessagesSquare :size="14" aria-hidden="true" />讨论</button>
           </div>
         </div>
       </aside>
@@ -870,4 +871,342 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .dd-select, .dd-comment { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; font-size: 13px; }
 .dd-comment { min-height: 56px; margin-top: 8px; resize: vertical; }
 .dd-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* iOS-style document workspace */
+.doc-review {
+  --doc-blue: #0a84ff;
+  --doc-blue-strong: #0071e3;
+  --doc-ink: #1d1d1f;
+  --doc-secondary: #6e6e73;
+  --doc-tertiary: #98989d;
+  --doc-border: rgba(60, 60, 67, 0.14);
+  --doc-glass: rgba(255, 255, 255, 0.76);
+  --doc-motion: cubic-bezier(0.22, 1, 0.36, 1);
+  background: #f1f3f7;
+  color: var(--doc-ink);
+}
+
+.doc-toolbar {
+  min-height: 52px;
+  padding: 9px 16px;
+  border-color: var(--doc-border);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 1px rgba(255, 255, 255, 0.72), 0 8px 22px rgba(31, 35, 48, 0.035);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+}
+
+.doc-stats {
+  gap: 0;
+  color: var(--doc-secondary);
+}
+
+.doc-stats > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 12px;
+  border-right: 1px solid var(--doc-border);
+}
+
+.doc-stats > span:first-child { padding-left: 0; }
+.doc-stats > span:last-child { border-right: 0; }
+.doc-stats strong { color: var(--doc-ink); font-variant-numeric: tabular-nums; }
+.omission-stat.warn strong { color: #d58a18; }
+
+.doc-toolbar-actions {
+  gap: 8px;
+}
+
+.mode-toggle {
+  gap: 0;
+  padding: 2px;
+  border: 1px solid rgba(60, 60, 67, 0.08);
+  border-radius: 8px;
+  background: rgba(118, 118, 128, 0.1);
+}
+
+.mode-toggle button {
+  min-height: 29px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 7px;
+  padding: 4px 10px;
+  color: var(--doc-secondary);
+  font-weight: 600;
+  transition: color 160ms ease, background 160ms ease, box-shadow 180ms ease, transform 220ms var(--doc-motion);
+}
+
+.mode-toggle button:hover {
+  color: var(--doc-ink);
+}
+
+.mode-toggle button:active {
+  transform: scale(0.97);
+}
+
+.mode-toggle button.active {
+  color: var(--doc-blue-strong);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 3px 9px rgba(31, 35, 48, 0.09), inset 0 0 0 1px rgba(60, 60, 67, 0.06);
+}
+
+.button {
+  min-height: 33px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--doc-border);
+  border-radius: 8px;
+  padding: 0 11px;
+  color: #30313a;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 1px 2px rgba(31, 35, 48, 0.045), inset 0 1px rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 180ms ease, transform 220ms var(--doc-motion);
+}
+
+.button:hover:not(:disabled) {
+  color: var(--doc-ink);
+  border-color: rgba(60, 60, 67, 0.22);
+  background: #fff;
+  box-shadow: 0 6px 15px rgba(31, 35, 48, 0.09);
+  transform: translateY(-1px);
+}
+
+.button:active:not(:disabled) { transform: scale(0.965); }
+.button:disabled { opacity: 0.48; cursor: default; }
+
+.button.primary {
+  color: #fff;
+  border-color: rgba(0, 94, 214, 0.72);
+  background: var(--doc-blue);
+  box-shadow: 0 7px 16px rgba(10, 132, 255, 0.22), inset 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.button.primary:hover:not(:disabled) {
+  color: #fff;
+  background: var(--doc-blue-strong);
+}
+
+.button.reject { color: #c7373d; }
+.spin { animation: doc-spin 900ms linear infinite; }
+
+.doc-message {
+  margin: 8px 14px 0;
+  padding: 8px 11px;
+  border: 1px solid rgba(213, 138, 24, 0.18);
+  border-radius: 8px;
+  color: #9a6413;
+  background: rgba(255, 248, 232, 0.86);
+  box-shadow: 0 6px 18px rgba(165, 104, 15, 0.06);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+}
+
+.doc-body {
+  grid-template-columns: minmax(0, 1fr) 390px;
+}
+
+.doc-paper {
+  padding: 16px 22px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.pdf-paper {
+  background: #e8eaef;
+}
+
+.pdf-page {
+  margin-bottom: 16px;
+  border: 1px solid rgba(60, 60, 67, 0.12);
+  border-radius: 6px;
+  box-shadow: 0 14px 38px rgba(31, 35, 48, 0.13), 0 2px 8px rgba(31, 35, 48, 0.08);
+}
+
+.pdf-block-zone {
+  transition: background 150ms ease, border-color 150ms ease, box-shadow 180ms ease;
+}
+
+.pdf-block-zone:hover {
+  box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.08);
+}
+
+.pdf-marker {
+  border-color: var(--doc-border);
+  color: var(--doc-blue-strong);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 5px 14px rgba(31, 35, 48, 0.13);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  transition: transform 220ms var(--doc-motion), box-shadow 180ms ease;
+}
+
+.pdf-marker:hover { transform: translateY(-1px) scale(1.03); }
+
+.doc-block {
+  border-radius: 4px;
+  transition: background 150ms ease, box-shadow 150ms ease;
+}
+
+.doc-block.anchored {
+  border-left-color: var(--doc-blue);
+  background: rgba(10, 132, 255, 0.035);
+}
+
+.doc-block.anchored:hover,
+.doc-block.in-span.evidence {
+  background: rgba(10, 132, 255, 0.075);
+}
+
+.doc-text {
+  color: #3f4149;
+  line-height: 1.56;
+}
+
+.doc-text mark {
+  border-radius: 3px;
+  background: rgba(255, 199, 64, 0.43);
+  box-shadow: inset 0 -1px rgba(184, 121, 0, 0.12);
+}
+
+.anno-chip {
+  border-color: var(--doc-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 2px 7px rgba(31, 35, 48, 0.045);
+  transition: color 150ms ease, border-color 150ms ease, background 150ms ease, transform 220ms var(--doc-motion);
+}
+
+.anno-chip:hover {
+  border-color: rgba(10, 132, 255, 0.3);
+  background: #fff;
+  transform: translateX(1px);
+}
+
+.anno-chip.sel {
+  outline: 0;
+  border-color: rgba(10, 132, 255, 0.42);
+  background: rgba(10, 132, 255, 0.09);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.1);
+}
+
+.doc-detail {
+  border-left-color: var(--doc-border);
+  padding: 16px;
+  background: rgba(246, 247, 250, 0.78);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+}
+
+.doc-detail-empty {
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--doc-tertiary);
+}
+
+.doc-detail-card {
+  animation: detail-enter 300ms var(--doc-motion) both;
+}
+
+.dd-module { color: var(--doc-blue-strong); }
+
+.dd-status,
+.dd-suspicion,
+.dd-consistency {
+  border-radius: 7px;
+}
+
+.dd-section {
+  margin: 12px 0;
+}
+
+.dd-label {
+  color: var(--doc-tertiary);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.dd-body,
+.dd-list {
+  color: #3f4149;
+  line-height: 1.6;
+}
+
+.dd-quote {
+  border-left-color: rgba(10, 132, 255, 0.35);
+  color: var(--doc-secondary);
+  background: rgba(10, 132, 255, 0.035);
+  border-radius: 0 6px 6px 0;
+  padding: 7px 9px;
+}
+
+.dd-select,
+.dd-comment {
+  border-color: var(--doc-border);
+  border-radius: 8px;
+  color: var(--doc-ink);
+  background: rgba(255, 255, 255, 0.78);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.dd-select:focus,
+.dd-comment:focus {
+  outline: 0;
+  border-color: rgba(10, 132, 255, 0.5);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.12);
+}
+
+.dd-actions {
+  position: sticky;
+  bottom: -1px;
+  z-index: 4;
+  margin: 12px -4px -4px;
+  padding: 10px 4px 4px;
+  background: rgba(246, 247, 250, 0.82);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+
+@keyframes detail-enter {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes doc-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1080px) {
+  .doc-body { grid-template-columns: minmax(0, 1fr) 340px; }
+  .doc-paper { padding-inline: 14px; }
+}
+
+@media (max-width: 820px) {
+  .doc-toolbar { align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+  .doc-body { grid-template-columns: minmax(0, 1fr); overflow: auto; }
+  .doc-paper { min-height: 58vh; overflow: visible; }
+  .doc-detail { max-height: 42vh; border-left: 0; border-top: 1px solid var(--doc-border); }
+  .doc-stats > span { padding-inline: 7px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 </style>
