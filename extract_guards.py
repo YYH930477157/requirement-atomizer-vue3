@@ -217,7 +217,8 @@ def _multi_value_pairing_risk(req: dict[str, Any], source: str) -> list[str]:
 # ①情态升格:引句 should/recommended(建议) → 正文"必须/严禁/不得"(强制);
 # ②标准号张冠李戴:正文引用的标准号不在本节基线里(利用了背景整数豁免的漏洞)。
 
-_SOURCE_WEAK_MODAL_RE = re.compile(r"\bshould\b|\brecommended\b|\bmay\b", re.IGNORECASE)
+_SOURCE_WEAK_MODAL_RE = re.compile(
+    r"\bshould\b|\brecommended\b|\bmay\b(?!\s+not\b)", re.IGNORECASE)
 _SOURCE_STRONG_MODAL_RE = re.compile(r"\bshall\b|\bmust\b|\brequired\b", re.IGNORECASE)
 _PRODUCED_STRONG_RE = re.compile(r"必须|严禁|不得|禁止")
 _STANDARD_REF_RE = re.compile(
@@ -225,10 +226,17 @@ _STANDARD_REF_RE = re.compile(
     re.IGNORECASE)
 
 
-def _modal_inflation(req: dict[str, Any]) -> bool:
-    """引句只有建议性情态(should/may,无 shall/must),正文却用了强制表述 → 升格待核。"""
+def _modal_inflation(req: dict[str, Any], source_baseline: str | None = None) -> bool:
+    """引句只有建议性情态且完整来源无强情态,正文却用了强制表述 → 升格待核。
+
+    ``may not`` 本身表达禁止/不允许,不能按弱情态 ``may`` 处理。自动软化还要求完整
+    来源基线没有 shall/must/required,避免短引句漏掉同一条款里的强制依据后误改正文。
+    """
     quote = str(req.get("source_quote") or "")
-    if not quote or not _SOURCE_WEAK_MODAL_RE.search(quote) or _SOURCE_STRONG_MODAL_RE.search(quote):
+    baseline = str(source_baseline if source_baseline is not None else quote)
+    if (not quote or not _SOURCE_WEAK_MODAL_RE.search(quote)
+            or _SOURCE_STRONG_MODAL_RE.search(quote)
+            or _SOURCE_STRONG_MODAL_RE.search(baseline)):
         return False
     produced = " ".join([str(req.get("title") or ""), str(req.get("description") or "")]
                         + [str(s.get("text") or "") for s in req.get("sub_items") or []])

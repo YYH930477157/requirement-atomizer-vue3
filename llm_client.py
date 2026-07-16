@@ -177,6 +177,10 @@ class LLMResponseError(LLMError):
     """Raised when the LLM response cannot be used as a review payload."""
 
 
+class LLMResponseFormatUnsupported(LLMResponseError):
+    """Raised only when an endpoint explicitly rejects response_format=json_object."""
+
+
 @dataclass(frozen=True)
 class LLMClientConfig:
     base_url: str
@@ -258,9 +262,9 @@ def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> st
         payload["response_format"] = {"type": "json_object"}
         try:
             response = _post_json(config, payload)
-        except LLMResponseError:
-            # 只有"响应类"4xx 才判定端点不支持并降级重发;连接类错误（401/403/429 打光/
-            # 5xx/网络）原样抛出——重发无 JSON 模式救不了真故障,只会调用翻倍。
+        except LLMResponseFormatUnsupported:
+            # 只有端点明确指出 response_format/json_object 不受支持才记忆并降级。
+            # 其它 4xx、畸形 200 和响应结构错误原样抛出,避免掩盖真实故障并重复调用。
             with _JSON_MODE_LOCK:
                 _JSON_MODE_UNSUPPORTED.add(endpoint_key)
             LOGGER.warning("端点疑似不支持 response_format=json_object,已记住并降级重发: %s", endpoint_key)
@@ -342,6 +346,13 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                     time.sleep(_retry_delay(attempt - 1, exc.headers.get("Retry-After")))
                     continue
                 raise LLMConnectionError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
+            body_low = raw.casefold()
+            if ("response_format" in payload
+                    and exc.code in {400, 404, 415, 422}
+                    and ("response_format" in body_low or "json_object" in body_low)):
+                raise LLMResponseFormatUnsupported(
+                    f"LLM endpoint does not support response_format=json_object: HTTP {exc.code}: {raw}"
+                ) from exc
             raise LLMResponseError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             LOGGER.warning("LLM 连接异常 model=%s dur=%.1fs attempt=%d err=%s",

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue"
+import { computed, onUnmounted, ref, watch } from "vue"
 import type { AiRequirement, DocumentBlock, PdfAnnotationPayload, PdfZoneRect, RequirementApiClient } from "./api-client"
 
 // 镜像后端 ai_extract.MODULE_VOCAB（受控模块词表）。改模块下拉用；taxonomy 变动时两边同步。
@@ -78,10 +78,14 @@ const anchorByBlock = computed(() => {
 // 回声段（同文重复出现的其他段落）：不重复挂批注（0716 用户裁定:批注不过度显示,
 // 汇总层才归并）——只用于免遗漏判定 + 点击时给"重复段"卡片指向汇总条目。
 const echoByBlock = computed(() => {
-  const map = new Map<string, AiRequirement>()
-  for (const req of requirements.value)
-    for (const echo of req.echo_block_ids || [])
-      if (!map.has(echo)) map.set(echo, req)
+  const map = new Map<string, AiRequirement[]>()
+  for (const req of requirements.value) {
+    for (const echo of req.echo_block_ids || []) {
+      const list = map.get(echo) || []
+      if (!list.some((item) => item.ai_req_id === req.ai_req_id)) list.push(req)
+      map.set(echo, list)
+    }
+  }
   return map
 })
 
@@ -110,14 +114,8 @@ const selectedBlockKind = computed(() => {
   if (echoByBlock.value.has(selectedBlock.value.block_id)) return "echo"
   return isOmission(selectedBlock.value) ? "omission" : "context"
 })
-const selectedEchoReq = computed(() =>
-  (selectedBlock.value && echoByBlock.value.get(selectedBlock.value.block_id)) || null)
-function jumpToEchoReq() {
-  const req = selectedEchoReq.value
-  if (!req) return
-  selectedBlockId.value = ""
-  selectedId.value = req.ai_req_id   // 直接选中(不走 select 的再点取消语义)
-}
+const selectedEchoReqs = computed(() =>
+  (selectedBlock.value && echoByBlock.value.get(selectedBlock.value.block_id)) || [])
 function selectBlockCard(b: DocumentBlock) {
   if (selectedBlockId.value === b.block_id) {  // 再点一下 → 取消选中
     selectedBlockId.value = ""
@@ -142,18 +140,41 @@ const viewMode = ref<"text" | "pdf">("text")
 const pdfData = ref<PdfAnnotationPayload | null>(null)
 const pdfLoading = ref(false)
 const pdfPageUrls = ref<Record<string, string>>({})
+let pdfPageLoadGeneration = 0
+let pdfPageLoadsDisposed = false
+
+function revokePdfPageUrl(url: string) {
+  if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+    URL.revokeObjectURL(url)
+  }
+}
+
 async function loadPdfPages(payload: PdfAnnotationPayload) {
+  if (pdfPageLoadsDisposed) return
+  const generation = ++pdfPageLoadGeneration
   // 顺序拉取页图(带鉴权头 fetch→blob;token 不进 URL——仓库安全锁);单页失败不阻断其余
   for (const page of payload.pages || []) {
     if (pdfPageUrls.value[page.file] || !props.client) continue
     try {
       const url = await props.client.loadPdfPageBlob(page.file)
+      if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration) {
+        revokePdfPageUrl(url)
+        continue
+      }
       pdfPageUrls.value = { ...pdfPageUrls.value, [page.file]: url }
     } catch {
       /* 页图缺失/网络抖动:保留占位框,不影响其它页 */
     }
   }
 }
+
+onUnmounted(() => {
+  pdfPageLoadsDisposed = true
+  pdfPageLoadGeneration += 1
+  const urls = new Set(Object.values(pdfPageUrls.value))
+  pdfPageUrls.value = {}
+  for (const url of urls) revokePdfPageUrl(url)
+})
 async function switchMode(mode: "text" | "pdf") {
   viewMode.value = mode
   if (mode === "pdf" && !pdfData.value && props.client && !pdfLoading.value) {
@@ -193,7 +214,8 @@ const pdfMarkersByPage = computed(() => {
 // 全段落热区（0714「点一段出翻译和解析」）：kind 语义由后端 _pdf_block_zones 唯一定义,
 // 这里只做渲染与路由——req→需求卡 / omission·context→块级卡（卡种由 selectedBlockKind 判定）
 type PdfBlockZone = { block_id: string; page: number; rect: PdfZoneRect
-                      kind: "req" | "omission" | "context"; req_id?: string }
+                      kind: "req" | "echo" | "omission" | "context";
+                      req_id?: string; req_ids?: string[] }
 const pdfZonesByPage = computed(() => {
   const byPage = new Map<number, PdfBlockZone[]>()
   for (const z of pdfData.value?.block_zones || []) {
@@ -214,10 +236,12 @@ function pdfZoneClick(z: PdfBlockZone) {
 }
 function pdfZoneSelected(z: PdfBlockZone): boolean {
   if (z.kind === "req") return !!z.req_id && z.req_id === selectedId.value
+  if (z.kind === "echo" && selectedId.value) return (z.req_ids || []).includes(selectedId.value)
   return z.block_id === selectedBlockId.value
 }
 function pdfZoneTitle(z: PdfBlockZone): string {
   if (z.kind === "req") return "查看需求批注"
+  if (z.kind === "echo") return "重复段·点击查看汇总需求"
   return z.kind === "omission" ? "疑似需求未覆盖·点击查看" : "查看该段翻译与解析"
 }
 
@@ -255,7 +279,8 @@ const selectedSpan = computed(() => {
   // 只黄一句会让"分析了一整段"的需求看起来像没选中（真实反馈）
   const r = selectedReq.value
   const anchor = r?.anchor_block_id || (r?.source_block_ids || [])[0]
-  const ids = [...(r?.source_block_ids || []), anchor].filter(Boolean) as string[]
+  const ids = [...(r?.source_block_ids || []), ...(r?.echo_block_ids || []), anchor]
+    .filter(Boolean) as string[]
   return new Set(ids)
 })
 
@@ -271,6 +296,27 @@ const reqNumbers = computed(() => {
 function reqNumber(r: AiRequirement): string {
   const n = reqNumbers.value.get(r.ai_req_id)
   return n ? String(n).padStart(2, "0") : "--"
+}
+
+function orderedEchoReqs(reqs: AiRequirement[]): AiRequirement[] {
+  return [...reqs].sort((a, b) =>
+    (reqNumbers.value.get(a.ai_req_id) ?? 1e9) - (reqNumbers.value.get(b.ai_req_id) ?? 1e9))
+}
+const orderedSelectedEchoReqs = computed(() => orderedEchoReqs(selectedEchoReqs.value))
+function echoReqsForBlock(blockId: string): AiRequirement[] {
+  return orderedEchoReqs(echoByBlock.value.get(blockId) || [])
+}
+function echoLabel(reqs: AiRequirement[]): string {
+  const numbers = orderedEchoReqs(reqs).map((req) => reqNumber(req)).filter((value) => value !== "--")
+  return numbers.length ? `重复·见${numbers.join("/")}` : "重复段"
+}
+function pdfEchoLabel(zone: PdfBlockZone): string {
+  const ids = new Set(zone.req_ids || [])
+  return echoLabel(requirements.value.filter((req) => ids.has(req.ai_req_id)))
+}
+function jumpToEchoReq(req: AiRequirement) {
+  selectedBlockId.value = ""
+  selectedId.value = req.ai_req_id   // 直接选中(不走 select 的再点取消语义)
 }
 
 // 排版保真：噪声（页眉/页脚/水印）不渲染；跨页处画分页线（与自包含 HTML 同语义）
@@ -334,26 +380,16 @@ function ownershipOf(r: AiRequirement): string {
   return String(r.ownership_effective || r.ownership || "software")
 }
 const OWNERSHIP_LABELS: Record<string, string> = { software: "软件", hardware: "硬件", co_design: "软硬件协同" }
-// 富化产物消费（与导出 HTML 同语义——双渲染器契约）：analysis_source=llm 且非空 → 富化优先
-function useEnriched(r: AiRequirement): boolean {
-  return r.analysis_source === "llm"
-}
-function analysisNarrative(r: AiRequirement): { text: string; enriched: boolean } {
-  const enriched = String(r.analysis_software_requirement_text || "").trim()
-  if (enriched && useEnriched(r)) return { text: enriched, enriched: true }
-  return { text: String(r.description || ""), enriched: false }
-}
 function devGuidanceOf(r: AiRequirement): string[] {
   if (ownershipOf(r) === "hardware") return []
-  return useEnriched(r) && (r.analysis_dev_guidance || []).length ? r.analysis_dev_guidance! : (r.dev_guidance || [])
+  return r.dev_guidance || []
 }
 function acceptanceOf(r: AiRequirement): string[] {
   if (ownershipOf(r) === "hardware") return []
-  return useEnriched(r) && (r.analysis_acceptance_criteria || []).length
-    ? r.analysis_acceptance_criteria! : (r.acceptance_criteria || [])
+  return r.acceptance_criteria || []
 }
 function ownershipReasonOf(r: AiRequirement): string {
-  return String(r.analysis_ownership_reason || r.ownership_reason || "")
+  return String(r.ownership_reason || "")
 }
 // 跨章合并徽章（双渲染器契约字段——与 doc_annotation_export functionalMergeBadge 同语义,
 // 契约夹具锁文案）：单源不显示（置信恒 1.0 是噪声）;置信 < 0.9 提示核对（弱合并最易错并）
@@ -481,7 +517,9 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                                 width: z.rect.width + '%', height: z.rect.height + '%' }"
                       :data-testid="`pdf-zone-${z.block_id}`"
                       :title="pdfZoneTitle(z)"
-                      @click.stop="pdfZoneClick(z)" />
+                      @click.stop="pdfZoneClick(z)">
+                <span v-if="z.kind === 'echo'" class="pdf-echo-tag">{{ pdfEchoLabel(z) }}</span>
+              </button>
               <span v-if="pdfSelectedZone(p.page_number)" class="pdf-zone"
                     :style="{ left: pdfSelectedZone(p.page_number)!.left + '%', top: pdfSelectedZone(p.page_number)!.top + '%',
                               width: pdfSelectedZone(p.page_number)!.width + '%', height: pdfSelectedZone(p.page_number)!.height + '%' }" />
@@ -542,6 +580,14 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                 title="疑似需求但未被任何抽取需求覆盖，点击查看说明"
                 @click.stop="selectBlockCard(b)"
               >未覆盖</button>
+              <button
+                v-if="echoReqsForBlock(b.block_id).length && !(anchorByBlock.get(b.block_id) || []).length"
+                class="echo-tag"
+                type="button"
+                :data-testid="`echo-tag-${b.block_id}`"
+                title="本段与已抽取需求的来源段落内容重复，点击查看汇总条目"
+                @click.stop="selectBlockCard(b)"
+              >{{ echoLabel(echoReqsForBlock(b.block_id)) }}</button>
             </figure>
             <p v-else class="doc-text" :class="{ 'list-item': isListItem(b) }">
               <template v-for="(seg, i) in segments(b)" :key="i"><mark v-if="seg.mark">{{ seg.text }}</mark><span v-else>{{ seg.text }}</span></template>
@@ -554,6 +600,14 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                 title="疑似需求但未被任何抽取需求覆盖，点击查看说明"
                 @click.stop="selectBlockCard(b)"
               >未覆盖</button>
+              <button
+                v-if="echoReqsForBlock(b.block_id).length && !(anchorByBlock.get(b.block_id) || []).length"
+                class="echo-tag"
+                type="button"
+                :data-testid="`echo-tag-${b.block_id}`"
+                title="本段与已抽取需求的来源段落内容重复，点击查看汇总条目"
+                @click.stop="selectBlockCard(b)"
+              >{{ echoLabel(echoReqsForBlock(b.block_id)) }}</button>
             </p>
           </div>
         </template>
@@ -569,9 +623,12 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
           <h3 class="dd-title">{{ selectedBlockKind === "omission" ? "为什么标为未覆盖" : (selectedBlockKind === "echo" ? "该段解析已汇总" : "为什么没有生成研发需求") }}</h3>
           <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "omission" ? OMISSION_REASON : (selectedBlockKind === "echo" ? ECHO_REASON : CONTEXT_REASON) }}</div></div>
-          <div v-if="selectedBlockKind === 'echo' && selectedEchoReq" class="dd-section">
-            <a class="echo-jump" data-testid="echo-jump" href="javascript:void(0)"
-               @click.stop="jumpToEchoReq()">查看需求《{{ selectedEchoReq.title }}》</a>
+          <div v-if="selectedBlockKind === 'echo' && orderedSelectedEchoReqs.length" class="dd-section">
+            <button v-for="req in orderedSelectedEchoReqs" :key="req.ai_req_id"
+                    class="echo-jump" data-testid="echo-jump" type="button"
+                    @click.stop="jumpToEchoReq(req)">
+              查看批注 {{ reqNumber(req) }}《{{ req.title }}》
+            </button>
           </div>
           <div class="dd-section">
             <div class="dd-label">原文翻译</div>
@@ -599,16 +656,34 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
 
           <div class="dd-legend">正文标记：<span style="background:#f3d9a0;padding:0 4px">黄=引用依据</span> · <span style="background:#eef2ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文</div>
-          <div class="dd-section">
-            <div class="dd-label">需求分析
-              <span class="src-badge" :class="{ quiet: !analysisNarrative(selectedReq).enriched }" data-testid="dd-analysis-badge">
-                {{ analysisNarrative(selectedReq).enriched ? "富化(LLM)" : "抽取" }}
-              </span>
-            </div>
-            <div class="dd-body dd-prewrap" data-testid="dd-analysis-text">{{ analysisNarrative(selectedReq).text }}</div>
+          <div class="dd-section" v-if="ownershipOf(selectedReq) !== 'hardware' && selectedReq.functional_requirement_id" data-testid="dd-functional">
+            <div class="dd-label">所属研发功能</div>
+            <div class="dd-body"><strong>{{ selectedReq.functional_title || selectedReq.functional_requirement_id }}</strong></div>
+            <div v-if="mergeBadgeOf(selectedReq)" :class="mergeWarnOf(selectedReq) ? 'dd-suspicion' : 'dd-consistency'"
+                 data-testid="dd-merge">⧉ {{ mergeBadgeOf(selectedReq) }}</div>
+            <div v-if="selectedReq.functional_objective" class="dd-body">{{ selectedReq.functional_objective }}</div>
+            <template v-if="(selectedReq.functional_behaviors || []).length">
+              <div class="dd-label">功能行为</div>
+              <ul class="dd-list"><li v-for="(b, i) in selectedReq.functional_behaviors" :key="i">{{ b }}</li></ul>
+            </template>
+            <template v-if="(selectedReq.functional_preconditions || []).length">
+              <div class="dd-label">前置条件</div>
+              <ul class="dd-list"><li v-for="(p, i) in selectedReq.functional_preconditions" :key="i">{{ p }}</li></ul>
+            </template>
+            <template v-if="(selectedReq.functional_data_constraints || []).length">
+              <div class="dd-label">数据约束</div>
+              <ul class="dd-list"><li v-for="(c, i) in selectedReq.functional_data_constraints" :key="i">{{ c }}</li></ul>
+            </template>
+            <template v-if="(selectedReq.functional_variants || []).length">
+              <div class="dd-label">功能变体</div>
+              <ul class="dd-list"><li v-for="(v, i) in selectedReq.functional_variants" :key="i"><strong>{{ v.name || "变体" }}</strong>：{{ v.behavior || "" }}</li></ul>
+            </template>
+            <div v-if="(selectedReq.functional_conflict_flags || []).length" class="dd-suspicion"
+                 data-testid="dd-conflict">待澄清冲突：{{ (selectedReq.functional_conflict_flags || []).join("；") }}</div>
           </div>
-          <div class="dd-section" v-if="(selectedReq.analysis_enrichment_warnings || []).length">
-            <div class="dd-suspicion" data-testid="dd-enrich-warnings">⚠ 富化待核：{{ (selectedReq.analysis_enrichment_warnings || []).join("；") }}</div>
+          <div class="dd-section" v-else-if="ownershipOf(selectedReq) !== 'hardware'" data-testid="dd-requirement-summary">
+            <div class="dd-label">需求摘要</div>
+            <div class="dd-body">{{ selectedReq.description || "未生成需求摘要" }}</div>
           </div>
           <div class="dd-section" v-if="ownershipOf(selectedReq) === 'hardware'">
             <div class="dd-label">中文翻译 / 说明</div>
@@ -634,41 +709,12 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
               </tbody>
             </table>
           </div>
-          <div class="dd-section" v-if="selectedReq.functional_requirement_id" data-testid="dd-functional">
-            <div class="dd-label">所属研发功能</div>
-            <div class="dd-body"><strong>{{ selectedReq.functional_title || selectedReq.functional_requirement_id }}</strong></div>
-            <div v-if="mergeBadgeOf(selectedReq)" :class="mergeWarnOf(selectedReq) ? 'dd-suspicion' : 'dd-consistency'"
-                 data-testid="dd-merge">⧉ {{ mergeBadgeOf(selectedReq) }}</div>
-            <div v-if="selectedReq.functional_objective" class="dd-body">{{ selectedReq.functional_objective }}</div>
-            <template v-if="(selectedReq.functional_behaviors || []).length">
-              <div class="dd-label">功能行为</div>
-              <ul class="dd-list"><li v-for="(b, i) in selectedReq.functional_behaviors" :key="i">{{ b }}</li></ul>
-            </template>
-            <template v-if="(selectedReq.functional_preconditions || []).length">
-              <div class="dd-label">前置条件</div>
-              <ul class="dd-list"><li v-for="(p, i) in selectedReq.functional_preconditions" :key="i">{{ p }}</li></ul>
-            </template>
-            <template v-if="(selectedReq.functional_data_constraints || []).length">
-              <div class="dd-label">数据约束</div>
-              <ul class="dd-list"><li v-for="(c, i) in selectedReq.functional_data_constraints" :key="i">{{ c }}</li></ul>
-            </template>
-            <template v-if="(selectedReq.functional_variants || []).length">
-              <div class="dd-label">功能变体</div>
-              <ul class="dd-list"><li v-for="(v, i) in selectedReq.functional_variants" :key="i"><strong>{{ v.name || "变体" }}</strong>：{{ v.behavior || "" }}</li></ul>
-            </template>
-            <div v-if="(selectedReq.functional_conflict_flags || []).length" class="dd-suspicion"
-                 data-testid="dd-conflict">待澄清冲突：{{ (selectedReq.functional_conflict_flags || []).join("；") }}</div>
-          </div>
           <div class="dd-section" v-if="devGuidanceOf(selectedReq).length">
-            <div class="dd-label">研发指引 / 落地实现
-              <span v-if="useEnriched(selectedReq)" class="src-badge">富化(LLM)</span>
-            </div>
+            <div class="dd-label">研发指引 / 落地实现</div>
             <ul class="dd-list"><li v-for="(g, i) in devGuidanceOf(selectedReq)" :key="i">{{ g }}</li></ul>
           </div>
           <div class="dd-section" v-if="acceptanceOf(selectedReq).length">
-            <div class="dd-label">测试指引 / 验收
-              <span v-if="useEnriched(selectedReq)" class="src-badge">富化(LLM)</span>
-            </div>
+            <div class="dd-label">测试指引 / 验收</div>
             <ul class="dd-list"><li v-for="(c, i) in acceptanceOf(selectedReq)" :key="i">{{ c }}</li></ul>
           </div>
           <div class="dd-section" v-if="selectedReq.source_quote">
@@ -741,6 +787,11 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .pdf-block-zone.sel { background: rgba(89, 120, 247, .12); border-color: rgba(89, 120, 247, .85); }
 .pdf-block-zone.zone-omission:hover { background: rgba(204, 137, 37, .10); border-color: rgba(204, 137, 37, .55); }
 .pdf-block-zone.zone-omission.sel { background: rgba(204, 137, 37, .14); border-color: rgba(180, 83, 9, .8); }
+.pdf-block-zone.zone-echo:hover, .pdf-block-zone.zone-echo.sel {
+  background: rgba(15,118,110,.08); border-color: rgba(15,118,110,.55); }
+.pdf-echo-tag { position: absolute; right: 2px; top: -13px; display: inline-block; padding: 0 2px 1px;
+  border-bottom: 1px dashed #667085; color: #4b5563; background: rgba(255,255,255,.92);
+  font-size: 9px; font-weight: 600; line-height: 1.15; white-space: nowrap; pointer-events: none; }
 .pdf-page-label { position: absolute; left: 8px; bottom: 6px; font-size: 10px; color: #98a1b3;
   background: rgba(255,255,255,.85); border-radius: 6px; padding: 1px 6px; }
 .doc-block { display: grid; grid-template-columns: 108px 1fr; gap: 8px; padding: 1px 4px; margin-bottom: 0; border-left: 2px solid transparent; cursor: default; }
@@ -785,6 +836,12 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
   border-bottom: 1px dotted #cbd5e1; border-radius: 0; background: transparent; color: #98a1b3;
   font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
 .omission-tag:hover, .omission-tag.sel { color: #b06f12; border-color: #b06f12; background: #fff9ec; }
+.echo-tag { display: inline-flex; margin-left: 6px; padding: 0 2px 1px; border: 0;
+  border-bottom: 1px dashed #cbd5e1; border-radius: 0; background: transparent; color: #7a8496;
+  font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
+.echo-tag:hover { color: #1f5f58; border-color: #1f5f58; }
+.echo-jump { display: block; margin: 3px 0; padding: 0; border: 0; background: transparent;
+  color: #1d7a5b; font: inherit; text-align: left; text-decoration: underline dotted; cursor: pointer; }
 .table-omission-tag { margin-top: 4px; vertical-align: baseline; }
 .dd-empty { color: #98a1b3; }
 .dd-prewrap { white-space: pre-wrap; }

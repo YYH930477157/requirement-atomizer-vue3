@@ -49,6 +49,7 @@ class DeliverableRebuilder:
         import threading
         self._delay = _resolve_rebuild_debounce() if delay_s is None else max(0.0, delay_s)
         self._lock = threading.Lock()
+        self._rebuild_lock = threading.Lock()
         self._timer: "threading.Timer | None" = None
         self._pending: Path | None = None
 
@@ -81,8 +82,12 @@ class DeliverableRebuilder:
         if out_dir is not None:
             self._rebuild(out_dir)
 
+    def _rebuild(self, out_dir: Path) -> None:
+        with self._rebuild_lock:
+            self._perform_rebuild(out_dir)
+
     @staticmethod
-    def _rebuild(out_dir: Path) -> None:
+    def _perform_rebuild(out_dir: Path) -> None:
         try:
             from ai_extract import rebuild_merged_spec
             rebuild_merged_spec(out_dir)
@@ -614,11 +619,10 @@ def _functional_membership(output_dir: Path) -> dict[str, dict]:
 
 
 def _analysis_enrichment(output_dir: Path) -> dict[str, dict]:
-    """engineering_analysis.json → AIR id 一对多投影（analysis_ 前缀,批注视图消费）。
+    """engineering_analysis.json → AIR id 一对多兼容投影（analysis_ 前缀）。
 
-    此前富化正文只落 xlsx/成文,批注卡显示的"需求分析"一直是抽取轨浅描述——用户
-    体感"分析不如聊天 AI"的最大一块其实是好内容没上墙。缺失/坏 JSON/异源 producer
-    → 空 merge(裁决回流免 LLM 重建语义不受影响,视图与旧行为逐字节一致)。"""
+    当前批注视图不展示 LLM 叙述富化，但保留字段供既有 API 消费方和未来方案库接回。
+    缺失/坏 JSON/异源 producer → 空 merge，裁决回流无需重建语义。"""
     path = output_dir / "engineering_analysis.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -693,7 +697,7 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
         row = dict(req)
         row["ai_req_id"] = rid
         row.update(membership.get(rid, {}))
-        row.update(analysis_map.get(rid, {}))   # 富化正文/归属原因上墙（缺失=空 merge）
+        row.update(analysis_map.get(rid, {}))   # 兼容保留；当前视图不消费富化叙述字段
         row["anchor_block_id"] = anchor_block_id(req, text_by_block)
         # 回声锚点(0715 电表招标实证:同文重复出现的第二处显示"未覆盖",用户误判整段没解析)
         row["echo_block_ids"] = compute_echo_block_ids(row, block_rows)

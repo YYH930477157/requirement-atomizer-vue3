@@ -18,7 +18,7 @@ from functional_synthesis import FUNCTIONAL_REQUIREMENTS, FUNCTIONAL_SYNTHESIS_V
 from export_requirements import export_requirements
 from llm_pipeline import DEFAULT_PIPELINE_PATH, read_jsonl, run_review_pipeline
 from requirement_kb.cli import default_kb_paths, package_root
-from requirements_analysis import run_requirements_analysis
+from requirements_analysis import requirements_analysis_enrichment_enabled, run_requirements_analysis
 from requirements_analysis_schema import normalize_ownership
 from spec_export import export_spec
 
@@ -375,7 +375,7 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     "ai-extract": "v3",
     "assemble": "v2",
     "functional-synthesis": "v2",
-    "requirements-analysis": "v2",
+    "requirements-analysis": "v3",
     "template-write": "v2",
     "clarification-report": "v3",
 }
@@ -386,7 +386,7 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v3-gap-tier",
     "compose": "engineering_composer/v1",
-    "export-annotation-html": "doc_annotation_export/v5",
+    "export-annotation-html": "doc_annotation_export/v7",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
@@ -397,12 +397,12 @@ def stage_producer(stage: str) -> str:
     producer = _STAGE_BASE_PRODUCERS.get(stage, stage)
     try:
         if stage == "ai-extract":
-            # 版本戳必须覆盖全部影响产物的代码层(专家审核 0715:verify 版本缺席使
-            # 复核变更后续跑直接跳过;guards 版本此前同样缺席——护栏 v2→v4 三次升级
-            # 均未失效阶段指纹,与缓存指纹同族的洞,一次补齐)
+            # 版本戳必须覆盖全部影响产物的代码层；否则 guards/verify 升级后
+            # chain 续跑仍可能复用旧结果。
             from ai_extract import (AI_EXTRACT_PROMPT_VERSION, AI_VERIFY_PROMPT_VERSION,
                                     EXTRACT_GUARDS_VERSION)
-            producer = f"{AI_EXTRACT_PROMPT_VERSION}+{EXTRACT_GUARDS_VERSION}+{AI_VERIFY_PROMPT_VERSION}"
+            producer = (f"{AI_EXTRACT_PROMPT_VERSION}+{EXTRACT_GUARDS_VERSION}"
+                        f"+{AI_VERIFY_PROMPT_VERSION}")
         elif stage == "requirements-analysis":
             from requirements_analysis import ANALYZE_PROMPT_VERSION
             producer = ANALYZE_PROMPT_VERSION
@@ -505,6 +505,10 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
             # 合批条数改变 prompt 形状 → 产物可能不同 → 指纹必须失效（0714 批次二）
             "RATOMIZER_ANALYZE_BATCH", "RATOMIZER_ENRICH_BATCH",
         )},
+        "requirements_analysis_enrich": (
+            requirements_analysis_enrichment_enabled()
+            if stage == "requirements-analysis" else None
+        ),
     }
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

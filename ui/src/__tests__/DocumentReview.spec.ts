@@ -52,7 +52,7 @@ describe("DocumentReview", () => {
     expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
     expect(wrapper.find('[data-testid="dd-suspicion"]').text()).toContain("数字漂移")  // 可疑度徽标
     expect(wrapper.find('[data-testid="dd-consistency"]').text()).toContain("跨章重复×2")  // 一致性闭环标记
-    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("应计量体积")  // 需求分析
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("应计量体积")  // 需求摘要回退
     expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("实现体积累计计量与本地存储")  // 研发指引
     expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("按 4.2 测试")  // 测试指引
 
@@ -64,7 +64,7 @@ describe("DocumentReview", () => {
     )
   })
 
-  it("echo blocks show a lightweight echo card instead of a duplicated chip", async () => {
+  it("echo blocks list every linked requirement and stay highlighted after jumping", async () => {
     // 回声段(0715 电表招标实证 + 0716 用户裁定):同文重复出现处不再显示"未覆盖",
     // 也不重复挂完整批注——点击给"重复段"卡片,链接跳到汇总条目
     const client = makeClient({
@@ -78,6 +78,14 @@ describe("DocumentReview", () => {
           acceptance_criteria: [], dev_guidance: [], labels: ["计量"],
           ownership: "software", ownership_effective: "software", review_state: null,
         },
+        {
+          ai_req_id: "AIR-2", title: "通信要求", description: "应支持通信", module: "通信协议",
+          module_effective: "通信协议", type: "functional", priority: "P1", status: "draft",
+          source_section: "4", source_quote: "4 Requirements",
+          source_block_ids: ["B1"], anchor_block_id: "B1", echo_block_ids: ["B3"],
+          acceptance_criteria: [], dev_guidance: [], labels: ["通信"],
+          ownership: "software", ownership_effective: "software", review_state: null,
+        },
       ]),
     })
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
@@ -85,14 +93,55 @@ describe("DocumentReview", () => {
 
     // 不计遗漏;chip 只在锚点段一枚(不过度显示)
     expect(wrapper.find('[data-testid="doc-stat-omissions"]').text()).toBe("0")
-    expect(wrapper.findAll(".anno-chip").length).toBe(1)
+    expect(wrapper.findAll(".anno-chip").length).toBe(2)
+    expect(wrapper.find('[data-testid="echo-tag-B3"]').text()).toContain("01/02")
 
     // 点击回声段 → "重复段"卡片(本段解析) + 跳转链接 → 选中汇总条目
     const echoBlock = wrapper.findAll(".doc-block").find((b) => b.text().includes("An uncovered requirement"))
-    await echoBlock!.trigger("click")
+    await wrapper.find('[data-testid="echo-tag-B3"]').trigger("click")
     expect(wrapper.find('[data-testid="echo-card"]').exists()).toBe(true)
-    await wrapper.find('[data-testid="echo-jump"]').trigger("click")
-    expect(wrapper.find('[data-testid="dd-module"]').text()).toBe("计量")   // 已跳到需求卡
+    expect(wrapper.findAll('[data-testid="echo-jump"]')).toHaveLength(2)
+    await wrapper.findAll('[data-testid="echo-jump"]')[1].trigger("click")
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toBe("计量")
+    expect(echoBlock!.classes()).toContain("in-span")
+  })
+
+  it("pdf echo zones show a marker, open the echo card, and retain every target", async () => {
+    const requirements = [
+      { ai_req_id: "AIR-1", title: "需求一", description: "d1", module: "计量",
+        module_effective: "计量", type: "functional", priority: "P1", status: "draft",
+        source_section: "4", source_quote: "The meter shall measure volume.",
+        source_block_ids: ["B2"], anchor_block_id: "B2", echo_block_ids: ["B3"],
+        acceptance_criteria: [], labels: [], review_state: null },
+      { ai_req_id: "AIR-2", title: "需求二", description: "d2", module: "通信协议",
+        module_effective: "通信协议", type: "functional", priority: "P1", status: "draft",
+        source_section: "4", source_quote: "4 Requirements",
+        source_block_ids: ["B1"], anchor_block_id: "B1", echo_block_ids: ["B3"],
+        acceptance_criteria: [], labels: [], review_state: null },
+    ]
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue(requirements),
+      loadPdfAnnotation: vi.fn().mockResolvedValue({
+        available: true,
+        pages: [{ page_number: 1, file: "page-0001.png", width: 595, height: 842 }],
+        requirement_markers: [], omission_markers: [],
+        block_zones: [{ block_id: "B3", page: 1,
+          rect: { left: 8, top: 40, width: 60, height: 4 },
+          kind: "echo", req_ids: ["AIR-1", "AIR-2"] }],
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
+    await flushPromises()
+
+    const zone = wrapper.find('[data-testid="pdf-zone-B3"]')
+    expect(zone.text()).toContain("重复·见01/02")
+    await zone.trigger("click")
+    expect(wrapper.find('[data-testid="echo-card"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid="echo-jump"]')).toHaveLength(2)
+    await wrapper.findAll('[data-testid="echo-jump"]')[0].trigger("click")
+    expect(zone.classes()).toContain("sel")
   })
 
   it("marks notes and list groups so paragraph rhythm is preserved", async () => {
@@ -203,6 +252,41 @@ describe("DocumentReview", () => {
     // 未覆盖标记 → 块级卡
     await wrapper.find(".pdf-marker.marker-omission").trigger("click")
     expect(wrapper.find('[data-testid="omission-card"]').exists()).toBe(true)
+  })
+
+  it("revokes loaded and late PDF page blob URLs when unmounted", async () => {
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal("URL", { revokeObjectURL })
+    let resolveLate: ((url: string) => void) | undefined
+    const client = makeClient({
+      loadPdfAnnotation: vi.fn().mockResolvedValue({
+        available: true,
+        pages: [
+          { page_number: 1, file: "page-0001.png", width: 595, height: 842 },
+          { page_number: 2, file: "page-0002.png", width: 595, height: 842 },
+        ],
+        requirement_markers: [],
+        omission_markers: [],
+      }),
+      loadPdfPageBlob: vi.fn((file: string) => file === "page-0001.png"
+        ? Promise.resolve("blob:loaded")
+        : new Promise<string>((resolve) => { resolveLate = resolve })),
+    })
+    try {
+      const wrapper = mount(DocumentReview, { props: { client, active: true } })
+      await flushPromises()
+      await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
+      await flushPromises()
+      expect(client.loadPdfPageBlob).toHaveBeenCalledTimes(2)
+
+      wrapper.unmount()
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:loaded")
+      resolveLate?.("blob:late")
+      await flushPromises()
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:late")
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it("pdf mode full-block zones: click any paragraph for translation/analysis card", async () => {
@@ -328,7 +412,7 @@ describe("DocumentReview", () => {
     expect(card.text()).toContain("未生成翻译")
   })
 
-  it("prefers enriched analysis narrative with source badge and ownership reason", async () => {
+  it("uses functional membership and extracted fields instead of legacy LLM enrichment", async () => {
     const client = makeClient({
       loadAiRequirements: vi.fn().mockResolvedValue([
         {
@@ -338,6 +422,12 @@ describe("DocumentReview", () => {
           source_block_ids: ["B2"], labels: ["计量"], review_state: null,
           ownership: "software", ownership_effective: "software",
           ownership_reason: "Matched software rule term: dlms",
+          functional_requirement_id: "FREQ-1",
+          functional_title: "体积计量管理",
+          functional_objective: "对计量结果进行累计和存储。",
+          functional_behaviors: ["累计体积计量结果"],
+          dev_guidance: ["实现抽取阶段给出的计量逻辑"],
+          acceptance_criteria: ["按原文计量场景验收"],
           analysis_source: "llm",
           analysis_software_requirement_text: "富化正文第一段。\n第二段:边界条件与异常处理。",
           analysis_dev_guidance: ["实现指引(富化)"],
@@ -350,21 +440,30 @@ describe("DocumentReview", () => {
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
     await flushPromises()
     await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
-    expect(wrapper.find('[data-testid="dd-analysis-badge"]').text()).toContain("富化(LLM)")
-    expect(wrapper.find('[data-testid="dd-analysis-text"]').text()).toContain("富化正文第一段")
-    expect(wrapper.find('[data-testid="dd-enrich-warnings"]').text()).toContain("数字待核 42")
-    expect(wrapper.find('[data-testid="dd-ownership-reason"]').text()).toContain("纯数据处理逻辑")
-    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("实现指引(富化)")
+    expect(wrapper.find('[data-testid="dd-functional"]').text()).toContain("体积计量管理")
+    expect(wrapper.find('[data-testid="dd-functional"]').text()).toContain("累计体积计量结果")
+    expect(wrapper.find('[data-testid="dd-requirement-summary"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dd-analysis-badge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dd-analysis-text"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dd-enrich-warnings"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dd-ownership-reason"]').text()).toContain("Matched software rule term")
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("实现抽取阶段给出的计量逻辑")
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("按原文计量场景验收")
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).not.toContain("富化正文第一段")
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).not.toContain("实现指引(富化)")
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).not.toContain("数字待核 42")
     expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("为什么判为软件")
   })
 
-  it("falls back to extraction description without analysis fields", async () => {
+  it("shows an extracted requirement summary when functional membership is unavailable", async () => {
     const client = makeClient()
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
     await flushPromises()
     await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
-    expect(wrapper.find('[data-testid="dd-analysis-badge"]').text()).toContain("抽取")
-    expect(wrapper.find('[data-testid="dd-analysis-text"]').text()).toContain("应计量体积")
+    expect(wrapper.find('[data-testid="dd-functional"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("需求摘要")
+    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("应计量体积")
+    expect(wrapper.find('[data-testid="dd-analysis-badge"]').exists()).toBe(false)
   })
 
   it("hardware card never shows english as translation, falls back to block translation", async () => {

@@ -45,6 +45,7 @@ SIBLING_TITLES_MAX = 8
 # （EN 16314 实测富化 126 次调用累计 66 分钟）。4 是推理模型输出预算与超时的稳妥点；
 # 1=回到逐条。硬件翻译输出短，批量 ×2 封顶 8。
 ANALYZE_BATCH_ENV = "RATOMIZER_ANALYZE_BATCH"
+REQUIREMENTS_ANALYSIS_ENRICH_ENV = "RATOMIZER_REQUIREMENTS_ANALYSIS_ENRICH"
 DEFAULT_ANALYZE_BATCH = 4
 MAX_ANALYZE_BATCH = 8
 
@@ -56,6 +57,15 @@ def _resolve_analyze_batch(explicit: int | None = None) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_ANALYZE_BATCH
     return max(1, min(MAX_ANALYZE_BATCH, value))
+
+
+def requirements_analysis_enrichment_enabled() -> bool:
+    """返回普通应用调用是否启用需求分析 LLM 富化；默认关闭。"""
+    return os.environ.get(REQUIREMENTS_ANALYSIS_ENRICH_ENV, "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 # 确定性分析层（规则+模板+裁决）恒在；openai_compatible 追加 LLM 富化层，只填叙述字段、
 # 结构/归属/路由字段全冻结。请求 LLM 但端点未配置时如实降级并记 route_requested（出处诚实）。
 STUB_ROUTE = "stub"
@@ -193,23 +203,28 @@ def run_requirements_analysis(
     # 容错读（坏行跳过）+ 最新覆盖，与裁决回流同一读取器——单条撕裂写不弄死整跑
     states = read_ai_review_states(out_dir)
     vocabulary = extract_template_vocabulary(template_path)
-    # 公司标准做法知识：从模板现读（不进仓不落索引），富化时按模块+词面相关注入
-    knowledge = extract_template_knowledge(template_path)
+    # 显式注入 chat 是测试/嵌入方的主动 opt-in；普通应用只有开关开启且请求 LLM
+    # 路由时才解析端点。默认关闭时连端点、模板知识和裁决样本都不读取。
+    enrichment_enabled = chat is not None or (
+        route != STUB_ROUTE and requirements_analysis_enrichment_enabled()
+    )
+    active_chat, model = (
+        _resolve_chat(route, chat, pipeline_path) if enrichment_enabled else (None, "")
+    )
+    # 公司标准做法知识：从模板现读（不进仓不落索引），仅供启用后的富化使用。
+    knowledge = extract_template_knowledge(template_path) if active_chat is not None else {}
     # 裁决样本库（env 指路，未配置=空库零注入）+ 澄清答复（评审会回灌，权威客户输入）
     from adjudication_bank import load_bank, render_exemplars, resolve_bank_path, select_exemplars
     from clarification_report import load_answers
-    bank = load_bank(resolve_bank_path())
+    bank = load_bank(resolve_bank_path()) if active_chat is not None else {}
     answers_by_source: dict[str, list[dict[str, Any]]] = {}
     for (sid, _q), row in load_answers(out_dir).items():
         if row.get("adopted", True) and sid:
             answers_by_source.setdefault(sid, []).append(row)
 
-    # LLM 富化层：注入的 chat 优先（测试/嵌入）；否则请求 LLM 路由时按 pipeline 解析端点，
-    # 端点缺失则降级为纯确定性（executed_route=stub），出处如实记录。
-    active_chat, model = _resolve_chat(route, chat, pipeline_path)
     executed_route = STUB_ROUTE
     note = ""
-    if route != STUB_ROUTE and active_chat is None:
+    if enrichment_enabled and route != STUB_ROUTE and active_chat is None:
         note = DEGRADE_NOTE
         LOGGER.warning(note)
     enrich_cache = _load_enrich_cache(out_dir, model) if active_chat is not None else {}
@@ -339,6 +354,7 @@ def run_requirements_analysis(
         "provenance": provenance("requirements_analysis", ANALYZE_PROMPT_VERSION),
         "route": executed_route,        # 实际执行的路由（出处诚实）
         "route_requested": route,
+        "enrichment_enabled": enrichment_enabled,
         "enriched": enriched_count,
         "enrich_degraded": degraded_count,
         "items": items,
@@ -370,6 +386,7 @@ def run_requirements_analysis(
         "issues": len(issues),
         "route": executed_route,
         "route_requested": route,
+        "enrichment_enabled": enrichment_enabled,
         "enriched": enriched_count,
         "enrich_degraded": degraded_count,
         "written": [xlsx_path.name] + [n for n in OUTPUT_FILES if n != "software_requirements.xlsx"],

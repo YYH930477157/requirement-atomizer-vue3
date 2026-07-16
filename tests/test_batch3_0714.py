@@ -202,6 +202,32 @@ class PdfBlockZoneTests(unittest.TestCase):
             self.assertEqual(zone["page"], 1)
             self.assertEqual(sorted(zone["rect"]), ["height", "left", "top", "width"])
 
+    def test_echo_zone_preserves_all_requirement_links(self) -> None:
+        import doc_annotation_export as dae
+        reqs = [
+            {"ai_req_id": "AIR-1", "anchor_block_id": "B1", "source_block_ids": ["B1"],
+             "echo_block_ids": ["B3"]},
+            {"ai_req_id": "AIR-2", "anchor_block_id": "B5", "source_block_ids": ["B5"],
+             "echo_block_ids": ["B3"]},
+        ]
+        zones = dae._pdf_block_zones(self.BLOCKS, reqs, self.GEOMETRY,
+                                     dae._covered_blocks(reqs))
+        echo = next(zone for zone in zones if zone["block_id"] == "B3")
+
+        self.assertEqual(echo["kind"], "echo")
+        self.assertEqual(echo["req_ids"], ["AIR-1", "AIR-2"])
+
+        records = dae._pdf_context_records(self.BLOCKS, zones)
+        self.assertEqual(records["B3"]["echo_req_ids"], ["AIR-1", "AIR-2"])
+
+        html_out = dae._render_pdf_page_stack(
+            [{"page_number": 1, "href": "document_pages/page-0001.png",
+              "width": 595, "height": 842}],
+            reqs, [], {"AIR-1": 1, "AIR-2": 2}, self.GEOMETRY, block_zones=zones)
+        self.assertIn('class="pdf-block-zone zone-echo"', html_out)
+        self.assertIn('data-echo-reqs="AIR-1 AIR-2"', html_out)
+        self.assertIn("重复·见01/02", html_out)
+
     def test_payload_carries_block_zones(self) -> None:
         import doc_annotation_export as dae
         with tempfile.TemporaryDirectory() as td:
@@ -213,7 +239,9 @@ class PdfBlockZoneTests(unittest.TestCase):
             pages_dir.mkdir()
             (pages_dir / "page-0001.png").write_bytes(b"\x89PNG fake")
             (pages_dir / dae.ANNOTATION_PAGES_MANIFEST).write_text(json.dumps({
-                "version": 1, "pages": [{"page_number": 1, "file": "page-0001.png",
+                "version": 1, "source_sha256": dae._file_sha256(out / "document_source.pdf"),
+                "dpi": dae.PDF_PAGE_RENDER_DPI,
+                "pages": [{"page_number": 1, "file": "page-0001.png",
                                           "width": 595, "height": 842}]}), encoding="utf-8")
             (out / dae.ANNOTATION_PDF_GEOMETRY).write_text(json.dumps({
                 "version": 2, "blocks": {}}), encoding="utf-8")
@@ -251,6 +279,7 @@ class PdfBlockZoneTests(unittest.TestCase):
     def test_static_template_wires_zone_click_and_context_card(self) -> None:
         import doc_annotation_export as dae
         self.assertIn("selectPdfContextRecord", dae._TEMPLATE)
+        self.assertIn("selectPdfEchoRecord", dae._TEMPLATE)
         self.assertIn("PDF_CONTEXT", dae._TEMPLATE)
         self.assertIn('closest(".pdf-block-zone")', dae._TEMPLATE)
         self.assertIn(".pdf-block-zone:hover", dae._TEMPLATE)

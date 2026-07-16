@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -68,6 +69,53 @@ class DeliverableRebuilderTests(unittest.TestCase):
         src = inspect.getsource(api_server.RequirementAPIHandler.handle_ai_review_action)
         self.assertIn("_rebuilder().schedule", src)
         self.assertNotIn("rebuild_merged_spec(self.output_dir)", src)
+
+    def test_overlapping_rebuilds_are_serialized(self) -> None:
+        from api_server import DeliverableRebuilder
+        entered_first = threading.Event()
+        entered_second = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        state_lock = threading.Lock()
+        active = 0
+        max_active = 0
+        calls = 0
+
+        def rebuild(_out: Path) -> None:
+            nonlocal active, max_active, calls
+            with state_lock:
+                calls += 1
+                call_no = calls
+                active += 1
+                max_active = max(max_active, active)
+            if call_no == 1:
+                entered_first.set()
+                release_first.wait(timeout=2)
+            else:
+                entered_second.set()
+            with state_lock:
+                active -= 1
+
+        rb = DeliverableRebuilder(delay_s=0)
+        with patch("ai_extract.rebuild_merged_spec", side_effect=rebuild):
+            first = threading.Thread(target=rb.schedule, args=(Path("A"),), daemon=True)
+            first.start()
+            self.assertTrue(entered_first.wait(timeout=1))
+
+            def start_second() -> None:
+                second_started.set()
+                rb.schedule(Path("B"))
+
+            second = threading.Thread(target=start_second, daemon=True)
+            second.start()
+            self.assertTrue(second_started.wait(timeout=1))
+            self.assertFalse(entered_second.wait(timeout=0.1))
+            release_first.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertTrue(entered_second.is_set())
+        self.assertEqual(max_active, 1)
 
 
 class CacheKeyNarrowingTests(unittest.TestCase):
@@ -193,6 +241,34 @@ class JsonModeDefaultTests(unittest.TestCase):
                                               timeout_s=2, max_retries=0), "s", "u")
         with llm_client._JSON_MODE_LOCK:
             self.assertEqual(llm_client._JSON_MODE_UNSUPPORTED, set())   # 连接类错误不定罪端点
+
+    def test_unrelated_400_does_not_fallback_or_mark_unsupported(self) -> None:
+        import llm_client
+        from llm_client import LLMClientConfig, LLMResponseError, chat_json
+        from tests.test_llm_client import MockOpenAIService
+
+        with MockOpenAIService([
+            {"status": 400, "body": {"error": "invalid max_tokens value"}},
+        ]) as service:
+            with self.assertRaises(LLMResponseError):
+                chat_json(LLMClientConfig(base_url=service.base_url, model="m", api_key_env="",
+                                          timeout_s=2, max_retries=0), "s", "u")
+        self.assertEqual(len(service.requests), 1)
+        with llm_client._JSON_MODE_LOCK:
+            self.assertEqual(llm_client._JSON_MODE_UNSUPPORTED, set())
+
+    def test_malformed_200_does_not_fallback_or_mark_unsupported(self) -> None:
+        import llm_client
+        from llm_client import LLMClientConfig, LLMResponseError, chat_json
+        from tests.test_llm_client import MockOpenAIService
+
+        with MockOpenAIService([{"body": ["not", "an", "object"]}]) as service:
+            with self.assertRaises(LLMResponseError):
+                chat_json(LLMClientConfig(base_url=service.base_url, model="m", api_key_env="",
+                                          timeout_s=2, max_retries=0), "s", "u")
+        self.assertEqual(len(service.requests), 1)
+        with llm_client._JSON_MODE_LOCK:
+            self.assertEqual(llm_client._JSON_MODE_UNSUPPORTED, set())
 
 
 class GuidanceTemplateCodeTests(unittest.TestCase):

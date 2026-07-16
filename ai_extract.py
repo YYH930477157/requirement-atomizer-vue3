@@ -124,7 +124,7 @@ def resolve_self_check_rounds(explicit: int | None = None) -> int:
 
 VERIFY_ENV = "RATOMIZER_AI_VERIFY"  # 二遍语义复核开关（默认开；=0/false/off 关）
 VERIFY_ROUNDS_ENV = "RATOMIZER_AI_VERIFY_ROUNDS"  # 复核投票轮数（默认 2,1..4）
-AI_VERIFY_PROMPT_VERSION = "ai-verify-v1"
+AI_VERIFY_PROMPT_VERSION = "ai-verify-v2"
 DEFAULT_VERIFY_ROUNDS = 2
 MAX_VERIFY_ROUNDS = 4
 
@@ -233,7 +233,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v4"  # v4:锚点质量门+指代符豁免+情态软化+去重标点底座;v3:资料性区段降级+溯源校正+元话语剥除+表文一致性
+EXTRACT_GUARDS_VERSION = "guards-v5"  # v5:情态软化按完整来源基线判定并排除 may not;v4:锚点质量门+指代符豁免+情态软化+去重标点底座
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -714,7 +714,7 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
                 suspicion.append("资料性来源待核")
                 _append_note(req, "资料性来源待核（本单元为 informative 附录/资料性内容,标成 P0/P1 强制需求请人工确认）")
         # 忠实性守恒（0715 内容审计:29 处误读全数绕过旧护栏——旧护栏只看编码/数字）
-        if _modal_inflation(req):
+        if _modal_inflation(req, source):
             # v6 审计:should→必须 升格反复出现,prompt 约束挡不住(u36 差评);引句
             # should-only 时强制措辞是确定性可证的误译——按引句软化(必须→宜),
             # 软标保留供人工复核
@@ -934,6 +934,16 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
                             and not _META_DISCOURSE_RE.search(str(s.get("text") or ""))]
         sup["acceptance_criteria"] = [x for x in (sup.get("acceptance_criteria") or [])
                                       if not _META_DISCOURSE_RE.search(str(x))]
+        pseudo = {"title": "", "description": str(sup.get("description_append") or ""),
+                  "source_quote": "",
+                  "sub_items": [s for s in (sup.get("sub_items") or []) if isinstance(s, dict)],
+                  "acceptance_criteria": [str(x) for x in (sup.get("acceptance_criteria") or [])],
+                  "dev_guidance": [], "design_options": [], "notes": ""}
+        removed_ints, removed_codes = _move_unsupported_delivery_items(pseudo, source)
+        # 自检补充与首轮抽取共用交付字段护栏。先回写清洗结果,再进入匹配/转换路径,
+        # 防止无据数字、编码或实现假设借 supplements 绕过首轮处理。
+        sup["acceptance_criteria"] = list(pseudo["acceptance_criteria"])
+        guard_note = str(pseudo.get("notes") or "")
         target = by_title.get(_norm_ws(sup.get("target_title")))
         if target is None:
             # v3 召回修正:未匹配不再直接丢——内容能在原文逐字定位的,转为独立需求原料
@@ -956,10 +966,6 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
             else:
                 LOGGER.info("自检补充目标未匹配且无法定位,丢弃：%s", str(sup.get("target_title") or "")[:40])
             continue
-        pseudo = {"title": "", "description": str(sup.get("description_append") or ""),
-                  "source_quote": "",
-                  "sub_items": [s for s in (sup.get("sub_items") or []) if isinstance(s, dict)],
-                  "acceptance_criteria": [str(x) for x in (sup.get("acceptance_criteria") or [])]}
         codes = code_drift(pseudo, source)
         if codes:
             LOGGER.info("自检补充编码漂移,拒绝并入：%s", ", ".join(sorted(codes)[:4]))
@@ -970,13 +976,6 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
                                        str(target.get("source_section") or "")):
             LOGGER.info("自检补充跨条款越界,丢弃：target=%s", str(target.get("title") or "")[:30])
             continue
-        # 交付字段护栏同构(专家审核 0715):此路径此前只软注 int 漂移——无据数字可经
-        # 并入直进 target 的验收标准,绕过第一类通道的整移护栏。复用同一护栏:验收行
-        # 含无据数字/编码/实现假设 → 不并入,审计留痕转挂 target(与直抽条目同待遇)。
-        pseudo.setdefault("design_options", [])
-        _move_unsupported_delivery_items(pseudo, source)
-        if str(pseudo.get("notes") or "").strip():
-            _append_note(target, f"自检补充经交付护栏筛除部分内容——{pseudo['notes']}")
         changed = False
         have_labels = {_norm_ws(s.get("label")) for s in target.get("sub_items") or []}
         have_labels.discard("")
@@ -1018,9 +1017,15 @@ def _apply_supplements(raw_supplements: Any, existing: list[dict[str, Any]],
                 changed = True
             else:
                 LOGGER.info("自检复核缺锚定证据,不挂标记：%s", note[:60])
-        ints = sorted(int_drift(pseudo, source))
+        ints = sorted(set(int_drift(pseudo, source)) | removed_ints)
         if ints and changed:
             _append_note(target, f"自检补充含数字漂移（待核）：{', '.join(ints[:6])}")
+        if removed_codes and changed:
+            _append_note(target, f"自检补充无据编码已移除：{', '.join(sorted(removed_codes)[:6])}")
+        if guard_note and changed:
+            _append_note(target, guard_note)
+        elif guard_note:
+            LOGGER.info("自检补充交付字段经护栏清空,未并入：target=%s", str(target.get("title") or "")[:30])
         if changed:
             _append_note(target, "自检并入：补漏内容已并入本需求（未新开条目）")
             applied += 1
@@ -1255,6 +1260,12 @@ def _fold_test_siblings(reqs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if carried:
             tgt["suspicion_reasons"] = list(dict.fromkeys(
                 list(tgt.get("suspicion_reasons") or []) + carried))
+        source_ids = list(tgt.get("source_block_ids") or [])
+        for block_id in r.get("source_block_ids") or []:
+            if block_id not in source_ids:
+                source_ids.append(block_id)
+        if source_ids:
+            tgt["source_block_ids"] = source_ids
         _append_note(tgt, f"同族 Test 条款已并入验收：{num}（条款族=一条需求）")
         drop.add(i)
     if not drop:
@@ -1290,9 +1301,10 @@ VERIFY_SYSTEM_PROMPT = (
     "**只报实错**:每个发现必须同时给出原文逐字片段(evidence_source,从章节原文原样复制)"
     "与产出逐字片段(evidence_produced,从该需求文本原样复制),两者对照能直接看出矛盾;"
     "吃不准/需要推测的不报;表述风格、翻译措辞、粒度、遗漏问题都不报(不在本职责内)。"
-    "correction 可选:给出把 evidence_produced 改正后的最小替换文本——只改错的部分,"
-    "不新增原文没有的内容,数值/编码只准来自原文。"
-    "只输出 JSON:{\"findings\": [{\"title\": \"<该需求 title 原样回填>\", \"kind\": "
+    "每条已抽需求都带 verify_slot。发现必须原样回填对应 verify_slot；title 仅作辅助核对。"
+    "correction 可选:给出把 evidence_produced 改正后的最小建议文本——只改错的部分,"
+    "不新增原文没有的内容,数值/编码只准来自原文；系统只留痕建议,不会自动改写需求。"
+    "只输出 JSON:{\"findings\": [{\"verify_slot\": 1, \"title\": \"<该需求 title 原样回填>\", \"kind\": "
     "\"exemption_reversal|direction|quantifier|subject|value_pairing|step_ref|attribution\", "
     "\"evidence_source\": \"…\", \"evidence_produced\": \"…\", \"correction\": \"<可选>\"}]}"
     "。无发现输出 {\"findings\": []}。"
@@ -1318,11 +1330,10 @@ def _verify_section(section: dict[str, Any], results: list[dict[str, Any]], chat
     """对本章节最终条目做 N 轮语义复核投票,并集采纳双侧锚定的发现。返回采纳数。
 
     多轮取并集:单轮对细微语义错误命中率实测 ~1/3(模型判断随机性),并集是
-    机制性提召回;锚定门不随轮数放宽(精度不掉)。同(title,kind)跨轮去重,
+    机制性提召回;锚定门不随轮数放宽(精度不掉)。同(slot,kind)跨轮去重,
     发现全部收集完再统一采纳(轮间无顺序效应)。
-    契约:复核**绝不新增**内容;锚定成立 → 软标+双证据留痕;correction 仅当
-    evidence_produced 是 description 精确子串且修正过漂移守卫(无新编码/无据数字)
-    才定点替换,否则只标不改(标错比不标更糟,宁缺勿错)。"""
+    契约:复核**绝不新增或自动改写**需求内容;锚定成立 → 软标+双证据留痕;
+    correction 只作为模型复核建议记录,由人工裁决。"""
     if not results:
         return 0
     entries = []
@@ -1330,15 +1341,20 @@ def _verify_section(section: dict[str, Any], results: list[dict[str, Any]], chat
         subs = "; ".join(str(s.get("text") or "") for s in r.get("sub_items") or [])[:400]
         acc = "; ".join(str(x) for x in r.get("acceptance_criteria") or [])[:600]
         entries.append(
-            f"[{i}] title: {r.get('title', '')}\n描述: {str(r.get('description') or '')[:800]}"
+            f"[{i}] verify_slot: {i}\ntitle: {r.get('title', '')}\n描述: {str(r.get('description') or '')[:800]}"
             + (f"\n子项: {subs}" if subs else "")
             + (f"\n验收: {acc}" if acc else "")
             + f"\n引句: {str(r.get('source_quote') or '')[:300]}")
     user = ("【章节原文】\n" + str(section.get("text") or "")
             + "\n\n【已抽需求】\n" + "\n\n".join(entries))
-    by_title = {_norm_ws(r.get("title")): r for r in results if str(r.get("title") or "").strip()}
-    # 收集期:N 轮调用,锚定过滤,(title,kind) 去重——首个锚定证据胜出
-    accepted: dict[tuple[str, str], dict[str, str]] = {}
+    by_slot = {i: r for i, r in enumerate(results, 1)}
+    slots_by_title: dict[str, list[int]] = {}
+    for slot, req in by_slot.items():
+        title_key = _norm_ws(req.get("title"))
+        if title_key:
+            slots_by_title.setdefault(title_key, []).append(slot)
+    # 收集期:N 轮调用,锚定过滤,(slot,kind) 去重——首个锚定证据胜出
+    accepted: dict[tuple[int, str], dict[str, str]] = {}
     for round_no in range(max(1, rounds)):
         try:
             payload = chat(VERIFY_SYSTEM_PROMPT, user)
@@ -1352,38 +1368,38 @@ def _verify_section(section: dict[str, Any], results: list[dict[str, Any]], chat
             if not isinstance(f, dict):
                 continue
             title_key = _norm_ws(f.get("title"))
-            req = by_title.get(title_key)
+            try:
+                slot = int(f.get("verify_slot"))
+            except (TypeError, ValueError):
+                slot = 0
+            req = by_slot.get(slot)
+            if req is None:
+                title_slots = slots_by_title.get(title_key) or []
+                if len(title_slots) == 1:
+                    slot = title_slots[0]
+                    req = by_slot[slot]
             kind = _VERIFY_KINDS.get(str(f.get("kind") or "").strip())
             src_ev = str(f.get("evidence_source") or "").strip()
             prod_ev = str(f.get("evidence_produced") or "").strip()
-            if req is None or kind is None or (title_key, kind) in accepted:
+            if req is None or kind is None or (slot, kind) in accepted:
                 continue
             # 双侧锚定:原文侧在章节原文、产出侧在该条目文本,都逐字可定位才算证据
             if not _anchored(src_ev, section.get("text", "")) or not _anchored(prod_ev, _entry_produced_text(req)):
                 LOGGER.info("二遍复核发现无锚定证据,丢弃：%s(%s)", str(f.get("title") or "")[:30], kind)
                 continue
-            accepted[(title_key, kind)] = {"src": src_ev, "prod": prod_ev,
-                                           "corr": str(f.get("correction") or "").strip()}
-    # 采纳期:统一应用(修正的精确子串检查在应用时对当前 description 现算)
-    source = section.get("drift_source") or section.get("text", "")
+            accepted[(slot, kind)] = {"src": src_ev, "prod": prod_ev,
+                                      "corr": str(f.get("correction") or "").strip()}
+    # 采纳期:统一挂标、留证据与建议,不改写自然语言需求
     applied = 0
-    for (title_key, kind), ev in accepted.items():
-        req = by_title[title_key]
+    for (slot, kind), ev in accepted.items():
+        req = by_slot[slot]
         req["suspicion_reasons"] = list(dict.fromkeys(
             list(req.get("suspicion_reasons") or []) + [f"二遍复核:{kind}"]))
         _append_note(req, f"二遍复核（{kind}）：原文「{ev['src'][:80]}」vs 产出「{ev['prod'][:80]}」")
         applied += 1
         corr, prod_ev = ev["corr"], ev["prod"]
-        if corr and corr != prod_ev and prod_ev in str(req.get("description") or ""):
-            from extract_guards import produced_ints, source_int_baseline, strip_produced_refs
-            pseudo = {"title": "", "description": corr, "source_quote": "",
-                      "sub_items": [], "acceptance_criteria": []}
-            fabricated = produced_ints(strip_produced_refs(corr)) - source_int_baseline(source)
-            if not code_drift(pseudo, source) and not fabricated:
-                req["description"] = str(req["description"]).replace(prod_ev, corr, 1)
-                _append_note(req, f"二遍复核改写：「{prod_ev[:60]}」→「{corr[:60]}」")
-            else:
-                LOGGER.info("二遍复核修正含漂移,拒改只标：%s", title_key[:30])
+        if corr and corr != prod_ev:
+            _append_note(req, f"复核建议（未自动改写）：{corr[:160]}")
     return applied
 
 

@@ -251,7 +251,7 @@ class W3MergeTests(unittest.TestCase):
             self.assertGreater(reason_pos, quote_pos)   # 归属判定在引用之后
             self.assertNotIn("设计候选（非规范约束）", rendered)   # 暂不渲染
 
-    def test_html_renders_enriched_narrative_and_warnings(self) -> None:
+    def test_html_keeps_legacy_enrichment_data_but_does_not_render_it(self) -> None:
         import doc_annotation_export as dae
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
@@ -265,11 +265,14 @@ class W3MergeTests(unittest.TestCase):
                  "source_requirement_ids": ["AIR-1"]},
             ]), ensure_ascii=False), encoding="utf-8")
             rendered = dae.render_annotation_html(out)
-            self.assertIn("富化(LLM)", rendered)
-            self.assertIn("富化正文第一段。", rendered)
+            self.assertIn("富化正文第一段。", rendered)  # 兼容字段仍嵌入，未来可重新启用
+            self.assertNotIn("function analysisNarrativeHtml", rendered)
+            self.assertNotIn("富化(LLM)", rendered)
+            self.assertNotIn("⚠ 富化待核", rendered)
+            self.assertIn("function requirementSummaryHtml", rendered)
+            self.assertIn("functionalMembershipHtml(r) || requirementSummaryHtml(r)", rendered)
+            self.assertIn("const devSrc = r.dev_guidance||[];", rendered)
             self.assertIn("为什么判为", rendered)
-            self.assertIn("含数据处理逻辑", rendered)
-            self.assertIn("⚠ 富化待核", rendered)
 
     def test_xlsx_notes_carry_acceptance_and_ownership(self) -> None:
         from requirements_analysis_excel import _notes_text

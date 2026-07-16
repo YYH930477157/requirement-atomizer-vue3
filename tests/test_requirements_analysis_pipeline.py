@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook
 from openpyxl import load_workbook
@@ -316,21 +318,45 @@ class PipelineHardeningTests(unittest.TestCase):
             assert any("ownership_override 非法" in issue
                        for row in payload["issues"] for issue in row["issues"])
 
-    def test_route_provenance_is_honest_when_endpoint_unusable(self) -> None:
-        """请求 openai_compatible 但端点不可用（无 API key）→ 如实降级并记录，不谎称跑过 LLM。"""
-        import os
+    def test_llm_enrichment_is_disabled_by_default_without_resolving_endpoint(self) -> None:
+        """普通应用调用默认只跑确定性分析；未显式开关时不能碰 LLM 端点。"""
         with tempfile.TemporaryDirectory() as td:
             tmp_path = Path(td)
             self._seed_one(tmp_path)
-            saved = os.environ.pop("RATOMIZER_LLM_API_KEY", None)
-            try:
-                result = run_requirements_analysis(tmp_path, route="openai_compatible", template_path=None)
-            finally:
-                if saved is not None:
-                    os.environ["RATOMIZER_LLM_API_KEY"] = saved
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("RATOMIZER_REQUIREMENTS_ANALYSIS_ENRICH", None)
+                with patch("requirements_analysis._resolve_chat") as resolve_chat:
+                    result = run_requirements_analysis(
+                        tmp_path, route="openai_compatible", template_path=None)
+
+            resolve_chat.assert_not_called()
+            assert result["route"] == "stub"
+            assert result["route_requested"] == "openai_compatible"
+            assert result["enrichment_enabled"] is False
+            assert result["enriched"] == 0
+            assert "note" not in result
+            payload = json.loads(
+                (tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            assert payload["enrichment_enabled"] is False
+            assert payload["items"][0]["analysis_source"] == "deterministic"
+
+    def test_route_provenance_is_honest_when_endpoint_unusable(self) -> None:
+        """请求 openai_compatible 但端点不可用（无 API key）→ 如实降级并记录，不谎称跑过 LLM。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            self._seed_one(tmp_path)
+            with patch.dict(os.environ, {"RATOMIZER_REQUIREMENTS_ANALYSIS_ENRICH": "1"}):
+                saved = os.environ.pop("RATOMIZER_LLM_API_KEY", None)
+                try:
+                    result = run_requirements_analysis(
+                        tmp_path, route="openai_compatible", template_path=None)
+                finally:
+                    if saved is not None:
+                        os.environ["RATOMIZER_LLM_API_KEY"] = saved
 
             assert result["route"] == "stub"                     # 实际执行的
             assert result["route_requested"] == "openai_compatible"
+            assert result["enrichment_enabled"] is True
             assert result["enriched"] == 0
             assert result.get("note")
             payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))

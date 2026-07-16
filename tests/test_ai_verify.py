@@ -1,7 +1,7 @@
 """二遍语义复核回归（0715:v6 审计残余差评全是语义理解错误,确定性护栏无法核验）。
 
-契约:复核绝不新增内容;发现须双侧逐字锚定(原文侧+产出侧),锚不上整条丢弃;
-correction 仅当 evidence_produced 是 description 精确子串且过漂移守卫才定点替换;
+契约:复核绝不新增或自动改写需求正文;发现须双侧逐字锚定(原文侧+产出侧),锚不上整条丢弃;
+correction 只作为复核建议留痕;
 失败非致命;开关走 env RATOMIZER_AI_VERIFY 且计入缓存指纹上下文。
 """
 from __future__ import annotations
@@ -78,7 +78,7 @@ class VerifySectionTests(unittest.TestCase):
 
         self.assertEqual(ai_extract._verify_section(SECTION, results, chat), 0)
 
-    def test_clean_correction_applied_in_place(self) -> None:
+    def test_clean_correction_recorded_without_rewriting_requirement(self) -> None:
         results = [_entry()]
 
         def chat(system: str, user: str) -> dict:
@@ -86,9 +86,10 @@ class VerifySectionTests(unittest.TestCase):
 
         applied = ai_extract._verify_section(SECTION, results, chat)
         self.assertEqual(applied, 1)
-        self.assertIn("下限不高于+5°C", results[0]["description"])
-        self.assertNotIn("下限不低于+5°C", results[0]["description"])
-        self.assertIn("二遍复核改写", results[0]["notes"])
+        self.assertIn("下限不低于+5°C", results[0]["description"])
+        self.assertNotIn("下限不高于+5°C", results[0]["description"])
+        self.assertIn("复核建议（未自动改写）：下限不高于+5°C", results[0]["notes"])
+        self.assertNotIn("二遍复核改写", results[0]["notes"])
 
     def test_correction_with_fabricated_number_flag_only(self) -> None:
         results = [_entry()]
@@ -99,6 +100,7 @@ class VerifySectionTests(unittest.TestCase):
         applied = ai_extract._verify_section(SECTION, results, chat)
         self.assertEqual(applied, 1)                                # 标记仍采纳
         self.assertIn("下限不低于+5°C", results[0]["description"])   # 但拒改
+        self.assertIn("复核建议（未自动改写）：下限不高于+7°C", results[0]["notes"])
         self.assertNotIn("二遍复核改写", results[0]["notes"])
 
     def test_correction_not_substring_flag_only(self) -> None:
@@ -121,6 +123,40 @@ class VerifySectionTests(unittest.TestCase):
 
         ai_extract._verify_section(SECTION, results, chat)
         self.assertEqual(len(results), 1)
+
+    def test_duplicate_titles_are_aligned_by_verify_slot(self) -> None:
+        results = [
+            _entry(title="同名温度要求", description="制造商声明的下限不低于+5°C。"),
+            _entry(title="同名温度要求", description="制造商声明的上限不低于+30°C。"),
+        ]
+
+        def chat(system: str, user: str) -> dict:
+            self.assertIn("verify_slot", system)
+            self.assertIn("verify_slot: 1", user)
+            return {"findings": [
+                _finding(title="同名温度要求", verify_slot=1,
+                         evidence_produced="下限不低于+5°C"),
+                _finding(title="同名温度要求", verify_slot=2,
+                         evidence_produced="上限不低于+30°C"),
+            ]}
+
+        self.assertEqual(ai_extract._verify_section(SECTION, results, chat), 2)
+        self.assertIn("二遍复核:方向或上下限反转", results[0]["suspicion_reasons"])
+        self.assertIn("二遍复核:方向或上下限反转", results[1]["suspicion_reasons"])
+
+    def test_duplicate_title_without_slot_is_ignored(self) -> None:
+        results = [
+            _entry(title="同名温度要求", description="制造商声明的下限不低于+5°C。"),
+            _entry(title="同名温度要求", description="制造商声明的上限不低于+30°C。"),
+        ]
+
+        def chat(system: str, user: str) -> dict:
+            return {"findings": [_finding(title="同名温度要求",
+                                           evidence_produced="上限不低于+30°C")]}
+
+        self.assertEqual(ai_extract._verify_section(SECTION, results, chat), 0)
+        self.assertEqual(results[0]["suspicion_reasons"], [])
+        self.assertEqual(results[1]["suspicion_reasons"], [])
 
 
 class FinalizeAndToggleTests(unittest.TestCase):

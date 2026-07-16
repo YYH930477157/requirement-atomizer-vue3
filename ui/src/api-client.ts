@@ -64,7 +64,8 @@ export type PdfAnnotationPayload = {
   omission_markers?: Array<{ block_id: string; page: number; rect: PdfZoneRect }>
   // 全段落热区(0714):点一段出翻译和解析——kind 路由与重排模式块点击语义同源(后端唯一实现)
   block_zones?: Array<{ block_id: string; page: number; rect: PdfZoneRect;
-                        kind: "req" | "omission" | "context"; req_id?: string }>
+                        kind: "req" | "echo" | "omission" | "context";
+                        req_id?: string; req_ids?: string[] }>
 }
 
 export type AiRequirement = Record<string, unknown> & {
@@ -106,7 +107,7 @@ export type AiRequirement = Record<string, unknown> & {
   functional_merge_confidence?: number
   functional_source_count?: number
   functional_conflict_flags?: string[]
-  // 需求分析富化产物（engineering_analysis.json,后端按 AIR id 合并;缺失=字段不存在,回退抽取内容）
+  // 需求分析兼容字段（当前默认不展示 LLM 叙述；保留供未来方案库重新接入）
   analysis_id?: string
   analysis_source?: string
   analysis_software_requirement_text?: string

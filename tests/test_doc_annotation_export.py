@@ -35,6 +35,17 @@ def _seed(out: Path) -> None:
 
 
 class DocAnnotationExportTests(unittest.TestCase):
+    def test_reflow_echo_tag_lists_all_linked_requirements(self) -> None:
+        rendered = dae._render_one_block(
+            "B-ECHO", "Repeated source paragraph.", [], "body",
+            False, False, False, [], {"AIR-1": 1, "AIR-2": 2},
+            block={"block_id": "B-ECHO", "type": "paragraph"},
+            echo_reqs=[{"ai_req_id": "AIR-1"}, {"ai_req_id": "AIR-2"}],
+        )
+
+        self.assertIn("重复·见01/02", rendered)
+        self.assertIn('data-echo-reqs="AIR-1 AIR-2"', rendered)
+
     def test_pdf_original_layout_renders_pages_with_clickable_annotation_overlays(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1074,7 +1085,8 @@ class PdfAnnotationPayloadTests(unittest.TestCase):
             pages_dir.mkdir()
             (pages_dir / "page-0001.png").write_bytes(b"\x89PNG-fake")
             (pages_dir / dae.ANNOTATION_PAGES_MANIFEST).write_text(json.dumps({
-                "version": 1, "source_sha256": "x", "dpi": 144,
+                "version": 1, "source_sha256": dae._file_sha256(out / "doc.pdf"),
+                "dpi": dae.PDF_PAGE_RENDER_DPI,
                 "pages": [{"page_number": 1, "file": "page-0001.png",
                            "width": 595.0, "height": 842.0}]}), encoding="utf-8")
 
@@ -1099,3 +1111,19 @@ class PdfAnnotationPayloadTests(unittest.TestCase):
             payload = dae.build_pdf_annotation_payload(out)
             self.assertFalse(payload["available"])
             self.assertIn("导出批注HTML", payload["reason"])
+
+    def test_payload_rejects_stale_or_incompatible_page_manifest(self) -> None:
+        mutations = ({"version": 0}, {"source_sha256": "stale"}, {"dpi": 72})
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                self._seed(out)
+                path = out / dae.ANNOTATION_PAGES_DIR / dae.ANNOTATION_PAGES_MANIFEST
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+                manifest.update(mutation)
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+
+                payload = dae.build_pdf_annotation_payload(out)
+
+                self.assertFalse(payload["available"])
+                self.assertIn("影印页缓存", payload["reason"])

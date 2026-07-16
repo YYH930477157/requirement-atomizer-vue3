@@ -43,6 +43,18 @@ class ModalInflationTests(unittest.TestCase):
                "description": "必须关闭阀门。"}
         self.assertFalse(_modal_inflation(req))
 
+    def test_may_not_is_prohibitive_not_weak_modal(self) -> None:
+        req = {"source_quote": "The seal may not be removed without authorization.",
+               "description": "未经授权不得拆除封印。"}
+        self.assertFalse(_modal_inflation(req))
+
+    def test_full_source_with_strong_modal_disables_automatic_softening(self) -> None:
+        req = {"source_quote": "The display should refresh after an update.",
+               "description": "更新后显示必须刷新。"}
+        baseline = ("The controller shall store the update result. "
+                    "The display should refresh after an update.")
+        self.assertFalse(_modal_inflation(req, baseline))
+
     def test_pipeline_appends_suspicion(self) -> None:
         section = {"section_id": "S", "heading": "4.5 Module A", "block_ids": [],
                    "text": "The module should be mounted according to the manual."}
@@ -221,6 +233,21 @@ class SelfCheckSupplementTests(unittest.TestCase):
         extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
         self.assertEqual(applied, 0)                             # 编码漂移 → 整条补充拒绝
         self.assertEqual(len(existing[0]["sub_items"]), 1)
+
+    def test_supplement_acceptance_with_fabricated_number_is_not_merged(self) -> None:
+        existing = self._existing()
+
+        def chat(system: str, user: str) -> dict:
+            return {"requirements": [], "supplements": [{
+                "target_title": "设备模块要求族",
+                "acceptance_criteria": ["模块应在 10 秒内完成保护动作"],
+            }]}
+
+        extra, applied = ai_extract.critique_section(self.SECTION, existing, chat)
+        self.assertEqual(extra, [])
+        self.assertEqual(applied, 0)
+        self.assertNotIn("模块应在 10 秒内完成保护动作",
+                         existing[0]["acceptance_criteria"])
 
     def test_duplicate_supplement_idempotent(self) -> None:
         existing = self._existing()
@@ -671,6 +698,16 @@ class FoldTestSiblingTests(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["threshold_table"], tt)
         self.assertIn("数值配对待核", out[0]["suspicion_reasons"])
+
+    def test_fold_unions_test_source_blocks_without_changing_target_anchor(self) -> None:
+        reqs = [self._req("5.2.1 Requirement", "要求",
+                          source_block_ids=["B-REQ"], anchor_block_id="B-REQ"),
+                self._req("5.2.2 Test", "测试",
+                          source_block_ids=["B-TEST-1", "B-TEST-2"], anchor_block_id="B-TEST-1",
+                          acceptance_criteria=["按测试程序执行。"]) ]
+        out = ai_extract._fold_test_siblings(reqs)
+        self.assertEqual(out[0]["source_block_ids"], ["B-REQ", "B-TEST-1", "B-TEST-2"])
+        self.assertEqual(out[0]["anchor_block_id"], "B-REQ")
 
 
 class AnnexScopeTests(unittest.TestCase):
