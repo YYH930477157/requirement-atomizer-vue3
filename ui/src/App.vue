@@ -467,13 +467,6 @@
                   <small>开启后，翻译、装配规格富化和后续 LLM 审查都使用 openai_compatible 配置。</small>
                 </span>
               </label>
-              <label class="settings-toggle">
-                <input v-model="llmSettings.visionCapable" type="checkbox" data-testid="settings-vision-capable" />
-                <span>
-                  <strong>批注排版：优化重排</strong>
-                  <small>开启=文字重排版式（单文件、只含抽取片段）；关闭=原版 PDF 影印批注（文件夹,含完整原文档）。纯本地渲染,任何模式都不会把文档发给模型。</small>
-                </span>
-              </label>
               <div class="settings-form-grid">
                 <label class="settings-field wide">
                   <span>Base URL</span>
@@ -1456,7 +1449,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
             outDir: finalOutDir, stages, llmRoute,
             templatePath: templatePath.value || undefined,
             ...(stages.includes("export-annotation-html")
-              ? { annotationLayoutMode: llmSettings.value.visionCapable ? "optimized" : "pdf_original" }
+              ? { annotationLayoutMode: "pdf_original" }
               : {}),
           })
         } catch (chainError) {
@@ -1647,7 +1640,7 @@ async function handleExportAnnotationHtml() {
     const payload = await window.ratomizerDesktop.exportAnnotationHtml({
       outDir: currentOutputDir.value,
       route: llmMode.value ? "openai_compatible" : undefined,
-      layoutMode: llmSettings.value.visionCapable ? "optimized" : "pdf_original",
+      layoutMode: "pdf_original",
     })
     if (payload.path) {
       await window.ratomizerDesktop.openPath?.(payload.path)

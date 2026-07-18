@@ -966,9 +966,16 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
     omissions = len(omission_items)
     overlay_enabled = bool(layout_mode == LAYOUT_PDF_ORIGINAL and pdf_pages)
     pdf_context_map: dict[str, dict[str, Any]] = {}
+    pdf_semantics: list[dict[str, Any]] = []
+    if layout_mode == LAYOUT_PDF_ORIGINAL:
+        # 翻译属于解析语义，不依赖页图或坐标是否成功生成；geometry 只决定左页热区。
+        pdf_semantics = _pdf_block_semantics(blocks, requirements, covered)
+        _collect_pdf_translation_texts(pdf_semantics)
     if overlay_enabled:
-        block_zones = _pdf_block_zones(blocks, requirements, pdf_geometry or {}, covered)
-        pdf_context_map = _pdf_context_records(blocks, block_zones)
+        block_zones = _pdf_block_zones(
+            blocks, requirements, pdf_geometry or {}, covered, semantics=pdf_semantics)
+        pdf_context_map = _pdf_context_records(
+            blocks, block_zones, include_requirements=True, semantics=pdf_semantics)
         blocks_html = _render_pdf_page_stack(
             pdf_pages or [], requirements, omission_items, req_numbers, pdf_geometry or {},
             block_zones=block_zones)
@@ -1170,69 +1177,124 @@ def _pdf_zone_style(region: dict[str, Any]) -> tuple[str, float]:
     )
 
 
-def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, Any]],
-                     geometry: dict[str, list[dict[str, Any]]],
-                     covered: set[str]) -> list[dict[str, Any]]:
-    """影印模式全段落热区（0714「点一段出翻译和解析」）——双渲染器共用的唯一语义源。
-
-    kind 路由与重排模式的块点击语义一一对应：
-    - req: 该块是某需求锚点 → 点击选中需求（多需求同锚取首个,与重排 anchored[0] 同）;
-    - echo: 该块是一个或多个需求的重复出现处 → 重复段卡片列出全部汇总条目;
-    - omission: 覆盖口径疑似遗漏（is_coverage_candidate 且未覆盖）→ 遗漏卡;
-    - context: 普通正文段 → 背景说明卡（原因/翻译/引用）;
-    - 标题/表格/噪声不给热区（重排同样不可点;锚在表格/标题上的需求经 req 热区仍可达）。
-    """
+def _pdf_block_semantics(blocks: list[dict[str, Any]], requirements: list[dict[str, Any]],
+                         covered: set[str]) -> list[dict[str, Any]]:
+    """与 PDF 几何无关的段落语义；翻译收集和热区生成共用，避免静默漏译。"""
     from merged_consistency import is_coverage_candidate
-    anchor_to_req: dict[str, str] = {}
+
+    anchor_to_reqs: dict[str, list[str]] = {}
     echo_to_reqs: dict[str, list[str]] = {}
+    covered_to_reqs: dict[str, list[str]] = {}
     for req in requirements:
         req_id = str(req.get("ai_req_id") or "")
         anchor = str(req.get("anchor_block_id") or (req.get("source_block_ids") or [""])[0] or "")
-        if req_id and anchor and anchor not in anchor_to_req:
-            anchor_to_req[anchor] = req_id
+        if req_id and anchor:
+            req_ids = anchor_to_reqs.setdefault(anchor, [])
+            if req_id not in req_ids:
+                req_ids.append(req_id)
         if req_id:
             for echo in req.get("echo_block_ids") or []:
                 block_ids = echo_to_reqs.setdefault(str(echo), [])
                 if req_id not in block_ids:
                     block_ids.append(req_id)
-    zones: list[dict[str, Any]] = []
+            echo_ids = {str(value) for value in (req.get("echo_block_ids") or []) if str(value)}
+            for source_id in req.get("source_block_ids") or []:
+                block_id = str(source_id)
+                if not block_id or block_id == anchor or block_id in echo_ids:
+                    continue
+                req_ids = covered_to_reqs.setdefault(block_id, [])
+                if req_id not in req_ids:
+                    req_ids.append(req_id)
+
+    semantics: list[dict[str, Any]] = []
     for block in blocks:
         block_id = str(block.get("block_id") or "")
         text = str(block.get("text") or "").strip()
         if not block_id or not text or block.get("noise"):
             continue
-        req_id = anchor_to_req.get(block_id)
-        if req_id:
+        anchor_req_ids = anchor_to_reqs.get(block_id) or []
+        if anchor_req_ids:
             kind = "req"
         elif echo_to_reqs.get(block_id):
             kind = "echo"
+        elif covered_to_reqs.get(block_id):
+            kind = "covered"
         elif is_coverage_candidate(block) and block_id not in covered:
             kind = "omission"
         elif str(block.get("type") or "") in ("heading", "table"):
             continue
         else:
             kind = "context"
+        item: dict[str, Any] = {"block_id": block_id, "text": text, "kind": kind}
+        if anchor_req_ids:
+            item["req_id"] = anchor_req_ids[0]
+            item["req_ids"] = list(anchor_req_ids)
+        if kind in {"echo", "covered"}:
+            item["req_ids"] = list(
+                echo_to_reqs[block_id] if kind == "echo" else covered_to_reqs[block_id])
+        semantics.append(item)
+    return semantics
+
+
+def _collect_pdf_translation_texts(semantics: list[dict[str, Any]]) -> None:
+    for item in semantics:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        kind = str(item.get("kind") or "context")
+        owner = "covered" if kind == "req" else kind
+        _collected_marker_texts.setdefault(_translation_key(text), (owner, text))
+
+
+def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, Any]],
+                     geometry: dict[str, list[dict[str, Any]]],
+                     covered: set[str], *,
+                     semantics: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """影印模式全段落热区（0714「点一段出翻译和解析」）——双渲染器共用的唯一语义源。
+
+    kind 路由与重排模式的块点击语义一一对应：
+    - req: 该块是某需求锚点 → 点击选中需求（多需求同锚取首个,与重排 anchored[0] 同）;
+    - echo: 该块是一个或多个需求的重复出现处 → 重复段卡片列出全部汇总条目;
+    - covered: 该块被一个或多个需求纳入来源范围，但不是锚点或重复段 → 关联需求卡;
+    - omission: 覆盖口径疑似遗漏（is_coverage_candidate 且未覆盖）→ 遗漏卡;
+    - context: 普通正文段 → 背景说明卡（原因/翻译/引用）;
+    - 标题/表格/噪声不给热区（重排同样不可点;锚在表格/标题上的需求经 req 热区仍可达）。
+    """
+    zones: list[dict[str, Any]] = []
+    semantic_items = (semantics if semantics is not None
+                      else _pdf_block_semantics(blocks, requirements, covered))
+    for item in semantic_items:
+        block_id = str(item.get("block_id") or "")
+        kind = str(item.get("kind") or "context")
         for region in geometry.get(block_id) or []:
             page = _page_number(region.get("page_number"))
             if not page:
                 continue
             zone: dict[str, Any] = {"block_id": block_id, "page": page,
                                     "rect": _pdf_zone_rect(region), "kind": kind}
-            if req_id:
-                zone["req_id"] = req_id
-            if kind == "echo":
-                zone["req_ids"] = list(echo_to_reqs[block_id])
+            if item.get("req_id"):
+                zone["req_id"] = str(item["req_id"])
+            if kind in {"req", "echo", "covered"}:
+                zone["req_ids"] = list(item.get("req_ids") or [])
             zones.append(zone)
     return zones
 
 
 def _pdf_context_records(blocks: list[dict[str, Any]],
-                         zones: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """静态影印页的背景/重复段卡片数据（block_id → 原文/翻译/页码）。
+                         zones: list[dict[str, Any]], *,
+                         include_requirements: bool = False,
+                         semantics: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    """静态影印页的段落卡片及需求翻译回退数据（block_id → 原文/翻译/页码）。
 
     翻译键双查（键同源纪律）：先原始文本键（旧缓存兼容）,未命中再清洗键。"""
-    detail_zones = {str(z["block_id"]): z for z in zones
-                    if z.get("kind") in {"context", "echo"}}
+    detail_kinds = {"context", "echo", "covered"}
+    if include_requirements:
+        detail_kinds.add("req")
+    detail_zones = {str(z["block_id"]): z for z in zones if z.get("kind") in detail_kinds}
+    if include_requirements:
+        for item in semantics or []:
+            if item.get("kind") == "req" and item.get("block_id"):
+                detail_zones.setdefault(str(item["block_id"]), item)
     page_by_block = {z["block_id"]: z["page"] for z in reversed(zones)}
     records: dict[str, dict[str, Any]] = {}
     for block in blocks:
@@ -1250,10 +1312,15 @@ def _pdf_context_records(blocks: list[dict[str, Any]],
                 note = _active_translation_notes[key]
         zone = detail_zones[block_id]
         record = {"text": text, "translation": translation,
-                  "translation_note": note, "page": page_by_block.get(block_id, 0),
+                  "translation_note": note,
+                  "page": page_by_block.get(block_id, _page_number(block.get("page_number")) or 0),
                   "kind": str(zone.get("kind") or "context")}
         if zone.get("kind") == "echo":
             record["echo_req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
+        elif zone.get("kind") == "covered":
+            record["covered_req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
+        elif zone.get("kind") == "req":
+            record["req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
         records[block_id] = record
     return records
 
@@ -1323,12 +1390,18 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
                  f"width:{rect.get('width', 0):.3f}%;height:{rect.get('height', 0):.3f}%")
         kind = str(zone.get("kind") or "context")
         title = {"req": "查看需求批注", "echo": "重复段·点击查看汇总需求",
+                 "covered": "该段已纳入需求解析·点击查看关联需求",
                  "omission": "疑似需求未覆盖·点击查看"}.get(kind, "查看该段翻译与解析")
         req_attr = (f' data-req="{html.escape(str(zone.get("req_id") or ""), quote=True)}"'
                     if zone.get("req_id") else "")
+        reqs_attr = ""
         echo_attr = ""
+        covered_attr = ""
         echo_content = ""
-        if kind == "echo":
+        if kind == "req":
+            req_ids = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
+            reqs_attr = f' data-reqs="{html.escape(" ".join(req_ids), quote=True)}"'
+        elif kind == "echo":
             req_ids = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
             req_ids = list(dict.fromkeys(req_ids))
             req_ids.sort(key=lambda rid: req_numbers.get(rid, 10**9))
@@ -1336,11 +1409,15 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
             label = "重复·见" + "/".join(f"{num:02d}" for num in nums) if nums else "重复段"
             echo_attr = f' data-echo-reqs="{html.escape(" ".join(req_ids), quote=True)}"'
             echo_content = f'<span class="pdf-echo-tag">{html.escape(label)}</span>'
+        elif kind == "covered":
+            req_ids = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
+            covered_attr = f' data-covered-reqs="{html.escape(" ".join(req_ids), quote=True)}"'
         zones_by_page.setdefault(int(zone["page"]), []).append(
             f'<button class="pdf-block-zone zone-{kind}" type="button" '
             f'data-zone-kind="{kind}" data-block-id="{html.escape(str(zone["block_id"]), quote=True)}"'
-            f'{req_attr}{echo_attr} data-page="{int(zone["page"])}" style="{style}" '
-            f'title="{html.escape(title, quote=True)}">{echo_content}</button>')
+            f'{req_attr}{reqs_attr}{echo_attr}{covered_attr} data-page="{int(zone["page"])}" style="{style}" '
+            f'title="{html.escape(title, quote=True)}" aria-label="{html.escape(title, quote=True)}" '
+            f'aria-pressed="false">{echo_content}</button>')
 
     page_html: list[str] = []
     for page in pages:
@@ -1409,7 +1486,7 @@ def build_pdf_annotation_payload(out_dir: Path) -> dict[str, Any]:
             or any(manifest.get(key) != value for key, value in expected_identity.items())):
         return {
             "available": False,
-            "reason": "影印页缓存与当前 PDF 或渲染版本不一致——先用「导出批注HTML」的原版影印模式重新生成",
+            "reason": "影印页缓存与当前 PDF 或渲染版本不一致——请重新导出批注 HTML 以生成最新影印页",
         }
     pages: list[dict[str, Any]] = []
     for page in manifest_pages or []:
@@ -1424,7 +1501,7 @@ def build_pdf_annotation_payload(out_dir: Path) -> dict[str, Any]:
                           "height": float(page.get("height") or 0.0)})
     if not pages:
         return {"available": False,
-                "reason": "影印页尚未生成——先用「导出批注HTML」的原版影印模式生成一次（之后常驻复用）"}
+                "reason": "影印页尚未生成——请重新导出批注 HTML（生成后将常驻复用）"}
 
     blocks = read_jsonl(out_dir / "blocks.jsonl")
     requirements = build_ai_requirements(out_dir)
@@ -1462,7 +1539,7 @@ def build_pdf_annotation_payload(out_dir: Path) -> dict[str, Any]:
 
 
 def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
-                             layout_mode: str = LAYOUT_OPTIMIZED) -> tuple[Path, dict[str, Any]]:
+                             layout_mode: str = LAYOUT_PDF_ORIGINAL) -> tuple[Path, dict[str, Any]]:
     out_dir = Path(out_dir).expanduser().resolve()
     requested_mode = _normalize_layout_mode(layout_mode)
     source_pdf = _source_pdf_path(out_dir) if requested_mode == LAYOUT_PDF_ORIGINAL else None
@@ -1494,15 +1571,15 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
         pdf_geometry=pdf_geometry,
     )
     summary: dict[str, Any] = {"route": "stub", "total_markers": len(_collected_marker_texts)}
-    if actual_mode == LAYOUT_PDF_ORIGINAL:
-        # PDF 原页模式不生成依赖文本重排的块级说明翻译。
-        summary.update({"route": route or "stub", "translation_skipped": "pdf_original"})
-    elif route and route != "stub":
+    if route and route != "stub":
         summary = generate_annotation_translations(out_dir, route=route,
                                                    texts=dict(_collected_marker_texts))
         if summary.get("translated") or summary.get("rejected"):
             rendered = render_annotation_html(
-                out_dir, layout_mode=actual_mode)   # 重渲染嵌入新译文或拒绝原因（毫秒级）
+                out_dir, layout_mode=actual_mode,
+                pdf_href=ANNOTATION_SOURCE_PDF if copied_pdf else None,
+                pdf_pages=pdf_pages,
+                pdf_geometry=pdf_geometry)   # 重渲染嵌入新译文或拒绝原因（毫秒级）
     summary.update({
         "layout_mode_requested": requested_mode,
         "layout_mode": actual_mode,
@@ -1516,7 +1593,7 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
 
 
 def export_annotation_html(out_dir: Path, route: str | None = None,
-                           layout_mode: str = LAYOUT_OPTIMIZED) -> Path:
+                           layout_mode: str = LAYOUT_PDF_ORIGINAL) -> Path:
     return export_annotation_bundle(out_dir, route=route, layout_mode=layout_mode)[0]
 
 
@@ -1558,7 +1635,7 @@ body {{ margin: 0; font-family: var(--sans);
   border: 0; border-radius: 0; box-shadow: none; background: #525659; }}
 .pdf-frame {{ display: block; width: 100%; height: 100%; border: 0; background: #525659; }}
 .reader-shell.pdf-annotated .doc-content {{ height: auto; min-height: 100%; overflow: visible; background: #3f4144; }}
-.pdf-renderer {{ min-height: 100%; --pdf-page-width: 850px; }}
+.pdf-renderer {{ min-height: 100%; --pdf-page-width: min(850px, calc(100vw - 696px)); }}
 .pdf-toolbar {{ position: sticky; top: 0; z-index: 7; height: 44px; display: flex; align-items: center;
   justify-content: space-between; padding: 0 14px; color: #f4f4f4; background: rgba(38,39,41,.96);
   border-bottom: 1px solid #5b5d60; font-family: var(--sans); }}
@@ -1574,28 +1651,33 @@ body {{ margin: 0; font-family: var(--sans);
 .pdf-toolbar-actions button:hover, .pdf-toolbar-actions a:hover {{ background: #57595d; }}
 #pdf-page-status {{ min-width: 62px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; }}
 .pdf-page-list {{ display: flex; flex-direction: column; align-items: center; gap: 18px; width: max-content;
-  min-width: 100%; padding: 20px 48px 48px; }}
+  min-width: 100%; padding: 20px 48px 48px 32px; }}
 .pdf-page {{ position: relative; width: var(--pdf-page-width); flex: 0 0 auto;
   background: #ffffff; box-shadow: 0 2px 12px rgba(0,0,0,.38); overflow: visible; }}
 .pdf-page > img {{ display: block; width: 100%; height: 100%; object-fit: fill; }}
 .pdf-page-overlay {{ position: absolute; inset: 0; overflow: visible; pointer-events: none; }}
 .pdf-source-zone {{ position: absolute; z-index: 1; border: 1px solid transparent; background: transparent;
   pointer-events: none; transition: background .12s, border-color .12s; }}
-.pdf-source-zone.selected {{ background: rgba(255, 232, 122, .32); border-color: rgba(15,118,110,.72); }}
-.pdf-source-zone.omission-zone.selected {{ background: rgba(236, 228, 207, .35); border-color: rgba(138,100,23,.65); }}
+.pdf-source-zone.selected {{ background: transparent; border-color: transparent; }}
+.pdf-source-zone.omission-zone.selected {{ background: transparent; border-color: transparent; }}
 /* 全段落热区（0714）：透明可点,悬停淡蓝提示——点一段出翻译和解析 */
 .pdf-block-zone {{ position: absolute; z-index: 2; margin: 0; padding: 0; border: 1px solid transparent;
-  background: transparent; cursor: pointer; border-radius: 3px;
+  background: transparent; cursor: pointer; pointer-events: auto; border-radius: 3px;
   transition: background .12s, border-color .12s; }}
-.pdf-block-zone:hover {{ background: rgba(89, 120, 247, .08); border-color: rgba(89, 120, 247, .5); }}
-.pdf-block-zone.selected {{ background: rgba(89, 120, 247, .12); border-color: rgba(89, 120, 247, .85); }}
-.pdf-block-zone.zone-omission:hover {{ background: rgba(204, 137, 37, .10); border-color: rgba(204, 137, 37, .55); }}
-.pdf-block-zone.zone-omission.selected {{ background: rgba(204, 137, 37, .14); border-color: rgba(180, 83, 9, .8); }}
+.pdf-block-zone:hover {{ background: rgba(89, 120, 247, .04); border-color: rgba(89, 120, 247, .42); }}
+.pdf-block-zone.selected {{ background: rgba(89, 120, 247, .06); border-color: rgba(89, 120, 247, .72); }}
+.pdf-block-zone:focus-visible {{ outline: 2px solid rgba(89, 120, 247, .85); outline-offset: 1px; }}
+.pdf-block-zone.zone-omission:hover {{ background: rgba(204, 137, 37, .05); border-color: rgba(204, 137, 37, .48); }}
+.pdf-block-zone.zone-omission.selected {{ background: rgba(204, 137, 37, .07); border-color: rgba(180, 83, 9, .7); }}
 .pdf-block-zone.zone-echo:hover, .pdf-block-zone.zone-echo.selected {{
-  background: rgba(15,118,110,.08); border-color: rgba(15,118,110,.55); }}
+  background: rgba(15,118,110,.05); border-color: rgba(15,118,110,.5); }}
 .pdf-echo-tag {{ position: absolute; right: 2px; top: -13px; display: inline-block; padding: 0 2px 1px;
   border-bottom: 1px dashed #667085; color: #4b5563; background: rgba(255,255,255,.92);
-  font: 600 9px/1.15 var(--sans); white-space: nowrap; pointer-events: none; }}
+  z-index: 2; font: 600 9px/1.15 var(--sans); white-space: nowrap; pointer-events: auto;
+  cursor: pointer; opacity: 0;
+  transition: opacity .12s; }}
+.pdf-block-zone.zone-echo:hover .pdf-echo-tag,
+.pdf-block-zone.zone-echo.selected .pdf-echo-tag {{ opacity: 1; }}
 .pdf-page .pdf-marker {{ position: absolute; right: -34px; z-index: 3; width: 25px; height: 25px; margin: 0;
   display: inline-flex; align-items: center; justify-content: center; padding: 0; border-radius: 50%;
   border: 2px solid #ffffff; color: #ffffff; cursor: pointer; pointer-events: auto;
@@ -1792,6 +1874,10 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .dd-consistency {{ font-size: 12px; color: #1e41c9; background: #eef2ff; border-radius: 6px; padding: 4px 8px; margin-bottom: 10px; }}
 .dd-label {{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 15px 0 5px; }}
 .dd-body {{ font-size: 14px; line-height: 1.7; }}
+.dd-result-primary {{ margin: 12px 0; padding: 11px 12px; border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0; background: rgba(15,118,110,.055); }}
+.dd-result-primary .dd-label {{ margin-top: 0; color: var(--accent); font-weight: 700; letter-spacing: 0; text-transform: none; }}
+.dd-result-primary .dd-body {{ color: var(--ink); font-size: 15px; }}
 .dd-empty {{ color: var(--faint); }}
 .dd-prewrap {{ white-space: pre-wrap; }}
 .src-badge {{ font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--accent);
@@ -1813,21 +1899,29 @@ textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
 .saved-hint {{ font-size: 12px; color: var(--st-accepted-tx); margin-top: 8px; min-height: 16px; }}
 
 /* 窄屏：隐藏大纲 */
-@media (max-width: 1100px) {{ .layout {{ grid-template-columns: minmax(0, 1fr) 340px; }} .outline {{ display: none; }} }}
+@media (max-width: 1100px) {{
+  .layout {{ grid-template-columns: minmax(0, 1fr) 340px; }}
+  .outline {{ display: none; }}
+  .pdf-renderer {{ --pdf-page-width: min(850px, calc(100vw - 436px)); }}
+}}
 @media (max-width: 768px) {{
   .topbar {{ padding: 0 10px; gap: 8px; }}
   .topbar .stats {{ display: none; }}
   .topbar button {{ padding: 6px 9px; font-size: 11px; }}
-  .layout {{ grid-template-columns: minmax(0, 1fr); }}
-  .detail {{ display: none; }}
-  .paper {{ min-width: 0; padding: 16px 0 32px; }}
+  .layout {{ display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 56fr) minmax(0, 44fr);
+    height: calc(100vh - 56px); overflow: hidden; }}
+  .detail {{ display: block; min-height: 0; overflow-y: auto; padding: 16px 14px;
+    border-top: 1px solid var(--line); border-left: 0; background: var(--panel); }}
+  .detail .empty {{ padding-top: 28px; }}
+  .detail-card {{ max-width: 680px; margin: 0 auto 14px; padding: 16px; }}
+  .paper {{ min-width: 0; min-height: 0; padding: 16px 0 32px; }}
   .doc-content {{ width: 100%; max-width: none; margin: 0; padding: 28px 18px 40px;
     border-left: 0; border-right: 0; border-radius: 0; }}
   .doc-block.h1 .text {{ font-size: 27px; }}
   .doc-block.h2 .text {{ font-size: 21px; }}
   .doc-block:not(.heading):not(.short) .text {{ text-align: left; }}
   .block-inner {{ padding-left: calc(var(--depth, 0) * 8px); }}
-  .pdf-renderer {{ --pdf-page-width: calc(100vw - 60px); }}
+  .pdf-renderer {{ --pdf-page-width: calc(100vw - 64px); }}
   .pdf-page-list {{ padding-left: 8px; padding-right: 40px; }}
   .pdf-page .pdf-marker {{ right: -30px; }}
   .pdf-marker-legend span {{ font-size: 0; gap: 0; }}
@@ -1853,7 +1947,7 @@ textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
 {blocks_html}
     </div>
   </article>
-  <aside class="annotation-rail detail" id="detail"><div class="empty">点击批注标记查看详情</div></aside>
+  <aside class="annotation-rail detail" id="detail"><div class="empty">点击原文段落或页边编号查看解析结果</div></aside>
 </div>
 </div>
 <script>
@@ -2089,6 +2183,8 @@ function isHardwareRequirement(r) {{
 function anchorBlockTranslation(r) {{
   const anchor = r.anchor_block_id || (r.source_block_ids||[])[0];
   if (!anchor) return "";
+  const pdfRecord = PDF_CONTEXT[anchor];
+  if (pdfRecord && pdfRecord.translation) return String(pdfRecord.translation);
   const p = document.querySelector('.text[data-block-id="' + anchor + '"]');
   return p ? (p.getAttribute("data-translation") || "") : "";
 }}
@@ -2127,9 +2223,9 @@ function ownershipReasonHtml(r) {{
 
 function requirementSummaryHtml(r) {{
   const summary = String(r.description || "").trim();
-  if (!summary) return "";
-  return '<div class="dd-section"><div class="dd-label">需求摘要</div>'+
-         '<div class="dd-body">'+esc(summary)+'</div></div>';
+  return '<div class="dd-section dd-result-primary"><div class="dd-label">抽取需求</div>'+
+         '<div class="dd-body'+(summary ? '' : ' dd-empty')+'">'+
+         (summary ? esc(summary) : '未生成需求摘要')+'</div></div>';
 }}
 
 function markQuoteTextNodes(container, quote) {{
@@ -2189,13 +2285,15 @@ function deselect() {{
   document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span"));
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   clearSourceQuoteMarks();
-  document.getElementById("detail").innerHTML = '<div class="empty">点击批注标记查看详情</div>';
+  document.getElementById("detail").innerHTML = '<div class="empty">点击原文段落或页边编号查看解析结果</div>';
 }}
 
 // 与 DocumentReview.vue 同文案（双渲染器契约）：未覆盖=疑似需求但无任何抽取需求覆盖
 const OMISSION_REASON = "该段含规范性措辞（shall/must/应…），被判为疑似需求，但没有任何已抽取需求的来源范围覆盖它。可能原因：抽取遗漏（自检未补回）或该句实为背景说明。确属需求请反馈补抽；背景说明可忽略。";
 const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），被判定为背景/说明性内容，因此没有生成研发需求；其信息会作为上下文供相邻需求的分析使用。如认为该段实际包含需求，请反馈补抽。";
 const ECHO_REASON = "该段与已抽取需求的来源段落内容重复（同文多次出现）。解析已汇总至对应需求条目，本段不重复挂批注；点击「重复·见」角标或下方链接可跳转查看该条目。";
+const COVERED_REASON = "该段已纳入一个或多个抽取需求的来源范围，用于补充该需求的约束、条件或上下文；它不是主锚点，因此不重复挂页边编号。";
+const REQUIREMENT_GROUP_REASON = "该段原文解析出了多条独立需求。为避免只展示第一条，下面列出该段的全部解析结果。";
 let selectedContextBlock = null;
 
 function echoTargets(reqIds) {{
@@ -2227,6 +2325,34 @@ function echoDetailsHtml(reqIds, text, translation, note, page) {{
     '<div class="dd-head"><span class="dd-module">重复段</span><span class="badge">说明</span></div>'+
     '<div class="dd-title">该段解析已汇总</div>'+location+
     '<div class="dd-body">'+esc(ECHO_REASON)+'</div>'+echoLinksHtml(reqIds)+translationHtml+
+    (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
+     '</div>';
+}}
+
+function coveredDetailsHtml(reqIds, text, translation, note, page) {{
+  const location = page ? '<div class="dd-meta">原文位置 · PDF 第 '+esc(page)+' 页</div>' : '';
+  const translationHtml = '<div class="dd-label">原文翻译</div>'+
+    (translation ? '<div class="dd-body">'+esc(translation)+'</div>'
+     : note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(note)+'）</div>'
+     : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>');
+  return '<div class="annotation-card detail-card">'+
+    '<div class="dd-head"><span class="dd-module">已解析来源段</span><span class="badge">说明</span></div>'+
+    '<div class="dd-title">该段已纳入需求解析</div>'+location+
+    '<div class="dd-body">'+esc(COVERED_REASON)+'</div>'+echoLinksHtml(reqIds)+translationHtml+
+    (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
+    '</div>';
+}}
+
+function requirementGroupDetailsHtml(reqIds, text, translation, note, page) {{
+  const location = page ? '<div class="dd-meta">原文位置 · PDF 第 '+esc(page)+' 页</div>' : '';
+  const translationHtml = '<div class="dd-label">原文翻译</div>'+
+    (translation ? '<div class="dd-body">'+esc(translation)+'</div>'
+     : note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(note)+'）</div>'
+     : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>');
+  return '<div class="annotation-card detail-card">'+
+    '<div class="dd-head"><span class="dd-module">解析结果</span><span class="badge">'+esc(reqIds.length)+' 条</span></div>'+
+    '<div class="dd-title">该段解析出 '+esc(reqIds.length)+' 条需求</div>'+location+
+    '<div class="dd-body">'+esc(REQUIREMENT_GROUP_REASON)+'</div>'+echoLinksHtml(reqIds)+translationHtml+
     (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
     '</div>';
 }}
@@ -2317,15 +2443,19 @@ function selectOmissionRecord(row) {{
 
 // 全段落热区选中高亮（0714）：req 热区随 select() 走 data-req,块级热区按 block_id 走这里
 function paintZoneSelection(blockId) {{
-  document.querySelectorAll(".pdf-block-zone").forEach(z => z.classList.remove("selected"));
-  if (blockId) document.querySelectorAll('.pdf-block-zone[data-block-id="' + blockId + '"]')
-    .forEach(z => z.classList.add("selected"));
+  document.querySelectorAll(".pdf-block-zone").forEach(z => {{
+    const active = Boolean(blockId) && z.getAttribute("data-block-id") === blockId;
+    z.classList.toggle("selected", active);
+    z.setAttribute("aria-pressed", String(active));
+  }});
 }}
 
-function selectPdfContextRecord(blockId, info) {{
-  if (selectedContextBlock === blockId) {{ selectedContextBlock = null; deselect(); return; }}
+function selectPdfContextRecord(blockId, info, clickedPage) {{
+  const sourcePage = Number(clickedPage || info.page || 0);
+  const selectionKey = blockId + "@pdf:" + sourcePage;
+  if (selectedContextBlock === selectionKey) {{ selectedContextBlock = null; deselect(); return; }}
   selected = null;
-  selectedContextBlock = blockId;
+  selectedContextBlock = selectionKey;
   document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
   document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
   document.querySelectorAll(".pdf-marker").forEach(marker => marker.classList.remove("sel"));
@@ -2335,7 +2465,7 @@ function selectPdfContextRecord(blockId, info) {{
     '<div class="annotation-card detail-card">'+
     '<div class="dd-head"><span class="dd-module">背景/上下文</span><span class="badge">说明</span></div>'+
     '<div class="dd-title">为什么没有生成研发需求</div>'+
-    (info.page ? '<div class="dd-meta">原文位置 · PDF 第 '+esc(info.page)+' 页</div>' : '')+
+    (sourcePage ? '<div class="dd-meta">原文位置 · PDF 第 '+esc(sourcePage)+' 页</div>' : '')+
     '<div class="dd-body">'+esc(CONTEXT_REASON)+'</div>'+
     '<div class="dd-label">原文翻译</div>'+
     (info.translation ? '<div class="dd-body">'+esc(info.translation)+'</div>'
@@ -2345,10 +2475,12 @@ function selectPdfContextRecord(blockId, info) {{
     '</div>';
 }}
 
-function selectPdfEchoRecord(blockId, info) {{
-  if (selectedContextBlock === blockId) {{ selectedContextBlock = null; deselect(); return; }}
+function selectPdfEchoRecord(blockId, info, clickedPage) {{
+  const sourcePage = Number(clickedPage || info.page || 0);
+  const selectionKey = blockId + "@pdf:" + sourcePage;
+  if (selectedContextBlock === selectionKey) {{ selectedContextBlock = null; deselect(); return; }}
   selected = null;
-  selectedContextBlock = blockId;
+  selectedContextBlock = selectionKey;
   document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
   document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
   document.querySelectorAll(".pdf-marker").forEach(marker => marker.classList.remove("sel"));
@@ -2356,7 +2488,40 @@ function selectPdfEchoRecord(blockId, info) {{
   paintZoneSelection(blockId);
   document.getElementById("detail").innerHTML = echoDetailsHtml(
     info.echo_req_ids || [], info.text || "", info.translation || "",
-    info.translation_note || "", info.page || 0);
+    info.translation_note || "", sourcePage);
+  bindEchoJumps();
+}}
+
+function selectPdfCoveredRecord(blockId, info, clickedPage) {{
+  const sourcePage = Number(clickedPage || info.page || 0);
+  const selectionKey = blockId + "@pdf:" + sourcePage;
+  if (selectedContextBlock === selectionKey) {{ selectedContextBlock = null; deselect(); return; }}
+  selected = null;
+  selectedContextBlock = selectionKey;
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
+  document.querySelectorAll(".pdf-marker").forEach(marker => marker.classList.remove("sel"));
+  document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
+  paintZoneSelection(blockId);
+  document.getElementById("detail").innerHTML = coveredDetailsHtml(
+    info.covered_req_ids || [], info.text || "", info.translation || "",
+    info.translation_note || "", sourcePage);
+  bindEchoJumps();
+}}
+
+function selectPdfRequirementGroup(blockId, info, reqIds, clickedPage) {{
+  const sourcePage = Number(clickedPage || info.page || 0);
+  const selectionKey = blockId + "@pdf:" + sourcePage;
+  if (selectedContextBlock === selectionKey) {{ selectedContextBlock = null; deselect(); return; }}
+  selected = null;
+  selectedContextBlock = selectionKey;
+  document.querySelectorAll(".chip").forEach(c => c.classList.remove("sel"));
+  document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
+  document.querySelectorAll(".pdf-marker").forEach(marker => marker.classList.remove("sel"));
+  document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
+  paintZoneSelection(blockId);
+  document.getElementById("detail").innerHTML = requirementGroupDetailsHtml(
+    reqIds, info.text || "", info.translation || "", info.translation_note || "", sourcePage);
   bindEchoJumps();
 }}
 
@@ -2457,8 +2622,13 @@ function select(id) {{
   document.querySelectorAll(".pdf-marker").forEach(marker =>
     marker.classList.toggle("sel", marker.getAttribute("data-req") === id));
   document.querySelectorAll(".pdf-block-zone").forEach(zone => {{
+    const reqs = (zone.getAttribute("data-reqs") || "").split(/\s+/).filter(Boolean);
     const echoes = (zone.getAttribute("data-echo-reqs") || "").split(/\s+/).filter(Boolean);
-    zone.classList.toggle("selected", zone.getAttribute("data-req") === id || echoes.includes(id));
+    const covered = (zone.getAttribute("data-covered-reqs") || "").split(/\s+/).filter(Boolean);
+    const active = zone.getAttribute("data-req") === id || reqs.includes(id) ||
+      echoes.includes(id) || covered.includes(id);
+    zone.classList.toggle("selected", active);
+    zone.setAttribute("aria-pressed", String(active));
   }});
   const r = byId[id]; if (!r) return;
   document.querySelectorAll(".req-index-item").forEach(item =>
@@ -2472,9 +2642,12 @@ function select(id) {{
   const dev = isHardware ? "" : devSrc.map(c => "<li>" + esc(c) + "</li>").join("");
   const acc = isHardware ? "" : accSrc.map(c => "<li>" + esc(c) + "</li>").join("");
   // 归属判定挪到「原文引用」之后（真实反馈 2026-07-12）；设计候选暂不渲染（数据仍在 xlsx）
-  const primaryHtml = isHardware
-    ? hardwareTranslationHtml(r)
-    : (functionalMembershipHtml(r) || requirementSummaryHtml(r));
+  const summaryHtml = requirementSummaryHtml(r);
+  const sourceQuoteHtml = r.source_quote
+    ? '<div class="dd-section"><div class="dd-label">抽取原句（对照左页）</div><div class="dd-quote">'+esc(r.source_quote)+'</div></div>'
+    : '';
+  const functionalHtml = isHardware ? "" : functionalMembershipHtml(r);
+  const primaryHtml = summaryHtml + sourceQuoteHtml + (isHardware ? hardwareTranslationHtml(r) : functionalHtml);
   const detailHtml = isHardware ? "" : subItemsHtml(r) + thresholdHtml(r);
   const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
   const ownershipOptions = [
@@ -2497,7 +2670,6 @@ function select(id) {{
     detailHtml+
     (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
-    (r.source_quote ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(r.source_quote)+'</div>' : '')+
     ownershipReasonHtml(r)+
     '<div class="dd-label">模块（可改）</div><select id="mod-sel">'+opts+'</select>'+
     '<div class="dd-section"><div class="dd-label">归属（可改）</div><select id="own-sel" class="dd-select">'+ownershipOptions+'</select></div>'+
@@ -2532,14 +2704,22 @@ document.getElementById("paper").addEventListener("click", e => {{
   if (zone) {{
     const kind = zone.getAttribute("data-zone-kind");
     const bid = zone.getAttribute("data-block-id") || "";
-    if (kind === "req") {{ select(zone.getAttribute("data-req")); return; }}
+    const page = Number(zone.getAttribute("data-page") || 0);
+    const info = PDF_CONTEXT[bid];
+    if (kind === "req") {{
+      const reqIds = (zone.getAttribute("data-reqs") || zone.getAttribute("data-req") || "")
+        .split(/\s+/).filter(Boolean);
+      if (reqIds.length > 1 && info) {{ selectPdfRequirementGroup(bid, info, reqIds, page); return; }}
+      select(zone.getAttribute("data-req"));
+      return;
+    }}
     if (kind === "omission") {{
       const row = PDF_OMISSIONS.find(r => r.block_id === bid);
-      if (row) {{ selectOmissionRecord(row); return; }}
+      if (row) {{ selectOmissionRecord({{...row, source_page: page || row.source_page || 0}}); return; }}
     }}
-    const info = PDF_CONTEXT[bid];
-    if (kind === "echo" && info) {{ selectPdfEchoRecord(bid, info); return; }}
-    if (info) {{ selectPdfContextRecord(bid, info); return; }}
+    if (kind === "echo" && info) {{ selectPdfEchoRecord(bid, info, page); return; }}
+    if (kind === "covered" && info) {{ selectPdfCoveredRecord(bid, info, page); return; }}
+    if (info) {{ selectPdfContextRecord(bid, info, page); return; }}
     return;
   }}
   const sourceMarker = e.target.closest(".source-classification"); if (sourceMarker) {{ selectSourceClassification(sourceMarker); return; }}
@@ -2567,20 +2747,31 @@ document.getElementById("export-btn").onclick = () => {{
   a.download = "ai_decisions_" + DOC_ID + ".json"; a.click();
 }};
 
+const PDF_ZOOM_STEP = 100;
 let pdfPageWidth = 850;
+function pdfZoomMinimum() {{
+  const paper = document.getElementById("paper");
+  const viewportWidth = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+  const containerWidth = paper ? paper.getBoundingClientRect().width : viewportWidth;
+  const pageChrome = viewportWidth <= 768 ? 64 : 96;
+  return Math.max(240, Math.min(520, Math.floor(containerWidth - pageChrome - PDF_ZOOM_STEP)));
+}}
 function setPdfZoom(width) {{
   if (!PDF_OVERLAY_ENABLED) return;
-  pdfPageWidth = Math.max(520, Math.min(1500, Number(width) || 850));
+  const minimum = Math.min(pdfPageWidth, pdfZoomMinimum());
+  pdfPageWidth = Math.max(minimum, Math.min(1500, Number(width) || 850));
   const renderer = document.getElementById("pdf-renderer");
   if (renderer) renderer.style.setProperty("--pdf-page-width", pdfPageWidth + "px");
 }}
 
 function initializePdfOverlay() {{
   if (!PDF_OVERLAY_ENABLED) return;
+  const firstPage = document.querySelector(".pdf-page");
+  if (firstPage) pdfPageWidth = Math.round(firstPage.getBoundingClientRect().width) || pdfPageWidth;
   const zoomOut = document.getElementById("pdf-zoom-out");
   const zoomIn = document.getElementById("pdf-zoom-in");
-  if (zoomOut) zoomOut.onclick = () => setPdfZoom(pdfPageWidth - 100);
-  if (zoomIn) zoomIn.onclick = () => setPdfZoom(pdfPageWidth + 100);
+  if (zoomOut) zoomOut.onclick = () => setPdfZoom(pdfPageWidth - PDF_ZOOM_STEP);
+  if (zoomIn) zoomIn.onclick = () => setPdfZoom(pdfPageWidth + PDF_ZOOM_STEP);
   const paper = document.getElementById("paper");
   const status = document.getElementById("pdf-page-status");
   if (!("IntersectionObserver" in window) || !paper || !status) return;

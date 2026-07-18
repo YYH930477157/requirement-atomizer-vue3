@@ -386,7 +386,7 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v3-gap-tier",
     "compose": "engineering_composer/v1",
-    "export-annotation-html": "doc_annotation_export/v7",
+    "export-annotation-html": "doc_annotation_export/v8",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
@@ -649,7 +649,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                template_path: Path | None = None,
                sample_ratio: float | None = None,
                limit_sections: int | None = None,
-               annotation_layout_mode: str = "optimized") -> dict[str, Any]:
+               annotation_layout_mode: str = "pdf_original") -> dict[str, Any]:
     """交付物链的后端单命令编排（F1：编排从 App.vue 搬回后端——headless/批量/CI 的地基）。
 
     阶段按 CHAIN_ORDER 归一排序去重；template-write 无模板路径时前置报错（不跑一半才死）；
@@ -782,7 +782,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
 
 
 def export_annotation_html_task(out_dir: Path, route: str | None = None,
-                                layout_mode: str = "optimized") -> dict[str, Any]:
+                                layout_mode: str = "pdf_original") -> dict[str, Any]:
     """生成可分享的文档批注 HTML bundle（内含 localStorage 裁决 + 导出 JSON）。
 
     route=openai_compatible 时补齐块级"说明"标记的原文中文翻译（内容哈希缓存
@@ -948,7 +948,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     chain_parser.add_argument("--sample-ratio", type=float, default=None)
     chain_parser.add_argument("--limit-sections", type=int, default=None)
     chain_parser.add_argument("--annotation-layout-mode", choices=["optimized", "pdf_original"],
-                              default="optimized")
+                              default="pdf_original")
 
     clarification_parser = subparsers.add_parser("clarification-report")
     clarification_parser.add_argument("--out", type=Path, required=True)
@@ -976,7 +976,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     anno_parser.add_argument("--route", choices=["stub", "openai_compatible"], default=None,
                              help="openai_compatible 时补齐块级说明标记的中文翻译（缓存复用）")
     anno_parser.add_argument("--layout-mode", choices=["optimized", "pdf_original"],
-                             default="optimized")
+                             default="pdf_original")
 
     import_parser = subparsers.add_parser("import-ai-decisions")
     import_parser.add_argument("--out", type=Path, required=True)
@@ -993,7 +993,7 @@ def _manifest_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
         context["route"] = getattr(args, "enrich_route", None) or None
     elif command == "export-annotation-html":
         context["route"] = getattr(args, "route", None) or None
-        context["config"] = {"layout_mode": getattr(args, "layout_mode", "optimized")}
+        context["config"] = {"layout_mode": getattr(args, "layout_mode", "pdf_original")}
     if command in {"requirements-analysis", "template-write"}:
         context["template_path"] = getattr(args, "template", None)
     if command == "ai-extract":

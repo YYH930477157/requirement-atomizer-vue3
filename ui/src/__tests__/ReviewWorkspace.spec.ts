@@ -171,14 +171,14 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="settings-panel"]').exists()).toBe(false)
   })
 
-  it("saves and tests OpenAI-compatible API settings from the settings panel", async () => {
+  it("saves and tests API settings while preserving existing vision capability metadata", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
         getApiSession: vi.fn().mockResolvedValue(null),
         getLlmSettings: vi.fn().mockResolvedValue({
           enabled: false,
-          visionCapable: false,
+          visionCapable: true,
           baseUrl: "http://127.0.0.1:11434/v1",
           model: "qwen2.5:14b",
           apiKeyEnv: "RATOMIZER_LLM_API_KEY",
@@ -208,9 +208,9 @@ describe("review workspace shell", () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="settings-base-url"]').element).toHaveProperty("value", "http://127.0.0.1:11434/v1")
     })
+    expect(wrapper.find('[data-testid="settings-vision-capable"]').exists()).toBe(false)
 
     await wrapper.find('[data-testid="settings-llm-mode"]').setValue(true)
-    await wrapper.find('[data-testid="settings-vision-capable"]').setValue(true)
     await wrapper.find('[data-testid="settings-base-url"]').setValue("https://open.bigmodel.cn/api/paas/v4")
     await wrapper.find('[data-testid="settings-model"]').setValue("glm-4-plus")
     await wrapper.find('[data-testid="settings-api-key-env"]').setValue("ZHIPU_API_KEY")
@@ -257,7 +257,7 @@ describe("review workspace shell", () => {
     })
   })
 
-  it("uses optimized annotation layout when the configured model is visual", async () => {
+  it("keeps original PDF annotation layout when the configured model is visual", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
@@ -282,7 +282,7 @@ describe("review workspace shell", () => {
       expect(window.ratomizerDesktop?.exportAnnotationHtml).toHaveBeenCalledWith({
         outDir: "E:\\out\\abnt",
         route: undefined,
-        layoutMode: "optimized",
+        layoutMode: "pdf_original",
       })
     })
   })
@@ -586,7 +586,8 @@ describe("review workspace shell", () => {
       getApiSession: vi.fn().mockResolvedValue(null),
       // 已保存 LLM 设置：onMounted 恢复（2026-07-08 审计 A2）——链条测试借此走 LLM 开启路径
       getLlmSettings: vi.fn().mockResolvedValue({
-        enabled: true, baseUrl: "http://127.0.0.1:11434/v1", model: "m", apiKeyEnv: "",
+        enabled: true, visionCapable: true,
+        baseUrl: "http://127.0.0.1:11434/v1", model: "m", apiKeyEnv: "",
         temperature: 0.1, maxTokens: 2048, timeoutS: 60, maxRetries: 2, concurrency: 2, selfCheck: true,
       }),
       openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),

@@ -64,7 +64,7 @@ export type PdfAnnotationPayload = {
   omission_markers?: Array<{ block_id: string; page: number; rect: PdfZoneRect }>
   // 全段落热区(0714):点一段出翻译和解析——kind 路由与重排模式块点击语义同源(后端唯一实现)
   block_zones?: Array<{ block_id: string; page: number; rect: PdfZoneRect;
-                        kind: "req" | "echo" | "omission" | "context";
+                        kind: "req" | "covered" | "echo" | "omission" | "context";
                         req_id?: string; req_ids?: string[] }>
 }
 

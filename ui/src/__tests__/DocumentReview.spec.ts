@@ -1,6 +1,14 @@
 import { describe, it, expect, vi } from "vitest"
 import { flushPromises, mount } from "@vue/test-utils"
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import DocumentReview from "../DocumentReview.vue"
+
+function deferred<T>() {
+  let resolvePromise!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((resolve) => { resolvePromise = resolve })
+  return { promise, resolve: resolvePromise }
+}
 
 function makeClient(over: Record<string, unknown> = {}) {
   return {
@@ -35,6 +43,144 @@ function makeClient(over: Record<string, unknown> = {}) {
 }
 
 describe("DocumentReview", () => {
+  it("shows a loading state instead of a false unavailable state during initial loading", async () => {
+    const documentRequest = deferred<{ count: number; blocks: [] }>()
+    const client = makeClient({ loadDocument: vi.fn(() => documentRequest.promise) })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="pdf-loading"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="pdf-unavailable"]').exists()).toBe(false)
+
+    documentRequest.resolve({ count: 0, blocks: [] })
+    await flushPromises()
+  })
+
+  it("prefers original PDF pages when available and labels reflow as parsed text", async () => {
+    const client = makeClient({
+      loadPdfAnnotation: vi.fn().mockResolvedValue({
+        available: true,
+        pages: [{ page_number: 1, file: "page-0001.png", width: 595, height: 842 }],
+        requirement_markers: [], omission_markers: [], block_zones: [],
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="mode-text"]').text()).toContain("解析文本")
+    expect(wrapper.find('[data-testid="mode-pdf"]').classes()).toContain("active")
+    expect(wrapper.find('[data-testid="pdf-paper"]').exists()).toBe(true)
+    expect(client.loadPdfAnnotation).toHaveBeenCalledTimes(1)
+    expect(client.loadPdfPageBlob).toHaveBeenCalledWith("page-0001.png")
+  })
+
+  it("falls back to parsed text when original pages are unavailable", async () => {
+    const client = makeClient()
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="mode-text"]').classes()).toContain("active")
+    expect(wrapper.find('[data-testid="doc-paper"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
+    expect(wrapper.find('[data-testid="pdf-unavailable"]').text()).toContain("影印页尚未生成")
+  })
+
+  it("refreshes stale PDF data and returns to original pages when they become available", async () => {
+    const loadPdfAnnotation = vi.fn()
+      .mockResolvedValueOnce({ available: false, reason: "影印页尚未生成" })
+      .mockResolvedValueOnce({
+        available: true,
+        pages: [{ page_number: 1, file: "page-new.png", width: 595, height: 842 }],
+        requirement_markers: [], omission_markers: [], block_zones: [],
+      })
+    const client = makeClient({ loadPdfAnnotation })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="mode-text"]').classes()).toContain("active")
+    await wrapper.find('[data-testid="doc-reload"]').trigger("click")
+    await flushPromises()
+
+    expect(loadPdfAnnotation).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="mode-pdf"]').classes()).toContain("active")
+    expect(client.loadPdfPageBlob).toHaveBeenCalledWith("page-new.png")
+  })
+
+  it("invalidates an in-flight PDF metadata response when refresh starts", async () => {
+    const staleRequest = deferred<{
+      available: boolean; reason: string; pages: []; requirement_markers: []; omission_markers: []; block_zones: []
+    }>()
+    const loadPdfAnnotation = vi.fn()
+      .mockImplementationOnce(() => staleRequest.promise)
+      .mockResolvedValueOnce({
+        available: true,
+        pages: [{ page_number: 1, file: "page-0002.png", width: 595, height: 842 }],
+        requirement_markers: [], omission_markers: [], block_zones: [],
+      })
+    const client = makeClient({ loadPdfAnnotation })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="doc-reload"]').trigger("click")
+    await flushPromises()
+    expect(loadPdfAnnotation).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="mode-pdf"]').classes()).toContain("active")
+
+    staleRequest.resolve({
+      available: false, reason: "旧请求不应回写", pages: [],
+      requirement_markers: [], omission_markers: [], block_zones: [],
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="mode-pdf"]').classes()).toContain("active")
+    expect(wrapper.find('[data-testid="pdf-unavailable"]').exists()).toBe(false)
+    expect(client.loadPdfPageBlob).toHaveBeenCalledWith("page-0002.png")
+  })
+
+  it("does not override a parsed-text choice made while refresh is loading PDF metadata", async () => {
+    const refreshRequest = deferred<{
+      available: boolean; pages: []; requirement_markers: []; omission_markers: []; block_zones: []
+    }>()
+    const loadPdfAnnotation = vi.fn()
+      .mockResolvedValueOnce({
+        available: true, pages: [], requirement_markers: [], omission_markers: [], block_zones: [],
+      })
+      .mockImplementationOnce(() => refreshRequest.promise)
+    const client = makeClient({ loadPdfAnnotation })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="doc-reload"]').trigger("click")
+    await flushPromises()
+    await wrapper.find('[data-testid="mode-text"]').trigger("click")
+    refreshRequest.resolve({
+      available: true, pages: [], requirement_markers: [], omission_markers: [], block_zones: [],
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="mode-text"]').classes()).toContain("active")
+    expect(wrapper.find('[data-testid="doc-paper"]').exists()).toBe(true)
+  })
+
+  it("keeps an explicit parsed-text selection after refresh", async () => {
+    const client = makeClient({
+      loadPdfAnnotation: vi.fn().mockResolvedValue({
+        available: true,
+        pages: [{ page_number: 1, file: "page-0001.png", width: 595, height: 842 }],
+        requirement_markers: [], omission_markers: [], block_zones: [],
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="mode-text"]').trigger("click")
+    await wrapper.find('[data-testid="doc-reload"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="mode-text"]').classes()).toContain("active")
+    expect(client.loadPdfAnnotation).toHaveBeenCalledTimes(1)
+  })
+
   it("renders the document, anchors annotations, flags omissions, and reviews in place", async () => {
     const client = makeClient()
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
@@ -137,7 +283,7 @@ describe("DocumentReview", () => {
 
     const zone = wrapper.find('[data-testid="pdf-zone-B3"]')
     expect(zone.text()).toContain("重复·见01/02")
-    await zone.trigger("click")
+    await zone.find(".pdf-echo-tag").trigger("click")
     expect(wrapper.find('[data-testid="echo-card"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="echo-jump"]')).toHaveLength(2)
     await wrapper.findAll('[data-testid="echo-jump"]')[0].trigger("click")
@@ -226,7 +372,7 @@ describe("DocumentReview", () => {
     // 再点一下 → 取消选中：详情回空态、无 in-span
     await wrapper.find('[data-testid="anno-AIR-9"]').trigger("click")
     expect(wrapper.findAll(".doc-block.in-span").length).toBe(0)
-    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("点左侧")
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("查看解析结果")
   })
 
   it("pdf original mode renders pages with clickable markers sharing the detail panel", async () => {
@@ -241,8 +387,6 @@ describe("DocumentReview", () => {
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
     await flushPromises()
 
-    await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
-    await flushPromises()
     expect(wrapper.find('[data-testid="pdf-paper"]').exists()).toBe(true)
     expect(wrapper.find(".pdf-page img").attributes("src")).toContain("page-0001.png")
     // 点批注标记 → 右栏详情(与文字模式共用,裁决可用)
@@ -254,7 +398,7 @@ describe("DocumentReview", () => {
     expect(wrapper.find('[data-testid="omission-card"]').exists()).toBe(true)
   })
 
-  it("revokes loaded and late PDF page blob URLs when unmounted", async () => {
+  it("revokes loaded and late PDF page blob URLs and stops fetching after unmount", async () => {
     const revokeObjectURL = vi.fn()
     vi.stubGlobal("URL", { revokeObjectURL })
     let resolveLate: ((url: string) => void) | undefined
@@ -264,18 +408,19 @@ describe("DocumentReview", () => {
         pages: [
           { page_number: 1, file: "page-0001.png", width: 595, height: 842 },
           { page_number: 2, file: "page-0002.png", width: 595, height: 842 },
+          { page_number: 3, file: "page-0003.png", width: 595, height: 842 },
         ],
         requirement_markers: [],
         omission_markers: [],
       }),
-      loadPdfPageBlob: vi.fn((file: string) => file === "page-0001.png"
-        ? Promise.resolve("blob:loaded")
-        : new Promise<string>((resolve) => { resolveLate = resolve })),
+      loadPdfPageBlob: vi.fn((file: string) => {
+        if (file === "page-0001.png") return Promise.resolve("blob:loaded")
+        if (file === "page-0002.png") return new Promise<string>((resolve) => { resolveLate = resolve })
+        return Promise.resolve("blob:must-not-load")
+      }),
     })
     try {
       const wrapper = mount(DocumentReview, { props: { client, active: true } })
-      await flushPromises()
-      await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
       await flushPromises()
       expect(client.loadPdfPageBlob).toHaveBeenCalledTimes(2)
 
@@ -284,16 +429,18 @@ describe("DocumentReview", () => {
       resolveLate?.("blob:late")
       await flushPromises()
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:late")
+      expect(client.loadPdfPageBlob).toHaveBeenCalledTimes(2)
+      expect(client.loadPdfPageBlob).not.toHaveBeenCalledWith("page-0003.png")
     } finally {
       vi.unstubAllGlobals()
     }
   })
 
   it("pdf mode full-block zones: click any paragraph for translation/analysis card", async () => {
-    // 0714「点一段出翻译和解析」：影印页全段落热区——req→需求卡,context→背景三段式卡
+    // 影印页全段落热区：锚点→需求卡，来源跨度→关联需求，普通段→背景卡。
     const client = makeClient({
       loadDocument: vi.fn().mockResolvedValue({
-        count: 2,
+        count: 4,
         blocks: [
           { block_id: "B1", order: 1, type: "paragraph", text: "The meter shall measure volume.",
             section_path: ["4"], requirement_like: true, noise: false, coverage_candidate: true,
@@ -301,33 +448,45 @@ describe("DocumentReview", () => {
           { block_id: "B2", order: 2, type: "paragraph", text: "Background prose paragraph.",
             section_path: ["4"], requirement_like: false, noise: false, coverage_candidate: false,
             translation: "背景说明段的中文翻译。" },
+          { block_id: "B3", order: 3, type: "paragraph", text: "The result shall also be stored.",
+            section_path: ["4"], requirement_like: true, noise: false, coverage_candidate: true,
+            translation: "结果还应被存储。" },
+          { block_id: "B4", order: 4, type: "paragraph", text: "An uncovered alarm shall be reported.",
+            section_path: ["4"], requirement_like: true, noise: false, coverage_candidate: true,
+            translation: "未覆盖的报警应被报告。" },
         ],
       }),
       loadAiRequirements: vi.fn().mockResolvedValue([
         { ai_req_id: "AIR-1", title: "计量", description: "d", module: "计量", module_effective: "计量",
           type: "functional", priority: "P1", status: "draft", source_section: "4",
           source_quote: "The meter shall measure volume.",
-          source_block_ids: ["B1"], anchor_block_id: "B1",
+          source_block_ids: ["B1", "B3"], anchor_block_id: "B1",
           acceptance_criteria: [], labels: ["计量"], review_state: null },
+        { ai_req_id: "AIR-2", title: "报警", description: "d2", module: "事件记录", module_effective: "事件记录",
+          type: "functional", priority: "P1", status: "draft", source_section: "4",
+          source_quote: "The meter shall measure volume.",
+          source_block_ids: ["B1"], anchor_block_id: "B1",
+          acceptance_criteria: [], labels: ["事件记录"], review_state: null },
       ]),
       loadPdfAnnotation: vi.fn().mockResolvedValue({
         available: true,
         pages: [{ page_number: 1, file: "page-0001.png", width: 595, height: 842 }],
         requirement_markers: [{ req_id: "AIR-1", page: 1, rect: { left: 8, top: 12, width: 60, height: 4 } }],
-        omission_markers: [],
+        omission_markers: [{ block_id: "B4", page: 1, rect: { left: 8, top: 56, width: 60, height: 4 } }],
         block_zones: [
           { block_id: "B1", page: 1, rect: { left: 8, top: 12, width: 60, height: 4 },
-            kind: "req", req_id: "AIR-1" },
+            kind: "req", req_id: "AIR-1", req_ids: ["AIR-1", "AIR-2"] },
           { block_id: "B2", page: 1, rect: { left: 8, top: 40, width: 60, height: 4 },
             kind: "context" },
+          { block_id: "B3", page: 1, rect: { left: 8, top: 48, width: 60, height: 4 },
+            kind: "covered", req_ids: ["AIR-1"] },
+          { block_id: "B4", page: 1, rect: { left: 8, top: 56, width: 60, height: 4 },
+            kind: "omission" },
         ],
       }),
     })
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
     await flushPromises()
-    await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
-    await flushPromises()
-
     // 背景段热区 → 三段式说明卡（原因/翻译/引用）
     await wrapper.find('[data-testid="pdf-zone-B2"]').trigger("click")
     const card = wrapper.find('[data-testid="context-card"]')
@@ -336,16 +495,36 @@ describe("DocumentReview", () => {
     expect(card.text()).toContain("背景说明段的中文翻译。")
     expect(card.text()).toContain("Background prose paragraph.")
     expect(wrapper.find('[data-testid="pdf-zone-B2"]').classes()).toContain("sel")
+    expect(wrapper.find(".pdf-zone").exists()).toBe(false)
 
-    // 需求锚点热区 → 需求详情卡（与标记同路由）
+    // 同一原文段解析出多条需求时先展示完整结果列表，避免只打开第一条。
     await wrapper.find('[data-testid="pdf-zone-B1"]').trigger("click")
-    expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
+    const reqGroupCard = wrapper.find('[data-testid="req-group-card"]')
+    expect(reqGroupCard.text()).toContain("该段解析出 2 条需求")
+    expect(reqGroupCard.findAll('[data-testid="echo-jump"]')).toHaveLength(2)
     expect(wrapper.find('[data-testid="pdf-zone-B1"]').classes()).toContain("sel")
+    await reqGroupCard.findAll('[data-testid="echo-jump"]')[0].trigger("click")
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
+
+    // 非锚点来源段不能误报为背景；点原文应说明它已纳入需求，并可跳转关联需求。
+    await wrapper.find('[data-testid="pdf-zone-B3"]').trigger("click")
+    const coveredCard = wrapper.find('[data-testid="covered-card"]')
+    expect(coveredCard.text()).toContain("该段已纳入需求解析")
+    expect(coveredCard.text()).toContain("结果还应被存储。")
+    expect(coveredCard.text()).toContain("查看批注 01《计量》")
+    expect(wrapper.find('[data-testid="pdf-zone-B3"]').attributes("aria-pressed")).toBe("true")
+    await coveredCard.find('[data-testid="echo-jump"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
 
     // 再点一下背景段 → 打开;再点同段 → 取消（与重排块点击同语义）
     await wrapper.find('[data-testid="pdf-zone-B2"]').trigger("click")
     await wrapper.find('[data-testid="pdf-zone-B2"]').trigger("click")
     expect(wrapper.find('[data-testid="context-card"]').exists()).toBe(false)
+
+    // 未覆盖段正文与页边 ! 使用同一遗漏卡路由。
+    await wrapper.find('[data-testid="pdf-zone-B4"]').trigger("click")
+    expect(wrapper.find('[data-testid="omission-card"]').text()).toContain("为什么标为未覆盖")
+    expect(wrapper.find('[data-testid="pdf-zone-B4"]').classes()).toContain("sel")
   })
 
   it("pdf mode shows honest hint when pages are not generated", async () => {
@@ -400,7 +579,7 @@ describe("DocumentReview", () => {
     // 再点一下 → 取消选中
     await wrapper.find('[data-testid="omission-tag"]').trigger("click")
     expect(wrapper.find('[data-testid="omission-card"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("点左侧")
+    expect(wrapper.find('[data-testid="doc-detail"]').text()).toContain("查看解析结果")
   })
 
   it("omission card shows honest empty state without translation", async () => {
@@ -440,9 +619,10 @@ describe("DocumentReview", () => {
     const wrapper = mount(DocumentReview, { props: { client, active: true } })
     await flushPromises()
     await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("抽取需求")
+    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("抽取轨浅描述")
     expect(wrapper.find('[data-testid="dd-functional"]').text()).toContain("体积计量管理")
     expect(wrapper.find('[data-testid="dd-functional"]').text()).toContain("累计体积计量结果")
-    expect(wrapper.find('[data-testid="dd-requirement-summary"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="dd-analysis-badge"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="dd-analysis-text"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="dd-enrich-warnings"]').exists()).toBe(false)
@@ -461,7 +641,7 @@ describe("DocumentReview", () => {
     await flushPromises()
     await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
     expect(wrapper.find('[data-testid="dd-functional"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("需求摘要")
+    expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("抽取需求")
     expect(wrapper.find('[data-testid="dd-requirement-summary"]').text()).toContain("应计量体积")
     expect(wrapper.find('[data-testid="dd-analysis-badge"]').exists()).toBe(false)
   })
@@ -546,5 +726,12 @@ describe("DocumentReview", () => {
     // 再点一下 → 取消
     await wrapper.findAll(".doc-block")[0].trigger("click")
     expect(wrapper.find('[data-testid="context-card"]').exists()).toBe(false)
+  })
+
+  it("keeps page-edge markers and PDF paragraph zones interactive", () => {
+    const source = readFileSync(resolve(__dirname, "../DocumentReview.vue"), "utf-8")
+    expect(source).toContain(".doc-paper.pdf-paper {\n  padding: 16px 48px 16px 16px;")
+    expect(source).toContain(".doc-paper.pdf-paper { padding: 14px 44px 14px 12px; }")
+    expect(source).toContain("cursor: pointer; pointer-events: auto; border-radius: 3px;")
   })
 })

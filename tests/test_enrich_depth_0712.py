@@ -246,7 +246,7 @@ class W3MergeTests(unittest.TestCase):
             out = Path(td)
             self._seed_air(out)
             rendered = dae.render_annotation_html(out)
-            quote_pos = rendered.index("(r.source_quote ? '<div class=\"dd-label\">原文引用</div>")
+            quote_pos = rendered.index("const sourceQuoteHtml = r.source_quote")
             reason_pos = rendered.index("ownershipReasonHtml(r)+", quote_pos)
             self.assertGreater(reason_pos, quote_pos)   # 归属判定在引用之后
             self.assertNotIn("设计候选（非规范约束）", rendered)   # 暂不渲染
@@ -270,7 +270,11 @@ class W3MergeTests(unittest.TestCase):
             self.assertNotIn("富化(LLM)", rendered)
             self.assertNotIn("⚠ 富化待核", rendered)
             self.assertIn("function requirementSummaryHtml", rendered)
-            self.assertIn("functionalMembershipHtml(r) || requirementSummaryHtml(r)", rendered)
+            self.assertIn("const summaryHtml = requirementSummaryHtml(r);", rendered)
+            self.assertIn(
+                "summaryHtml + sourceQuoteHtml + (isHardware ? hardwareTranslationHtml(r) : functionalHtml)",
+                rendered,
+            )
             self.assertIn("const devSrc = r.dev_guidance||[];", rendered)
             self.assertIn("为什么判为", rendered)
 

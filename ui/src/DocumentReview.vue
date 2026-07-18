@@ -60,8 +60,6 @@ async function load() {
   }
 }
 
-watch(() => props.active, (on) => { if (on && (!loadedOnce || !requirements.value.length)) void load() }, { immediate: true })
-
 // 每条需求锚到含其 source_quote 原句的那一小段（后端 anchor_block_id，段落级精确），
 // 回退 source_block_ids 首块。批注钉在需求实际所在的小段，不分散到整章节。
 const anchorByBlock = computed(() => {
@@ -90,6 +88,21 @@ const echoByBlock = computed(() => {
   return map
 })
 
+// 来源跨度中除锚点外的段落也参与了需求解析。点击时应展示关联需求，不能误称为背景。
+const coveredByBlock = computed(() => {
+  const map = new Map<string, AiRequirement[]>()
+  for (const req of requirements.value) {
+    const anchor = req.anchor_block_id || (req.source_block_ids || [])[0]
+    for (const source of req.source_block_ids || []) {
+      if (!source || source === anchor) continue
+      const list = map.get(source) || []
+      if (!list.some((item) => item.ai_req_id === req.ai_req_id)) list.push(req)
+      map.set(source, list)
+    }
+  }
+  return map
+})
+
 // 被任意需求覆盖的块集合（含整段 source_block_ids 与回声段），用于遗漏判定。
 const coveredBlocks = computed(() => {
   const s = new Set<string>()
@@ -106,17 +119,25 @@ const selectedReq = computed(() => requirements.value.find((r) => r.ai_req_id ==
 // 目标：全文每一段都有分析结果——需求段有批注,其余段点开能看到为什么没生成需求+翻译+引用。
 const OMISSION_REASON = "该段含规范性措辞（shall/must/应…），被判为疑似需求，但没有任何已抽取需求的来源范围覆盖它。可能原因：抽取遗漏（自检未补回）或该句实为背景说明。确属需求请反馈补抽；背景说明可忽略。"
 const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），被判定为背景/说明性内容，因此没有生成研发需求；其信息会作为上下文供相邻需求的分析使用。如认为该段实际包含需求，请反馈补抽。"
+const COVERED_REASON = "该段已纳入一条或多条抽取需求的来源范围，用于补充完整语义、条件或约束；它不是独立锚点，因此不重复挂页边编号。可从下方查看关联需求。"
+const REQ_GROUP_REASON = "该段原文解析出了多条独立需求。为避免只展示第一条，下面列出该段的全部解析结果。"
 // 与导出 HTML 同文案（双渲染器契约）
 const ECHO_REASON = "该段与已抽取需求的来源段落内容重复（同文多次出现）。解析已汇总至对应需求条目，本段不重复挂批注；点击「重复·见」角标或下方链接可跳转查看该条目。"
 const selectedBlockId = ref("")
 const selectedBlock = computed(() => blocks.value.find((b) => b.block_id === selectedBlockId.value) || null)
 const selectedBlockKind = computed(() => {
   if (!selectedBlock.value) return "context"
+  if ((anchorByBlock.value.get(selectedBlock.value.block_id) || []).length > 1) return "req_group"
   if (echoByBlock.value.has(selectedBlock.value.block_id)) return "echo"
+  if (coveredByBlock.value.has(selectedBlock.value.block_id)) return "covered"
   return isOmission(selectedBlock.value) ? "omission" : "context"
 })
-const selectedEchoReqs = computed(() =>
-  (selectedBlock.value && echoByBlock.value.get(selectedBlock.value.block_id)) || [])
+const selectedRelatedReqs = computed(() => {
+  if (!selectedBlock.value) return []
+  const blockId = selectedBlock.value.block_id
+  if (selectedBlockKind.value === "req_group") return anchorByBlock.value.get(blockId) || []
+  return (selectedBlockKind.value === "covered" ? coveredByBlock.value.get(blockId) : echoByBlock.value.get(blockId)) || []
+})
 function selectBlockCard(b: DocumentBlock) {
   if (selectedBlockId.value === b.block_id) {  // 再点一下 → 取消选中
     selectedBlockId.value = ""
@@ -137,12 +158,17 @@ function onBlockClick(b: DocumentBlock) {
 
 // 原版影印模式（2026-07-14）：数据与分享 HTML 同源（几何缓存/百分比换算共用后端实现），
 // 右栏详情与裁决两种模式完全共用——双渲染器等价。页图缺失时提示先跑一次影印导出。
-const viewMode = ref<"text" | "pdf">("text")
+const viewMode = ref<"text" | "pdf">("pdf")
 const pdfData = ref<PdfAnnotationPayload | null>(null)
 const pdfLoading = ref(false)
 const pdfPageUrls = ref<Record<string, string>>({})
 let pdfPageLoadGeneration = 0
+let pdfDataLoadGeneration = 0
+let pdfDataLoadPromise: Promise<boolean> | null = null
+let workspaceLoadGeneration = 0
+let modeSelectionGeneration = 0
 let pdfPageLoadsDisposed = false
+let textModeWasFallback = false
 
 function revokePdfPageUrl(url: string) {
   if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
@@ -151,16 +177,18 @@ function revokePdfPageUrl(url: string) {
 }
 
 async function loadPdfPages(payload: PdfAnnotationPayload) {
-  if (pdfPageLoadsDisposed) return
+  const client = props.client
+  if (pdfPageLoadsDisposed || !client) return
   const generation = ++pdfPageLoadGeneration
   // 顺序拉取页图(带鉴权头 fetch→blob;token 不进 URL——仓库安全锁);单页失败不阻断其余
   for (const page of payload.pages || []) {
-    if (pdfPageUrls.value[page.file] || !props.client) continue
+    if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration) break
+    if (pdfPageUrls.value[page.file]) continue
     try {
-      const url = await props.client.loadPdfPageBlob(page.file)
+      const url = await client.loadPdfPageBlob(page.file)
       if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration) {
         revokePdfPageUrl(url)
-        continue
+        break
       }
       pdfPageUrls.value = { ...pdfPageUrls.value, [page.file]: url }
     } catch {
@@ -169,26 +197,93 @@ async function loadPdfPages(payload: PdfAnnotationPayload) {
   }
 }
 
+async function ensurePdfData(): Promise<boolean> {
+  if (pdfData.value) return Boolean(pdfData.value.available)
+  if (pdfDataLoadPromise) return pdfDataLoadPromise
+  const client = props.client
+  if (!client || pdfPageLoadsDisposed) return false
+  const generation = pdfDataLoadGeneration
+  pdfLoading.value = true
+  const request = client.loadPdfAnnotation()
+    .then((payload) => {
+      if (pdfPageLoadsDisposed || generation !== pdfDataLoadGeneration || client !== props.client) return false
+      pdfData.value = payload
+      if (payload.available) void loadPdfPages(payload)
+      return Boolean(payload.available)
+    })
+    .catch((error: unknown) => {
+      if (pdfPageLoadsDisposed || generation !== pdfDataLoadGeneration || client !== props.client) return false
+      pdfData.value = { available: false, reason: error instanceof Error ? error.message : "影印数据加载失败" }
+      return false
+    })
+    .finally(() => {
+      if (generation === pdfDataLoadGeneration && pdfDataLoadPromise === request) {
+        pdfDataLoadPromise = null
+        pdfLoading.value = false
+      }
+    })
+  pdfDataLoadPromise = request
+  return request
+}
+
+async function loadWorkspace() {
+  const workspaceGeneration = ++workspaceLoadGeneration
+  const modeGeneration = modeSelectionGeneration
+  await load()
+  if (workspaceGeneration !== workspaceLoadGeneration || viewMode.value !== "pdf") return
+  const available = await ensurePdfData()
+  if (workspaceGeneration !== workspaceLoadGeneration || modeGeneration !== modeSelectionGeneration) return
+  if (!available && viewMode.value === "pdf") {
+    viewMode.value = "text"
+    textModeWasFallback = true
+  }
+}
+
+async function reloadWorkspace() {
+  const workspaceGeneration = ++workspaceLoadGeneration
+  const modeGeneration = modeSelectionGeneration
+  const shouldRestorePdf = viewMode.value === "pdf" || textModeWasFallback
+  pdfDataLoadGeneration += 1
+  pdfDataLoadPromise = null
+  pdfLoading.value = false
+  pdfPageLoadGeneration += 1
+  const urls = new Set(Object.values(pdfPageUrls.value))
+  pdfPageUrls.value = {}
+  for (const url of urls) revokePdfPageUrl(url)
+  pdfData.value = null
+  await load()
+  if (workspaceGeneration !== workspaceLoadGeneration || !shouldRestorePdf || modeGeneration !== modeSelectionGeneration) return
+  const available = await ensurePdfData()
+  if (workspaceGeneration !== workspaceLoadGeneration || modeGeneration !== modeSelectionGeneration) return
+  if (available) {
+    viewMode.value = "pdf"
+    textModeWasFallback = false
+  } else {
+    viewMode.value = "text"
+    textModeWasFallback = true
+  }
+}
+
+watch(() => props.active, (on) => {
+  if (on && (!loadedOnce || !requirements.value.length)) void loadWorkspace()
+}, { immediate: true })
+
 onUnmounted(() => {
   pdfPageLoadsDisposed = true
+  workspaceLoadGeneration += 1
+  pdfDataLoadGeneration += 1
+  pdfDataLoadPromise = null
+  pdfLoading.value = false
   pdfPageLoadGeneration += 1
   const urls = new Set(Object.values(pdfPageUrls.value))
   pdfPageUrls.value = {}
   for (const url of urls) revokePdfPageUrl(url)
 })
 async function switchMode(mode: "text" | "pdf") {
+  modeSelectionGeneration += 1
+  textModeWasFallback = false
   viewMode.value = mode
-  if (mode === "pdf" && !pdfData.value && props.client && !pdfLoading.value) {
-    pdfLoading.value = true
-    try {
-      pdfData.value = await props.client.loadPdfAnnotation()
-      if (pdfData.value?.available) void loadPdfPages(pdfData.value)
-    } catch (error) {
-      pdfData.value = { available: false, reason: error instanceof Error ? error.message : "影印数据加载失败" }
-    } finally {
-      pdfLoading.value = false
-    }
-  }
+  if (mode === "pdf") await ensurePdfData()
 }
 type PdfMarker = { kind: "req" | "omission"; id: string; rect: PdfZoneRect; laneOffset: number }
 const pdfMarkersByPage = computed(() => {
@@ -215,7 +310,7 @@ const pdfMarkersByPage = computed(() => {
 // 全段落热区（0714「点一段出翻译和解析」）：kind 语义由后端 _pdf_block_zones 唯一定义,
 // 这里只做渲染与路由——req→需求卡 / omission·context→块级卡（卡种由 selectedBlockKind 判定）
 type PdfBlockZone = { block_id: string; page: number; rect: PdfZoneRect
-                      kind: "req" | "echo" | "omission" | "context";
+                      kind: "req" | "covered" | "echo" | "omission" | "context";
                       req_id?: string; req_ids?: string[] }
 const pdfZonesByPage = computed(() => {
   const byPage = new Map<number, PdfBlockZone[]>()
@@ -228,6 +323,11 @@ const pdfZonesByPage = computed(() => {
 })
 function pdfZoneClick(z: PdfBlockZone) {
   if (z.kind === "req" && z.req_id) {
+    if ((z.req_ids || []).length > 1) {
+      const block = blocks.value.find((b) => b.block_id === z.block_id)
+      if (block) selectBlockCard(block)
+      return
+    }
     const req = requirements.value.find((r) => r.ai_req_id === z.req_id)
     if (req) select(req)
     return
@@ -236,12 +336,16 @@ function pdfZoneClick(z: PdfBlockZone) {
   if (block) selectBlockCard(block)
 }
 function pdfZoneSelected(z: PdfBlockZone): boolean {
-  if (z.kind === "req") return !!z.req_id && z.req_id === selectedId.value
+  if (z.kind === "req") {
+    return (!!z.req_id && z.req_id === selectedId.value) ||
+      ((z.req_ids || []).length > 1 && z.block_id === selectedBlockId.value)
+  }
   if (z.kind === "echo" && selectedId.value) return (z.req_ids || []).includes(selectedId.value)
   return z.block_id === selectedBlockId.value
 }
 function pdfZoneTitle(z: PdfBlockZone): string {
-  if (z.kind === "req") return "查看需求批注"
+  if (z.kind === "req") return (z.req_ids || []).length > 1 ? "查看该段的全部需求解析" : "查看需求批注"
+  if (z.kind === "covered") return "查看该段关联的需求解析"
   if (z.kind === "echo") return "重复段·点击查看汇总需求"
   return z.kind === "omission" ? "疑似需求未覆盖·点击查看" : "查看该段翻译与解析"
 }
@@ -262,11 +366,6 @@ function pdfMarkerLabel(m: PdfMarker): string {
 }
 function pdfMarkerSelected(m: PdfMarker): boolean {
   return m.kind === "req" ? m.id === selectedId.value : m.id === selectedBlockId.value
-}
-function pdfSelectedZone(page: number): PdfZoneRect | null {
-  const markers = pdfMarkersByPage.value.get(page) || []
-  const hit = markers.find((m) => pdfMarkerSelected(m))
-  return hit ? hit.rect : null
 }
 // 只高亮选中的片段（锚点小段），不把整个章节跨度刷蓝
 const evidenceBlocks = computed(() => {
@@ -303,7 +402,7 @@ function orderedEchoReqs(reqs: AiRequirement[]): AiRequirement[] {
   return [...reqs].sort((a, b) =>
     (reqNumbers.value.get(a.ai_req_id) ?? 1e9) - (reqNumbers.value.get(b.ai_req_id) ?? 1e9))
 }
-const orderedSelectedEchoReqs = computed(() => orderedEchoReqs(selectedEchoReqs.value))
+const orderedSelectedRelatedReqs = computed(() => orderedEchoReqs(selectedRelatedReqs.value))
 function echoReqsForBlock(blockId: string): AiRequirement[] {
   return orderedEchoReqs(echoByBlock.value.get(blockId) || [])
 }
@@ -311,11 +410,16 @@ function echoLabel(reqs: AiRequirement[]): string {
   const numbers = orderedEchoReqs(reqs).map((req) => reqNumber(req)).filter((value) => value !== "--")
   return numbers.length ? `重复·见${numbers.join("/")}` : "重复段"
 }
-function pdfEchoLabel(zone: PdfBlockZone): string {
+function pdfLinkedLabel(zone: PdfBlockZone): string {
   const ids = new Set(zone.req_ids || [])
-  return echoLabel(requirements.value.filter((req) => ids.has(req.ai_req_id)))
+  const reqs = requirements.value.filter((req) => ids.has(req.ai_req_id))
+  if (zone.kind === "covered") {
+    const numbers = orderedEchoReqs(reqs).map((req) => reqNumber(req)).filter((value) => value !== "--")
+    return numbers.length ? `关联·见${numbers.join("/")}` : "分析范围"
+  }
+  return echoLabel(reqs)
 }
-function jumpToEchoReq(req: AiRequirement) {
+function jumpToRelatedReq(req: AiRequirement) {
   selectedBlockId.value = ""
   selectedId.value = req.ai_req_id   // 直接选中(不走 select 的再点取消语义)
 }
@@ -486,11 +590,11 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
       <div class="doc-toolbar-actions">
         <div class="mode-toggle">
           <button type="button" :class="{ active: viewMode === 'text' }" data-testid="mode-text"
-                  @click="switchMode('text')"><Rows3 :size="14" aria-hidden="true" />文字重排</button>
+                  @click="switchMode('text')"><Rows3 :size="14" aria-hidden="true" />解析文本</button>
           <button type="button" :class="{ active: viewMode === 'pdf' }" data-testid="mode-pdf"
-                  @click="switchMode('pdf')"><Image :size="14" aria-hidden="true" />原版影印</button>
+                  @click="switchMode('pdf')"><Image :size="14" aria-hidden="true" />原版核对</button>
         </div>
-        <button class="button" type="button" data-testid="doc-reload" :disabled="loading" @click="load">
+        <button class="button" type="button" data-testid="doc-reload" :disabled="loading" @click="reloadWorkspace">
           <RefreshCw :class="{ spin: loading }" :size="14" aria-hidden="true" />{{ loading ? "加载中" : "刷新" }}
         </button>
       </div>
@@ -500,7 +604,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 
     <div class="doc-body">
       <article v-if="viewMode === 'pdf'" class="doc-paper pdf-paper" data-testid="pdf-paper">
-        <div v-if="pdfLoading" class="doc-detail-empty">影印数据加载中…</div>
+        <div v-if="loading || pdfLoading" class="doc-detail-empty" data-testid="pdf-loading">影印数据加载中…</div>
         <div v-else-if="!pdfData || !pdfData.available" class="doc-detail-empty" data-testid="pdf-unavailable">
           {{ pdfData?.reason || "影印数据不可用" }}
         </div>
@@ -518,12 +622,11 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                                 width: z.rect.width + '%', height: z.rect.height + '%' }"
                       :data-testid="`pdf-zone-${z.block_id}`"
                       :title="pdfZoneTitle(z)"
+                      :aria-label="pdfZoneTitle(z)"
+                      :aria-pressed="pdfZoneSelected(z)"
                       @click.stop="pdfZoneClick(z)">
-                <span v-if="z.kind === 'echo'" class="pdf-echo-tag">{{ pdfEchoLabel(z) }}</span>
+                <span v-if="z.kind === 'echo' || z.kind === 'covered'" class="pdf-echo-tag">{{ pdfLinkedLabel(z) }}</span>
               </button>
-              <span v-if="pdfSelectedZone(p.page_number)" class="pdf-zone"
-                    :style="{ left: pdfSelectedZone(p.page_number)!.left + '%', top: pdfSelectedZone(p.page_number)!.top + '%',
-                              width: pdfSelectedZone(p.page_number)!.width + '%', height: pdfSelectedZone(p.page_number)!.height + '%' }" />
               <button v-for="m in (pdfMarkersByPage.get(p.page_number) || [])"
                       :key="m.kind + m.id" type="button" class="pdf-marker"
                       :class="[m.kind === 'omission' ? 'marker-omission' : 'marker-req', { sel: pdfMarkerSelected(m) }]"
@@ -615,19 +718,19 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
       </article>
 
       <aside class="doc-detail" data-testid="doc-detail">
-        <div v-if="!selectedReq && !selectedBlock" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点左侧批注查看需求详情</span></div>
+        <div v-if="!selectedReq && !selectedBlock" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
         <div v-else-if="selectedBlock" class="doc-detail-card"
-             :data-testid="selectedBlockKind === 'omission' ? 'omission-card' : (selectedBlockKind === 'echo' ? 'echo-card' : 'context-card')">
+             :data-testid="selectedBlockKind === 'omission' ? 'omission-card' : (selectedBlockKind === 'echo' ? 'echo-card' : (selectedBlockKind === 'covered' ? 'covered-card' : (selectedBlockKind === 'req_group' ? 'req-group-card' : 'context-card')))">
           <div class="dd-head">
-            <span class="dd-module">{{ selectedBlockKind === "omission" ? "未覆盖" : (selectedBlockKind === "echo" ? "重复段" : "背景/上下文") }}</span>
+            <span class="dd-module">{{ selectedBlockKind === "omission" ? "未覆盖" : (selectedBlockKind === "echo" ? "重复段" : (selectedBlockKind === "covered" ? "分析范围" : (selectedBlockKind === "req_group" ? "解析结果" : "背景/上下文"))) }}</span>
             <span class="dd-status">说明</span>
           </div>
-          <h3 class="dd-title">{{ selectedBlockKind === "omission" ? "为什么标为未覆盖" : (selectedBlockKind === "echo" ? "该段解析已汇总" : "为什么没有生成研发需求") }}</h3>
-          <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "omission" ? OMISSION_REASON : (selectedBlockKind === "echo" ? ECHO_REASON : CONTEXT_REASON) }}</div></div>
-          <div v-if="selectedBlockKind === 'echo' && orderedSelectedEchoReqs.length" class="dd-section">
-            <button v-for="req in orderedSelectedEchoReqs" :key="req.ai_req_id"
+          <h3 class="dd-title">{{ selectedBlockKind === "omission" ? "为什么标为未覆盖" : (selectedBlockKind === "echo" ? "该段解析已汇总" : (selectedBlockKind === "covered" ? "该段已纳入需求解析" : (selectedBlockKind === "req_group" ? `该段解析出 ${orderedSelectedRelatedReqs.length} 条需求` : "为什么没有生成研发需求"))) }}</h3>
+          <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "omission" ? OMISSION_REASON : (selectedBlockKind === "echo" ? ECHO_REASON : (selectedBlockKind === "covered" ? COVERED_REASON : (selectedBlockKind === "req_group" ? REQ_GROUP_REASON : CONTEXT_REASON))) }}</div></div>
+          <div v-if="(selectedBlockKind === 'echo' || selectedBlockKind === 'covered' || selectedBlockKind === 'req_group') && orderedSelectedRelatedReqs.length" class="dd-section">
+            <button v-for="req in orderedSelectedRelatedReqs" :key="req.ai_req_id"
                     class="echo-jump" data-testid="echo-jump" type="button"
-                    @click.stop="jumpToEchoReq(req)">
+                    @click.stop="jumpToRelatedReq(req)">
               查看批注 {{ reqNumber(req) }}《{{ req.title }}》
             </button>
           </div>
@@ -656,7 +759,14 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             ⇄ 全文档一致性：{{ (selectedReq.consistency_flags || []).join("；") }}
           </div>
 
-          <div class="dd-legend">正文标记：<span style="background:#f3d9a0;padding:0 4px">黄=引用依据</span> · <span style="background:#eef2ff;padding:0 4px">蓝=证据段</span> · 左侧细条=分析上下文</div>
+          <div class="dd-legend">{{ viewMode === "pdf" ? "左侧原版页面为核对依据，右侧为解析结果" : "解析文本可能丢失原版字形与间距，请用原版核对来源" }}</div>
+          <div class="dd-section dd-result-primary" data-testid="dd-requirement-summary">
+            <div class="dd-label">抽取需求</div>
+            <div class="dd-body">{{ selectedReq.description || "未生成需求摘要" }}</div>
+          </div>
+          <div class="dd-section" v-if="selectedReq.source_quote">
+            <div class="dd-label">抽取原句（对照左页）</div><div class="dd-quote">{{ selectedReq.source_quote }}</div>
+          </div>
           <div class="dd-section" v-if="ownershipOf(selectedReq) !== 'hardware' && selectedReq.functional_requirement_id" data-testid="dd-functional">
             <div class="dd-label">所属研发功能</div>
             <div class="dd-body"><strong>{{ selectedReq.functional_title || selectedReq.functional_requirement_id }}</strong></div>
@@ -681,10 +791,6 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             </template>
             <div v-if="(selectedReq.functional_conflict_flags || []).length" class="dd-suspicion"
                  data-testid="dd-conflict">待澄清冲突：{{ (selectedReq.functional_conflict_flags || []).join("；") }}</div>
-          </div>
-          <div class="dd-section" v-else-if="ownershipOf(selectedReq) !== 'hardware'" data-testid="dd-requirement-summary">
-            <div class="dd-label">需求摘要</div>
-            <div class="dd-body">{{ selectedReq.description || "未生成需求摘要" }}</div>
           </div>
           <div class="dd-section" v-if="ownershipOf(selectedReq) === 'hardware'">
             <div class="dd-label">中文翻译 / 说明</div>
@@ -717,9 +823,6 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           <div class="dd-section" v-if="acceptanceOf(selectedReq).length">
             <div class="dd-label">测试指引 / 验收</div>
             <ul class="dd-list"><li v-for="(c, i) in acceptanceOf(selectedReq)" :key="i">{{ c }}</li></ul>
-          </div>
-          <div class="dd-section" v-if="selectedReq.source_quote">
-            <div class="dd-label">原文引用</div><div class="dd-quote">{{ selectedReq.source_quote }}</div>
           </div>
           <div class="dd-section" v-if="ownershipReasonOf(selectedReq)">
             <div class="dd-label">为什么判为{{ OWNERSHIP_LABELS[ownershipOf(selectedReq)] || ownershipOf(selectedReq) }}</div>
@@ -766,33 +869,39 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
   background: transparent; cursor: pointer; }
 .mode-toggle button.active { background: #ffffff; color: #1e41c9; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
 /* 原版影印：页图 + 百分比批注覆盖层（与分享 HTML 同源数据） */
-.pdf-paper { background: #eceef2; padding: 16px; }
+.pdf-paper { background: #eceef2; padding: 16px 48px 16px 16px; }
 .pdf-page { position: relative; margin: 0 auto 14px; max-width: 920px; background: #ffffff;
-  box-shadow: 0 2px 10px rgba(0,0,0,.10); border-radius: 4px; overflow: hidden; }
+  box-shadow: 0 2px 10px rgba(0,0,0,.10); border-radius: 4px; overflow: visible; }
+.pdf-page > img { border-radius: 4px; }
 .pdf-page img { display: block; width: 100%; height: auto; }
 .pdf-page-loading { position: absolute; inset: 0; display: flex; align-items: center;
   justify-content: center; color: #98a1b3; font-size: 12px; }
 .pdf-overlay { position: absolute; inset: 0; }
-.pdf-zone { position: absolute; background: rgba(89,120,247,.14); outline: 2px solid rgba(89,120,247,.55);
-  border-radius: 2px; pointer-events: none; }
-.pdf-marker { position: absolute; right: 6px; min-width: 26px; height: 22px; border-radius: 11px;
+.pdf-marker { position: absolute; right: -32px; min-width: 26px; height: 22px; border-radius: 11px;
   border: 1px solid #cbd5e1; background: #ffffff; color: #1e41c9; font-size: 11px; font-weight: 700;
   cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.14); z-index: 3; }
 .pdf-marker.marker-omission { color: #b45309; border-color: #ecd9ae; background: #fdf3e3; }
 .pdf-marker.sel { outline: 2px solid #5978f7; }
 /* 全段落热区（0714）：透明可点,悬停淡蓝提示——点一段出翻译和解析;标记浮在热区上层 */
 .pdf-block-zone { position: absolute; z-index: 1; margin: 0; padding: 0; border: 1px solid transparent;
-  background: transparent; cursor: pointer; border-radius: 3px;
+  background: transparent; cursor: pointer; pointer-events: auto; border-radius: 3px;
   transition: background .12s, border-color .12s; }
-.pdf-block-zone:hover { background: rgba(89, 120, 247, .08); border-color: rgba(89, 120, 247, .5); }
-.pdf-block-zone.sel { background: rgba(89, 120, 247, .12); border-color: rgba(89, 120, 247, .85); }
-.pdf-block-zone.zone-omission:hover { background: rgba(204, 137, 37, .10); border-color: rgba(204, 137, 37, .55); }
-.pdf-block-zone.zone-omission.sel { background: rgba(204, 137, 37, .14); border-color: rgba(180, 83, 9, .8); }
+.pdf-block-zone:hover { background: rgba(89, 120, 247, .04); border-color: rgba(89, 120, 247, .42); }
+.pdf-block-zone.sel { background: rgba(89, 120, 247, .06); border-color: rgba(89, 120, 247, .72); }
+.pdf-block-zone.zone-omission:hover { background: rgba(204, 137, 37, .05); border-color: rgba(204, 137, 37, .48); }
+.pdf-block-zone.zone-omission.sel { background: rgba(204, 137, 37, .07); border-color: rgba(180, 83, 9, .7); }
 .pdf-block-zone.zone-echo:hover, .pdf-block-zone.zone-echo.sel {
-  background: rgba(15,118,110,.08); border-color: rgba(15,118,110,.55); }
+  background: rgba(15,118,110,.05); border-color: rgba(15,118,110,.5); }
+.pdf-block-zone.zone-covered:hover, .pdf-block-zone.zone-covered.sel {
+  background: rgba(10,132,255,.045); border-color: rgba(10,132,255,.5); }
 .pdf-echo-tag { position: absolute; right: 2px; top: -13px; display: inline-block; padding: 0 2px 1px;
   border-bottom: 1px dashed #667085; color: #4b5563; background: rgba(255,255,255,.92);
-  font-size: 9px; font-weight: 600; line-height: 1.15; white-space: nowrap; pointer-events: none; }
+  z-index: 2; font-size: 9px; font-weight: 600; line-height: 1.15; white-space: nowrap;
+  pointer-events: auto; cursor: pointer; opacity: 0; transition: opacity .12s; }
+.pdf-block-zone.zone-echo:hover .pdf-echo-tag,
+.pdf-block-zone.zone-echo.sel .pdf-echo-tag,
+.pdf-block-zone.zone-covered:hover .pdf-echo-tag,
+.pdf-block-zone.zone-covered.sel .pdf-echo-tag { opacity: 1; }
 .pdf-page-label { position: absolute; left: 8px; bottom: 6px; font-size: 10px; color: #98a1b3;
   background: rgba(255,255,255,.85); border-radius: 6px; padding: 1px 6px; }
 .doc-block { display: grid; grid-template-columns: 108px 1fr; gap: 8px; padding: 1px 4px; margin-bottom: 0; border-left: 2px solid transparent; cursor: default; }
@@ -1009,7 +1118,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 }
 
 .doc-body {
-  grid-template-columns: minmax(0, 1fr) 390px;
+  grid-template-columns: minmax(0, 1fr) clamp(390px, 32vw, 480px);
 }
 
 .doc-paper {
@@ -1019,6 +1128,10 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 
 .pdf-paper {
   background: #e8eaef;
+}
+
+.doc-paper.pdf-paper {
+  padding: 16px 48px 16px 16px;
 }
 
 .pdf-page {
@@ -1130,6 +1243,16 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
   margin: 12px 0;
 }
 
+.dd-result-primary {
+  padding: 11px 12px;
+  border-left: 3px solid var(--doc-blue);
+  border-radius: 0 6px 6px 0;
+  background: rgba(10, 132, 255, 0.055);
+}
+
+.dd-result-primary .dd-label { color: var(--doc-blue-strong); font-weight: 700; }
+.dd-result-primary .dd-body { color: var(--doc-ink); font-size: 14px; line-height: 1.65; }
+
 .dd-label {
   color: var(--doc-tertiary);
   letter-spacing: 0;
@@ -1190,6 +1313,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 @media (max-width: 1080px) {
   .doc-body { grid-template-columns: minmax(0, 1fr) 340px; }
   .doc-paper { padding-inline: 14px; }
+  .doc-paper.pdf-paper { padding: 14px 44px 14px 12px; }
 }
 
 @media (max-width: 820px) {

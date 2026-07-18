@@ -646,8 +646,24 @@ class DesktopTaskTests(unittest.TestCase):
                         "--out",
                         str(out),
                         "--layout-mode",
-                        "pdf_original",
+                        "optimized",
                     ])
+
+        self.assertEqual(exit_code, 0)
+        task.assert_called_once_with(out, route=None, layout_mode="optimized")
+
+    def test_export_annotation_html_cli_defaults_to_original_pdf_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with patch("desktop_tasks.export_annotation_html_task") as task:
+                task.return_value = {
+                    "kind": "annotation_html",
+                    "out_dir": str(out),
+                    "path": str(out / "document_annotation.html"),
+                    "written": [],
+                }
+                with redirect_stdout(io.StringIO()):
+                    exit_code = desktop_tasks.main(["export-annotation-html", "--out", str(out)])
 
         self.assertEqual(exit_code, 0)
         task.assert_called_once_with(out, route=None, layout_mode="pdf_original")
@@ -720,12 +736,44 @@ class ChainAndManifestTests(unittest.TestCase):
             "requirements-analysis": "analyze-llm-v6+impl-v3",   # v3: 富化默认关闭并保留显式开关
             "template-write": "template_writer/v1+impl-v2",
             "clarification-report": "clarification/v3-gap-tier+impl-v3",   # v3: 遗漏候选档(0714 批次一)
-            "export-annotation-html": "doc_annotation_export/v7",
+            "export-annotation-html": "doc_annotation_export/v8",
         }
         self.assertEqual(
             {stage: desktop_tasks.stage_producer(stage) for stage in expected},
             expected,
         )
+
+    def test_legacy_v7_annotation_export_is_not_reusable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "document_annotation.html").write_text("legacy", encoding="utf-8")
+            fingerprint = desktop_tasks.stage_input_fingerprint(
+                out,
+                "export-annotation-html",
+                route="openai_compatible",
+                config={"layout_mode": "pdf_original"},
+            )
+            (out / desktop_tasks.RUN_MANIFEST).write_text(json.dumps({
+                "manifest_version": 2,
+                "stages": {
+                    "export-annotation-html": {
+                        "status": "ok",
+                        "producer": "doc_annotation_export/v7",
+                        "route": "openai_compatible",
+                        "input_fingerprint": fingerprint,
+                        "outputs": ["document_annotation.html"],
+                    },
+                },
+            }), encoding="utf-8")
+
+            reusable = desktop_tasks.stage_is_reusable(
+                out,
+                "export-annotation-html",
+                route="openai_compatible",
+                config={"layout_mode": "pdf_original"},
+            )
+
+        self.assertFalse(reusable)
 
     def test_ai_extract_fingerprint_tracks_verify_toggles(self) -> None:
         # 专家审核 0715:verify 开关/轮数不进阶段指纹 → 改设置后 chain 续跑
@@ -905,8 +953,21 @@ class ChainAndManifestTests(unittest.TestCase):
                     out,
                     stages=["export-annotation-html"],
                     route="stub",
-                    annotation_layout_mode="pdf_original",
+                    annotation_layout_mode="optimized",
                 )
+
+        export_task.assert_called_once_with(
+            out.resolve(), route="stub", layout_mode="optimized")
+
+    def test_chain_defaults_annotation_export_to_original_pdf_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            with mock.patch.object(
+                desktop_tasks,
+                "export_annotation_html_task",
+                return_value={"kind": "annotation_html", "path": str(out / "document_annotation.html"), "written": []},
+            ) as export_task:
+                desktop_tasks.chain_task(out, stages=["export-annotation-html"], route="stub")
 
         export_task.assert_called_once_with(
             out.resolve(), route="stub", layout_mode="pdf_original")

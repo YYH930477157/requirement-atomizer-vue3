@@ -85,6 +85,11 @@ class DocAnnotationExportTests(unittest.TestCase):
             self.assertIn('class="pdf-page"', rendered)
             self.assertIn('class="pdf-marker marker-requirement', rendered)
             self.assertIn('class="pdf-marker omission-tag marker-omission"', rendered)
+            self.assertIn('cursor: pointer; pointer-events: auto; border-radius: 3px;', rendered)
+            self.assertIn('white-space: nowrap; pointer-events: auto;', rendered)
+            self.assertIn('cursor: pointer; opacity: 0;', rendered)
+            self.assertIn('const page = Number(zone.getAttribute("data-page") || 0);', rendered)
+            self.assertIn('selectPdfContextRecord(bid, info, page)', rendered)
             self.assertIn('data-req="', rendered)
             self.assertIn('data-omission-text="', rendered)
             self.assertIn('function setPdfZoom', rendered)
@@ -149,6 +154,255 @@ class DocAnnotationExportTests(unittest.TestCase):
             self.assertIn('const PDF_MODE = false;', rendered)
             self.assertIn('class="doc-block', rendered)
 
+    def test_non_pdf_fallback_still_generates_translation_sidecar(self) -> None:
+        quote = "The manufacturer shall mark its trademark on the equipment."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            _seed_marker_block(out, quote)
+            source_docx = root / "source.docx"
+            source_docx.write_bytes(b"not-a-pdf")
+            (out / "manifest.json").write_text(
+                json.dumps({"input": str(source_docx), "input_format": "docx"}),
+                encoding="utf-8",
+            )
+
+            def chat(_system: str, _user: str) -> dict:
+                return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+            with patch("functional_synthesis._resolve_catalog_chat",
+                       return_value=(chat, "llm:test-model")):
+                target, summary = dae.export_annotation_bundle(
+                    out, route="openai_compatible")
+
+            rendered = target.read_text(encoding="utf-8")
+            sidecar_exists = (out / dae.ANNOTATION_TRANSLATIONS).exists()
+
+        self.assertEqual(summary["layout_mode_requested"], "pdf_original")
+        self.assertEqual(summary["layout_mode"], "optimized")
+        self.assertEqual(summary["route"], "openai_compatible")
+        self.assertTrue(sidecar_exists)
+        self.assertIn("制造商应在设备上标注其商标。", rendered)
+
+    def test_default_export_prefers_original_pdf_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            _seed(out)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.7\noriginal-pdf-bytes\n%%EOF")
+            (out / "manifest.json").write_text(
+                json.dumps({"input": str(source_pdf), "input_format": "pdf"}),
+                encoding="utf-8",
+            )
+
+            _target, summary = dae.export_annotation_bundle(out)
+
+            self.assertEqual(summary["layout_mode_requested"], "pdf_original")
+            self.assertEqual(summary["layout_mode"], "pdf_original")
+
+    def test_pdf_original_collects_translation_candidates_without_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            _seed(out)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.7\noriginal-pdf-bytes\n%%EOF")
+            (out / "manifest.json").write_text(
+                json.dumps({"input": str(source_pdf), "input_format": "pdf"}),
+                encoding="utf-8",
+            )
+            pages = [{"page_number": 1, "href": "annotation_pages/page-0001.png", "width": 595, "height": 842}]
+
+            def chat(_system: str, _user: str) -> dict:
+                return {"items": [{"id": index, "translation": "中文译文"}
+                                  for index in range(1, 9)]}
+
+            with (patch.object(dae, "_resolve_pdf_geometry", return_value={}),
+                  patch.object(dae, "_ensure_pdf_page_images",
+                               return_value=(pages, [str(out / "annotation_pages" / "page-0001.png")])),
+                  patch("functional_synthesis._resolve_catalog_chat",
+                        return_value=(chat, "llm:test-model"))):
+                target, summary = dae.export_annotation_bundle(
+                    out, route="openai_compatible", layout_mode="pdf_original")
+
+            rendered = target.read_text(encoding="utf-8")
+            sidecar = json.loads(
+                (out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+            self.assertIn(
+                ("omission", "An uncovered requirement shall hold."),
+                dae._collected_marker_texts.values(),
+            )
+            self.assertIn(
+                ("covered", "The meter shall measure volume < 5 & log it."),
+                dae._collected_marker_texts.values(),
+            )
+            self.assertEqual(summary["translated"], 2)
+            self.assertEqual(len(sidecar["items"]), 2)
+            self.assertIn('const PDF_CONTEXT = {"B2":', rendered)
+            self.assertIn('"translation": "中文译文"', rendered)
+
+    def test_pdf_context_can_embed_anchor_translation_for_hardware_fallback(self) -> None:
+        blocks = [{"block_id": "B1", "text": "The enclosure shall be sealed."}]
+        semantics = [{"block_id": "B1", "text": blocks[0]["text"],
+                      "kind": "req", "req_id": "AIR-1"}]
+        key = dae._translation_key(blocks[0]["text"])
+        with patch.object(dae, "_active_translations", {key: "外壳应密封。"}):
+            records = dae._pdf_context_records(
+                blocks, [], include_requirements=True, semantics=semantics)
+
+        self.assertEqual(records["B1"]["translation"], "外壳应密封。")
+        self.assertEqual(records["B1"]["page"], 0)
+
+    def test_pdf_semantics_marks_non_anchor_source_blocks_as_covered(self) -> None:
+        blocks = [
+            {"block_id": "A1", "text": "Primary anchor one.", "type": "paragraph", "noise": False},
+            {"block_id": "C1", "text": "Shared covered constraint.", "type": "paragraph", "noise": False},
+            {"block_id": "A2", "text": "Primary anchor two.", "type": "paragraph", "noise": False},
+            {"block_id": "E1", "text": "Repeated source text.", "type": "paragraph", "noise": False},
+        ]
+        requirements = [
+            {"ai_req_id": "REQ-1", "anchor_block_id": "A1",
+             "source_block_ids": ["A1", "C1", "E1"], "echo_block_ids": ["E1"]},
+            {"ai_req_id": "REQ-2", "anchor_block_id": "A2",
+             "source_block_ids": ["A2", "C1"]},
+            {"ai_req_id": "REQ-3", "anchor_block_id": "A1",
+             "source_block_ids": ["A1"]},
+        ]
+
+        semantics = dae._pdf_block_semantics(
+            blocks, requirements, {"A1", "A2", "C1", "E1"})
+        by_block = {item["block_id"]: item for item in semantics}
+
+        self.assertEqual(by_block["A1"]["kind"], "req")
+        self.assertEqual(by_block["A1"]["req_ids"], ["REQ-1", "REQ-3"])
+        self.assertEqual(by_block["E1"]["kind"], "echo")
+        self.assertEqual(by_block["E1"]["req_ids"], ["REQ-1"])
+        self.assertEqual(by_block["C1"]["kind"], "covered")
+        self.assertEqual(by_block["C1"]["req_ids"], ["REQ-1", "REQ-2"])
+
+    def test_pdf_covered_zone_renders_linked_analysis_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            shared = "The shared constraint shall apply to both requirements."
+            blocks = [
+                {"block_id": "A1", "order": 1, "type": "paragraph",
+                 "text": "The first function shall run.", "section_path": ["4"],
+                 "page_number": 1, "requirement_like": True, "noise": False},
+                {"block_id": "C1", "order": 2, "type": "paragraph", "text": shared,
+                 "section_path": ["4"], "page_number": 2,
+                 "requirement_like": True, "noise": False},
+                {"block_id": "A2", "order": 3, "type": "paragraph",
+                 "text": "The second function shall run.", "section_path": ["4"],
+                 "page_number": 2, "requirement_like": True, "noise": False},
+            ]
+            (out / "blocks.jsonl").write_text(
+                "".join(json.dumps(block, ensure_ascii=False) + "\n" for block in blocks),
+                encoding="utf-8")
+            requirements = [
+                {"ai_req_id": "REQ-1", "title": "需求一", "description": "解析一", "module": "其它",
+                 "anchor_block_id": "A1", "source_block_ids": ["A1", "C1"],
+                 "source_quote": "The first function shall run."},
+                {"ai_req_id": "REQ-2", "title": "需求二", "description": "解析二", "module": "其它",
+                 "anchor_block_id": "A2", "source_block_ids": ["A2", "C1"],
+                 "source_quote": "The second function shall run."},
+                {"ai_req_id": "REQ-3", "title": "需求三", "description": "解析三", "module": "其它",
+                 "anchor_block_id": "A1", "source_block_ids": ["A1"],
+                 "source_quote": "The first function shall run."},
+            ]
+            (out / "ai_requirements.jsonl").write_text(
+                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in requirements),
+                encoding="utf-8")
+            key = dae._translation_key(shared)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1,
+                "items": {key: {"owner": "covered", "translation": "共享约束适用于两项需求。"}},
+            }, ensure_ascii=False), encoding="utf-8")
+            pages = [
+                {"page_number": 1, "href": "document_pages/page-0001.png",
+                 "width": 595, "height": 842},
+                {"page_number": 2, "href": "document_pages/page-0002.png",
+                 "width": 595, "height": 842},
+            ]
+            geometry = {
+                "A1": [{"page_number": 1, "bbox": [50, 60, 400, 85],
+                        "page_width": 595, "page_height": 842}],
+                "C1": [{"page_number": 2, "bbox": [50, 100, 400, 125],
+                        "page_width": 595, "page_height": 842}],
+                "A2": [{"page_number": 2, "bbox": [50, 140, 400, 165],
+                        "page_width": 595, "page_height": 842}],
+            }
+
+            rendered = dae.render_annotation_html(
+                out, layout_mode="pdf_original", pdf_href=dae.ANNOTATION_SOURCE_PDF,
+                pdf_pages=pages, pdf_geometry=geometry)
+
+        self.assertIn('class="pdf-block-zone zone-covered"', rendered)
+        self.assertIn('data-covered-reqs="REQ-1 REQ-2"', rendered)
+        self.assertIn('data-reqs="REQ-1 REQ-3"', rendered)
+        self.assertIn('"kind": "covered"', rendered)
+        self.assertIn('"covered_req_ids": ["REQ-1", "REQ-2"]', rendered)
+        self.assertIn('"translation": "共享约束适用于两项需求。"', rendered)
+        self.assertIn("该段已纳入需求解析", rendered)
+        self.assertIn("selectPdfCoveredRecord(bid, info, page)", rendered)
+        self.assertIn("selectPdfRequirementGroup(bid, info, reqIds, page)", rendered)
+        self.assertIn("covered.includes(id)", rendered)
+        self.assertIn("const sourcePage = Number(clickedPage || info.page || 0);", rendered)
+
+    def test_pdf_original_translation_rerender_keeps_page_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            _seed(out)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.7\noriginal-pdf-bytes\n%%EOF")
+            (out / "manifest.json").write_text(
+                json.dumps({"input": str(source_pdf), "input_format": "pdf"}),
+                encoding="utf-8",
+            )
+            pages = [{
+                "page_number": 1,
+                "href": "document_pages/page-0001.png",
+                "width": 595,
+                "height": 842,
+            }]
+            geometry = {
+                "B2": [{"page_number": 1, "bbox": [50, 60, 400, 85],
+                        "page_width": 595, "page_height": 842}],
+                "B3": [{"page_number": 1, "bbox": [50, 100, 400, 125],
+                        "page_width": 595, "page_height": 842}],
+            }
+
+            def chat(_system: str, _user: str) -> dict:
+                return {"items": [{"id": index, "translation": "中文译文"}
+                                  for index in range(1, 9)]}
+
+            with (patch.object(dae, "_resolve_pdf_geometry", return_value=geometry),
+                  patch.object(dae, "_ensure_pdf_page_images",
+                               return_value=(pages, [str(out / "document_pages" / "page-0001.png")])),
+                  patch("functional_synthesis._resolve_catalog_chat",
+                        return_value=(chat, "llm:test-model"))):
+                target, summary = dae.export_annotation_bundle(
+                    out, route="openai_compatible", layout_mode="pdf_original")
+
+            rendered = target.read_text(encoding="utf-8")
+            sidecar = json.loads(
+                (out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["route"], "openai_compatible")
+        self.assertEqual(summary["translated"], 2)
+        self.assertTrue(summary["annotation_overlay"])
+        self.assertEqual(len(sidecar["items"]), 2)
+        self.assertIn('class="pdf-page"', rendered)
+        self.assertIn('class="pdf-block-zone zone-req"', rendered)
+        self.assertIn('"translation": "中文译文"', rendered)
+        self.assertNotIn('id="pdf-frame"', rendered)
+
     def test_renders_self_contained_html_with_data_and_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -165,6 +419,37 @@ class DocAnnotationExportTests(unittest.TestCase):
             # 无残留 format 占位符
             import re
             self.assertEqual(re.findall(r"\{[a-z_]+\}", html), [])
+
+    def test_narrow_layout_keeps_parse_results_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            rendered = dae.render_annotation_html(out)
+
+        self.assertIn("grid-template-rows: minmax(0, 56fr) minmax(0, 44fr)", rendered)
+        self.assertNotIn("grid-template-rows: minmax(56vh, 1fr) minmax(320px, 44vh)", rendered)
+        self.assertNotIn(".detail { display: none; }", rendered)
+
+    def test_detail_empty_states_and_missing_summary_are_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            rendered = dae.render_annotation_html(out)
+
+        self.assertEqual(rendered.count("点击原文段落或页边编号查看解析结果"), 2)
+        self.assertNotIn("点击批注标记查看详情", rendered)
+        self.assertIn("未生成需求摘要", rendered)
+
+    def test_pdf_zoom_floor_tracks_the_current_container(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            rendered = dae.render_annotation_html(out)
+
+        self.assertIn("function pdfZoomMinimum()", rendered)
+        self.assertIn("containerWidth - pageChrome - PDF_ZOOM_STEP", rendered)
+        self.assertIn("const minimum = Math.min(pdfPageWidth, pdfZoomMinimum());", rendered)
+        self.assertNotIn("Math.max(520, Math.min(1500", rendered)
 
     def test_reader_style_is_quiet_and_premium(self) -> None:
         """高级阅读器风格：弱化工具按钮和 emoji，批注以细线/编号锚点呈现。"""
@@ -1050,7 +1335,7 @@ class PdfOriginalShareNoteTests(unittest.TestCase):
                     "layout_mode": "optimized", "page_files": []}
             with mock.patch("doc_annotation_export.export_annotation_bundle",
                             return_value=(out / "document_annotation.html", fake)):
-                payload = desktop_tasks.export_annotation_html_task(out)
+                payload = desktop_tasks.export_annotation_html_task(out, layout_mode="optimized")
             self.assertNotIn("对外分享", str(payload.get("note") or ""))
 
 
@@ -1110,7 +1395,8 @@ class PdfAnnotationPayloadTests(unittest.TestCase):
             self._seed(out, with_pages=False)
             payload = dae.build_pdf_annotation_payload(out)
             self.assertFalse(payload["available"])
-            self.assertIn("导出批注HTML", payload["reason"])
+            self.assertIn("重新导出批注 HTML", payload["reason"])
+            self.assertNotIn("原版影印模式", payload["reason"])
 
     def test_payload_rejects_stale_or_incompatible_page_manifest(self) -> None:
         mutations = ({"version": 0}, {"source_sha256": "stale"}, {"dpi": 72})
@@ -1127,3 +1413,4 @@ class PdfAnnotationPayloadTests(unittest.TestCase):
 
                 self.assertFalse(payload["available"])
                 self.assertIn("影印页缓存", payload["reason"])
+                self.assertNotIn("原版影印模式", payload["reason"])
