@@ -711,6 +711,7 @@ class PlatformScaffoldTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Cannot override frozen review state"):
                 apply_expert_decision(out_dir, "SREQ-1", "rejected", actor="expert")
 
+
     def test_apply_expert_decision_serializes_concurrent_writes(self) -> None:
         import review_state as review_state_module
 

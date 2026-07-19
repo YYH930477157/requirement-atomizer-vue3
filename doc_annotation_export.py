@@ -420,7 +420,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
                    covered: set[str],
                    req_numbers: dict[str, int] | None = None,
                    sub_anchor_map: dict[str, list] | None = None,
-                   echo_map: dict[str, list[dict[str, Any]]] | None = None) -> str:
+                   echo_map: dict[str, list[dict[str, Any]]] | None = None,
+                   marker_state: dict[str, Any] | None = None) -> str:
     """渲染文档块：正文正常，非正文区折叠，noise 灰显，纯符号行跳过。"""
     parts: list[str] = []
     collapse_open = False
@@ -441,7 +442,7 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         collapse_buf = []
 
     prev_page: int | None = None
-    marker_state: dict[str, Any] = {"next": 1, "req_numbers": {}}
+    state = marker_state if marker_state is not None else {"next": 1, "req_numbers": {}}
     outline_map = _build_outline_map(blocks)
     for b in blocks:
         bid = str(b.get("block_id") or "")
@@ -472,7 +473,7 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
         # 渲染单个 block 的 HTML（表格块带 data_rows 时渲染真表格，旧 out_dir 无该字段回退扁平文字）
         block_html = _render_one_block(bid, text, path, region, is_heading, is_noise, is_omission, anchored,
                                        req_numbers or {}, (sub_anchor_map or {}).get(bid) or [],
-                                       block=b, marker_state=marker_state,
+                                       block=b, marker_state=state,
                                        outline_level=outline_map.get(bid),
                                        echo_reqs=(echo_map or {}).get(bid) or [])
 
@@ -567,7 +568,11 @@ def _marker_number_for_req(req: dict[str, Any], marker_state: dict[str, Any] | N
             number = int(marker_state.get("next", fallback_index))
             assigned[rid] = number
             marker_state["next"] = number + 1
-        return int(assigned[rid])
+        number = int(assigned[rid])
+        # A preallocated second render must advance past requirement markers so
+        # source-classification markers retain the same source-order numbers.
+        marker_state["next"] = max(int(marker_state.get("next", 1)), number + 1)
+        return number
     number = int(marker_state.get("next", fallback_index))
     marker_state["next"] = number + 1
     return number
@@ -985,8 +990,32 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
             f'<iframe id="pdf-frame" class="pdf-frame" src="{source}#view=FitH" '
             'title="原始 PDF"></iframe>')
     else:
-        blocks_html = _render_blocks(blocks, anchor_map, covered, req_numbers, sub_anchor_map,
-                                     echo_map=echo_map)
+        # Optimized layout interleaves requirement chips and source-classification
+        # markers. Allocate once in actual render order, then render with the
+        # stable map so inline chips, the side index, and annotation links agree.
+        allocation_state: dict[str, Any] = {"next": 1, "req_numbers": {}}
+        _render_blocks(
+            blocks, anchor_map, covered, req_numbers, sub_anchor_map,
+            echo_map=echo_map, marker_state=allocation_state,
+        )
+        allocated = {
+            str(key): int(value)
+            for key, value in allocation_state.get("req_numbers", {}).items()
+        }
+        next_number = int(allocation_state.get("next", 1))
+        for req in ordered:
+            req_id = str(req.get("ai_req_id") or "")
+            if req_id and req_id not in allocated:
+                allocated[req_id] = next_number
+                next_number += 1
+        req_numbers = allocated
+        for req in requirements:
+            req["annotation_number"] = req_numbers.get(str(req.get("ai_req_id") or ""))
+        blocks_html = _render_blocks(
+            blocks, anchor_map, covered, req_numbers, sub_anchor_map,
+            echo_map=echo_map,
+            marker_state={"next": 1, "req_numbers": dict(req_numbers)},
+        )
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
     omissions_json = json.dumps(omission_items, ensure_ascii=False).replace("</", "<\\/")
     pdf_context_json = json.dumps(pdf_context_map, ensure_ascii=False).replace("</", "<\\/")

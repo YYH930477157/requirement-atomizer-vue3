@@ -134,17 +134,21 @@ describe("review workspace shell", () => {
     wrapper.unmount()
   })
 
-  it("updates the selected requirement status from review decisions", async () => {
+  it("disables review decisions and keeps local status unchanged without an API session", async () => {
     const wrapper = mount(App)
     await openReview(wrapper)
 
     await wrapper.find('[data-testid="row-REQ-2024-0003"]').trigger("click")
     expect(wrapper.find('[data-testid="detail-title"]').text()).toContain("REQ-2024-0003")
+    const reject = wrapper.find('[data-testid="decision-rejected"]')
+    expect(reject.attributes("disabled")).toBeDefined()
+    const detailStatus = wrapper.find('[data-testid="detail-status"]').text()
+    const rowStatus = wrapper.find('[data-testid="row-status-REQ-2024-0003"]').text()
 
-    await wrapper.find('[data-testid="decision-rejected"]').trigger("click")
+    await reject.trigger("click")
 
-    expect(wrapper.find('[data-testid="detail-status"]').text()).toContain("已拒绝")
-    expect(wrapper.find('[data-testid="row-status-REQ-2024-0003"]').text()).toContain("已拒绝")
+    expect(wrapper.find('[data-testid="detail-status"]').text()).toBe(detailStatus)
+    expect(wrapper.find('[data-testid="row-status-REQ-2024-0003"]').text()).toBe(rowStatus)
   })
 
   it("uses the Phase 1 side navigation for document, export, and settings actions", async () => {
@@ -237,6 +241,7 @@ describe("review workspace shell", () => {
       selfCheck: true,
     })
 
+    await wrapper.find('[data-testid="settings-api-key"]').setValue("sk-test-only")
     await wrapper.find('[data-testid="settings-test"]').trigger("click")
     expect(window.ratomizerDesktop?.testLlmConnection).toHaveBeenCalledWith({
       enabled: true,
@@ -244,7 +249,7 @@ describe("review workspace shell", () => {
       baseUrl: "https://open.bigmodel.cn/api/paas/v4",
       model: "glm-4-plus",
       apiKeyEnv: "ZHIPU_API_KEY",
-      apiKey: "",
+      apiKey: "sk-test-only",
       temperature: 0.2,
       maxTokens: 2048,
       timeoutS: 20,
@@ -459,6 +464,131 @@ describe("review workspace shell", () => {
 
     expect(wrapper.find('[data-testid="row-REQ-2024-0001"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="detail-title"]').text()).toContain("未选择需求")
+  })
+
+  it("tries the empty selected directory session without reusing the old review session", async () => {
+    const startApiSession = vi.fn().mockResolvedValue(null)
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8765", token: "old-token", outputDir: "E:\\out\\old",
+        }),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\new-empty"),
+        getOutputSummary: vi.fn().mockResolvedValue({
+          kind: "summary", out_dir: "E:\\out\\new-empty",
+          summary: { counts: { requirements: 0, reviews: 0, review_states: 0 }, run_manifest: {} },
+        }),
+        startApiSession,
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).endsWith("/requirements?limit=5000")) {
+        return { ok: true, json: async () => [{
+          stable_req_id: "SREQ-OLD", requirement_type: "functional", object_name: "Old output",
+          description: "Old requirement", review_state: { status: "accepted" },
+        }] } as Response
+      }
+      return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+    })
+
+    const wrapper = mount(App)
+    await openReview(wrapper)
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-OLD"]').exists()).toBe(true))
+
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await flushPromises()
+
+    expect(startApiSession).toHaveBeenCalledWith("E:\\out\\new-empty")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    expect(wrapper.find('[data-testid="selected-output-dir"]').text()).toContain("E:\\out\\new-empty")
+    await openReview(wrapper)
+    expect(wrapper.find('[data-testid="empty-requirements"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("裁决已禁用")
+  })
+
+  it("switches an existing output directory to its own API session and requirements", async () => {
+    const startApiSession = vi.fn().mockResolvedValue({
+      baseUrl: "http://127.0.0.1:8770", token: "new-token", outputDir: "E:\\out\\new",
+    })
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8765", token: "old-token", outputDir: "E:\\out\\old",
+        }),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\new"),
+        getOutputSummary: vi.fn().mockResolvedValue({
+          kind: "summary", out_dir: "E:\\out\\new",
+          summary: { counts: { requirements: 1 }, run_manifest: {} },
+        }),
+        startApiSession,
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith("/requirements?limit=5000")) {
+        const isNew = url.startsWith("http://127.0.0.1:8770")
+        expect(init?.headers).toMatchObject({
+          "X-Requirement-Atomizer-Token": isNew ? "new-token" : "old-token",
+        })
+        return { ok: true, json: async () => [{
+          stable_req_id: isNew ? "SREQ-NEW" : "SREQ-OLD",
+          requirement_type: "functional", object_name: isNew ? "New output" : "Old output",
+          description: isNew ? "New requirement" : "Old requirement", review_state: { status: "draft" },
+        }] } as Response
+      }
+      return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+    })
+
+    const wrapper = mount(App)
+    await openReview(wrapper)
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-OLD"]').exists()).toBe(true))
+
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-NEW"]').exists()).toBe(true))
+
+    expect(startApiSession).toHaveBeenCalledWith("E:\\out\\new")
+    expect(wrapper.find('[data-testid="row-SREQ-OLD"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="decision-accepted"]').attributes("disabled")).toBeUndefined()
+  })
+
+  it("disconnects the old review client when the selected output session fails to start", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8765", token: "old-token", outputDir: "E:\\out\\old",
+        }),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\broken"),
+        getOutputSummary: vi.fn().mockResolvedValue({
+          kind: "summary", out_dir: "E:\\out\\broken",
+          summary: { counts: { requirements: 1 }, run_manifest: {} },
+        }),
+        startApiSession: vi.fn().mockRejectedValue(new Error("API server startup timed out")),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).endsWith("/requirements?limit=5000")) {
+        return { ok: true, json: async () => [{
+          stable_req_id: "SREQ-OLD", requirement_type: "functional", object_name: "Old output",
+          description: "Old requirement", review_state: { status: "accepted" },
+        }] } as Response
+      }
+      return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+    })
+
+    const wrapper = mount(App)
+    await openReview(wrapper)
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-OLD"]').exists()).toBe(true))
+
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="row-SREQ-OLD"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="empty-requirements"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("裁决已禁用")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("API server startup timed out")
   })
 
   it("runs pipeline then the enabled AI-extract stage as one chain from the Run button", async () => {

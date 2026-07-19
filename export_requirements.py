@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from io_utils import read_jsonl
+from text_normalize import formula_safe
 
 
 CSV_COLUMNS = [
@@ -99,7 +100,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
         writer.writeheader()
         for row in rows:
-            writer.writerow({key: row.get(key, "") for key in CSV_COLUMNS})
+            writer.writerow({key: formula_safe(row.get(key, "")) for key in CSV_COLUMNS})
 
 
 def write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:

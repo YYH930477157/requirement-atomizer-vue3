@@ -221,6 +221,12 @@ def detect_heading(
     if numbered:
         number, title = numbered.groups()
         title = title.strip()
+        # A large bare integer is overwhelmingly a quantity or table value, not
+        # a top-level clause number (for example, "100 litres of water ...").
+        # Keep explicit Heading styles authoritative, but protect all heuristic
+        # callers, including DOCX, instead of relying on the PDF-only refinement.
+        if "." not in number and int(number) > 40:
+            return None
         if not looks_like_toc_entry(title) and not looks_like_caption(text, document_profile=profile):
             return min(number.count(".") + 1, 6), f"{number} {title}"
 

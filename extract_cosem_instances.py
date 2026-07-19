@@ -36,6 +36,51 @@ def is_attribute_row(fields: dict[str, Any]) -> bool:
     return bool(fields.get("#") and fields.get("Object/attribute name"))
 
 
+_CONTINUATION_TITLE_RE = re.compile(
+    r"(?:\bcontinued\b|\bcontinuation\b|\bcont\.?\b|\u7eed\u8868)",
+    flags=re.IGNORECASE,
+)
+
+
+def _table_title_key(value: Any) -> str:
+    title = normalize_name(str(value or "")).casefold()
+    title = _CONTINUATION_TITLE_RE.sub("", title)
+    return title.strip(" -:()")
+
+
+def _continues_object_table(
+    previous_table_id: str,
+    previous_title: str,
+    previous_section: tuple[str, ...],
+    item: dict[str, Any],
+) -> bool:
+    """Require explicit table-continuation evidence before carrying an object."""
+    table_id = str(item.get("table_id") or "")
+    if table_id == previous_table_id:
+        return True
+    if not table_id or not previous_table_id:
+        return not table_id and not previous_table_id
+
+    continued_from = str(
+        item.get("continued_from_table_id")
+        or item.get("continuation_of_table_id")
+        or item.get("continuation_of")
+        or ""
+    )
+    if continued_from and continued_from == previous_table_id:
+        return True
+
+    title = normalize_name(str(item.get("table_title") or ""))
+    section = tuple(str(value) for value in (item.get("section_path") or []))
+    if section != previous_section or not title or not previous_title:
+        return False
+    same_base_title = _table_title_key(title) == _table_title_key(previous_title)
+    return same_base_title and (
+        title.casefold() == previous_title.casefold()
+        or bool(_CONTINUATION_TITLE_RE.search(title))
+    )
+
+
 def parse_intish(value: Any) -> int | str | None:
     if value is None:
         return None
@@ -51,9 +96,33 @@ def parse_intish(value: Any) -> int | str | None:
 def extract_instances(table_items_path: Path) -> list[dict[str, Any]]:
     instances: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
+    current_table_id = ""
+    current_table_title = ""
+    current_section: tuple[str, ...] = ()
 
     for item in iter_jsonl(table_items_path):
         fields = item.get("fields", {})
+        table_id = str(item.get("table_id") or "")
+        table_title = normalize_name(str(item.get("table_title") or ""))
+        section = tuple(str(value) for value in (item.get("section_path") or []))
+
+        if current and table_id != current_table_id:
+            if _continues_object_table(
+                current_table_id, current_table_title, current_section, item,
+            ):
+                current_table_id = table_id
+                current_table_title = table_title
+                current_section = section
+                source_table_ids = current["source"].setdefault("table_ids", [])
+                if table_id and table_id not in source_table_ids:
+                    source_table_ids.append(table_id)
+            else:
+                instances.append(current)
+                current = None
+                current_table_id = ""
+                current_table_title = ""
+                current_section = ()
+
         if is_object_header(fields):
             if current:
                 instances.append(current)
@@ -66,6 +135,8 @@ def extract_instances(table_items_path: Path) -> list[dict[str, Any]]:
                 "comment": normalize_name(fields.get("Comment")),
                 "source": {
                     "table_item_id": item.get("item_id"),
+                    "table_id": table_id,
+                    "table_ids": [table_id] if table_id else [],
                     "table_title": item.get("table_title"),
                     "section_path": item.get("section_path", []),
                     "row_index": item.get("row_index"),
@@ -74,6 +145,9 @@ def extract_instances(table_items_path: Path) -> list[dict[str, Any]]:
                 "domain_tags": item.get("domain_tags", []),
                 "kb_matches": item.get("kb_matches", []),
             }
+            current_table_id = table_id
+            current_table_title = table_title
+            current_section = section
             continue
 
         if current and is_attribute_row(fields):
@@ -88,6 +162,7 @@ def extract_instances(table_items_path: Path) -> list[dict[str, Any]]:
                     "access_rights": normalize_name(fields.get("Access rights RC/PC/SC/LC")),
                     "source": {
                         "table_item_id": item.get("item_id"),
+                        "table_id": table_id,
                         "row_index": item.get("row_index"),
                     },
                 }

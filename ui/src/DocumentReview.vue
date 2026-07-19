@@ -39,14 +39,16 @@ const OWNERSHIP_OPTIONS = [
 let loadedOnce = false
 
 async function load() {
-  if (!props.client) {
+  const client = props.client
+  if (!client) {
     message.value = "未连接输出目录——先运行管线 + AI 抽取"
     return
   }
   loading.value = true
   message.value = ""
   try {
-    const [doc, reqs] = await Promise.all([props.client.loadDocument(), props.client.loadAiRequirements()])
+    const [doc, reqs] = await Promise.all([client.loadDocument(), client.loadAiRequirements()])
+    if (client !== props.client) return
     blocks.value = doc.blocks || []
     requirements.value = reqs || []
     if (!requirements.value.length) {
@@ -54,9 +56,9 @@ async function load() {
     }
     loadedOnce = true
   } catch (error) {
-    message.value = error instanceof Error ? error.message : "加载失败"
+    if (client === props.client) message.value = error instanceof Error ? error.message : "加载失败"
   } finally {
-    loading.value = false
+    if (client === props.client) loading.value = false
   }
 }
 
@@ -264,8 +266,26 @@ async function reloadWorkspace() {
   }
 }
 
-watch(() => props.active, (on) => {
-  if (on && (!loadedOnce || !requirements.value.length)) void loadWorkspace()
+watch([() => props.active, () => props.client], ([on, client], previous) => {
+  const clientChanged = client !== previous?.[1]
+  if (clientChanged) {
+    loadedOnce = false
+    blocks.value = []
+    requirements.value = []
+    selectedId.value = ""
+    selectedBlockId.value = ""
+    message.value = ""
+    workspaceLoadGeneration += 1
+    pdfDataLoadGeneration += 1
+    pdfDataLoadPromise = null
+    pdfLoading.value = false
+    pdfPageLoadGeneration += 1
+    const urls = new Set(Object.values(pdfPageUrls.value))
+    pdfPageUrls.value = {}
+    for (const url of urls) revokePdfPageUrl(url)
+    pdfData.value = null
+  }
+  if (on && (clientChanged || !loadedOnce || !requirements.value.length)) void loadWorkspace()
 }, { immediate: true })
 
 onUnmounted(() => {
@@ -476,7 +496,10 @@ function isOmission(b: DocumentBlock): boolean {
   return isCoverageCandidate(b) && !coveredBlocks.value.has(b.block_id)
 }
 function moduleOf(r: AiRequirement): string {
-  return String(r.module_effective || r.module || (r.labels || [])[0] || "未分模块")
+  return String(r.module_effective || originalModuleOf(r))
+}
+function originalModuleOf(r: AiRequirement): string {
+  return String(r.module || (r.labels || [])[0] || "未分模块")
 }
 function statusOf(r: AiRequirement): string {
   return String(r.status || "draft")
@@ -559,15 +582,18 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
   try {
     const state = await props.client.applyAiReviewAction({
       aiReqId: req.ai_req_id, status,
-      moduleOverride: moduleEdit.value !== moduleOf(req) ? moduleEdit.value : "",
+      // 与规则初判比较：重复裁决时保留既有覆盖；选回初判值才发空串清除。
+      moduleOverride: moduleEdit.value !== originalModuleOf(req) ? moduleEdit.value : "",
       // 选回规则初判值 → 发空串清除覆盖，归属回落规则判定
       ownershipOverride: ownershipEdit.value !== (req.ownership || "") ? ownershipEdit.value : "",
       reason: comment.value, actor: "reviewer",
     })
     req.review_state = state
     req.status = state.status
-    if (state.module_override) req.module_effective = state.module_override
+    req.module_effective = state.module_override || originalModuleOf(req)
     req.ownership_effective = state.ownership_override || req.ownership
+    moduleEdit.value = moduleOf(req)
+    ownershipEdit.value = ownershipOf(req)
     message.value = `已${STATUS_LABELS[status] || status}：${req.title || req.ai_req_id}`
   } catch (error) {
     message.value = error instanceof Error ? error.message : "裁决写入失败"

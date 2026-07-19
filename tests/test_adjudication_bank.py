@@ -29,6 +29,26 @@ def seed_out(tmp: Path) -> None:
     write_jsonl(tmp / "ai_review_states.jsonl", states)
 
 
+def seed_transition(tmp: Path, status: str, *, suspicious: bool = False) -> str:
+    rid = "AIR-transition"
+    requirement = {
+        "ai_req_id": rid,
+        "title": "Clock accuracy requirement",
+        "description": "Clock accuracy shall remain within five seconds per day.",
+        "source_quote": "clock accuracy within five seconds per day",
+        "source_block_ids": ["B-transition"],
+        "module": "clock",
+        "suspicion_reasons": ["unverified"] if suspicious else [],
+    }
+    write_jsonl(tmp / "ai_requirements.jsonl", [requirement])
+    write_jsonl(tmp / "ai_review_states.jsonl", [{
+        "ai_req_id": rid,
+        "status": status,
+        "reason": "latest decision",
+    }])
+    return rid
+
+
 class BankTests(unittest.TestCase):
     def test_harvest_accept_and_reject(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -53,6 +73,93 @@ class BankTests(unittest.TestCase):
             ab.update_bank(bank_path, tmp)
             report = ab.update_bank(bank_path, tmp)          # 重复收割不膨胀
             self.assertEqual(report["accepted_total"], 1)
+
+    def test_latest_rejection_removes_previously_accepted_exemplar(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            bank_path = tmp / "bank.json"
+            rid = seed_transition(tmp, "accepted")
+            ab.update_bank(bank_path, tmp)
+
+            seed_transition(tmp, "rejected")
+            ab.update_bank(bank_path, tmp)
+            bank = ab.load_bank(bank_path)
+
+            self.assertNotIn(rid, bank["accepted"])
+            self.assertIn(rid, bank["rejected"])
+            self.assertEqual(ab.select_exemplars(bank, "clock", "clock accuracy"), [])
+
+    def test_latest_acceptance_removes_previously_rejected_example(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            bank_path = tmp / "bank.json"
+            rid = seed_transition(tmp, "rejected")
+            ab.update_bank(bank_path, tmp)
+
+            seed_transition(tmp, "accepted")
+            ab.update_bank(bank_path, tmp)
+            bank = ab.load_bank(bank_path)
+
+            self.assertIn(rid, bank["accepted"])
+            self.assertNotIn(rid, bank["rejected"])
+
+    def test_non_final_or_suspicious_status_removes_stale_exemplar(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            bank_path = tmp / "bank.json"
+            rid = seed_transition(tmp, "accepted")
+            ab.update_bank(bank_path, tmp)
+
+            seed_transition(tmp, "needs_discussion")
+            ab.update_bank(bank_path, tmp)
+            bank = ab.load_bank(bank_path)
+            self.assertNotIn(rid, bank["accepted"])
+            self.assertNotIn(rid, bank["rejected"])
+
+            seed_transition(tmp, "accepted")
+            ab.update_bank(bank_path, tmp)
+            seed_transition(tmp, "accepted", suspicious=True)
+            ab.update_bank(bank_path, tmp)
+            bank = ab.load_bank(bank_path)
+            self.assertNotIn(rid, bank["accepted"])
+            self.assertNotIn(rid, bank["rejected"])
+
+    def test_missing_current_decision_keeps_cross_project_exemplar(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            bank_path = tmp / "bank.json"
+            rid = seed_transition(tmp, "accepted")
+            ab.update_bank(bank_path, tmp)
+
+            write_jsonl(tmp / "ai_review_states.jsonl", [])
+            ab.update_bank(bank_path, tmp)
+
+            self.assertIn(rid, ab.load_bank(bank_path)["accepted"])
+
+    def test_legacy_overlapping_decisions_prefer_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bank_path = Path(td) / "bank.json"
+            rid = "AIR-legacy-overlap"
+            bank_path.write_text(json.dumps({
+                "version": 1,
+                "accepted": {rid: {
+                    "module": "clock",
+                    "title": "Stale accepted exemplar",
+                    "description": "clock accuracy requirement",
+                    "source_quote": "clock accuracy",
+                }},
+                "rejected": {rid: {
+                    "module": "clock",
+                    "title": "Stale accepted exemplar",
+                    "reason": "later rejected",
+                }},
+            }), encoding="utf-8")
+
+            bank = ab.load_bank(bank_path)
+
+            self.assertNotIn(rid, bank["accepted"])
+            self.assertIn(rid, bank["rejected"])
+            self.assertEqual(ab.select_exemplars(bank, "clock", "clock accuracy"), [])
 
     def test_select_exemplars_module_and_relevance(self) -> None:
         bank = {"accepted": {

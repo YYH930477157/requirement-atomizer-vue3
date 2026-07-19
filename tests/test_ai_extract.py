@@ -184,6 +184,17 @@ class ChapterUnitModeTests(unittest.TestCase):
         for u in units:
             self.assertLessEqual(len(u["text"]), ai_extract.CHAPTER_MAX_CHARS + 200)
 
+    def test_chapter_prompt_keeps_tail_beyond_12000_chars(self) -> None:
+        tail = "TAIL_REQUIREMENT_MARKER"
+        units = ai_extract.merge_sections(
+            [self._sec("7.1 Long chapter", "a" * 13000 + tail)], unit_mode="chapter")
+        self.assertEqual(len(units), 1)
+        self.assertGreater(len(units[0]["text"]), 12000)
+
+        payload = json.loads(ai_extract.build_section_prompt(units[0]))
+        self.assertEqual(payload["text"], units[0]["text"])
+        self.assertIn(tail, payload["text"])
+
 
 class SelfCheckClauseAlignmentTests(unittest.TestCase):
     """真实案例（EN 16314 §4.14）：初抽按条款族正确合成一条（子项 a-e），自检只见标题→
@@ -525,6 +536,32 @@ class CacheReproducibilityTests(unittest.TestCase):
             self.assertEqual(calls["n"], after_first)  # 第二次命中缓存，未再调 LLM
             self.assertEqual(first, second)   # 同输入同输出（稳定）
 
+    def test_cache_reader_repairs_only_unterminated_final_record(self) -> None:
+        valid_row = {"fingerprint": "good", "requirements": [{"title": "cached"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "c.jsonl"
+            valid_line = json.dumps(valid_row, ensure_ascii=False) + "\n"
+            cache.write_text(valid_line + '{"fingerprint":"torn"', encoding="utf-8")
+
+            with self.assertLogs("requirement_atomizer", level="WARNING") as captured:
+                rows = ai_extract.read_cache(cache)
+
+            self.assertEqual(rows, {"good": [{"title": "cached"}]})
+            self.assertEqual(cache.read_text(encoding="utf-8"), valid_line)
+            self.assertIn("repaired interrupted final JSONL cache record", captured.output[0])
+
+    def test_cache_reader_rejects_malformed_middle_record(self) -> None:
+        valid_row = json.dumps({"fingerprint": "good", "requirements": []})
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "c.jsonl"
+            original = valid_row + "\n" + '{"fingerprint":}\n' + valid_row + "\n"
+            cache.write_text(original, encoding="utf-8")
+
+            with self.assertRaises(json.JSONDecodeError):
+                ai_extract.read_cache(cache)
+
+            self.assertEqual(cache.read_text(encoding="utf-8"), original)
+
 
 class ExtractAllProgressTests(unittest.TestCase):
     def test_progress_events_and_failure_count(self) -> None:
@@ -706,6 +743,38 @@ class MergeSectionsTests(unittest.TestCase):
         early = merged[0]
         self.assertNotIn("0-0:96.7.16.255", early["text"])
         self.assertIn("0-0:96.7.16.255", early["drift_source"])
+
+    def test_fingerprint_tracks_full_drift_source(self) -> None:
+        section = {
+            "section_id": "S", "heading": "安全", "text": "unchanged split fragment",
+            "drift_source": "unchanged split fragment\nOBIS 0-0:96.7.16.255",
+        }
+        before = ai_extract.section_fingerprint(section, "model")
+        section["drift_source"] = "unchanged split fragment\nOBIS 0-0:96.7.17.255"
+        self.assertNotEqual(before, ai_extract.section_fingerprint(section, "model"))
+
+    def test_cross_ref_keeps_full_split_drift_source(self) -> None:
+        """拆分片段注入跨节引用时，不得丢掉整章基线中的其它片段编码。"""
+        obis = "0-0:96.7.16.255"
+        source = (
+            "Confirm the limit specified in 9.1 before activation.\n"
+            + "Long chapter context. " * 300
+            + f"\nThe event object uses OBIS {obis}."
+        )
+        target = "9.1 Reference limit\nThe activation limit shall be 25 units. " + "detail " * 120
+        units = ai_extract.merge_sections([
+            {"section_id": "S", "heading": "Long chapter", "text": source, "block_ids": ["b1"]},
+            {"section_id": "R", "heading": "Reference", "text": target, "block_ids": ["b2"]},
+        ], target_chars=2800)
+        referring = next(unit for unit in units if "specified in 9.1" in unit["text"])
+        self.assertNotIn(obis, referring["text"])
+        self.assertIn(obis, referring["drift_source"])
+
+        ai_extract.resolve_section_refs(units)
+
+        self.assertEqual(referring["ref_texts"][0]["clause"], "9.1")
+        self.assertIn("25 units", referring["drift_source"])
+        self.assertIn(obis, referring["drift_source"])
 
     def test_cross_fragment_code_not_falsely_flagged_as_drift(self) -> None:
         """回归：LLM 在不含码的片段里引用同章另一片段的 OBIS 码，不得被判结构漂移。"""
@@ -1363,7 +1432,7 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("忠实性", ai_extract.SYSTEM_PROMPT)
         self.assertIn("不得升格约束强度", ai_extract.SYSTEM_PROMPT)
         self.assertIn("测试装置/夹具/图例说明", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v19")
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v20")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}

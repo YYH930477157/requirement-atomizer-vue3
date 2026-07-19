@@ -385,10 +385,10 @@
               </section>
 
               <div class="detail-actions">
-                <button class="button decision-accept" type="button" :disabled="isSubmitting" data-testid="decision-accepted" @click="updateStatus('accepted')"><Check :size="15" aria-hidden="true" />接受</button>
-                <button class="button decision-reject" type="button" :disabled="isSubmitting" data-testid="decision-rejected" @click="updateStatus('rejected')"><Ban :size="15" aria-hidden="true" />拒绝</button>
-                <button class="button" type="button" :disabled="isSubmitting" @click="updateStatus('needs_discussion')"><MessagesSquare :size="15" aria-hidden="true" />讨论</button>
-                <button class="button" type="button" :disabled="isSubmitting" @click="updateStatus('expert_pending')"><UserRound :size="15" aria-hidden="true" />专家</button>
+                <button class="button decision-accept" type="button" :disabled="isSubmitting || !apiClient" data-testid="decision-accepted" @click="updateStatus('accepted')"><Check :size="15" aria-hidden="true" />接受</button>
+                <button class="button decision-reject" type="button" :disabled="isSubmitting || !apiClient" data-testid="decision-rejected" @click="updateStatus('rejected')"><Ban :size="15" aria-hidden="true" />拒绝</button>
+                <button class="button" type="button" :disabled="isSubmitting || !apiClient" @click="updateStatus('needs_discussion')"><MessagesSquare :size="15" aria-hidden="true" />讨论</button>
+                <button class="button" type="button" :disabled="isSubmitting || !apiClient" @click="updateStatus('expert_pending')"><UserRound :size="15" aria-hidden="true" />专家</button>
               </div>
               <textarea v-model="reviewComment" class="comment-box" placeholder="请输入审查意见" />
               <div v-if="apiMessage" class="api-message" data-testid="api-message">{{ apiMessage }}</div>
@@ -662,6 +662,7 @@ const activeNavLabel = computed(
   () => phaseNavItems.find((i) => i.id === activeNav.value)?.label || "审查")
 const llmMode = ref(false)
 const apiClient = ref<RequirementApiClient | null>(null)
+let apiSessionLoadGeneration = 0
 const apiMessage = ref("")
 const currentInputPath = ref("")
 const currentOutputDir = ref("")
@@ -1141,7 +1142,7 @@ async function handleTestLlmConnection() {
   isTestingSettings.value = true
   settingsStatus.value = ""
   try {
-    const payload = await window.ratomizerDesktop?.testLlmConnection?.(buildLlmSettingsPayload(false))
+    const payload = await window.ratomizerDesktop?.testLlmConnection?.(buildLlmSettingsPayload(true))
     settingsStatus.value = payload?.message || "测试完成"
   } catch (error) {
     settingsStatus.value = error instanceof Error ? error.message : "测试连接失败"
@@ -1222,7 +1223,7 @@ async function updateStatus(status: ReviewStatus) {
   if (!row) return
   apiMessage.value = ""
   if (!apiClient.value) {
-    row.status = status
+    apiMessage.value = "未连接当前输出目录的审查会话，裁决未保存"
     return
   }
   isSubmitting.value = true
@@ -1333,12 +1334,35 @@ async function handleOpenOutput() {
   if (window.ratomizerDesktop?.selectOutputDir) {
     const path = await window.ratomizerDesktop.selectOutputDir()
     if (path) {
+      disconnectReviewSession()
       currentOutputDir.value = path
       apiMessage.value = `已选择输出目录：${path}`
       runStage.value = "待运行"
-      const payload = await window.ratomizerDesktop.getOutputSummary?.({ outDir: path })
-      latestTaskSummary.value = objectValue(payload?.summary)
-      applyRunManifestSummary(latestTaskSummary.value)
+      try {
+        const payload = await window.ratomizerDesktop.getOutputSummary?.({ outDir: path })
+        if (payload) {
+          latestTaskSummary.value = objectValue(payload.summary)
+          applyRunManifestSummary(latestTaskSummary.value)
+        }
+      } catch (error) {
+        apiMessage.value = error instanceof Error ? error.message : "输出目录摘要加载失败"
+      }
+
+      if (!window.ratomizerDesktop.startApiSession) {
+        apiMessage.value = `已选择输出目录：${path}；审查会话未连接，裁决已禁用`
+        return
+      }
+      try {
+        const session = await window.ratomizerDesktop.startApiSession(path)
+        if (!session) {
+          apiMessage.value = `已选择输出目录：${path}；审查会话未连接，裁决已禁用`
+          return
+        }
+        await loadFromSession(session)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "本地 API 启动失败"
+        apiMessage.value = `无法连接输出目录的审查会话：${reason}；裁决已禁用`
+      }
     }
     return
   }
@@ -1690,16 +1714,22 @@ async function loadInitialApiSession() {
 }
 
 async function loadFromSession(session: { baseUrl: string; token: string; outputDir?: string }) {
-  apiMessage.value = session.outputDir ? `已连接输出目录：${session.outputDir}` : ""
+  disconnectReviewSession()
+  const generation = apiSessionLoadGeneration
+  apiMessage.value = session.outputDir ? `正在连接输出目录：${session.outputDir}` : "正在连接审查会话"
   currentOutputDir.value = session.outputDir || currentOutputDir.value
   const client = new RequirementApiClient({ baseUrl: session.baseUrl, token: session.token })
-  apiClient.value = client
   try {
     const rows = (await client.loadRequirements()).map(mapBackendRequirement)
+    if (generation !== apiSessionLoadGeneration) return
+    apiClient.value = client
     requirementRows.value = rows
     selectedRequirementId.value = rows[0]?.id ?? ""
+    apiMessage.value = session.outputDir ? `已连接输出目录：${session.outputDir}` : "已连接审查会话"
   } catch (error) {
-    apiMessage.value = error instanceof Error ? error.message : "需求加载失败"
+    if (generation === apiSessionLoadGeneration) {
+      apiMessage.value = `${error instanceof Error ? error.message : "需求加载失败"}；裁决已禁用`
+    }
     throw error
   }
   try {
@@ -1712,11 +1742,22 @@ async function loadFromSession(session: { baseUrl: string; token: string; output
   }
 }
 
+function disconnectReviewSession() {
+  apiSessionLoadGeneration += 1
+  apiClient.value = null
+  requirementRows.value = []
+  selectedRequirementId.value = ""
+  reviewInsights.value = []
+}
+
 async function refreshAfterDesktopTask(outDir: string): Promise<string> {
+  disconnectReviewSession()
   try {
     const session = await window.ratomizerDesktop?.startApiSession?.(outDir)
     if (session) {
       await loadFromSession(session)
+    } else {
+      return formatApiReconnectWarning(outDir, "本地 API 未返回审查会话，裁决已禁用")
     }
     return ""
   } catch (error) {

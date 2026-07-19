@@ -309,6 +309,14 @@ def _is_object_model_requirement(req: dict[str, Any]) -> bool:
     title = str(req.get("title") or "")
     quote = str(req.get("source_quote") or "")
     tt = req.get("threshold_table")
+    structured = req.get("cosem_object")
+    if req.get("requirement_kind") == "cosem_object_model" and isinstance(structured, dict):
+        return (
+            bool(str(structured.get("name") or "").strip())
+            and bool(str(structured.get("obis") or "").strip())
+            and bool(str(structured.get("class_id") or "").strip())
+            and isinstance(tt, dict)
+        )
     return (
         "OBIS " in title
         and " / CL " in title
@@ -332,12 +340,18 @@ def _split_access_row(row: list[Any]) -> dict[str, Any]:
 
 
 def _object_model_name(req: dict[str, Any]) -> str:
+    structured = req.get("cosem_object")
+    if isinstance(structured, dict) and str(structured.get("name") or "").strip():
+        return str(structured["name"]).strip()
     title = str(req.get("title") or "")
     marker = " (OBIS "
     return title.split(marker, 1)[0].strip() if marker in title else title.strip()
 
 
 def _object_model_class(req: dict[str, Any]) -> str:
+    structured = req.get("cosem_object")
+    if isinstance(structured, dict) and str(structured.get("class_id") or "").strip():
+        return str(structured["class_id"]).strip()
     title = str(req.get("title") or "")
     if " / CL " not in title:
         return ""
@@ -345,6 +359,9 @@ def _object_model_class(req: dict[str, Any]) -> str:
 
 
 def _object_model_obis(req: dict[str, Any]) -> str:
+    structured = req.get("cosem_object")
+    if isinstance(structured, dict) and str(structured.get("obis") or "").strip():
+        return str(structured["obis"]).strip()
     title = str(req.get("title") or "")
     if "(OBIS " not in title or " / CL " not in title:
         return ""

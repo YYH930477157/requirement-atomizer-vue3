@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import json
 import logging
 import os
@@ -12,7 +13,7 @@ from typing import Any, Callable
 import yaml
 
 from domain_pack import load_domain_pack
-from io_utils import read_jsonl
+from io_utils import read_jsonl, read_jsonl_recover_torn_tail
 from llm_client import LLMClientConfig, LLMConnectionError, LLMError, LLMResponseError, chat_json, chat_json_messages
 from llm_review_schema import validate_llm_review_result_payload, validate_llm_review_results
 from resources import package_root
@@ -24,6 +25,9 @@ _PACKAGE_ROOT = package_root()
 DEFAULT_PIPELINE_PATH = _PACKAGE_ROOT / "llm_agents" / "review_pipeline.yaml"
 DEFAULT_DOMAIN_PACK_PATH = _PACKAGE_ROOT / "domain_packs" / "dlms_cosem" / "pack.yaml"
 PROMPT_VERSION = "m2-review-v1"
+# Cache rows contain policy-normalized output. Bump this whenever deterministic
+# review post-processing changes so an older normalized decision cannot leak through.
+LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v2"
 FAST_FAIL_SAMPLE_SIZE = 5
 PROGRESS_INTERVAL = 20
 SOURCE_TYPE_CONFIDENCE_THRESHOLD = 0.85
@@ -230,10 +234,10 @@ def review_requirements_with_openai(
             reviews[index] = build_stub_review(requirement, pipeline)
             rule_stub += 1
             continue
-        cache_key = llm_cache_key(requirement, client_config.model)
+        cache_key = llm_cache_key(requirement, client_config.model, pipeline, scope_config)
         cached_review = cache.get(cache_key)
         if cached_review is not None:
-            reviews[index] = cached_review
+            reviews[index] = apply_deterministic_review_policy(requirement, pipeline, cached_review)
             llm_reviewed += 1
         else:
             pending.append(index)
@@ -276,7 +280,9 @@ def review_requirements_with_openai(
             llm_reviewed += 1
             completed_llm += 1
             record_progress()
-            new_cache_rows.append(llm_cache_row(requirement, client_config.model, review))
+            new_cache_rows.append(llm_cache_row(
+                requirement, client_config.model, pipeline, scope_config, review,
+            ))
         reviews[index] = review
 
     if sample and sample_connection_failures == len(sample):
@@ -318,7 +324,9 @@ def review_requirements_with_openai(
                     llm_reviewed += 1
                     completed_llm += 1
                     record_progress()
-                    new_cache_rows.append(llm_cache_row(requirement, client_config.model, review))
+                    new_cache_rows.append(llm_cache_row(
+                        requirement, client_config.model, pipeline, scope_config, review,
+                    ))
                 reviews[index] = review
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
@@ -483,6 +491,8 @@ def review_with_validation_errors(
     review = complete_llm_review_payload(requirement, pipeline, payload, model=model)
     issues = validate_llm_review_result_payload(review)
     errors = [issue for issue in issues if issue.severity == "error"]
+    if not errors:
+        review = apply_deterministic_review_policy(requirement, pipeline, review)
     return review, errors
 
 
@@ -539,13 +549,63 @@ def complete_llm_review_payload(
     return review
 
 
-def llm_cache_key(requirement: dict[str, Any], model: str) -> tuple[str, str, str]:
-    return (requirement_identity(requirement), model, PROMPT_VERSION)
+def apply_deterministic_review_policy(
+    requirement: dict[str, Any],
+    pipeline: ReviewPipeline,
+    review: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply the configured policy as a floor after LLM or cache retrieval."""
+    normalized = dict(review)
+    policy_risk = classify_review_risk(requirement, pipeline)
+    risk_rank = {"low_risk": 0, "high_risk": 1, "mandatory_review": 2}
+    model_risk = str(normalized.get("risk") or "")
+    effective_risk = max(
+        (policy_risk, model_risk),
+        key=lambda value: risk_rank.get(value, -1),
+    )
+    normalized["risk"] = effective_risk
+
+    if policy_risk == "mandatory_review" and normalized.get("decision") != "needs_expert":
+        original_decision = str(normalized.get("decision") or "unknown")
+        normalized["decision"] = "needs_expert"
+        notes = list(normalized.get("review_notes") or [])
+        policy_note = f"Deterministic mandatory-review policy overrode decision={original_decision}."
+        if policy_note not in notes:
+            notes.append(policy_note)
+        normalized["review_notes"] = notes
+    return normalized
 
 
-def read_llm_review_cache(path: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
-    cache: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for row in read_jsonl(path):
+def llm_cache_key(
+    requirement: dict[str, Any],
+    model: str,
+    pipeline: ReviewPipeline,
+    scope_config: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    fingerprint_payload = {
+        "cache_version": LLM_REVIEW_CACHE_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_prompt(requirement)},
+        ],
+        "risk_policy": pipeline.risk_policy,
+        "review_scope": scope_config,
+    }
+    canonical = json.dumps(
+        fingerprint_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    input_fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return (requirement_identity(requirement), model, PROMPT_VERSION, input_fingerprint)
+
+
+def read_llm_review_cache(path: Path) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    cache: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in read_jsonl_recover_torn_tail(path):
         review = row.get("review")
         if not isinstance(review, dict):
             continue
@@ -553,19 +613,29 @@ def read_llm_review_cache(path: Path) -> dict[tuple[str, str, str], dict[str, An
             str(row.get("stable_req_id") or row.get("requirement_id") or ""),
             str(row.get("model") or ""),
             str(row.get("prompt_version") or ""),
+            str(row.get("input_fingerprint") or ""),
         )
         if all(key):
             cache[key] = review
     return cache
 
 
-def llm_cache_row(requirement: dict[str, Any], model: str, review: dict[str, Any]) -> dict[str, Any]:
+def llm_cache_row(
+    requirement: dict[str, Any],
+    model: str,
+    pipeline: ReviewPipeline,
+    scope_config: dict[str, Any],
+    review: dict[str, Any],
+) -> dict[str, Any]:
     requirement_id = requirement_identity(requirement)
+    cache_key = llm_cache_key(requirement, model, pipeline, scope_config)
     return {
         "stable_req_id": requirement_id,
         "requirement_id": requirement_id,
         "model": model,
         "prompt_version": PROMPT_VERSION,
+        "cache_version": LLM_REVIEW_CACHE_VERSION,
+        "input_fingerprint": cache_key[-1],
         "review": review,
     }
 

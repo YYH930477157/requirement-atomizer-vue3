@@ -7,8 +7,12 @@ import json
 import logging
 import os
 import sys
+import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from threading import RLock
+from typing import Any, Iterator
 
 import ai_extract
 from assemble_spec import assemble
@@ -23,6 +27,7 @@ from requirements_analysis_schema import normalize_ownership
 from spec_export import export_spec
 
 
+LOGGER = logging.getLogger("requirement_atomizer")
 ASSEMBLED_JSON = "dlms_cosem_spec_requirements.json"
 PROGRESS_PREFIX = "__RATOMIZER_PROGRESS__"
 BLUE_BOOK_INDEX_ENV = "RATOMIZER_BLUE_BOOK_INDEX"
@@ -326,6 +331,12 @@ def ai_extract_task(out_dir: Path, *, route: str | None, limit_sections: int | N
 
 RUN_MANIFEST = "run_manifest.json"
 STAGES_DIR = "_stages"
+_MANIFEST_LOCKS: dict[Path, RLock] = {}
+_MANIFEST_LOCKS_GUARD = RLock()
+_MANIFEST_LOCK_TIMEOUT_S = 10.0
+_MANIFEST_LOCK_STALE_AFTER_S = 300.0
+_REPLACE_ATTEMPTS = 5
+_REPLACE_RETRY_DELAY_S = 0.02
 
 # 阶段名 == 子命令名（manifest 键与 CLI 一致，GUI 单步按钮与 chain 写同一本账）
 CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
@@ -403,6 +414,12 @@ def stage_producer(stage: str) -> str:
                                     EXTRACT_GUARDS_VERSION)
             producer = (f"{AI_EXTRACT_PROMPT_VERSION}+{EXTRACT_GUARDS_VERSION}"
                         f"+{AI_VERIFY_PROMPT_VERSION}")
+        elif stage == "assemble":
+            # assemble 会运行 spec_enrich；富化 prompt/护栏升级必须让阶段续跑失效，
+            # 否则旧 run_manifest 会在富化缓存检查之前跳过整个阶段。
+            from spec_enrich import ENRICH_GUARDS_VERSION, ENRICH_PROMPT_VERSION
+            producer = (f"{producer}+{ENRICH_PROMPT_VERSION}"
+                        f"+{ENRICH_GUARDS_VERSION}")
         elif stage == "requirements-analysis":
             from requirements_analysis import ANALYZE_PROMPT_VERSION
             producer = ANALYZE_PROMPT_VERSION
@@ -518,13 +535,87 @@ def _stage_manifest_path(out_dir: Path, stage: str) -> Path:
     return Path(out_dir).expanduser().resolve() / STAGES_DIR / stage / "stage_manifest.json"
 
 
+@contextmanager
+def _run_manifest_lock(
+    out_dir: Path,
+    *,
+    timeout_s: float = _MANIFEST_LOCK_TIMEOUT_S,
+    stale_after_s: float = _MANIFEST_LOCK_STALE_AFTER_S,
+) -> Iterator[None]:
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    with _manifest_process_lock_for(root):
+        lock_path = root / "run_manifest.lock"
+        deadline = time.monotonic() + timeout_s
+        fd: int | None = None
+        while fd is None:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if _remove_stale_manifest_lock(lock_path, stale_after_s):
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"timed out waiting for run manifest lock: {lock_path}")
+                time.sleep(0.01)
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            yield
+        finally:
+            os.close(fd)
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _manifest_process_lock_for(out_dir: Path) -> RLock:
+    with _MANIFEST_LOCKS_GUARD:
+        return _MANIFEST_LOCKS.setdefault(out_dir, RLock())
+
+
+def _remove_stale_manifest_lock(lock_path: Path, stale_after_s: float) -> bool:
+    if stale_after_s < 0:
+        return False
+    try:
+        age_s = time.time() - lock_path.stat().st_mtime
+    except FileNotFoundError:
+        return True
+    if age_s < stale_after_s:
+        return False
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        return True
+    return True
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt + 1 >= _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_S)
+
+
 def _atomic_write_json(path: Path, text: str) -> None:
     """原子写：临时文件 + os.replace。崩溃中途不会留下半截 JSON（旧 write_text 会，
     read_run_manifest 吞 JSONDecodeError 后静默丢弃所有阶段记录 → 强制全量重跑）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_with_retry(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _write_stage_manifest(out_dir: Path, stage: str, entry: dict[str, Any]) -> None:
@@ -610,37 +701,38 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
     import datetime as _dt
     root = Path(out_dir).expanduser().resolve()
     path = root / RUN_MANIFEST
-    data = read_run_manifest(root)
-    stages = data.get("stages")
-    if not isinstance(stages, dict):
-        stages = {}
     now = _dt.datetime.now().isoformat(timespec="seconds")
-    entry = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
-    if status == "running":
-        entry = {"status": "running", "started": now, "producer": stage_producer(stage)}
-    else:
-        entry.update({"status": status, "finished": now, "producer": stage_producer(stage)})
-        if route:
-            entry["route"] = route   # stub 降级 ≠ 真 LLM：账本必须可区分（2026-07-08 审计）
-        if outputs is not None:
-            entry["outputs"] = _relative_outputs(root, outputs)
-        elif status == "ok" and "outputs" not in entry and stage in STAGE_REQUIRED_OUTPUTS:
-            entry["outputs"] = list(STAGE_REQUIRED_OUTPUTS[stage])
-        if status == "ok":
-            entry["input_fingerprint"] = input_fingerprint or stage_input_fingerprint(
-                root, stage, route=route, template_path=template_path,
-                input_path=input_path, config=config)
-        if action:
-            entry["last_action"] = action
-        if error:
-            entry["error"] = str(error)[:300]
-        else:
-            entry.pop("error", None)
-    stages[stage] = entry
-    data.update({"manifest_version": 2, "stages": stages, "updated": now})
     try:
-        _atomic_write_json(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-        _write_stage_manifest(root, stage, entry)
+        with _run_manifest_lock(root):
+            data = read_run_manifest(root)
+            stages = data.get("stages")
+            if not isinstance(stages, dict):
+                stages = {}
+            entry = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+            if status == "running":
+                entry = {"status": "running", "started": now, "producer": stage_producer(stage)}
+            else:
+                entry.update({"status": status, "finished": now, "producer": stage_producer(stage)})
+                if route:
+                    entry["route"] = route   # stub 降级 ≠ 真 LLM：账本必须可区分（2026-07-08 审计）
+                if outputs is not None:
+                    entry["outputs"] = _relative_outputs(root, outputs)
+                elif status == "ok" and "outputs" not in entry and stage in STAGE_REQUIRED_OUTPUTS:
+                    entry["outputs"] = list(STAGE_REQUIRED_OUTPUTS[stage])
+                if status == "ok":
+                    entry["input_fingerprint"] = input_fingerprint or stage_input_fingerprint(
+                        root, stage, route=route, template_path=template_path,
+                        input_path=input_path, config=config)
+                if action:
+                    entry["last_action"] = action
+                if error:
+                    entry["error"] = str(error)[:300]
+                else:
+                    entry.pop("error", None)
+            stages[stage] = entry
+            data.update({"manifest_version": 2, "stages": stages, "updated": now})
+            _atomic_write_json(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            _write_stage_manifest(root, stage, entry)
     except OSError:  # pragma: no cover - manifest 写失败不阻断任务本体
         LOGGER.warning("run_manifest 写入失败（忽略）：%s", path)
 

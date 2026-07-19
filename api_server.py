@@ -233,6 +233,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=409)
             return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
         self.send_json(state)
 
     def handle_translation(self) -> None:
@@ -274,6 +277,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                                            reason=reason, actor=actor)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=409)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
         # 裁决回流交付物：防抖合并重建（0714 批次二 S4）——连续裁决只重建一次,
         # POST 即刻返回;批注视图不读 merged,不受延迟影响。失败不影响裁决本身。

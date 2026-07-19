@@ -445,7 +445,11 @@ def resolve_section_refs(sections: list[dict[str, Any]]) -> list[dict[str, Any]]
                 break
         if refs:
             s["ref_texts"] = refs
-            s["drift_source"] = s["text"] + "\n" + "\n".join(r["text"] for r in refs)
+            drift_source = s.get("drift_source") or s["text"]
+            for ref in refs:
+                if ref["text"] not in drift_source:
+                    drift_source += "\n" + ref["text"]
+            s["drift_source"] = drift_source
     return sections
 
 

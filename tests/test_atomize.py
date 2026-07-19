@@ -13,6 +13,7 @@ from atomize import (
     build_atomic_candidates,
     build_table_artifacts,
     build_quality_report,
+    detect_heading,
     extract_matrix_facts,
     first_field_value,
     interpret_table_matrix,
@@ -23,6 +24,12 @@ from atomize import (
 
 
 class AtomizeTableTests(unittest.TestCase):
+    def test_large_bare_integer_sentence_is_not_a_heading(self) -> None:
+        self.assertIsNone(detect_heading(
+            "100 litres of water shall be stored safely.",
+            "Normal",
+        ))
+
     def test_definition_with_fixed_validity_values_is_requirement_like(self) -> None:
         text = (
             "A period of time that always begins on the first day of a month "

@@ -5,13 +5,23 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from llm_client import LLMClientConfig, LLMConnectionError
-from llm_pipeline import llm_config_from_route, read_jsonl, run_review_pipeline, write_jsonl
+from llm_pipeline import (
+    effective_review_scope,
+    llm_cache_key,
+    llm_config_from_route,
+    load_review_pipeline,
+    read_jsonl,
+    read_llm_review_cache,
+    run_review_pipeline,
+    write_jsonl,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -275,6 +285,123 @@ class LLMPipelineRouteTests(unittest.TestCase):
         self.assertEqual(second["llm_reviewed"], 2)
         self.assertEqual(len(service.requests), 2)
         self.assertEqual(len(cache_rows), 2)
+
+    def test_cache_fingerprint_covers_prompt_policy_and_effective_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline_path = Path(tmp) / "review_pipeline.yaml"
+            write_pipeline_config(pipeline_path, "http://127.0.0.1:9/v1")
+            pipeline = load_review_pipeline(pipeline_path)
+            row = requirement("SREQ-0000000000000013", confidence=0.70)
+            targeted = effective_review_scope(pipeline, "targeted")
+
+            base_key = llm_cache_key(row, "mock-review-model", pipeline, targeted)
+            changed_prompt = dict(row)
+            changed_prompt["requirement"] = "Changed requirement text."
+            changed_policy = replace(
+                pipeline,
+                risk_policy={**pipeline.risk_policy, "mandatory_review_types": ["event_definition"]},
+            )
+
+            self.assertNotEqual(
+                base_key,
+                llm_cache_key(changed_prompt, "mock-review-model", pipeline, targeted),
+            )
+            self.assertNotEqual(
+                base_key,
+                llm_cache_key(row, "mock-review-model", changed_policy, targeted),
+            )
+            self.assertNotEqual(
+                base_key,
+                llm_cache_key(row, "mock-review-model", pipeline, effective_review_scope(pipeline, "all")),
+            )
+
+    def test_policy_change_invalidates_cache_and_mandatory_policy_is_consistent_on_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [requirement("SREQ-0000000000000014", confidence=0.90)],
+            )
+
+            with ScriptedOpenAIService(lambda body, count: {"body": openai_review()}) as service:
+                pipeline_path = tmp_path / "review_pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                run_review_pipeline(
+                    out_dir, pipeline_path=pipeline_path, domain_pack_path=None,
+                    route="openai_compatible", scope="all",
+                )
+                policy_text = pipeline_path.read_text(encoding="utf-8").replace(
+                    "risk_policy:\n",
+                    "risk_policy:\n  mandatory_review_types:\n    - \"event_definition\"\n",
+                    1,
+                )
+                pipeline_path.write_text(policy_text, encoding="utf-8")
+                run_review_pipeline(
+                    out_dir, pipeline_path=pipeline_path, domain_pack_path=None,
+                    route="openai_compatible", scope="all",
+                )
+                fresh_review = read_jsonl(out_dir / "llm_review_results.jsonl")[0]
+                run_review_pipeline(
+                    out_dir, pipeline_path=pipeline_path, domain_pack_path=None,
+                    route="openai_compatible", scope="all",
+                )
+                cached_review = read_jsonl(out_dir / "llm_review_results.jsonl")[0]
+
+            cache_rows = read_jsonl(out_dir / "llm_review_cache.jsonl")
+
+        self.assertEqual(len(service.requests), 2)
+        self.assertEqual(len(cache_rows), 2)
+        self.assertEqual(fresh_review["risk"], "mandatory_review")
+        self.assertEqual(fresh_review["decision"], "needs_expert")
+        self.assertEqual(cached_review, fresh_review)
+
+    def test_legacy_cache_row_is_ignored_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            out_dir.mkdir()
+            row = requirement("SREQ-0000000000000015", confidence=0.70)
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [row])
+            write_jsonl(
+                out_dir / "llm_review_cache.jsonl",
+                [{
+                    "stable_req_id": row["stable_req_id"],
+                    "model": "mock-review-model",
+                    "prompt_version": "m2-review-v1",
+                    "review": {"decision": "accept", "risk": "low_risk"},
+                }],
+            )
+
+            with ScriptedOpenAIService(lambda body, count: {"body": openai_review()}) as service:
+                pipeline_path = tmp_path / "review_pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                run_review_pipeline(
+                    out_dir, pipeline_path=pipeline_path, domain_pack_path=None,
+                    route="openai_compatible", scope="all",
+                )
+
+        self.assertEqual(len(service.requests), 1)
+
+    def test_review_cache_reader_repairs_torn_final_record(self) -> None:
+        valid_row = {
+            "stable_req_id": "SREQ-1",
+            "model": "m",
+            "prompt_version": "p",
+            "input_fingerprint": "f",
+            "review": {"decision": "accept"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "llm_review_cache.jsonl"
+            valid_line = json.dumps(valid_row) + "\n"
+            cache.write_text(valid_line + '{"stable_req_id":', encoding="utf-8")
+
+            with self.assertLogs("requirement_atomizer", level="WARNING"):
+                rows = read_llm_review_cache(cache)
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(cache.read_text(encoding="utf-8"), valid_line)
 
     def test_openai_review_reports_progress_for_each_completed_llm_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -6,14 +6,16 @@ const path = require("node:path");
 const {
   DEFAULT_LLM_SETTINGS,
   appendBackendLog,
+  bindAmbientLlmCredential,
   buildChainArgs,
   buildExportAnnotationArgs,
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
   loadLlmSettingsConfig,
-  normalizeLlmSettings,
   resolveBackendCommand,
+  resolveBoundLlmApiKey,
+  resolveLlmTestConnection,
   saveLlmSettingsConfig,
   shouldReuseApiSession,
 } = require("./main.helpers.cjs");
@@ -23,6 +25,7 @@ let apiProcess = null;
 let apiSession = null;
 let llmSettings = null;
 let sessionApiKey = "";
+let startupAmbientCredential = null;
 const API_STARTUP_ATTEMPTS = 3;
 const API_STARTUP_TIMEOUT_MS = 30000;
 const API_STARTUP_RETRY_DELAY_MS = 750;
@@ -380,19 +383,17 @@ function loadLlmSettings() {
   const loaded = loadLlmSettingsConfig(llmSettingsPath(), safeStorage);
   llmSettings = loaded.settings;
   sessionApiKey = loaded.apiKey;
-  if (sessionApiKey) {
-    process.env[llmSettings.apiKeyEnv] = sessionApiKey;
-  }
+  startupAmbientCredential = bindAmbientLlmCredential(llmSettings, process.env);
   return llmSettings;
 }
 
 function saveLlmSettings(input) {
-  const saved = saveLlmSettingsConfig(llmSettingsPath(), input, safeStorage, sessionApiKey);
+  const previousSettings = loadLlmSettings();
+  const saved = saveLlmSettingsConfig(
+    llmSettingsPath(), input, safeStorage, sessionApiKey, previousSettings,
+  );
   llmSettings = saved.settings;
   sessionApiKey = saved.apiKey;
-  if (sessionApiKey) {
-    process.env[llmSettings.apiKeyEnv] = sessionApiKey;
-  }
   if (apiSession?.outputDir) {
     void startApiServer(apiSession.outputDir).catch(() => undefined);
   }
@@ -400,9 +401,12 @@ function saveLlmSettings(input) {
 }
 
 async function testLlmConnection(input) {
-  const settings = normalizeLlmSettings(input || loadLlmSettings());
-  const apiKey = typeof input?.apiKey === "string" && input.apiKey.trim() ? input.apiKey.trim() : sessionApiKey;
-  const env = buildLlmEnvironment({ ...settings, apiKey }, process.env);
+  const savedSettings = loadLlmSettings();
+  const { settings, apiKey } = resolveLlmTestConnection(
+    input,
+    savedSettings,
+    resolveBoundLlmApiKey(savedSettings, sessionApiKey, startupAmbientCredential),
+  );
   const body = JSON.stringify({
     model: settings.model,
     messages: [{ role: "user", content: "ping" }],
@@ -410,9 +414,8 @@ async function testLlmConnection(input) {
     temperature: 0,
   });
   const headers = { "Content-Type": "application/json", Accept: "application/json" };
-  const key = env[settings.apiKeyEnv] || "";
-  if (key) {
-    headers.Authorization = `Bearer ${key}`;
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
   }
   const response = await fetch(`${settings.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
     method: "POST",
@@ -434,7 +437,9 @@ async function testLlmConnection(input) {
 }
 
 function buildCurrentLlmEnvironment() {
-  return buildLlmEnvironment({ ...loadLlmSettings(), apiKey: sessionApiKey }, process.env);
+  const settings = loadLlmSettings();
+  const apiKey = resolveBoundLlmApiKey(settings, sessionApiKey, startupAmbientCredential);
+  return buildLlmEnvironment({ ...settings, apiKey }, process.env);
 }
 
 function logsDirPath() {

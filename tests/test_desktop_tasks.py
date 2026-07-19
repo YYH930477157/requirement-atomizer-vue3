@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import io
+import multiprocessing
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -12,6 +14,18 @@ from unittest.mock import ANY, patch
 import desktop_tasks
 
 from llm_pipeline import write_jsonl
+
+
+def _update_manifest_process(out_dir: str, stage: str, start_event) -> None:
+    start_event.wait(10)
+    desktop_tasks.update_run_manifest(Path(out_dir), stage, "running")
+
+
+def _hold_manifest_lock(out_dir: str, ready_event, release_event) -> None:
+    with desktop_tasks._run_manifest_lock(Path(out_dir)):
+        ready_event.set()
+        if not release_event.wait(10):
+            raise RuntimeError("test did not release run manifest lock")
 
 
 class ResolveKbPathsTests(unittest.TestCase):
@@ -730,8 +744,8 @@ class ChainAndManifestTests(unittest.TestCase):
             "atomize": "atomize+impl-v4",
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
-            "ai-extract": "ai-extract-v19+guards-v5+ai-verify-v2+impl-v3",
-            "assemble": "assemble_spec/v1+impl-v2",
+            "ai-extract": "ai-extract-v20+guards-v6+ai-verify-v2+impl-v3",
+            "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+impl-v2",
             "functional-synthesis": "functional-synthesis-v5+impl-v2",
             "requirements-analysis": "analyze-llm-v6+impl-v3",   # v3: 富化默认关闭并保留显式开关
             "template-write": "template_writer/v1+impl-v2",
@@ -742,6 +756,16 @@ class ChainAndManifestTests(unittest.TestCase):
             {stage: desktop_tasks.stage_producer(stage) for stage in expected},
             expected,
         )
+
+    def test_assemble_producer_tracks_enrich_guards_version(self) -> None:
+        import spec_enrich
+
+        current = desktop_tasks.stage_producer("assemble")
+        with patch.object(spec_enrich, "ENRICH_GUARDS_VERSION", "enrich-guards-vNEXT"):
+            changed = desktop_tasks.stage_producer("assemble")
+
+        self.assertNotEqual(current, changed)
+        self.assertIn("enrich-guards-vNEXT", changed)
 
     def test_legacy_v7_annotation_export_is_not_reusable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1003,6 +1027,115 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertIn("started", entry)
             self.assertIn("finished", entry)
             self.assertEqual(data["manifest_version"], 2)
+
+    def test_concurrent_process_updates_preserve_both_stages(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as td:
+            start_event = context.Event()
+            processes = [
+                context.Process(
+                    target=_update_manifest_process,
+                    args=(td, stage, start_event),
+                )
+                for stage in ("concurrent-a", "concurrent-b")
+            ]
+            for process in processes:
+                process.start()
+            start_event.set()
+            for process in processes:
+                process.join(20)
+                self.assertEqual(process.exitcode, 0)
+
+            data = json.loads((Path(td) / desktop_tasks.RUN_MANIFEST).read_text(encoding="utf-8"))
+            stage_a = json.loads(
+                desktop_tasks._stage_manifest_path(Path(td), "concurrent-a").read_text(encoding="utf-8")
+            )
+            stage_b = json.loads(
+                desktop_tasks._stage_manifest_path(Path(td), "concurrent-b").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(set(data["stages"]), {"concurrent-a", "concurrent-b"})
+        self.assertEqual(stage_a["stage"], "concurrent-a")
+        self.assertEqual(stage_b["stage"], "concurrent-b")
+
+    def test_manifest_transaction_waits_for_cross_process_lock(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as td:
+            ready_event = context.Event()
+            release_event = context.Event()
+            holder = context.Process(
+                target=_hold_manifest_lock,
+                args=(td, ready_event, release_event),
+            )
+            holder.start()
+            self.assertTrue(ready_event.wait(10))
+
+            started = threading.Event()
+            finished = threading.Event()
+
+            def update_manifest() -> None:
+                started.set()
+                desktop_tasks.update_run_manifest(Path(td), "waiting-stage", "running")
+                finished.set()
+
+            writer = threading.Thread(target=update_manifest)
+            writer.start()
+            self.assertTrue(started.wait(2))
+            self.assertFalse(finished.wait(0.2))
+            release_event.set()
+            writer.join(10)
+            holder.join(10)
+
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(holder.exitcode, 0)
+            self.assertTrue(finished.is_set())
+            data = desktop_tasks.read_run_manifest(Path(td))
+            self.assertEqual(data["stages"]["waiting-stage"]["status"], "running")
+
+    def test_atomic_json_writes_use_unique_temporary_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "shared.json"
+            start = threading.Barrier(6)
+            errors: list[BaseException] = []
+
+            def write_payload(index: int) -> None:
+                try:
+                    start.wait(5)
+                    desktop_tasks._atomic_write_json(
+                        path,
+                        json.dumps({"writer": index, "payload": "x" * 100_000}),
+                    )
+                except BaseException as exc:  # capture worker failures for the assertion thread
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=write_payload, args=(index,)) for index in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+
+            self.assertEqual(errors, [])
+            self.assertIn(json.loads(path.read_text(encoding="utf-8"))["writer"], range(6))
+            self.assertEqual(list(Path(td).glob(".shared.json.*.tmp")), [])
+
+    def test_atomic_json_replace_retries_windows_sharing_violation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "manifest.json"
+            real_replace = desktop_tasks.os.replace
+            attempts = 0
+
+            def flaky_replace(source, target) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    raise PermissionError("temporarily locked")
+                real_replace(source, target)
+
+            with patch.object(desktop_tasks.os, "replace", side_effect=flaky_replace):
+                desktop_tasks._atomic_write_json(path, '{"ok": true}\n')
+
+            self.assertEqual(attempts, 3)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"ok": True})
 
     def test_run_pipeline_task_reuses_completed_atomize_and_review_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as td:

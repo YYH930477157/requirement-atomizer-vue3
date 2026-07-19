@@ -760,6 +760,10 @@ class DocAnnotationExportTests(unittest.TestCase):
                 rendered.index('<span class="annotation-number">03</span><span class="annotation-owner">软件</span>'),
             ]
             self.assertEqual(positions, sorted(positions))
+            self.assertRegex(
+                rendered,
+                r'"ai_req_id": "AI-B".*?"annotation_number": 3',
+            )
 
     def test_exact_source_anchor_places_marker_on_quoted_block_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

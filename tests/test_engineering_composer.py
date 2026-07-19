@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import engineering_composer
 from engineering_composer import compose_engineering_requirements, write_engineering_requirements
@@ -3711,6 +3712,37 @@ class EngineeringComposerTests(unittest.TestCase):
         script = model["dlms_objects"][0]
         self.assertEqual(script["attributes"], [])
         self.assertEqual(script["methods"], [{"index": "1", "name": "execute", "access_rights": "--/--/-W/-W"}])
+
+
+class KnowledgeIndexPriorityTests(unittest.TestCase):
+    def test_default_index_keeps_first_duplicate_entry_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = [root / "authoritative.json", root / "shadow.json"]
+            payloads = [
+                {
+                    "kb_id": "authoritative", "name": "A", "version": "1",
+                    "entries": [{
+                        "id": "KB-DUP", "type": "term", "name": "Authoritative",
+                        "definition": "first definition",
+                    }],
+                },
+                {
+                    "kb_id": "shadow", "name": "B", "version": "1",
+                    "entries": [{
+                        "id": "KB-DUP", "type": "term", "name": "Shadow",
+                        "definition": "later definition",
+                    }],
+                },
+            ]
+            for path, payload in zip(paths, payloads):
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with patch("engineering_composer.default_kb_paths", return_value=paths):
+                index = engineering_composer._load_default_kb_entry_index()
+
+        self.assertEqual(index["KB-DUP"]["name"], "Authoritative")
+        self.assertEqual(index["KB-DUP"]["definition"], "first definition")
 
 
 if __name__ == "__main__":

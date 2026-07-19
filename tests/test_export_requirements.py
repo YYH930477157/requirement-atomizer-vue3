@@ -69,6 +69,36 @@ class ExportRequirementsTests(unittest.TestCase):
         self.assertEqual(rows[0]["source_refs"], "BLK-2")
         self.assertIn("## security", md_text)
 
+    def test_csv_neutralizes_formula_prefixes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            write_jsonl(
+                out_dir / "atomic_requirements.jsonl",
+                [{
+                    "req_id": "AREQ-1",
+                    "stable_req_id": "SREQ-1",
+                    "requirement_type": "functional",
+                    "domain": "test",
+                    "object": "=HYPERLINK(\"https://example.invalid\")",
+                    "requirement": "+cmd|' /C calc'!A0",
+                    "source_refs": ["@SUM(A1:A2)"],
+                    "section_path": ["-2+3+cmd"],
+                }],
+            )
+            write_jsonl(out_dir / "review_states.jsonl", [])
+
+            export_requirements(out_dir, formats=["csv"])
+
+            with (out_dir / "requirements_export.csv").open(
+                encoding="utf-8-sig", newline="",
+            ) as handle:
+                row = next(csv.DictReader(handle))
+
+        self.assertEqual(row["object"], "'=HYPERLINK(\"https://example.invalid\")")
+        self.assertTrue(row["requirement"].startswith("'+cmd"))
+        self.assertEqual(row["source_refs"], "'@SUM(A1:A2)")
+        self.assertEqual(row["section_path"], "'-2+3+cmd")
+
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as f:

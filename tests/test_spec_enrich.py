@@ -96,6 +96,41 @@ class SpecEnrichTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_cache_reader_repairs_interrupted_final_record(self) -> None:
+        valid_row = {"fingerprint": "good", "description": "cached"}
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "c.jsonl"
+            valid_line = json.dumps(valid_row, ensure_ascii=False) + "\n"
+            cache.write_text(valid_line + '{"fingerprint":', encoding="utf-8")
+
+            with self.assertLogs("requirement_atomizer", level="WARNING"):
+                rows = spec_enrich.read_cache(cache)
+
+            self.assertEqual(rows, {"good": valid_row})
+            self.assertEqual(cache.read_text(encoding="utf-8"), valid_line)
+
+    def test_guards_version_invalidates_cache_and_is_recorded(self) -> None:
+        server, port = start_server()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                cache = Path(tmp) / "c.jsonl"
+                spec_enrich.enrich_descriptions([obj_req()], config=make_config(port), cache_path=cache)
+                first_calls = _Handler.calls
+
+                first_row = json.loads(cache.read_text(encoding="utf-8").splitlines()[0])
+                self.assertEqual(first_row["guards_version"], spec_enrich.ENRICH_GUARDS_VERSION)
+
+                with patch.object(spec_enrich, "ENRICH_GUARDS_VERSION", "enrich-guards-vNEXT"):
+                    spec_enrich.enrich_descriptions(
+                        [obj_req()], config=make_config(port), cache_path=cache)
+
+                self.assertGreater(_Handler.calls, first_calls)
+                last_row = json.loads(cache.read_text(encoding="utf-8").splitlines()[-1])
+                self.assertEqual(last_row["guards_version"], "enrich-guards-vNEXT")
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_code_drift_rejected(self) -> None:
         _Handler.reply_description = "Clock 对象，参见 OBIS 1-1:99.9.9.255 与第 42 项。"  # 注入新 OBIS + 新数字
         server, port = start_server()

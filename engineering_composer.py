@@ -875,7 +875,12 @@ def _load_default_kb_entry_index() -> dict[str, dict[str, Any]]:
         repo = KnowledgeRepository.from_paths(default_kb_paths())
     except (OSError, ValueError, json.JSONDecodeError):
         return {}
-    return {entry.entry_id: entry.to_dict(include_metadata=True) for entry in repo.entries}
+    index: dict[str, dict[str, Any]] = {}
+    for entry in repo.entries:
+        # Match KnowledgeRepository.get(): default path order is authoritative,
+        # so a later KB must not silently shadow the first entry with the same ID.
+        index.setdefault(entry.entry_id, entry.to_dict(include_metadata=True))
+    return index
 
 
 def _class_hints(row: dict[str, Any], kb_entry_index: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:

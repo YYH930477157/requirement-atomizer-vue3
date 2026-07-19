@@ -5,16 +5,22 @@ import path from "node:path"
 
 import {
   PROGRESS_PREFIX,
+  bindAmbientLlmCredential,
   buildChainArgs,
   buildExportAnnotationArgs,
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
   loadLlmSettingsConfig,
+  normalizeLlmEndpoint,
   normalizeLlmSettings,
   resolveBackendCommand,
+  resolveBoundLlmApiKey,
+  resolveLlmTestConnection,
   resolvePythonScriptPath,
   saveLlmSettingsConfig,
+  SESSION_API_KEY_ENV,
+  sameLlmCredentialScope,
   shouldReuseApiSession,
 } from "../main.helpers.cjs"
 
@@ -174,17 +180,169 @@ describe("Electron main helpers", () => {
     })
     expect(settings).not.toHaveProperty("apiKey")
 
-    expect(buildLlmEnvironment({ ...settings, apiKey: "sk-secret" })).toMatchObject({
+    const childEnv = buildLlmEnvironment({ ...settings, apiKey: "sk-secret" }, {})
+    expect(childEnv).toMatchObject({
       RATOMIZER_LLM_BASE_URL: "https://open.bigmodel.cn/api/paas/v4",
       RATOMIZER_LLM_MODEL: "glm-4-plus",
-      RATOMIZER_LLM_API_KEY_ENV: "ZHIPU_API_KEY",
+      RATOMIZER_LLM_API_KEY_ENV: SESSION_API_KEY_ENV,
       RATOMIZER_LLM_TEMPERATURE: "0.2",
       RATOMIZER_LLM_MAX_TOKENS: "2048",
       RATOMIZER_LLM_TIMEOUT_S: "15",
       RATOMIZER_LLM_MAX_RETRIES: "0",
       RATOMIZER_LLM_CONCURRENCY: "8",
-      ZHIPU_API_KEY: "sk-secret",
+      [SESSION_API_KEY_ENV]: "sk-secret",
     })
+    expect(childEnv).not.toHaveProperty("ZHIPU_API_KEY")
+  })
+
+  it("normalizes and validates LLM endpoints before credentials can be attached", () => {
+    expect(normalizeLlmEndpoint(" HTTPS://API.Example.com:443/v1/ "))
+      .toBe("https://api.example.com/v1")
+    expect(normalizeLlmEndpoint("http://localhost:11434/v1/"))
+      .toBe("http://localhost:11434/v1")
+    expect(normalizeLlmEndpoint("http://127.0.0.1:11434/v1"))
+      .toBe("http://127.0.0.1:11434/v1")
+
+    expect(() => normalizeLlmEndpoint("ftp://api.example.com/v1")).toThrow(/http or https/)
+    expect(() => normalizeLlmEndpoint("http://api.example.com/v1")).toThrow(/must use https/)
+    expect(() => normalizeLlmEndpoint("https://user:secret@api.example.com/v1"))
+      .toThrow(/credentials/)
+  })
+
+  it("reuses a session key only within the saved endpoint and API-key variable scope", () => {
+    const saved = {
+      baseUrl: "https://api.example.com/v1",
+      apiKeyEnv: "EXAMPLE_API_KEY",
+      model: "saved-model",
+    }
+    const sameScope = resolveLlmTestConnection({
+      baseUrl: "https://API.EXAMPLE.com:443/v1/",
+      apiKeyEnv: "EXAMPLE_API_KEY",
+      model: "new-model",
+    }, saved, "session-secret")
+
+    expect(sameScope.apiKey).toBe("session-secret")
+    expect(sameScope.settings.baseUrl).toBe("https://api.example.com/v1")
+    expect(sameLlmCredentialScope(sameScope.settings, saved)).toBe(true)
+
+    const previousEnvKey = process.env.EXAMPLE_API_KEY
+    process.env.EXAMPLE_API_KEY = "ambient-secret"
+    try {
+      expect(resolveLlmTestConnection({
+        baseUrl: saved.baseUrl,
+        apiKeyEnv: saved.apiKeyEnv,
+      }, saved, "").apiKey).toBe("")
+    } finally {
+      if (previousEnvKey == null) delete process.env.EXAMPLE_API_KEY
+      else process.env.EXAMPLE_API_KEY = previousEnvKey
+    }
+
+    expect(() => resolveLlmTestConnection({
+      baseUrl: "https://attacker.example/v1",
+      apiKeyEnv: "EXAMPLE_API_KEY",
+    }, saved, "session-secret")).toThrow(/explicit API key/)
+    expect(() => resolveLlmTestConnection({
+      baseUrl: saved.baseUrl,
+      apiKeyEnv: "UNRELATED_SECRET",
+    }, saved, "session-secret")).toThrow(/explicit API key/)
+
+    const explicit = resolveLlmTestConnection({
+      baseUrl: "https://other.example/v1",
+      apiKeyEnv: "OTHER_API_KEY",
+      apiKey: "explicit-secret",
+    }, saved, "session-secret")
+    expect(explicit.apiKey).toBe("explicit-secret")
+  })
+
+  it("does not persist an old key when its endpoint or variable scope changes", () => {
+    const configDir = mkdtempSync(path.join(tmpdir(), "ratomizer-scope-"))
+    const configPath = path.join(configDir, "llm-settings.json")
+    const safeStorage = {
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(`encrypted:${value}`, "utf8"),
+      decryptString: (value: Buffer) => value.toString("utf8").replace(/^encrypted:/, ""),
+    }
+    const originalSettings = {
+      baseUrl: "https://api.example.com/v1",
+      apiKeyEnv: "EXAMPLE_API_KEY",
+      model: "model-a",
+    }
+
+    try {
+      const sameScope = saveLlmSettingsConfig(
+        configPath,
+        { ...originalSettings, baseUrl: "https://API.EXAMPLE.com:443/v1/" },
+        safeStorage,
+        "old-secret",
+        originalSettings,
+      )
+      expect(sameScope.apiKey).toBe("old-secret")
+
+      const changedEndpoint = saveLlmSettingsConfig(
+        configPath,
+        { ...originalSettings, baseUrl: "https://other.example/v1" },
+        safeStorage,
+        "old-secret",
+        originalSettings,
+      )
+      expect(changedEndpoint.apiKey).toBe("")
+      expect(loadLlmSettingsConfig(configPath, safeStorage).apiKey).toBe("")
+      expect(readFileSync(configPath, "utf8")).not.toContain("apiKeyProtected")
+
+      const changedVariable = saveLlmSettingsConfig(
+        configPath,
+        { ...originalSettings, apiKeyEnv: "OTHER_API_KEY" },
+        safeStorage,
+        "old-secret",
+        originalSettings,
+      )
+      expect(changedVariable.apiKey).toBe("")
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it("never selects a renderer-named ambient variable as the child API key", () => {
+    const childEnv = buildLlmEnvironment({
+      baseUrl: "https://attacker.example/v1",
+      apiKeyEnv: "AWS_SECRET_ACCESS_KEY",
+    }, {
+      AWS_SECRET_ACCESS_KEY: "ambient-secret",
+      [SESSION_API_KEY_ENV]: "stale-session-secret",
+    })
+
+    expect(childEnv.RATOMIZER_LLM_API_KEY_ENV).toBe(SESSION_API_KEY_ENV)
+    expect(childEnv[SESSION_API_KEY_ENV]).toBeUndefined()
+    expect(childEnv[childEnv.RATOMIZER_LLM_API_KEY_ENV]).not.toBe("ambient-secret")
+  })
+
+  it("binds an ambient API key to the startup endpoint scope only", () => {
+    const startupSettings = {
+      baseUrl: "https://api.example.com/v1",
+      apiKeyEnv: "EXAMPLE_API_KEY",
+    }
+    const binding = bindAmbientLlmCredential(startupSettings, {
+      EXAMPLE_API_KEY: "startup-secret",
+      AWS_SECRET_ACCESS_KEY: "unrelated-secret",
+    })
+
+    expect(binding?.apiKey).toBe("startup-secret")
+    expect(resolveBoundLlmApiKey(startupSettings, "", binding)).toBe("startup-secret")
+    expect(resolveBoundLlmApiKey({
+      ...startupSettings,
+      baseUrl: "https://attacker.example/v1",
+    }, "", binding)).toBe("")
+    expect(resolveBoundLlmApiKey({
+      ...startupSettings,
+      apiKeyEnv: "OTHER_API_KEY",
+    }, "", binding)).toBe("")
+    expect(resolveBoundLlmApiKey(startupSettings, "safe-storage-secret", binding))
+      .toBe("safe-storage-secret")
+
+    expect(bindAmbientLlmCredential({
+      baseUrl: "https://api.example.com/v1",
+      apiKeyEnv: "AWS_SECRET_ACCESS_KEY",
+    }, { AWS_SECRET_ACCESS_KEY: "unrelated-secret" })).toBeNull()
   })
 
   it("clamps AI-extract concurrency to 1..16 and exposes it to Python", () => {

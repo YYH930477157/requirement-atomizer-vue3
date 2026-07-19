@@ -38,14 +38,31 @@ _OBIS_LIST_C_MEANING = {
 
 def _req(*, title: str, description: str, source_quote: str, labels: list[str],
          priority: str = "P1", source_section: str = "", threshold_table: dict | None = None,
-         acceptance: list[str] | None = None, notes: str = "") -> dict[str, Any]:
-    return {
+         acceptance: list[str] | None = None, notes: str = "",
+         requirement_kind: str = "", cosem_object: dict[str, str] | None = None) -> dict[str, Any]:
+    row = {
         "id": "REQ-TMP", "title": title[:80], "description": description, "type": "functional",
         "priority": priority, "status": "confirmed", "source_section": source_section,
         "source_quote": source_quote or "（源表，见 source_refs）", "threshold_table": threshold_table,
         "acceptance_criteria": acceptance or [], "dependencies": [], "parent": None, "children": [],
         "labels": labels or ["通信协议"], "notes": notes,
     }
+    if requirement_kind:
+        row["requirement_kind"] = requirement_kind
+    if cosem_object:
+        row["cosem_object"] = dict(cosem_object)
+    return row
+
+
+def _object_requirement_title(display: dict[str, str], limit: int = 80) -> str:
+    suffix = f" (OBIS {display['obis']} / CL {display['class_id']})"
+    if len(suffix) >= limit:
+        return suffix[-limit:]
+    available = limit - len(suffix)
+    name = display["name"]
+    if len(name) > available:
+        name = (name[: max(1, available - 3)].rstrip() + "...")[:available]
+    return f"{name}{suffix}"
 
 
 def _rate_label(value: str) -> str:
@@ -122,7 +139,7 @@ def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
                          for a in attrs],
             }
         reqs.append(_req(
-            title=f"{display['name']} (OBIS {display['obis']} / CL {display['class_id']})",
+            title=_object_requirement_title(display),
             description=(f"计量软件 SHALL 实现下列 COSEM 对象：Object / Attribute Name: {display['name']}；"
                          f"OBIS Code: {display['obis']}；Interface Class: {display['class_id']}。"
                          f"其属性的数据类型与各关联(RC/PC/SC/LC)访问权限按属性表实现。"),
@@ -135,6 +152,8 @@ def p1_requirements(model: dict[str, Any]) -> list[dict[str, Any]]:
             acceptance=[f"读取 {display['name']} 的 logical_name 返回 OBIS {display['obis']}",
                         "各属性的访问权限与数据类型符合属性表"],
             notes=f"对象模型由确定性装配(P1)，OBIS/CL/访问位来自源表、未经 LLM。",
+            requirement_kind="cosem_object_model",
+            cosem_object=display,
         ))
     return reqs
 

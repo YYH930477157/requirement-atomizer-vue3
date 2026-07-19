@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import assemble_spec
+import spec_excel
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -109,6 +110,28 @@ class AssembleSpecTests(unittest.TestCase):
         self.assertIn("OBIS Code: 1-0:1.2.x.255", req["description"])
         self.assertIn("Interface Class: 4", req["description"])
         self.assertNotIn("Cumulative Active Demand (Q1 + Q4)+ - Register import", req["description"])
+
+    def test_long_object_name_preserves_structured_identity_after_title_truncation(self) -> None:
+        name = "Very Long Customer Specific Profile Generic Event Log Configuration Object With Extension"
+        req = assemble_spec.p1_requirements({
+            "objects": [{
+                "object": name,
+                "obis": "0-0:99.98.123.255",
+                "class_id": "7",
+                "domain": "event",
+                "section_path": [],
+                "attributes": [{
+                    "index": "1", "name": "logical_name", "type": "octet-string",
+                    "access": {}, "default": "",
+                }],
+            }],
+        })[0]
+
+        self.assertLessEqual(len(req["title"]), 80)
+        self.assertIn("(OBIS 0-0:99.98.123.255 / CL 7)", req["title"])
+        self.assertEqual(req["cosem_object"]["name"], name)
+        self.assertTrue(spec_excel._is_object_model_requirement(req))
+        self.assertEqual(spec_excel._object_model_name(req), name)
 
     def test_obis_list_style_name_keeps_concrete_rate_labels(self) -> None:
         reqs = assemble_spec.p1_requirements({

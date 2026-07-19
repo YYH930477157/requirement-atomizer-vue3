@@ -36,8 +36,14 @@ def load_bank(path: Path | None) -> dict[str, Any]:
         return {"version": BANK_VERSION, "accepted": {}, "rejected": {}}
     if not isinstance(data, dict):
         return {"version": BANK_VERSION, "accepted": {}, "rejected": {}}
-    data.setdefault("accepted", {})
-    data.setdefault("rejected", {})
+    if not isinstance(data.get("accepted"), dict):
+        data["accepted"] = {}
+    if not isinstance(data.get("rejected"), dict):
+        data["rejected"] = {}
+    # 旧版本改判时未清理对侧桶，可能让 rejected 样本继续作为正例注入。
+    # 无可靠时序可恢复时按宁漏勿错处理：重叠 ID 以 rejected 为准。
+    for rid in data["accepted"].keys() & data["rejected"].keys():
+        data["accepted"].pop(rid, None)
     return data
 
 
@@ -64,8 +70,11 @@ def update_bank(bank_path: Path, out_dir: Path) -> dict[str, Any]:
             # 漂移标记或 suspicion 未清，样本可能含编造内容——注入 few-shot 会教坏后续富化
             notes = str(req.get("notes") or "")
             if "漂移" in notes or (req.get("suspicion_reasons") or []):
+                bank["accepted"].pop(rid, None)
+                bank["rejected"].pop(rid, None)
                 continue
             module = str((state or {}).get("module_override") or req.get("module") or "")
+            bank["rejected"].pop(rid, None)
             bank["accepted"][rid] = {
                 "module": module,
                 "title": str(req.get("title") or ""),
@@ -77,12 +86,16 @@ def update_bank(bank_path: Path, out_dir: Path) -> dict[str, Any]:
             }
             added_accepted += 1
         elif status == "rejected":
+            bank["accepted"].pop(rid, None)
             bank["rejected"][rid] = {
                 "module": str(req.get("module") or ""),
                 "title": str(req.get("title") or ""),
                 "reason": str((state or {}).get("reason") or ""),
             }
             added_rejected += 1
+        elif state is not None:
+            bank["accepted"].pop(rid, None)
+            bank["rejected"].pop(rid, None)
 
     bank["version"] = BANK_VERSION
     bank["updated"] = datetime.datetime.now().isoformat(timespec="seconds")

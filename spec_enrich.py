@@ -25,6 +25,7 @@ from typing import Any
 
 import blue_book_lookup
 from cosem_behavior_spec import extract_codes, extract_ints
+from io_utils import read_jsonl_recover_torn_tail
 from llm_client import LLMClientConfig, LLMConnectionError, LLMError, chat_json
 from llm_pipeline import (
     DEFAULT_PIPELINE_PATH,
@@ -37,6 +38,9 @@ from llm_pipeline import (
 
 LOGGER = logging.getLogger("requirement_atomizer")
 ENRICH_PROMPT_VERSION = "enrich-v3"   # v3：合批模式（0714 批次一 S1b）；v2：单条改写
+# 缓存保存的是漂移/出处护栏处理后的最终结果。护栏行为变化必须提升此版本，
+# 否则旧缓存会绕过新的 check_drift/citation_mismatch 行为。
+ENRICH_GUARDS_VERSION = "enrich-guards-v1"
 ENRICH_CACHE = "spec_enrich_cache.jsonl"
 # 推理模型（如 GLM-5.2）会把 max_tokens 大量花在 reasoning_content 上，content 可能空；
 # 富化给足下限，避免正文被推理预算挤空导致整批降级。
@@ -105,7 +109,8 @@ def blue_book_entry_hash(entry: dict[str, Any] | None) -> str:
 
 def fingerprint(req: dict[str, Any], model: str, blue_book_entry: dict[str, Any] | None = None) -> str:
     digest = hashlib.sha256(
-        f"{frozen_text(req)}\n{model}\n{ENRICH_PROMPT_VERSION}\n{blue_book_entry_hash(blue_book_entry)}".encode("utf-8")
+        f"{frozen_text(req)}\n{model}\n{ENRICH_PROMPT_VERSION}\n{ENRICH_GUARDS_VERSION}"
+        f"\n{blue_book_entry_hash(blue_book_entry)}".encode("utf-8")
     ).hexdigest()
     return digest[:24]
 
@@ -308,16 +313,10 @@ def _enrich_batch_unit(
 
 def read_cache(path: Path) -> dict[str, dict[str, Any]]:
     cache: dict[str, dict[str, Any]] = {}
-    if not path.exists():
-        return cache
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            key = str(row.get("fingerprint") or "")
-            if key:
-                cache[key] = row
+    for row in read_jsonl_recover_torn_tail(path):
+        key = str(row.get("fingerprint") or "")
+        if key:
+            cache[key] = row
     return cache
 
 
@@ -372,7 +371,8 @@ def enrich_descriptions(
         else:
             rejected += 1
         new_rows.append({"fingerprint": fp, "model": config.model,
-                         "prompt_version": ENRICH_PROMPT_VERSION, "description": desc,
+                         "prompt_version": ENRICH_PROMPT_VERSION,
+                         "guards_version": ENRICH_GUARDS_VERSION, "description": desc,
                          "enriched": is_enriched, "note": note,
                          "blue_book_origin": str(req.get("blue_book_origin") or "")})
 

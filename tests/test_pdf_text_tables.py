@@ -212,8 +212,11 @@ class HeadingRefineTests(unittest.TestCase):
 
     def test_bare_large_int_degraded(self) -> None:
         """"100 litres and up…" 表格行被数字正则误判成标题 → 降级段落。"""
-        heading, _, body = self._refine(
-            "100 litres and up to 200 litres are classified as VpC1 in every case")
+        text = "100 litres and up to 200 litres are classified as VpC1 in every case"
+        self.assertIsNone(detect_heading(text, "", document_profile=DEFAULT_DOCUMENT_PROFILE))
+        # Keep the PDF layer defensive for callers that already classified a line.
+        heading, _, body = _refine_pdf_heading(
+            (1, text), text, DEFAULT_DOCUMENT_PROFILE)
         self.assertIsNone(heading)
         self.assertIsNone(body)
 

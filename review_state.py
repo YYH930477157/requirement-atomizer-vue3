@@ -11,6 +11,8 @@ from threading import RLock
 from typing import Any, Iterator
 
 
+# 仅约束自动化路径（llm_pipeline 的 transition()）。专家入口 apply_expert_decision
+# 是覆盖式裁决，不受此表约束——见其 docstring。
 VALID_TRANSITIONS = {
     "candidate": {"llm_reviewed", "rejected"},
     "llm_reviewed": {"expert_pending", "accepted", "flagged", "rejected"},
@@ -27,6 +29,8 @@ EXPERT_DECISION_STATUSES = {"accepted", "rejected", "needs_discussion", "expert_
 EXPERT_ACTORS = {"expert", "vue3-test", "gui", "vue3-ui"}
 _PROCESS_LOCKS: dict[Path, RLock] = {}
 _PROCESS_LOCKS_GUARD = RLock()
+_REPLACE_ATTEMPTS = 5
+_REPLACE_RETRY_DELAY_S = 0.02
 
 
 @dataclass
@@ -70,6 +74,11 @@ def apply_expert_decision(
     actor: str,
     reason: str = "",
 ) -> dict[str, Any]:
+    """专家覆盖式裁决：决策状态间可自由改判（含 accepted→rejected、rejected→
+    expert_pending 重审），这是有意语义——专家是权威裁决方，VALID_TRANSITIONS
+    只约束自动化 LLM 路径。唯一禁止的跳转是从 frozen 改出（须显式解冻流程，
+    不属于本入口）。每次改判都追加 history（actor/reason/timestamp），审计链完整。
+    """
     if status not in EXPERT_DECISION_STATUSES:
         raise ValueError(f"Unknown review status: {status}")
     out_dir = out_dir.expanduser().resolve()
@@ -99,9 +108,19 @@ def apply_expert_decision(
         states[state_index] = state.to_dict()
 
         _atomic_write_jsonl(states_path, states)
+        result = states[state_index]
         if event is not None:
-            _append_review_state_event(events_path, states[state_index], event)
-        return states[state_index]
+            try:
+                _append_review_state_event(events_path, result, event)
+            except OSError as exc:
+                # state.history 已原子提交，是权威审计记录；事件 JSONL 只是投影。
+                # 此时返回 503 会诱导同状态重试，而重试不会产生新 transition。
+                import logging
+                logging.getLogger("requirement_atomizer").warning(
+                    "裁决状态已保存，但事件日志追加失败：%s", exc)
+                result = dict(result)
+                result["audit_warning"] = "裁决已保存，但独立事件日志写入失败；完整历史仍保存在状态文件中"
+        return result
 
 
 def merge_review_states(
@@ -287,10 +306,24 @@ def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         with tmp_path.open("w", encoding="utf-8", newline="\n") as f:
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        os.replace(tmp_path, path)
+        _replace_with_retry(tmp_path, path)
     finally:
-        if tmp_path.exists():
+        try:
             tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    """Retry short-lived Windows sharing violations without weakening atomic replacement."""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt + 1 >= _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_S)
 
 
 def _append_review_state_event(path: Path, state: dict[str, Any], event: dict[str, Any]) -> None:

@@ -62,6 +62,7 @@ const DEFAULT_LLM_SETTINGS = {
 const MAX_CONCURRENCY = 16;
 
 const SECRET_PREFIX = "safeStorage:v1:";
+const SESSION_API_KEY_ENV = "RATOMIZER_LLM_SESSION_API_KEY";
 
 function normalizeLlmSettings(input = {}) {
   return {
@@ -82,13 +83,98 @@ function normalizeLlmSettings(input = {}) {
   };
 }
 
+function normalizeLlmEndpoint(value) {
+  const raw = stringValue(value, DEFAULT_LLM_SETTINGS.baseUrl);
+  let endpoint;
+  try {
+    endpoint = new URL(raw);
+  } catch {
+    throw new TypeError("LLM endpoint must be a valid URL");
+  }
+  if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") {
+    throw new TypeError("LLM endpoint must use http or https");
+  }
+  if (endpoint.username || endpoint.password) {
+    throw new TypeError("LLM endpoint must not contain credentials");
+  }
+  const hostname = endpoint.hostname.toLowerCase();
+  const isLoopback = hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname === "127.0.0.1"
+    || hostname === "[::1]";
+  if (endpoint.protocol === "http:" && !isLoopback) {
+    throw new TypeError("Remote LLM endpoints must use https");
+  }
+  if (endpoint.search || endpoint.hash) {
+    throw new TypeError("LLM endpoint must not contain a query or fragment");
+  }
+  endpoint.pathname = endpoint.pathname.replace(/\/+$/, "");
+  return endpoint.toString().replace(/\/$/, "");
+}
+
+function sameLlmCredentialScope(left, right) {
+  if (!left || !right) return false;
+  try {
+    return normalizeLlmEndpoint(left.baseUrl) === normalizeLlmEndpoint(right.baseUrl)
+      && stringValue(left.apiKeyEnv, DEFAULT_LLM_SETTINGS.apiKeyEnv)
+        === stringValue(right.apiKeyEnv, DEFAULT_LLM_SETTINGS.apiKeyEnv);
+  } catch {
+    return false;
+  }
+}
+
+function bindAmbientLlmCredential(settings, env = process.env) {
+  const normalized = normalizeLlmSettings(settings);
+  normalized.baseUrl = normalizeLlmEndpoint(normalized.baseUrl);
+  // Ambient lookup is only for the startup config loaded by the main process.
+  // Requiring an API-key-shaped name prevents generic secrets such as PATH or
+  // AWS_SECRET_ACCESS_KEY from becoming bearer credentials even in that config.
+  if (!/^[A-Za-z_][A-Za-z0-9_]*API_KEY$/i.test(normalized.apiKeyEnv)) {
+    return null;
+  }
+  const apiKey = typeof env[normalized.apiKeyEnv] === "string"
+    ? env[normalized.apiKeyEnv].trim() : "";
+  if (!apiKey) return null;
+  return {
+    settings: { baseUrl: normalized.baseUrl, apiKeyEnv: normalized.apiKeyEnv },
+    apiKey,
+  };
+}
+
+function resolveBoundLlmApiKey(settings, sessionApiKey = "", ambientCredential = null) {
+  const sessionKey = String(sessionApiKey || "").trim();
+  if (sessionKey) return sessionKey;
+  if (ambientCredential
+      && sameLlmCredentialScope(settings, ambientCredential.settings)) {
+    return String(ambientCredential.apiKey || "").trim();
+  }
+  return "";
+}
+
+function resolveLlmTestConnection(input, savedSettings, sessionApiKey = "") {
+  const settings = normalizeLlmSettings({ ...(savedSettings || {}), ...(input || {}) });
+  settings.baseUrl = normalizeLlmEndpoint(settings.baseUrl);
+  const explicitApiKey = typeof input?.apiKey === "string" ? input.apiKey.trim() : "";
+  const sameScope = sameLlmCredentialScope(settings, savedSettings);
+  if (!explicitApiKey && !sameScope) {
+    throw new Error("Testing a different LLM endpoint or API key variable requires an explicit API key");
+  }
+  return {
+    settings,
+    apiKey: explicitApiKey || (sameScope ? String(sessionApiKey || "").trim() : ""),
+  };
+}
+
 function buildLlmEnvironment(settings, env = process.env) {
   const normalized = normalizeLlmSettings(settings);
   const result = {
     ...env,
     RATOMIZER_LLM_BASE_URL: normalized.baseUrl,
     RATOMIZER_LLM_MODEL: normalized.model,
-    RATOMIZER_LLM_API_KEY_ENV: normalized.apiKeyEnv,
+    // Renderer-controlled apiKeyEnv is metadata only. Child processes always read the
+    // safeStorage session key from a fixed variable, so arbitrary parent env values
+    // cannot be selected and forwarded to a renderer-controlled endpoint.
+    RATOMIZER_LLM_API_KEY_ENV: SESSION_API_KEY_ENV,
     RATOMIZER_LLM_TEMPERATURE: String(normalized.temperature),
     RATOMIZER_LLM_MAX_TOKENS: String(normalized.maxTokens),
     RATOMIZER_LLM_TIMEOUT_S: String(normalized.timeoutS),
@@ -98,9 +184,9 @@ function buildLlmEnvironment(settings, env = process.env) {
   };
   const apiKey = typeof settings?.apiKey === "string" ? settings.apiKey.trim() : "";
   if (apiKey) {
-    result[normalized.apiKeyEnv] = apiKey;
-  } else if (env[normalized.apiKeyEnv]) {
-    result[normalized.apiKeyEnv] = env[normalized.apiKeyEnv];
+    result[SESSION_API_KEY_ENV] = apiKey;
+  } else {
+    delete result[SESSION_API_KEY_ENV];
   }
   return result;
 }
@@ -121,10 +207,18 @@ function loadLlmSettingsConfig(configPath, safeStorage) {
   }
 }
 
-function saveLlmSettingsConfig(configPath, input, safeStorage, previousApiKey = "") {
+function saveLlmSettingsConfig(
+  configPath,
+  input,
+  safeStorage,
+  previousApiKey = "",
+  previousSettings = null,
+) {
   const settings = normalizeLlmSettings(input);
+  settings.baseUrl = normalizeLlmEndpoint(settings.baseUrl);
   const explicitApiKey = typeof input?.apiKey === "string" ? input.apiKey.trim() : "";
-  const apiKey = explicitApiKey || previousApiKey;
+  const apiKey = explicitApiKey
+    || (sameLlmCredentialScope(settings, previousSettings) ? previousApiKey : "");
   const payload = { ...settings };
   const protectedKey = encryptApiKey(apiKey, safeStorage);
   if (protectedKey) {
@@ -276,15 +370,21 @@ module.exports = {
   PROGRESS_PREFIX,
   appendBackendLog,
   backendLogPath,
+  bindAmbientLlmCredential,
   buildLlmEnvironment,
   buildChainArgs,
   buildExportAnnotationArgs,
   buildRunPipelineArgs,
   drainProgressLines,
   loadLlmSettingsConfig,
+  normalizeLlmEndpoint,
   normalizeLlmSettings,
+  resolveLlmTestConnection,
   resolveBackendCommand,
+  resolveBoundLlmApiKey,
   resolvePythonScriptPath,
   saveLlmSettingsConfig,
+  SESSION_API_KEY_ENV,
+  sameLlmCredentialScope,
   shouldReuseApiSession,
 };

@@ -325,6 +325,60 @@ describe("DocumentReview", () => {
     )
   })
 
+  it("preserves an existing module override when deciding the requirement again", async () => {
+    const seedClient = makeClient()
+    const reqs = await seedClient.loadAiRequirements()
+    const applyAiReviewAction = vi.fn().mockResolvedValue({
+      ai_req_id: "AIR-1", status: "rejected", module_override: "计量精度", ownership_override: null,
+    })
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([{
+        ...reqs[0], module: "计量", module_effective: "计量精度",
+        review_state: { status: "accepted", module_override: "计量精度" },
+      }]),
+      applyAiReviewAction,
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    await wrapper.find('[data-testid="dd-reject"]').trigger("click")
+    await flushPromises()
+
+    expect(applyAiReviewAction).toHaveBeenCalledWith(
+      expect.objectContaining({ aiReqId: "AIR-1", status: "rejected", moduleOverride: "计量精度" }),
+    )
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toBe("计量精度")
+  })
+
+  it("clears an existing module override when selecting the original module", async () => {
+    const seedClient = makeClient()
+    const reqs = await seedClient.loadAiRequirements()
+    const applyAiReviewAction = vi.fn().mockResolvedValue({
+      ai_req_id: "AIR-1", status: "accepted", module_override: null, ownership_override: null,
+    })
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([{
+        ...reqs[0], module: "计量", module_effective: "计量精度",
+        review_state: { status: "rejected", module_override: "计量精度" },
+      }]),
+      applyAiReviewAction,
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    await wrapper.find('[data-testid="dd-module-select"]').setValue("计量")
+    await wrapper.find('[data-testid="dd-accept"]').trigger("click")
+    await flushPromises()
+
+    expect(applyAiReviewAction).toHaveBeenCalledWith(
+      expect.objectContaining({ aiReqId: "AIR-1", status: "accepted", moduleOverride: "" }),
+    )
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toBe("计量")
+    expect((wrapper.find('[data-testid="dd-module-select"]').element as HTMLSelectElement).value).toBe("计量")
+  })
+
   it("changing the ownership dropdown sends ownership_override on decide", async () => {
     const client = makeClient()
     const wrapper = mount(DocumentReview, { props: { client, active: true } })

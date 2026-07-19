@@ -33,6 +33,7 @@ from typing import Any, Callable
 
 from cosem_behavior_spec import extract_codes, extract_ints
 from llm_client import LLMClientConfig, LLMError, chat_json
+from io_utils import read_jsonl_recover_torn_tail
 from llm_pipeline import (
     DEFAULT_PIPELINE_PATH,
     apply_llm_environment_overrides,
@@ -64,7 +65,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v19"  # v19：自检补充 target_slot 编号定位（同名并错目标,专家审核 0716）；v18：免责从句保向+量符号下标+单位词不猜译；v17：忠实性判据+测试装置排除
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v20"  # v20：chapter 单元全文进入 prompt，不再静默截断 12000 字；v19：自检补充 target_slot 编号定位（同名并错目标,专家审核 0716）
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -233,15 +234,17 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v5"  # v5:情态软化按完整来源基线判定并排除 may not;v4:锚点质量门+指代符豁免+情态软化+去重标点底座
+EXTRACT_GUARDS_VERSION = "guards-v6"  # v6:跨节引用追加到既有整章漂移基线;v5:情态软化按完整来源基线判定并排除 may not
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
     refs = (section.get("ref_texts") or []) + (section.get("term_defs") or [])
     refs_key = hashlib.sha256(json.dumps(refs, ensure_ascii=False).encode("utf-8")).hexdigest()[:12] if refs else ""
+    drift_source = str(section.get("drift_source") or section.get("text") or "")
+    drift_key = hashlib.sha256(drift_source.encode("utf-8")).hexdigest()[:16]
     digest = hashlib.sha256(
         f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{EXTRACT_GUARDS_VERSION}"
-        f"\n{context_key}\n{refs_key}".encode("utf-8")
+        f"\n{context_key}\n{refs_key}\n{drift_key}".encode("utf-8")
     ).hexdigest()
     return digest[:24]
 
@@ -277,7 +280,7 @@ def render_extract_exemplars(bank: dict[str, Any]) -> str:
 
 
 def build_section_prompt(section: dict[str, Any]) -> str:
-    payload = {"heading": section.get("heading"), "text": section.get("text", "")[:12000]}
+    payload = {"heading": section.get("heading"), "text": section.get("text", "")}
     base = json.dumps(payload, ensure_ascii=False, indent=2)
     refs = section.get("ref_texts") or []
     terms = section.get("term_defs") or []
@@ -1518,16 +1521,10 @@ def extract_section(section: dict[str, Any], chat: ChatFn, doc_context: str = ""
 
 def read_cache(path: Path) -> dict[str, list[dict[str, Any]]]:
     cache: dict[str, list[dict[str, Any]]] = {}
-    if not path.exists():
-        return cache
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            key = str(row.get("fingerprint") or "")
-            if key:
-                cache[key] = row.get("requirements") or []
+    for row in read_jsonl_recover_torn_tail(path):
+        key = str(row.get("fingerprint") or "")
+        if key:
+            cache[key] = row.get("requirements") or []
     return cache
 
 
