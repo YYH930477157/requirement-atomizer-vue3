@@ -20,18 +20,32 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 > 2026-06-27：**GUI 正式以 Vue3+Electron（`ui/`）为准，PySide6（`gui/`）冻结**；终点交付物（`assemble`/`compose` 实现规格）数据完整性修复由 Claude 直接实现并自查（同上轨道纪律）。
 > 换机继续：项目上下文靠本文件 + `~/.claude/.../memory/` 自动加载；完整聊天 transcript 在 HOME `~/.claude/projects/<proj>/`，**不进代码仓**（含客户文档/业务细节，公开仓会泄密），如需带走走私有同步。
 
+## 提交信息准则（每次推送必守）
+
+每条 commit message 必须说清三件事，修复类提交按发现逐条列出"三段式"：
+
+1. **原因**：为什么改——缺陷根因或需求来源（引用审查发现/问题单/真实案例）
+2. **现象**：用户可观察到的症状——什么丢了、什么崩了、什么误导了，附 `file:line`
+3. **解决方法**：修复机制（不是动作清单）——改了什么不变量、为什么这样修是对的
+
+配套规则：
+
+- 行为面变更（`EXTRACT_GUARDS_VERSION` / `*_PROMPT_VERSION` / `ENRICH_GUARDS_VERSION` / `LLM_REVIEW_CACHE_VERSION` / 策略指纹）必须在 message 中显式声明，并注明对缓存与 golden 基线的影响
+- 推送前全量测试必须绿（`python -m unittest discover -s tests` + `cd ui && npm test`），message 不写未经测试验证的声明
+- 已推送的历史不改写；信息写错了用新提交修正，不 amend/force-push
+
 ## 回归纪律
 
 - `golden_sets/abnt_nbr_16968_v5/golden_summary.json` 是冻结基线；动它必须逐项写明原因
 - 真实测试文档：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.docx`（机器相关路径，换机器需调整）
 - 真实测试 PDF：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.pdf`（同目录文字层 PDF；旧 `D:\Codex\abnt_converted.pdf` 已失效）
 - **Blue Book Ed.16 两 PDF**（P2 行为 RAG 语料，版权文件不进仓）：同目录 `Blue-Book-Ed-16-part-{1,2}-V1.0.pdf`；索引编译 `python -m blue_book_ingest --pdf <p1> --pdf <p2> --out out/bluebook`（约 2 分钟，产物 gitignored）
-- 测试命令：`python -m unittest discover -s tests`（2026-07-19：**1341 tests** + ui `vitest 120` + vue-tsc；Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时 GUI 测试 skip）。0 skip 需设 env `RATOMIZER_HISTORICAL_SAMPLE="C:/Users/YYHwudi/Desktop/Canna-29/eval_assets/test18_functional_synthesis_sample.json"`（历史守恒样本含客户词面已外置,不进仓;不设则 1 skip 如实降级）
+- 测试命令：`python -m unittest discover -s tests`（2026-07-19：**1344 tests** + ui `vitest 120` + vue-tsc；Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时 GUI 测试 skip）。0 skip 需设 env `RATOMIZER_HISTORICAL_SAMPLE="C:/Users/YYHwudi/Desktop/Canna-29/eval_assets/test18_functional_synthesis_sample.json"`（历史守恒样本含客户词面已外置,不进仓;不设则 1 skip 如实降级）
 - golden 基线输出 `out/abnt_nbr_16968_atomizer_v5/` 已于 2026-07-04 重新生成（真实 ABNT docx + **三个 --kb + domain-pack**，缺 KB 会假漂移）；测试用例只做 unittest.TestCase（**pytest 未装**，模块级 `def test_*` 会被静默跳过）
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
-## 重大更新（2026-07-19）——审查并行化与遗漏闭环（分支待合并）
+## 重大更新（2026-07-19）——审查并行化与遗漏闭环（已合并 main `26a72f7`）
 
 - **运行中增量审查**：AI 抽取逐终态章节发布 `ai_requirements.partial.json`，前端按章节进度节流刷新需求与 PDF 标记，复用已加载页图；早期裁决绑定需求 id + 来源/审查内容指纹，内容变化后保留历史但强制复核。final 新增 `ai_requirements.meta.json` 绑定 `blocks.jsonl` 代际，stale partial/final 不得跨文档回退。
 - **澄清闭环**：必答拆为问客户/内部核对，内部核对用 `verified_ok / issue_confirmed / deferred` 审计状态；只有证据指纹仍匹配的 `verified_ok` 和客户答复可消解就绪门/进入分析权威输入。就绪门分开统计阻塞项、普通问题、内部核对、覆盖率与失败章节；旧工作簿在写入前校验新版列。
