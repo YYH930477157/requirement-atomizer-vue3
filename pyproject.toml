@@ -75,6 +75,8 @@ py-modules = [
   "template_writer",
   "corpus_eval",
   "clarification_report",
+  "clarification_check_states",
+  "omission_actions",
   "xlsx_io",
   "requirement_record",
   "adjudication_bank",

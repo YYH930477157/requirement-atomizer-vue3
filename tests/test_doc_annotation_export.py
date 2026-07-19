@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -320,7 +321,8 @@ class DocAnnotationExportTests(unittest.TestCase):
             key = dae._translation_key(shared)
             (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
                 "version": 1,
-                "items": {key: {"owner": "covered", "translation": "共享约束适用于两项需求。"}},
+                "items": {key: {"owner": "covered", "translation": "共享约束适用于两项需求。",
+                                "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
             }, ensure_ascii=False), encoding="utf-8")
             pages = [
                 {"page_number": 1, "href": "document_pages/page-0001.png",
@@ -1027,7 +1029,8 @@ class MarkerTranslationTests(unittest.TestCase):
             _seed_marker_block(out, self.QUOTE)
             key = dae._translation_key(self.QUOTE)
             (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
-                "version": 1, "items": {key: {"owner": "hardware", "translation": "制造商应在设备上标注其商标。"}},
+                "version": 2, "items": {key: {"owner": "hardware", "translation": "制造商应在设备上标注其商标。",
+                                              "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
             }, ensure_ascii=False), encoding="utf-8")
             rendered = dae.render_annotation_html(out)
             self.assertIn('data-source-translation="制造商应在设备上标注其商标。"', rendered)
@@ -1039,7 +1042,8 @@ class MarkerTranslationTests(unittest.TestCase):
             key = dae._translation_key(self.QUOTE)
             (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
                 "version": 1, "items": {key: {"owner": "hardware", "translation": "",
-                                              "rejected": True, "reason": "翻译含无据编码/数字"}},
+                                              "rejected": True, "reason": "翻译含无据编码/数字",
+                                              "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
             }, ensure_ascii=False), encoding="utf-8")
             rendered = dae.render_annotation_html(out)
             # 拒绝要如实呈现：译文不嵌入,但拒绝原因随标记进卡片（检查单 #3 标记随行）
@@ -1099,6 +1103,511 @@ class MarkerTranslationTests(unittest.TestCase):
             path, _ = dae.export_annotation_bundle(out, route=None)
             self.assertIn('data-source-translation="制造商应在设备上标注其商标。"',
                           path.read_text(encoding="utf-8"))
+
+    def test_batch_guard_rejection_retries_single_item_successfully(self) -> None:
+        calls: list[str] = []
+        timed_quote = "The meter shall respond within 30 seconds."
+
+        def chat(_system: str, user: str) -> dict:
+            calls.append(user)
+            if "原文条目 JSON" in user:
+                # 30 属于第 1 条，却被批次响应串进第 2 条；只应重试第 2 条。
+                return {"items": [
+                    {"id": 1, "translation": "电表应在 30 秒内响应。"},
+                    {"id": 2, "translation": "制造商应在 30 秒内标注设备。"},
+                ]}
+            self.assertIn("单条整段重试", user)
+            self.assertIn("30", user)   # 护栏反馈明确告诉模型禁止复现的 token
+            self.assertIn("不得借用此前批次或其他条目", user)
+            self.assertIn(self.QUOTE, user)
+            self.assertNotIn(timed_quote, user)
+            return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat,
+                texts={
+                    dae._translation_key(timed_quote): ("context", timed_quote),
+                    dae._translation_key(self.QUOTE): ("hardware", self.QUOTE),
+                })
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            entry = sidecar["items"][dae._translation_key(self.QUOTE)]
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(summary["translated"], 2)
+        self.assertEqual(summary["rejected"], 0)
+        self.assertEqual(summary["single_retries"], 1)
+        self.assertEqual(summary["retry_calls"], 1)
+        self.assertEqual(summary["strategy_version"], dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION)
+        self.assertEqual(sidecar["strategy_version"], dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION)
+        self.assertEqual(entry["strategy"], "single")
+        self.assertEqual(entry["status"], "accepted")
+        self.assertEqual(entry["retry_count"], 1)
+        self.assertEqual(sidecar["items"][dae._translation_key(timed_quote)]["strategy"], "batch")
+
+    def test_batch_call_failure_retries_single_item_successfully(self) -> None:
+        calls: list[str] = []
+
+        def chat(_system: str, user: str) -> dict:
+            calls.append(user)
+            if "原文条目 JSON" in user:
+                raise RuntimeError("temporary batch failure")
+            self.assertIn("单条整段重试", user)
+            self.assertIn("batch_call_failed", user)
+            return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat)
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            entry = sidecar["items"][dae._translation_key(self.QUOTE)]
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(summary["failed_calls"], 1)
+        self.assertEqual(summary["translated"], 1)
+        self.assertEqual(summary["unresolved"], 0)
+        self.assertEqual(entry["strategy"], "single")
+
+    def test_batch_and_single_call_failures_fall_back_to_all_sentence_segments(self) -> None:
+        quote = "The meter shall log events. The display shall show alarms."
+        calls: list[str] = []
+
+        def chat(_system: str, user: str) -> dict:
+            calls.append(user)
+            if "原文条目 JSON" in user:
+                raise RuntimeError("batch unavailable")
+            if "单条整段重试" in user:
+                raise RuntimeError("single unavailable")
+            if "第 1/2 句段" in user:
+                return {"items": [{"id": 1, "translation": "电表应记录事件。"}]}
+            if "第 2/2 句段" in user:
+                return {"items": [{"id": 1, "translation": "显示器应显示告警。"}]}
+            self.fail(f"unexpected prompt: {user}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, quote)
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat)
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            entry = sidecar["items"][dae._translation_key(quote)]
+
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(summary["failed_calls"], 2)
+        self.assertEqual(summary["retry_calls"], 3)
+        self.assertEqual(summary["translated"], 1)
+        self.assertEqual(summary["unresolved"], 0)
+        self.assertEqual(entry["strategy"], "sentence")
+        self.assertEqual(entry["translation"], "电表应记录事件。显示器应显示告警。")
+
+    def test_batch_missing_item_retries_only_that_item(self) -> None:
+        calls: list[str] = []
+
+        def chat(_system: str, user: str) -> dict:
+            calls.append(user)
+            if "原文条目 JSON" in user:
+                return {"items": []}
+            self.assertIn("batch_missing_item", user)
+            return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(summary["batch_calls"], 1)
+        self.assertEqual(summary["single_retries"], 1)
+        self.assertEqual(summary["translated"], 1)
+        self.assertEqual(summary["unresolved"], 0)
+
+    def test_single_guard_rejection_falls_back_to_sentence_segments(self) -> None:
+        quote = "The meter shall log events. The display shall show alarms."
+        calls: list[str] = []
+
+        def chat(_system: str, user: str) -> dict:
+            calls.append(user)
+            if "原文条目 JSON" in user:
+                return {"items": [{"id": 1, "translation": "电表应在 30 秒内记录事件并显示告警。"}]}
+            if "单条整段重试" in user:
+                return {"items": [{"id": 1, "translation": "电表应记录 40 个事件并显示告警。"}]}
+            if "第 1/2 句段" in user:
+                return {"items": [{"id": 1, "translation": "电表应记录事件。"}]}
+            if "第 2/2 句段" in user:
+                return {"items": [{"id": 1, "translation": "显示器应显示告警。"}]}
+            self.fail(f"unexpected prompt: {user}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, quote)
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat)
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            entry = sidecar["items"][dae._translation_key(quote)]
+
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(summary["translated"], 1)
+        self.assertEqual(summary["rejected"], 0)
+        self.assertEqual(summary["segment_retries"], 1)
+        self.assertEqual(summary["segment_calls"], 2)
+        self.assertEqual(summary["retry_calls"], 3)
+        self.assertEqual(entry["translation"], "电表应记录事件。显示器应显示告警。")
+        self.assertEqual(entry["strategy"], "sentence")
+        self.assertEqual(entry["attempts"], {"batch": 1, "single": 1, "sentence": 2})
+        self.assertEqual(entry["retry_count"], 3)
+
+    def test_sentence_fallback_rejects_whole_item_when_one_segment_fails(self) -> None:
+        quote = "The meter shall log events. The display shall show alarms."
+
+        def chat(_system: str, user: str) -> dict:
+            if "原文条目 JSON" in user:
+                return {"items": [{"id": 1, "translation": "电表应在 30 秒内处理事件。"}]}
+            if "单条整段重试" in user:
+                return {"items": [{"id": 1, "translation": "电表应记录 40 个事件。"}]}
+            if "第 1/2 句段" in user:
+                return {"items": [{"id": 1, "translation": "电表应记录事件。"}]}
+            if "第 2/2 句段" in user:
+                return {"items": [{"id": 1, "translation": "显示器应显示 99 个告警。"}]}
+            self.fail(f"unexpected prompt: {user}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, quote)
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat)
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            entry = sidecar["items"][dae._translation_key(quote)]
+
+        self.assertEqual(summary["translated"], 0)
+        self.assertEqual(summary["rejected"], 1)
+        self.assertTrue(entry["rejected"])
+        self.assertEqual(entry["translation"], "")
+        self.assertEqual(entry["strategy"], "sentence")
+        self.assertIn("第 2/2 句段", entry["reason"])
+        self.assertNotIn("电表应记录事件", entry["translation"])
+
+    def test_sentence_split_preserves_newline_content_and_abbreviations(self) -> None:
+        text = "Use alarm types, e.g. tamper alerts.\nThe meter shall log events."
+        segments = dae._split_translation_segments(text)
+
+        self.assertEqual(segments, [
+            "Use alarm types, e.g. tamper alerts.",
+            "The meter shall log events.",
+        ])
+        self.assertEqual(
+            re.sub(r"\s+", "", "".join(segments)),
+            re.sub(r"\s+", "", text),
+        )
+
+    def test_old_rejected_cache_entry_is_retried_after_strategy_upgrade(self) -> None:
+        calls = 0
+
+        def chat(_system: str, _user: str) -> dict:
+            nonlocal calls
+            calls += 1
+            return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1,
+                "items": {key: {"owner": "hardware", "translation": "", "rejected": True,
+                                "reason": "翻译含无据编码/数字"}},
+            }, ensure_ascii=False), encoding="utf-8")
+
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat)
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(summary["cached"], 0)
+        self.assertEqual(summary["translated"], 1)
+        self.assertFalse(sidecar["items"][key]["rejected"])
+        self.assertEqual(sidecar["items"][key]["strategy_version"],
+                         dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION)
+
+    def test_old_accepted_cache_entry_is_reused_without_llm_call(self) -> None:
+        def chat(_system: str, _user: str) -> dict:
+            self.fail("accepted cache entry must not call the LLM")
+
+        guard_calls: list[tuple[str, str]] = []
+        real_guard = dae._fabricated_translation_tokens
+
+        def guarded(source: str, translated: str) -> list[str]:
+            guard_calls.append((source, translated))
+            return real_guard(source, translated)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1,
+                "items": {key: {"owner": "hardware",
+                                "translation": "制造商应在设备上标注其商标。",
+                                "guards_version": "annotation-translation-guards-v0"}},
+            }, ensure_ascii=False), encoding="utf-8")
+
+            with patch.object(dae, "_fabricated_translation_tokens", side_effect=guarded):
+                summary = dae.generate_annotation_translations(
+                    out, route="openai_compatible", chat=chat)
+            sidecar = json.loads(
+                (out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(len(guard_calls), 1)
+        self.assertEqual(summary["cached"], 1)
+        self.assertEqual(summary["cached_accepted"], 1)
+        self.assertEqual(summary["translated"], 0)
+        self.assertEqual(summary["retry_calls"], 0)
+        self.assertEqual(
+            sidecar["items"][key]["guards_version"],
+            dae.ANNOTATION_TRANSLATION_GUARDS_VERSION,
+        )
+
+    def test_old_accepted_cache_is_hidden_until_current_guard_revalidates_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1,
+                "items": {key: {
+                    "owner": "hardware",
+                    "translation": "制造商应在 30 秒内标注其商标。",
+                    "guards_version": "annotation-translation-guards-v0",
+                }},
+            }, ensure_ascii=False), encoding="utf-8")
+
+            translations, notes = dae._load_annotation_translations(out)
+            html = dae.render_annotation_html(out)
+
+        self.assertEqual(translations, {})
+        self.assertEqual(notes, {})
+        self.assertNotIn("制造商应在 30 秒内标注其商标。", html)
+
+    def test_export_rerenders_after_zero_call_guard_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            translated = "制造商应在设备上标注其商标。"
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1,
+                "items": {key: {
+                    "owner": "hardware",
+                    "translation": translated,
+                    "guards_version": "annotation-translation-guards-v0",
+                }},
+            }, ensure_ascii=False), encoding="utf-8")
+
+            path, summary = dae.export_annotation_bundle(
+                out,
+                route="openai_compatible",
+                layout_mode=dae.LAYOUT_OPTIMIZED,
+            )
+            rendered = path.read_text(encoding="utf-8")
+
+        self.assertEqual(summary["cache_migrated"], 1)
+        self.assertEqual(summary["translated"], 0)
+        self.assertIn(translated, rendered)
+
+    def test_stub_export_still_runs_zero_call_guard_migration(self) -> None:
+        """回归：stub（无 LLM）路由曾跳过迁移，旧护栏译文从视图/导出永久消失。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            translated = "电表应在设备上标注商标。"
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1,
+                "items": {key: {
+                    "owner": "hardware",
+                    "translation": translated,
+                    "guards_version": "annotation-translation-guards-v0",
+                }},
+            }, ensure_ascii=False), encoding="utf-8")
+
+            path, summary = dae.export_annotation_bundle(
+                out,
+                route="stub",
+                layout_mode=dae.LAYOUT_OPTIMIZED,
+            )
+            rendered = path.read_text(encoding="utf-8")
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["cache_migrated"], 1)
+        self.assertEqual(summary["translated"], 0)
+        self.assertIn(translated, rendered)
+        self.assertEqual(sidecar["items"][key]["guards_version"],
+                         dae.ANNOTATION_TRANSLATION_GUARDS_VERSION)
+
+    def test_old_accepted_cache_failing_current_guard_is_replaced(self) -> None:
+        calls = 0
+
+        def chat(_system: str, _user: str) -> dict:
+            nonlocal calls
+            calls += 1
+            return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1,
+                "items": {key: {
+                    "owner": "hardware",
+                    "translation": "制造商应在 30 秒内标注其商标。",
+                    "guards_version": "annotation-translation-guards-v0",
+                }},
+            }, ensure_ascii=False), encoding="utf-8")
+
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat)
+            sidecar = json.loads(
+                (out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(summary["cached"], 0)
+        self.assertEqual(summary["translated"], 1)
+        self.assertEqual(
+            sidecar["items"][key]["translation"],
+            "制造商应在设备上标注其商标。",
+        )
+        self.assertEqual(
+            sidecar["items"][key]["guards_version"],
+            dae.ANNOTATION_TRANSLATION_GUARDS_VERSION,
+        )
+
+    def test_invalidated_accepted_cache_stays_pending_when_llm_is_unavailable(self) -> None:
+        calls = 0
+
+        def chat(_system: str, _user: str) -> dict:
+            nonlocal calls
+            calls += 1
+            return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 1,
+                "items": {key: {
+                    "owner": "hardware",
+                    "translation": "制造商应在 30 秒内标注其商标。",
+                    "guards_version": "annotation-translation-guards-v0",
+                }},
+            }, ensure_ascii=False), encoding="utf-8")
+
+            first = dae.generate_annotation_translations(out, route="stub")
+            invalidated = json.loads(
+                (out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            second = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat)
+            recovered = json.loads(
+                (out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(first["cache_invalidated"], 1)
+        self.assertEqual(first["unresolved"], 1)
+        self.assertEqual(invalidated["items"][key]["translation"], "")
+        self.assertEqual(invalidated["items"][key]["status"], "unresolved")
+        self.assertFalse(invalidated["items"][key]["rejected"])
+        self.assertEqual(calls, 1)
+        self.assertEqual(second["translated"], 1)
+        self.assertEqual(
+            recovered["items"][key]["translation"],
+            "制造商应在设备上标注其商标。",
+        )
+
+    def test_current_strategy_rejected_cache_entry_is_reused_without_llm_call(self) -> None:
+        def chat(_system: str, _user: str) -> dict:
+            self.fail("current-strategy rejection must not call the LLM again")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            key = dae._translation_key(self.QUOTE)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 2,
+                "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                "items": {key: {
+                    "owner": "hardware", "translation": "", "rejected": True,
+                    "status": "rejected", "reason": "翻译含无据编码/数字",
+                    "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                    "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION,
+                }},
+            }, ensure_ascii=False), encoding="utf-8")
+
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=chat)
+
+        self.assertEqual(summary["cached"], 1)
+        self.assertEqual(summary["cached_rejected"], 1)
+        self.assertEqual(summary["translated"], 0)
+        self.assertEqual(summary["retry_calls"], 0)
+
+    def test_translation_sidecar_replace_retries_windows_reader_lock(self) -> None:
+        real_replace = dae.os.replace
+        attempts = 0
+
+        def flaky_replace(source: str | Path, target: str | Path) -> None:
+            nonlocal attempts
+            self.assertTrue((out / "annotation_translations.lock").exists())
+            attempts += 1
+            if attempts == 1:
+                raise PermissionError("target is being read")
+            real_replace(source, target)
+
+        def chat(_system: str, _user: str) -> dict:
+            return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, self.QUOTE)
+            with patch.object(dae.os, "replace", side_effect=flaky_replace), \
+                    patch.object(dae.time, "sleep") as sleep:
+                summary = dae.generate_annotation_translations(
+                    out, route="openai_compatible", chat=chat)
+
+            self.assertEqual(summary["translated"], 1)
+            self.assertTrue((out / dae.ANNOTATION_TRANSLATIONS).exists())
+            self.assertEqual(attempts, 2)
+            sleep.assert_called_once_with(dae._TRANSLATION_REPLACE_RETRY_S)
+
+    def test_translation_sidecar_locked_merge_preserves_concurrent_acceptance(self) -> None:
+        first_key = dae._translation_key(self.QUOTE)
+        second_text = "The meter shall log events."
+        second_key = dae._translation_key(second_text)
+        accepted = {"owner": "hardware", "translation": "制造商应标注商标。",
+                    "rejected": False, "status": "accepted"}
+        second = {"owner": "software", "translation": "电表应记录事件。",
+                  "rejected": False, "status": "accepted"}
+        stale_rejection = {"owner": "hardware", "translation": "", "rejected": True,
+                           "status": "rejected", "reason": "无据数字"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            first_view = {first_key: accepted}
+            dae._write_translation_sidecar(out, first_view, "test", {first_key})
+
+            stale_second_view = {second_key: second}
+            dae._write_translation_sidecar(out, stale_second_view, "test", {second_key})
+            self.assertEqual(set(stale_second_view), {first_key, second_key})
+
+            conflicting_view = {first_key: stale_rejection}
+            dae._write_translation_sidecar(out, conflicting_view, "test", {first_key})
+            saved = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["items"][first_key]["translation"], "制造商应标注商标。")
+        self.assertEqual(saved["items"][second_key]["translation"], "电表应记录事件。")
+        self.assertFalse(saved["items"][first_key]["rejected"])
 
     def test_generate_translations_rejects_fabricated_code_and_int(self) -> None:
         """编向：忠实翻译不会引入源文没有的编码/数字——出现即拒绝并留账不嵌入。"""
@@ -1180,7 +1689,8 @@ class MarkerTranslationTests(unittest.TestCase):
             key = dae._translation_key(quote)
             (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
                 "version": 1, "items": {key: {"owner": "omission",
-                                              "translation": "一条未被覆盖的需求应当成立。"}},
+                                              "translation": "一条未被覆盖的需求应当成立。",
+                                              "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
             }, ensure_ascii=False), encoding="utf-8")
             rendered = dae.render_annotation_html(out)
             self.assertIn('<button class="omission-tag"', rendered)
@@ -1220,9 +1730,11 @@ class MarkerTranslationTests(unittest.TestCase):
             key = dae._translation_key(quote)
             (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
                 "version": 1, "items": {
-                    key: {"owner": "omission", "translation": "一条未被覆盖的需求应当成立。"},
+                    key: {"owner": "omission", "translation": "一条未被覆盖的需求应当成立。",
+                          "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION},
                     dae._translation_key("其它"): {"owner": "omission", "translation": "",
-                                                   "rejected": True, "reason": "含无据数字"},
+                                                   "rejected": True, "reason": "含无据数字",
+                                                   "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION},
                 }}, ensure_ascii=False), encoding="utf-8")
             doc = build_document_blocks(out)
             by_id = {b["block_id"]: b for b in doc["blocks"]}
@@ -1243,7 +1755,8 @@ class MarkerTranslationTests(unittest.TestCase):
             key = dae._translation_key(plain)
             (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
                 "version": 1, "items": {key: {"owner": "context",
-                                              "translation": "本文件系依据 M/441 号授权起草的背景说明。"}},
+                                              "translation": "本文件系依据 M/441 号授权起草的背景说明。",
+                                              "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
             }, ensure_ascii=False), encoding="utf-8")
             rendered = dae.render_annotation_html(out)
             self.assertIn('data-translation="本文件系依据 M/441 号授权起草的背景说明。"', rendered)
@@ -1275,6 +1788,13 @@ class MarkerTranslationTests(unittest.TestCase):
             self.assertIn("translations", payload)
             self.assertTrue(Path(payload["path"]).exists())
 
+    def test_export_stage_producer_includes_translation_strategy_version(self) -> None:
+        import desktop_tasks
+
+        producer = desktop_tasks.stage_producer("export-annotation-html")
+        self.assertIn(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION, producer)
+        self.assertIn(dae.ANNOTATION_TRANSLATION_GUARDS_VERSION, producer)
+
 
 class TranslationKeyParityTests(unittest.TestCase):
     """0714 评审跟进:API 读键与导出写键同源(写侧=渲染清洗后文本的哈希)。"""
@@ -1292,7 +1812,8 @@ class TranslationKeyParityTests(unittest.TestCase):
             self.assertNotEqual(cleaned_key, translation_key(raw))   # 前提:两键确实不同
             (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
                 "version": 1, "items": {cleaned_key: {"owner": "context",
-                                                      "translation": "电池寿命累计器"}},
+                                                      "translation": "电池寿命累计器",
+                                                      "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
             }, ensure_ascii=False), encoding="utf-8")
             doc = build_document_blocks(out)
             self.assertEqual(doc["blocks"][0].get("translation"), "电池寿命累计器")
@@ -1308,7 +1829,8 @@ class TranslationKeyParityTests(unittest.TestCase):
                 "doc_region": "body"}, ensure_ascii=False) + "\n", encoding="utf-8")
             (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
                 "version": 1, "items": {translation_key(raw): {"owner": "context",
-                                                               "translation": "电表应记录事件。"}},
+                                                               "translation": "电表应记录事件。",
+                                                               "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
             }, ensure_ascii=False), encoding="utf-8")
             doc = build_document_blocks(out)
             self.assertEqual(doc["blocks"][0].get("translation"), "电表应记录事件。")
@@ -1392,6 +1914,31 @@ class PdfAnnotationPayloadTests(unittest.TestCase):
             for key in ("left", "top", "width", "height"):
                 self.assertIn(key, req_marker["rect"])
             self.assertEqual(payload["omission_markers"][0]["block_id"], "B2")
+
+    def test_payload_can_project_partial_requirements_instead_of_old_final_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            partial = [{
+                "ai_req_id": "AIR-PARTIAL",
+                "title": "增量需求",
+                "description": "d",
+                "module": "事件",
+                "source_quote": "An uncovered requirement shall hold.",
+                "source_block_ids": ["B2"],
+                "anchor_block_id": "B2",
+            }]
+
+            payload = dae.build_pdf_annotation_payload(out, requirements=partial)
+
+            self.assertEqual(
+                [marker["req_id"] for marker in payload["requirement_markers"]],
+                ["AIR-PARTIAL"],
+            )
+            self.assertEqual(
+                [marker["block_id"] for marker in payload["omission_markers"]],
+                ["B1"],
+            )
 
     def test_payload_unavailable_without_pages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

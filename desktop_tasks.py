@@ -10,6 +10,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator
@@ -37,6 +38,34 @@ REQUIREMENTS_ANALYSIS_OUTPUTS = [
     "co_design_items.md",
     "software_requirements.xlsx",
 ]
+
+
+def _leased_pipeline_stage(stage: str):
+    """Keep targeted extraction out while a downstream stage consumes AI requirements."""
+    def decorate(func):
+        @wraps(func)
+        def wrapped(out_dir: Path, *args, **kwargs):
+            from omission_actions import extraction_operation_lock
+
+            root = Path(out_dir).expanduser().resolve()
+            with extraction_operation_lock(root, operation=f"stage:{stage}"):
+                if "ai_requirements.jsonl" in STAGE_INPUTS.get(stage, []):
+                    from api_server import final_ai_requirements_are_stale
+
+                    if final_ai_requirements_are_stale(root):
+                        raise RuntimeError(
+                            "AI extraction belongs to an older parsed document; rerun ai-extract first"
+                        )
+                before = stage_input_files_fingerprint(root, stage)
+                payload = func(root, *args, **kwargs)
+                after = stage_input_files_fingerprint(root, stage)
+                if before != after:
+                    raise RuntimeError(f"{stage} inputs changed while the stage was running")
+                if isinstance(payload, dict):
+                    payload["_input_files_fingerprint"] = after
+                return payload
+        return wrapped
+    return decorate
 
 
 def resolve_bundled_path(path: Path | None) -> Path | None:
@@ -172,6 +201,7 @@ def resolve_blue_book_index(explicit: Path | None, out_dir: Path) -> Path | None
     return None
 
 
+@_leased_pipeline_stage("assemble")
 def assemble_task(
     out_dir: Path,
     *,
@@ -209,11 +239,13 @@ def assemble_task(
     }
 
 
+@_leased_pipeline_stage("functional-synthesis")
 def functional_synthesis_task(out_dir: Path, *, route: str = "stub") -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     return run_functional_synthesis(out_dir, route=route)
 
 
+@_leased_pipeline_stage("compose")
 def compose_task(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     model = compose_engineering_requirements(out_dir)
@@ -229,6 +261,7 @@ def compose_task(out_dir: Path) -> dict[str, Any]:
     }
 
 
+@_leased_pipeline_stage("requirements-analysis")
 def requirements_analysis_task(
     out_dir: Path,
     *,
@@ -265,6 +298,7 @@ def resolve_template_path(template_path: Path | None) -> Path | None:
     return path.resolve()
 
 
+@_leased_pipeline_stage("clarification-report")
 def clarification_report_task(out_dir: Path) -> dict[str, Any]:
     """澄清问题清单 + 就绪判定（确定性零 LLM）：全链疑问信号聚合成评审会可用的问客户清单。"""
     from clarification_report import run_report
@@ -283,6 +317,54 @@ def clarification_report_task(out_dir: Path) -> dict[str, Any]:
     }
 
 
+def import_clarification_workbook_task(
+    out_dir: Path,
+    workbook_path: Path,
+    *,
+    actor: str = "desktop-import",
+) -> dict[str, Any]:
+    """Import customer answers and internal acknowledgements from one report workbook."""
+    from openpyxl import load_workbook
+    from clarification_report import import_answers, import_internal_checks, run_report
+
+    out_dir = out_dir.expanduser().resolve()
+    workbook_path = workbook_path.expanduser().resolve()
+    workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+    try:
+        has_internal_sheet = "必答-内部核对" in workbook.sheetnames
+        internal_headers = (
+            [str(cell.value or "").strip() for cell in workbook["必答-内部核对"][1]]
+            if has_internal_sheet else []
+        )
+    finally:
+        workbook.close()
+    if not has_internal_sheet:
+        raise ValueError("工作簿缺少「必答-内部核对」sheet，请重新生成澄清清单")
+    required = {"澄清ID", "证据指纹", "阻塞级", "模块", "信号", "来源需求", "核对人", "备注"}
+    missing = sorted(required.difference(internal_headers))
+    if not any(value.startswith("新处置") for value in internal_headers):
+        missing.append("新处置(确认无误/确认有问题/暂缓)")
+    if missing:
+        raise ValueError(f"「必答-内部核对」sheet 缺少列：{', '.join(missing)}")
+    answers = import_answers(out_dir, workbook_path)
+    checks = import_internal_checks(out_dir, workbook_path, actor=actor)
+    report = run_report(out_dir)
+    return {
+        "kind": "clarification_answers",
+        "out_dir": str(out_dir),
+        "imported": int(answers.get("imported") or 0),
+        "internal_imported": int(checks.get("imported") or 0),
+        "readiness": report.get("readiness") or {},
+        "questions": int(report.get("questions") or 0),
+        "written": list(dict.fromkeys([
+            *(str(value) for value in (answers.get("written") or [])),
+            *(str(value) for value in (checks.get("written") or [])),
+            *(str(value) for value in (report.get("written") or [])),
+        ])),
+    }
+
+
+@_leased_pipeline_stage("template-write")
 def template_write_task(out_dir: Path, template_path: Path) -> dict[str, Any]:
     """成文：analyze 结果按公司标准化需求列表 V2.3.x 格式追加进对应模块 sheet（确定性零 LLM）。"""
     from template_writer import run_writer
@@ -344,17 +426,24 @@ CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-a
 STAGE_INPUTS: dict[str, list[str]] = {
     "atomize": [],
     "llm-review": ["atomic_requirements.jsonl", "llm_tasks.jsonl"],
-    "ai-extract": ["blocks.jsonl", "llm_review_results.jsonl", "review_states.jsonl"],
-    "assemble": ["table_items.jsonl", "atomic_requirements.jsonl", "llm_review_results.jsonl"],
-    "functional-synthesis": ["ai_requirements.jsonl", "ai_review_states.jsonl"],
+    "ai-extract": ["blocks.jsonl", "llm_review_results.jsonl", "review_states.jsonl",
+                   "ai_supplements.jsonl"],
+    "assemble": ["table_items.jsonl", "atomic_requirements.jsonl", "llm_review_results.jsonl",
+                 "ai_supplements.jsonl"],
+    "functional-synthesis": ["ai_requirements.jsonl", "ai_requirements.meta.json", "blocks.jsonl",
+                             "ai_review_states.jsonl", "ai_supplements.jsonl"],
     "requirements-analysis": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "ai_review_states.jsonl",
-                              "clarification_answers.jsonl", "blocks.jsonl", "term_map.json"],
-    "template-write": ["engineering_analysis.json"],
+                              "clarification_answers.jsonl", "blocks.jsonl", "term_map.json",
+                              "ai_requirements.meta.json", "ai_supplements.jsonl"],
+    "template-write": ["engineering_analysis.json", "ai_supplements.jsonl"],
     "clarification-report": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "engineering_analysis.json",
-                             "consistency_report.json", "blocks.jsonl"],
-    "compose": ["atomic_requirements.jsonl", "table_items.jsonl"],
+                             "consistency_report.json", "blocks.jsonl", "ai_review_states.jsonl",
+                             "clarification_answers.jsonl", "clarification_check_states.jsonl",
+                             "omission_states.jsonl", "ai_requirements.meta.json", "ai_supplements.jsonl"],
+    "compose": ["atomic_requirements.jsonl", "table_items.jsonl", "ai_supplements.jsonl"],
     "export-annotation-html": ["blocks.jsonl", "ai_requirements.jsonl", "engineering_analysis.json",
-                               "ai_review_states.jsonl", "annotation_translations.json"],
+                               "ai_review_states.jsonl", "annotation_translations.json",
+                               "ai_requirements.meta.json", "ai_supplements.jsonl"],
 }
 
 
@@ -370,7 +459,11 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
         "summary.md",
     ],
     "llm-review": ["llm_review_results.jsonl", "review_states.jsonl"],
-    "ai-extract": ["ai_requirements.jsonl", "merged_spec_requirements.json"],
+    "ai-extract": [
+        "ai_requirements.jsonl",
+        "ai_requirements.meta.json",
+        "merged_spec_requirements.json",
+    ],
     "functional-synthesis": [FUNCTIONAL_REQUIREMENTS],
     "assemble": [ASSEMBLED_JSON],
     "requirements-analysis": REQUIREMENTS_ANALYSIS_OUTPUTS,
@@ -383,21 +476,21 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 
 STAGE_IMPLEMENTATION_REVISIONS = {
     "atomize": "v4",
-    "ai-extract": "v3",
+    "ai-extract": "v4",
     "assemble": "v2",
     "functional-synthesis": "v2",
-    "requirements-analysis": "v3",
+    "requirements-analysis": "v4",
     "template-write": "v2",
-    "clarification-report": "v3",
+    "clarification-report": "v4",
 }
 
 _STAGE_BASE_PRODUCERS = {
     "atomize": "atomize",
     "assemble": "assemble_spec/v1",
     "template-write": "template_writer/v1",
-    "clarification-report": "clarification/v3-gap-tier",
+    "clarification-report": "clarification/v4-check-state",
     "compose": "engineering_composer/v1",
-    "export-annotation-html": "doc_annotation_export/v8",
+    "export-annotation-html": "doc_annotation_export/v9",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
@@ -425,6 +518,17 @@ def stage_producer(stage: str) -> str:
             producer = ANALYZE_PROMPT_VERSION
         elif stage == "functional-synthesis":
             producer = FUNCTIONAL_SYNTHESIS_VERSION
+        elif stage == "export-annotation-html":
+            from doc_annotation_export import (ANNOTATION_TRANSLATION_GUARDS_VERSION,
+                                                ANNOTATION_TRANSLATION_STRATEGY_VERSION)
+            producer = (f"{producer}+{ANNOTATION_TRANSLATION_STRATEGY_VERSION}"
+                        f"+{ANNOTATION_TRANSLATION_GUARDS_VERSION}")
+        if stage in {
+            "ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
+            "clarification-report", "compose", "export-annotation-html",
+        }:
+            from omission_actions import AI_SUPPLEMENT_VERSION
+            producer = f"{producer}+{AI_SUPPLEMENT_VERSION}"
     except Exception:  # pragma: no cover - 版本戳失败不阻断任务
         pass
     revision = STAGE_IMPLEMENTATION_REVISIONS.get(stage)
@@ -483,6 +587,28 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+_STAGE_MUTABLE_INPUTS = {
+    "export-annotation-html": {"annotation_translations.json"},
+}
+
+
+def stage_input_files_fingerprint(out_dir: Path, stage: str) -> str:
+    """Hash immutable stage inputs for the duration of a downstream read lease."""
+    root = Path(out_dir).expanduser().resolve()
+    ignored = _STAGE_MUTABLE_INPUTS.get(stage, set())
+    payload = [
+        {
+            "path": name,
+            "sha256": _hash_file(root / name) if (root / name).is_file() else None,
+        }
+        for name in STAGE_INPUTS.get(stage, [])
+        if name not in ignored
+    ]
+    return hashlib.sha256(json.dumps(
+        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
 
 
 def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = None,
@@ -651,6 +777,9 @@ def stage_is_reusable(out_dir: Path, stage: str, *,
             input_path=input_path, config=config)
         if recorded_fingerprint != current_fingerprint:
             return False
+        recorded_files = str(entry.get("input_files_fingerprint") or "")
+        if recorded_files and recorded_files != stage_input_files_fingerprint(out_dir, stage):
+            return False
     if not _outputs_exist(out_dir, _stage_outputs(stage, entry)):
         return False
     if stage == "atomize" and input_path is not None:
@@ -694,6 +823,7 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
                         outputs: list[str | Path] | None = None,
                         action: str | None = None,
                         input_fingerprint: str | None = None,
+                        input_files_fingerprint: str | None = None,
                         template_path: Path | None = None,
                         input_path: Path | None = None,
                         config: dict[str, Any] | None = None) -> None:
@@ -723,6 +853,8 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
                     entry["input_fingerprint"] = input_fingerprint or stage_input_fingerprint(
                         root, stage, route=route, template_path=template_path,
                         input_path=input_path, config=config)
+                    if input_files_fingerprint:
+                        entry["input_files_fingerprint"] = input_files_fingerprint
                 if action:
                     entry["last_action"] = action
                 if error:
@@ -735,6 +867,23 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
             _write_stage_manifest(root, stage, entry)
     except OSError:  # pragma: no cover - manifest 写失败不阻断任务本体
         LOGGER.warning("run_manifest 写入失败（忽略）：%s", path)
+
+
+def _stage_completion_status(stage: str, payload: Any) -> str:
+    """Return a non-reusable terminal status when a stage produced incomplete output."""
+    if stage == "ai-extract" and isinstance(payload, dict):
+        quality = payload.get("quality") if isinstance(payload.get("quality"), dict) else {}
+        failed_sections = int(payload.get("failed_sections") or quality.get("failed_sections") or 0)
+        if failed_sections > 0:
+            return "partial"
+    if stage == "export-annotation-html" and isinstance(payload, dict):
+        translations = payload.get("translations")
+        if isinstance(translations, dict):
+            unresolved = int(translations.get("unresolved") or 0)
+            failed_calls = int(translations.get("failed_calls") or 0)
+            if unresolved > 0 or failed_calls > 0:
+                return "partial"
+    return "ok"
 
 
 def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
@@ -828,10 +977,15 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 stage_outputs = stage_payload.get("written") if isinstance(stage_payload, dict) else None
                 actual_route = (str(stage_payload.get("route") or "").strip()
                                 if isinstance(stage_payload, dict) else "") or stage_route
-                update_run_manifest(out_dir, stage, "ok", route=actual_route,
+                leased_input_files = (str(stage_payload.get("_input_files_fingerprint") or "")
+                                      if isinstance(stage_payload, dict) else "") or None
+                completion_status = _stage_completion_status(stage, stage_payload)
+                update_run_manifest(out_dir, stage, completion_status, route=actual_route,
                                     outputs=stage_outputs or _stage_outputs(stage), action="ran",
-                                    template_path=stage_template, config=stage_config)
+                                    template_path=stage_template, config=stage_config,
+                                    input_files_fingerprint=leased_input_files)
             stage_payload = dict(stage_payload or {})
+            stage_payload.pop("_input_files_fingerprint", None)
             stage_payload.pop("summary", None)   # 各阶段的 summary 体积大且重复，链尾统一给一份
             results[stage] = stage_payload
             # 顶层聚合：GUI 消息只看这几个键，不必翻 results
@@ -873,6 +1027,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     return payload
 
 
+@_leased_pipeline_stage("export-annotation-html")
 def export_annotation_html_task(out_dir: Path, route: str | None = None,
                                 layout_mode: str = "pdf_original") -> dict[str, Any]:
     """生成可分享的文档批注 HTML bundle（内含 localStorage 裁决 + 导出 JSON）。
@@ -1174,9 +1329,7 @@ def main(argv: list[str] | None = None) -> int:
             from adjudication_bank import update_bank
             payload = {"kind": "adjudication_bank", **update_bank(args.bank, args.out)}
         elif args.command == "import-clarification-answers":
-            from clarification_report import import_answers
-            payload = {"kind": "clarification_answers", "out_dir": str(args.out),
-                       **import_answers(args.out, args.file)}
+            payload = import_clarification_workbook_task(args.out, args.file)
         elif args.command == "chain":
             payload = chain_task(args.out, stages=[x.strip() for x in args.stages.split(",") if x.strip()],
                                  route=args.llm_route, template_path=args.template,
@@ -1220,7 +1373,16 @@ def main(argv: list[str] | None = None) -> int:
             manifest_context["route"] = actual_route
         if args.command == "export-annotation-html" and isinstance(payload, dict):
             manifest_context["outputs"] = payload.get("written") or None
-        update_run_manifest(args.out, args.command, "ok", **manifest_context)
+        leased_input_files = (str(payload.pop("_input_files_fingerprint", "") or "")
+                              if isinstance(payload, dict) else "") or None
+        if leased_input_files:
+            manifest_context["input_files_fingerprint"] = leased_input_files
+        update_run_manifest(
+            args.out,
+            args.command,
+            _stage_completion_status(args.command, payload),
+            **manifest_context,
+        )
     print_json_payload(payload)
     return 0
 

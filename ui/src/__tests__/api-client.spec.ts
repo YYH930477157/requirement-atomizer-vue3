@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { RequirementApiClient } from "../api-client"
+import { RequirementApiClient, RequirementApiError, isNeedsReconfirmationError } from "../api-client"
 import { runDesktopTask } from "../desktop-bridge"
 
 describe("RequirementApiClient", () => {
@@ -108,6 +108,126 @@ describe("RequirementApiClient", () => {
     })
 
     await expect(client.loadRequirements()).resolves.toEqual([{ stable_req_id: "SREQ-1" }])
+  })
+
+  it("loads incremental extraction status and omission states", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          schema: "ai-requirements-partial/v1", run_id: "run-1",
+          completed: 2, total: 5, complete: false, rows: [{ ai_req_id: "AIR-1" }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ schema: "omission-actions/v1", states: [] }),
+      })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadAiExtractionStatus()).resolves.toMatchObject({ completed: 2, total: 5 })
+    await expect(client.loadOmissionActions()).resolves.toEqual({ schema: "omission-actions/v1", states: [] })
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8770/ai-extraction-status", {
+      headers: { "X-Requirement-Atomizer-Token": "local-token" },
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:8770/omission-actions", {
+      headers: { "X-Requirement-Atomizer-Token": "local-token" },
+    })
+  })
+
+  it("posts omission triage and targeted re-extraction actions", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ omission_id: "OM-B3", block_id: "B3", status: "needs_extraction" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          schema: "omission-reextract/v1", omission: {}, supplement: {},
+          requirements: 1, effective_count: 2, written: ["ai_supplements.jsonl"],
+        }),
+      })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await client.applyOmissionAction({
+      omissionId: "OM-B3", blockId: "B3", sourceFingerprint: "source-B3", status: "needs_extraction",
+      reason: "规范性语句", actor: "reviewer",
+    })
+    await client.reextractOmission({
+      omissionId: "OM-B3", blockId: "B3", sourceFingerprint: "source-B3",
+      focusLines: ["The meter shall hold."],
+      actor: "reviewer", reason: "确认遗漏", route: "openai_compatible",
+    })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8770/omission-actions", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        omission_id: "OM-B3", block_id: "B3", source_fingerprint: "source-B3", status: "needs_extraction",
+        reason: "规范性语句", actor: "reviewer",
+      }),
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:8770/omission-reextract", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        omission_id: "OM-B3", block_id: "B3", source_fingerprint: "source-B3",
+        focus_lines: ["The meter shall hold."],
+        actor: "reviewer", reason: "确认遗漏", route: "openai_compatible",
+      }),
+    }))
+  })
+
+  it("binds AI decisions to the displayed source and subject fingerprints", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ai_req_id: "AIR-1", status: "accepted" }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await client.applyAiReviewAction({
+      aiReqId: "AIR-1", status: "accepted",
+      sourceFingerprint: "source-v2", reviewSubjectFingerprint: "subject-v2",
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8770/ai-review-actions",
+      expect.objectContaining({
+        body: JSON.stringify({
+          ai_req_id: "AIR-1", status: "accepted",
+          source_fingerprint: "source-v2", review_subject_fingerprint: "subject-v2",
+          module_override: "", ownership_override: "", reason: "", actor: "",
+        }),
+      }),
+    )
+  })
+
+  it("preserves structured 409 reconfirmation details", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: "AI requirement changed; refresh before adjudicating",
+        needs_reconfirmation: true,
+        source_fingerprint: "source-v2",
+      }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    const error = await client.applyAiReviewAction({ aiReqId: "AIR-1", status: "accepted" })
+      .catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(RequirementApiError)
+    expect(isNeedsReconfirmationError(error)).toBe(true)
+    expect((error as RequirementApiError).status).toBe(409)
+    expect((error as RequirementApiError).details.source_fingerprint).toBe("source-v2")
   })
 })
 

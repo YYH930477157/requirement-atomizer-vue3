@@ -1,7 +1,17 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from "vue"
-import { Ban, Check, Image, MessageSquareText, MessagesSquare, RefreshCw, Rows3 } from "@lucide/vue"
-import type { AiRequirement, DocumentBlock, PdfAnnotationPayload, PdfZoneRect, RequirementApiClient } from "./api-client"
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
+import { Ban, Check, ChevronLeft, ChevronRight, Image, MessageSquareText, MessagesSquare, RefreshCw, Rows3 } from "@lucide/vue"
+import type {
+  AiExtractionStatusPayload,
+  AiRequirement,
+  DocumentBlock,
+  OmissionActionState,
+  OmissionActionStatus,
+  PdfAnnotationPayload,
+  PdfZoneRect,
+  RequirementApiClient,
+} from "./api-client"
+import { isNeedsReconfirmationError } from "./api-client"
 
 // 镜像后端 ai_extract.MODULE_VOCAB（受控模块词表）。改模块下拉用；taxonomy 变动时两边同步。
 const MODULE_VOCAB = [
@@ -18,7 +28,14 @@ const STATUS_LABELS: Record<string, string> = {
 // 结构化子集（避免 class 私有成员 + ref 解包导致的名义类型不匹配）
 type DocClient = Pick<RequirementApiClient,
   "loadDocument" | "loadAiRequirements" | "applyAiReviewAction" | "loadPdfAnnotation" | "loadPdfPageBlob">
-const props = defineProps<{ client: DocClient | null; active: boolean }>()
+  & Partial<Pick<RequirementApiClient,
+    "loadAiExtractionStatus" | "loadOmissionActions" | "applyOmissionAction" | "reextractOmission">>
+const props = withDefaults(defineProps<{
+  client: DocClient | null
+  active: boolean
+  refreshToken?: number
+  sessionKey?: string
+}>(), { refreshToken: 0, sessionKey: "" })
 
 const blocks = ref<DocumentBlock[]>([])
 const requirements = ref<AiRequirement[]>([])
@@ -29,6 +46,13 @@ const isSaving = ref(false)
 const comment = ref("")
 const moduleEdit = ref("")
 const ownershipEdit = ref("")
+const extractionStatus = ref<AiExtractionStatusPayload | null>(null)
+const omissionStates = ref<OmissionActionState[]>([])
+const omissionSaving = ref(false)
+const omissionNote = ref("")
+type RequirementDraft = { comment: string; module: string; ownership: string }
+const requirementDrafts = new Map<string, RequirementDraft>()
+const omissionDrafts = new Map<string, string>()
 
 // 与后端 requirements_analysis_schema 的三值归属一致
 const OWNERSHIP_OPTIONS = [
@@ -37,6 +61,42 @@ const OWNERSHIP_OPTIONS = [
   { value: "co_design", label: "软硬件协同" },
 ]
 let loadedOnce = false
+let contentLoadGeneration = 0
+let reviewOperationGeneration = 0
+let omissionOperationGeneration = 0
+
+function stashRequirementDraft(id = selectedId.value) {
+  if (!id) return
+  requirementDrafts.set(id, {
+    comment: comment.value,
+    module: moduleEdit.value,
+    ownership: ownershipEdit.value,
+  })
+}
+
+function stashOmissionDraft(blockId = selectedBlockId.value) {
+  if (!blockId) return
+  omissionDrafts.set(blockId, omissionNote.value)
+}
+
+function clearRequirementEditor() {
+  comment.value = ""
+  moduleEdit.value = ""
+  ownershipEdit.value = ""
+}
+
+function replaceRequirements(rows: AiRequirement[]) {
+  requirements.value = rows
+  if (selectedId.value && !rows.some((row) => row.ai_req_id === selectedId.value)) {
+    stashRequirementDraft()
+    selectedId.value = ""
+    clearRequirementEditor()
+  }
+}
+
+function setOmissionStates(states: OmissionActionState[] | undefined) {
+  omissionStates.value = Array.isArray(states) ? states : []
+}
 
 async function load() {
   const client = props.client
@@ -44,19 +104,30 @@ async function load() {
     message.value = "未连接输出目录——先运行管线 + AI 抽取"
     return
   }
+  const generation = ++contentLoadGeneration
   loading.value = true
   message.value = ""
   try {
-    const [doc, reqs] = await Promise.all([client.loadDocument(), client.loadAiRequirements()])
+    const [doc, reqs, partial, omissionPayload] = await Promise.all([
+      client.loadDocument(),
+      client.loadAiRequirements(),
+      client.loadAiExtractionStatus?.().catch(() => null) ?? Promise.resolve(null),
+      client.loadOmissionActions?.().catch(() => null) ?? Promise.resolve(null),
+    ])
     if (client !== props.client) return
     blocks.value = doc.blocks || []
-    requirements.value = reqs || []
+    loadedOnce = true
+    if (generation !== contentLoadGeneration) return
+    extractionStatus.value = partial
+    replaceRequirements(partial?.run_id && !partial.complete ? partial.rows || [] : reqs || [])
+    setOmissionStates(omissionPayload?.states)
     if (!requirements.value.length) {
       message.value = "暂无 AI 抽取需求——请先开 LLM 跑「AI 抽取」"
     }
-    loadedOnce = true
   } catch (error) {
-    if (client === props.client) message.value = error instanceof Error ? error.message : "加载失败"
+    if (client === props.client && generation === contentLoadGeneration) {
+      message.value = error instanceof Error ? error.message : "加载失败"
+    }
   } finally {
     if (client === props.client) loading.value = false
   }
@@ -141,12 +212,17 @@ const selectedRelatedReqs = computed(() => {
   return (selectedBlockKind.value === "covered" ? coveredByBlock.value.get(blockId) : echoByBlock.value.get(blockId)) || []
 })
 function selectBlockCard(b: DocumentBlock) {
+  stashRequirementDraft()
+  stashOmissionDraft()
   if (selectedBlockId.value === b.block_id) {  // 再点一下 → 取消选中
     selectedBlockId.value = ""
+    omissionNote.value = ""
     return
   }
   selectedBlockId.value = b.block_id
   selectedId.value = ""
+  clearRequirementEditor()
+  omissionNote.value = omissionDrafts.get(b.block_id) || ""
 }
 function onBlockClick(b: DocumentBlock) {
   const anchored = anchorByBlock.value.get(b.block_id)
@@ -178,17 +254,16 @@ function revokePdfPageUrl(url: string) {
   }
 }
 
-async function loadPdfPages(payload: PdfAnnotationPayload) {
-  const client = props.client
+async function loadPdfPages(payload: PdfAnnotationPayload, client = props.client) {
   if (pdfPageLoadsDisposed || !client) return
   const generation = ++pdfPageLoadGeneration
   // 顺序拉取页图(带鉴权头 fetch→blob;token 不进 URL——仓库安全锁);单页失败不阻断其余
   for (const page of payload.pages || []) {
-    if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration) break
+    if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration || client !== props.client) break
     if (pdfPageUrls.value[page.file]) continue
     try {
       const url = await client.loadPdfPageBlob(page.file)
-      if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration) {
+      if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration || client !== props.client) {
         revokePdfPageUrl(url)
         break
       }
@@ -196,6 +271,32 @@ async function loadPdfPages(payload: PdfAnnotationPayload) {
     } catch {
       /* 页图缺失/网络抖动:保留占位框,不影响其它页 */
     }
+  }
+}
+
+function applyPdfMetadata(payload: PdfAnnotationPayload, client: DocClient) {
+  const files = new Set((payload.pages || []).map((page) => page.file))
+  const retained: Record<string, string> = {}
+  for (const [file, url] of Object.entries(pdfPageUrls.value)) {
+    if (files.has(file)) retained[file] = url
+    else revokePdfPageUrl(url)
+  }
+  pdfPageUrls.value = retained
+  pdfData.value = payload
+  if (payload.available) void loadPdfPages(payload, client)
+}
+
+async function refreshPdfMetadata(client: DocClient, workspaceGeneration = workspaceLoadGeneration) {
+  const generation = ++pdfDataLoadGeneration
+  pdfDataLoadPromise = null
+  pdfLoading.value = false
+  try {
+    const payload = await client.loadPdfAnnotation()
+    if (pdfPageLoadsDisposed || client !== props.client || generation !== pdfDataLoadGeneration
+        || workspaceGeneration !== workspaceLoadGeneration) return
+    applyPdfMetadata(payload, client)
+  } catch {
+    // 增量刷新只更新标记元数据；短暂失败时保留当前可核对页面。
   }
 }
 
@@ -209,8 +310,7 @@ async function ensurePdfData(): Promise<boolean> {
   const request = client.loadPdfAnnotation()
     .then((payload) => {
       if (pdfPageLoadsDisposed || generation !== pdfDataLoadGeneration || client !== props.client) return false
-      pdfData.value = payload
-      if (payload.available) void loadPdfPages(payload)
+      applyPdfMetadata(payload, client)
       return Boolean(payload.available)
     })
     .catch((error: unknown) => {
@@ -266,31 +366,56 @@ async function reloadWorkspace() {
   }
 }
 
-watch([() => props.active, () => props.client], ([on, client], previous) => {
+watch([() => props.active, () => props.client, () => props.sessionKey], ([on, client, sessionKey], previous) => {
   const clientChanged = client !== previous?.[1]
+  const previousSessionKey = String(previous?.[2] || "")
+  const identityChanged = !previous
+    || (sessionKey || previousSessionKey ? sessionKey !== previousSessionKey : clientChanged)
   if (clientChanged) {
     loadedOnce = false
-    blocks.value = []
-    requirements.value = []
-    selectedId.value = ""
-    selectedBlockId.value = ""
-    message.value = ""
     workspaceLoadGeneration += 1
+    contentLoadGeneration += 1
+    reviewOperationGeneration += 1
+    omissionOperationGeneration += 1
+    isSaving.value = false
+    omissionSaving.value = false
     pdfDataLoadGeneration += 1
     pdfDataLoadPromise = null
     pdfLoading.value = false
     pdfPageLoadGeneration += 1
+    pdfData.value = null
+  }
+  if (identityChanged) {
+    blocks.value = []
+    requirements.value = []
+    extractionStatus.value = null
+    omissionStates.value = []
+    selectedId.value = ""
+    selectedBlockId.value = ""
+    omissionNote.value = ""
+    clearRequirementEditor()
+    requirementDrafts.clear()
+    omissionDrafts.clear()
+    message.value = ""
     const urls = new Set(Object.values(pdfPageUrls.value))
     pdfPageUrls.value = {}
     for (const url of urls) revokePdfPageUrl(url)
-    pdfData.value = null
   }
   if (on && (clientChanged || !loadedOnce || !requirements.value.length)) void loadWorkspace()
 }, { immediate: true })
 
+watch(() => props.refreshToken, (token, previous) => {
+  if (token !== previous) scheduleIncrementalRefresh()
+})
+
 onUnmounted(() => {
+  window.removeEventListener("keydown", handleReviewShortcut)
+  if (incrementalRefreshTimer !== undefined) clearTimeout(incrementalRefreshTimer)
   pdfPageLoadsDisposed = true
   workspaceLoadGeneration += 1
+  contentLoadGeneration += 1
+  reviewOperationGeneration += 1
+  omissionOperationGeneration += 1
   pdfDataLoadGeneration += 1
   pdfDataLoadPromise = null
   pdfLoading.value = false
@@ -314,7 +439,9 @@ const pdfMarkersByPage = computed(() => {
     byPage.set(page, list)
   }
   for (const m of pdfData.value?.requirement_markers || []) push(m.page, "req", m.req_id, m.rect)
-  for (const m of pdfData.value?.omission_markers || []) push(m.page, "omission", m.block_id, m.rect)
+  for (const m of pdfData.value?.omission_markers || []) {
+    if (!omissionIsClosed(omissionStateFor(m.block_id))) push(m.page, "omission", m.block_id, m.rect)
+  }
   for (const list of byPage.values()) {
     list.sort((a, b) => a.rect.top - b.rect.top)
     let prevTop = -100
@@ -334,7 +461,10 @@ type PdfBlockZone = { block_id: string; page: number; rect: PdfZoneRect
                       req_id?: string; req_ids?: string[] }
 const pdfZonesByPage = computed(() => {
   const byPage = new Map<number, PdfBlockZone[]>()
-  for (const z of pdfData.value?.block_zones || []) {
+  for (const raw of pdfData.value?.block_zones || []) {
+    const z: PdfBlockZone = raw.kind === "omission" && omissionIsClosed(omissionStateFor(raw.block_id))
+      ? { ...raw, kind: "context" }
+      : raw
     const list = byPage.get(z.page) || []
     list.push(z)
     byPage.set(z.page, list)
@@ -440,8 +570,7 @@ function pdfLinkedLabel(zone: PdfBlockZone): string {
   return echoLabel(reqs)
 }
 function jumpToRelatedReq(req: AiRequirement) {
-  selectedBlockId.value = ""
-  selectedId.value = req.ai_req_id   // 直接选中(不走 select 的再点取消语义)
+  activateReq(req)   // 直接选中(不走 select 的再点取消语义)
 }
 
 // 排版保真：噪声（页眉/页脚/水印）不渲染；跨页处画分页线（与自包含 HTML 同语义）
@@ -480,7 +609,7 @@ function isCoverageCandidate(b: DocumentBlock): boolean {
 }
 
 const omissionCount = computed(
-  () => blocks.value.filter((b) => isCoverageCandidate(b) && !coveredBlocks.value.has(b.block_id)).length,
+  () => blocks.value.filter((b) => isOmission(b)).length,
 )
 
 const stats = computed(() => ({
@@ -492,8 +621,23 @@ const stats = computed(() => ({
 function isHeading(b: DocumentBlock): boolean {
   return b.type === "heading" || (b.section_path?.length ? b.text === b.section_path[b.section_path.length - 1] : false)
 }
+const omissionStateByBlock = computed(() => new Map(
+  omissionStates.value.map((state) => [state.block_id, state]),
+))
+function omissionStateFor(blockId: string): OmissionActionState | undefined {
+  return omissionStateByBlock.value.get(blockId)
+}
+function omissionIsClosed(state: OmissionActionState | undefined): boolean {
+  return state?.status === "non_requirement" || state?.status === "resolved"
+}
+function omissionStatusLabel(blockId: string): string {
+  const status = omissionStateFor(blockId)?.status
+  return status ? OMISSION_STATUS_LABELS[status] : ""
+}
 function isOmission(b: DocumentBlock): boolean {
-  return isCoverageCandidate(b) && !coveredBlocks.value.has(b.block_id)
+  return isCoverageCandidate(b)
+    && !coveredBlocks.value.has(b.block_id)
+    && !omissionIsClosed(omissionStateFor(b.block_id))
 }
 function moduleOf(r: AiRequirement): string {
   return String(r.module_effective || originalModuleOf(r))
@@ -549,16 +693,198 @@ function hardwareTranslationOf(r: AiRequirement): string {
   return block?.translation || ""
 }
 
-function select(req: AiRequirement) {
+function activateReq(req: AiRequirement) {
+  stashRequirementDraft()
+  stashOmissionDraft()
   selectedBlockId.value = ""
+  omissionNote.value = ""
+  selectedId.value = req.ai_req_id
+  const draft = requirementDrafts.get(req.ai_req_id)
+  comment.value = draft?.comment ?? String(req.review_state?.reason || "")
+  moduleEdit.value = draft?.module ?? moduleOf(req)
+  ownershipEdit.value = draft?.ownership ?? ownershipOf(req)
+}
+
+function select(req: AiRequirement) {
   if (selectedId.value === req.ai_req_id) {  // 再点一下 → 取消选中
+    stashRequirementDraft()
     selectedId.value = ""
+    clearRequirementEditor()
     return
   }
-  selectedId.value = req.ai_req_id
-  comment.value = String(req.review_state?.reason || "")
-  moduleEdit.value = moduleOf(req)
-  ownershipEdit.value = ownershipOf(req)
+  activateReq(req)
+}
+
+// 顺序过审导航：按页边批注号（文档顺序）逐条前进/后退，首尾循环
+const orderedReqs = computed(() => [...requirements.value].sort((a, b) =>
+  (reqNumbers.value.get(a.ai_req_id) ?? 1e9) - (reqNumbers.value.get(b.ai_req_id) ?? 1e9)))
+const selectedReqIndex = computed(() => orderedReqs.value.findIndex((r) => r.ai_req_id === selectedId.value))
+async function stepReq(delta: number) {
+  const list = orderedReqs.value
+  if (!list.length) return
+  const current = selectedReqIndex.value
+  const nextIndex = current < 0 ? (delta > 0 ? 0 : list.length - 1) : (current + delta + list.length) % list.length
+  const req = list[nextIndex]
+  activateReq(req)
+  await nextTick()
+  const anchor = String(req.anchor_block_id || (req.source_block_ids || [])[0] || "")
+  if (!anchor) return
+  const el = rootEl.value?.querySelector(`[data-block-id="${anchor}"]`)
+    || rootEl.value?.querySelector(`[data-testid="pdf-zone-${anchor}"]`)
+  el?.scrollIntoView?.({ behavior: "smooth", block: "center" })
+}
+
+const rootEl = ref<HTMLElement | null>(null)
+
+// 疑似遗漏是审查的核心风险入口：点击统计数字循环定位下一处未覆盖段（文本/影印两模式通用）
+const omissionBlocks = computed(() => blocks.value.filter((b) => isOmission(b)))
+const omissionJumpIndex = ref(-1)
+async function jumpToNextOmission() {
+  const list = omissionBlocks.value
+  if (!list.length) return
+  omissionJumpIndex.value = (omissionJumpIndex.value + 1) % list.length
+  const block = list[omissionJumpIndex.value]
+  selectBlockCard(block)
+  await nextTick()
+  const el = rootEl.value?.querySelector(`[data-block-id="${block.block_id}"]`)
+    || rootEl.value?.querySelector(`[data-testid="pdf-zone-${block.block_id}"]`)
+  el?.scrollIntoView({ behavior: "smooth", block: "center" })
+  message.value = `疑似遗漏 ${omissionJumpIndex.value + 1}/${list.length}`
+}
+
+const OMISSION_STATUS_LABELS: Record<OmissionActionStatus, string> = {
+  non_requirement: "已判定非需求",
+  needs_extraction: "等待补抽",
+  issue_confirmed: "已确认遗漏",
+  resolved: "已补抽",
+}
+
+function replaceOmissionState(state: OmissionActionState) {
+  const next = omissionStates.value.filter((item) => item.block_id !== state.block_id)
+  next.push(state)
+  omissionStates.value = next
+}
+
+async function refreshReviewData(client: DocClient, includeDocument = false): Promise<boolean> {
+  const generation = ++contentLoadGeneration
+  const workspaceGeneration = workspaceLoadGeneration
+  const [doc, reqs, partial, omissionPayload] = await Promise.all([
+    includeDocument ? client.loadDocument() : Promise.resolve(null),
+    client.loadAiRequirements(),
+    client.loadAiExtractionStatus?.().catch(() => null) ?? Promise.resolve(null),
+    client.loadOmissionActions?.().catch(() => null) ?? Promise.resolve(null),
+  ])
+  if (client !== props.client || generation !== contentLoadGeneration
+      || workspaceGeneration !== workspaceLoadGeneration) return false
+  if (doc) blocks.value = doc.blocks || []
+  extractionStatus.value = partial
+  replaceRequirements(partial?.run_id && !partial.complete ? partial.rows || [] : reqs || [])
+  if (omissionPayload) setOmissionStates(omissionPayload.states)
+  await refreshPdfMetadata(client, workspaceGeneration)
+  return client === props.client && generation === contentLoadGeneration
+    && workspaceGeneration === workspaceLoadGeneration
+}
+
+function omissionRequestIsCurrent(client: DocClient, generation: number) {
+  return client === props.client && generation === omissionOperationGeneration
+}
+
+async function applyOmissionDisposition(status: "non_requirement" | "issue_confirmed") {
+  const block = selectedBlock.value
+  const client = props.client
+  if (!block || !client?.applyOmissionAction || omissionSaving.value) return
+  const generation = ++omissionOperationGeneration
+  const blockId = block.block_id
+  const note = omissionNote.value
+  stashOmissionDraft(blockId)
+  omissionSaving.value = true
+  try {
+    const previous = omissionStateFor(block.block_id)
+    const omissionId = previous?.omission_id || block.omission_id
+    const sourceFingerprint = block.omission_source_fingerprint
+    if (!omissionId || !sourceFingerprint) {
+      message.value = "遗漏身份已变化，请刷新后重试"
+      return
+    }
+    const state = await client.applyOmissionAction({
+      omissionId,
+      blockId,
+      sourceFingerprint,
+      status,
+      reason: note,
+      actor: "reviewer",
+    })
+    if (!omissionRequestIsCurrent(client, generation)
+        || state.block_id !== blockId || state.omission_id !== omissionId) return
+    replaceOmissionState(state)
+    omissionDrafts.delete(blockId)
+    if (selectedBlockId.value === blockId) omissionNote.value = ""
+    message.value = status === "non_requirement"
+      ? "已记为非需求，不再计入疑似遗漏"
+      : "已确认遗漏，可直接执行定点补抽"
+  } catch (error) {
+    if (!omissionRequestIsCurrent(client, generation)) return
+    if (isNeedsReconfirmationError(error)) {
+      await refreshReviewData(client, true).catch(() => false)
+      if (omissionRequestIsCurrent(client, generation)) {
+        message.value = "遗漏来源已变化，已刷新当前证据，请核对后重新处置"
+      }
+    } else {
+      message.value = error instanceof Error ? error.message : "遗漏处置写入失败"
+    }
+  } finally {
+    if (omissionRequestIsCurrent(client, generation)) omissionSaving.value = false
+  }
+}
+
+async function reextractSelectedOmission() {
+  const block = selectedBlock.value
+  const client = props.client
+  if (!block || !client?.reextractOmission || omissionSaving.value) return
+  const generation = ++omissionOperationGeneration
+  const blockId = block.block_id
+  const note = omissionNote.value
+  stashOmissionDraft(blockId)
+  omissionSaving.value = true
+  try {
+    const previous = omissionStateFor(block.block_id)
+    const omissionId = previous?.omission_id || block.omission_id
+    const sourceFingerprint = block.omission_source_fingerprint
+    if (!omissionId || !sourceFingerprint) {
+      message.value = "遗漏身份已变化，请刷新后重试"
+      return
+    }
+    const payload = await client.reextractOmission({
+      omissionId,
+      blockId,
+      sourceFingerprint,
+      focusLines: [(block.text || "").trim()].filter(Boolean),
+      actor: "reviewer",
+      reason: note,
+    })
+    if (!omissionRequestIsCurrent(client, generation)
+        || payload.omission.block_id !== blockId || payload.omission.omission_id !== omissionId) return
+    replaceOmissionState(payload.omission)
+    await refreshReviewData(client)
+    if (!omissionRequestIsCurrent(client, generation)) return
+    omissionDrafts.delete(blockId)
+    if (selectedBlockId.value === blockId) omissionNote.value = ""
+    message.value = payload.requirements > 0
+      ? `定点补抽完成：新增或更新 ${payload.requirements} 条需求`
+      : "定点补抽完成，未发现可通过护栏的新需求"
+  } catch (error) {
+    if (!omissionRequestIsCurrent(client, generation)) return
+    if (isNeedsReconfirmationError(error)) {
+      await refreshReviewData(client, true).catch(() => false)
+      if (omissionRequestIsCurrent(client, generation)) {
+        message.value = "遗漏来源已变化，已刷新当前证据，请核对后重新补抽"
+      }
+    } else {
+      message.value = error instanceof Error ? error.message : "定点补抽失败"
+    }
+  } finally {
+    if (omissionRequestIsCurrent(client, generation)) omissionSaving.value = false
+  }
 }
 
 // 选中需求时，在锚段内的块里高亮 source_quote 原句；选中未覆盖/背景段时整段=引用本体 → 全黄。
@@ -575,43 +901,161 @@ function segments(b: DocumentBlock): Array<{ text: string; mark: boolean }> {
   ].filter((s) => s.text.length)
 }
 
-async function decide(status: "accepted" | "rejected" | "needs_discussion") {
+async function decide(status: "accepted" | "rejected" | "needs_discussion", advance = false) {
   const req = selectedReq.value
-  if (!req || !props.client || isSaving.value) return
+  const client = props.client
+  if (!req || !client || isSaving.value) return
+  const generation = ++reviewOperationGeneration
+  stashRequirementDraft(req.ai_req_id)
   isSaving.value = true
   try {
-    const state = await props.client.applyAiReviewAction({
+    const state = await client.applyAiReviewAction({
       aiReqId: req.ai_req_id, status,
+      sourceFingerprint: req.source_fingerprint,
+      reviewSubjectFingerprint: req.review_subject_fingerprint,
       // 与规则初判比较：重复裁决时保留既有覆盖；选回初判值才发空串清除。
       moduleOverride: moduleEdit.value !== originalModuleOf(req) ? moduleEdit.value : "",
       // 选回规则初判值 → 发空串清除覆盖，归属回落规则判定
       ownershipOverride: ownershipEdit.value !== (req.ownership || "") ? ownershipEdit.value : "",
       reason: comment.value, actor: "reviewer",
     })
+    if (client !== props.client || generation !== reviewOperationGeneration
+        || state.ai_req_id !== req.ai_req_id) return
     req.review_state = state
+    req.needs_reconfirmation = false
     req.status = state.status
     req.module_effective = state.module_override || originalModuleOf(req)
     req.ownership_effective = state.ownership_override || req.ownership
     moduleEdit.value = moduleOf(req)
     ownershipEdit.value = ownershipOf(req)
     message.value = `已${STATUS_LABELS[status] || status}：${req.title || req.ai_req_id}`
+    if (advance && selectedId.value === req.ai_req_id) await stepReq(1)
   } catch (error) {
-    message.value = error instanceof Error ? error.message : "裁决写入失败"
+    if (client !== props.client || generation !== reviewOperationGeneration) return
+    if (isNeedsReconfirmationError(error)) {
+      await refreshReviewData(client).catch(() => false)
+      if (client === props.client && generation === reviewOperationGeneration) {
+        message.value = "需求证据或解析内容已变化，已刷新，请核对后重新裁决"
+      }
+    } else {
+      message.value = error instanceof Error ? error.message : "裁决写入失败"
+    }
   } finally {
-    isSaving.value = false
+    if (client === props.client && generation === reviewOperationGeneration) isSaving.value = false
   }
 }
+
+let incrementalRefreshTimer: ReturnType<typeof setTimeout> | undefined
+let incrementalRefreshRunning = false
+let incrementalRefreshQueued = false
+
+function partialRowsIdentity(rows: AiRequirement[]) {
+  return rows.map((row) => [
+    row.ai_req_id,
+    row.extraction_fingerprint || "",
+    row.source_fingerprint || "",
+    row.review_subject_fingerprint || "",
+  ].join(":")).join("|")
+}
+
+async function refreshIncremental() {
+  const client = props.client
+  if (!client?.loadAiExtractionStatus || incrementalRefreshRunning) {
+    if (incrementalRefreshRunning) incrementalRefreshQueued = true
+    return
+  }
+  const generation = ++contentLoadGeneration
+  const workspaceGeneration = workspaceLoadGeneration
+  incrementalRefreshRunning = true
+  try {
+    const [partial, omissionPayload] = await Promise.all([
+      client.loadAiExtractionStatus(),
+      client.loadOmissionActions?.().catch(() => null) ?? Promise.resolve(null),
+    ])
+    if (client !== props.client || generation !== contentLoadGeneration
+        || workspaceGeneration !== workspaceLoadGeneration) return
+    const previous = extractionStatus.value
+    extractionStatus.value = partial
+    setOmissionStates(omissionPayload?.states ?? omissionStates.value)
+    const changed = partial.run_id !== previous?.run_id
+      || partial.completed !== previous?.completed
+      || partial.complete !== previous?.complete
+      || partial.failed !== previous?.failed
+      || partialRowsIdentity(partial.rows) !== partialRowsIdentity(previous?.rows || [])
+    if (changed && partial.run_id) {
+      const rows = partial.complete ? await client.loadAiRequirements() : partial.rows
+      if (client !== props.client || generation !== contentLoadGeneration
+          || workspaceGeneration !== workspaceLoadGeneration) return
+      replaceRequirements(rows || [])
+      await refreshPdfMetadata(client, workspaceGeneration)
+    }
+  } catch (error) {
+    if (client === props.client && generation === contentLoadGeneration
+        && workspaceGeneration === workspaceLoadGeneration) {
+      message.value = error instanceof Error ? error.message : "增量结果刷新失败"
+    }
+  } finally {
+    incrementalRefreshRunning = false
+    if (incrementalRefreshQueued) {
+      incrementalRefreshQueued = false
+      scheduleIncrementalRefresh()
+    }
+  }
+}
+
+function scheduleIncrementalRefresh() {
+  if (!props.active || !props.client?.loadAiExtractionStatus) return
+  if (incrementalRefreshTimer !== undefined) clearTimeout(incrementalRefreshTimer)
+  incrementalRefreshTimer = setTimeout(() => {
+    incrementalRefreshTimer = undefined
+    void refreshIncremental()
+  }, 180)
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+}
+
+function handleReviewShortcut(event: KeyboardEvent) {
+  if (!props.active || event.defaultPrevented || event.repeat || event.isComposing
+      || event.ctrlKey || event.metaKey || event.altKey || isEditableTarget(event.target)) return
+  const key = event.key.toLowerCase()
+  if ((key === "j" || key === "k") && orderedReqs.value.length) {
+    event.preventDefault()
+    void stepReq(key === "j" ? 1 : -1)
+    return
+  }
+  if (!selectedReq.value || !props.client || isSaving.value) return
+  const status = ({ a: "accepted", r: "rejected", d: "needs_discussion" } as const)[key as "a" | "r" | "d"]
+  if (!status) return
+  event.preventDefault()
+  void decide(status, true)
+}
+
+onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 </script>
 
 <template>
-  <section class="doc-review" data-testid="doc-review">
+  <section ref="rootEl" class="doc-review" data-testid="doc-review">
     <header class="doc-toolbar">
       <div class="doc-stats">
         <span>需求 <strong data-testid="doc-stat-reqs">{{ stats.reqs }}</strong></span>
         <span>已挂载 <strong>{{ stats.anchored }}</strong></span>
-        <span class="omission-stat" :class="{ warn: stats.omissions > 0 }">
-          疑似遗漏 <strong data-testid="doc-stat-omissions">{{ stats.omissions }}</strong>
+        <span v-if="extractionStatus?.run_id && extractionStatus.failed"
+              class="partial-status failed" data-testid="partial-status">
+          抽取不完整 <strong>{{ extractionStatus.completed }}/{{ extractionStatus.total }}</strong>
         </span>
+        <span v-else-if="extractionStatus?.run_id && !extractionStatus.complete"
+              class="partial-status" data-testid="partial-status">
+          抽取中 <strong>{{ extractionStatus.completed }}/{{ extractionStatus.total }}</strong>
+        </span>
+        <button type="button" class="omission-stat omission-jump" :class="{ warn: stats.omissions > 0 }"
+                :disabled="!stats.omissions" data-testid="omission-jump"
+                title="疑似需求但未被任何抽取覆盖——点击循环定位下一处"
+                @click="jumpToNextOmission">
+          疑似遗漏 <strong data-testid="doc-stat-omissions">{{ stats.omissions }}</strong>
+        </button>
       </div>
       <div class="doc-toolbar-actions">
         <div class="mode-toggle">
@@ -674,6 +1118,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
                        anchored: anchorByBlock.get(b.block_id)?.length,
                        'in-span': selectedSpan.has(b.block_id) || b.block_id === selectedBlockId,
                        evidence: evidenceBlocks.has(b.block_id) || b.block_id === selectedBlockId }]"
+            :data-block-id="b.block_id"
             :data-testid="isOmission(b) ? 'omission-block' : undefined"
             @click="onBlockClick(b)"
           >
@@ -753,6 +1198,27 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
           <h3 class="dd-title">{{ selectedBlockKind === "omission" ? "为什么标为未覆盖" : (selectedBlockKind === "echo" ? "该段解析已汇总" : (selectedBlockKind === "covered" ? "该段已纳入需求解析" : (selectedBlockKind === "req_group" ? `该段解析出 ${orderedSelectedRelatedReqs.length} 条需求` : "为什么没有生成研发需求"))) }}</h3>
           <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "omission" ? OMISSION_REASON : (selectedBlockKind === "echo" ? ECHO_REASON : (selectedBlockKind === "covered" ? COVERED_REASON : (selectedBlockKind === "req_group" ? REQ_GROUP_REASON : CONTEXT_REASON))) }}</div></div>
+          <div v-if="selectedBlockKind === 'omission' && (props.client?.applyOmissionAction || props.client?.reextractOmission)"
+               class="dd-section omission-actions" data-testid="omission-actions">
+            <div class="dd-label">遗漏处置</div>
+            <div v-if="omissionStateFor(selectedBlock.block_id)" class="omission-state" data-testid="omission-state">
+              {{ omissionStatusLabel(selectedBlock.block_id) }}
+            </div>
+            <textarea v-model="omissionNote" class="dd-comment" data-testid="omission-note" placeholder="处置备注（可选）" />
+            <div class="omission-action-row">
+              <button v-if="props.client?.applyOmissionAction" class="button" type="button"
+                      data-testid="omission-non-requirement" :disabled="omissionSaving"
+                      @click="applyOmissionDisposition('non_requirement')">非需求</button>
+              <button v-if="props.client?.applyOmissionAction" class="button" type="button"
+                      data-testid="omission-confirm" :disabled="omissionSaving"
+                      @click="applyOmissionDisposition('issue_confirmed')">确认遗漏</button>
+              <button v-if="props.client?.reextractOmission" class="button primary" type="button"
+                      data-testid="omission-reextract" :disabled="omissionSaving"
+                      @click="reextractSelectedOmission">
+                <RefreshCw :class="{ spin: omissionSaving }" :size="14" aria-hidden="true" />定点补抽
+              </button>
+            </div>
+          </div>
           <div v-if="(selectedBlockKind === 'echo' || selectedBlockKind === 'covered' || selectedBlockKind === 'req_group') && orderedSelectedRelatedReqs.length" class="dd-section">
             <button v-for="req in orderedSelectedRelatedReqs" :key="req.ai_req_id"
                     class="echo-jump" data-testid="echo-jump" type="button"
@@ -776,6 +1242,13 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
             <span class="dd-module" data-testid="dd-module">{{ moduleOf(selectedReq) }}</span>
             <span class="dd-status" :class="'st-' + statusOf(selectedReq)">{{ STATUS_LABELS[statusOf(selectedReq)] || statusOf(selectedReq) }}</span>
           </div>
+          <div class="dd-nav">
+            <span class="dd-anno-no" data-testid="dd-anno-no">批注 {{ reqNumber(selectedReq) }}<template v-if="selectedReqIndex >= 0"> · {{ selectedReqIndex + 1 }}/{{ orderedReqs.length }}</template></span>
+            <span class="dd-nav-btns">
+              <button type="button" class="dd-nav-btn" data-testid="dd-prev" title="上一条批注" aria-keyshortcuts="K" @click="stepReq(-1)"><ChevronLeft :size="15" aria-hidden="true" /></button>
+              <button type="button" class="dd-nav-btn" data-testid="dd-next" title="下一条批注" aria-keyshortcuts="J" @click="stepReq(1)"><ChevronRight :size="15" aria-hidden="true" /></button>
+            </span>
+          </div>
           <h3 class="dd-title">{{ selectedReq.title }}</h3>
           <div class="dd-meta">{{ selectedReq.type }} · {{ selectedReq.priority }} · {{ selectedReq.source_section }}</div>
           <div v-if="(selectedReq.suspicion_reasons || []).length" class="dd-suspicion" data-testid="dd-suspicion">
@@ -783,6 +1256,9 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
           <div v-if="(selectedReq.consistency_flags || []).length" class="dd-consistency" data-testid="dd-consistency">
             ⇄ 全文档一致性：{{ (selectedReq.consistency_flags || []).join("；") }}
+          </div>
+          <div v-if="selectedReq.needs_reconfirmation" class="dd-reconfirmation" data-testid="dd-reconfirmation">
+            需复核：来源证据或解析内容已变化，历史裁决与覆盖值未沿用。
           </div>
 
           <div class="dd-legend">{{ viewMode === "pdf" ? "左侧原版页面为核对依据，右侧为解析结果" : "解析文本可能丢失原版字形与间距，请用原版核对来源" }}</div>
@@ -870,9 +1346,9 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
           </div>
           <textarea v-model="comment" class="dd-comment" data-testid="dd-comment" placeholder="审查意见（可选）" />
           <div class="dd-actions">
-            <button class="button primary" type="button" data-testid="dd-accept" :disabled="isSaving" @click="decide('accepted')"><Check :size="14" aria-hidden="true" />接受</button>
-            <button class="button reject" type="button" data-testid="dd-reject" :disabled="isSaving" @click="decide('rejected')"><Ban :size="14" aria-hidden="true" />拒绝</button>
-            <button class="button" type="button" data-testid="dd-discuss" :disabled="isSaving" @click="decide('needs_discussion')"><MessagesSquare :size="14" aria-hidden="true" />讨论</button>
+            <button class="button primary" type="button" data-testid="dd-accept" aria-keyshortcuts="A" :disabled="isSaving" @click="decide('accepted')"><Check :size="14" aria-hidden="true" />接受</button>
+            <button class="button reject" type="button" data-testid="dd-reject" aria-keyshortcuts="R" :disabled="isSaving" @click="decide('rejected')"><Ban :size="14" aria-hidden="true" />拒绝</button>
+            <button class="button" type="button" data-testid="dd-discuss" aria-keyshortcuts="D" :disabled="isSaving" @click="decide('needs_discussion')"><MessagesSquare :size="14" aria-hidden="true" />讨论</button>
           </div>
         </div>
       </aside>
@@ -886,6 +1362,11 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .doc-stats { display: flex; gap: 18px; font-size: 13px; color: #5c6675; }
 .doc-stats strong { color: #1a2233; }
 .omission-stat.warn strong { color: #5c6675; }
+/* 疑似遗漏统计即跳转入口 */
+.omission-jump { border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; }
+.omission-jump:disabled { cursor: default; }
+.omission-jump:not(:disabled):hover { color: #b45309; }
+.omission-jump:not(:disabled):hover strong { color: #b45309; text-decoration: underline; }
 .doc-message { padding: 6px 14px; font-size: 12px; color: #b45309; background: #fdf3e3; }
 .doc-body { display: grid; grid-template-columns: 1fr 360px; gap: 0; flex: 1; min-height: 0; }
 .doc-paper { overflow: auto; padding: 12px 18px; background: #ffffff; }
@@ -987,6 +1468,13 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .doc-detail { border-left: 1px solid #e6e9f0; overflow: auto; padding: 14px; background: #fafbfd; }
 .doc-detail-empty { color: #98a1b3; font-size: 13px; padding-top: 40px; text-align: center; }
 .dd-head { display: flex; justify-content: space-between; align-items: center; }
+/* 顺序过审导航：批注号 + 上一条/下一条 */
+.dd-nav { display: flex; justify-content: space-between; align-items: center; margin: 6px 0 2px; }
+.dd-anno-no { font-size: 12px; font-weight: 650; color: #1e41c9; }
+.dd-nav-btns { display: flex; gap: 4px; }
+.dd-nav-btn { width: 26px; height: 24px; border: 1px solid #e6e9f0; border-radius: 6px; background: #fff;
+  color: #5c6675; display: grid; place-items: center; cursor: pointer; }
+.dd-nav-btn:hover { background: #eef2ff; color: #1e41c9; }
 .dd-module { font-weight: 700; color: #1e41c9; }
 .dd-status { font-size: 12px; padding: 1px 8px; border-radius: 8px; background: #e6e9f0; }
 .dd-status.st-accepted { background: #e6f6ef; color: #1d8a5c; }
@@ -995,6 +1483,7 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .dd-meta { font-size: 12px; color: #7a8496; margin-bottom: 8px; }
 .dd-suspicion { font-size: 12px; color: #b06f12; background: #fdf3e3; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
 .dd-consistency { font-size: 12px; color: #1e41c9; background: #eef2ff; border-radius: 6px; padding: 4px 8px; margin-bottom: 8px; }
+.dd-reconfirmation { font-size: 12px; color: #8a4b12; background: #fff4dd; border: 1px solid #efd39b; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
 .dd-table { border-collapse: collapse; font-size: 12px; width: 100%; }
 .dd-table th, .dd-table td { border: 1px solid #e6e9f0; padding: 3px 8px; text-align: left; }
 .dd-table th { background: #fafbfd; font-weight: 600; }
@@ -1006,6 +1495,10 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion") {
 .dd-select, .dd-comment { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; font-size: 13px; }
 .dd-comment { min-height: 56px; margin-top: 8px; resize: vertical; }
 .dd-actions { display: flex; gap: 8px; margin-top: 10px; }
+.omission-action-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.omission-state { display: inline-flex; padding: 2px 7px; border-radius: 6px; font-size: 12px; color: #985f0b; background: #fff3d8; }
+.partial-status { color: #2563a6; }
+.partial-status.failed { color: #b45309; }
 
 /* iOS-style document workspace */
 .doc-review {

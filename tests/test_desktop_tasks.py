@@ -736,6 +736,82 @@ class DesktopTaskTests(unittest.TestCase):
 
 
 
+class ClarificationWorkbookImportTests(unittest.TestCase):
+    def test_legacy_workbook_is_rejected_before_any_answer_is_written(self) -> None:
+        import clarification_report
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "ai_requirements.jsonl").write_text(json.dumps({
+                "ai_req_id": "AIR-1",
+                "title": "Limit",
+                "source_section": "4",
+                "source_quote": "The meter shall expose the configured limit.",
+                "suspicion_reasons": ["原文数值未带全", "引用非逐字"],
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "failed_sections": 0, "coverage_pct": 80.0,
+            }), encoding="utf-8")
+            clarification_report.run_report(out)
+            workbook = load_workbook(out / clarification_report.REPORT_XLSX)
+            workbook["必答-问客户"].cell(2, 8, "25")
+            internal = workbook["必答-内部核对"]
+            columns = {str(cell.value): cell.column for cell in internal[1]}
+            internal.cell(
+                1,
+                columns["新处置(确认无误/确认有问题/暂缓)"],
+                "旧版处置列",
+            )
+            legacy = out / "legacy-filled.xlsx"
+            workbook.save(legacy)
+            workbook.close()
+
+            with self.assertRaisesRegex(ValueError, "缺少列"):
+                desktop_tasks.import_clarification_workbook_task(out, legacy)
+
+            self.assertFalse((out / clarification_report.ANSWERS_FILE).exists())
+            self.assertFalse((out / "clarification_check_states.jsonl").exists())
+
+    def test_one_import_closes_customer_and_internal_rows_then_recomputes_readiness(self) -> None:
+        import clarification_report
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "ai_requirements.jsonl").write_text(json.dumps({
+                "ai_req_id": "AIR-1",
+                "title": "Limit",
+                "module": "计量",
+                "source_section": "4",
+                "source_quote": "The meter shall expose the configured limit.",
+                "suspicion_reasons": ["原文数值未带全", "引用非逐字"],
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "failed_sections": 0, "coverage_pct": 80.0,
+            }), encoding="utf-8")
+            first = clarification_report.run_report(out)
+            workbook = load_workbook(out / clarification_report.REPORT_XLSX)
+            customer = workbook["必答-问客户"]
+            customer.cell(2, 8, "25")
+            customer.cell(2, 9, "是")
+            internal = workbook["必答-内部核对"]
+            columns = {str(cell.value): cell.column for cell in internal[1]}
+            internal.cell(2, columns["新处置(确认无误/确认有问题/暂缓)"], "确认无误")
+            internal.cell(2, columns["核对人"], "reviewer")
+            filled = out / "filled.xlsx"
+            workbook.save(filled)
+            workbook.close()
+
+            result = desktop_tasks.import_clarification_workbook_task(out, filled)
+
+        self.assertEqual(first["questions"], 2)
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["internal_imported"], 1)
+        self.assertEqual(result["questions"], 0)
+        self.assertEqual(result["readiness"]["verdict"], "READY")
+
+
 class ChainAndManifestTests(unittest.TestCase):
     """F1+F7：后端链编排 + run_manifest 显式状态账本。"""
 
@@ -744,18 +820,30 @@ class ChainAndManifestTests(unittest.TestCase):
             "atomize": "atomize+impl-v4",
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
-            "ai-extract": "ai-extract-v20+guards-v6+ai-verify-v2+impl-v3",
-            "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+impl-v2",
-            "functional-synthesis": "functional-synthesis-v5+impl-v2",
-            "requirements-analysis": "analyze-llm-v6+impl-v3",   # v3: 富化默认关闭并保留显式开关
-            "template-write": "template_writer/v1+impl-v2",
-            "clarification-report": "clarification/v3-gap-tier+impl-v3",   # v3: 遗漏候选档(0714 批次一)
-            "export-annotation-html": "doc_annotation_export/v8",
+            "ai-extract": "ai-extract-v20+guards-v6+ai-verify-v2+ai-supplement-v3-identity-preconditions+impl-v4",
+            "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
+            "functional-synthesis": "functional-synthesis-v5+ai-supplement-v3-identity-preconditions+impl-v2",
+            "requirements-analysis": "analyze-llm-v6+ai-supplement-v3-identity-preconditions+impl-v4",
+            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
+            "clarification-report": "clarification/v4-check-state+ai-supplement-v3-identity-preconditions+impl-v4",
+            "export-annotation-html": (
+                "doc_annotation_export/v9+annotation-translation-v2-segment-fallback"
+                "+annotation-translation-guards-v1+ai-supplement-v3-identity-preconditions"
+            ),
         }
         self.assertEqual(
             {stage: desktop_tasks.stage_producer(stage) for stage in expected},
             expected,
         )
+
+    def test_clarification_stage_tracks_all_resolution_sidecars(self) -> None:
+        inputs = set(desktop_tasks.STAGE_INPUTS["clarification-report"])
+        self.assertTrue({
+            "clarification_answers.jsonl",
+            "clarification_check_states.jsonl",
+            "omission_states.jsonl",
+            "ai_review_states.jsonl",
+        }.issubset(inputs))
 
     def test_assemble_producer_tracks_enrich_guards_version(self) -> None:
         import spec_enrich
@@ -766,6 +854,19 @@ class ChainAndManifestTests(unittest.TestCase):
 
         self.assertNotEqual(current, changed)
         self.assertIn("enrich-guards-vNEXT", changed)
+
+    def test_annotation_producer_tracks_translation_guards_version(self) -> None:
+        import doc_annotation_export
+
+        current = desktop_tasks.stage_producer("export-annotation-html")
+        with patch.object(
+                doc_annotation_export,
+                "ANNOTATION_TRANSLATION_GUARDS_VERSION",
+                "annotation-translation-guards-vNEXT"):
+            changed = desktop_tasks.stage_producer("export-annotation-html")
+
+        self.assertNotEqual(current, changed)
+        self.assertIn("annotation-translation-guards-vNEXT", changed)
 
     def test_legacy_v7_annotation_export_is_not_reusable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -995,6 +1096,87 @@ class ChainAndManifestTests(unittest.TestCase):
 
         export_task.assert_called_once_with(
             out.resolve(), route="stub", layout_mode="pdf_original")
+
+    def test_chain_retries_partial_translation_export_until_clean_run(self) -> None:
+        summaries = [
+            {"unresolved": 1, "failed_calls": 0},
+            {"unresolved": 0, "failed_calls": 1},
+            {"unresolved": 0, "failed_calls": 0},
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+
+            def run_export(*_args, **_kwargs):
+                path = out / "document_annotation.html"
+                path.write_text("annotation", encoding="utf-8")
+                return {
+                    "kind": "annotation_html",
+                    "path": str(path),
+                    "route": "openai_compatible",
+                    "written": [str(path)],
+                    "translations": summaries.pop(0),
+                }
+
+            with mock.patch.object(
+                    desktop_tasks, "export_annotation_html_task",
+                    side_effect=run_export) as export_task:
+                desktop_tasks.chain_task(
+                    out, stages=["export-annotation-html"], route="openai_compatible")
+                first = desktop_tasks.read_run_manifest(out)["stages"]["export-annotation-html"]
+                desktop_tasks.chain_task(
+                    out, stages=["export-annotation-html"], route="openai_compatible")
+                second = desktop_tasks.read_run_manifest(out)["stages"]["export-annotation-html"]
+                desktop_tasks.chain_task(
+                    out, stages=["export-annotation-html"], route="openai_compatible")
+                third = desktop_tasks.read_run_manifest(out)["stages"]["export-annotation-html"]
+
+        self.assertEqual(first["status"], "partial")
+        self.assertEqual(second["status"], "partial")
+        self.assertEqual(third["status"], "ok")
+        self.assertEqual(export_task.call_count, 3)
+
+    def test_ai_extract_with_failed_sections_is_non_reusable(self) -> None:
+        self.assertEqual(
+            desktop_tasks._stage_completion_status("ai-extract", {"failed_sections": 1}),
+            "partial",
+        )
+        self.assertEqual(
+            desktop_tasks._stage_completion_status(
+                "ai-extract", {"quality": {"failed_sections": 1}}
+            ),
+            "partial",
+        )
+        self.assertEqual(
+            desktop_tasks._stage_completion_status("ai-extract", {"failed_sections": 0}),
+            "ok",
+        )
+
+    def test_single_annotation_command_records_incomplete_translation_as_partial(self) -> None:
+        for translations in (
+                {"unresolved": 1, "failed_calls": 0},
+                {"unresolved": 0, "failed_calls": 1}):
+            with self.subTest(translations=translations), tempfile.TemporaryDirectory() as td:
+                out = Path(td)
+                path = out / "document_annotation.html"
+                payload = {
+                    "kind": "annotation_html",
+                    "path": str(path),
+                    "route": "openai_compatible",
+                    "written": [str(path)],
+                    "translations": translations,
+                }
+                with mock.patch.object(
+                        desktop_tasks, "export_annotation_html_task",
+                        return_value=payload), redirect_stdout(io.StringIO()):
+                    exit_code = desktop_tasks.main([
+                        "export-annotation-html", "--out", str(out),
+                        "--route", "openai_compatible",
+                    ])
+
+                entry = desktop_tasks.read_run_manifest(out)["stages"]["export-annotation-html"]
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(entry["status"], "partial")
 
     def test_chain_unknown_stage_and_missing_template_fail_fast(self) -> None:
         with tempfile.TemporaryDirectory() as td:

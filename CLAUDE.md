@@ -1,7 +1,7 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
-> 状态快照截至 2026-07-15，里程碑推进后请同步更新本文件。
+> 状态快照截至 2026-07-19，里程碑推进后请同步更新本文件。
 
 ## 项目是什么
 
@@ -26,10 +26,19 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 真实测试文档：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.docx`（机器相关路径，换机器需调整）
 - 真实测试 PDF：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.pdf`（同目录文字层 PDF；旧 `D:\Codex\abnt_converted.pdf` 已失效）
 - **Blue Book Ed.16 两 PDF**（P2 行为 RAG 语料，版权文件不进仓）：同目录 `Blue-Book-Ed-16-part-{1,2}-V1.0.pdf`；索引编译 `python -m blue_book_ingest --pdf <p1> --pdf <p2> --out out/bluebook`（约 2 分钟，产物 gitignored）
-- 测试命令：`python -m unittest discover -s tests`（2026-07-15：**1190 tests** + ui `vitest 77` + vue-tsc；Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时 GUI 测试 skip）。0 skip 需设 env `RATOMIZER_HISTORICAL_SAMPLE="C:/Users/YYHwudi/Desktop/Canna-29/eval_assets/test18_functional_synthesis_sample.json"`（历史守恒样本含客户词面已外置,不进仓;不设则 1 skip 如实降级）
+- 测试命令：`python -m unittest discover -s tests`（2026-07-19：**1341 tests** + ui `vitest 120` + vue-tsc；Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时 GUI 测试 skip）。0 skip 需设 env `RATOMIZER_HISTORICAL_SAMPLE="C:/Users/YYHwudi/Desktop/Canna-29/eval_assets/test18_functional_synthesis_sample.json"`（历史守恒样本含客户词面已外置,不进仓;不设则 1 skip 如实降级）
 - golden 基线输出 `out/abnt_nbr_16968_atomizer_v5/` 已于 2026-07-04 重新生成（真实 ABNT docx + **三个 --kb + domain-pack**，缺 KB 会假漂移）；测试用例只做 unittest.TestCase（**pytest 未装**，模块级 `def test_*` 会被静默跳过）
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
+
+## 重大更新（2026-07-19）——审查并行化与遗漏闭环（分支待合并）
+
+- **运行中增量审查**：AI 抽取逐终态章节发布 `ai_requirements.partial.json`，前端按章节进度节流刷新需求与 PDF 标记，复用已加载页图；早期裁决绑定需求 id + 来源/审查内容指纹，内容变化后保留历史但强制复核。final 新增 `ai_requirements.meta.json` 绑定 `blocks.jsonl` 代际，stale partial/final 不得跨文档回退。
+- **澄清闭环**：必答拆为问客户/内部核对，内部核对用 `verified_ok / issue_confirmed / deferred` 审计状态；只有证据指纹仍匹配的 `verified_ok` 和客户答复可消解就绪门/进入分析权威输入。就绪门分开统计阻塞项、普通问题、内部核对、覆盖率与失败章节；旧工作簿在写入前校验新版列。
+- **遗漏可行动**：`omission_states.jsonl` 记录非需求/确认遗漏/已补抽；定点补抽只跑目标章节并走原抽取护栏，补丁以策略、原需求、全部来源块和前置条件指纹约束，版本为 `ai-supplement-v3-identity-preconditions`。补抽会刷新 AI final 代际、质量覆盖率、merged spec 与下游输入指纹；full/targeted/下游消费共享跨进程 lease。
+- **翻译降级与缓存纪律**：批量失败后按单条、再按句段重试，每级过同一数字/编码护栏；旧 accepted 译文先以当前 guards 零调用复验，迁移前不展示。存在 unresolved/failed call 时 `export-annotation-html` manifest 记 `partial`，下次 chain 必须重跑；producer 动态纳入翻译策略与 guards 版本。
+- **专家操作效率**：文档审查支持 `j/k` 顺序导航与 `a/r/d` 裁决，输入框/IME/重复键防误触；同输出目录 API 重连保留选中项和按 requirement/block id 暂存的评论、模块、归属、遗漏备注，异步响应均有 client/generation 护栏，结构化 409 会刷新当前证据。
+- **验证**：历史样本启用的后端 `1341 tests`（0 skip）、前端 `vitest 120`、`vue-tsc + vite build`、Python/Node 语法检查与 `git diff --check` 全部通过；golden 文件未修改。
 
 ## 重大更新（2026-06-27）
 

@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import ai_extract
 
@@ -1454,6 +1455,37 @@ class PromptV5Tests(unittest.TestCase):
 
 
 class QualityReportTests(unittest.TestCase):
+    def test_section_failure_publishes_terminal_non_reusable_snapshot(self) -> None:
+        from llm_client import LLMClientConfig, LLMConnectionError
+
+        config = LLMClientConfig(base_url="http://x", model="m", max_tokens=8192)
+
+        def failed_chat(*_args, **_kwargs):
+            raise LLMConnectionError("endpoint unavailable")
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ai_extract, "config_for_route", return_value=config), \
+                patch.object(ai_extract, "chat_json", side_effect=failed_chat):
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(json.dumps({
+                "block_id": "B1", "section_path": ["4"],
+                "text": "The meter shall do A.", "requirement_like": True,
+                "noise": False,
+            }) + "\n", encoding="utf-8")
+
+            result = ai_extract.run_ai_extract(
+                out, route="openai_compatible", self_check=False
+            )
+            partial = ai_extract.read_partial_snapshot(out / ai_extract.AI_REQUIREMENTS_PARTIAL)
+            metadata = json.loads(
+                (out / ai_extract.AI_REQUIREMENTS_META).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result["failed_sections"], 1)
+        self.assertTrue(partial["complete"])
+        self.assertTrue(partial["failed"])
+        self.assertEqual(metadata["failed_sections"], 1)
+
     def test_run_ai_extract_writes_quality_report_with_coverage(self) -> None:
         from llm_client import LLMClientConfig
         cfg = LLMClientConfig(base_url="http://x", model="m", max_tokens=8192)

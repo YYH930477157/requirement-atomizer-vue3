@@ -67,11 +67,13 @@
           <div class="app-actions">
             <button class="button" type="button" data-testid="action-open-document" @click="handleOpenDocument"><FolderOpen :size="15" aria-hidden="true" /><span class="button-label">导入文档</span></button>
             <button class="button" type="button" data-testid="action-select-output-dir" @click="handleOpenOutput"><FolderOutput :size="15" aria-hidden="true" /><span class="button-label">选择输出目录</span></button>
+            <span class="action-divider" aria-hidden="true"></span>
             <label class="llm-toggle">
               <input v-model="llmMode" type="checkbox" data-testid="llm-mode-toggle" />
               <span class="llm-track" aria-hidden="true"></span>
               <Sparkles :size="14" aria-hidden="true" /><span>LLM 富化</span>
             </label>
+            <span class="action-divider" aria-hidden="true"></span>
             <button class="button" type="button" data-testid="action-test-pipeline" :disabled="isRunning" @click="handleRunPipeline({ llmReviewLimit: TEST_LLM_REVIEW_LIMIT })"><FlaskConical :size="15" aria-hidden="true" /><span class="button-label">测试运行</span></button>
             <button class="button primary" type="button" data-testid="action-run-pipeline" :disabled="isRunning" @click="() => handleRunPipeline()">
               <RefreshCw v-if="isRunning" class="spin" :size="15" aria-hidden="true" />
@@ -80,35 +82,42 @@
             </button>
             <button v-if="activeNav === 'document'" class="button icon-tool" type="button" data-testid="action-export-html" aria-label="导出批注 HTML" title="导出批注 HTML" @click="handleExportAnnotationHtml"><Download :size="16" aria-hidden="true" /></button>
             <button v-if="activeNav === 'document'" class="button icon-tool" type="button" data-testid="action-import-decisions" aria-label="导入裁决" title="导入裁决" @click="handleImportDecisions"><Upload :size="16" aria-hidden="true" /></button>
-            <button v-if="activeNav === 'document'" class="button icon-tool" type="button" data-testid="action-import-answers" aria-label="导入澄清答复" title="导入澄清答复" @click="handleImportAnswers"><MessageSquareReply :size="16" aria-hidden="true" /></button>
+            <button v-if="activeNav === 'document'" class="button icon-tool" type="button" data-testid="action-import-answers" aria-label="导入澄清处置" title="导入澄清处置" @click="handleImportAnswers"><MessageSquareReply :size="16" aria-hidden="true" /></button>
           </div>
         </header>
 
         <!-- 统一消息 testid:与审查页 api-message 互斥渲染,任意页面都能拿到运行反馈 -->
         <div v-if="apiMessage && activeNav !== 'review'" class="global-message" data-testid="api-message"
-             role="status" @click="apiMessage = ''"><CircleHelp :size="15" aria-hidden="true" />{{ apiMessage }}<X class="global-message-close" :size="14" aria-hidden="true" /></div>
+             role="status">
+          <CircleHelp :size="15" aria-hidden="true" class="global-message-icon" />
+          <span class="global-message-text" :class="{ clamped: !apiMessageExpanded }">{{ apiMessage }}</span>
+          <button v-if="apiMessage.length > 120" class="global-message-toggle" type="button"
+                  data-testid="api-message-toggle" @click.stop="apiMessageExpanded = !apiMessageExpanded">{{ apiMessageExpanded ? "收起" : "详情" }}</button>
+          <button class="global-message-close" type="button" aria-label="关闭消息" title="关闭消息"
+                  @click.stop="apiMessage = ''"><X :size="14" aria-hidden="true" /></button>
+        </div>
 
         <section v-if="activeNav === 'run'" class="run-home" data-testid="run-paths-panel">
           <div class="ov-stats">
-            <div class="ov-stat">
+            <div class="ov-stat" :class="{ 'is-empty': runOverview.atoms == null }">
               <div class="k">原子需求</div>
-              <div class="v">{{ runOverview.atoms != null ? runOverview.atoms.toLocaleString("zh-CN") : "—" }}</div>
+              <div class="v">{{ runOverview.atoms != null ? runOverview.atoms.toLocaleString("zh-CN") : "待运行" }}</div>
               <div class="d flat">结构化字段确定性抽取</div>
             </div>
-            <div class="ov-stat">
+            <div class="ov-stat" :class="{ 'is-empty': runOverview.aiReqs == null }">
               <div class="k">AI 行为需求</div>
-              <div class="v">{{ runOverview.aiReqs != null ? runOverview.aiReqs : "—" }}</div>
-              <div class="d up">{{ runOverview.selfCheck != null ? `↑ ${runOverview.selfCheck} 条来自自检补充` : "含自检收敛补充" }}</div>
+              <div class="v">{{ runOverview.aiReqs != null ? runOverview.aiReqs : "待运行" }}</div>
+              <div class="d" :class="runOverview.selfCheck != null ? 'up' : 'flat'">{{ runOverview.selfCheck != null ? `↑ ${runOverview.selfCheck} 条来自自检补充` : "含自检收敛补充" }}</div>
             </div>
-            <div class="ov-stat">
+            <div class="ov-stat" :class="{ 'is-empty': runOverview.coverage == null }">
               <div class="k">章节覆盖率</div>
-              <div class="v">{{ runOverview.coverage != null ? `${runOverview.coverage.toFixed(1)}%` : "—" }}</div>
-              <div class="d up">{{ runOverview.chapters || "跑完整链后统计" }}</div>
+              <div class="v">{{ runOverview.coverage != null ? `${runOverview.coverage.toFixed(1)}%` : "待运行" }}</div>
+              <div class="d" :class="runOverview.coverage != null ? 'up' : 'flat'">{{ runOverview.chapters || "跑完整链后统计" }}</div>
             </div>
-            <div class="ov-stat">
+            <div class="ov-stat" :class="{ 'is-empty': runOverview.questions == null }">
               <div class="k">必答澄清</div>
-              <div class="v">{{ runOverview.questions != null ? runOverview.questions : "—" }}</div>
-              <div class="d" :class="runOverview.verdict === 'READY' ? 'up' : 'warn'">
+              <div class="v">{{ runOverview.questions != null ? runOverview.questions : "待运行" }}</div>
+              <div class="d" :class="runOverview.verdict ? (runOverview.verdict === 'READY' ? 'up' : 'warn') : 'flat'">
                 {{ runOverview.verdict ? `就绪判定:${runOverview.verdict}` : "评审会前必答清单" }}</div>
             </div>
           </div>
@@ -117,7 +126,7 @@
             <div class="board-head">
               <h4>交付物流水线</h4>
               <span>run_manifest 台账 · 中断可续跑
-                <em class="path-hint" data-testid="selected-input-path">{{ currentInputPath || "尚未选择文档" }}</em>
+                <em class="path-hint" data-testid="selected-input-path" :title="currentInputPath || undefined">{{ currentInputPath || "尚未选择文档" }}</em>
               </span>
             </div>
             <div class="run-meter" data-testid="run-progress">
@@ -126,6 +135,7 @@
                 <strong>{{ runProgress }}%</strong>
               </div>
               <div class="run-meter-detail" data-testid="run-progress-detail">{{ runProgressDetail }}</div>
+              <div v-if="runStallHint" class="run-meter-stall" data-testid="run-stall-hint">{{ runStallHint }}</div>
               <div class="run-meter-track">
                 <div class="run-meter-fill" :style="{ width: `${runProgress}%` }"></div>
               </div>
@@ -146,7 +156,9 @@
                   <span class="stage-signal" aria-hidden="true"></span>
                 </span>
                 <strong class="stage-status">{{ card.statusText }}</strong>
-                <small class="stage-detail">{{ card.detail }}</small>
+                <small v-if="card.detail && card.detail !== card.statusText" class="stage-detail">{{ card.detail }}</small>
+                <small v-if="card.status === 'running' && card.elapsedS >= 10" class="stage-elapsed">已用时 {{ formatDuration(card.elapsedS) }}</small>
+                <small v-if="card.stalled" class="stage-stall" :data-testid="`run-stall-${card.key}`">已 {{ formatDuration(card.idleS) }} 无新进度 · 等待 LLM 响应</small>
                 <span
                   class="stage-bar"
                   :class="{ 'is-indeterminate': card.status === 'running' && card.percent <= 0 }"
@@ -172,7 +184,12 @@
                 <button class="link-button" type="button" @click="handleNavAction('review')">进入工作台 <ChevronRight :size="14" aria-hidden="true" /></button>
               </div>
               <div class="preview-wrap">
-                <table class="preview-table">
+                <div v-if="!reviewPreviewRows.length" class="preview-empty">
+                  <ClipboardCheck :size="22" aria-hidden="true" />
+                  <p>暂无待裁决需求</p>
+                  <span>运行管线后，高置信需求会出现在这里，点击进入工作台裁决</span>
+                </div>
+                <table v-else class="preview-table">
                   <thead><tr><th>编号</th><th>需求</th><th>模块</th><th>置信度</th><th>状态</th></tr></thead>
                   <tbody>
                     <tr v-for="row in reviewPreviewRows" :key="row.id" @click="handleNavAction('review')">
@@ -189,7 +206,7 @@
             <div class="panel-card">
               <div class="board-head">
                 <h4>最新交付物</h4>
-                <span class="path-hint" data-testid="selected-output-dir">{{ currentOutputDir || "尚未选择输出目录" }}</span>
+                <span class="path-hint" data-testid="selected-output-dir" :title="currentOutputDir || undefined">{{ currentOutputDir || "尚未选择输出目录" }}</span>
               </div>
               <div class="dl-files" data-testid="deliverable-html">
                 <div v-for="f in DELIVERABLE_FILES" :key="f.key" class="dl-file">
@@ -396,10 +413,11 @@
           </aside>
         </section>
         </template>
-        <DocumentReview v-else-if="activeNav === 'document'" :client="apiClient" :active="activeNav === 'document'" />
+        <DocumentReview v-else-if="activeNav === 'document'" :client="apiClient" :session-key="reviewSessionKey"
+                        :active="activeNav === 'document'" :refresh-token="documentRefreshToken" />
 
         <footer class="status-bar">
-          <span>输出目录：{{ currentOutputDir || "尚未选择输出目录" }}</span>
+          <span :title="currentOutputDir || undefined">输出目录：{{ currentOutputDir ? tailPath(currentOutputDir) : "尚未选择输出目录" }}</span>
           <span class="kbd-hints"><ShieldCheck :size="13" aria-hidden="true" />本地审查会话</span>
         </footer>
       </main>
@@ -662,8 +680,12 @@ const activeNavLabel = computed(
   () => phaseNavItems.find((i) => i.id === activeNav.value)?.label || "审查")
 const llmMode = ref(false)
 const apiClient = ref<RequirementApiClient | null>(null)
+const reviewSessionKey = ref("")
+const documentRefreshToken = ref(0)
 let apiSessionLoadGeneration = 0
 const apiMessage = ref("")
+const apiMessageExpanded = ref(false)
+watch(apiMessage, () => { apiMessageExpanded.value = false })
 const currentInputPath = ref("")
 const currentOutputDir = ref("")
 const isRunning = ref(false)
@@ -771,6 +793,25 @@ function defaultStageStates(): Record<RunStageKey, RunStageState> {
   ])) as Record<RunStageKey, RunStageState>
 }
 
+// 单章 LLM 调用可能长达数分钟且无中间进度事件——用"距上次事件时长"区分"慢"与"死"
+const STALL_THRESHOLD_S = 60
+const nowTick = ref(Date.now())
+const lastProgressEventAt = ref(0)
+const stageStartedAt = ref<Record<string, number>>({})
+let heartbeatTimer: ReturnType<typeof setInterval> | undefined
+
+function formatDuration(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  if (minutes <= 0) return `${seconds} 秒`
+  return `${minutes} 分 ${String(seconds).padStart(2, "0")} 秒`
+}
+
+function tailPath(p: string, segments = 2) {
+  const parts = p.split(/[\\/]+/).filter(Boolean)
+  return parts.length <= segments ? p : `…\\${parts.slice(-segments).join("\\")}`
+}
+
 const runStageStates = ref<Record<RunStageKey, RunStageState>>(defaultStageStates())
 const isCompletedStage = (status: RunStageStatus) => status === "ok" || status === "skipped"
 
@@ -787,26 +828,46 @@ const runStageCards = computed(() => RUN_STAGE_DEFS.map((item, index) => {
   const state = runStageStates.value[item.key]
   const nextDefinition = RUN_STAGE_DEFS[index + 1]
   const nextState = nextDefinition ? runStageStates.value[nextDefinition.key] : null
+  const startedAt = stageStartedAt.value[item.key] || 0
+  const elapsedS = state.status === "running" && startedAt
+    ? Math.max(0, Math.floor((nowTick.value - startedAt) / 1000)) : 0
+  const idleS = state.status === "running" && lastProgressEventAt.value
+    ? Math.max(0, Math.floor((nowTick.value - lastProgressEventAt.value) / 1000)) : 0
   return {
     ...item,
     ...state,
     statusText: stageStatusText(state),
     relayStatus: nextState ? relayConnectorStatus(state, nextState) : null,
+    elapsedS,
+    idleS,
+    stalled: idleS >= STALL_THRESHOLD_S,
   }
 }))
 
 function stageStatusText(state: RunStageState) {
   if (state.status === "ok") return "已完成"
   if (state.status === "skipped") return "已完成，已跳过"
-  if (state.status === "running") return `运行中，进度${Math.round(state.percent)}%`
+  if (state.status === "running") return `运行中 ${Math.round(state.percent)}%`
   if (state.status === "failed") return "失败"
   if (state.status === "disabled") return "未启用"
   return "待完成"
 }
 
+const runStallHint = computed(() => {
+  const stalledCard = runStageCards.value.find((card) => card.stalled)
+  if (!stalledCard) return ""
+  return `「${stalledCard.label}」已 ${formatDuration(stalledCard.idleS)} 无新进度——单章 LLM 调用可能较慢，仍在等待响应`
+})
+
 function setRunStageState(key: string | undefined, patch: Partial<RunStageState>) {
   if (!key || !(key in runStageStates.value)) return
   const stageKey = key as RunStageKey
+  if (patch.status === "running") {
+    lastProgressEventAt.value = Date.now()
+    if (runStageStates.value[stageKey].status !== "running") {
+      stageStartedAt.value = { ...stageStartedAt.value, [stageKey]: Date.now() }
+    }
+  }
   runStageStates.value = {
     ...runStageStates.value,
     [stageKey]: {
@@ -829,9 +890,11 @@ function failRunningStages(detail: string) {
 }
 
 let lastChainStep = ""   // 链步跟踪:步名变化 → 上一阶段卡片翻绿(后端完成事件不带 status)
+let lastAiExtractCompleted = -1
 
 function resetRunStageBoard() {
   lastChainStep = ""
+  lastAiExtractCompleted = -1
   const next = defaultStageStates()
   if (!runStages.value.llmReview) next["llm-review"] = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.aiExtract) {
@@ -866,6 +929,8 @@ function startProgressDemo() {
   stopProgressDemo()
   lastChainStep = ""
   runStageStates.value = defaultStageStates()
+  stageStartedAt.value = {}
+  lastProgressEventAt.value = Date.now()
   runProgress.value = 0
   runProgressDetail.value = "仅预览界面动效，不调用后端"
   isRunning.value = true
@@ -1078,6 +1143,9 @@ const knowledgeMatches = computed(() => {
 })
 
 onMounted(() => {
+  heartbeatTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 5000)
   if (new URLSearchParams(window.location.search).get("demoProgress") === "1") {
     startProgressDemo()
     return
@@ -1088,7 +1156,10 @@ onMounted(() => {
   void loadLlmSettings()
 })
 
-onUnmounted(stopProgressDemo)
+onUnmounted(() => {
+  stopProgressDemo()
+  if (heartbeatTimer) clearInterval(heartbeatTimer)
+})
 
 function handleNavAction(item: PhaseNavId) {
   if (item === "settings") {
@@ -1334,9 +1405,9 @@ async function handleOpenOutput() {
   if (window.ratomizerDesktop?.selectOutputDir) {
     const path = await window.ratomizerDesktop.selectOutputDir()
     if (path) {
-      disconnectReviewSession()
+      if (!isCurrentOutputSession(path)) disconnectReviewSession()
       currentOutputDir.value = path
-      apiMessage.value = `已选择输出目录：${path}`
+      apiMessage.value = `已选择输出目录：${tailPath(path)}`
       runStage.value = "待运行"
       try {
         const payload = await window.ratomizerDesktop.getOutputSummary?.({ outDir: path })
@@ -1349,17 +1420,20 @@ async function handleOpenOutput() {
       }
 
       if (!window.ratomizerDesktop.startApiSession) {
-        apiMessage.value = `已选择输出目录：${path}；审查会话未连接，裁决已禁用`
+        disconnectReviewSession()
+        apiMessage.value = `已选择输出目录：${tailPath(path)}；审查会话未连接，裁决已禁用`
         return
       }
       try {
         const session = await window.ratomizerDesktop.startApiSession(path)
         if (!session) {
-          apiMessage.value = `已选择输出目录：${path}；审查会话未连接，裁决已禁用`
+          disconnectReviewSession()
+          apiMessage.value = `已选择输出目录：${tailPath(path)}；审查会话未连接，裁决已禁用`
           return
         }
         await loadFromSession(session)
       } catch (error) {
+        disconnectReviewSession()
         const reason = error instanceof Error ? error.message : "本地 API 启动失败"
         apiMessage.value = `无法连接输出目录的审查会话：${reason}；裁决已禁用`
       }
@@ -1627,6 +1701,10 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
     return
   }
   if (event.stage === "ai_extract") {
+    if (completed !== lastAiExtractCompleted) {
+      lastAiExtractCompleted = completed
+      documentRefreshToken.value += 1
+    }
     setRunStageState("ai-extract", { status: percent >= 100 ? "ok" : "running", percent, detail: total ? `${completed}/${total} 章节` : "逐章节调用 LLM" })
     runStage.value = total ? `AI 抽取 ${completed}/${total} 章节` : "AI 抽取"
     runProgress.value = percent
@@ -1685,7 +1763,10 @@ async function handleImportAnswers() {
   try {
     const payload = await window.ratomizerDesktop.importClarificationAnswers({ outDir: currentOutputDir.value })
     if (payload.canceled) return
-    apiMessage.value = `已导入澄清答复 ${Number(payload.imported ?? 0)} 条——重跑「软件需求分析」后答复将作为权威输入生效`
+    const readiness = objectValue(payload.readiness) as { verdict?: string } | null
+    apiMessage.value = `已导入客户答复 ${Number(payload.imported ?? 0)} 条、内部核对 ${Number(payload.internal_imported ?? 0)} 条` +
+      (readiness?.verdict ? `；当前就绪判定：${readiness.verdict}` : "") +
+      "——客户答复将在下次软件需求分析时作为权威输入生效"
   } catch (error) {
     apiMessage.value = error instanceof Error ? error.message : "导入澄清答复失败"
   }
@@ -1707,27 +1788,42 @@ async function handleImportDecisions() {
 }
 
 async function loadInitialApiSession() {
-  const session = await window.ratomizerDesktop?.getApiSession?.()
-  if (session) {
-    await loadFromSession(session)
+  // 后端（PyInstaller exe）启动需要数秒——轮询等它就绪，而不是首查 null 就放弃
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const session = await window.ratomizerDesktop?.getApiSession?.()
+    if (session) {
+      try {
+        await loadFromSession(session)
+      } catch {
+        // loadFromSession 已把原因写进 apiMessage
+      }
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
   }
 }
 
 async function loadFromSession(session: { baseUrl: string; token: string; outputDir?: string }) {
-  disconnectReviewSession()
-  const generation = apiSessionLoadGeneration
-  apiMessage.value = session.outputDir ? `正在连接输出目录：${session.outputDir}` : "正在连接审查会话"
+  const nextSessionKey = reviewSessionIdentity(session)
+  const sameSession = Boolean(nextSessionKey && nextSessionKey === reviewSessionKey.value)
+  const generation = ++apiSessionLoadGeneration
+  if (!sameSession) clearReviewSessionState()
+  apiMessage.value = session.outputDir ? `正在连接输出目录：${tailPath(session.outputDir)}` : "正在连接审查会话"
   currentOutputDir.value = session.outputDir || currentOutputDir.value
   const client = new RequirementApiClient({ baseUrl: session.baseUrl, token: session.token })
   try {
     const rows = (await client.loadRequirements()).map(mapBackendRequirement)
     if (generation !== apiSessionLoadGeneration) return
+    reviewSessionKey.value = nextSessionKey
     apiClient.value = client
     requirementRows.value = rows
-    selectedRequirementId.value = rows[0]?.id ?? ""
-    apiMessage.value = session.outputDir ? `已连接输出目录：${session.outputDir}` : "已连接审查会话"
+    if (!sameSession || !rows.some((row) => row.id === selectedRequirementId.value)) {
+      selectedRequirementId.value = rows[0]?.id ?? ""
+    }
+    apiMessage.value = session.outputDir ? `已连接输出目录：${tailPath(session.outputDir)}` : "已连接审查会话"
   } catch (error) {
     if (generation === apiSessionLoadGeneration) {
+      clearReviewSessionState()
       apiMessage.value = `${error instanceof Error ? error.message : "需求加载失败"}；裁决已禁用`
     }
     throw error
@@ -1735,35 +1831,56 @@ async function loadFromSession(session: { baseUrl: string; token: string; output
   try {
     // 复盘建议为附属信息：加载失败/老目录缺文件不影响连接流程
     const insights = await client.loadReviewInsights()
+    if (generation !== apiSessionLoadGeneration) return
     reviewInsights.value = Array.isArray(insights?.suggestions)
       ? insights.suggestions.map((s) => String(s)) : []
   } catch {
-    reviewInsights.value = []
+    if (generation === apiSessionLoadGeneration) reviewInsights.value = []
   }
 }
 
 function disconnectReviewSession() {
   apiSessionLoadGeneration += 1
+  clearReviewSessionState()
+}
+
+function clearReviewSessionState() {
   apiClient.value = null
+  reviewSessionKey.value = ""
   requirementRows.value = []
   selectedRequirementId.value = ""
   reviewInsights.value = []
 }
 
 async function refreshAfterDesktopTask(outDir: string): Promise<string> {
-  disconnectReviewSession()
   try {
     const session = await window.ratomizerDesktop?.startApiSession?.(outDir)
     if (session) {
       await loadFromSession(session)
     } else {
+      disconnectReviewSession()
       return formatApiReconnectWarning(outDir, "本地 API 未返回审查会话，裁决已禁用")
     }
     return ""
   } catch (error) {
+    disconnectReviewSession()
     const message = error instanceof Error ? error.message : String(error)
     return formatApiReconnectWarning(outDir, message)
   }
+}
+
+function reviewSessionIdentity(session: { baseUrl: string; outputDir?: string }) {
+  const output = String(session.outputDir || "").trim()
+  if (output) return `output:${normalizeOutputIdentity(output)}`
+  return `api:${String(session.baseUrl || "").trim().replace(/\/+$/, "").toLowerCase()}`
+}
+
+function normalizeOutputIdentity(path: string) {
+  return path.trim().replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase()
+}
+
+function isCurrentOutputSession(path: string) {
+  return reviewSessionKey.value === `output:${normalizeOutputIdentity(path)}`
 }
 
 function formatApiReconnectWarning(outDir: string, reason: string) {
@@ -2865,6 +2982,15 @@ tbody tr.selected {
   flex-wrap: wrap;
 }
 
+/* 顶栏三组动作的分隔：文件操作 | 模式开关 | 运行 */
+.action-divider {
+  width: 1px;
+  height: 20px;
+  background: #e6e9f0;
+  margin: 0 2px;
+  flex: none;
+}
+
 .run-dashboard {
   display: grid;
   grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
@@ -2933,6 +3059,14 @@ tbody tr.selected {
 .ov-stat .d.flat { color: #98a1b3; }
 .ov-stat .d.warn { color: #cc8925; }
 
+/* 空态：未运行时数值降级为浅灰小字，不再用整排大"—"抢占首屏 */
+.ov-stat.is-empty .v {
+  font-size: 15px;
+  font-weight: 500;
+  color: #c3c9d6;
+  padding: 6px 0 5px;
+}
+
 .flow-card,
 .panel-card {
   background: #ffffff;
@@ -2987,6 +3121,26 @@ tbody tr.selected {
 
 .preview-wrap { overflow-x: auto; }
 
+.preview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 44px 16px;
+  color: #b6bdcb;
+  text-align: center;
+}
+
+.preview-empty p {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #5c6675;
+}
+
+.preview-empty span { font-size: 12px; }
+
 .preview-table {
   border-collapse: collapse;
   width: 100%;
@@ -3013,7 +3167,7 @@ tbody tr.selected {
 .preview-table tbody tr { cursor: pointer; }
 .preview-table tbody tr:hover td { background: #fafbfd; }
 .preview-table tr:last-child td { border-bottom: 0; }
-.preview-table .rid { font-family: Consolas, monospace; font-size: 12px; color: #5c6675; white-space: nowrap; }
+.preview-table .rid { font-family: Consolas, monospace; font-size: 12px; color: #5c6675; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-table .req-cell { max-width: 360px; }
 .preview-table .num { font-variant-numeric: tabular-nums; }
 
@@ -3211,14 +3365,19 @@ tbody tr.selected {
 
 .run-stage-board {
   min-width: 0;
-  display: flex;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 8px;
-  overflow-x: auto;
   padding-bottom: 2px;
 }
 
-.run-stage-board .run-stage-card {
-  flex: 1 0 118px;
+/* 窄窗口两行排布（每行 5 张），仍不横向滚动 */
+@media (max-width: 1240px) {
+  .run-stage-board {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
 }
 
 .board-head {
@@ -3257,7 +3416,7 @@ tbody tr.selected {
 
 .stage-name {
   color: #242c3d;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
@@ -3280,6 +3439,31 @@ tbody tr.selected {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.stage-elapsed {
+  color: #7f8aa0;
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+/* 停滞提示：距上次进度事件超过阈值——单章 LLM 调用慢≠死，给用户可判读的依据 */
+.stage-stall {
+  color: #cc8925;
+  font-size: 10.5px;
+  font-weight: 600;
+  animation: stall-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes stall-pulse {
+  50% { opacity: 0.55; }
+}
+
+.run-meter-stall {
+  margin-top: 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #cc8925;
 }
 
 .run-stage-card.stage-running {
@@ -3986,9 +4170,17 @@ tbody tr:hover td {
 }
 
 .global-message { display: flex; align-items: center; gap: 8px; margin: 8px 16px 0; padding: 8px 12px;
-  background: #eef2ff; border: 1px solid #c7d3fc; border-radius: 8px; font-size: 13px; color: #1e41c9;
-  cursor: pointer; white-space: pre-wrap; word-break: break-all; }
-.global-message-close { margin-left: auto; color: #aebdfb; font-size: 12px; }
+  background: #eef2ff; border: 1px solid #c7d3fc; border-radius: 8px; font-size: 13px; color: #1e41c9; }
+.global-message-icon { flex: none; }
+.global-message-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+/* 长摘要（运行完成链路+一致性统计）默认一行折叠，「详情」展开全文 */
+.global-message-text.clamped { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.global-message-toggle { border: 0; background: none; color: #1e41c9; font-size: 12px; font-weight: 600;
+  cursor: pointer; flex: none; padding: 2px 4px; }
+.global-message-toggle:hover { text-decoration: underline; }
+.global-message-close { margin-left: auto; border: 0; background: none; color: #aebdfb; cursor: pointer;
+  display: grid; place-items: center; padding: 2px; flex: none; }
+.global-message-close:hover { color: #1e41c9; }
 
 .template-row { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
 .template-row .field-label { font-size: 12px; color: #7a8496; white-space: nowrap; }

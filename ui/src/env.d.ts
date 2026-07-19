@@ -35,6 +35,7 @@ declare global {
     report?: unknown
     questions?: number
     imported?: number
+    internal_imported?: number
     readiness?: unknown
     results?: unknown
     analysis?: unknown

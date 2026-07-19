@@ -30,6 +30,8 @@ export type TranslationPayload = {
 
 export type DocumentBlock = {
   block_id: string
+  omission_id?: string
+  omission_source_fingerprint?: string
   order: number
   type?: string
   text?: string
@@ -70,6 +72,10 @@ export type PdfAnnotationPayload = {
 
 export type AiRequirement = Record<string, unknown> & {
   ai_req_id: string
+  source_fingerprint?: string
+  review_subject_fingerprint?: string
+  extraction_fingerprint?: string
+  needs_reconfirmation?: boolean
   anchor_block_id?: string
   title?: string
   description?: string
@@ -136,6 +142,8 @@ export type ReviewInsightsPayload = {
 export type AiReviewActionInput = {
   aiReqId: string
   status: ReviewStatus
+  sourceFingerprint?: string
+  reviewSubjectFingerprint?: string
   moduleOverride?: string
   ownershipOverride?: string
   reason?: string
@@ -145,10 +153,73 @@ export type AiReviewActionInput = {
 export type AiReviewStatePayload = {
   ai_req_id: string
   status: string
+  source_fingerprint?: string
+  review_subject_fingerprint?: string
   module_override?: string | null
   ownership_override?: string | null
   reason?: string
   actor?: string | null
+}
+
+export type AiExtractionStatusPayload = {
+  schema: "ai-requirements-partial/v1"
+  run_id: string | null
+  completed: number
+  total: number
+  complete: boolean
+  failed?: boolean
+  error?: string
+  input_fingerprint?: string
+  rows: AiRequirement[]
+}
+
+export type OmissionActionStatus =
+  | "non_requirement"
+  | "needs_extraction"
+  | "issue_confirmed"
+  | "resolved"
+
+export type OmissionActionState = {
+  omission_id: string
+  block_id: string
+  status: OmissionActionStatus
+  reason?: string
+  actor?: string | null
+  source_fingerprint?: string
+  recorded_at?: string
+}
+
+export type OmissionActionsPayload = {
+  schema: "omission-actions/v1"
+  states: OmissionActionState[]
+}
+
+export type OmissionActionInput = {
+  omissionId?: string
+  blockId: string
+  sourceFingerprint: string
+  status: OmissionActionStatus
+  reason?: string
+  actor?: string
+}
+
+export type OmissionReextractInput = {
+  omissionId?: string
+  blockId: string
+  sourceFingerprint: string
+  focusLines?: string[]
+  actor?: string
+  reason?: string
+  route?: string
+}
+
+export type OmissionReextractPayload = {
+  schema: "omission-reextract/v1"
+  omission: OmissionActionState
+  supplement: Record<string, unknown>
+  requirements: number
+  effective_count: number
+  written: string[]
 }
 
 type FetchLike = typeof fetch
@@ -157,6 +228,35 @@ type RequirementApiClientOptions = {
   baseUrl: string
   token: string
   fetchImpl?: FetchLike
+}
+
+export type RequirementApiErrorDetails = {
+  error?: string
+  needs_reconfirmation?: boolean
+  retryable?: boolean
+  source_fingerprint?: string
+  review_subject_fingerprint?: string
+  [key: string]: unknown
+}
+
+export class RequirementApiError extends Error {
+  readonly status: number
+  readonly details: RequirementApiErrorDetails
+
+  constructor(status: number, details: RequirementApiErrorDetails = {}) {
+    super(details.error || `API request failed: ${status}`)
+    this.name = "RequirementApiError"
+    this.status = status
+    this.details = details
+  }
+
+  get needsReconfirmation(): boolean {
+    return this.status === 409 && this.details.needs_reconfirmation === true
+  }
+}
+
+export function isNeedsReconfirmationError(error: unknown): error is RequirementApiError {
+  return error instanceof RequirementApiError && error.needsReconfirmation
 }
 
 export class RequirementApiClient {
@@ -216,6 +316,45 @@ export class RequirementApiClient {
     return this.request<AiRequirement[]>("/ai-requirements")
   }
 
+  async loadAiExtractionStatus(): Promise<AiExtractionStatusPayload> {
+    return this.request<AiExtractionStatusPayload>("/ai-extraction-status")
+  }
+
+  async loadOmissionActions(): Promise<OmissionActionsPayload> {
+    return this.request<OmissionActionsPayload>("/omission-actions")
+  }
+
+  async applyOmissionAction(input: OmissionActionInput): Promise<OmissionActionState> {
+    return this.request<OmissionActionState>("/omission-actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        omission_id: input.omissionId || "",
+        block_id: input.blockId,
+        source_fingerprint: input.sourceFingerprint,
+        status: input.status,
+        reason: input.reason || "",
+        actor: input.actor || "",
+      }),
+    })
+  }
+
+  async reextractOmission(input: OmissionReextractInput): Promise<OmissionReextractPayload> {
+    return this.request<OmissionReextractPayload>("/omission-reextract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        omission_id: input.omissionId || "",
+        block_id: input.blockId,
+        source_fingerprint: input.sourceFingerprint,
+        focus_lines: input.focusLines || [],
+        actor: input.actor || "",
+        reason: input.reason || "",
+        route: input.route || "",
+      }),
+    })
+  }
+
   // 裁决复盘建议（review_insights.json,专家改判模式→规则改进建议）——E5:此前零消费者
   async loadReviewInsights(): Promise<ReviewInsightsPayload> {
     return this.request<ReviewInsightsPayload>("/review-insights")
@@ -228,6 +367,8 @@ export class RequirementApiClient {
       body: JSON.stringify({
         ai_req_id: input.aiReqId,
         status: input.status,
+        source_fingerprint: input.sourceFingerprint || "",
+        review_subject_fingerprint: input.reviewSubjectFingerprint || "",
         module_override: input.moduleOverride || "",
         ownership_override: input.ownershipOverride || "",
         reason: input.reason || "",
@@ -257,8 +398,11 @@ export class RequirementApiClient {
     if (!response.ok) {
       // 后端对每个错误路径都返回 {"error": "..."}（如 409 冻结、400 缺字段、502 LLM 故障）。
       // 透出该信息而不是只显示状态码，让审查者看到可操作的原因。
-      const body = (await response.json().catch(() => null)) as { error?: string } | null
-      throw new Error(body?.error || `API request failed: ${response.status}`)
+      const parsed = await response.json().catch(() => null)
+      const body = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as RequirementApiErrorDetails
+        : {}
+      throw new RequirementApiError(response.status, body)
     }
     return response.json() as Promise<T>
   }

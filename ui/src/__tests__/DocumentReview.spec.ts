@@ -3,6 +3,7 @@ import { flushPromises, mount } from "@vue/test-utils"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import DocumentReview from "../DocumentReview.vue"
+import { RequirementApiError } from "../api-client"
 
 function deferred<T>() {
   let resolvePromise!: (value: T | PromiseLike<T>) => void
@@ -20,7 +21,8 @@ function makeClient(over: Record<string, unknown> = {}) {
         { block_id: "B2", order: 2, type: "paragraph", text: "The meter shall measure volume.",
           section_path: ["4 Requirements"], requirement_like: true, noise: false },
         { block_id: "B3", order: 3, type: "paragraph", text: "An uncovered requirement shall hold.",
-          section_path: ["4 Requirements"], requirement_like: true, noise: false },
+          section_path: ["4 Requirements"], requirement_like: true, noise: false,
+          omission_id: "OM-B3", omission_source_fingerprint: "source-B3" },
       ],
     }),
     loadAiRequirements: vi.fn().mockResolvedValue([
@@ -782,8 +784,406 @@ describe("DocumentReview", () => {
     expect(wrapper.find('[data-testid="context-card"]').exists()).toBe(false)
   })
 
+  it("navigates requirements sequentially with prev/next and shows annotation position", async () => {
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        { ai_req_id: "AIR-1", title: "体积计量", module: "计量", status: "draft",
+          source_quote: "The meter shall measure volume.", source_block_ids: ["B2"], labels: ["计量"] },
+        { ai_req_id: "AIR-2", title: "保持要求", module: "计量", status: "draft",
+          source_quote: "An uncovered requirement shall hold.", source_block_ids: ["B3"], labels: ["计量"] },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-anno-no"]').text()).toContain("批注 01")
+    expect(wrapper.find('[data-testid="dd-anno-no"]').text()).toContain("1/2")
+
+    await wrapper.find('[data-testid="dd-next"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-anno-no"]').text()).toContain("批注 02")
+    expect(wrapper.find(".dd-title").text()).toBe("保持要求")
+
+    await wrapper.find('[data-testid="dd-next"]').trigger("click")   // 尾部循环回第一条
+    expect(wrapper.find('[data-testid="dd-anno-no"]').text()).toContain("批注 01")
+    await wrapper.find('[data-testid="dd-prev"]').trigger("click")   // 首部后退循环到尾部
+    expect(wrapper.find('[data-testid="dd-anno-no"]').text()).toContain("批注 02")
+  })
+
+  it("supports scoped review shortcuts and advances after a keyboard decision", async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const applyAiReviewAction = vi.fn().mockResolvedValue({
+      ai_req_id: "AIR-1", status: "accepted", module_override: null, ownership_override: null,
+    })
+    const client = makeClient({
+      applyAiReviewAction,
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        { ai_req_id: "AIR-1", title: "体积计量", module: "计量", status: "draft",
+          source_quote: "The meter shall measure volume.", source_block_ids: ["B2"], labels: ["计量"] },
+        { ai_req_id: "AIR-2", title: "保持要求", module: "计量", status: "draft",
+          source_quote: "An uncovered requirement shall hold.", source_block_ids: ["B3"], labels: ["计量"] },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }))
+    await flushPromises()
+    expect(wrapper.find(".dd-title").text()).toBe("体积计量")
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }))
+    await flushPromises()
+    expect(wrapper.find(".dd-title").text()).toBe("保持要求")
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k" }))
+    await flushPromises()
+    expect(wrapper.find(".dd-title").text()).toBe("体积计量")
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }))
+    await flushPromises()
+    expect(applyAiReviewAction).toHaveBeenCalledWith(expect.objectContaining({
+      aiReqId: "AIR-1", status: "accepted",
+    }))
+    expect(wrapper.find(".dd-title").text()).toBe("保持要求")
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it("ignores review shortcuts while editing or composing text", async () => {
+    const applyAiReviewAction = vi.fn()
+    const client = makeClient({ applyAiReviewAction })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+
+    const comment = wrapper.find('[data-testid="dd-comment"]')
+    comment.element.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }))
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", isComposing: true }))
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "d", ctrlKey: true }))
+    await flushPromises()
+
+    expect(applyAiReviewAction).not.toHaveBeenCalled()
+    expect(wrapper.find(".dd-title").text()).toBe("体积计量")
+    wrapper.unmount()
+  })
+
+  it("jumps to suspected omissions from the stats entry", async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const client = makeClient()
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    const jump = wrapper.find('[data-testid="omission-jump"]')
+    expect(jump.text()).toContain("1")
+    await jump.trigger("click")
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="omission-card"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="doc-message"]').text()).toContain("疑似遗漏 1/1")
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
+  })
+
+  it("refreshes terminal chapter snapshots without reloading the document or losing local edits", async () => {
+    const base = await makeClient().loadAiRequirements()
+    const second = {
+      ...base[0], ai_req_id: "AIR-2", title: "保持要求",
+      source_quote: "An uncovered requirement shall hold.", source_block_ids: ["B3"],
+    }
+    const loadAiExtractionStatus = vi.fn()
+      .mockResolvedValueOnce({
+        schema: "ai-requirements-partial/v1", run_id: "run-1",
+        completed: 1, total: 2, complete: false, rows: base,
+      })
+      .mockResolvedValueOnce({
+        schema: "ai-requirements-partial/v1", run_id: "run-1",
+        completed: 2, total: 2, complete: false, rows: [...base, second],
+      })
+    const client = makeClient({ loadAiExtractionStatus })
+    const wrapper = mount(DocumentReview, { props: { client, active: true, refreshToken: 0 } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="partial-status"]').text()).toContain("1/2")
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    await wrapper.find('[data-testid="dd-comment"]').setValue("尚未保存的核对意见")
+
+    await wrapper.setProps({ refreshToken: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 220))
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="partial-status"]').text()).toContain("2/2")
+    expect(wrapper.find('[data-testid="doc-stat-reqs"]').text()).toBe("2")
+    expect(wrapper.find('[data-testid="dd-comment"]').element).toHaveProperty("value", "尚未保存的核对意见")
+    expect(client.loadDocument).toHaveBeenCalledTimes(1)
+    expect(client.loadPdfAnnotation).toHaveBeenCalledTimes(2)
+  })
+
+  it("shows a terminal incomplete state instead of claiming extraction is still running", async () => {
+    const base = await makeClient().loadAiRequirements()
+    const client = makeClient({
+      loadAiExtractionStatus: vi.fn().mockResolvedValue({
+        schema: "ai-requirements-partial/v1",
+        run_id: "run-failed",
+        completed: 2,
+        total: 3,
+        complete: true,
+        failed: true,
+        error: "1 section failed",
+        rows: base,
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="partial-status"]').text()).toContain("抽取不完整 2/3")
+    expect(wrapper.find('[data-testid="partial-status"]').classes()).toContain("failed")
+  })
+
+  it("does not let a delayed initial snapshot overwrite a newer incremental snapshot", async () => {
+    const base = await makeClient().loadAiRequirements()
+    const second = {
+      ...base[0], ai_req_id: "AIR-2", title: "保持要求",
+      source_quote: "An uncovered requirement shall hold.", source_block_ids: ["B3"],
+    }
+    const staleInitial = deferred<{
+      schema: "ai-requirements-partial/v1"; run_id: string; completed: number
+      total: number; complete: boolean; rows: typeof base
+    }>()
+    const loadAiExtractionStatus = vi.fn()
+      .mockImplementationOnce(() => staleInitial.promise)
+      .mockResolvedValueOnce({
+        schema: "ai-requirements-partial/v1", run_id: "run-1",
+        completed: 2, total: 2, complete: false, rows: [...base, second],
+      })
+    const client = makeClient({ loadAiExtractionStatus })
+    const wrapper = mount(DocumentReview, { props: { client, active: true, refreshToken: 0 } })
+    await flushPromises()
+
+    await wrapper.setProps({ refreshToken: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 220))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="doc-stat-reqs"]').text()).toBe("2")
+
+    staleInitial.resolve({
+      schema: "ai-requirements-partial/v1", run_id: "run-1",
+      completed: 1, total: 2, complete: false, rows: base,
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="doc-stat-reqs"]').text()).toBe("2")
+    expect(wrapper.find('[data-testid="partial-status"]').text()).toContain("2/2")
+  })
+
+  it("refreshes PDF markers for a partial snapshot while reusing the existing page blob", async () => {
+    const base = await makeClient().loadAiRequirements()
+    const second = {
+      ...base[0], ai_req_id: "AIR-2", title: "保持要求",
+      source_quote: "An uncovered requirement shall hold.", source_block_ids: ["B3"],
+    }
+    const loadAiExtractionStatus = vi.fn()
+      .mockResolvedValueOnce({
+        schema: "ai-requirements-partial/v1", run_id: "run-1",
+        completed: 1, total: 2, complete: false, rows: base,
+      })
+      .mockResolvedValueOnce({
+        schema: "ai-requirements-partial/v1", run_id: "run-1",
+        completed: 2, total: 2, complete: false, rows: [...base, second],
+      })
+    const page = { page_number: 1, file: "page-0001.png", width: 595, height: 842 }
+    const loadPdfAnnotation = vi.fn()
+      .mockResolvedValueOnce({
+        available: true, pages: [page], omission_markers: [], block_zones: [],
+        requirement_markers: [{ req_id: "AIR-1", page: 1, rect: { left: 90, top: 20, width: 4, height: 3 } }],
+      })
+      .mockResolvedValueOnce({
+        available: true, pages: [page], omission_markers: [], block_zones: [],
+        requirement_markers: [
+          { req_id: "AIR-1", page: 1, rect: { left: 90, top: 20, width: 4, height: 3 } },
+          { req_id: "AIR-2", page: 1, rect: { left: 90, top: 30, width: 4, height: 3 } },
+        ],
+      })
+    const client = makeClient({ loadAiExtractionStatus, loadPdfAnnotation })
+    const wrapper = mount(DocumentReview, { props: { client, active: true, refreshToken: 0 } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="pdf-marker-AIR-2"]').exists()).toBe(false)
+
+    await wrapper.setProps({ refreshToken: 1 })
+    await new Promise((resolve) => setTimeout(resolve, 220))
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="pdf-marker-AIR-2"]').exists()).toBe(true)
+    expect(client.loadPdfPageBlob).toHaveBeenCalledTimes(1)
+    expect(client.loadPdfPageBlob).toHaveBeenCalledWith("page-0001.png")
+  })
+
+  it("keeps selected item and per-item drafts when the same document session reconnects", async () => {
+    const first = await makeClient().loadAiRequirements()
+    const second = { ...first[0], ai_req_id: "AIR-2", title: "备用要求" }
+    const rows = [...first, second]
+    const client1 = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue(rows), applyOmissionAction: vi.fn(),
+    })
+    const client2 = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue(rows), applyOmissionAction: vi.fn(),
+    })
+    const wrapper = mount(DocumentReview, {
+      props: { client: client1, active: true, sessionKey: "output:e:/out/run" },
+    })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    await wrapper.find('[data-testid="dd-comment"]').setValue("AIR-1 未保存意见")
+    await wrapper.find('[data-testid="dd-module-select"]').setValue("安全")
+    await wrapper.find('[data-testid="dd-ownership-select"]').setValue("hardware")
+    await wrapper.find('[data-testid="anno-AIR-2"]').trigger("click")
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-comment"]').element).toHaveProperty("value", "AIR-1 未保存意见")
+
+    await wrapper.find('[data-testid="omission-tag"]').trigger("click")
+    await wrapper.find('[data-testid="omission-note"]').setValue("B3 未保存备注")
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    await wrapper.setProps({ client: client2 })
+    await flushPromises()
+
+    expect(wrapper.find(".dd-title").text()).toBe("体积计量")
+    expect(wrapper.find('[data-testid="dd-comment"]').element).toHaveProperty("value", "AIR-1 未保存意见")
+    expect(wrapper.find('[data-testid="dd-module-select"]').element).toHaveProperty("value", "安全")
+    expect(wrapper.find('[data-testid="dd-ownership-select"]').element).toHaveProperty("value", "hardware")
+    await wrapper.find('[data-testid="omission-tag"]').trigger("click")
+    expect(wrapper.find('[data-testid="omission-note"]').element).toHaveProperty("value", "B3 未保存备注")
+  })
+
+  it("ignores a late omission response from a replaced client generation", async () => {
+    const pending = deferred<{ omission_id: string; block_id: string; status: "non_requirement" }>()
+    const client1 = makeClient({ applyOmissionAction: vi.fn(() => pending.promise) })
+    const client2 = makeClient({ applyOmissionAction: vi.fn() })
+    const wrapper = mount(DocumentReview, {
+      props: { client: client1, active: true, sessionKey: "output:e:/out/run" },
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="omission-tag"]').trigger("click")
+    await wrapper.find('[data-testid="omission-note"]').setValue("仍需核对")
+    await wrapper.find('[data-testid="omission-non-requirement"]').trigger("click")
+
+    await wrapper.setProps({ client: client2 })
+    await flushPromises()
+    pending.resolve({ omission_id: "OM-B3", block_id: "B3", status: "non_requirement" })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="doc-stat-omissions"]').text()).toBe("1")
+    expect(wrapper.find('[data-testid="omission-note"]').element).toHaveProperty("value", "仍需核对")
+  })
+
+  it("handles a structured reconfirmation conflict by refreshing evidence and retaining the draft", async () => {
+    const oldRow = {
+      ...(await makeClient().loadAiRequirements())[0],
+      source_fingerprint: "source-v1", review_subject_fingerprint: "subject-v1",
+    }
+    const newRow = {
+      ...oldRow, title: "体积计量（证据已更新）", source_fingerprint: "source-v2",
+      review_subject_fingerprint: "subject-v2", needs_reconfirmation: true,
+    }
+    const loadAiRequirements = vi.fn()
+      .mockResolvedValueOnce([oldRow])
+      .mockResolvedValueOnce([newRow])
+    const client = makeClient({
+      loadAiRequirements,
+      applyAiReviewAction: vi.fn().mockRejectedValue(new RequirementApiError(409, {
+        error: "AI requirement changed; refresh before adjudicating",
+        needs_reconfirmation: true,
+      })),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    await wrapper.find('[data-testid="dd-comment"]').setValue("保留这条核对意见")
+    await wrapper.find('[data-testid="dd-accept"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.find(".dd-title").text()).toBe("体积计量（证据已更新）")
+    expect(wrapper.find('[data-testid="dd-reconfirmation"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="dd-comment"]').element).toHaveProperty("value", "保留这条核对意见")
+    expect(wrapper.find('[data-testid="doc-message"]').text()).toContain("已刷新")
+  })
+
+  it("shows reconfirmation state and submits the current evidence fingerprints", async () => {
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([{
+        ai_req_id: "AIR-1", title: "体积计量", description: "应计量体积", module: "计量",
+        status: "draft", source_quote: "The meter shall measure volume.", source_block_ids: ["B2"],
+        source_fingerprint: "source-v2", review_subject_fingerprint: "subject-v2",
+        needs_reconfirmation: true, review_state: { status: "accepted", module_override: "计量精度" },
+      }]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-reconfirmation"]').text()).toContain("历史裁决与覆盖值未沿用")
+    await wrapper.find('[data-testid="dd-accept"]').trigger("click")
+    await flushPromises()
+
+    expect(client.applyAiReviewAction).toHaveBeenCalledWith(expect.objectContaining({
+      aiReqId: "AIR-1",
+      sourceFingerprint: "source-v2",
+      reviewSubjectFingerprint: "subject-v2",
+    }))
+    expect(wrapper.find('[data-testid="dd-reconfirmation"]').exists()).toBe(false)
+  })
+
+  it("triages non-requirements and removes them from the omission count", async () => {
+    const applyOmissionAction = vi.fn().mockResolvedValue({
+      omission_id: "OM-B3", block_id: "B3", status: "non_requirement", actor: "reviewer",
+    })
+    const client = makeClient({
+      loadOmissionActions: vi.fn().mockResolvedValue({ schema: "omission-actions/v1", states: [] }),
+      applyOmissionAction,
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="omission-jump"]').trigger("click")
+    await wrapper.find('[data-testid="omission-note"]').setValue("背景说明")
+    await wrapper.find('[data-testid="omission-non-requirement"]').trigger("click")
+    await flushPromises()
+
+    expect(applyOmissionAction).toHaveBeenCalledWith(expect.objectContaining({
+      blockId: "B3", status: "non_requirement", reason: "背景说明",
+    }))
+    expect(wrapper.find('[data-testid="doc-stat-omissions"]').text()).toBe("0")
+  })
+
+  it("runs targeted re-extraction and refreshes requirements and PDF metadata", async () => {
+    const first = await makeClient().loadAiRequirements()
+    const added = {
+      ...first[0], ai_req_id: "AIR-2", title: "保持要求",
+      source_quote: "An uncovered requirement shall hold.", source_block_ids: ["B3"],
+    }
+    const loadAiRequirements = vi.fn()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce([...first, added])
+    const reextractOmission = vi.fn().mockResolvedValue({
+      schema: "omission-reextract/v1",
+      omission: { omission_id: "OM-B3", block_id: "B3", status: "resolved" },
+      supplement: {}, requirements: 1, effective_count: 2, written: ["ai_supplements.jsonl"],
+    })
+    const client = makeClient({ loadAiRequirements, reextractOmission })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="omission-jump"]').trigger("click")
+    await wrapper.find('[data-testid="omission-reextract"]').trigger("click")
+    await flushPromises()
+
+    expect(reextractOmission).toHaveBeenCalledWith(expect.objectContaining({
+      blockId: "B3", focusLines: ["An uncovered requirement shall hold."],
+    }))
+    expect(wrapper.find('[data-testid="doc-stat-reqs"]').text()).toBe("2")
+    expect(wrapper.find('[data-testid="doc-stat-omissions"]').text()).toBe("0")
+    expect(client.loadDocument).toHaveBeenCalledTimes(1)
+    expect(client.loadPdfAnnotation).toHaveBeenCalledTimes(2)
+  })
+
   it("keeps page-edge markers and PDF paragraph zones interactive", () => {
-    const source = readFileSync(resolve(__dirname, "../DocumentReview.vue"), "utf-8")
+    // 工作区可能以 CRLF 签出（core.autocrlf），断言针对 CSS 内容而非行尾
+    const source = readFileSync(resolve(__dirname, "../DocumentReview.vue"), "utf-8").replace(/\r\n/g, "\n")
     expect(source).toContain(".doc-paper.pdf-paper {\n  padding: 16px 48px 16px 16px;")
     expect(source).toContain(".doc-paper.pdf-paper { padding: 14px 44px 14px 12px; }")
     expect(source).toContain("cursor: pointer; pointer-events: auto; border-radius: 3px;")

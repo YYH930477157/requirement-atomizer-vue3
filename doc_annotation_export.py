@@ -22,10 +22,14 @@ import json
 import os
 import re
 import shutil
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from threading import RLock
+from typing import Any, Iterator
 
-from api_server import (ANNOTATION_TRANSLATIONS, build_ai_requirements, build_document_blocks,
+from api_server import (ANNOTATION_TRANSLATIONS, ANNOTATION_TRANSLATION_GUARDS_VERSION,
+                        build_ai_requirements, build_document_blocks,
                         load_annotation_translations, translation_key)
 from io_utils import read_jsonl
 from requirement_kb.matching import clean_text as normalize_text
@@ -41,6 +45,14 @@ LAYOUT_PDF_ORIGINAL = "pdf_original"
 ANNOTATION_LAYOUT_MODES = {LAYOUT_OPTIMIZED, LAYOUT_PDF_ORIGINAL}
 # 翻译缓存键/加载器的唯一实现在 api_server（两个渲染面共用防分叉）；生成侧在本模块。
 _TRANSLATION_BATCH = 8
+ANNOTATION_TRANSLATION_STRATEGY_VERSION = "annotation-translation-v2-segment-fallback"
+_TRANSLATION_SIDECAR_VERSION = 2
+_TRANSLATION_REPLACE_ATTEMPTS = 5
+_TRANSLATION_REPLACE_RETRY_S = 0.02
+_TRANSLATION_LOCK_TIMEOUT_S = 10.0
+_TRANSLATION_LOCK_STALE_AFTER_S = 300.0
+_TRANSLATION_PROCESS_LOCKS: dict[Path, RLock] = {}
+_TRANSLATION_PROCESS_LOCKS_GUARD = RLock()
 # 数字并组：千位空格/逗号分隔（"4 000"→"4000"），护栏基线用
 _DIGIT_GROUP_RE = re.compile(r"(?<=\d)[\s,  ](?=\d)")
 
@@ -112,7 +124,7 @@ _load_annotation_translations = load_annotation_translations
 
 
 def _read_translation_sidecar(out_dir: Path) -> dict[str, dict[str, Any]]:
-    """生成侧读完整条目（含被拒留账的）——pending 计算要把被拒的也当已判定,不重试。"""
+    """生成侧读完整条目（含被拒留账的）；是否复用由当前策略版本决定。"""
     try:
         data = json.loads((Path(out_dir) / ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -1071,6 +1083,311 @@ def _translate_marker_batch(chat: Any, batch: list[tuple[str, str, str]]) -> dic
     return result
 
 
+def _translate_marker_single(chat: Any, text: str, *, forbidden_tokens: list[str],
+                             segment_label: str = "", retry_reason: str = "") -> str:
+    cleaned = " ".join(_clean_block_text(text).split()) or " ".join(text.split())
+    system = "你是电表/燃气表等技术标准文档的翻译助手。"
+    retry_kind = f"句段重试（{segment_label}）" if segment_label else "单条整段重试"
+    retry_feedback = (
+        "上一版译文因引入原文没有的编码/数字而被拒绝。"
+        if forbidden_tokens else
+        f"上一轮没有得到可校验的译文（{retry_reason or '未返回译文'}）。"
+    )
+    user = "\n".join([
+        f"这是一次{retry_kind}。{retry_feedback}",
+        "只翻译下面这一条原文，不得借用此前批次或其他条目的数字、编号、协议代码或单位。",
+        "必须忠实原文，不新增建议、解释或推断；专有名词与缩写保留原文。",
+        "以下 token 已由护栏判定为原文不存在，译文中严禁再次出现：",
+        json.dumps(forbidden_tokens, ensure_ascii=False),
+        "只输出 JSON 对象 {\"items\":[{\"id\":1,\"translation\":\"...\"}]}。",
+        "唯一原文 JSON:",
+        json.dumps({"id": 1, "text": cleaned}, ensure_ascii=False),
+    ])
+    payload = chat(system, user)
+    items = payload.get("items") if isinstance(payload, dict) else None
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            item_id = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if item_id == 1:
+            return str(item.get("translation") or "").strip()
+    return ""
+
+
+def _fabricated_translation_tokens(source: str, translation: str) -> list[str]:
+    from cosem_behavior_spec import extract_codes, extract_ints
+    from text_normalize import strip_enum_markers
+
+    basis = f"{source} {_DIGIT_GROUP_RE.sub('', source)}"
+    fabricated = ((extract_codes(translation) - extract_codes(source))
+                  | (extract_ints(strip_enum_markers(translation)) - extract_ints(basis)))
+    return sorted(str(token) for token in fabricated)
+
+
+_TRANSLATION_ABBREVIATIONS = ("e.g.", "i.e.", "etc.", "fig.", "no.", "vs.")
+
+
+def _split_translation_segments(text: str) -> list[str]:
+    """保守分句；无法得到至少两个完整句段时不启用句级降级。"""
+    # _clean_block_text 会折叠换行；逐行清洁后再拼回去，保留无标点列表/换行句段边界。
+    cleaned_lines = [_clean_block_text(line) for line in str(text).splitlines()]
+    cleaned = "\n".join(line for line in cleaned_lines if line)
+    if not cleaned:
+        cleaned = _clean_block_text(text) or " ".join(text.split())
+    if not cleaned:
+        return []
+    raw_parts = [part.strip() for part in re.split(
+        r"(?:\r?\n)+|(?<=[.;!?])\s+|(?<=[。；！？])", cleaned) if part.strip()]
+    if len(raw_parts) < 2:
+        return []
+
+    parts: list[str] = []
+    for part in raw_parts:
+        if parts and (parts[-1].casefold().endswith(_TRANSLATION_ABBREVIATIONS)
+                      or re.search(r"\b[A-Za-z]\.$", parts[-1])):
+            parts[-1] = f"{parts[-1]} {part}"
+        else:
+            parts.append(part)
+    if len(parts) < 2 or any(len(re.sub(r"\W", "", part)) < 2 for part in parts):
+        return []
+    # 分隔符全是零宽边界；此不变量防止以后调整正则时静默丢字。
+    if re.sub(r"\s+", "", "".join(parts)) != re.sub(r"\s+", "", cleaned):
+        return []
+    return parts
+
+
+def _translation_entry_is_reusable(entry: dict[str, Any], source_text: str) -> bool:
+    # 已接受译文可零调用迁移，但必须用当前护栏重新验证；拒绝只在同策略+护栏内复用。
+    if str(entry.get("translation") or "").strip() and not entry.get("rejected"):
+        return not _fabricated_translation_tokens(source_text, str(entry.get("translation") or ""))
+    return bool(entry.get("rejected")
+                and entry.get("strategy_version") == ANNOTATION_TRANSLATION_STRATEGY_VERSION
+                and entry.get("guards_version") == ANNOTATION_TRANSLATION_GUARDS_VERSION)
+
+
+def _translation_process_lock_for(out_dir: Path) -> RLock:
+    with _TRANSLATION_PROCESS_LOCKS_GUARD:
+        return _TRANSLATION_PROCESS_LOCKS.setdefault(out_dir, RLock())
+
+
+@contextmanager
+def _translation_sidecar_lock(out_dir: Path) -> Iterator[None]:
+    out_dir = Path(out_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with _translation_process_lock_for(out_dir):
+        lock_path = out_dir / "annotation_translations.lock"
+        deadline = time.monotonic() + _TRANSLATION_LOCK_TIMEOUT_S
+        fd: int | None = None
+        while fd is None:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    stale = time.time() - lock_path.stat().st_mtime >= _TRANSLATION_LOCK_STALE_AFTER_S
+                except FileNotFoundError:
+                    continue
+                if stale:
+                    try:
+                        lock_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"timed out waiting for translation sidecar lock: {lock_path}")
+                time.sleep(0.01)
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            yield
+        finally:
+            os.close(fd)
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _merge_translation_update(existing: dict[str, Any] | None,
+                              incoming: dict[str, Any]) -> dict[str, Any]:
+    """并发冲突时已接受译文优先；拒绝项仍可被新策略接受结果替换。"""
+    if not existing:
+        return dict(incoming)
+    existing_accepted = bool(str(existing.get("translation") or "").strip()
+                             and not existing.get("rejected"))
+    incoming_accepted = bool(str(incoming.get("translation") or "").strip()
+                             and not incoming.get("rejected"))
+    if existing_accepted:
+        # 当前护栏重新验证的结果可以取代旧护栏下的成功项。否则旧译文即使被
+        # 新护栏判定不安全，也会被“已接受优先”的并发规则永久保留下来。
+        if (existing.get("guards_version") != ANNOTATION_TRANSLATION_GUARDS_VERSION
+                and incoming.get("guards_version") == ANNOTATION_TRANSLATION_GUARDS_VERSION):
+            return dict(incoming)
+        # 零调用复验只更新版本元数据；相同译文不是并发冲突。
+        if (incoming_accepted
+                and str(existing.get("translation") or "").strip()
+                == str(incoming.get("translation") or "").strip()):
+            return {**existing, **incoming}
+        return dict(existing)
+    if incoming_accepted:
+        return dict(incoming)
+    return dict(incoming)
+
+
+def _write_translation_sidecar(out_dir: Path, sidecar: dict[str, dict[str, Any]], model: str,
+                               updated_keys: set[str]) -> None:
+    out_dir = Path(out_dir).expanduser().resolve()
+    target = out_dir / ANNOTATION_TRANSLATIONS
+    with _translation_sidecar_lock(out_dir):
+        latest = _read_translation_sidecar(out_dir)
+        for key in updated_keys:
+            latest[key] = _merge_translation_update(latest.get(key), sidecar[key])
+        sidecar.clear()
+        sidecar.update(latest)
+        payload = {
+            "version": _TRANSLATION_SIDECAR_VERSION,
+            "strategy_version": ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+            "guards_version": ANNOTATION_TRANSLATION_GUARDS_VERSION,
+            "model": model,
+            "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "items": latest,
+        }
+        tmp = target.with_name(f".{target.name}.{os.getpid()}.{id(sidecar)}.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            for attempt in range(_TRANSLATION_REPLACE_ATTEMPTS):
+                try:
+                    os.replace(tmp, target)
+                    return
+                except PermissionError:
+                    if attempt + 1 >= _TRANSLATION_REPLACE_ATTEMPTS:
+                        raise
+                    time.sleep(_TRANSLATION_REPLACE_RETRY_S)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
+def _resolve_guarded_translation(chat: Any, *, owner: str, text: str,
+                                 batch_translation: str, model: str,
+                                 batch_failure: str = "") -> tuple[dict[str, Any], dict[str, int]]:
+    attempts = {"batch": 1, "single": 0, "sentence": 0}
+    metrics = {"single_retries": 0, "segment_retries": 0,
+               "segment_calls": 0, "retry_calls": 0, "failed_calls": 0}
+    rejections: list[dict[str, Any]] = []
+    base: dict[str, Any] = {
+        "owner": owner,
+        "model": model,
+        "source_head": " ".join(text.split())[:120],
+        "strategy_version": ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+        "guards_version": ANNOTATION_TRANSLATION_GUARDS_VERSION,
+    }
+
+    batch_tokens = _fabricated_translation_tokens(text, batch_translation) if batch_translation else []
+    if batch_translation and not batch_tokens and not batch_failure:
+        return ({**base, "translation": batch_translation, "rejected": False,
+                 "status": "accepted", "strategy": "batch", "attempts": attempts,
+                 "retry_count": 0, "rejections": rejections}, metrics)
+    if batch_tokens:
+        rejections.append({"strategy": "batch", "reason": "fabricated_tokens",
+                           "fabricated_tokens": batch_tokens})
+    else:
+        rejections.append({"strategy": "batch", "reason": batch_failure or "missing_translation"})
+
+    attempts["single"] = 1
+    metrics["single_retries"] = 1
+    metrics["retry_calls"] = 1
+    forbidden_tokens = list(batch_tokens)
+    try:
+        single = _translate_marker_single(
+            chat, text, forbidden_tokens=forbidden_tokens,
+            retry_reason=batch_failure or "批次漏回本条")
+    except Exception as exc:
+        single = ""
+        metrics["failed_calls"] += 1
+        rejections.append({"strategy": "single", "reason": "call_failed",
+                           "detail": str(exc)[:160]})
+    if single:
+        single_tokens = _fabricated_translation_tokens(text, single)
+        if not single_tokens:
+            return ({**base, "translation": single, "rejected": False,
+                     "status": "accepted", "strategy": "single", "attempts": attempts,
+                     "retry_count": 1, "rejections": rejections}, metrics)
+        forbidden_tokens = sorted(set(forbidden_tokens) | set(single_tokens))
+        rejections.append({"strategy": "single", "reason": "fabricated_tokens",
+                           "fabricated_tokens": single_tokens})
+    elif not any(item.get("strategy") == "single" for item in rejections):
+        rejections.append({"strategy": "single", "reason": "missing_translation"})
+
+    segments = _split_translation_segments(text)
+    if len(segments) < 2:
+        had_guard_rejection = any(
+            item.get("reason") == "fabricated_tokens" for item in rejections)
+        reason_prefix = "翻译含无据编码/数字" if had_guard_rejection else "翻译调用未得到可校验结果"
+        reason = f"{reason_prefix}；单条重试仍未通过，且原文无法可靠切成多个句段"
+        unresolved = not had_guard_rejection
+        return ({**base, "translation": "", "rejected": not unresolved,
+                 "status": "unresolved" if unresolved else "rejected",
+                 "strategy": "single", "reason": reason, "attempts": attempts,
+                 "retry_count": attempts["single"], "rejections": rejections}, metrics)
+
+    metrics["segment_retries"] = 1
+    translated_segments: list[str] = []
+    segment_failure = ""
+    for index, segment in enumerate(segments, start=1):
+        attempts["sentence"] += 1
+        metrics["segment_calls"] += 1
+        metrics["retry_calls"] += 1
+        label = f"第 {index}/{len(segments)} 句段"
+        try:
+            translated = _translate_marker_single(
+                chat, segment, forbidden_tokens=forbidden_tokens, segment_label=label,
+                retry_reason="此前重试未返回可校验译文")
+        except Exception as exc:
+            metrics["failed_calls"] += 1
+            segment_failure = f"{label}调用失败: {str(exc)[:120]}"
+            rejections.append({"strategy": "sentence", "segment": index,
+                               "reason": "call_failed", "detail": str(exc)[:160]})
+            break
+        if not translated:
+            segment_failure = f"{label}未返回译文"
+            rejections.append({"strategy": "sentence", "segment": index,
+                               "reason": "missing_translation"})
+            break
+        segment_tokens = _fabricated_translation_tokens(segment, translated)
+        if segment_tokens:
+            segment_failure = f"{label}仍含无据 token: {', '.join(segment_tokens[:6])}"
+            rejections.append({"strategy": "sentence", "segment": index,
+                               "reason": "fabricated_tokens",
+                               "fabricated_tokens": segment_tokens})
+            break
+        translated_segments.append(translated)
+
+    if not segment_failure and len(translated_segments) == len(segments):
+        assembled = "".join(translated_segments)
+        assembled_tokens = _fabricated_translation_tokens(text, assembled)
+        if not assembled_tokens:
+            return ({**base, "translation": assembled, "rejected": False,
+                     "status": "accepted", "strategy": "sentence", "attempts": attempts,
+                     "retry_count": attempts["single"] + attempts["sentence"],
+                     "rejections": rejections}, metrics)
+        segment_failure = f"组装译文仍含无据 token: {', '.join(assembled_tokens[:6])}"
+        rejections.append({"strategy": "sentence_assembled", "reason": "fabricated_tokens",
+                           "fabricated_tokens": assembled_tokens})
+
+    had_guard_rejection = any(item.get("reason") == "fabricated_tokens" for item in rejections)
+    reason_prefix = "翻译含无据编码/数字" if had_guard_rejection else "翻译调用未得到可校验结果"
+    reason = f"{reason_prefix}；句段降级未全部通过（{segment_failure}）"
+    return ({**base, "translation": "", "rejected": had_guard_rejection,
+             "status": "rejected" if had_guard_rejection else "unresolved",
+             "strategy": "sentence", "reason": reason, "attempts": attempts,
+             "retry_count": attempts["single"] + attempts["sentence"],
+             "rejections": rejections}, metrics)
+
+
 def generate_annotation_translations(out_dir: Path, *, route: str | None,
                                      texts: dict[str, tuple[str, str]] | None = None,
                                      chat: Any = None) -> dict[str, Any]:
@@ -1078,23 +1395,71 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
 
     翻译只在此处生成、按内容哈希写 annotation_translations.json；渲染层只读缓存，
     保持确定性（裁决回流免 LLM 重建不受影响）。护栏同硬件翻译通路（检查单 #2）：
-    忠实翻译不会引入源文没有的编码/数字——出现即拒绝该条并留账（不嵌入、不重试）。
+    忠实翻译不会引入源文没有的编码/数字；批次被拒后按单条、句段两级降级，所有层级
+    逐条过同一护栏。旧成功缓存先过当前护栏再零调用复用，旧策略拒绝项会重新尝试。
     """
     out_dir = Path(out_dir).expanduser().resolve()
     if texts is None:
         render_annotation_html(out_dir)   # 收集本文档全部说明标记文本
         texts = dict(_collected_marker_texts)
     sidecar = _read_translation_sidecar(out_dir)
-    pending = {key: value for key, value in texts.items() if key not in sidecar}
+    reusable = {
+        key for key, (_owner, text) in texts.items()
+        if key in sidecar and _translation_entry_is_reusable(sidecar[key], text)
+    }
+    invalidated_keys = {
+        key for key, (_owner, text) in texts.items()
+        if key in sidecar
+        and key not in reusable
+        and str(sidecar[key].get("translation") or "").strip()
+        and not sidecar[key].get("rejected")
+        and _fabricated_translation_tokens(text, str(sidecar[key].get("translation") or ""))
+    }
+    migrated_keys = {
+        key for key in reusable
+        if not sidecar[key].get("rejected")
+        and sidecar[key].get("guards_version") != ANNOTATION_TRANSLATION_GUARDS_VERSION
+    }
+    for key in migrated_keys:
+        sidecar[key]["guards_version"] = ANNOTATION_TRANSLATION_GUARDS_VERSION
+    for key in invalidated_keys:
+        owner, text = texts[key]
+        unsafe_translation = str(sidecar[key].get("translation") or "")
+        sidecar[key] = {
+            **sidecar[key],
+            "owner": owner,
+            "translation": "",
+            "rejected": False,
+            "status": "unresolved",
+            "reason": "旧缓存译文未通过当前数字/编码护栏，等待重新翻译",
+            "fabricated_tokens": _fabricated_translation_tokens(text, unsafe_translation),
+            "strategy_version": ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+            "guards_version": ANNOTATION_TRANSLATION_GUARDS_VERSION,
+        }
+    pending = {key: value for key, value in texts.items() if key not in reusable}
+    cached_rejected = sum(1 for key in reusable if sidecar[key].get("rejected"))
     summary: dict[str, Any] = {
         "route": "stub", "model": "", "total_markers": len(texts),
-        "cached": len(texts) - len(pending), "translated": 0, "rejected": 0,
-        "unresolved": 0, "failed_calls": 0,
+        "strategy_version": ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+        "guards_version": ANNOTATION_TRANSLATION_GUARDS_VERSION,
+        "cached": len(reusable), "cached_accepted": len(reusable) - cached_rejected,
+        "cached_rejected": cached_rejected, "translated": 0, "rejected": 0,
+        "cache_invalidated": len(invalidated_keys), "cache_migrated": len(migrated_keys),
+        "unresolved": 0, "failed_calls": 0, "batch_calls": 0,
+        "single_retries": 0, "segment_retries": 0, "segment_calls": 0,
+        "retry_calls": 0,
     }
     if not pending:
         # 无新文本：不必解析 LLM 配置；缓存条目本就全部来自真 LLM
         summary["route"] = "openai_compatible" if summary["cached"] else "stub"
+        if migrated_keys:
+            model = next((str(sidecar[key].get("model") or "") for key in migrated_keys), "")
+            _write_translation_sidecar(out_dir, sidecar, model, migrated_keys)
         return summary
+    metadata_keys = migrated_keys | invalidated_keys
+    if metadata_keys:
+        model = next((str(sidecar[key].get("model") or "") for key in metadata_keys), "")
+        _write_translation_sidecar(out_dir, sidecar, model, metadata_keys)
     from functional_synthesis import _resolve_catalog_chat
     invoke, executed = _resolve_catalog_chat(route, chat)
     if invoke is None:
@@ -1103,24 +1468,11 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
     summary["route"] = "openai_compatible"
     summary["model"] = executed.split(":", 1)[1] if executed.startswith("llm:") else executed
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from threading import Lock
-
-    from cosem_behavior_spec import extract_codes, extract_ints
-
-    def _flush() -> None:
-        target = out_dir / ANNOTATION_TRANSLATIONS
-        payload = {"version": 1, "model": summary["model"],
-                   "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                   "items": sidecar}
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, target)
 
     pending_list = [(key, owner, text) for key, (owner, text) in pending.items()]
     batches = [pending_list[start:start + _TRANSLATION_BATCH]
                for start in range(0, len(pending_list), _TRANSLATION_BATCH)]
-    lock = Lock()
-    changed = False
+    summary["batch_calls"] = len(batches)
     try:
         from ai_extract import resolve_concurrency
         workers = resolve_concurrency(None)
@@ -1131,38 +1483,34 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
         futures = {executor.submit(_translate_marker_batch, invoke, batch): batch for batch in batches}
         for future in as_completed(futures):
             batch = futures[future]
+            batch_failure = ""
             try:
                 translations = future.result()
-            except Exception:
-                with lock:
-                    summary["failed_calls"] += 1
-                continue
-            with lock:
-                for index, (key, owner, text) in enumerate(batch, start=1):
-                    translation = translations.get(index, "")
-                    if not translation:
-                        summary["unresolved"] += 1   # 漏译不落账 → 下次导出自动补齐
-                        continue
-                    # 基线含数字并组形态：欧标千位分隔 "4 000"，忠实翻译写 "4000" 是格式
-                    # 归一不是编造（test16 实测 3 条误伤）;枚举标号同理（test18：a)→1. 转写），
-                    # int 提取先剥标号。编码仍按原文严格。
-                    from text_normalize import strip_enum_markers
-                    basis = f"{text} {_DIGIT_GROUP_RE.sub('', text)}"
-                    fabricated = sorted((extract_codes(translation) - extract_codes(text))
-                                        | (extract_ints(strip_enum_markers(translation)) - extract_ints(basis)))
-                    entry: dict[str, Any] = {"owner": owner, "model": summary["model"],
-                                             "source_head": " ".join(text.split())[:120]}
-                    if fabricated:
-                        entry.update({"translation": "", "rejected": True,
-                                      "reason": "翻译含无据编码/数字: " + ", ".join(str(x) for x in fabricated[:6])})
-                        summary["rejected"] += 1
-                    else:
-                        entry["translation"] = translation
-                        summary["translated"] += 1
-                    sidecar[key] = entry
-                    changed = True
-                if changed:
-                    _flush()   # 中途被杀不丢已完成的真实调用
+            except Exception as exc:
+                translations = {}
+                batch_failure = f"batch_call_failed: {str(exc)[:160]}"
+                summary["failed_calls"] += 1
+            changed_keys: set[str] = set()
+            for index, (key, owner, text) in enumerate(batch, start=1):
+                translation = translations.get(index, "")
+                entry, metrics = _resolve_guarded_translation(
+                    invoke, owner=owner, text=text, batch_translation=translation,
+                    model=summary["model"],
+                    batch_failure=batch_failure or ("batch_missing_item" if not translation else ""))
+                for metric, value in metrics.items():
+                    summary[metric] += value
+                if entry.get("status") == "unresolved":
+                    summary["unresolved"] += 1
+                    continue
+                if entry.get("rejected"):
+                    summary["rejected"] += 1
+                else:
+                    summary["translated"] += 1
+                sidecar[key] = entry
+                changed_keys.add(key)
+            if changed_keys:
+                _write_translation_sidecar(out_dir, sidecar, summary["model"], changed_keys)
+                # 每批完成即落盘，中途被杀不丢已完成的真实调用。
     return summary
 
 
@@ -1484,7 +1832,11 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
         f'<div class="pdf-page-list" id="pdf-page-list">{"".join(page_html)}</div></div>')
 
 
-def build_pdf_annotation_payload(out_dir: Path) -> dict[str, Any]:
+def build_pdf_annotation_payload(
+    out_dir: Path,
+    *,
+    requirements: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """应用内「原版影印」批注数据（与导出 HTML 同源：同几何缓存/页图/百分比换算——
     双渲染器等价靠共用本模块实现,不是各写一份）。
 
@@ -1533,7 +1885,10 @@ def build_pdf_annotation_payload(out_dir: Path) -> dict[str, Any]:
                 "reason": "影印页尚未生成——请重新导出批注 HTML（生成后将常驻复用）"}
 
     blocks = read_jsonl(out_dir / "blocks.jsonl")
-    requirements = build_ai_requirements(out_dir)
+    if requirements is None:
+        requirements = build_ai_requirements(out_dir)
+    else:
+        requirements = [dict(row) for row in requirements if isinstance(row, dict)]
     geometry = _resolve_pdf_geometry(source_pdf, blocks,
                                      cache_path=out_dir / ANNOTATION_PDF_GEOMETRY)
     requirement_markers: list[dict[str, Any]] = []
@@ -1600,15 +1955,18 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
         pdf_geometry=pdf_geometry,
     )
     summary: dict[str, Any] = {"route": "stub", "total_markers": len(_collected_marker_texts)}
-    if route and route != "stub":
-        summary = generate_annotation_translations(out_dir, route=route,
-                                                   texts=dict(_collected_marker_texts))
-        if summary.get("translated") or summary.get("rejected"):
-            rendered = render_annotation_html(
-                out_dir, layout_mode=actual_mode,
-                pdf_href=ANNOTATION_SOURCE_PDF if copied_pdf else None,
-                pdf_pages=pdf_pages,
-                pdf_geometry=pdf_geometry)   # 重渲染嵌入新译文或拒绝原因（毫秒级）
+    # 零调用迁移/失效与路由无关：读侧按当前 guards_version 过滤，stub（无 LLM 配置）
+    # 用户若跳过此步，存量译文在护栏升级后永久从视图与导出消失且无可达恢复入口。
+    # stub 下 _resolve_catalog_chat 返回 None——只做迁移/失效写盘，绝不发起调用。
+    summary = generate_annotation_translations(out_dir, route=route,
+                                               texts=dict(_collected_marker_texts))
+    if (summary.get("translated") or summary.get("rejected")
+            or summary.get("cache_invalidated") or summary.get("cache_migrated")):
+        rendered = render_annotation_html(
+            out_dir, layout_mode=actual_mode,
+            pdf_href=ANNOTATION_SOURCE_PDF if copied_pdf else None,
+            pdf_pages=pdf_pages,
+            pdf_geometry=pdf_geometry)   # 重渲染嵌入新译文或拒绝原因（毫秒级）
     summary.update({
         "layout_mode_requested": requested_mode,
         "layout_mode": actual_mode,

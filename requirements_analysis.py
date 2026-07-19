@@ -215,10 +215,10 @@ def run_requirements_analysis(
     knowledge = extract_template_knowledge(template_path) if active_chat is not None else {}
     # 裁决样本库（env 指路，未配置=空库零注入）+ 澄清答复（评审会回灌，权威客户输入）
     from adjudication_bank import load_bank, render_exemplars, resolve_bank_path, select_exemplars
-    from clarification_report import load_answers
+    from clarification_report import load_current_answers
     bank = load_bank(resolve_bank_path()) if active_chat is not None else {}
     answers_by_source: dict[str, list[dict[str, Any]]] = {}
-    for (sid, _q), row in load_answers(out_dir).items():
+    for (sid, _q), row in load_current_answers(out_dir).items():
         if row.get("adopted", True) and sid:
             answers_by_source.setdefault(sid, []).append(row)
 

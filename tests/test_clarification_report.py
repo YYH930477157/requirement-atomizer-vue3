@@ -168,6 +168,63 @@ class AnswersRoundtripTests(unittest.TestCase):
             second = cr.run_report(tmp)
             self.assertEqual(second["questions"], 1)               # 未采纳不消解
 
+    def test_customer_answer_is_stale_after_evidence_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            requirement = {
+                "ai_req_id": "AIR-1",
+                "title": "Limit",
+                "source_section": "4",
+                "source_quote": "The configured limit shall be exposed.",
+                "suspicion_reasons": ["原文数值未带全"],
+            }
+            seed(out, reqs=[requirement], quality={"failed_sections": 0, "coverage_pct": 80.0})
+            entry = cr.run_report(out)["entries"][0]
+            (out / cr.ANSWERS_FILE).write_text(json.dumps({
+                "source_id": entry["source_id"],
+                "question": entry["question"],
+                "answer": "限值为 25。",
+                "adopted": True,
+                "clarification_id": entry["clarification_id"],
+                "evidence_fingerprint": entry["evidence_fingerprint"],
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            seed(out, reqs=[dict(requirement, source_quote="The revised limit shall be exposed.")],
+                 quality={"failed_sections": 0, "coverage_pct": 80.0})
+            report = cr.run_report(out)
+            current_answers = cr.load_current_answers(out)
+
+        self.assertEqual(report["questions"], 1)
+        self.assertFalse(report["entries"][0]["answer_state_current"])
+        self.assertEqual(current_answers, {})
+
+    def test_closed_omission_is_removed_from_the_next_report(self) -> None:
+        from omission_actions import apply_omission_action
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            seed(
+                out,
+                reqs=[],
+                consistency={"coverage": {
+                    "uncovered_count": 1,
+                    "uncovered_samples": [{
+                        "block_id": "B3", "section": "4",
+                        "text": "The device shall expose a diagnostic flag.",
+                    }],
+                }},
+                quality={"failed_sections": 0, "coverage_pct": 80.0},
+            )
+            (out / "blocks.jsonl").write_text(json.dumps({
+                "block_id": "B3", "text": "The device shall expose a diagnostic flag.",
+            }) + "\n", encoding="utf-8")
+            first = cr.run_report(out)
+            apply_omission_action(out, block_id="B3", status="non_requirement", actor="reviewer")
+            second = cr.run_report(out)
+
+        self.assertEqual(first["coverage_candidates"], 1)
+        self.assertEqual(second["coverage_candidates"], 0)
+
 
 class AudienceSplitTests(unittest.TestCase):
     def test_internal_checks_separated_from_customer_questions(self) -> None:
@@ -194,7 +251,10 @@ class RunReportTests(unittest.TestCase):
             report = cr.run_report(tmp)
 
             self.assertEqual(report["questions"], 1)
-            self.assertEqual(report["readiness"]["verdict"], "READY")
+            self.assertEqual(report["provenance"]["producer_version"],
+                             "clarification/v4-check-state")
+            self.assertEqual(report["readiness"]["verdict"], "NEEDS WORK")
+            self.assertEqual(report["readiness"]["unresolved_blocking"], 1)
             md = (tmp / cr.REPORT_MD).read_text(encoding="utf-8")
             self.assertIn("缺失", md)
             from openpyxl import load_workbook
@@ -209,6 +269,216 @@ class RunReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(FileNotFoundError):
                 cr.run_report(Path(td))
+
+
+class BlockerAndIdentityTests(unittest.TestCase):
+    def test_high_risk_signals_are_blocking_and_ids_are_stable(self) -> None:
+        reasons = [
+            "数字漂移",
+            "数值配对待核",
+            "表文数值不一致",
+            "二遍复核:方向或上下限反转",
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            seed(out, reqs=[{
+                "ai_req_id": "AIR-1",
+                "title": "限值",
+                "module": "计量",
+                "source_section": "4",
+                "source_quote": "The limit is 5 l/h.",
+                "description": "限值为 6 l/h",
+                "suspicion_reasons": reasons,
+            }])
+            first = cr.collect_questions(out)
+            second = cr.collect_questions(out)
+
+        self.assertEqual(len(first), 4)
+        self.assertTrue(all(e["blocker_level"] == cr.BLOCKER_BLOCKING for e in first))
+        self.assertTrue(all(e["audience"] == cr.AUDIENCE_INTERNAL for e in first))
+        self.assertEqual(
+            [e["clarification_id"] for e in first],
+            [e["clarification_id"] for e in second],
+        )
+        self.assertTrue(all(e["evidence_fingerprint"] for e in first))
+
+    def test_evidence_change_preserves_identity_but_requires_reconfirmation(self) -> None:
+        from clarification_check_states import apply_clarification_check_action
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            req = {"ai_req_id": "AIR-1", "title": "T", "source_section": "4",
+                   "source_quote": "original", "suspicion_reasons": ["引用非逐字"]}
+            seed(out, reqs=[req])
+            before = cr.run_report(out)["entries"][0]
+            apply_clarification_check_action(
+                out, before["clarification_id"], "verified_ok",
+                evidence_fingerprint=before["evidence_fingerprint"], actor="reviewer",
+            )
+            seed(out, reqs=[dict(req, source_quote="changed")])
+            report = cr.run_report(out)
+            after = report["entries"][0]
+        self.assertNotEqual(before["evidence_fingerprint"], after["evidence_fingerprint"])
+        self.assertEqual(before["clarification_id"], after["clarification_id"])
+        self.assertFalse(after["check_state_current"])
+        self.assertEqual(report["questions"], 1)
+
+    def test_distinct_second_pass_findings_keep_distinct_identities(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            seed(out, reqs=[{
+                "ai_req_id": "AIR-1",
+                "title": "Limit",
+                "source_section": "4",
+                "source_quote": "The limit shall remain below the maximum.",
+                "source_block_ids": ["B1"],
+                "suspicion_reasons": [
+                    "二遍复核:方向或上下限反转",
+                    "二遍复核:主语或对象错配",
+                ],
+            }])
+            entries = cr.collect_questions(out)
+
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(len({entry["clarification_id"] for entry in entries}), 2)
+
+    def test_module_override_is_reported_as_effective_module(self) -> None:
+        from ai_review_actions import apply_ai_review_action
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            seed(out, reqs=[{"ai_req_id": "AIR-1", "title": "T", "module": "时钟",
+                             "source_quote": "q", "suspicion_reasons": ["数字漂移"]}])
+            apply_ai_review_action(out, "AIR-1", "needs_discussion", module_override="计量精度")
+            entry = cr.collect_questions(out)[0]
+        self.assertEqual(entry["module"], "计量精度")
+
+    def test_readiness_separates_blockers_from_ordinary_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            seed(out, reqs=[], quality={"failed_sections": 0, "coverage_pct": 80.0})
+            blocked = cr.readiness_verdict(
+                out, unresolved_blocking=1, unresolved_important=0
+            )
+            ordinary_ok = cr.readiness_verdict(
+                out, unresolved_blocking=0, unresolved_important=30
+            )
+            ordinary_many = cr.readiness_verdict(
+                out, unresolved_blocking=0, unresolved_important=31
+            )
+        self.assertEqual(blocked["verdict"], "NEEDS WORK")
+        self.assertEqual(ordinary_ok["verdict"], "READY")
+        self.assertEqual(ordinary_many["verdict"], "NEEDS WORK")
+
+
+class InternalCheckClosureTests(unittest.TestCase):
+    def _seed_internal(self, out: Path) -> None:
+        seed(out, reqs=[{
+            "ai_req_id": "AIR-1",
+            "title": "T",
+            "module": "计量",
+            "source_section": "4",
+            "source_quote": "source text",
+            "suspicion_reasons": ["引用非逐字"],
+        }], quality={"failed_sections": 0, "coverage_pct": 80.0})
+
+    def test_verified_ok_resolves_only_matching_evidence(self) -> None:
+        from clarification_check_states import apply_clarification_check_action
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed_internal(out)
+            entry = cr.run_report(out)["entries"][0]
+            apply_clarification_check_action(
+                out,
+                entry["clarification_id"],
+                "verified_ok",
+                evidence_fingerprint="stale-fingerprint",
+                actor="reviewer",
+            )
+            stale = cr.run_report(out)
+            self.assertEqual(stale["questions"], 1)
+            self.assertFalse(stale["entries"][0]["check_state_current"])
+            self.assertEqual(stale["readiness"]["verdict"], "NEEDS WORK")
+
+            apply_clarification_check_action(
+                out,
+                entry["clarification_id"],
+                "verified_ok",
+                evidence_fingerprint=entry["evidence_fingerprint"],
+                actor="reviewer",
+                note="逐字核对完成",
+            )
+            resolved = cr.run_report(out)
+
+        self.assertEqual(resolved["questions"], 0)
+        self.assertEqual(resolved["resolved_by_checks"], 1)
+        self.assertEqual(resolved["readiness"]["resolved_internal"], 1)
+        self.assertEqual(resolved["entries"][0]["check_note"], "逐字核对完成")
+        self.assertEqual(resolved["entries"][0]["state"], "verified_ok")
+        self.assertEqual(resolved["entries"][0]["actor"], "reviewer")
+        self.assertTrue(resolved["entries"][0]["timestamp"])
+        self.assertEqual(resolved["entries"][0]["note"], "逐字核对完成")
+        self.assertEqual(resolved["readiness"]["unresolved"], 0)
+        self.assertEqual(resolved["readiness"]["resolved"], 1)
+
+    def test_issue_confirmed_and_deferred_remain_unresolved(self) -> None:
+        from clarification_check_states import apply_clarification_check_action
+
+        for action in ("issue_confirmed", "deferred"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as td:
+                out = Path(td)
+                self._seed_internal(out)
+                entry = cr.run_report(out)["entries"][0]
+                apply_clarification_check_action(
+                    out, entry["clarification_id"], action,
+                    evidence_fingerprint=entry["evidence_fingerprint"], actor="reviewer",
+                )
+                report = cr.run_report(out)
+                self.assertEqual(report["questions"], 1)
+                self.assertEqual(report["unresolved_internal"], 1)
+                self.assertEqual(report["readiness"]["verdict"], "NEEDS WORK")
+
+    def test_internal_action_roundtrip_from_xlsx(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed_internal(out)
+            first = cr.run_report(out)
+            wb = load_workbook(out / cr.REPORT_XLSX)
+            ws = wb["必答-内部核对"]
+            headers = {str(cell.value): cell.column for cell in ws[1]}
+            ws.cell(2, headers["新处置(确认无误/确认有问题/暂缓)"], "确认无误")
+            ws.cell(2, headers["核对人"], "张工")
+            ws.cell(2, headers["备注"], "已对照原文")
+            filled = out / "filled-internal.xlsx"
+            wb.save(filled)
+            wb.close()
+
+            imported = cr.import_internal_checks(out, filled)
+            second = cr.run_report(out)
+            from clarification_check_states import read_clarification_check_states
+            stored = read_clarification_check_states(out)[first["entries"][0]["clarification_id"]]
+
+        self.assertEqual(first["questions"], 1)
+        self.assertEqual(imported["imported"], 1)
+        self.assertEqual(second["questions"], 0)
+        self.assertEqual(second["entries"][0]["check_actor"], "张工")
+        self.assertTrue(second["entries"][0]["check_timestamp"])
+        state = second["entries"][0]
+        self.assertEqual(state["blocker_level"], cr.BLOCKER_IMPORTANT)
+        self.assertEqual(state["module"], "计量")
+        self.assertEqual(stored["blocker_level"], cr.BLOCKER_IMPORTANT)
+        self.assertEqual(stored["module"], "计量")
+
+    def test_json_is_organized_by_blocker_audience_and_module(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed_internal(out)
+            report = cr.run_report(out)
+        grouped = report["organized_entries"][cr.BLOCKER_IMPORTANT]
+        self.assertIn("计量", grouped[cr.AUDIENCE_INTERNAL])
 
 
 if __name__ == "__main__":

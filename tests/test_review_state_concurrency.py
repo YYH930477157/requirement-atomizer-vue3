@@ -133,5 +133,60 @@ class ReviewActionErrorResponseTests(unittest.TestCase):
         self.assertEqual(payload, {"error": "invalid transition"})
 
 
+class CorruptReadPathGetTests(unittest.TestCase):
+    """抽取轮询路径上的 GET 端点：坏 JSONL 必须返回 503 envelope，不能裸崩断连。"""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        out_dir = Path(self.temp_dir.name).resolve()
+        (out_dir / "blocks.jsonl").write_text('{"broken": \n', encoding="utf-8")
+        # 有效 partial（指纹绑定到这份坏文件）才能把读路径推进到 blocks.jsonl 解析
+        from ai_extract import AI_PARTIAL_SCHEMA, AI_REQUIREMENTS_PARTIAL, extraction_input_fingerprint
+        (out_dir / AI_REQUIREMENTS_PARTIAL).write_text(json.dumps({
+            "schema": AI_PARTIAL_SCHEMA,
+            "run_id": "run-1",
+            "completed": 1,
+            "total": 1,
+            "complete": False,
+            "failed": False,
+            "input_fingerprint": extraction_input_fingerprint(out_dir),
+            "rows": [{"ai_req_id": "AIR-1", "title": "t", "source_block_ids": ["B1"]}],
+        }), encoding="utf-8")
+
+        class TestHandler(RequirementAPIHandler):
+            pass
+
+        TestHandler.output_dir = out_dir
+        TestHandler.allowed_origins = {"null"}
+        TestHandler.local_token = "test-token"
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.thread.join(timeout=5)
+        self.server.server_close()
+        self.temp_dir.cleanup()
+
+    def get_json(self, path: str) -> tuple[int, dict]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        try:
+            connection.request("GET", path, headers={TOKEN_HEADER: "test-token"})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            return response.status, payload
+        finally:
+            connection.close()
+
+    def test_corrupt_blocks_jsonl_returns_retryable_503_envelope(self) -> None:
+        for path in ("/omission-actions", "/ai-extraction-status", "/document/pdf"):
+            with self.subTest(path=path):
+                status, payload = self.get_json(path)
+                self.assertEqual(status, 503)
+                self.assertTrue(payload["retryable"])
+                self.assertTrue(payload["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

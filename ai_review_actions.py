@@ -16,6 +16,7 @@ import logging
 import os
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator
@@ -30,6 +31,111 @@ _AI_REVIEW_LOCKS_GUARD = RLock()
 _AI_REVIEW_LOCK_TIMEOUT_S = 10.0
 _AI_REVIEW_LOCK_STALE_AFTER_S = 300.0
 LOGGER = logging.getLogger("requirement_atomizer")
+
+
+_REVIEW_SUBJECT_FIELDS = (
+    "title",
+    "functional_key",
+    "description",
+    "type",
+    "priority",
+    "module",
+    "ownership",
+    "threshold_table",
+    "sub_items",
+    "acceptance_criteria",
+    "dev_guidance",
+    "design_options",
+    "dependencies",
+)
+
+
+def _fingerprint_payload(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def source_fingerprint(req: dict[str, Any]) -> str:
+    """Hash only source evidence, never model/prompt/guard configuration."""
+    return _fingerprint_payload({
+        "source_section": str(req.get("source_section") or ""),
+        "source_quote": str(req.get("source_quote") or ""),
+        "source_block_ids": [str(value) for value in (req.get("source_block_ids") or [])],
+    })
+
+
+def review_anchor_fingerprint(req: dict[str, Any]) -> str:
+    """Best-effort logical anchor that survives title/quote edits within the same source blocks."""
+    return _fingerprint_payload({
+        "source_section": str(req.get("source_section") or ""),
+        "source_block_ids": [str(value) for value in (req.get("source_block_ids") or [])],
+    })
+
+
+def review_subject_fingerprint(req: dict[str, Any]) -> str:
+    """Hash the requirement fields an expert is actually adjudicating."""
+    return _fingerprint_payload({key: req.get(key) for key in _REVIEW_SUBJECT_FIELDS})
+
+
+def ensure_requirement_identity(
+    req: dict[str, Any],
+    *,
+    extraction_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    """Persist the stable logical id and the three distinct fingerprint roles."""
+    req["ai_req_id"] = source_ai_requirement_id(req)
+    req["source_fingerprint"] = source_fingerprint(req)
+    req["review_anchor_fingerprint"] = review_anchor_fingerprint(req)
+    req["review_subject_fingerprint"] = review_subject_fingerprint(req)
+    if extraction_fingerprint is not None:
+        req["extraction_fingerprint"] = str(extraction_fingerprint)
+    return req
+
+
+def review_state_needs_reconfirmation(
+    req: dict[str, Any], state: dict[str, Any] | None,
+) -> bool:
+    """Legacy states remain valid; fingerprinted states must match current content."""
+    if not state:
+        return False
+    expected_source = str(state.get("source_fingerprint") or "")
+    expected_subject = str(state.get("review_subject_fingerprint") or "")
+    # Recompute from the current fields. Persisted fingerprints are provenance metadata,
+    # not authority: a manually migrated/stale row must not conceal content drift.
+    current_source = source_fingerprint(req)
+    current_subject = review_subject_fingerprint(req)
+    if expected_source and expected_source != current_source:
+        return True
+    if expected_subject and expected_subject != current_subject:
+        return True
+    return False
+
+
+def review_state_for_requirement(
+    req: dict[str, Any], states: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Resolve exact identity first, then one unambiguous fingerprinted legacy state."""
+    exact = states.get(source_ai_requirement_id(req))
+    if exact is not None:
+        return exact
+    current_source = source_fingerprint(req)
+    matches = [
+        state for state in states.values()
+        if str(state.get("source_fingerprint") or "") == current_source
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    current_anchor = review_anchor_fingerprint(req)
+    anchor_matches = [
+        state for state in states.values()
+        if str(state.get("review_anchor_fingerprint") or "") == current_anchor
+    ]
+    return anchor_matches[0] if len(anchor_matches) == 1 else None
 
 
 def ai_req_id(req: dict[str, Any]) -> str:
@@ -161,6 +267,9 @@ def apply_ai_review_action(
     ownership_override: str | None = None,
     reason: str = "",
     actor: str | None = None,
+    source_fingerprint_value: str | None = None,
+    review_subject_fingerprint_value: str | None = None,
+    review_anchor_fingerprint_value: str | None = None,
 ) -> dict[str, Any]:
     """追加一条 AI 需求裁决，返回写入的 state。"""
     ai_req_id_value = str(ai_req_id_value or "").strip()
@@ -179,7 +288,14 @@ def apply_ai_review_action(
         "ownership_override": ownership,
         "reason": str(reason or ""),
         "actor": actor,
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if source_fingerprint_value:
+        state["source_fingerprint"] = str(source_fingerprint_value)
+    if review_subject_fingerprint_value:
+        state["review_subject_fingerprint"] = str(review_subject_fingerprint_value)
+    if review_anchor_fingerprint_value:
+        state["review_anchor_fingerprint"] = str(review_anchor_fingerprint_value)
     out_dir = Path(out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     with _ai_review_state_lock(out_dir):

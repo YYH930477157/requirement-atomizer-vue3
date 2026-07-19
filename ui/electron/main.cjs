@@ -64,6 +64,15 @@ app.whenReady().then(() => {
   llmSettings = loadLlmSettings();
 });
 
+// 开发/演示入口：`npx electron . --out-dir <path>` 启动后直接连接该输出目录
+app.whenReady().then(() => {
+  const flagIndex = process.argv.indexOf("--out-dir");
+  const outDir = flagIndex >= 0 ? process.argv[flagIndex + 1] : "";
+  if (outDir) {
+    void startApiServer(outDir).catch(() => undefined);
+  }
+});
+
 app.on("window-all-closed", () => {
   stopApiServer();
   if (process.platform !== "darwin") {
@@ -202,11 +211,11 @@ ipcMain.handle("task:import-ai-decisions", async (_event, input) => {
   return runDesktopTaskProcess(["import-ai-decisions", "--out", input.outDir, "--file", result.filePaths[0]]);
 });
 
-// 澄清答复回灌：评审会填好的 clarification_questions.xlsx 导回（闭环另一半）
+// 澄清处置回灌：同一工作簿同时导入客户答复与内部核对动作。
 ipcMain.handle("task:import-clarification-answers", async (_event, input) => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
-    filters: [{ name: "澄清清单(已填答复)", extensions: ["xlsx"] }],
+    filters: [{ name: "澄清清单(已填写)", extensions: ["xlsx"] }],
   });
   if (result.canceled || !result.filePaths.length) {
     return { kind: "clarification_answers", imported: 0, canceled: true };

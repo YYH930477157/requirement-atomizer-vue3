@@ -25,6 +25,9 @@ import json
 import logging
 import os
 import re
+import tempfile
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from dataclasses import replace
@@ -74,6 +77,9 @@ DOC_CONTEXT_GLOSSARY_MAX = 1800   # 术语表注入上限（控 token 成本）
 DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
+AI_REQUIREMENTS_META = "ai_requirements.meta.json"
+AI_REQUIREMENTS_PARTIAL = "ai_requirements.partial.json"
+AI_PARTIAL_SCHEMA = "ai-requirements-partial/v1"
 DEFAULT_CONCURRENCY = 8   # 4→8（2026-07-14 提速）：IO 等待型并发,mimo 端点 8 并发实测稳定
 MAX_CONCURRENCY = 16
 CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
@@ -85,6 +91,179 @@ CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
 AI_EXTRACT_MIN_MAX_TOKENS = 6144
 
 ChatFn = Callable[[str, str], dict[str, Any]]
+
+
+def _replace_with_retry(source: Path, target: Path, *, attempts: int = 8) -> None:
+    """Atomic replace with a short Windows reader-lock retry window."""
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.{os.getpid()}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_with_retry(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    payload = b"".join(
+        (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+        for row in rows
+    )
+    _atomic_write_bytes(path, payload)
+
+
+def extraction_input_fingerprint(out_dir: Path) -> str:
+    """Bind partial generations to the exact parsed document consumed by extraction."""
+    path = Path(out_dir).expanduser().resolve() / "blocks.jsonl"
+    digest = hashlib.sha256()
+    if not path.exists() or not path.is_file():
+        return ""
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_ai_requirements_metadata(
+    out_dir: Path,
+    *,
+    input_fingerprint: str = "",
+    run_id: str = "",
+    failed_sections: int = 0,
+) -> dict[str, Any]:
+    """Bind the published final JSONL to the parsed document generation it consumed."""
+    root = Path(out_dir).expanduser().resolve()
+    payload = {
+        "schema": "ai-requirements-final/v1",
+        "input_fingerprint": str(input_fingerprint or extraction_input_fingerprint(root)),
+        "run_id": str(run_id or ""),
+        "failed_sections": int(failed_sections),
+    }
+    _atomic_write_bytes(
+        root / AI_REQUIREMENTS_META,
+        (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"),
+    )
+    return payload
+
+
+def refresh_ai_extract_quality(
+    out_dir: Path,
+    requirements: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Recompute requirement-derived quality fields after a targeted supplement."""
+    root = Path(out_dir).expanduser().resolve()
+    quality_path = root / "ai_extract_quality.json"
+    try:
+        quality = json.loads(quality_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        quality = {}
+    if not isinstance(quality, dict):
+        quality = {}
+
+    from merged_consistency import coverage_denominator_blocks
+
+    blocks = body_blocks(read_jsonl(root / "blocks.jsonl"))
+    req_like = [block for block in coverage_denominator_blocks(blocks) if clean_block_text(block)]
+    quotes = [quote for quote in (_norm_ws(row.get("source_quote")) for row in requirements) if quote]
+    covered = sum(
+        1 for block in req_like
+        if (lambda text: text and any(quote in text or text in quote for quote in quotes))(
+            _norm_ws(block.get("text"))
+        )
+    )
+    by_module: dict[str, int] = {}
+    for row in requirements:
+        module = str((row.get("labels") or ["未分模块"])[0])
+        by_module[module] = by_module.get(module, 0) + 1
+    quality.update({
+        "requirements": len(requirements),
+        "self_check_added": sum(1 for row in requirements if row.get("self_check_added")),
+        "code_drift_flagged": sum(
+            1 for row in requirements if "结构漂移已拦截" in str(row.get("notes") or "")
+        ),
+        "int_drift_flagged": sum(
+            1 for row in requirements if "数字漂移" in str(row.get("notes") or "")
+        ),
+        "requirement_like_blocks": len(req_like),
+        "covered_blocks": covered,
+        "coverage_pct": round(covered * 100 / len(req_like), 1) if req_like else None,
+        "by_module": dict(sorted(by_module.items(), key=lambda item: -item[1])),
+    })
+    from requirement_record import provenance
+
+    quality["provenance"] = provenance("ai_extract", AI_EXTRACT_PROMPT_VERSION)
+    _atomic_write_bytes(
+        quality_path,
+        (json.dumps(quality, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+    return quality
+
+
+def write_partial_snapshot(
+    path: Path,
+    *,
+    run_id: str,
+    completed: int,
+    total: int,
+    complete: bool,
+    rows: list[dict[str, Any]],
+    input_fingerprint: str = "",
+    failed: bool = False,
+    error: str = "",
+) -> dict[str, Any]:
+    payload = {
+        "schema": AI_PARTIAL_SCHEMA,
+        "run_id": str(run_id),
+        "completed": int(completed),
+        "total": int(total),
+        "complete": bool(complete),
+        "failed": bool(failed),
+        "input_fingerprint": str(input_fingerprint or ""),
+        "rows": rows,
+    }
+    if error:
+        payload["error"] = str(error)[:500]
+    _atomic_write_bytes(
+        path,
+        (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"),
+    )
+    return payload
+
+
+def read_partial_snapshot(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema") != AI_PARTIAL_SCHEMA:
+        return None
+    if not isinstance(payload.get("rows"), list) or not payload.get("run_id"):
+        return None
+    return payload
 
 
 def resolve_concurrency(explicit: int | None = None) -> int:
@@ -1536,6 +1715,19 @@ def append_cache(path: Path, rows: list[dict[str, Any]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _prepare_requirement_rows(
+    rows: list[dict[str, Any]], extraction_fingerprint: str,
+) -> list[dict[str, Any]]:
+    """Apply deterministic producer metadata before a section becomes visible."""
+    from ai_review_actions import ensure_requirement_identity
+
+    prepared = [dict(row) for row in rows if isinstance(row, dict)]
+    ensure_domain_labels(prepared)
+    for row in prepared:
+        ensure_requirement_identity(row, extraction_fingerprint=extraction_fingerprint)
+    return prepared
+
+
 def extract_all(
     sections: list[dict[str, Any]],
     chat: ChatFn,
@@ -1550,6 +1742,9 @@ def extract_all(
     self_check_rounds: int | None = None,
     block_info: dict[str, dict[str, Any]] | None = None,
     exemplars: str = "",
+    partial_path: Path | None = None,
+    run_id: str | None = None,
+    partial_input_fingerprint: str = "",
 ) -> list[dict[str, Any]]:
     """逐章节抽取（缓存优先 + 并发 + 失败降级）。返回扁平需求列表，可复现。
 
@@ -1569,12 +1764,14 @@ def extract_all(
         context_key += f"|verify:{AI_VERIFY_PROMPT_VERSION}:r{verify_rounds}"
     cache = read_cache(cache_path)
     results: list[list[dict[str, Any]] | None] = [None] * len(sections)
+    section_done = [False] * len(sections)
     pending: list[tuple[int, dict[str, Any], str]] = []
     for i, section in enumerate(sections):
         fp = section_fingerprint(section, model, context_key)
         hit = cache.get(fp)
         if hit is not None:
-            results[i] = hit
+            results[i] = _prepare_requirement_rows(hit, fp)
+            section_done[i] = True
         else:
             pending.append((i, section, fp))
 
@@ -1582,6 +1779,23 @@ def extract_all(
     cached = total - len(pending)
     completed = cached
     failed = 0
+
+    def publish(*, complete: bool = False) -> None:
+        if partial_path is None or not run_id:
+            return
+        visible: list[dict[str, Any]] = []
+        for index, reqs in enumerate(results):
+            if section_done[index]:
+                visible.extend(reqs or [])
+        write_partial_snapshot(
+            partial_path,
+            run_id=run_id,
+            completed=sum(section_done),
+            total=total,
+            complete=complete,
+            rows=visible,
+            input_fingerprint=partial_input_fingerprint,
+        )
 
     def emit() -> None:
         if progress_callback is not None and total:
@@ -1593,6 +1807,7 @@ def extract_all(
                 "model": model,
             })
 
+    publish()  # 新 run 先覆盖旧快照；缓存命中章节可立即审查
     emit()  # 初始进度（含缓存命中数），让界面立刻有反馈
 
     def work(item: tuple[int, dict[str, Any], str]) -> tuple[int, str, list[dict[str, Any]], bool]:
@@ -1611,15 +1826,18 @@ def extract_all(
             futures = [executor.submit(work, item) for item in pending]
             for future in as_completed(futures):
                 idx, fp, reqs, ok = future.result()
-                results[idx] = reqs
+                prepared = _prepare_requirement_rows(reqs, fp)
+                results[idx] = prepared
+                section_done[idx] = True
                 if ok:
                     # 逐章节增量缓存：中途中断不丢已完成章节
                     append_cache(cache_path, [{"fingerprint": fp, "model": model,
                                                "prompt_version": AI_EXTRACT_PROMPT_VERSION,
-                                               "requirements": reqs}])
+                                               "requirements": prepared}])
                 else:
                     failed += 1
                 completed += 1
+                publish()
                 emit()
 
     if stats is not None:
@@ -1705,14 +1923,24 @@ def apply_ai_decisions(out_dir: Path, ai_requirements: list[dict[str, Any]],
     rejected → 剔除（不进研发规格）；module_override → 生效并重定首要领域；
     accepted → status=confirmed；reason → 追加"专家意见"到 notes。无裁决原样保留。
     """
-    from ai_review_actions import read_ai_review_states, source_ai_requirement_id
+    from ai_review_actions import (
+        read_ai_review_states,
+        review_state_for_requirement,
+        review_state_needs_reconfirmation,
+        source_ai_requirement_id,
+    )
     states = read_ai_review_states(out_dir)
     applied = 0
     dropped = 0
+    reconfirmation = 0
     kept: list[dict[str, Any]] = []
     for req in ai_requirements:
-        state = states.get(source_ai_requirement_id(req)) if states else None
+        state = review_state_for_requirement(req, states) if states else None
         if not state:
+            kept.append(req)
+            continue
+        if review_state_needs_reconfirmation(req, state):
+            reconfirmation += 1
             kept.append(req)
             continue
         applied += 1
@@ -1733,6 +1961,7 @@ def apply_ai_decisions(out_dir: Path, ai_requirements: list[dict[str, Any]],
     if stats is not None:
         stats["decisions_applied"] = applied
         stats["rejected_dropped"] = dropped
+        stats["decisions_need_reconfirmation"] = reconfirmation
     return kept
 
 
@@ -1834,7 +2063,77 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
     试抽模式（分钟级出质量样本，不等全量）：limit_sections=固定 N 章；sample_ratio=按比例
     （如 0.2 = 全文 1/5，随文档规模自适应——「测试运行」用这个，不写死条数）。两者都给时固定数优先。
     """
+    from omission_actions import extraction_operation_lock
+
     out_dir = out_dir.expanduser().resolve()
+    with extraction_operation_lock(out_dir, operation="full"):
+        previous_partial = read_partial_snapshot(out_dir / AI_REQUIREMENTS_PARTIAL)
+        previous_run_id = str((previous_partial or {}).get("run_id") or "")
+        attempt_input_fingerprint = extraction_input_fingerprint(out_dir)
+        try:
+            return _run_ai_extract_locked(
+                out_dir,
+                route=route,
+                merge_chars=merge_chars,
+                write_doc=write_doc,
+                merge_deterministic=merge_deterministic,
+                pipeline_path=pipeline_path,
+                progress_callback=progress_callback,
+                concurrency=concurrency,
+                self_check=self_check,
+                limit_sections=limit_sections,
+                sample_ratio=sample_ratio,
+                unit_mode=unit_mode,
+            )
+        except Exception as exc:
+            partial_path = out_dir / AI_REQUIREMENTS_PARTIAL
+            partial = read_partial_snapshot(partial_path)
+            try:
+                if (partial
+                        and str(partial.get("run_id") or "") != previous_run_id):
+                    partial_input = str(partial.get("input_fingerprint") or "")
+                    write_partial_snapshot(
+                        partial_path,
+                        run_id=str(partial["run_id"]),
+                        completed=int(partial.get("completed") or 0),
+                        total=int(partial.get("total") or 0),
+                        complete=False,
+                        failed=True,
+                        error=str(exc),
+                        rows=list(partial.get("rows") or []),
+                        input_fingerprint=partial_input,
+                    )
+                elif attempt_input_fingerprint:
+                    # Preprocessing can fail before _run_ai_extract_locked publishes its
+                    # initial snapshot. Create a distinct terminal generation instead of
+                    # mutating a completed snapshot from an earlier run.
+                    write_partial_snapshot(
+                        partial_path,
+                        run_id=uuid.uuid4().hex,
+                        completed=0,
+                        total=0,
+                        complete=False,
+                        failed=True,
+                        error=str(exc),
+                        rows=[],
+                        input_fingerprint=attempt_input_fingerprint,
+                    )
+            except OSError:
+                LOGGER.exception("AI partial 失败终态写入失败")
+            raise
+
+
+def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
+                           merge_chars: int = DEFAULT_MERGE_CHARS,
+                           write_doc: bool = False, merge_deterministic: bool = False,
+                           pipeline_path: Path = DEFAULT_PIPELINE_PATH,
+                           progress_callback: Callable[[dict[str, Any]], None] | None = None,
+                           concurrency: int | None = None,
+                           self_check: bool | None = None,
+                           limit_sections: int | None = None,
+                           sample_ratio: float | None = None,
+                           unit_mode: str | None = None) -> dict[str, Any]:
+    """Implementation body for :func:`run_ai_extract` under the operation lease."""
     blocks = read_jsonl(out_dir / "blocks.jsonl")
     blocks = body_blocks(blocks)   # 封面/目录区不进抽取（EN 16314：目录条目被抽成 11 条空壳需求）
     resolved_mode = (unit_mode or os.environ.get(UNIT_MODE_ENV) or "clause").strip().lower()
@@ -1852,6 +2151,19 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         LOGGER.info("试抽模式：全文 %d 章均匀抽样 %d 章（质量指标只对样本计算）",
                     len(all_sections), len(sections))
 
+    run_id = uuid.uuid4().hex
+    partial_path = out_dir / AI_REQUIREMENTS_PARTIAL
+    input_fingerprint = extraction_input_fingerprint(out_dir)
+    write_partial_snapshot(
+        partial_path,
+        run_id=run_id,
+        completed=0,
+        total=len(sections),
+        complete=False,
+        rows=[],
+        input_fingerprint=input_fingerprint,
+    )
+
     config = config_for_route(route, pipeline_path)
     written: list[str] = []
     code_flagged = 0
@@ -1865,6 +2177,11 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         # 产出结构规格，所以不在此 early-return，继续走 write_doc / merge_deterministic。
         requirements: list[dict[str, Any]] = []
         route_label = "stub"
+        # 补抽补丁是专家已确认的独立审计资产，不是本轮 LLM 产出——stub 路由也必须
+        # 重放，否则正式文件会被空结果静默覆盖（补丁日志虽可重放，其间批注丢行）。
+        from omission_actions import apply_supplement_patches
+        requirements = apply_supplement_patches(out_dir, requirements)
+        ensure_domain_labels(requirements)
     else:
         from llm_client import apply_min_tokens
         config = apply_min_tokens(config, "extract-chapter" if resolved_mode == "chapter" else "extract")
@@ -1893,7 +2210,14 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
                                    doc_context=doc_context,
                                    self_check=resolve_self_check(self_check),
                                    block_info=block_info,
-                                   exemplars=bank_exemplars)
+                                   exemplars=bank_exemplars,
+                                   partial_path=partial_path,
+                                   run_id=run_id,
+                                   partial_input_fingerprint=input_fingerprint)
+        # 定点补抽补丁是独立审计层。全量抽取以新鲜基础结果为准，只重放来源与
+        # 策略仍匹配的补丁，防下一次全量运行静默覆盖专家已确认的补漏。
+        from omission_actions import apply_supplement_patches
+        requirements = apply_supplement_patches(out_dir, requirements)
         ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
         code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
         int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
@@ -1903,11 +2227,6 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
 
         from requirement_record import validate_rows
         validate_rows(requirements, where=AI_REQUIREMENTS)  # 行契约告警（F2，不拦截）
-        target = out_dir / AI_REQUIREMENTS
-        with target.open("w", encoding="utf-8", newline="\n") as f:
-            for req in requirements:
-                f.write(json.dumps(req, ensure_ascii=False) + "\n")
-        written.append(target.name)
 
         # 质量报表：这轮抽取的可核指标（覆盖率/漂移/自检补充/模块分布），落盘供追溯。
         # 覆盖分母统一口径（E3b）：与 consistency/批注/澄清同用 is_coverage_candidate
@@ -1945,10 +2264,34 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
         written.append(quality_path.name)
         result_quality = quality
 
+    # 正式产物与 complete 快照都采用同目录原子替换。先发布正式文件，再把 partial
+    # 标成 complete，读侧不会观察到“运行完成但最终文件仍是旧内容”的窗口。
+    target = out_dir / AI_REQUIREMENTS
+    atomic_write_jsonl(target, requirements)
+    written.append(target.name)
+    write_ai_requirements_metadata(
+        out_dir,
+        input_fingerprint=input_fingerprint,
+        run_id=run_id,
+        failed_sections=failed_sections,
+    )
+    written.append(AI_REQUIREMENTS_META)
+    write_partial_snapshot(
+        partial_path,
+        run_id=run_id,
+        completed=len(sections),
+        total=len(sections),
+        complete=True,
+        failed=bool(failed_sections),
+        error=(f"{failed_sections} section(s) failed" if failed_sections else ""),
+        rows=requirements,
+        input_fingerprint=input_fingerprint,
+    )
+
     result: dict[str, Any] = {"route": route_label, "sections": len(sections),
               "requirements": len(requirements), "code_drift_flagged": code_flagged,
               "int_drift_flagged": int_flagged, "failed_sections": failed_sections,
-              "written": written}
+              "written": written, "run_id": run_id}
     if sampled:
         result["sampled"] = {"sections": len(sections), "total_sections": len(all_sections)}
     if model:

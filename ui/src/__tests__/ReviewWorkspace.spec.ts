@@ -711,6 +711,32 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("API")
   })
 
+  it("collapses long global messages to one line with an expand toggle", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\demo"),
+        startApiSession: vi.fn().mockRejectedValue(new Error(
+          "API server startup timed out after 30000 ms while waiting for the local backend ready payload; retries exhausted")),
+      },
+    })
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("无法连接输出目录")
+    })
+
+    const toggle = wrapper.find('[data-testid="api-message-toggle"]')
+    expect(toggle.exists()).toBe(true)
+    expect(wrapper.find(".global-message-text").classes()).toContain("clamped")
+    await toggle.trigger("click")
+    expect(wrapper.find(".global-message-text").classes()).not.toContain("clamped")
+    await toggle.trigger("click")
+    expect(wrapper.find(".global-message-text").classes()).toContain("clamped")
+  })
+
   function deliverableBridge(overrides: Record<string, unknown> = {}) {
     return {
       getApiSession: vi.fn().mockResolvedValue(null),
@@ -1307,5 +1333,58 @@ describe("review workspace shell", () => {
       expect(synthCard).not.toContain("14%")
       expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("2/7")
     })
+  })
+
+  it("warns when a running stage goes quiet instead of silently looking stuck", async () => {
+    // 单章 LLM 调用可能数分钟无事件——超过阈值后界面必须区分"慢"与"死"
+    vi.useFakeTimers()
+    try {
+      const runPromise = new Promise<{ kind: string; out_dir: string }>(() => {})
+      type AnyEvent = { stage: string; step?: string; status?: string; completed?: number; total?: number; percent?: number }
+      let progressHandler: (event: AnyEvent) => void = () => {
+        throw new Error("progress handler was not registered")
+      }
+      Object.defineProperty(window, "ratomizerDesktop", {
+        configurable: true,
+        value: {
+          getApiSession: vi.fn().mockResolvedValue(null),
+          openDocument: vi.fn().mockResolvedValue("C:\input\doc.pdf"),
+          selectOutputDir: vi.fn().mockResolvedValue("E:\out\demo"),
+          openOutput: vi.fn(),
+          openPath: vi.fn(),
+          startApiSession: vi.fn().mockResolvedValue(null),
+          runPipeline: vi.fn().mockReturnValue(runPromise),
+          onTaskProgress: vi.fn((handler: (event: AnyEvent) => void) => {
+            progressHandler = handler
+            return vi.fn()
+          }),
+        },
+      })
+      vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, json: async () => [] } as Response)
+
+      const wrapper = mount(App)
+      await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+      await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+      void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+      await flushPromises()
+
+      progressHandler({ stage: "ai_extract", completed: 11, total: 46, percent: 24 })
+      await flushPromises()
+      expect(wrapper.find('[data-testid="run-stage-ai-extract"]').text()).toContain("运行中 24%")
+      expect(wrapper.find('[data-testid="run-stall-ai-extract"]').exists()).toBe(false)
+
+      vi.advanceTimersByTime(70_000)   // 超过 60s 停滞阈值 + 5s 心跳
+      await flushPromises()
+      expect(wrapper.find('[data-testid="run-stage-ai-extract"]').text()).toContain("已用时")
+      expect(wrapper.find('[data-testid="run-stall-ai-extract"]').text()).toContain("无新进度")
+      expect(wrapper.find('[data-testid="run-stall-hint"]').text()).toContain("AI抽取")
+
+      progressHandler({ stage: "ai_extract", completed: 12, total: 46, percent: 26 })
+      await flushPromises()
+      expect(wrapper.find('[data-testid="run-stall-ai-extract"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="run-stall-hint"]').exists()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

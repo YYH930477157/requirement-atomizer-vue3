@@ -153,6 +153,8 @@ class OwnershipRegressionTests(unittest.TestCase):
             out = Path(tmp)
             _write_jsonl(out / "ai_requirements.jsonl", [{
                 "ai_req_id": "AI-1", "title": "事件上报", "description": "上报事件。", "module": "事件",
+                "source_section": "4", "source_quote": "事件应在规定时限内上报。",
+                "suspicion_reasons": ["原文数值未带全"],
             }])
             (out / "functional_requirements.json").write_text(json.dumps({
                 "items": [{
@@ -163,11 +165,15 @@ class OwnershipRegressionTests(unittest.TestCase):
                     "module": "事件",
                 }]
             }, ensure_ascii=False), encoding="utf-8")
+            from clarification_report import collect_questions
+            clarification = collect_questions(out)[0]
             _write_jsonl(out / "clarification_answers.jsonl", [{
                 "source_id": "AI-1",
-                "question": "上报时限？",
+                "question": clarification["question"],
                 "answer": "事件产生后 30 秒内上报。",
                 "adopted": True,
+                "clarification_id": clarification["clarification_id"],
+                "evidence_fingerprint": clarification["evidence_fingerprint"],
             }])
 
             run_requirements_analysis(out, route="stub")

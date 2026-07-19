@@ -22,6 +22,40 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 class RequirementsAnalysisPipelineTests(unittest.TestCase):
+    def test_stale_clarification_answer_is_not_injected_as_authoritative_input(self) -> None:
+        from clarification_report import collect_questions
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            source = {
+                "ai_req_id": "AI-1",
+                "title": "事件上报",
+                "description": "上报事件。",
+                "module": "事件",
+                "source_section": "4",
+                "source_quote": "事件应在规定时限内上报。",
+                "suspicion_reasons": ["原文数值未带全"],
+            }
+            write_jsonl(out / "ai_requirements.jsonl", [source])
+            clarification = collect_questions(out)[0]
+            write_jsonl(out / "clarification_answers.jsonl", [{
+                "source_id": "AI-1",
+                "question": clarification["question"],
+                "answer": "事件产生后 30 秒内上报。",
+                "adopted": True,
+                "clarification_id": clarification["clarification_id"],
+                "evidence_fingerprint": clarification["evidence_fingerprint"],
+            }])
+            write_jsonl(out / "ai_requirements.jsonl", [dict(
+                source,
+                source_quote="事件应在链路恢复后尽快上报。",
+            )])
+
+            run_requirements_analysis(out, route="stub", template_path=None)
+            payload = json.loads((out / "engineering_analysis.json").read_text(encoding="utf-8"))
+
+        self.assertNotIn("客户答复：事件产生后 30 秒内上报。", payload["items"][0]["notes"])
+
     def test_writes_json_and_reports(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp_path = Path(td)

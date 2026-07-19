@@ -10,7 +10,17 @@ from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
 from review_actions import apply_review_action
-from ai_review_actions import apply_ai_review_action, read_ai_review_states, source_ai_requirement_id
+from ai_review_actions import (
+    apply_ai_review_action,
+    ensure_requirement_identity,
+    read_ai_review_states,
+    review_anchor_fingerprint,
+    review_state_for_requirement,
+    review_state_needs_reconfirmation,
+    review_subject_fingerprint,
+    source_ai_requirement_id,
+    source_fingerprint,
+)
 from io_utils import read_jsonl
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
@@ -137,7 +147,20 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             # 惰性反向导入（同 _clean_block_text 先例）：影印批注数据的唯一权威实现在导出侧,
             # 应用内视图与分享 HTML 共用同一份几何/换算——双渲染器等价靠同源,不靠各写一份
             from doc_annotation_export import build_pdf_annotation_payload
-            self.send_json(build_pdf_annotation_payload(self.output_dir))
+            try:
+                extraction = build_ai_extraction_status(self.output_dir)
+                partial_requirements = (
+                    list(extraction.get("rows") or []) if extraction.get("run_id") else None
+                )
+                if partial_requirements is None and final_ai_requirements_are_stale(self.output_dir):
+                    partial_requirements = []
+                self.send_json(build_pdf_annotation_payload(
+                    self.output_dir,
+                    requirements=partial_requirements,
+                ))
+            except (TimeoutError, OSError, ValueError) as exc:
+                # 抽取轮询路径：文件被活跃 writer 替换/撕裂是瞬态，契约同 /review-actions
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
         if parsed.path.startswith("/document/pages/"):
             filename = parsed.path.rsplit("/", 1)[-1]
@@ -193,6 +216,24 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/ai-requirements":
             self.send_json(build_ai_requirements(self.output_dir))
             return
+        if parsed.path == "/ai-extraction-status":
+            try:
+                self.send_json(build_ai_extraction_status(self.output_dir))
+            except (TimeoutError, OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        if parsed.path == "/omission-actions":
+            from omission_actions import read_current_omission_states
+            try:
+                states = read_current_omission_states(self.output_dir)
+            except (TimeoutError, OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
+                return
+            self.send_json({
+                "schema": "omission-actions/v1",
+                "states": [states[key] for key in sorted(states)],
+            })
+            return
         if parsed.path == "/review-insights":
             self.send_json(load_review_insights(self.output_dir))
             return
@@ -213,6 +254,12 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/ai-review-actions":
             self.handle_ai_review_action()
+            return
+        if parsed.path == "/omission-actions":
+            self.handle_omission_action()
+            return
+        if parsed.path == "/omission-reextract":
+            self.handle_omission_reextract()
             return
         if parsed.path != "/review-actions":
             self.send_error(404, "Unknown endpoint")
@@ -270,11 +317,39 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if not req_id or not status:
             self.send_json({"error": "ai_req_id and status are required"}, status=400)
             return
+        current = find_current_ai_requirement(self.output_dir, req_id)
+        if current is None:
+            self.send_json({"error": "AI requirement is not present in the current run"}, status=409)
+            return
+        current_source_fingerprint = (
+            str(current.get("source_fingerprint") or "") or source_fingerprint(current)
+        )
+        current_subject_fingerprint = (
+            str(current.get("review_subject_fingerprint") or "")
+            or review_subject_fingerprint(current)
+        )
+        submitted_source = str(payload.get("source_fingerprint") or "").strip()
+        submitted_subject = str(payload.get("review_subject_fingerprint") or "").strip()
+        if not submitted_source or not submitted_subject:
+            self.send_json({"error": "source and review subject fingerprints are required"}, status=409)
+            return
+        if ((submitted_source and submitted_source != current_source_fingerprint)
+                or (submitted_subject and submitted_subject != current_subject_fingerprint)):
+            self.send_json({
+                "error": "AI requirement changed; refresh before adjudicating",
+                "needs_reconfirmation": True,
+                "source_fingerprint": current_source_fingerprint,
+                "review_subject_fingerprint": current_subject_fingerprint,
+            }, status=409)
+            return
         try:
             state = apply_ai_review_action(self.output_dir, req_id, status,
                                            module_override=module_override,
                                            ownership_override=ownership_override,
-                                           reason=reason, actor=actor)
+                                           reason=reason, actor=actor,
+                                           source_fingerprint_value=current_source_fingerprint,
+                                           review_subject_fingerprint_value=current_subject_fingerprint,
+                                           review_anchor_fingerprint_value=review_anchor_fingerprint(current))
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=409)
             return
@@ -286,6 +361,93 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if (self.output_dir / "ai_requirements.jsonl").exists():
             _rebuilder().schedule(self.output_dir)
         self.send_json(state)
+
+    def handle_omission_action(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        from omission_actions import OmissionConflictError, apply_omission_action
+        omission_id = str(payload.get("omission_id") or "").strip()
+        source_fingerprint_value = str(payload.get("source_fingerprint") or "").strip()
+        if not omission_id or not source_fingerprint_value:
+            self.send_json({
+                "error": "omission identity and source fingerprint are required",
+                "needs_reconfirmation": True,
+            }, status=409)
+            return
+        try:
+            state = apply_omission_action(
+                self.output_dir,
+                block_id=str(payload.get("block_id") or ""),
+                omission_id=omission_id,
+                status=str(payload.get("status") or ""),
+                reason=str(payload.get("reason") or ""),
+                actor=str(payload.get("actor") or "").strip() or None,
+                expected_source_fingerprint=source_fingerprint_value,
+            )
+        except OmissionConflictError as exc:
+            self.send_json({"error": str(exc), "needs_reconfirmation": True}, status=409)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        self.send_json(state)
+
+    def handle_omission_reextract(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        from omission_actions import (
+            OmissionConflictError,
+            OmissionNoResultError,
+            targeted_reextract,
+        )
+        focus_lines = payload.get("focus_lines")
+        if focus_lines is not None and not isinstance(focus_lines, list):
+            self.send_json({"error": "focus_lines must be an array"}, status=400)
+            return
+        omission_id = str(payload.get("omission_id") or "").strip()
+        source_fingerprint_value = str(payload.get("source_fingerprint") or "").strip()
+        if not omission_id or not source_fingerprint_value:
+            self.send_json({
+                "error": "omission identity and source fingerprint are required",
+                "needs_reconfirmation": True,
+            }, status=409)
+            return
+        try:
+            result = targeted_reextract(
+                self.output_dir,
+                block_id=str(payload.get("block_id") or ""),
+                omission_id=omission_id,
+                focus_lines=[str(value) for value in (focus_lines or [])],
+                actor=str(payload.get("actor") or "").strip() or None,
+                reason=str(payload.get("reason") or ""),
+                route=str(payload.get("route") or "openai_compatible"),
+                expected_source_fingerprint=source_fingerprint_value,
+            )
+        except OmissionConflictError as exc:
+            self.send_json({
+                "error": str(exc),
+                "retryable": True,
+                "needs_reconfirmation": True,
+            }, status=409)
+            return
+        except OmissionNoResultError as exc:
+            self.send_json({"error": str(exc), "retryable": False}, status=422)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (LLMConnectionError, LLMResponseError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=502)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        self.send_json(result)
 
     def read_json_body(self) -> dict | None:
         try:
@@ -392,6 +554,7 @@ _BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
 # 块级中文翻译缓存（内容哈希键,仅由真 LLM 写入;详见 doc_annotation_export 的生成侧）。
 # 键函数与加载器放这里作为唯一实现——批注导出与本 API 两个渲染面共用,防分叉。
 ANNOTATION_TRANSLATIONS = "annotation_translations.json"
+ANNOTATION_TRANSLATION_GUARDS_VERSION = "annotation-translation-guards-v1"
 
 
 def translation_key(text: object) -> str:
@@ -400,7 +563,7 @@ def translation_key(text: object) -> str:
 
 
 def load_annotation_translations(output_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
-    """annotation_translations.json → (可嵌入译文, 被拒条目原因)。缺失/损坏 → 空（视图无翻译照常）。"""
+    """Load only translations already validated by the current anti-drift guards."""
     try:
         data = json.loads((Path(output_dir) / ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -411,6 +574,8 @@ def load_annotation_translations(output_dir: Path) -> tuple[dict[str, str], dict
     if isinstance(items, dict):
         for key, entry in items.items():
             if not isinstance(entry, dict):
+                continue
+            if entry.get("guards_version") != ANNOTATION_TRANSLATION_GUARDS_VERSION:
                 continue
             translation = str(entry.get("translation") or "").strip()
             if translation and not entry.get("rejected"):
@@ -434,9 +599,15 @@ def _build_document_blocks_impl(output_dir: Path) -> dict:
     在应用内视图与导出 HTML 同语义。"""
     blocks = read_jsonl(output_dir / "blocks.jsonl")
     from merged_consistency import is_coverage_candidate
+    from omission_actions import make_omission_id, omission_source_fingerprint
     trimmed = []
     for b in blocks:
         row = {k: b.get(k) for k in _BLOCK_FIELDS}
+        block_id = str(b.get("block_id") or "")
+        block_text = str(b.get("text") or "")
+        if block_id:
+            row["omission_id"] = make_omission_id(block_id, block_text)
+            row["omission_source_fingerprint"] = omission_source_fingerprint(block_id, block_text)
         # 覆盖/遗漏统一口径（E3b）：服务端算好,双渲染器与澄清清单同源消费
         row["coverage_candidate"] = is_coverage_candidate(b)
         trimmed.append(row)
@@ -482,7 +653,8 @@ _DOC_MEMO_SOURCES = ("blocks.jsonl", "annotation_translations.json")
 _REQ_MEMO_SOURCES = ("merged_spec_requirements.json", "ai_requirements_doc.json",
                      "ai_requirements.jsonl", "ai_review_states.jsonl",
                      "functional_requirements.json", "engineering_analysis.json",
-                     "consistency_report.json", "blocks.jsonl")
+                     "consistency_report.json", "blocks.jsonl",
+                     "ai_requirements.meta.json", "ai_requirements.partial.json")
 
 
 def _source_signature(output_dir: Path, names: tuple[str, ...]) -> tuple:
@@ -687,10 +859,39 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
     优先读 merged_spec_requirements.json（双引擎交付物），回退 ai_requirements_doc.json /
     ai_requirements.jsonl。anchor_block_id = 含 source_quote 的具体段落（段落级精确）。
     """
-    requirements = _load_ai_requirements(output_dir)
+    if final_ai_requirements_are_stale(output_dir):
+        return []
+    source_path = next(
+        (output_dir / name for name in (
+            "ai_requirements.jsonl",
+            "merged_spec_requirements.json",
+            "ai_requirements_doc.json",
+        ) if (output_dir / name).exists()),
+        None,
+    )
+    return _enrich_ai_requirement_rows(
+        output_dir, _load_ai_requirements(output_dir), freshness_reference=source_path,
+    )
+
+
+def _enrich_ai_requirement_rows(
+    output_dir: Path,
+    requirements: list[dict],
+    *,
+    freshness_reference: Path | None = None,
+) -> list[dict]:
+    """Apply the regular review-workspace projection to final or partial rows."""
+    def artifact_is_current(name: str) -> bool:
+        if freshness_reference is None:
+            return True
+        try:
+            return (output_dir / name).stat().st_mtime_ns >= freshness_reference.stat().st_mtime_ns
+        except OSError:
+            return False
+
     states = read_ai_review_states(output_dir)
-    membership = _functional_membership(output_dir)
-    analysis_map = _analysis_enrichment(output_dir)
+    membership = _functional_membership(output_dir) if artifact_is_current("functional_requirements.json") else {}
+    analysis_map = _analysis_enrichment(output_dir) if artifact_is_current("engineering_analysis.json") else {}
     block_rows = read_jsonl(output_dir / "blocks.jsonl")
     text_by_block = {str(b.get("block_id")): (b.get("text") or "") for b in block_rows}
     from requirements_analysis_rules import classify_ownership  # 规则初判（确定性、零 LLM）
@@ -698,19 +899,23 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
 
     enriched: list[dict] = []
     for req in requirements:
-        rid = source_ai_requirement_id(req)
-        state = states.get(rid)
         row = dict(req)
+        ensure_requirement_identity(row)
+        rid = source_ai_requirement_id(req)
+        state = review_state_for_requirement(row, states)
         row["ai_req_id"] = rid
+        needs_reconfirmation = review_state_needs_reconfirmation(row, state)
+        effective_state = None if needs_reconfirmation else state
         row.update(membership.get(rid, {}))
         row.update(analysis_map.get(rid, {}))   # 兼容保留；当前视图不消费富化叙述字段
         row["anchor_block_id"] = anchor_block_id(req, text_by_block)
         # 回声锚点(0715 电表招标实证:同文重复出现的第二处显示"未覆盖",用户误判整段没解析)
         row["echo_block_ids"] = compute_echo_block_ids(row, block_rows)
         row["review_state"] = state
+        row["needs_reconfirmation"] = needs_reconfirmation
         # 专家改过模块则以 override 为准（module 字段保持原值供追溯）
-        if state and state.get("module_override"):
-            row["module_effective"] = state["module_override"]
+        if effective_state and effective_state.get("module_override"):
+            row["module_effective"] = effective_state["module_override"]
         else:
             row["module_effective"] = req.get("module") or (req.get("labels") or [None])[0]
         # 归属单源化（真实反馈 2026-07-12,test18）：视图层与分析层各判一次会分叉——
@@ -726,16 +931,144 @@ def _build_ai_requirements_impl(output_dir: Path) -> list[dict]:
             row["ownership"] = verdict["ownership"]
             for key in ("ownership_reason", "ownership_source", "ownership_confidence"):
                 row.setdefault(key, verdict.get(key))
-        if state and state.get("ownership_override"):
-            row["ownership_effective"] = state["ownership_override"]
+        if effective_state and effective_state.get("ownership_override"):
+            row["ownership_effective"] = effective_state["ownership_override"]
         else:
             row["ownership_effective"] = row["ownership"]
-        row["status"] = (state or {}).get("status") or "draft"
+        row["status"] = (effective_state or {}).get("status") or "draft"
         flags = _row_consistency_flags(row, dup_quotes, differ_codes)
         if flags:
             row["consistency_flags"] = flags
         enriched.append(row)
     return enriched
+
+
+def build_ai_extraction_status(output_dir: Path) -> dict:
+    """Return only the run-aware partial generation; never merge an older final file."""
+    from ai_extract import (
+        AI_PARTIAL_SCHEMA,
+        AI_REQUIREMENTS_PARTIAL,
+        extraction_input_fingerprint,
+        read_partial_snapshot,
+    )
+
+    root = Path(output_dir).expanduser().resolve()
+    partial_path = root / AI_REQUIREMENTS_PARTIAL
+    partial = read_partial_snapshot(partial_path)
+    current_input = extraction_input_fingerprint(root)
+    if (partial is None
+            or not current_input
+            or str(partial.get("input_fingerprint") or "") != current_input):
+        return {
+            "schema": AI_PARTIAL_SCHEMA,
+            "run_id": None,
+            "completed": 0,
+            "total": 0,
+            "complete": False,
+            "failed": False,
+            "rows": [],
+        }
+    return {
+        "schema": AI_PARTIAL_SCHEMA,
+        "run_id": str(partial["run_id"]),
+        "completed": int(partial.get("completed") or 0),
+        "total": int(partial.get("total") or 0),
+        "complete": bool(partial.get("complete")),
+        "failed": bool(partial.get("failed")),
+        "error": str(partial.get("error") or ""),
+        "rows": _enrich_ai_requirement_rows(
+            root,
+            list(partial.get("rows") or []),
+            freshness_reference=partial_path,
+        ),
+    }
+
+
+def final_ai_requirements_are_stale(output_dir: Path) -> bool:
+    """Reject a final result that belongs to an older ``blocks.jsonl`` generation."""
+    from ai_extract import (
+        AI_REQUIREMENTS,
+        AI_REQUIREMENTS_META,
+        AI_REQUIREMENTS_PARTIAL,
+        extraction_input_fingerprint,
+        read_partial_snapshot,
+    )
+
+    root = Path(output_dir).expanduser().resolve()
+    current_input = extraction_input_fingerprint(root)
+    meta_path = root / AI_REQUIREMENTS_META
+    if meta_path.exists():
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return True
+        return (
+            not isinstance(metadata, dict)
+            or metadata.get("schema") != "ai-requirements-final/v1"
+            or not current_input
+            or str(metadata.get("input_fingerprint") or "") != current_input
+        )
+
+    partial_path = root / AI_REQUIREMENTS_PARTIAL
+    if partial_path.exists():
+        partial = read_partial_snapshot(partial_path)
+        return (
+            partial is None
+            or not current_input
+            or str(partial.get("input_fingerprint") or "") != current_input
+        )
+
+    # Legacy output directories predate generation metadata. The final file was produced
+    # after parsing, so a newer blocks file is a conservative, deterministic stale signal.
+    blocks_path = root / "blocks.jsonl"
+    final_path = next(
+        (root / name for name in (
+            AI_REQUIREMENTS,
+            "merged_spec_requirements.json",
+            "ai_requirements_doc.json",
+        ) if (root / name).exists()),
+        None,
+    )
+    if final_path is None or not blocks_path.exists():
+        return False
+    try:
+        blocks_are_newer = blocks_path.stat().st_mtime_ns > final_path.stat().st_mtime_ns
+    except OSError:
+        return True
+    if not blocks_are_newer:
+        return False
+    if final_path.name == AI_REQUIREMENTS:
+        blocks = {
+            str(block.get("block_id") or ""): _norm_text(block.get("text"))
+            for block in read_jsonl(blocks_path)
+            if block.get("block_id")
+        }
+        for row in read_jsonl(final_path):
+            quote = _norm_text(row.get("source_quote"))
+            source_text = " ".join(
+                blocks.get(str(block_id), "")
+                for block_id in (row.get("source_block_ids") or [])
+            ).strip()
+            if quote and source_text and (quote in source_text or source_text in quote):
+                # Some legacy fixtures/tools rewrite blocks after the final JSONL. A verbatim
+                # source anchor proves this row still belongs to the current document.
+                return False
+    return True
+
+
+def find_current_ai_requirement(output_dir: Path, req_id: str) -> dict | None:
+    """Find the adjudication subject in the current partial generation, then final output."""
+    root = Path(output_dir).expanduser().resolve()
+    status = build_ai_extraction_status(root)
+    candidates = status.get("rows") or []
+    if status.get("run_id") is None:
+        if final_ai_requirements_are_stale(root):
+            return None
+        candidates = build_ai_requirements(root)
+    for row in candidates:
+        if source_ai_requirement_id(row) == req_id:
+            return row
+    return None
 
 
 def load_review_insights(output_dir: Path) -> dict:
