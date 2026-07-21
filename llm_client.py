@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+import http.client
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -35,6 +36,11 @@ def apply_min_tokens(config, purpose: str):
 
 
 RATE_LIMIT_MIN_ATTEMPTS = 8
+
+# 截断自动升级上限（test3 实证：3.22 章推理模型 reasoning 吃光 6144 预算 → 空响应 →
+# JSON 修复调用同样被截 → 整章稳定失败）。finish_reason=length 或空 content 时 max_tokens
+# 倍升重试,封顶 32768（6144→12288→24576→32768 最多 3 次升级）——比丢整章便宜得多。
+MAX_TOKENS_ESCALATION_CAP = 32768
 
 # --- 429 自适应闸门（0714 批次一 S2）--------------------------------------------
 # 真实数据（EN 16314 全量跑）：并发 4 时抽取轨 781 次调用有 164 次 429——各线程各自
@@ -253,32 +259,50 @@ def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> st
         "model": config.model,
         "messages": messages,
         "temperature": config.temperature,
-        "max_tokens": config.max_tokens,
     }
     endpoint_key = f"{config.base_url}|{config.model}"
     with _JSON_MODE_LOCK:
         endpoint_supported = endpoint_key not in _JSON_MODE_UNSUPPORTED
-    if _json_mode_enabled() and endpoint_supported:
-        payload["response_format"] = {"type": "json_object"}
+    max_tokens = int(config.max_tokens)
+    while True:
+        payload["max_tokens"] = max_tokens
+        if _json_mode_enabled() and endpoint_supported:
+            payload["response_format"] = {"type": "json_object"}
+            try:
+                response = _post_json(config, payload)
+            except LLMResponseFormatUnsupported:
+                # 只有端点明确指出 response_format/json_object 不受支持才记忆并降级。
+                # 其它 4xx、畸形 200 和响应结构错误原样抛出,避免掩盖真实故障并重复调用。
+                with _JSON_MODE_LOCK:
+                    _JSON_MODE_UNSUPPORTED.add(endpoint_key)
+                endpoint_supported = False
+                LOGGER.warning("端点疑似不支持 response_format=json_object,已记住并降级重发: %s", endpoint_key)
+                payload.pop("response_format", None)
+                response = _post_json(config, payload)
+        else:
+            response = _post_json(config, payload)
         try:
-            response = _post_json(config, payload)
-        except LLMResponseFormatUnsupported:
-            # 只有端点明确指出 response_format/json_object 不受支持才记忆并降级。
-            # 其它 4xx、畸形 200 和响应结构错误原样抛出,避免掩盖真实故障并重复调用。
-            with _JSON_MODE_LOCK:
-                _JSON_MODE_UNSUPPORTED.add(endpoint_key)
-            LOGGER.warning("端点疑似不支持 response_format=json_object,已记住并降级重发: %s", endpoint_key)
-            payload.pop("response_format", None)
-            response = _post_json(config, payload)
-    else:
-        response = _post_json(config, payload)
-    try:
-        content = response["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMResponseError("LLM response missing choices[0].message.content") from exc
-    if not isinstance(content, str):
-        raise LLMResponseError("LLM response content must be a string")
-    return content
+            choice = response["choices"][0]
+            content = choice["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMResponseError("LLM response missing choices[0].message.content") from exc
+        if not isinstance(content, str):
+            raise LLMResponseError("LLM response content must be a string")
+        finish_reason = str(choice.get("finish_reason") or "")
+        # 截断检测：finish_reason=length（输出被 max_tokens 切断）或空 content（推理模型
+        # reasoning 吃光预算、可见输出为零）。两者都注定 JSON 解析失败——立即升级重试,
+        # 不走"截断 JSON → 修复重发"的弯路（修复调用用同一 max_tokens,同样被截）。
+        truncated = finish_reason == "length" or not content.strip()
+        if not truncated:
+            return content
+        if max_tokens >= MAX_TOKENS_ESCALATION_CAP:
+            LOGGER.warning("LLM 输出截断/空响应且 max_tokens 已到升级上限 %d（finish=%s）,按原样返回交下游修复",
+                           MAX_TOKENS_ESCALATION_CAP, finish_reason)
+            return content
+        escalated = min(max_tokens * 2, MAX_TOKENS_ESCALATION_CAP)
+        LOGGER.warning("LLM 输出截断/空响应（finish=%s bytes=%d）——max_tokens %d→%d 自动升级重试 model=%s",
+                       finish_reason, len(content), max_tokens, escalated, config.model)
+        max_tokens = escalated
 
 
 def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, Any]:
@@ -354,7 +378,9 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                     f"LLM endpoint does not support response_format=json_object: HTTP {exc.code}: {raw}"
                 ) from exc
             raise LLMResponseError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+            # http.client.HTTPException（IncompleteRead/RemoteDisconnected/BadStatusLine）不是
+            # URLError 子类——漏捕时一次传输抖动直接中止整轮抽取（test3 实测三连崩）。
             LOGGER.warning("LLM 连接异常 model=%s dur=%.1fs attempt=%d err=%s",
                            config.model, time.monotonic() - started, attempt + 1,
                            str(exc)[:120])

@@ -193,6 +193,55 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(len(service.requests), 2)
         self.assertIn("Only output valid JSON", service.requests[1]["messages"][-1]["content"])
 
+    def test_truncated_response_escalates_max_tokens(self) -> None:
+        """finish_reason=length → max_tokens 倍升重试（test3 实证：截断 JSON 走修复重发
+        同预算仍被截,整章稳定失败——必须升级预算而非修复）。"""
+        truncated = {"choices": [{"message": {"content": '{"requirements": [{"title": "partial'}, "finish_reason": "length"}]}
+        complete = {"choices": [{"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}]}
+        with MockOpenAIService([{"body": truncated}, {"body": complete}]) as service:
+            result = chat_json(
+                LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="",
+                                timeout_s=2, max_retries=0, max_tokens=100),
+                "system",
+                "user",
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(service.requests), 2)
+        self.assertEqual(service.requests[0]["max_tokens"], 100)
+        self.assertEqual(service.requests[1]["max_tokens"], 200)
+
+    def test_empty_content_escalates_max_tokens(self) -> None:
+        """空 content（推理模型 reasoning 吃光预算的可见输出）同样触发升级重试。"""
+        empty = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+        complete = {"choices": [{"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}]}
+        with MockOpenAIService([{"body": empty}, {"body": complete}]) as service:
+            result = chat_json(
+                LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="",
+                                timeout_s=2, max_retries=0, max_tokens=100),
+                "system",
+                "user",
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(service.requests), 2)
+        self.assertEqual(service.requests[1]["max_tokens"], 200)
+
+    def test_escalation_stops_at_cap(self) -> None:
+        """已到升级上限的截断原样返回交下游修复,不再多发请求。"""
+        from llm_client import _chat_content
+
+        truncated = {"choices": [{"message": {"content": '{"partial'}, "finish_reason": "length"}]}
+        with MockOpenAIService([{"body": truncated}]) as service:
+            content = _chat_content(
+                LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="",
+                                timeout_s=2, max_retries=0, max_tokens=32768),
+                [{"role": "user", "content": "u"}],
+            )
+
+        self.assertEqual(content, '{"partial')
+        self.assertEqual(len(service.requests), 1)   # 到顶不升级,零额外请求
+
     def test_json_array_triggers_one_repair_request(self) -> None:
         with MockOpenAIService(
             [

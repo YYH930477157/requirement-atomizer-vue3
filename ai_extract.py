@@ -27,6 +27,7 @@ import os
 import re
 import tempfile
 import time
+import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
@@ -196,6 +197,58 @@ def write_compliance_requirements(
         (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
     return payload
+
+
+def _supplement_uncovered_compliance(
+    requirements: list[dict[str, Any]],
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """确定性合规兜底：LLM 未覆盖的合规块 → 补 draft 需求行（逐字引句 + 正则文号 +
+    suspicion 标记）。补行进 ai_requirements.jsonl——suspicion 随澄清报告进必答清单,
+    漏抽即入澄清而非静默漏（test3 实证 LLM 把 terse 证书句当行政文本跳过,召回 2/7）。"""
+    from compliance import is_compliance_requirement, looks_like_compliance, resolve_source_backed_instrument
+    from merged_consistency import coverage_gaps
+
+    source_pool = [b for b in blocks if isinstance(b, dict)]
+    compliance_blocks = [b for b in source_pool if looks_like_compliance(b.get("text"))]
+    if not compliance_blocks:
+        return requirements
+    compliance_reqs = [r for r in requirements if is_compliance_requirement(r)]
+    gaps = coverage_gaps(compliance_reqs, compliance_blocks, source_blocks=source_pool)
+    uncovered_ids = set(gaps.get("uncovered_block_ids") or [])
+    if not uncovered_ids:
+        return requirements
+
+    block_map = {str(b.get("block_id") or ""): b for b in compliance_blocks}
+    supplemented = list(requirements)
+    for block_id in sorted(uncovered_ids):
+        block = block_map.get(block_id)
+        if block is None:
+            continue
+        text = str(block.get("text") or "").strip()
+        if not text:
+            continue
+        instrument, _note = resolve_source_backed_instrument("", text)
+        section_path = [str(s) for s in (block.get("section_path") or []) if str(s).strip()]
+        supplemented.append({
+            "ai_req_id": f"COMP-DET-{block_id}",
+            "title": text[:120],
+            "description": text,
+            "type": "compliance",
+            "priority": "P1",
+            "status": "draft",
+            "labels": ["测试合规"],
+            "compliance_instrument": instrument,
+            "compliance_obligations": [{"text": text}],
+            "source_section": section_path[-1] if section_path else "",
+            "source_quote": text,
+            "source_block_ids": [block_id],
+            "source_mapping": "deterministic_fallback",
+            "suspicion_reasons": ["确定性合规兜底（LLM 未覆盖）"],
+            "notes": "合规交付义务由确定性规则检出（LLM 未覆盖），引句逐字来自原文，请人工审核后确认",
+        })
+    LOGGER.info("合规兜底：补入 %d 条 LLM 未覆盖的合规交付义务", len(supplemented) - len(requirements))
+    return supplemented
 
 
 def _coverage_quality_fields(
@@ -497,7 +550,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v9"  # v9:合规 umbrella/instrument 只认确定性证据;v8:混合技术/合规分流
+EXTRACT_GUARDS_VERSION = "guards-v10"  # v10:引用三层分流(标点差异软标/跨块逐字降级)+合规兜底补行进 jsonl;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -928,6 +981,44 @@ def _map_requirement_source(req: dict[str, Any], section: dict[str, Any]) -> Non
         req["source_mapping"] = "section_fallback"
 
 
+def _norm_verbatim(text: str) -> str:
+    """NFKC + lowercase + collapse whitespace for verbatim-quote comparison."""
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(text or ""))).strip().lower()
+
+
+def _char_verbatim(text: str) -> str:
+    """NFKC + casefold 后只留 [a-z0-9]——标点归一差异层的比较底座（test3 分诊：37 条
+    引用非逐字里 17 条是括号/冒号/µ/空格类出入,内容逐字）。quote 剥空时不判此层
+    （空串是任意文本的子串,会假阳）——调用方须先查 quote_chars 非空。"""
+    return re.sub(r"[^a-z0-9]+", "", unicodedata.normalize("NFKC", str(text or "")).casefold())
+
+
+def _is_sentence_subsequence(quote: str, source: str) -> bool:
+    """True if every sentence-like fragment of *quote* appears in *source* (cross-paragraph
+    verbatim reassembly). Softer than exact substring — flags as 引用跨段 not 引用非逐字."""
+    fragments = [f.strip() for f in re.split(r"[.!?;。！？；]\s*", quote) if f.strip()]
+    if not fragments:
+        return False
+    norm_source = _norm_verbatim(source)
+    return all(_norm_verbatim(f) in norm_source for f in fragments)
+
+
+def _downgrade_cross_block_verbatim(requirements: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> None:
+    """跨块逐字降级：quote 在所属 section 内非逐字、但在全文（跨块拼接底座）逐字命中 →
+    硬标"引用非逐字"改挂软标"引用跨段"（test3 分诊：37 条里 4 条是跨 section 边界的
+    完整逐字引用,属锚点严格性误报,不该进必答清单）。"""
+    full_norm = _norm_verbatim("\n".join(str(b.get("text") or "") for b in blocks))
+    if not full_norm:
+        return
+    for req in requirements:
+        reasons = req.get("suspicion_reasons") or []
+        if "引用非逐字" not in reasons:
+            continue
+        quote_norm = _norm_verbatim(req.get("source_quote"))
+        if quote_norm and quote_norm in full_norm:
+            req["suspicion_reasons"] = ["引用跨段" if r == "引用非逐字" else r for r in reasons]
+
+
 def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
                               context_ints: frozenset[str] | set[str] = frozenset()) -> list[dict[str, Any]]:
     """raw LLM 需求 → 归一 + 分级漂移护栏。抽取与完整性自检共用（补的也过同一套护栏）。
@@ -981,9 +1072,16 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
             suspicion.append("编码漂移")
         if ints:
             suspicion.append("数字漂移")
-        quote_norm = re.sub(r"\s+", " ", req["source_quote"]).strip().lower()
-        if quote_norm and quote_norm not in re.sub(r"\s+", " ", source).lower():
-            suspicion.append("引用非逐字")
+        quote_norm = _norm_verbatim(req["source_quote"])
+        if quote_norm and quote_norm not in _norm_verbatim(source):
+            quote_chars = _char_verbatim(req["source_quote"])
+            if quote_chars and quote_chars in _char_verbatim(source):
+                # 标点归一差异（µs/括号/冒号出入,内容逐字）→ 软标,不进必答
+                suspicion.append("引用标点差异")
+            elif _is_sentence_subsequence(req["source_quote"], source):
+                suspicion.append("引用跨段")
+            else:
+                suspicion.append("引用非逐字")
         left_behind = _values_left_behind(req, source)
         if left_behind:
             suspicion.append("原文数值未带全")
@@ -2433,6 +2531,8 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
 
     # 正式产物与 complete 快照都采用同目录原子替换。先发布正式文件，再把 partial
     # 标成 complete，读侧不会观察到“运行完成但最终文件仍是旧内容”的窗口。
+    _downgrade_cross_block_verbatim(requirements, blocks)   # 跨块逐字硬标→软标（写盘前统一过一遍）
+    requirements = _supplement_uncovered_compliance(requirements, blocks)   # 合规漏抽兜底,进 jsonl+澄清
     target = out_dir / AI_REQUIREMENTS
     atomic_write_jsonl(target, requirements)
     written.append(target.name)

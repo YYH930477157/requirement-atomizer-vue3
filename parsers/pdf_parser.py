@@ -47,9 +47,11 @@ _COPYRIGHT_FOOTER_RE = re.compile(chr(0xA9) + ".{0,40}" + chr(92) + "bpage" + ch
 _FRAG_ALPHA_RE = re.compile("(?<![0-9] )" + chr(92) + "b([B-HJ-Zb-hj-z]) ([a-z]{2,})" + chr(92) + "b")  # 排除 a/A/I/i（合法单字母词）与数字后的单位字母（"0,5 m as"）
 _FRAG_CAP_RE = re.compile(r"\b([A-Z]) ([A-Z]{1,4})\b(?! [a-z])")   # "I SO"/"O NE" → ISO/ONE
 _FRAG_DIGIT_RE = re.compile(r"\b(\d) (\d{2,})\b")                   # "1 2007" → 12007
+_FRAG_DECIMAL_RE = re.compile(r"\b(\d) ([.,]\d)")                   # "1 .5" → 1.5 / "1 ,5" → 1,5
+_FRAG_DIGIT_PAIR_RE = re.compile(r"\b(\d) (\d)\b")                  # "1 0" → 10
 _FRAG_PROBE_RE = re.compile(r"\b[A-Za-z] [a-z]{2,}\b")
 DEFRAG_RATIO_THRESHOLD = 0.02   # 每词碎片数 ≥2% 判定为破碎文档
-PDF_TEXT_REPAIR_VERSION = "pdf-text-repair-v2"
+PDF_TEXT_REPAIR_VERSION = "pdf-text-repair-v3"
 PDF_TEXT_REPAIR_VOCAB_VERSION = "wordninja-top50000-v1+metering-v1"
 _REPAIR_VOCAB_RESOURCE = "data/english_words_top50000.txt.gz"
 _ALPHA_TOKEN_RE = re.compile(r"[A-Za-z]+")
@@ -394,8 +396,22 @@ def defragment_text_with_audit(text: str) -> tuple[str, list[dict[str, Any]]]:
             r"\1\2",
             "digit_fragment_join",
         )
+        current, decimal_events = _apply_regex_repair(
+            current,
+            _FRAG_DECIMAL_RE,
+            r"\1\2",
+            "decimal_fragment_join",
+        )
+        current, pair_events = _apply_regex_repair(
+            current,
+            _FRAG_DIGIT_PAIR_RE,
+            r"\1\2",
+            "digit_pair_fragment_join",
+        )
         events.extend(cap_events)
         events.extend(digit_events)
+        events.extend(decimal_events)
+        events.extend(pair_events)
         if current == previous:
             break
 

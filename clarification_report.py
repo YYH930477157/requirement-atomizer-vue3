@@ -102,22 +102,25 @@ SIGNAL_BLOCKER_LEVELS = {
     "analyze:assumption": BLOCKER_IMPORTANT,
 }
 
-_SUSPICION_POLICIES: dict[str, tuple[str, str, str, str]] = {
-    # reason: (stable signal, category, audience, blocker_level)
-    "编码漂移": ("suspicion:code_drift", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING),
-    "数字漂移": ("suspicion:number_drift", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING),
-    "原文数值未带全": ("suspicion:漏值", CAT_MISSING, AUDIENCE_CUSTOMER, BLOCKER_BLOCKING),
-    "引用非逐字": ("suspicion:引用", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT),
-    "验收不可测": ("suspicion:验收", CAT_AMBIGUOUS, AUDIENCE_CUSTOMER, BLOCKER_IMPORTANT),
-    "资料性来源待核": ("suspicion:informative_source", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT),
-    "资料性附录来源": ("suspicion:informative_source", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT),
-    "情态升格待核": ("suspicion:modal_strength", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT),
-    "标准号待核": ("suspicion:standard_ref", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING),
-    "数值配对待核": ("suspicion:value_pairing", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING),
-    "表文数值不一致": ("suspicion:table_text_mismatch", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING),
-    "自检补充（初抽遗漏）": ("suspicion:self_check_added", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT),
+_SUSPICION_POLICIES: dict[str, tuple[str, str, str, str, str]] = {
+    # reason: (stable signal, category, audience, blocker_level, tier)
+    "编码漂移": ("suspicion:code_drift", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING, TIER_HARD),
+    "数字漂移": ("suspicion:number_drift", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING, TIER_HARD),
+    "原文数值未带全": ("suspicion:漏值", CAT_MISSING, AUDIENCE_CUSTOMER, BLOCKER_BLOCKING, TIER_HARD),
+    "引用非逐字": ("suspicion:引用", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD),
+    "引用跨段": ("suspicion:引用", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_SOFT),
+    "引用标点差异": ("suspicion:引用", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_SOFT),
+    "验收不可测": ("suspicion:验收", CAT_AMBIGUOUS, AUDIENCE_CUSTOMER, BLOCKER_IMPORTANT, TIER_HARD),
+    "资料性来源待核": ("suspicion:informative_source", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD),
+    "资料性附录来源": ("suspicion:informative_source", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD),
+    "情态升格待核": ("suspicion:modal_strength", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD),
+    "标准号待核": ("suspicion:standard_ref", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING, TIER_HARD),
+    "数值配对待核": ("suspicion:value_pairing", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING, TIER_HARD),
+    "表文数值不一致": ("suspicion:table_text_mismatch", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING, TIER_HARD),
+    "确定性合规兜底（LLM 未覆盖）": ("suspicion:compliance_fallback", CAT_MISSING, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD),
+    "自检补充（初抽遗漏）": ("suspicion:self_check_added", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD),
     "自检复核:描述与引句疑似矛盾": (
-        "suspicion:self_check_conflict", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT
+        "suspicion:self_check_conflict", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD
     ),
 }
 
@@ -272,20 +275,21 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
             if not reason:
                 continue
             if reason.startswith("二遍复核:"):
-                signal, category, audience, blocker = (
+                signal, category, audience, blocker, tier = (
                     "suspicion:second_pass_semantic",
                     CAT_CONFLICT,
                     AUDIENCE_INTERNAL,
                     BLOCKER_BLOCKING,
+                    TIER_HARD,
                 )
                 reason_subject = f"{requirement_subject}:verify:{reason.split(':', 1)[1]}"
             else:
                 policy = _SUSPICION_POLICIES.get(reason)
                 if policy is None:
                     signal = "suspicion:other:" + hashlib.sha1(reason.encode("utf-8")).hexdigest()[:10]
-                    category, audience, blocker = CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT
+                    category, audience, blocker, tier = CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD
                 else:
-                    signal, category, audience, blocker = policy
+                    signal, category, audience, blocker, tier = policy
                 reason_subject = requirement_subject
             entries.append(_entry(
                 category,
@@ -294,6 +298,7 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 quote=quote,
                 source_id=rid,
                 signal=signal,
+                tier=tier,
                 audience=audience,
                 blocker_level=blocker,
                 module=module,
