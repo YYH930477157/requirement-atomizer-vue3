@@ -306,6 +306,62 @@ class AdjudicationFingerprintTests(unittest.TestCase):
 
 
 class OmissionActionTests(unittest.TestCase):
+    def test_current_candidates_exclude_blocks_already_covered_by_a_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_jsonl(out / "blocks.jsonl", [
+                {"block_id": "B1", "order": 1, "text": "The meter shall log events.",
+                 "requirement_like": True, "noise": False},
+                {"block_id": "B2", "order": 2, "text": "The meter shall expose alarms.",
+                 "requirement_like": True, "noise": False},
+            ])
+            _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [{
+                "source_quote": "The meter shall log events.",
+            }])
+
+            candidates = omission_actions.current_omission_candidate_ids(out)
+
+        self.assertEqual(candidates, {"B2"})
+
+    def test_current_non_requirement_triage_is_removed_from_candidate_set(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            text = "Product family background statement."
+            _write_jsonl(out / "blocks.jsonl", [{
+                "block_id": "B1", "order": 1, "text": text,
+                "requirement_like": True, "noise": False,
+            }])
+            _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [])
+            omission_actions.apply_omission_action(
+                out, block_id="B1", status="non_requirement", actor="reviewer",
+            )
+
+            candidates = omission_actions.current_omission_candidate_ids(out)
+            quality = ai_extract.refresh_ai_extract_quality(out, [])
+            ai_extract._write_consistency_report(out, {"requirements": []})
+            consistency = json.loads((out / "consistency_report.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(candidates, set())
+        self.assertEqual(quality["core_requirement_like_blocks"], 0)
+        self.assertEqual(quality["excluded_requirement_like_blocks"], 1)
+        self.assertEqual(consistency["coverage"]["excluded"]["block_ids"], ["B1"])
+
+    def test_targeted_reextract_rechecks_candidate_inside_operation_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+
+            with mock.patch.object(
+                omission_actions,
+                "current_omission_candidate_ids",
+                return_value=set(),
+            ), self.assertRaises(omission_actions.OmissionConflictError):
+                omission_actions.targeted_reextract(
+                    out,
+                    block_id="B1",
+                    omission_id="OMI-B1",
+                    route="openai_compatible",
+                )
+
     def test_status_log_and_source_bound_id(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
@@ -344,7 +400,7 @@ class OmissionActionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             source_text = "The meter shall log events."
-            blocks = [{"block_id": "B1", "text": source_text}]
+            blocks = [{"block_id": "B1", "text": source_text, "requirement_like": True}]
             _write_jsonl(out / "blocks.jsonl", blocks)
             original = {
                 "ai_req_id": "AI-1",
@@ -352,7 +408,7 @@ class OmissionActionTests(unittest.TestCase):
                 "description": "Old description",
                 "module": "事件",
                 "source_section": "4",
-                "source_quote": source_text,
+                "source_quote": "An older adjacent event requirement.",
                 "source_block_ids": ["B1"],
             }
             _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [original])
@@ -405,7 +461,8 @@ class OmissionActionTests(unittest.TestCase):
             def run_once(description: str) -> dict:
                 _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [{
                     "ai_req_id": "AI-1", "title": "Event logging", "description": description,
-                    "module": "事件", "source_section": "4", "source_quote": source_text,
+                    "module": "事件", "source_section": "4",
+                    "source_quote": "An older adjacent event requirement.",
                     "source_block_ids": ["B1"],
                 }])
 
@@ -578,6 +635,29 @@ class OmissionActionTests(unittest.TestCase):
 
         self.assertEqual(quality["covered_blocks"], 2)
         self.assertEqual(quality["coverage_pct"], 100.0)
+
+    def test_quality_coverage_uses_reliable_whitespace_insensitive_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_jsonl(out / "blocks.jsonl", [
+                {"block_id": "B1", "order": 1,
+                 "text": "The meter must beable to communicate a nd report alarms.",
+                 "requirement_like": True, "noise": False},
+                {"block_id": "B2", "order": 2,
+                 "text": "The meter shall retain diagnostics.",
+                 "requirement_like": True, "noise": False},
+            ])
+            requirements = [{
+                "source_quote": "The meter must be able to communicate and report alarms.",
+                "source_block_ids": ["B1", "B2"],
+                "source_mapping": "section_fallback",
+                "labels": ["通信"],
+            }]
+
+            quality = ai_extract.refresh_ai_extract_quality(out, requirements)
+
+        self.assertEqual(quality["covered_blocks"], 1)
+        self.assertEqual(quality["coverage_pct"], 50.0)
 
     def test_new_supplement_row_is_not_replayed_after_its_evidence_block_changes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -781,6 +861,8 @@ class OmissionEndpointTests(unittest.TestCase):
                 omission_actions,
                 "targeted_reextract",
                 side_effect=omission_actions.OmissionConflictError("busy"),
+            ), mock.patch.object(
+                omission_actions, "current_omission_candidate_ids", return_value={"B1"}
             ):
                 handler.handle_omission_reextract()
 
@@ -799,6 +881,8 @@ class OmissionEndpointTests(unittest.TestCase):
                 omission_actions,
                 "targeted_reextract",
                 side_effect=LLMConnectionError("endpoint unavailable"),
+            ), mock.patch.object(
+                omission_actions, "current_omission_candidate_ids", return_value={"B1"}
             ):
                 handler.handle_omission_reextract()
 

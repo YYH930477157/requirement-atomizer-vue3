@@ -4,6 +4,7 @@ import { Ban, Check, ChevronLeft, ChevronRight, Image, MessageSquareText, Messag
 import type {
   AiExtractionStatusPayload,
   AiRequirement,
+  ClarificationInternalChecksPayload,
   DocumentBlock,
   OmissionActionState,
   OmissionActionStatus,
@@ -29,7 +30,8 @@ const STATUS_LABELS: Record<string, string> = {
 type DocClient = Pick<RequirementApiClient,
   "loadDocument" | "loadAiRequirements" | "applyAiReviewAction" | "loadPdfAnnotation" | "loadPdfPageBlob">
   & Partial<Pick<RequirementApiClient,
-    "loadAiExtractionStatus" | "loadOmissionActions" | "applyOmissionAction" | "reextractOmission">>
+    "loadAiExtractionStatus" | "loadOmissionActions" | "applyOmissionAction" | "reextractOmission" |
+    "loadClarificationInternalChecks" | "applyClarificationCheckBatch">>
 const props = withDefaults(defineProps<{
   client: DocClient | null
   active: boolean
@@ -39,6 +41,7 @@ const props = withDefaults(defineProps<{
 
 const blocks = ref<DocumentBlock[]>([])
 const requirements = ref<AiRequirement[]>([])
+const moduleOptions = ref<string[]>([...MODULE_VOCAB])
 const loading = ref(false)
 const message = ref("")
 const selectedId = ref("")
@@ -50,6 +53,9 @@ const extractionStatus = ref<AiExtractionStatusPayload | null>(null)
 const omissionStates = ref<OmissionActionState[]>([])
 const omissionSaving = ref(false)
 const omissionNote = ref("")
+const internalChecks = ref<ClarificationInternalChecksPayload | null>(null)
+const internalCheckSignal = ref("")
+const internalCheckSaving = ref(false)
 type RequirementDraft = { comment: string; module: string; ownership: string }
 const requirementDrafts = new Map<string, RequirementDraft>()
 const omissionDrafts = new Map<string, string>()
@@ -64,6 +70,7 @@ let loadedOnce = false
 let contentLoadGeneration = 0
 let reviewOperationGeneration = 0
 let omissionOperationGeneration = 0
+let internalCheckOperationGeneration = 0
 
 function stashRequirementDraft(id = selectedId.value) {
   if (!id) return
@@ -98,6 +105,14 @@ function setOmissionStates(states: OmissionActionState[] | undefined) {
   omissionStates.value = Array.isArray(states) ? states : []
 }
 
+function setInternalChecks(payload: ClarificationInternalChecksPayload | null) {
+  internalChecks.value = payload
+  const groups = payload?.groups || []
+  if (!groups.some((group) => group.signal === internalCheckSignal.value)) {
+    internalCheckSignal.value = groups[0]?.signal || ""
+  }
+}
+
 async function load() {
   const client = props.client
   if (!client) {
@@ -108,19 +123,21 @@ async function load() {
   loading.value = true
   message.value = ""
   try {
-    const [doc, reqs, partial, omissionPayload] = await Promise.all([
+    const [doc, reqs, partial, omissionPayload, checksPayload] = await Promise.all([
       client.loadDocument(),
       client.loadAiRequirements(),
       client.loadAiExtractionStatus?.().catch(() => null) ?? Promise.resolve(null),
       client.loadOmissionActions?.().catch(() => null) ?? Promise.resolve(null),
+      client.loadClarificationInternalChecks?.().catch(() => null) ?? Promise.resolve(null),
     ])
-    if (client !== props.client) return
+    if (client !== props.client || generation !== contentLoadGeneration) return
     blocks.value = doc.blocks || []
+    moduleOptions.value = [...new Set([...MODULE_VOCAB, ...(doc.module_vocabulary || [])])]
     loadedOnce = true
-    if (generation !== contentLoadGeneration) return
     extractionStatus.value = partial
     replaceRequirements(partial?.run_id && !partial.complete ? partial.rows || [] : reqs || [])
     setOmissionStates(omissionPayload?.states)
+    setInternalChecks(checksPayload)
     if (!requirements.value.length) {
       message.value = "暂无 AI 抽取需求——请先开 LLM 跑「AI 抽取」"
     }
@@ -129,7 +146,7 @@ async function load() {
       message.value = error instanceof Error ? error.message : "加载失败"
     }
   } finally {
-    if (client === props.client) loading.value = false
+    if (client === props.client && generation === contentLoadGeneration) loading.value = false
   }
 }
 
@@ -176,11 +193,22 @@ const coveredByBlock = computed(() => {
   return map
 })
 
-// 被任意需求覆盖的块集合（含整段 source_block_ids 与回声段），用于遗漏判定。
+// 后端用可靠 source_quote/source_mapping 计算覆盖集合；旧 API 才回退本地字段。
 const coveredBlocks = computed(() => {
   const s = new Set<string>()
+  const hasServerCoverage = blocks.value.some((block) => block.covered_by_requirement !== undefined)
+  if (hasServerCoverage) {
+    for (const block of blocks.value) {
+      if (block.covered_by_requirement) s.add(block.block_id)
+    }
+    return s
+  }
   for (const req of requirements.value) {
-    for (const b of req.source_block_ids || []) s.add(b)
+    const mapping = String(req.source_mapping || "")
+    const reliable = new Set(["exact", "contains", "multi_block", "fuzzy"]).has(mapping)
+    if (reliable || !mapping) {
+      for (const b of req.source_block_ids || []) s.add(b)
+    }
     for (const b of req.echo_block_ids || []) s.add(b)
   }
   return s
@@ -192,6 +220,7 @@ const selectedReq = computed(() => requirements.value.find((r) => r.ai_req_id ==
 // 目标：全文每一段都有分析结果——需求段有批注,其余段点开能看到为什么没生成需求+翻译+引用。
 const OMISSION_REASON = "该段含规范性措辞（shall/must/应…），被判为疑似需求，但没有任何已抽取需求的来源范围覆盖它。可能原因：抽取遗漏（自检未补回）或该句实为背景说明。确属需求请反馈补抽；背景说明可忽略。"
 const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），被判定为背景/说明性内容，因此没有生成研发需求；其信息会作为上下文供相邻需求的分析使用。如认为该段实际包含需求，请反馈补抽。"
+const FAILED_EXTRACTION_REASON = "该章节的 AI 抽取调用失败，当前段落没有得到完整分析。失败通常来自端点、密钥、限流或超时；请在重跑成功前不要把这里的空白视为“无需求”。"
 const COVERED_REASON = "该段已纳入一条或多条抽取需求的来源范围，用于补充完整语义、条件或约束；它不是独立锚点，因此不重复挂页边编号。可从下方查看关联需求。"
 const REQ_GROUP_REASON = "该段原文解析出了多条独立需求。为避免只展示第一条，下面列出该段的全部解析结果。"
 // 与导出 HTML 同文案（双渲染器契约）
@@ -200,11 +229,20 @@ const selectedBlockId = ref("")
 const selectedBlock = computed(() => blocks.value.find((b) => b.block_id === selectedBlockId.value) || null)
 const selectedBlockKind = computed(() => {
   if (!selectedBlock.value) return "context"
+  if (selectedBlock.value.extraction_failed) return "failed"
   if ((anchorByBlock.value.get(selectedBlock.value.block_id) || []).length > 1) return "req_group"
   if (echoByBlock.value.has(selectedBlock.value.block_id)) return "echo"
   if (coveredByBlock.value.has(selectedBlock.value.block_id)) return "covered"
   return isOmission(selectedBlock.value) ? "omission" : "context"
 })
+const selectedRepairEvents = computed(() =>
+  (selectedBlock.value?.text_repairs || []).filter((event) => event && typeof event === "object"))
+function repairEventText(event: Record<string, unknown>, key: "before" | "after" | "rule"): string {
+  return String(event[key] || "")
+}
+function repairRulesOf(block: DocumentBlock): string {
+  return [...new Set((block.text_repairs || []).map((event) => String(event.rule || "")).filter(Boolean))].join("、")
+}
 const selectedRelatedReqs = computed(() => {
   if (!selectedBlock.value) return []
   const blockId = selectedBlock.value.block_id
@@ -386,10 +424,14 @@ watch([() => props.active, () => props.client, () => props.sessionKey], ([on, cl
     pdfData.value = null
   }
   if (identityChanged) {
+    internalCheckOperationGeneration += 1
+    internalCheckSaving.value = false
     blocks.value = []
     requirements.value = []
+    moduleOptions.value = [...MODULE_VOCAB]
     extractionStatus.value = null
     omissionStates.value = []
+    setInternalChecks(null)
     selectedId.value = ""
     selectedBlockId.value = ""
     omissionNote.value = ""
@@ -498,6 +540,9 @@ function pdfZoneTitle(z: PdfBlockZone): string {
   if (z.kind === "covered") return "查看该段关联的需求解析"
   if (z.kind === "echo") return "重复段·点击查看汇总需求"
   return z.kind === "omission" ? "疑似需求未覆盖·点击查看" : "查看该段翻译与解析"
+}
+function pdfZoneBlock(z: PdfBlockZone): DocumentBlock | undefined {
+  return blocks.value.find((block) => block.block_id === z.block_id)
 }
 
 function pdfMarkerClick(m: PdfMarker) {
@@ -617,6 +662,68 @@ const stats = computed(() => ({
   anchored: requirements.value.filter((r) => (r.source_block_ids || []).length).length,
   omissions: omissionCount.value,
 }))
+const internalCheckGroups = computed(() => internalChecks.value?.groups || [])
+const selectedInternalChecks = computed(() =>
+  (internalChecks.value?.entries || []).filter((entry) => entry.signal === internalCheckSignal.value))
+const INTERNAL_CHECK_LABELS: Record<string, string> = {
+  "suspicion:引用": "原文引用核对",
+  "suspicion:self_check_added": "自检补抽核对",
+  "consistency:duplicate": "跨章重复核对",
+  "consistency:compliance_uncovered": "合规漏项核对",
+  "parse_audit:noise_char_ratio": "解析噪声核对",
+  "parse_audit:body_ratio": "正文区域核对",
+}
+function internalCheckLabel(signal: string): string {
+  return INTERNAL_CHECK_LABELS[signal] || signal.replace(/^.*:/, "") || "未分类"
+}
+async function acknowledgeInternalCheckGroup() {
+  const client = props.client
+  const selected = selectedInternalChecks.value
+  if (!client?.applyClarificationCheckBatch || !selected.length || internalCheckSaving.value) return
+  const generation = ++internalCheckOperationGeneration
+  const signal = internalCheckSignal.value
+  internalCheckSaving.value = true
+  try {
+    const result = await client.applyClarificationCheckBatch({
+      checks: selected.map((entry) => ({
+        clarificationId: entry.clarification_id,
+        evidenceFingerprint: entry.evidence_fingerprint,
+      })),
+      action: "verified_ok",
+      actor: "reviewer",
+      note: `批量确认：${internalCheckLabel(signal)}`,
+    })
+    if (client !== props.client || generation !== internalCheckOperationGeneration) return
+    const refreshed = await client.loadClarificationInternalChecks?.() || null
+    if (client !== props.client || generation !== internalCheckOperationGeneration) return
+    setInternalChecks(refreshed)
+    const rejected = [
+      ["证据过期", result.stale.length],
+      ["已不存在", result.missing.length],
+      ["不适用", result.ineligible.length],
+      ["重复提交", result.duplicates.length],
+    ].filter(([, count]) => Number(count) > 0)
+    message.value = `已确认 ${result.applied} 项${rejected.length
+      ? `；未写入：${rejected.map(([label, count]) => `${label} ${count} 项`).join("、")}`
+      : ""}`
+  } catch (error) {
+    if (client === props.client && generation === internalCheckOperationGeneration) {
+      if (isNeedsReconfirmationError(error)) {
+        const refreshed = await client.loadClarificationInternalChecks?.().catch(() => null) || null
+        if (client === props.client && generation === internalCheckOperationGeneration) {
+          setInternalChecks(refreshed)
+          message.value = "内部核对证据已变化，已刷新，请重新确认"
+        }
+      } else {
+        message.value = error instanceof Error ? error.message : "批量确认失败"
+      }
+    }
+  } finally {
+    if (client === props.client && generation === internalCheckOperationGeneration) {
+      internalCheckSaving.value = false
+    }
+  }
+}
 
 function isHeading(b: DocumentBlock): boolean {
   return b.type === "heading" || (b.section_path?.length ? b.text === b.section_path[b.section_path.length - 1] : false)
@@ -768,18 +875,23 @@ function replaceOmissionState(state: OmissionActionState) {
 async function refreshReviewData(client: DocClient, includeDocument = false): Promise<boolean> {
   const generation = ++contentLoadGeneration
   const workspaceGeneration = workspaceLoadGeneration
-  const [doc, reqs, partial, omissionPayload] = await Promise.all([
+  const [doc, reqs, partial, omissionPayload, checksPayload] = await Promise.all([
     includeDocument ? client.loadDocument() : Promise.resolve(null),
     client.loadAiRequirements(),
     client.loadAiExtractionStatus?.().catch(() => null) ?? Promise.resolve(null),
     client.loadOmissionActions?.().catch(() => null) ?? Promise.resolve(null),
+    client.loadClarificationInternalChecks?.().catch(() => null) ?? Promise.resolve(null),
   ])
   if (client !== props.client || generation !== contentLoadGeneration
       || workspaceGeneration !== workspaceLoadGeneration) return false
-  if (doc) blocks.value = doc.blocks || []
+  if (doc) {
+    blocks.value = doc.blocks || []
+    moduleOptions.value = [...new Set([...MODULE_VOCAB, ...(doc.module_vocabulary || [])])]
+  }
   extractionStatus.value = partial
   replaceRequirements(partial?.run_id && !partial.complete ? partial.rows || [] : reqs || [])
   if (omissionPayload) setOmissionStates(omissionPayload.states)
+  if (checksPayload) setInternalChecks(checksPayload)
   await refreshPdfMetadata(client, workspaceGeneration)
   return client === props.client && generation === contentLoadGeneration
     && workspaceGeneration === workspaceLoadGeneration
@@ -905,6 +1017,15 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion", adva
   const req = selectedReq.value
   const client = props.client
   if (!req || !client || isSaving.value) return
+  const moduleName = moduleEdit.value.trim()
+  if (!moduleName) {
+    message.value = "模块不能为空"
+    return
+  }
+  if (Array.from(moduleName).length > 20) {
+    message.value = "模块最多 20 字"
+    return
+  }
   const generation = ++reviewOperationGeneration
   stashRequirementDraft(req.ai_req_id)
   isSaving.value = true
@@ -914,7 +1035,8 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion", adva
       sourceFingerprint: req.source_fingerprint,
       reviewSubjectFingerprint: req.review_subject_fingerprint,
       // 与规则初判比较：重复裁决时保留既有覆盖；选回初判值才发空串清除。
-      moduleOverride: moduleEdit.value !== originalModuleOf(req) ? moduleEdit.value : "",
+      moduleOverride: moduleName !== originalModuleOf(req) ? moduleName : undefined,
+      clearModuleOverride: moduleName === originalModuleOf(req) && Boolean(req.review_state?.module_override),
       // 选回规则初判值 → 发空串清除覆盖，归属回落规则判定
       ownershipOverride: ownershipEdit.value !== (req.ownership || "") ? ownershipEdit.value : "",
       reason: comment.value, actor: "reviewer",
@@ -1058,6 +1180,20 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
         </button>
       </div>
       <div class="doc-toolbar-actions">
+        <div v-if="internalCheckGroups.length && props.client?.applyClarificationCheckBatch"
+             class="internal-check-batch" data-testid="internal-check-batch">
+          <select v-model="internalCheckSignal" aria-label="内部核对类别">
+            <option v-for="group in internalCheckGroups" :key="group.signal" :value="group.signal">
+              {{ internalCheckLabel(group.signal) }} · {{ group.count }}
+            </option>
+          </select>
+          <button type="button" :disabled="internalCheckSaving || !selectedInternalChecks.length"
+                  data-testid="internal-check-acknowledge"
+                  :title="`确认当前类别 ${selectedInternalChecks.length} 项证据均已逐项核对无误`"
+                  @click="acknowledgeInternalCheckGroup">
+            <Check :size="14" aria-hidden="true" />{{ internalCheckSaving ? "写入中" : `确认 ${selectedInternalChecks.length} 项` }}
+          </button>
+        </div>
         <div class="mode-toggle">
           <button type="button" :class="{ active: viewMode === 'text' }" data-testid="mode-text"
                   @click="switchMode('text')"><Rows3 :size="14" aria-hidden="true" />解析文本</button>
@@ -1096,6 +1232,8 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                       :aria-pressed="pdfZoneSelected(z)"
                       @click.stop="pdfZoneClick(z)">
                 <span v-if="z.kind === 'echo' || z.kind === 'covered'" class="pdf-echo-tag">{{ pdfLinkedLabel(z) }}</span>
+                <span v-if="pdfZoneBlock(z)?.text_repaired" class="pdf-audit-tag tag-repair">修复</span>
+                <span v-if="pdfZoneBlock(z)?.extraction_failed" class="pdf-audit-tag tag-failed">失败</span>
               </button>
               <button v-for="m in (pdfMarkersByPage.get(p.page_number) || [])"
                       :key="m.kind + m.id" type="button" class="pdf-marker"
@@ -1115,6 +1253,7 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
             :class="['doc-block',
                      { heading: isHeading(b), omission: isOmission(b), note: isNote(b),
                        'list-item': isListItem(b),
+                       'extraction-failed': b.extraction_failed,
                        anchored: anchorByBlock.get(b.block_id)?.length,
                        'in-span': selectedSpan.has(b.block_id) || b.block_id === selectedBlockId,
                        evidence: evidenceBlocks.has(b.block_id) || b.block_id === selectedBlockId }]"
@@ -1147,6 +1286,22 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                 </table>
               </div>
               <button
+                v-if="b.text_repaired"
+                class="repair-tag"
+                type="button"
+                data-testid="repair-tag"
+                :title="`原文断词已做 ${b.text_repairs?.length || 0} 处确定性修复，点击查看审计记录`"
+                @click.stop="selectBlockCard(b)"
+              >原文修复</button>
+              <button
+                v-if="b.extraction_failed"
+                class="failed-extraction-tag"
+                type="button"
+                data-testid="failed-extraction-tag"
+                title="该章节 AI 抽取失败，点击定位"
+                @click.stop="selectBlockCard(b)"
+              >抽取失败</button>
+              <button
                 v-if="isOmission(b)"
                 class="omission-tag table-omission-tag"
                 :class="{ sel: b.block_id === selectedBlockId }"
@@ -1166,6 +1321,22 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
             </figure>
             <p v-else class="doc-text" :class="{ 'list-item': isListItem(b) }">
               <template v-for="(seg, i) in segments(b)" :key="i"><mark v-if="seg.mark">{{ seg.text }}</mark><span v-else>{{ seg.text }}</span></template>
+              <button
+                v-if="b.text_repaired"
+                class="repair-tag"
+                type="button"
+                data-testid="repair-tag"
+                :title="`原文断词已做 ${b.text_repairs?.length || 0} 处确定性修复，点击查看审计记录`"
+                @click.stop="selectBlockCard(b)"
+              >原文修复</button>
+              <button
+                v-if="b.extraction_failed"
+                class="failed-extraction-tag"
+                type="button"
+                data-testid="failed-extraction-tag"
+                title="该章节 AI 抽取失败，点击定位"
+                @click.stop="selectBlockCard(b)"
+              >抽取失败</button>
               <button
                 v-if="isOmission(b)"
                 class="omission-tag"
@@ -1191,13 +1362,29 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
       <aside class="doc-detail" data-testid="doc-detail">
         <div v-if="!selectedReq && !selectedBlock" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
         <div v-else-if="selectedBlock" class="doc-detail-card"
-             :data-testid="selectedBlockKind === 'omission' ? 'omission-card' : (selectedBlockKind === 'echo' ? 'echo-card' : (selectedBlockKind === 'covered' ? 'covered-card' : (selectedBlockKind === 'req_group' ? 'req-group-card' : 'context-card')))">
+             :data-testid="selectedBlockKind === 'failed' ? 'failed-card' : (selectedBlockKind === 'omission' ? 'omission-card' : (selectedBlockKind === 'echo' ? 'echo-card' : (selectedBlockKind === 'covered' ? 'covered-card' : (selectedBlockKind === 'req_group' ? 'req-group-card' : 'context-card'))))">
           <div class="dd-head">
-            <span class="dd-module">{{ selectedBlockKind === "omission" ? "未覆盖" : (selectedBlockKind === "echo" ? "重复段" : (selectedBlockKind === "covered" ? "分析范围" : (selectedBlockKind === "req_group" ? "解析结果" : "背景/上下文"))) }}</span>
+            <span class="dd-module">{{ selectedBlockKind === "failed" ? "抽取失败" : (selectedBlockKind === "omission" ? "未覆盖" : (selectedBlockKind === "echo" ? "重复段" : (selectedBlockKind === "covered" ? "分析范围" : (selectedBlockKind === "req_group" ? "解析结果" : "背景/上下文")))) }}</span>
             <span class="dd-status">说明</span>
           </div>
-          <h3 class="dd-title">{{ selectedBlockKind === "omission" ? "为什么标为未覆盖" : (selectedBlockKind === "echo" ? "该段解析已汇总" : (selectedBlockKind === "covered" ? "该段已纳入需求解析" : (selectedBlockKind === "req_group" ? `该段解析出 ${orderedSelectedRelatedReqs.length} 条需求` : "为什么没有生成研发需求"))) }}</h3>
-          <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "omission" ? OMISSION_REASON : (selectedBlockKind === "echo" ? ECHO_REASON : (selectedBlockKind === "covered" ? COVERED_REASON : (selectedBlockKind === "req_group" ? REQ_GROUP_REASON : CONTEXT_REASON))) }}</div></div>
+          <h3 class="dd-title">{{ selectedBlockKind === "failed" ? "该段所在章节未完成抽取" : (selectedBlockKind === "omission" ? "为什么标为未覆盖" : (selectedBlockKind === "echo" ? "该段解析已汇总" : (selectedBlockKind === "covered" ? "该段已纳入需求解析" : (selectedBlockKind === "req_group" ? `该段解析出 ${orderedSelectedRelatedReqs.length} 条需求` : "为什么没有生成研发需求")))) }}</h3>
+          <div class="dd-section"><div class="dd-body">{{ selectedBlockKind === "failed" ? FAILED_EXTRACTION_REASON : (selectedBlockKind === "omission" ? OMISSION_REASON : (selectedBlockKind === "echo" ? ECHO_REASON : (selectedBlockKind === "covered" ? COVERED_REASON : (selectedBlockKind === "req_group" ? REQ_GROUP_REASON : CONTEXT_REASON)))) }}</div></div>
+          <div v-if="selectedBlock.text_repaired" class="dd-section repair-audit" data-testid="repair-audit">
+            <div class="dd-label">原文修复 · {{ selectedRepairEvents.length }} 处</div>
+            <div v-if="repairRulesOf(selectedBlock)" class="repair-rules">{{ repairRulesOf(selectedBlock) }}</div>
+            <div class="repair-compare">
+              <div><span>修复前</span><p>{{ selectedBlock.raw_text || "" }}</p></div>
+              <div><span>修复后</span><p>{{ selectedBlock.text || "" }}</p></div>
+            </div>
+            <div v-if="selectedRepairEvents.length" class="repair-events">
+              <div v-for="(event, index) in selectedRepairEvents" :key="index">
+                <code>{{ repairEventText(event, "before") }}</code>
+                <span>→</span>
+                <code>{{ repairEventText(event, "after") }}</code>
+                <small>{{ repairEventText(event, "rule") }}</small>
+              </div>
+            </div>
+          </div>
           <div v-if="selectedBlockKind === 'omission' && (props.client?.applyOmissionAction || props.client?.reextractOmission)"
                class="dd-section omission-actions" data-testid="omission-actions">
             <div class="dd-label">遗漏处置</div>
@@ -1334,9 +1521,11 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 
           <div class="dd-section">
             <div class="dd-label">模块（可改）</div>
-            <select v-model="moduleEdit" class="dd-select" data-testid="dd-module-select">
-              <option v-for="m in MODULE_VOCAB" :key="m" :value="m">{{ m }}</option>
-            </select>
+            <input v-model.trim="moduleEdit" class="dd-select" data-testid="dd-module-select"
+                   list="review-module-options" autocomplete="off" maxlength="20" />
+            <datalist id="review-module-options">
+              <option v-for="m in moduleOptions" :key="m" :value="m" />
+            </datalist>
           </div>
           <div class="dd-section">
             <div class="dd-label">归属（可改，规则初判：{{ OWNERSHIP_OPTIONS.find(o => o.value === selectedReq?.ownership)?.label || "软件" }}）</div>
@@ -1371,6 +1560,14 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 .doc-body { display: grid; grid-template-columns: 1fr 360px; gap: 0; flex: 1; min-height: 0; }
 .doc-paper { overflow: auto; padding: 12px 18px; background: #ffffff; }
 .doc-toolbar-actions { display: flex; align-items: center; gap: 10px; }
+.internal-check-batch { display: flex; align-items: center; gap: 4px; padding-right: 8px;
+  border-right: 1px solid #e6e9f0; }
+.internal-check-batch select { max-width: 154px; height: 28px; border: 1px solid #d8dde6;
+  border-radius: 6px; padding: 0 6px; color: #5c6675; background: #fff; font-size: 11px; }
+.internal-check-batch button { height: 28px; display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid #cfd6e2; border-radius: 6px; padding: 0 7px; color: #465568;
+  background: #fff; font-size: 11px; cursor: pointer; }
+.internal-check-batch button:disabled { opacity: .55; cursor: default; }
 .mode-toggle { display: flex; gap: 2px; padding: 2px; background: #eef1f6; border-radius: 8px; }
 .mode-toggle button { border: 0; border-radius: 6px; padding: 4px 10px; font-size: 12px; color: #5c6675;
   background: transparent; cursor: pointer; }
@@ -1401,6 +1598,11 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
   background: rgba(15,118,110,.05); border-color: rgba(15,118,110,.5); }
 .pdf-block-zone.zone-covered:hover, .pdf-block-zone.zone-covered.sel {
   background: rgba(10,132,255,.045); border-color: rgba(10,132,255,.5); }
+.pdf-audit-tag { position: absolute; left: 2px; top: -13px; padding: 1px 3px; border-radius: 3px;
+  background: rgba(255,255,255,.94); font-size: 8px; font-weight: 650; line-height: 1.15;
+  pointer-events: none; opacity: .72; }
+.pdf-audit-tag.tag-repair { color: #53606f; border-bottom: 1px dotted #8793a1; }
+.pdf-audit-tag.tag-failed { left: auto; right: 2px; color: #a23b3f; border-bottom: 1px solid #d9a6a8; }
 .pdf-echo-tag { position: absolute; right: 2px; top: -13px; display: inline-block; padding: 0 2px 1px;
   border-bottom: 1px dashed #667085; color: #4b5563; background: rgba(255,255,255,.92);
   z-index: 2; font-size: 9px; font-weight: 600; line-height: 1.15; white-space: nowrap;
@@ -1439,6 +1641,7 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 
 .doc-block.in-span { box-shadow: inset 3px 0 0 #c7d3fc; }
 .doc-block.in-span.evidence { background: #eef2ff; box-shadow: none; }
+.doc-block.extraction-failed { box-shadow: inset 2px 0 0 rgba(193, 52, 58, .48); }
 .dd-legend { font-size: 11px; color: #98a1b3; margin: 4px 0 8px; }
 .doc-block.omission:hover { background: #fcfbf7; }
 .doc-gutter { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
@@ -1453,6 +1656,12 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
   border-bottom: 1px dotted #cbd5e1; border-radius: 0; background: transparent; color: #98a1b3;
   font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
 .omission-tag:hover, .omission-tag.sel { color: #b06f12; border-color: #b06f12; background: #fff9ec; }
+.repair-tag, .failed-extraction-tag { display: inline-flex; margin-left: 6px; padding: 0 2px 1px;
+  border: 0; border-bottom: 1px dotted #aeb6c2; border-radius: 0; background: transparent;
+  color: #7a8496; font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
+.repair-tag:hover { color: #465568; border-color: #465568; }
+.failed-extraction-tag { color: #a23b3f; border-color: #d6a4a6; }
+.failed-extraction-tag:hover { color: #7f1f24; border-color: #7f1f24; }
 .echo-tag { display: inline-flex; margin-left: 6px; padding: 0 2px 1px; border: 0;
   border-bottom: 1px dashed #cbd5e1; border-radius: 0; background: transparent; color: #7a8496;
   font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
@@ -1490,6 +1699,16 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 .dd-section { margin: 10px 0; }
 .dd-label { font-size: 11px; color: #98a1b3; text-transform: uppercase; margin-bottom: 3px; }
 .dd-body { font-size: 13px; line-height: 1.55; color: #3f4a61; }
+.repair-rules { margin-bottom: 6px; color: #7a8496; font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.repair-compare { display: grid; gap: 6px; }
+.repair-compare > div { padding: 7px 8px; border: 1px solid #e6e9f0; border-radius: 6px; background: #fff; }
+.repair-compare span { color: #98a1b3; font-size: 10px; }
+.repair-compare p { margin: 2px 0 0; color: #3f4a61; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+.repair-events { margin-top: 7px; max-height: 150px; overflow: auto; }
+.repair-events > div { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center; gap: 5px; padding: 3px 0; border-bottom: 1px solid #f0f2f5; font-size: 11px; }
+.repair-events code { overflow-wrap: anywhere; color: #465568; }
+.repair-events small { grid-column: 1 / -1; color: #98a1b3; }
 .dd-list { margin: 0; padding-left: 18px; font-size: 13px; color: #3f4a61; }
 .dd-quote { font-size: 12px; color: #5c6675; border-left: 3px solid #cbd5e1; padding-left: 8px; font-style: italic; }
 .dd-select, .dd-comment { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; font-size: 13px; }

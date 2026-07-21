@@ -39,8 +39,15 @@ export type DocumentBlock = {
   page_number?: number
   requirement_like?: boolean
   coverage_candidate?: boolean   // 覆盖/遗漏统一口径(E3b,服务端计算);旧后端缺省→前端回退宽口径
+  covered_by_requirement?: boolean // 后端基于可靠 source_quote/source_mapping 计算
   noise?: boolean
   doc_region?: string
+  raw_text?: string
+  text_repaired?: boolean
+  text_repair_checked?: boolean
+  text_repair_version?: string
+  text_repairs?: Array<Record<string, unknown>>
+  extraction_failed?: boolean
   // 表格块（type="table"）：批注视图渲染真表格；旧 out_dir 无 data_rows 回退扁平文字
   table_title?: string
   table_source?: string
@@ -54,6 +61,43 @@ export type DocumentBlock = {
 export type DocumentPayload = {
   blocks: DocumentBlock[]
   count: number
+  failed_section_ids?: string[]
+  failed_section_block_ids?: string[]
+  module_vocabulary?: string[]
+}
+
+export type ClarificationInternalCheck = {
+  clarification_id: string
+  evidence_fingerprint: string
+  signal?: string
+  module?: string
+  blocker_level?: "blocking" | "important"
+  question?: string
+}
+
+export type ClarificationInternalChecksPayload = {
+  schema: string
+  total: number
+  unresolved: number
+  entries: ClarificationInternalCheck[]
+  groups: Array<{
+    signal: string
+    count: number
+    blocking: number
+    modules?: Record<string, number>
+  }>
+}
+
+export type ClarificationCheckBatchPayload = {
+  requested: number
+  applied: number
+  stale: string[]
+  missing: string[]
+  ineligible: string[]
+  duplicates: string[]
+  by_signal: Record<string, number>
+  by_module: Record<string, number>
+  readiness?: Record<string, unknown> | null
 }
 
 // 原版影印批注数据（/document/pdf,与分享 HTML 同源）
@@ -87,6 +131,7 @@ export type AiRequirement = Record<string, unknown> & {
   source_section?: string
   source_quote?: string
   source_block_ids?: string[]
+  source_mapping?: string
   echo_block_ids?: string[]
   acceptance_criteria?: string[]
   dev_guidance?: string[]
@@ -145,6 +190,7 @@ export type AiReviewActionInput = {
   sourceFingerprint?: string
   reviewSubjectFingerprint?: string
   moduleOverride?: string
+  clearModuleOverride?: boolean
   ownershipOverride?: string
   reason?: string
   actor?: string
@@ -324,6 +370,31 @@ export class RequirementApiClient {
     return this.request<OmissionActionsPayload>("/omission-actions")
   }
 
+  async loadClarificationInternalChecks(): Promise<ClarificationInternalChecksPayload> {
+    return this.request<ClarificationInternalChecksPayload>("/clarification-internal-checks")
+  }
+
+  async applyClarificationCheckBatch(input: {
+    checks: Array<{ clarificationId: string; evidenceFingerprint: string }>
+    action?: "verified_ok" | "issue_confirmed" | "deferred"
+    actor?: string
+    note?: string
+  }): Promise<ClarificationCheckBatchPayload> {
+    return this.request<ClarificationCheckBatchPayload>("/clarification-check-actions/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        checks: input.checks.map((row) => ({
+          clarification_id: row.clarificationId,
+          evidence_fingerprint: row.evidenceFingerprint,
+        })),
+        action: input.action || "verified_ok",
+        actor: input.actor || "",
+        note: input.note || "",
+      }),
+    })
+  }
+
   async applyOmissionAction(input: OmissionActionInput): Promise<OmissionActionState> {
     return this.request<OmissionActionState>("/omission-actions", {
       method: "POST",
@@ -369,7 +440,8 @@ export class RequirementApiClient {
         status: input.status,
         source_fingerprint: input.sourceFingerprint || "",
         review_subject_fingerprint: input.reviewSubjectFingerprint || "",
-        module_override: input.moduleOverride || "",
+        ...(input.moduleOverride !== undefined ? { module_override: input.moduleOverride } : {}),
+        clear_module_override: input.clearModuleOverride === true,
         ownership_override: input.ownershipOverride || "",
         reason: input.reason || "",
         actor: input.actor || "",

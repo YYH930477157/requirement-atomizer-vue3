@@ -14,6 +14,7 @@ datas = [
     (str(ROOT / "domain_packs"), "domain_packs"),
     (str(ROOT / "knowledge_bases" / "*.json"), "knowledge_bases"),
     (str(ROOT / "schemas" / "*.json"), "schemas"),
+    (str(ROOT / "parsers" / "data"), "parsers/data"),
 ]
 
 spec_generator_modules = [
@@ -37,6 +38,7 @@ spec_generator_modules = [
     "template_writer",
     "corpus_eval",
     "clarification_report",
+    "compliance",
     "xlsx_io",
     "requirement_record",
     "adjudication_bank",

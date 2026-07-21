@@ -289,6 +289,35 @@ def read_current_omission_states(out_dir: Path) -> dict[str, dict[str, Any]]:
     return current
 
 
+def current_non_requirement_block_ids(out_dir: Path) -> set[str]:
+    """Return source-current blocks explicitly triaged as non-requirements."""
+    return {
+        str(state.get("block_id") or "")
+        for state in read_current_omission_states(out_dir).values()
+        if state.get("status") == "non_requirement" and str(state.get("block_id") or "")
+    }
+
+
+def current_omission_candidate_ids(out_dir: Path) -> set[str]:
+    """Recompute the current uncovered denominator instead of trusting stale UI/report state."""
+    root = Path(out_dir).expanduser().resolve()
+    blocks = read_jsonl(root / "blocks.jsonl")
+    requirements_path = root / "ai_requirements.jsonl"
+    requirements = read_jsonl(requirements_path) if requirements_path.exists() else []
+    from merged_consistency import coverage_denominator_blocks, layered_coverage
+
+    denominator = coverage_denominator_blocks(blocks)
+    coverage = layered_coverage(
+        requirements,
+        denominator,
+        source_blocks=blocks,
+        expert_excluded_block_ids=current_non_requirement_block_ids(root),
+    )
+    uncovered = list(coverage.get("uncovered_block_ids") or [])
+    uncovered.extend((coverage.get("compliance") or {}).get("uncovered_block_ids") or [])
+    return {str(value) for value in uncovered if str(value)}
+
+
 def apply_omission_action(
     out_dir: Path,
     *,
@@ -557,6 +586,10 @@ def targeted_reextract(
             raise OmissionConflictError(
                 "AI extraction belongs to an older parsed document; rerun full extraction first"
             )
+        if block_id not in current_omission_candidate_ids(root):
+            raise OmissionConflictError(
+                "block is no longer an uncovered requirement candidate; refresh before extracting"
+            )
         block = _block_by_id(root, block_id)
         block_text = str(block.get("text") or "")
         current_omission_fingerprint = omission_source_fingerprint(block_id, block_text)
@@ -693,6 +726,7 @@ def targeted_reextract(
                 "targeted extraction inputs changed before publish; refresh and retry"
             )
         ai_extract.atomic_write_jsonl(root / ai_extract.AI_REQUIREMENTS, effective)
+        ai_extract.write_compliance_requirements(root, effective)
 
         partial = ai_extract.read_partial_snapshot(root / ai_extract.AI_REQUIREMENTS_PARTIAL)
         quality = ai_extract.refresh_ai_extract_quality(root, effective)
@@ -701,6 +735,7 @@ def targeted_reextract(
             input_fingerprint=ai_extract.extraction_input_fingerprint(root),
             run_id=str((partial or {}).get("run_id") or "targeted"),
             failed_sections=int(quality.get("failed_sections") or 0),
+            failed_section_ids=list(quality.get("failed_section_ids") or []),
         )
         if partial and partial.get("complete"):
             ai_extract.write_partial_snapshot(
@@ -731,6 +766,7 @@ def targeted_reextract(
         written = [
             ai_extract.AI_REQUIREMENTS,
             ai_extract.AI_REQUIREMENTS_META,
+            ai_extract.COMPLIANCE_REQUIREMENTS,
             "ai_extract_quality.json",
             AI_SUPPLEMENTS,
         ]

@@ -36,6 +36,8 @@ REQUIREMENTS_ANALYSIS_OUTPUTS = [
     "engineering_analysis.json",
     "hardware_items.md",
     "co_design_items.md",
+    "compliance_items.json",
+    "compliance_items.md",
     "software_requirements.xlsx",
 ]
 
@@ -462,6 +464,7 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
     "ai-extract": [
         "ai_requirements.jsonl",
         "ai_requirements.meta.json",
+        "compliance_requirements.json",
         "merged_spec_requirements.json",
     ],
     "functional-synthesis": [FUNCTIONAL_REQUIREMENTS],
@@ -478,19 +481,19 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     "atomize": "v4",
     "ai-extract": "v4",
     "assemble": "v2",
-    "functional-synthesis": "v2",
-    "requirements-analysis": "v4",
-    "template-write": "v2",
-    "clarification-report": "v4",
+    "functional-synthesis": "v3",
+    "requirements-analysis": "v5",
+    "template-write": "v3",
+    "clarification-report": "v5",
 }
 
 _STAGE_BASE_PRODUCERS = {
     "atomize": "atomize",
     "assemble": "assemble_spec/v1",
     "template-write": "template_writer/v1",
-    "clarification-report": "clarification/v4-check-state",
+    "clarification-report": "clarification/v6-coverage-basis",
     "compose": "engineering_composer/v1",
-    "export-annotation-html": "doc_annotation_export/v9",
+    "export-annotation-html": "doc_annotation_export/v10",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
@@ -505,8 +508,18 @@ def stage_producer(stage: str) -> str:
             # chain 续跑仍可能复用旧结果。
             from ai_extract import (AI_EXTRACT_PROMPT_VERSION, AI_VERIFY_PROMPT_VERSION,
                                     EXTRACT_GUARDS_VERSION)
+            from merged_consistency import MERGED_CONSISTENCY_VERSION
             producer = (f"{AI_EXTRACT_PROMPT_VERSION}+{EXTRACT_GUARDS_VERSION}"
-                        f"+{AI_VERIFY_PROMPT_VERSION}")
+                        f"+{AI_VERIFY_PROMPT_VERSION}+{MERGED_CONSISTENCY_VERSION}")
+        elif stage == "atomize":
+            # PDF text repair changes blocks consumed by every downstream stage. Include both
+            # the algorithm version and the bundled vocabulary content in the producer so a
+            # repaired parser cannot silently reuse an old atomize run.
+            from parsers.pdf_parser import PDF_TEXT_REPAIR_VERSION, text_repair_vocabulary_fingerprint
+            producer = (
+                f"{producer}+{PDF_TEXT_REPAIR_VERSION}"
+                f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
+            )
         elif stage == "assemble":
             # assemble 会运行 spec_enrich；富化 prompt/护栏升级必须让阶段续跑失效，
             # 否则旧 run_manifest 会在富化缓存检查之前跳过整个阶段。
@@ -611,6 +624,26 @@ def stage_input_files_fingerprint(out_dir: Path, stage: str) -> str:
     ).encode("utf-8")).hexdigest()
 
 
+def _resource_content_fingerprint(path: Path | None) -> str | None:
+    """Hash a KB file or a deterministic directory tree for atomize reuse checks."""
+    if path is None:
+        return None
+    path = Path(path).expanduser().resolve()
+    if path.is_file():
+        return _hash_file(path)
+    if not path.is_dir():
+        return None
+    entries = []
+    for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        entries.append({
+            "path": str(child.relative_to(path)).replace("\\", "/"),
+            "sha256": _hash_file(child),
+        })
+    return hashlib.sha256(json.dumps(
+        entries, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+
+
 def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = None,
                             template_path: Path | None = None,
                             input_path: Path | None = None,
@@ -629,6 +662,27 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
         "producer": stage_producer(stage),
         "route": route or "",
         "inputs": inputs,
+        "atomize_resources": (
+            {
+                "knowledge_bases": [
+                    {
+                        "path": str(Path(path).expanduser().resolve()),
+                        "sha256": _resource_content_fingerprint(Path(path)),
+                    }
+                    for path in (config or {}).get("kb_paths") or []
+                ],
+                "domain_pack": (
+                    {
+                        "path": str(Path((config or {}).get("domain_pack_dir")).expanduser().resolve()),
+                        "sha256": _resource_content_fingerprint(
+                            Path((config or {}).get("domain_pack_dir"))
+                        ),
+                    }
+                    if (config or {}).get("domain_pack_dir") else None
+                ),
+            }
+            if stage == "atomize" else None
+        ),
         "template": ({"path": str(template), "sha256": _hash_file(template)}
                      if template and template.exists() and template.is_file() else None),
         "source_input": ({"path": str(Path(input_path).expanduser().resolve()),
@@ -1107,6 +1161,14 @@ def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, A
     if applied and (out_dir / "ai_requirements.jsonl").exists():
         rebuilt = ai_extract.rebuild_merged_spec(out_dir)
         payload["rebuilt"] = rebuilt
+        try:
+            from adjudication_bank import resolve_bank_path, update_bank
+
+            bank_path = resolve_bank_path()
+            if bank_path is not None:
+                payload["adjudication_bank"] = update_bank(bank_path, out_dir)
+        except Exception as exc:  # 导入/重建已成功；学习资产失败只留告警
+            LOGGER.warning("HTML 裁决导入后样本库收割失败（忽略）：%s", exc)
     return payload
 
 

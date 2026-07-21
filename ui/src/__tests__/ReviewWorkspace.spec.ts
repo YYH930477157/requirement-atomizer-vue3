@@ -434,7 +434,10 @@ describe("review workspace shell", () => {
       expect(wrapper.find('[data-testid="translation-text"]').text()).toContain("读取客户端应支持 xDLMS 服务")
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(3)   // requirements + review-insights + action
+    const translationCalls = fetchMock.mock.calls.filter(([input]) =>
+      String(input).endsWith("/translations"),
+    )
+    expect(translationCalls).toHaveLength(1)
   })
 
   it("clears mock rows when the connected API session has no requirements", async () => {

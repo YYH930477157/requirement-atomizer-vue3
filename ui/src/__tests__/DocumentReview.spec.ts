@@ -45,6 +45,165 @@ function makeClient(over: Record<string, unknown> = {}) {
 }
 
 describe("DocumentReview", () => {
+  it("shows auditable text repairs and failed extraction locations", async () => {
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 1,
+        failed_section_ids: ["4"],
+        blocks: [{
+          block_id: "B2", order: 1, type: "paragraph", text: "is obliged",
+          raw_text: "i sobliged", text_repaired: true, extraction_failed: true,
+          section_path: ["4"], requirement_like: true, noise: false,
+          text_repairs: [{
+            rule: "wordlist_fragment_repair", before: "i sobliged", after: "is obliged",
+          }],
+        }],
+      }),
+      loadAiRequirements: vi.fn().mockResolvedValue([]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="repair-tag"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="failed-extraction-tag"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="repair-tag"]').trigger("click")
+    const repair = wrapper.find('[data-testid="repair-audit"]')
+    expect(repair.text()).toContain("i sobliged")
+    expect(repair.text()).toContain("is obliged")
+    expect(repair.text()).toContain("wordlist_fragment_repair")
+    expect(wrapper.find('[data-testid="failed-card"]').text()).toContain("该章节的 AI 抽取调用失败")
+  })
+
+  it("batch acknowledges one internal-check category with evidence fingerprints", async () => {
+    const loadChecks = vi.fn()
+      .mockResolvedValueOnce({
+        schema: "clarification-internal-checks/v1", total: 2, unresolved: 2,
+        groups: [{ signal: "suspicion:引用", count: 2, blocking: 0, modules: { 计量: 2 } }],
+        entries: [
+          { clarification_id: "CLR-1", evidence_fingerprint: "FP-1", signal: "suspicion:引用" },
+          { clarification_id: "CLR-2", evidence_fingerprint: "FP-2", signal: "suspicion:引用" },
+        ],
+      })
+      .mockResolvedValueOnce({
+        schema: "clarification-internal-checks/v1", total: 2, unresolved: 0,
+        groups: [], entries: [],
+      })
+    const applyBatch = vi.fn().mockResolvedValue({
+      requested: 2, applied: 2, stale: [], missing: [], ineligible: [], duplicates: [],
+      by_signal: { "suspicion:引用": 2 }, by_module: { 计量: 2 }, readiness: null,
+    })
+    const client = makeClient({
+      loadClarificationInternalChecks: loadChecks,
+      applyClarificationCheckBatch: applyBatch,
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="internal-check-acknowledge"]').trigger("click")
+    await flushPromises()
+
+    expect(applyBatch).toHaveBeenCalledWith(expect.objectContaining({
+      checks: [
+        { clarificationId: "CLR-1", evidenceFingerprint: "FP-1" },
+        { clarificationId: "CLR-2", evidenceFingerprint: "FP-2" },
+      ],
+      action: "verified_ok",
+    }))
+    expect(wrapper.find('[data-testid="doc-message"]').text()).toContain("已确认 2 项")
+  })
+
+  it("reports each rejected batch category separately", async () => {
+    const loadChecks = vi.fn()
+      .mockResolvedValueOnce({
+        schema: "clarification-internal-checks/v1", total: 4, unresolved: 4,
+        groups: [{ signal: "suspicion:引用", count: 4, blocking: 0 }],
+        entries: [
+          { clarification_id: "CLR-1", evidence_fingerprint: "FP-1", signal: "suspicion:引用" },
+          { clarification_id: "CLR-2", evidence_fingerprint: "FP-2", signal: "suspicion:引用" },
+          { clarification_id: "CLR-3", evidence_fingerprint: "FP-3", signal: "suspicion:引用" },
+          { clarification_id: "CLR-4", evidence_fingerprint: "FP-4", signal: "suspicion:引用" },
+        ],
+      })
+      .mockResolvedValueOnce({
+        schema: "clarification-internal-checks/v1", total: 4, unresolved: 3,
+        groups: [{ signal: "suspicion:引用", count: 3, blocking: 0 }], entries: [],
+      })
+    const client = makeClient({
+      loadClarificationInternalChecks: loadChecks,
+      applyClarificationCheckBatch: vi.fn().mockResolvedValue({
+        requested: 4, applied: 1,
+        stale: ["CLR-1"], missing: ["CLR-2"], ineligible: ["CLR-3"], duplicates: ["CLR-4"],
+        by_signal: {}, by_module: {}, readiness: null,
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="internal-check-acknowledge"]').trigger("click")
+    await flushPromises()
+
+    const message = wrapper.find('[data-testid="doc-message"]').text()
+    expect(message).toContain("证据过期 1 项")
+    expect(message).toContain("已不存在 1 项")
+    expect(message).toContain("不适用 1 项")
+    expect(message).toContain("重复提交 1 项")
+  })
+
+  it("refreshes internal checks after a structured batch reconfirmation conflict", async () => {
+    const initial = {
+      schema: "clarification-internal-checks/v1" as const, total: 1, unresolved: 1,
+      groups: [{ signal: "suspicion:引用", count: 1, blocking: 0 }],
+      entries: [{ clarification_id: "CLR-1", evidence_fingerprint: "FP-1", signal: "suspicion:引用" }],
+    }
+    const refreshed = {
+      ...initial,
+      entries: [{ clarification_id: "CLR-1", evidence_fingerprint: "FP-2", signal: "suspicion:引用" }],
+    }
+    const loadChecks = vi.fn().mockResolvedValueOnce(initial).mockResolvedValueOnce(refreshed)
+    const client = makeClient({
+      loadClarificationInternalChecks: loadChecks,
+      applyClarificationCheckBatch: vi.fn().mockRejectedValue(new RequirementApiError(409, {
+        error: "clarification evidence changed",
+        needs_reconfirmation: true,
+      })),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="internal-check-acknowledge"]').trigger("click")
+    await flushPromises()
+
+    expect(loadChecks).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="doc-message"]').text()).toContain("证据已变化，已刷新")
+  })
+
+  it("selects a valid internal-check category after workspace refresh", async () => {
+    const loadChecks = vi.fn()
+      .mockResolvedValueOnce({
+        schema: "clarification-internal-checks/v1", total: 1, unresolved: 1,
+        groups: [{ signal: "suspicion:引用", count: 1, blocking: 0 }],
+        entries: [{ clarification_id: "CLR-1", evidence_fingerprint: "FP-1", signal: "suspicion:引用" }],
+      })
+      .mockResolvedValueOnce({
+        schema: "clarification-internal-checks/v1", total: 1, unresolved: 1,
+        groups: [{ signal: "parse_audit:body_ratio", count: 1, blocking: 1 }],
+        entries: [{ clarification_id: "CLR-2", evidence_fingerprint: "FP-2", signal: "parse_audit:body_ratio" }],
+      })
+    const client = makeClient({
+      loadClarificationInternalChecks: loadChecks,
+      applyClarificationCheckBatch: vi.fn(),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="doc-reload"]').trigger("click")
+    await flushPromises()
+
+    const select = wrapper.find('[aria-label="内部核对类别"]')
+    expect((select.element as HTMLSelectElement).value).toBe("parse_audit:body_ratio")
+    expect(wrapper.find('[data-testid="internal-check-acknowledge"]').text()).toContain("确认 1 项")
+  })
+
   it("shows a loading state instead of a false unavailable state during initial loading", async () => {
     const documentRequest = deferred<{ count: number; blocks: [] }>()
     const client = makeClient({ loadDocument: vi.fn(() => documentRequest.promise) })
@@ -327,6 +486,50 @@ describe("DocumentReview", () => {
     )
   })
 
+  it("accepts a free-text module outside the suggested vocabulary", async () => {
+    const client = makeClient()
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+    await wrapper.find('[data-testid="dd-module-select"]').setValue("通信安全")
+    await wrapper.find('[data-testid="dd-accept"]').trigger("click")
+    await flushPromises()
+
+    expect(client.applyAiReviewAction).toHaveBeenCalledWith(
+      expect.objectContaining({ aiReqId: "AIR-1", moduleOverride: "通信安全" }),
+    )
+  })
+
+  it("renders custom module vocabulary returned by the document endpoint", async () => {
+    const seedClient = makeClient()
+    const document = await seedClient.loadDocument()
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({ ...document, module_vocabulary: ["通信安全"] }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+
+    expect(wrapper.findAll('#review-module-options option').map((option) => option.attributes("value")))
+      .toContain("通信安全")
+  })
+
+  it("rejects blank and overlong free-text modules before submission", async () => {
+    const client = makeClient()
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="anno-AIR-1"]').trigger("click")
+
+    await wrapper.find('[data-testid="dd-module-select"]').setValue("   ")
+    await wrapper.find('[data-testid="dd-accept"]').trigger("click")
+    expect(wrapper.find('[data-testid="doc-message"]').text()).toContain("模块不能为空")
+
+    await wrapper.find('[data-testid="dd-module-select"]').setValue("模".repeat(21))
+    await wrapper.find('[data-testid="dd-accept"]').trigger("click")
+    expect(wrapper.find('[data-testid="doc-message"]').text()).toContain("最多 20 字")
+    expect(client.applyAiReviewAction).not.toHaveBeenCalled()
+  })
+
   it("preserves an existing module override when deciding the requirement again", async () => {
     const seedClient = makeClient()
     const reqs = await seedClient.loadAiRequirements()
@@ -375,10 +578,10 @@ describe("DocumentReview", () => {
     await flushPromises()
 
     expect(applyAiReviewAction).toHaveBeenCalledWith(
-      expect.objectContaining({ aiReqId: "AIR-1", status: "accepted", moduleOverride: "" }),
+      expect.objectContaining({ aiReqId: "AIR-1", status: "accepted", clearModuleOverride: true }),
     )
     expect(wrapper.find('[data-testid="dd-module"]').text()).toBe("计量")
-    expect((wrapper.find('[data-testid="dd-module-select"]').element as HTMLSelectElement).value).toBe("计量")
+    expect((wrapper.find('[data-testid="dd-module-select"]').element as HTMLInputElement).value).toBe("计量")
   })
 
   it("changing the ownership dropdown sends ownership_override on decide", async () => {

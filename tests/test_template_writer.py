@@ -84,6 +84,20 @@ class AppendTests(unittest.TestCase):
             self.assertEqual(ws.cell(row=4, column=4).value, "温补校准")
             self.assertEqual(ws.cell(row=4, column=10).value, "是")          # 协同标驱动/硬件相关
 
+    def test_compliance_is_defensively_excluded_from_software_template(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            template = Path(td) / "t.xlsx"
+            out = Path(td) / "written.xlsx"
+            make_template(template)
+            compliance = item("测试合规", "型式证书", seq_hint=1)
+            compliance["source_requirement_type"] = "compliance"
+
+            report = tw.append_analysis_to_template(template, [compliance], out)
+
+            self.assertEqual(report["appended_total"], 0)
+            self.assertEqual(report["skipped_compliance"], 1)
+            self.assertNotIn(tw.FALLBACK_SHEET, load_workbook(out).sheetnames)
+
     def test_unmapped_module_lands_in_fallback_sheet(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             template = Path(td) / "t.xlsx"

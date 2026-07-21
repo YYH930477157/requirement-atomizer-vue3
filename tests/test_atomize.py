@@ -513,6 +513,32 @@ class AtomizeTableTests(unittest.TestCase):
         self.assertEqual(report["counts"]["ambiguous_atomic_requirements"], 1)
         self.assertEqual(report["counts"]["low_confidence_atomic_requirements"], 1)
 
+    def test_build_quality_report_aggregates_pdf_text_repair_audit(self) -> None:
+        blocks = [{
+            "block_id": "B1",
+            "text": "is obliged to deliver",
+            "raw_text": "i sobliged to deliver",
+            "text_repair_checked": True,
+            "text_repaired": True,
+            "text_repair_version": "pdf-text-repair-v2",
+            "text_repairs": [{"rule": "wordlist_fragment_join"}],
+            "text_repair_words_before": 4,
+            "text_repair_words_after": 4,
+            "text_repair_candidates_before": 2,
+            "text_repair_candidates_after": 1,
+        }]
+
+        report = build_quality_report(blocks, [], [], [])
+
+        hygiene = report["text_hygiene"]
+        self.assertEqual(hygiene["checked_blocks"], 1)
+        self.assertEqual(hygiene["repaired_blocks"], 1)
+        self.assertEqual(hygiene["repairs"], 1)
+        self.assertEqual(hygiene["suspected_fragments_before"], 2)
+        self.assertEqual(hygiene["suspected_fragments_after"], 1)
+        self.assertEqual(hygiene["broken_ratio_before"], 0.5)
+        self.assertEqual(hygiene["broken_ratio_after"], 0.25)
+
     def test_run_atomizer_pipeline_raises_input_error_for_missing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(AtomizerInputError) as caught:

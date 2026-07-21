@@ -26,6 +26,7 @@ from requirements_analysis_schema import normalize_ownership
 
 AI_REVIEW_STATES = "ai_review_states.jsonl"
 VALID_AI_STATUS = {"accepted", "rejected", "needs_discussion", "expert_pending", "draft"}
+MODULE_OVERRIDE_MAX_LENGTH = 20
 _AI_REVIEW_LOCKS: dict[Path, RLock] = {}
 _AI_REVIEW_LOCKS_GUARD = RLock()
 _AI_REVIEW_LOCK_TIMEOUT_S = 10.0
@@ -48,6 +49,17 @@ _REVIEW_SUBJECT_FIELDS = (
     "design_options",
     "dependencies",
 )
+
+
+def normalize_module_override(value: str | None) -> str | None:
+    if value is None:
+        return None
+    module = str(value).strip()
+    if not module:
+        raise ValueError("module_override must not be empty")
+    if len(module) > MODULE_OVERRIDE_MAX_LENGTH:
+        raise ValueError(f"module_override must not exceed {MODULE_OVERRIDE_MAX_LENGTH} characters")
+    return module
 
 
 def _fingerprint_payload(payload: Any) -> str:
@@ -278,7 +290,7 @@ def apply_ai_review_action(
     status = str(status or "").strip()
     if status not in VALID_AI_STATUS:
         raise ValueError(f"invalid status: {status}")
-    module = str(module_override or "").strip() or None
+    module = normalize_module_override(module_override)
     ownership_text = str(ownership_override or "").strip()
     ownership = normalize_ownership(ownership_text) if ownership_text else None
     state = {

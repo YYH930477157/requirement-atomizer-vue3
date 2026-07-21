@@ -6,8 +6,12 @@ import unittest
 from parsers.pdf_parser import (
     DEFRAG_RATIO_THRESHOLD,
     _COPYRIGHT_FOOTER_RE,
+    _fragmentation_signal_count,
+    _merge_words,
     _normalize_repeated_line,
     defragment_text,
+    defragment_text_with_audit,
+    text_repair_vocabulary_fingerprint,
 )
 
 
@@ -36,6 +40,63 @@ class DefragTests(unittest.TestCase):
     def test_normal_text_untouched(self) -> None:
         text = "The XDEV shall withstand a drop from 0,5 m as given in Table 6."
         self.assertEqual(defragment_text(text), text)
+
+    def test_wordlist_repair_handles_single_letter_fragments_without_merging_words(self) -> None:
+        cases = {
+            "i sobliged to deliver": "is obliged to deliver",
+            "a nd communication": "and communication",
+            "must beable to communicate": "must be able to communicate",
+            "i nthe standards": "in the standards",
+            "b e able": "be able",
+        }
+        for raw, expect in cases.items():
+            self.assertEqual(defragment_text(raw), expect)
+
+    def test_wordlist_repair_protects_valid_short_words_and_references(self) -> None:
+        cases = [
+            "I am sure",
+            "a nice day",
+            "in such a way",
+            "Annex B gives",
+            "class A meters",
+        ]
+        for text in cases:
+            self.assertEqual(defragment_text(text), text)
+
+    def test_repair_events_are_auditable(self) -> None:
+        repaired, events = defragment_text_with_audit("i sobliged to deliver")
+
+        self.assertEqual(repaired, "is obliged to deliver")
+        self.assertTrue(events)
+        event = events[0]
+        self.assertEqual(event["before"], "i sobliged")
+        self.assertEqual(event["after"], "is obliged")
+        self.assertIn("rule", event)
+        self.assertIn("start", event)
+        self.assertIn("end", event)
+        self.assertIn("vocab_version", event)
+
+    def test_residual_metric_is_independent_from_repairability(self) -> None:
+        repaired, events = defragment_text_with_audit("a nice day")
+
+        self.assertEqual(repaired, "a nice day")
+        self.assertEqual(events, [])
+        self.assertEqual(_fragmentation_signal_count(repaired), 1)
+
+    def test_word_line_preserves_raw_text_and_repair_metadata(self) -> None:
+        line = _merge_words([
+            {"text": "i", "x0": 0, "x1": 4, "top": 0, "bottom": 10},
+            {"text": "sobliged", "x0": 6, "x1": 50, "top": 0, "bottom": 10},
+        ], defrag=True)
+
+        self.assertEqual(line["raw_text"], "i sobliged")
+        self.assertEqual(line["text"], "is obliged")
+        self.assertTrue(line["text_repair_checked"])
+        self.assertTrue(line["text_repairs"])
+
+    def test_repair_vocabulary_has_a_stable_fingerprint(self) -> None:
+        fingerprint = text_repair_vocabulary_fingerprint()
+        self.assertRegex(fingerprint, r"^[0-9a-f]{16}$")
 
     def test_threshold_documented(self) -> None:
         self.assertGreater(DEFRAG_RATIO_THRESHOLD, 0)   # 门控存在（ABNT 实测 0.001，UNI 0.19）

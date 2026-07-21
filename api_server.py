@@ -13,6 +13,7 @@ from review_actions import apply_review_action
 from ai_review_actions import (
     apply_ai_review_action,
     ensure_requirement_identity,
+    normalize_module_override,
     read_ai_review_states,
     review_anchor_fingerprint,
     review_state_for_requirement,
@@ -211,7 +212,10 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json(build_review_summary(self.output_dir))
             return
         if parsed.path == "/document":
-            self.send_json(build_document_blocks(self.output_dir))
+            try:
+                self.send_json(build_document_blocks(self.output_dir))
+            except (TimeoutError, OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
         if parsed.path == "/ai-requirements":
             self.send_json(build_ai_requirements(self.output_dir))
@@ -237,6 +241,13 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/review-insights":
             self.send_json(load_review_insights(self.output_dir))
             return
+        if parsed.path == "/clarification-internal-checks":
+            from clarification_report import current_internal_checks
+            try:
+                self.send_json(current_internal_checks(self.output_dir))
+            except (TimeoutError, OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
         self.send_error(404, "Unknown endpoint")
 
     def do_POST(self) -> None:
@@ -260,6 +271,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/omission-reextract":
             self.handle_omission_reextract()
+            return
+        if parsed.path == "/clarification-check-actions/batch":
+            self.handle_clarification_check_batch()
             return
         if parsed.path != "/review-actions":
             self.send_error(404, "Unknown endpoint")
@@ -310,7 +324,21 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         req_id = str(payload.get("ai_req_id") or "").strip()
         status = str(payload.get("status") or "").strip()
-        module_override = str(payload.get("module_override") or "").strip() or None
+        clear_module_override = payload.get("clear_module_override", False)
+        if not isinstance(clear_module_override, bool):
+            self.send_json({"error": "clear_module_override must be boolean"}, status=400)
+            return
+        module_override_supplied = "module_override" in payload
+        if clear_module_override and module_override_supplied:
+            self.send_json({"error": "module_override and clear_module_override are mutually exclusive"}, status=400)
+            return
+        submitted_module_override: str | None = None
+        if module_override_supplied:
+            try:
+                submitted_module_override = normalize_module_override(payload.get("module_override"))
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+                return
         ownership_override = str(payload.get("ownership_override") or "").strip() or None
         reason = str(payload.get("reason") or "").strip()
         actor = str(payload.get("actor") or "").strip() or None
@@ -321,6 +349,16 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if current is None:
             self.send_json({"error": "AI requirement is not present in the current run"}, status=409)
             return
+        current_review_state = current.get("review_state")
+        if not isinstance(current_review_state, dict) or current.get("needs_reconfirmation"):
+            current_review_state = {}
+        if clear_module_override:
+            module_override = None
+        elif module_override_supplied:
+            module_override = submitted_module_override
+        else:
+            existing_module = current_review_state.get("module_override")
+            module_override = normalize_module_override(existing_module) if existing_module else None
         current_source_fingerprint = (
             str(current.get("source_fingerprint") or "") or source_fingerprint(current)
         )
@@ -360,15 +398,29 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         # POST 即刻返回;批注视图不读 merged,不受延迟影响。失败不影响裁决本身。
         if (self.output_dir / "ai_requirements.jsonl").exists():
             _rebuilder().schedule(self.output_dir)
+            try:
+                from adjudication_bank import resolve_bank_path, update_bank
+
+                bank_path = resolve_bank_path()
+                if bank_path is not None:
+                    update_bank(bank_path, self.output_dir)
+            except Exception as exc:  # 裁决已持久化；学习资产刷新失败不能把主操作报成失败
+                LOGGER.warning("裁决样本库即时收割失败（忽略）：%s", exc)
         self.send_json(state)
 
     def handle_omission_action(self) -> None:
         payload = self.read_json_body()
         if payload is None:
             return
-        from omission_actions import OmissionConflictError, apply_omission_action
+        from omission_actions import (
+            OmissionConflictError,
+            apply_omission_action,
+            current_omission_candidate_ids,
+            extraction_operation_lock,
+        )
         omission_id = str(payload.get("omission_id") or "").strip()
         source_fingerprint_value = str(payload.get("source_fingerprint") or "").strip()
+        block_id = str(payload.get("block_id") or "").strip()
         if not omission_id or not source_fingerprint_value:
             self.send_json({
                 "error": "omission identity and source fingerprint are required",
@@ -376,15 +428,30 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             }, status=409)
             return
         try:
-            state = apply_omission_action(
-                self.output_dir,
-                block_id=str(payload.get("block_id") or ""),
-                omission_id=omission_id,
-                status=str(payload.get("status") or ""),
-                reason=str(payload.get("reason") or ""),
-                actor=str(payload.get("actor") or "").strip() or None,
-                expected_source_fingerprint=source_fingerprint_value,
-            )
+            with extraction_operation_lock(self.output_dir, operation="omission-action"):
+                if block_id not in current_omission_candidate_ids(self.output_dir):
+                    raise OmissionConflictError(
+                        "block is no longer an uncovered requirement candidate; refresh before adjudicating"
+                    )
+                state = apply_omission_action(
+                    self.output_dir,
+                    block_id=block_id,
+                    omission_id=omission_id,
+                    status=str(payload.get("status") or ""),
+                    reason=str(payload.get("reason") or ""),
+                    actor=str(payload.get("actor") or "").strip() or None,
+                    expected_source_fingerprint=source_fingerprint_value,
+                )
+                requirements_path = self.output_dir / "ai_requirements.jsonl"
+                if requirements_path.exists():
+                    try:
+                        from ai_extract import refresh_ai_extract_quality, refresh_consistency_report
+
+                        requirements = read_jsonl(requirements_path)
+                        refresh_ai_extract_quality(self.output_dir, requirements)
+                        refresh_consistency_report(self.output_dir, requirements)
+                    except (OSError, TimeoutError, ValueError) as exc:
+                        LOGGER.warning("遗漏裁决已保存，但覆盖质量刷新失败：%s", exc)
         except OmissionConflictError as exc:
             self.send_json({"error": str(exc), "needs_reconfirmation": True}, status=409)
             return
@@ -403,6 +470,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         from omission_actions import (
             OmissionConflictError,
             OmissionNoResultError,
+            current_omission_candidate_ids,
             targeted_reextract,
         )
         focus_lines = payload.get("focus_lines")
@@ -411,6 +479,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         omission_id = str(payload.get("omission_id") or "").strip()
         source_fingerprint_value = str(payload.get("source_fingerprint") or "").strip()
+        block_id = str(payload.get("block_id") or "").strip()
         if not omission_id or not source_fingerprint_value:
             self.send_json({
                 "error": "omission identity and source fingerprint are required",
@@ -418,9 +487,15 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             }, status=409)
             return
         try:
+            # Fast feedback before entering the targeted operation lease. targeted_reextract
+            # repeats this check under the lease to close the extraction-generation race.
+            if block_id not in current_omission_candidate_ids(self.output_dir):
+                raise OmissionConflictError(
+                    "block is no longer an uncovered requirement candidate; refresh before extracting"
+                )
             result = targeted_reextract(
                 self.output_dir,
-                block_id=str(payload.get("block_id") or ""),
+                block_id=block_id,
                 omission_id=omission_id,
                 focus_lines=[str(value) for value in (focus_lines or [])],
                 actor=str(payload.get("actor") or "").strip() or None,
@@ -443,6 +518,39 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         except (LLMConnectionError, LLMResponseError) as exc:
             self.send_json({"error": str(exc), "retryable": True}, status=502)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        self.send_json(result)
+
+    def handle_clarification_check_batch(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        checks = payload.get("checks")
+        if not isinstance(checks, list):
+            self.send_json({"error": "checks must be an array"}, status=400)
+            return
+        from clarification_report import batch_apply_internal_checks
+        from omission_actions import OmissionConflictError
+        try:
+            result = batch_apply_internal_checks(
+                self.output_dir,
+                [row for row in checks if isinstance(row, dict)],
+                action=str(payload.get("action") or "verified_ok"),
+                actor=str(payload.get("actor") or "").strip() or None,
+                note=str(payload.get("note") or ""),
+            )
+        except OmissionConflictError as exc:
+            self.send_json({
+                "error": str(exc),
+                "retryable": True,
+                "needs_reconfirmation": True,
+            }, status=409)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
             return
         except (TimeoutError, OSError) as exc:
             self.send_json({"error": str(exc), "retryable": True}, status=503)
@@ -548,6 +656,9 @@ def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict
 
 _BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
                  "page_number", "requirement_like", "noise", "doc_region",
+                 "raw_text", "text_repaired", "text_repair_checked", "text_repair_version",
+                 "text_repairs", "text_repair_words_before", "text_repair_words_after",
+                 "text_repair_candidates_before", "text_repair_candidates_after",
                  # 表格块渲染真表格所需（旧 blocks.jsonl 无这些字段 → None，前端回退扁平文字）
                  "table_title", "table_source", "header_rows", "data_rows")
 
@@ -588,8 +699,18 @@ def load_annotation_translations(output_dir: Path) -> tuple[dict[str, str], dict
 def build_document_blocks(output_dir: Path) -> dict:
     """供文档批注视图（源文件签名 memo,见 _memoized）。"""
     resolved = Path(output_dir).expanduser().resolve()
-    return _memoized("document", resolved, _DOC_MEMO_SOURCES,
-                     lambda: _build_document_blocks_impl(resolved))
+    payload = _memoized("document", resolved, _DOC_MEMO_SOURCES,
+                        lambda: _build_document_blocks_impl(resolved))
+    payload["module_vocabulary"] = _review_module_vocabulary()
+    return payload
+
+
+def _review_module_vocabulary() -> list[str]:
+    from ai_extract import MODULE_VOCAB
+    from adjudication_bank import load_bank, module_vocabulary, resolve_bank_path
+
+    custom = module_vocabulary(load_bank(resolve_bank_path()))
+    return list(dict.fromkeys([str(value) for value in MODULE_VOCAB] + custom))
 
 
 def _build_document_blocks_impl(output_dir: Path) -> dict:
@@ -600,6 +721,25 @@ def _build_document_blocks_impl(output_dir: Path) -> dict:
     blocks = read_jsonl(output_dir / "blocks.jsonl")
     from merged_consistency import is_coverage_candidate
     from omission_actions import make_omission_id, omission_source_fingerprint
+    from merged_consistency import covered_block_ids
+    requirements = build_ai_requirements(output_dir)
+    covered_ids = covered_block_ids(requirements, blocks)
+    try:
+        extract_quality = json.loads(
+            (output_dir / "ai_extract_quality.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        extract_quality = {}
+    if not isinstance(extract_quality, dict):
+        raise ValueError("ai_extract_quality.json must contain a JSON object")
+    failed_section_ids = [
+        str(value) for value in (extract_quality.get("failed_section_ids") or [])
+        if str(value)
+    ]
+    failed_block_ids = {
+        str(value) for value in (extract_quality.get("failed_section_block_ids") or [])
+        if str(value)
+    }
     trimmed = []
     for b in blocks:
         row = {k: b.get(k) for k in _BLOCK_FIELDS}
@@ -610,6 +750,8 @@ def _build_document_blocks_impl(output_dir: Path) -> dict:
             row["omission_source_fingerprint"] = omission_source_fingerprint(block_id, block_text)
         # 覆盖/遗漏统一口径（E3b）：服务端算好,双渲染器与澄清清单同源消费
         row["coverage_candidate"] = is_coverage_candidate(b)
+        row["covered_by_requirement"] = block_id in covered_ids
+        row["extraction_failed"] = block_id in failed_block_ids
         trimmed.append(row)
     translations, notes = load_annotation_translations(output_dir)
     clean_block_text = None
@@ -636,7 +778,12 @@ def _build_document_blocks_impl(output_dir: Path) -> dict:
                     break
         block["text"] = normalize_text(original_text)
     trimmed.sort(key=lambda b: b.get("order") or 0)
-    return {"blocks": trimmed, "count": len(trimmed)}
+    return {
+        "blocks": trimmed,
+        "count": len(trimmed),
+        "failed_section_ids": failed_section_ids,
+        "failed_section_block_ids": sorted(failed_block_ids),
+    }
 
 
 # 请求级重算备忘（0714 批次三 S7b）：GUI 每次刷新都全量重读+重 join（2000 块翻译匹配、
@@ -649,7 +796,11 @@ import threading as _threading
 _MEMO_LOCK = _threading.Lock()
 _MEMO: dict[tuple[str, str], tuple[tuple, object]] = {}
 
-_DOC_MEMO_SOURCES = ("blocks.jsonl", "annotation_translations.json")
+_DOC_MEMO_SOURCES = ("blocks.jsonl", "annotation_translations.json", "ai_requirements.jsonl",
+                     "merged_spec_requirements.json", "ai_requirements.meta.json",
+                     "ai_review_states.jsonl", "functional_requirements.json",
+                     "engineering_analysis.json", "consistency_report.json",
+                     "ai_extract_quality.json")
 _REQ_MEMO_SOURCES = ("merged_spec_requirements.json", "ai_requirements_doc.json",
                      "ai_requirements.jsonl", "ai_review_states.jsonl",
                      "functional_requirements.json", "engineering_analysis.json",
@@ -695,10 +846,6 @@ def _norm_text(s: object) -> str:
     return _WS_RE.sub(" ", str(s or "")).strip().lower()
 
 
-def _strip_ws(s: object) -> str:
-    return _WS_RE.sub("", str(s or "")).casefold()
-
-
 def compute_echo_block_ids(req: dict, blocks: list[dict]) -> list[str]:
     """同文重复出现的回声锚点(视图层专用字段,**不进** source_block_ids 溯源数据)。
 
@@ -710,37 +857,9 @@ def compute_echo_block_ids(req: dict, blocks: list[dict]) -> list[str]:
     相等,或 J≥0.8+数字多重集守卫(真实文档全对探针:目标对 0.97/真重复 0.84 保住,
     0.72 的跨章节相似句排除)。防噪:参照块与候选块剥空白后均 ≥60 字;跳过噪声块
     与已在 source_block_ids/anchor 里的块。"""
-    from extract_guards import _gram_jaccard, _num_multiset
-    quote = _strip_ws(req.get("source_quote"))
-    have = {str(b) for b in (req.get("source_block_ids") or [])}
-    have.add(str(req.get("anchor_block_id") or ""))
-    text_of = {str(b.get("block_id") or ""): str(b.get("text") or "") for b in blocks}
-    refs = []   # (原文, 剥空白, 数字多重集) —— 条目源块里够长的段落
-    for bid in have:
-        raw = text_of.get(bid, "")
-        stripped = _strip_ws(raw)
-        if len(stripped) >= 60:
-            refs.append((raw, stripped, _num_multiset(raw)))
-    echoes: list[str] = []
-    for block in blocks:
-        bid = str(block.get("block_id") or "")
-        if not bid or bid in have or block.get("noise"):
-            continue
-        raw = str(block.get("text") or "")
-        stripped = _strip_ws(raw)
-        if len(stripped) < 30:
-            continue
-        if len(quote) >= 30 and (quote in stripped or stripped in quote):
-            echoes.append(bid)
-            continue
-        if len(stripped) < 60:
-            continue
-        for ref_raw, ref_stripped, ref_nums in refs:
-            if stripped == ref_stripped or (
-                    _num_multiset(raw) == ref_nums and _gram_jaccard(raw, ref_raw) >= 0.8):
-                echoes.append(bid)
-                break
-    return echoes
+    from merged_consistency import reliable_echo_block_ids
+
+    return reliable_echo_block_ids(req, blocks)
 
 
 def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
@@ -749,15 +868,29 @@ def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
     批注挂在需求实际所在的小段上（而非整章节段首），符合"一小段一个需求点"。
     """
     span = [str(b) for b in (req.get("source_block_ids") or [])]
-    quote = _norm_text(req.get("source_quote"))
+    from merged_consistency import compact_source_text, match_source_quote_blocks
+
+    source_blocks = [
+        {"block_id": block_id, "order": order, "text": text_by_block.get(block_id, "")}
+        for order, block_id in enumerate(span)
+    ]
+    matched, _mapping = match_source_quote_blocks(req.get("source_quote"), source_blocks)
+    if matched:
+        return matched[0]
+    quote = compact_source_text(req.get("source_quote"))
     if quote:
-        for bid in span:
-            if quote in _norm_text(text_by_block.get(bid, "")):
-                return bid
-        prefix = quote[:40]  # LLM 引用偶有尾部偏差，用前缀兜一层
-        if prefix:
+        # LLM 引用偶有尾部偏差。保留旧的“含空格前 40 字”兜底，并额外支持 PDF
+        # 词内空格漂移；两者都只决定锚点，不扩大覆盖判定。
+        normalized_prefix = _norm_text(req.get("source_quote"))[:40]
+        compact_prefix = quote[:30]
+        if normalized_prefix or compact_prefix:
             for bid in span:
-                if prefix in _norm_text(text_by_block.get(bid, "")):
+                block_text = text_by_block.get(bid, "")
+                if (
+                    normalized_prefix and normalized_prefix in _norm_text(block_text)
+                ) or (
+                    compact_prefix and compact_prefix in compact_source_text(block_text)
+                ):
                     return bid
     return span[0] if span else ""
 
@@ -1104,6 +1237,8 @@ def _consistency_markers(output_dir: Path) -> tuple[dict[str, int], set[str]]:
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return {}, set()
+    if not isinstance(report, dict):
         return {}, set()
 
     def norm(s: object) -> str:

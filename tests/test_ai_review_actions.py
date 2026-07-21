@@ -59,6 +59,13 @@ class OwnershipOverrideTests(unittest.TestCase):
                 apply_ai_review_action(Path(td), "AI-1", "accepted", ownership_override="firmware")
             assert "unknown ownership" in str(ctx.exception)
 
+    def test_rejects_blank_or_overlong_module_override(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            for invalid in ("   ", "模" * 21):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    apply_ai_review_action(out, "AI-1", "accepted", module_override=invalid)
+
 
 class SourceAiRequirementIdTests(unittest.TestCase):
     """三处（api_server/ai_extract/requirements_analysis）共用的唯一主键实现。"""

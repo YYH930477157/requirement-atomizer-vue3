@@ -22,6 +22,57 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 class RequirementsAnalysisPipelineTests(unittest.TestCase):
+    def test_compliance_is_written_separately_without_ownership_or_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            write_jsonl(out / "ai_requirements.jsonl", [
+                {
+                    "ai_req_id": "AI-CORE",
+                    "type": "behavior",
+                    "title": "双向通信",
+                    "description": "The meter shall communicate bidirectionally.",
+                    "source_quote": "The meter shall communicate bidirectionally.",
+                    "source_block_ids": ["B-1"],
+                    "module": "通信协议",
+                },
+                {
+                    "ai_req_id": "AI-COMP",
+                    "type": "compliance",
+                    "title": "型式证书",
+                    "description": "A valid type certificate according to IEC 62053-22 shall be supplied.",
+                    "source_quote": "A valid type certificate according to IEC 62053-22 shall be supplied.",
+                    "source_block_ids": ["B-2"],
+                    "compliance_instrument": "IEC 62053-22",
+                    "compliance_obligations": [{"text": "Supply a valid type certificate."}],
+                },
+            ])
+            calls: list[tuple[str, str]] = []
+
+            def chat(system: str, user: str) -> dict:
+                calls.append((system, user))
+                return {"items": [{
+                    "software_requirement_text": "软件应支持双向通信。",
+                    "developer_guidance": [],
+                    "design_options": [],
+                    "acceptance_criteria": [],
+                    "open_questions": [],
+                    "assumptions": [],
+                }]}
+
+            result = run_requirements_analysis(out, route="openai_compatible", chat=chat)
+            analysis = json.loads((out / "engineering_analysis.json").read_text(encoding="utf-8"))
+            compliance = json.loads((out / "compliance_items.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(result["analysis_count"], 1)
+            self.assertEqual(result["compliance_count"], 1)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(analysis["items"][0]["source_requirement_ids"], ["AI-CORE"])
+            self.assertEqual(compliance["items"][0]["id"], "AI-COMP")
+            self.assertEqual(compliance["items"][0]["instrument"], "IEC 62053-22")
+            self.assertNotIn("ownership", compliance["items"][0])
+            self.assertNotIn("software_requirement_text", compliance["items"][0])
+            self.assertTrue((out / "compliance_items.md").exists())
+
     def test_stale_clarification_answer_is_not_injected_as_authoritative_input(self) -> None:
         from clarification_report import collect_questions
 

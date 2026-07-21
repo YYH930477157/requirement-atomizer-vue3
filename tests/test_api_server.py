@@ -9,6 +9,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import api_server
 import ai_review_actions
@@ -81,6 +82,45 @@ class AiReviewActionsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ai_review_actions.apply_ai_review_action(Path(tmp), "AIR-x", "bogus")
 
+    def test_endpoint_rejects_ambiguous_empty_module_override(self) -> None:
+        handler = object.__new__(api_server.RequirementAPIHandler)
+        handler.read_json_body = lambda: {
+            "ai_req_id": "AIR-1", "status": "accepted", "module_override": "",
+        }
+        responses: list[tuple[int, dict]] = []
+        handler.send_json = lambda body, status=200: responses.append((status, body))
+
+        handler.handle_ai_review_action()
+
+        self.assertEqual(responses[0][0], 400)
+        self.assertIn("must not be empty", responses[0][1]["error"])
+
+    def test_endpoint_uses_explicit_clear_module_override_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            handler = object.__new__(api_server.RequirementAPIHandler)
+            handler.output_dir = Path(tmp)
+            handler.read_json_body = lambda: {
+                "ai_req_id": "AIR-1", "status": "accepted",
+                "source_fingerprint": "source-current",
+                "review_subject_fingerprint": "subject-current",
+                "clear_module_override": True,
+            }
+            responses: list[tuple[int, dict]] = []
+            handler.send_json = lambda body, status=200: responses.append((status, body))
+            current = {
+                "ai_req_id": "AIR-1", "source_fingerprint": "source-current",
+                "review_subject_fingerprint": "subject-current",
+                "review_state": {"module_override": "计量精度"},
+            }
+            state = {"ai_req_id": "AIR-1", "status": "accepted", "module_override": None}
+            with patch("api_server.find_current_ai_requirement", return_value=current), patch(
+                "api_server.apply_ai_review_action", return_value=state,
+            ) as apply:
+                handler.handle_ai_review_action()
+
+        self.assertEqual(responses, [(200, state)])
+        self.assertIsNone(apply.call_args.kwargs["module_override"])
+
 
 class AiRequirementsEndpointTests(unittest.TestCase):
     def _seed(self, out: Path) -> None:
@@ -121,6 +161,67 @@ class AiRequirementsEndpointTests(unittest.TestCase):
             by_id = {block["block_id"]: block for block in result["blocks"]}
             self.assertEqual(by_id["BLK-2"]["text"], "- closed locations")
 
+    def test_document_blocks_mark_failed_extraction_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "failed_sections": 1,
+                "failed_section_ids": ["4"],
+                "failed_section_block_ids": ["BLK-2"],
+            }), encoding="utf-8")
+
+            result = api_server.build_document_blocks(out)
+
+            by_id = {block["block_id"]: block for block in result["blocks"]}
+            self.assertFalse(by_id["BLK-1"]["extraction_failed"])
+            self.assertTrue(by_id["BLK-2"]["extraction_failed"])
+            self.assertEqual(result["failed_section_ids"], ["4"])
+
+    def test_document_blocks_reject_structurally_invalid_quality_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            (out / "ai_extract_quality.json").write_text("[]", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                api_server.build_document_blocks(out)
+
+    def test_document_endpoint_wraps_structural_json_error_as_retryable_503(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            (out / "ai_extract_quality.json").write_text("[]", encoding="utf-8")
+            handler = object.__new__(api_server.RequirementAPIHandler)
+            handler.path = "/document"
+            handler.headers = {}
+            handler.allowed_origins = set()
+            handler.local_token = ""
+            handler.output_dir = out
+            responses: list[tuple[int, dict]] = []
+            handler.send_json = lambda body, status=200: responses.append((status, body))
+
+            handler.do_GET()
+
+        self.assertEqual(responses[0][0], 503)
+        self.assertTrue(responses[0][1]["retryable"])
+
+    def test_document_payload_includes_cross_document_custom_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out)
+            bank_path = out / "bank.json"
+            bank_path.write_text(json.dumps({
+                "version": 1,
+                "accepted": {},
+                "rejected": {},
+                "modules": {"通信安全": {"count": 2, "requirement_ids": ["A", "B"]}},
+            }, ensure_ascii=False), encoding="utf-8")
+            with patch.dict("os.environ", {"RATOMIZER_ADJUDICATION_BANK": str(bank_path)}):
+                result = api_server.build_document_blocks(out)
+
+        self.assertIn("通信安全", result["module_vocabulary"])
+
     def test_anchor_block_id_precise_to_quote_paragraph(self) -> None:
         text_by_block = {
             "BLK-1": "Some intro paragraph without the requirement.",
@@ -140,6 +241,24 @@ class AiRequirementsEndpointTests(unittest.TestCase):
         self.assertEqual(api_server.anchor_block_id(req3, text_by_block), "BLK-3")
         # 无 quote/无 span → 空
         self.assertEqual(api_server.anchor_block_id({}, text_by_block), "")
+
+    def test_anchor_block_id_ignores_pdf_word_internal_spaces(self) -> None:
+        text_by_block = {
+            "BLK-1": "Unrelated introductory paragraph.",
+            "BLK-2": (
+                "Electricity meters must beable to communicate bidirectionally "
+                "with the data a nd communication center."
+            ),
+        }
+        req = {
+            "source_quote": (
+                "Electricity meters must be able to communicate bidirectionally "
+                "with the data and communication center."
+            ),
+            "source_block_ids": ["BLK-1", "BLK-2"],
+        }
+
+        self.assertEqual(api_server.anchor_block_id(req, text_by_block), "BLK-2")
 
     def test_echo_block_ids_for_duplicated_text(self) -> None:
         """回声锚点(0715 电表招标实证):同一段产品描述在 Scope 与 3.1 各出现一次,
@@ -284,6 +403,68 @@ class AiRequirementsEndpointTests(unittest.TestCase):
             self.assertEqual(rows[0]["ownership_effective"], "hardware")
 
 
+class ClarificationBatchEndpointTests(unittest.TestCase):
+    def test_internal_checks_endpoint_wraps_structural_json_error_as_retryable_503(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "consistency_report.json").write_text("[]", encoding="utf-8")
+            handler = object.__new__(api_server.RequirementAPIHandler)
+            handler.path = "/clarification-internal-checks"
+            handler.headers = {}
+            handler.allowed_origins = set()
+            handler.local_token = ""
+            handler.output_dir = out
+            responses: list[tuple[int, dict]] = []
+            handler.send_json = lambda body, status=200: responses.append((status, body))
+
+            handler.do_GET()
+
+        self.assertEqual(responses[0][0], 503)
+        self.assertTrue(responses[0][1]["retryable"])
+
+    def test_batch_endpoint_returns_fingerprint_validation_summary(self) -> None:
+        handler = object.__new__(api_server.RequirementAPIHandler)
+        handler.output_dir = Path(".")
+        handler.read_json_body = lambda: {
+            "checks": [{"clarification_id": "CLR-1", "evidence_fingerprint": "FP-1"}],
+            "action": "verified_ok",
+            "actor": "reviewer",
+        }
+        responses: list[tuple[int, dict]] = []
+        handler.send_json = lambda body, status=200: responses.append((status, body))
+        expected = {
+            "requested": 1, "applied": 1, "stale": [], "missing": [],
+            "ineligible": [], "duplicates": [], "by_signal": {"suspicion:引用": 1},
+            "by_module": {"计量": 1}, "readiness": None, "written": [],
+        }
+        with patch("clarification_report.batch_apply_internal_checks", return_value=expected) as apply:
+            handler.handle_clarification_check_batch()
+
+        self.assertEqual(responses, [(200, expected)])
+        apply.assert_called_once()
+
+    def test_batch_endpoint_reports_extraction_conflict_as_retryable_409(self) -> None:
+        from omission_actions import OmissionConflictError
+
+        handler = object.__new__(api_server.RequirementAPIHandler)
+        handler.output_dir = Path(".")
+        handler.read_json_body = lambda: {
+            "checks": [{"clarification_id": "CLR-1", "evidence_fingerprint": "FP-1"}],
+        }
+        responses: list[tuple[int, dict]] = []
+        handler.send_json = lambda body, status=200: responses.append((status, body))
+
+        with patch(
+            "clarification_report.batch_apply_internal_checks",
+            side_effect=OmissionConflictError("extraction is running"),
+        ):
+            handler.handle_clarification_check_batch()
+
+        self.assertEqual(responses[0][0], 409)
+        self.assertTrue(responses[0][1]["retryable"])
+        self.assertTrue(responses[0][1]["needs_reconfirmation"])
+
+
 class ConsistencyFlagsTests(unittest.TestCase):
     """一致性闭环：P1b critic 的报表标记挂到批注视图行上（此前只写不读）。"""
 
@@ -335,6 +516,10 @@ class ConsistencyFlagsTests(unittest.TestCase):
 
             (out / "consistency_report.json").write_text("{broken", encoding="utf-8")
             rows = api_server.build_ai_requirements(out)          # 损坏报表 → 不抛、零标记
+            self.assertTrue(all("consistency_flags" not in r for r in rows))
+
+            (out / "consistency_report.json").write_text("[]", encoding="utf-8")
+            rows = api_server.build_ai_requirements(out)          # 结构错误同样不可裸崩
             self.assertTrue(all("consistency_flags" not in r for r in rows))
 
 

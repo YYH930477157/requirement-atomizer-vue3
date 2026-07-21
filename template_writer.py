@@ -25,6 +25,7 @@ from typing import Any
 
 from requirements_analysis_excel import _notes_text, _safe_cell
 from requirements_analysis_schema import OWNERSHIP_CO_DESIGN, OWNERSHIP_HARDWARE
+from compliance import is_compliance_requirement
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
@@ -119,9 +120,17 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
     wb = load_workbook(template_path)
     appended: dict[str, int] = {}
     skipped_hardware = 0
+    skipped_compliance = 0
 
     software_items = []
     for item in items:
+        # ``source_requirement_type`` is emitted by requirements_analysis, not by the narrative
+        # LLM. Trust it only at this final defensive boundary so a stale analysis file cannot put
+        # a known compliance row back into the software workbook.
+        source_type = str(item.get("source_requirement_type") or "").casefold()
+        if source_type == "compliance" or is_compliance_requirement(item):
+            skipped_compliance += 1
+            continue
         if item.get("ownership") == OWNERSHIP_HARDWARE:
             skipped_hardware += 1
             continue
@@ -151,6 +160,7 @@ def append_analysis_to_template(template_path: Path, items: list[dict[str, Any]]
     return {"appended_by_sheet": dict(sorted(appended.items(), key=lambda x: -x[1])),
             "appended_total": sum(appended.values()),
             "skipped_hardware": skipped_hardware,
+            "skipped_compliance": skipped_compliance,
             "workbook": out_path.name}
 
 

@@ -341,6 +341,11 @@ def _produced_text(requirement: dict[str, Any]) -> str:
     # 纳入后：编造编码走硬拦（draft+拦截注），无据数字走软标（批注视图 suspicion 徽章）。
     sub_texts = " ".join(
         str(s.get("text") or "") for s in requirement.get("sub_items") or [] if isinstance(s, dict))
+    compliance_texts = " ".join(
+        str(s.get("text") or "")
+        for s in requirement.get("compliance_obligations") or []
+        if isinstance(s, dict)
+    )
     table = requirement.get("threshold_table") or {}
     table_cells: list[str] = []
     if isinstance(table, dict):
@@ -356,6 +361,7 @@ def _produced_text(requirement: dict[str, Any]) -> str:
         # 要进漂移扫描——"不得带无依据容量"此前只是提示词约定
         " ".join(str(a) for a in requirement.get("design_options") or []),
         sub_texts,
+        compliance_texts,
         " ".join(table_cells),
     ])
 

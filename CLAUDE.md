@@ -1,7 +1,7 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
-> 状态快照截至 2026-07-19，里程碑推进后请同步更新本文件。
+> 状态快照截至 2026-07-21，里程碑推进后请同步更新本文件。
 
 ## 项目是什么
 
@@ -44,6 +44,17 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - golden 基线输出 `out/abnt_nbr_16968_atomizer_v5/` 已于 2026-07-04 重新生成（真实 ABNT docx + **三个 --kb + domain-pack**，缺 KB 会假漂移）；测试用例只做 unittest.TestCase（**pytest 未装**，模块级 `def test_*` 会被静默跳过）
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
+
+## 重大更新（2026-07-20）——test2 招标 PDF 解析、合规分流与审计闭环（分支待复核）
+
+- **根因与边界**：test2 是 Google 机翻 PDF，词内空格是内容流里的真实空格字形，调 `x_tolerance` 无效；旧 `defragment_text` 又会把 `i s obliged`/`b e able` 链式误并为 `i sobliged`/`beable`，继而使来源引用锚定失败、真实需求被漏掉。修复坚持确定性和“宁漏勿猜”：结构编码仍只允许原文逐字锚定，无法唯一判断的残留只显示为审计信号，不自动改字。
+- **PDF 文本修复 v2**：内置 `parsers/data/english_words_top50000.txt.gz` + 电表域词，按词频与唯一切分修复单字母碎片、粘连词、全大写缩写、拆分数字和假粗体；每块保留 `raw_text`、修复前后、规则与坐标，词表/算法 hash 纳入解析缓存和 PyInstaller 资源。质量报告区分“实际修复事件”与“保守疑似碎片”，避免把“修复器已无把握”误报为“文本已无缺陷”。行为版本 `PDF_TEXT_REPAIR_VERSION=pdf-text-repair-v2`，抽取 prompt/护栏升级为 `ai-extract-v21` / `guards-v9`。
+- **来源与覆盖口径**：引用匹配改为空白不敏感、标点/数字/编码严格保留，支持 12 个相邻块及多摘录；`section_fallback` 不再虚标整章覆盖。覆盖拆成 `core` / `compliance` / `excluded` 三层；当前指纹仍匹配的专家 `non_requirement` triage 从 core/compliance 分母移出并在 excluded 留审计原因。fuzzy 映射和未验证 echo 不计覆盖，echo 使用与批注视图同源的确定性重复门；旧顶层字段继续代表 core，就绪门读取实时 core 覆盖率。
+- **compliance 独立流转**：证书、法令、初始检定、符合性声明等不再挤入软件/硬件研发需求；输出 `compliance_requirements.json`、`compliance_items.json/md`，功能合成（`functional-synthesis-v6`）、软件分析和模板成文均防御性排除。结构分流只读原文证据，生成的 type/title/description 不能改覆盖分母；“技术义务 + 末尾证书/法令引用”的混合块保留在 core。umbrella 只由原文多个合规义务确定，instrument 错配不再静默替换且保留审计说明；合规义务也经过编码/数字/标准号漂移护栏。未处置合规漏项作为 blocking 内部核对项保留，不靠改分母掩盖。
+- **审计与操作性**：质量报告记录失败章节及具体块，Vue/静态 HTML/PDF 热区均提供轻量“原文修复”“抽取失败”标记，点击可查修复前后与事件明细。内部核对新增按 signal/module 批量确认，整批在单锁内原子写入，每条必须匹配当前 `evidence_fingerprint`；stale/missing/ineligible/duplicate 分类汇报，409 会刷新证据并要求重新确认。模块自由文本前后端均限制为非空、最多 20 字；旧目录覆盖率明确标记 `legacy`。澄清报告版本为 `clarification/v6-coverage-basis`，一致性报告版本为 `merged-consistency/v2-triage-strict-evidence`。
+- **跨文档模块沉淀**：模块控件支持自由文本 + 建议列表；后端 `/document` 返回 bank 词表且 Vue datalist 实际消费；已接受的 `module_override` 在裁决/API 导入后立即收割到 `RATOMIZER_ADJUDICATION_BANK`。样本库使用跨进程锁、Windows `PermissionError` 重试和原子替换，并记录模块使用计数；旧 bank 的 accepted 范例也可直接形成模块词表。
+- **test2 确定性实测**：569 块中 408 块发生修复，共 4723 个修复事件；同一保守探针的疑似断词率 `24.91% -> 1.93%`（4333 -> 246），重复运行的块正文、原文和修复事件逐块一致。复用旧 127 条真实 AI 需求映射到新块做离线链路核验：core `119/162=73.46%`、compliance `6/6=100%`、excluded 7；独立合规条目 3（其中一个 umbrella 含 5 项义务），DLMS/COSEM over IP 双向通信探针命中。按当前确定性功能合成后有 121 条研发分析项且无 compliance 混入。就绪门仍为 `NEEDS WORK`：158 条内部核对尚未处置，其中 48 条 blocking，且普通待澄清量超阈值；core 覆盖率已通过 60% 门槛。
+- **诚实限制与合并纪律**：本轮无可用 LLM/API Key，未执行 `ai-extract-v21` 的 test2 在线全量复抽；上述需求侧指标是旧真实抽取结果的离线重锚定，只验证确定性后处理与分流，不宣称验证新 prompt 召回。隔离 worktree 全量为 **1415 unittest（26 skip）+ 130 vitest + vue-tsc/Vite build**；`git diff --check` 与 Python compileall 通过。golden 文件未修改；合入 main 后必须按三个种子 KB + domain-pack 重生成 main 的 ABNT 输出并完成 golden 零漂移或逐项说明，才算最终合并完成。
 
 ## 重大更新（2026-07-19）——审查并行化与遗漏闭环（已合并 main `26a72f7`）
 

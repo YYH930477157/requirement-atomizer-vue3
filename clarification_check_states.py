@@ -63,6 +63,70 @@ def apply_clarification_check_action(
     note: str = "",
 ) -> dict[str, Any]:
     """Append one audited internal-check action and return the stored event."""
+    event = _build_check_event(
+        clarification_id,
+        action,
+        evidence_fingerprint=evidence_fingerprint,
+        blocker_level=blocker_level,
+        module=module,
+        signal=signal,
+        source_id=source_id,
+        actor=actor,
+        note=note,
+    )
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / CHECK_STATES_FILE
+    with clarification_check_state_lock(root):
+        history = _read_history_unlocked(path)
+        history.append(event)
+        _atomic_write_history(path, history)
+    return event
+
+
+def apply_clarification_check_actions_batch(
+    out_dir: Path,
+    actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Append a validated batch under one cross-process lock and one atomic replace."""
+    events = [
+        _build_check_event(
+            row.get("clarification_id"),
+            row.get("action"),
+            evidence_fingerprint=row.get("evidence_fingerprint"),
+            blocker_level=row.get("blocker_level") or "important",
+            module=row.get("module") or "",
+            signal=row.get("signal") or "",
+            source_id=row.get("source_id") or "",
+            actor=row.get("actor"),
+            note=row.get("note") or "",
+        )
+        for row in actions
+    ]
+    if not events:
+        return []
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / CHECK_STATES_FILE
+    with clarification_check_state_lock(root):
+        history = _read_history_unlocked(path)
+        history.extend(events)
+        _atomic_write_history(path, history)
+    return events
+
+
+def _build_check_event(
+    clarification_id: Any,
+    action: Any,
+    *,
+    evidence_fingerprint: Any,
+    blocker_level: Any = "important",
+    module: Any = "",
+    signal: Any = "",
+    source_id: Any = "",
+    actor: Any = None,
+    note: Any = "",
+) -> dict[str, Any]:
     clarification_id = str(clarification_id or "").strip()
     action = str(action or "").strip()
     evidence_fingerprint = str(evidence_fingerprint or "").strip()
@@ -77,7 +141,7 @@ def apply_clarification_check_action(
     if blocker_level not in VALID_BLOCKER_LEVELS:
         raise ValueError(f"invalid clarification blocker level: {blocker_level}")
 
-    event = {
+    return {
         "clarification_id": clarification_id,
         "action": action,
         # ``state`` is the effective snapshot field consumed by report/API clients. Keep
@@ -92,14 +156,6 @@ def apply_clarification_check_action(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "note": str(note or "").strip(),
     }
-    root = Path(out_dir).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / CHECK_STATES_FILE
-    with clarification_check_state_lock(root):
-        history = _read_history_unlocked(path)
-        history.append(event)
-        _atomic_write_history(path, history)
-    return event
 
 
 @contextmanager

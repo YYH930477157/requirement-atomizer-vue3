@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ai_review_actions import read_ai_review_states, source_ai_requirement_id
+from compliance import build_compliance_payload, is_compliance_requirement
 from io_utils import read_jsonl
 from requirements_analysis_agent import build_analysis_prompt, validate_llm_item
 from requirements_analysis_excel import write_software_requirements_xlsx
@@ -78,6 +79,8 @@ OUTPUT_FILES = [
     "engineering_analysis.json",
     "hardware_items.md",
     "co_design_items.md",
+    "compliance_items.json",
+    "compliance_items.md",
 ]
 
 
@@ -182,6 +185,7 @@ def run_requirements_analysis(
         # 缺输入必须响亮失败：静默产出"0 条 0 问题"的空交付物会掩盖打错目录（仓库纪律）
         raise FileNotFoundError(
             f"ai_requirements.jsonl not found in {out_dir} — 请先运行「AI 抽取」再做需求分析")
+    raw_requirements = read_jsonl(source_path)
     if synthesized_path.exists():
         try:
             synthesized_payload = json.loads(synthesized_path.read_text(encoding="utf-8"))
@@ -197,11 +201,25 @@ def run_requirements_analysis(
                 LOGGER.warning("functional_requirements.json producer 异常（%s），回退逐原子输入", producer or "缺失")
                 requirements = None
         if not isinstance(requirements, list):
-            requirements = read_jsonl(source_path)
+            requirements = raw_requirements
     else:
-        requirements = read_jsonl(source_path)
+        requirements = raw_requirements
     # 容错读（坏行跳过）+ 最新覆盖，与裁决回流同一读取器——单条撕裂写不弄死整跑
     states = read_ai_review_states(out_dir)
+    compliance_source: list[dict[str, Any]] = []
+    for requirement in raw_requirements:
+        source_id = _source_requirement_id(requirement)
+        state = states.get(source_id)
+        if _is_rejected(state) or not is_compliance_requirement(requirement):
+            continue
+        reviewed = dict(requirement)
+        reviewed["ai_req_id"] = source_id
+        if state and str(state.get("status") or "").strip():
+            reviewed["status"] = str(state.get("status") or "").strip()
+        compliance_source.append(reviewed)
+    # 防御旧 functional_requirements.json：即使上游产物来自隔离修复前，也不能让合规项
+    # 进入归属分类、软件 LLM 或研发模板。
+    requirements = [row for row in requirements if not is_compliance_requirement(row)]
     vocabulary = extract_template_vocabulary(template_path)
     # 显式注入 chat 是测试/嵌入方的主动 opt-in；普通应用只有开关开启且请求 LLM
     # 路由时才解析端点。默认关闭时连端点、模板知识和裁决样本都不读取。
@@ -358,6 +376,10 @@ def run_requirements_analysis(
         "enriched": enriched_count,
         "enrich_degraded": degraded_count,
         "items": items,
+        "compliance": {
+            "count": len(compliance_source),
+            "files": ["compliance_items.json", "compliance_items.md"],
+        },
         "issues": issues,
     }
     if note:
@@ -379,10 +401,22 @@ def run_requirements_analysis(
         "Co-design Items",
         co_design=True,
     )
+    compliance_payload = build_compliance_payload(compliance_source)
+    compliance_payload.update({
+        "producer": ANALYZE_PROMPT_VERSION,
+        "source": source_path.name,
+        "analysis": "deterministic_compliance_projection",
+    })
+    (out_dir / "compliance_items.json").write_text(
+        json.dumps(compliance_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _write_compliance_report(out_dir / "compliance_items.md", compliance_payload["items"])
 
     result = {
         "kind": "requirements_analysis",
         "analysis_count": len(items),
+        "compliance_count": len(compliance_payload["items"]),
         "issues": len(issues),
         "route": executed_route,
         "route_requested": route,
@@ -961,6 +995,7 @@ def _base_item(index: int, req: dict[str, Any], vocabulary: dict[str, Any]) -> d
     return {
         "analysis_id": build_analysis_id(index),
         "source_kind": "ai_requirement",
+        "source_requirement_type": str(req.get("type") or req.get("requirement_type") or ""),
         "source_requirement_ids": [str(value) for value in _as_list(req.get("source_ai_requirement_ids")) if str(value).strip()] or [source_id],
         "source_block_ids": [str(value) for value in _as_list(req.get("source_block_ids"))],
         "module": module,
@@ -1076,6 +1111,30 @@ def _write_report(path: Path, rows: list[dict[str, Any]], title: str, *, co_desi
         lines.extend([
             f"- Source: {', '.join(str(value) for value in row.get('source_requirement_ids') or [])}",
             f"- Source quote: {row.get('source_quote') or ''}",
+            "",
+        ])
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_compliance_report(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Render the independent compliance delivery list without deriving implementation advice."""
+    lines = ["# 合规交付项", ""]
+    if not rows:
+        lines.extend(["无。", ""])
+    for row in rows:
+        lines.append(f"## {row.get('id') or ''} {row.get('title') or ''}".rstrip())
+        if row.get("instrument"):
+            lines.append(f"- 法规/标准依据: {row['instrument']}")
+        obligations = row.get("obligations") or []
+        if obligations:
+            lines.append("- 交付义务:")
+            for obligation in obligations:
+                label = str(obligation.get("label") or "").strip()
+                prefix = f"{label} " if label else ""
+                lines.append(f"  - {prefix}{obligation.get('text') or ''}".rstrip())
+        lines.extend([
+            f"- 来源章节: {row.get('source_section') or ''}",
+            f"- 原文依据: {row.get('source_quote') or ''}",
             "",
         ])
     path.write_text("\n".join(lines), encoding="utf-8")

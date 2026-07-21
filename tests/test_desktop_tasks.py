@@ -816,18 +816,27 @@ class ChainAndManifestTests(unittest.TestCase):
     """F1+F7：后端链编排 + run_manifest 显式状态账本。"""
 
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
+        from parsers.pdf_parser import PDF_TEXT_REPAIR_VERSION, text_repair_vocabulary_fingerprint
+
         expected = {
-            "atomize": "atomize+impl-v4",
+            "atomize": (
+                f"atomize+{PDF_TEXT_REPAIR_VERSION}"
+                f"+repair-vocab-{text_repair_vocabulary_fingerprint()}+impl-v4"
+            ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
-            "ai-extract": "ai-extract-v20+guards-v6+ai-verify-v2+ai-supplement-v3-identity-preconditions+impl-v4",
+            "ai-extract": (
+                "ai-extract-v21+guards-v9+ai-verify-v2"
+                "+merged-consistency/v2-triage-strict-evidence"
+                "+ai-supplement-v3-identity-preconditions+impl-v4"
+            ),
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
-            "functional-synthesis": "functional-synthesis-v5+ai-supplement-v3-identity-preconditions+impl-v2",
-            "requirements-analysis": "analyze-llm-v6+ai-supplement-v3-identity-preconditions+impl-v4",
-            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
-            "clarification-report": "clarification/v4-check-state+ai-supplement-v3-identity-preconditions+impl-v4",
+            "functional-synthesis": "functional-synthesis-v6+ai-supplement-v3-identity-preconditions+impl-v3",
+            "requirements-analysis": "analyze-llm-v6+ai-supplement-v3-identity-preconditions+impl-v5",
+            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v3",
+            "clarification-report": "clarification/v6-coverage-basis+ai-supplement-v3-identity-preconditions+impl-v5",
             "export-annotation-html": (
-                "doc_annotation_export/v9+annotation-translation-v2-segment-fallback"
+                "doc_annotation_export/v10+annotation-translation-v2-segment-fallback"
                 "+annotation-translation-guards-v1+ai-supplement-v3-identity-preconditions"
             ),
         }
@@ -835,6 +844,26 @@ class ChainAndManifestTests(unittest.TestCase):
             {stage: desktop_tasks.stage_producer(stage) for stage in expected},
             expected,
         )
+
+    def test_atomize_fingerprint_tracks_kb_and_domain_pack_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            kb = root / "kb.json"
+            domain = root / "domain"
+            domain.mkdir()
+            rules = domain / "rules.yaml"
+            kb.write_text('{"entries": []}', encoding="utf-8")
+            rules.write_text("version: 1\n", encoding="utf-8")
+            config = {"kb_paths": [str(kb)], "domain_pack_dir": str(domain)}
+
+            first = desktop_tasks.stage_input_fingerprint(root, "atomize", config=config)
+            kb.write_text('{"entries": [{"id": "changed"}]}', encoding="utf-8")
+            second = desktop_tasks.stage_input_fingerprint(root, "atomize", config=config)
+            rules.write_text("version: 2\n", encoding="utf-8")
+            third = desktop_tasks.stage_input_fingerprint(root, "atomize", config=config)
+
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(second, third)
 
     def test_clarification_stage_tracks_all_resolution_sidecars(self) -> None:
         inputs = set(desktop_tasks.STAGE_INPUTS["clarification-report"])
@@ -854,6 +883,16 @@ class ChainAndManifestTests(unittest.TestCase):
 
         self.assertNotEqual(current, changed)
         self.assertIn("enrich-guards-vNEXT", changed)
+
+    def test_ai_extract_producer_tracks_consistency_version(self) -> None:
+        import merged_consistency
+
+        current = desktop_tasks.stage_producer("ai-extract")
+        with patch.object(merged_consistency, "MERGED_CONSISTENCY_VERSION", "merged-consistency/vNEXT"):
+            changed = desktop_tasks.stage_producer("ai-extract")
+
+        self.assertNotEqual(current, changed)
+        self.assertIn("merged-consistency/vNEXT", changed)
 
     def test_annotation_producer_tracks_translation_guards_version(self) -> None:
         import doc_annotation_export

@@ -133,6 +133,49 @@ class FunctionalSynthesisIdentityTests(unittest.TestCase):
         self.assertEqual(len(set(assigned)), 2)
         self.assertTrue(all(rid.startswith("AIR-") for rid in assigned))
 
+    def test_compliance_requirements_do_not_enter_function_catalog(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+        from functional_synthesis import run_functional_synthesis
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            rows = [
+                {
+                    "ai_req_id": "AI-CORE",
+                    "type": "behavior",
+                    "title": "双向通信",
+                    "description": "The meter shall communicate bidirectionally over DLMS/COSEM.",
+                    "source_quote": "The meter shall communicate bidirectionally over DLMS/COSEM.",
+                    "module": "通信协议",
+                },
+                {
+                    "ai_req_id": "AI-COMP",
+                    "type": "compliance",
+                    "title": "型式证书",
+                    "description": "A valid type certificate according to IEC 62053-22 shall be supplied.",
+                    "source_quote": "A valid type certificate according to IEC 62053-22 shall be supplied.",
+                    "module": "测试合规",
+                },
+            ]
+            (out / "ai_requirements.jsonl").write_text(
+                "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+
+            result = run_functional_synthesis(out, route="stub")
+            payload = json.loads((out / "functional_requirements.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["compliance_requirements"], 1)
+        self.assertEqual(payload["compliance_requirements"], 1)
+        assigned = {
+            source_id
+            for item in payload["items"]
+            for source_id in item.get("source_ai_requirement_ids") or []
+        }
+        self.assertEqual(assigned, {"AI-CORE"})
+
 
 class StructuredFunctionalRequirementTests(unittest.TestCase):
     def test_structured_output_preserves_constraints_and_provenance(self) -> None:

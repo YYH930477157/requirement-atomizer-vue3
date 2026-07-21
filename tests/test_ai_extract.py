@@ -272,6 +272,29 @@ class SelfCheckClauseAlignmentTests(unittest.TestCase):
         self.assertEqual(len(uncovered), 1)
         self.assertTrue(uncovered[0].startswith("f)"))           # a) 已被子项覆盖，f) 才是真未覆盖
 
+    def test_uncovered_lines_do_not_credit_whole_section_fallback_span(self) -> None:
+        blocks = {
+            "B1": {"block_id": "B1", "order": 1, "requirement_like": True, "noise": False,
+                   "text": "The meter shall log events."},
+            "B2": {"block_id": "B2", "order": 2, "requirement_like": True, "noise": False,
+                   "text": "The meter shall expose alarms."},
+        }
+        section = {
+            "section_id": "4",
+            "heading": "4",
+            "block_ids": ["B1", "B2"],
+            "text": blocks["B1"]["text"] + "\n" + blocks["B2"]["text"],
+        }
+        existing = [{
+            "source_quote": blocks["B1"]["text"],
+            "source_block_ids": ["B1", "B2"],
+            "source_mapping": "section_fallback",
+        }]
+
+        uncovered = ai_extract._uncovered_requirement_lines(section, existing, blocks)
+
+        self.assertEqual(uncovered, [blocks["B2"]["text"]])
+
 
 class AnnexRefAndTermDefsTests(unittest.TestCase):
     """v11：Annex 引用解析（EN 系测试程序全在附录，此前是瞎的）+ 术语定向注入。"""
@@ -594,6 +617,8 @@ class ExtractAllProgressTests(unittest.TestCase):
         self.assertEqual(events[-1]["percent"], 100)
         # 失败章节计入 stats、不抛；成功章节仍产 1 条需求
         self.assertEqual(stats["failed_sections"], 1)
+        self.assertEqual(stats["failed_section_ids"], ["S2"])
+        self.assertEqual(stats["failed_section_block_ids"], ["B2"])
         self.assertEqual(stats["total_sections"], 2)
         self.assertEqual(len(flat), 1)
 
@@ -1433,7 +1458,7 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("忠实性", ai_extract.SYSTEM_PROMPT)
         self.assertIn("不得升格约束强度", ai_extract.SYSTEM_PROMPT)
         self.assertIn("测试装置/夹具/图例说明", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v20")
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v21")
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}
@@ -1452,6 +1477,130 @@ class PromptV5Tests(unittest.TestCase):
 
         reqs = ai_extract.extract_section(sec, chat)
         self.assertIn("引用非逐字", reqs[0].get("suspicion_reasons") or [])
+
+
+class SourceMappingTests(unittest.TestCase):
+    def test_fragmented_multi_block_quote_ignores_tiny_page_number_block(self) -> None:
+        section = {
+            "block_ids": ["B14", "B15", "B21"],
+            "source_blocks": [
+                {"block_id": "B14", "text": "The meter must meet the conditions set forth i nthe standards."},
+                {"block_id": "B15", "text": "It must comply a ccording t o Act 157/2018 C oll."},
+                {"block_id": "B21", "text": "2"},
+            ],
+        }
+        req = {
+            "source_quote": (
+                "The meter must meet the conditions set forth in the standards. "
+                "It must comply according to Act 157/2018 Coll."
+            )
+        }
+
+        ai_extract._map_requirement_source(req, section)
+
+        self.assertEqual(req["source_block_ids"], ["B14", "B15"])
+        self.assertEqual(req["anchor_block_id"], "B14")
+        self.assertEqual(req["source_mapping"], "multi_block")
+
+
+class ComplianceExtractionTests(unittest.TestCase):
+    def test_legal_certificate_is_deterministically_retyped_and_source_backed(self) -> None:
+        quote = "Valid Certificate according to the standard STN EN 62053-22."
+        row = ai_extract.normalize_requirement({
+            "title": "Certificate",
+            "description": "Provide the certificate.",
+            "type": "functional",
+            "source_quote": quote,
+            "instrument": "IEC 99999",
+        }, {"section_id": "2.1", "block_ids": ["B1"]})
+
+        self.assertEqual(row["type"], "compliance")
+        self.assertEqual(row["priority"], "P0")
+        self.assertEqual(row["module"], "测试合规")
+        self.assertEqual(row["compliance_instrument"], "")
+        self.assertIn("IEC 99999", row["notes"])
+        payload = ai_extract.build_compliance_payload([row])
+        self.assertEqual(payload["items"][0]["instrument"], "")
+        self.assertIn("IEC 99999", payload["items"][0]["notes"])
+
+    def test_model_umbrella_flag_is_recomputed_from_obligation_count(self) -> None:
+        row = ai_extract.normalize_requirement({
+            "title": "Declaration",
+            "description": "Provide the declaration.",
+            "type": "compliance",
+            "source_quote": "The declaration of conformity shall be supplied.",
+            "compliance_umbrella": True,
+            "compliance_obligations": [{"text": "Provide the declaration of conformity."}],
+        }, {"section_id": "2.1", "block_ids": ["B1"]})
+
+        self.assertFalse(row["compliance_umbrella"])
+
+    def test_dlms_behavior_reference_stays_functional(self) -> None:
+        row = ai_extract.normalize_requirement({
+            "title": "Bidirectional communication",
+            "description": "The meter communicates over IP.",
+            "type": "functional",
+            "source_quote": "Communication must use DLMS/COSEM standards based on IP.",
+        }, {"section_id": "2", "block_ids": ["B1"]})
+
+        self.assertEqual(row["type"], "functional")
+
+    def test_regulatory_citation_does_not_remove_a_technical_constraint_from_core(self) -> None:
+        row = ai_extract.normalize_requirement({
+            "title": "Mechanical environmental class",
+            "description": "The enclosure shall meet mechanical environmental class M1.",
+            "type": "functional",
+            "source_quote": (
+                "The meter must meet mechanical environmental class M1 in accordance with "
+                "Regulation of the Government No. 145/2016."
+            ),
+        }, {"section_id": "3.3", "block_ids": ["B1"]})
+
+        self.assertEqual(row["type"], "functional")
+
+    def test_unsupported_model_compliance_label_cannot_change_delivery_scope(self) -> None:
+        row = ai_extract.normalize_requirement({
+            "title": "Bidirectional communication",
+            "description": "The meter communicates over IP.",
+            "type": "compliance",
+            "source_quote": "The meter shall communicate bidirectionally over DLMS/COSEM.",
+            "instrument": "IEC 99999",
+        }, {"section_id": "2", "block_ids": ["B1"]})
+
+        self.assertEqual(row["type"], "functional")
+        self.assertEqual(row["compliance_instrument"], "")
+
+    def test_mixed_emc_and_certificate_source_stays_a_technical_requirement(self) -> None:
+        row = ai_extract.normalize_requirement({
+            "title": "EMC requirements",
+            "description": "The meter shall withstand EMC disturbances.",
+            "type": "compliance",
+            "source_quote": (
+                "Electricity meters must show resistance to electrostatic discharges according "
+                "to STN EN 61000-4-2. We require a certificate of conformity to be supplied."
+            ),
+        }, {"section_id": "3.5", "block_ids": ["B1"]})
+
+        self.assertEqual(row["type"], "functional")
+        self.assertEqual(row["compliance_obligations"], [])
+
+    def test_compliance_obligations_are_covered_by_delivery_field_drift_guard(self) -> None:
+        quote = "Valid Certificate according to the standard STN EN 62053-22."
+        row = ai_extract.normalize_requirement({
+            "title": "Certificate",
+            "description": "Provide the required certificate.",
+            "type": "compliance",
+            "source_quote": quote,
+            "compliance_obligations": [
+                {"label": "a", "text": "Supply a certificate according to IEC 99999."},
+            ],
+        }, {"section_id": "2.1", "block_ids": ["B1"]})
+
+        ai_extract._move_unsupported_delivery_items(row, quote)
+
+        self.assertEqual(row["compliance_obligations"], [])
+        self.assertIn("compliance_obligations", row["notes"])
+        self.assertIn("IEC 99999", row["notes"])
 
 
 class QualityReportTests(unittest.TestCase):
@@ -1482,9 +1631,11 @@ class QualityReportTests(unittest.TestCase):
             )
 
         self.assertEqual(result["failed_sections"], 1)
+        self.assertEqual(result["failed_section_ids"], ["4"])
         self.assertTrue(partial["complete"])
         self.assertTrue(partial["failed"])
         self.assertEqual(metadata["failed_sections"], 1)
+        self.assertEqual(metadata["failed_section_ids"], ["4"])
 
     def test_run_ai_extract_writes_quality_report_with_coverage(self) -> None:
         from llm_client import LLMClientConfig

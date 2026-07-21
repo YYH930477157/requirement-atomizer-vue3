@@ -422,6 +422,43 @@ class DocAnnotationExportTests(unittest.TestCase):
             import re
             self.assertEqual(re.findall(r"\{[a-z_]+\}", html), [])
 
+    def test_renders_text_repair_and_failed_section_audit_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            path = out / "blocks.jsonl"
+            rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+            rows[1].update({
+                "raw_text": "i sobliged",
+                "text": "is obliged",
+                "text_repaired": True,
+                "text_repair_version": "pdf-text-repair-v2",
+                "text_repairs": [{
+                    "rule": "wordlist_fragment_repair",
+                    "before": "i sobliged",
+                    "after": "is obliged",
+                }],
+            })
+            path.write_text(
+                "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "failed_sections": 1,
+                "failed_section_ids": ["4"],
+                "failed_section_block_ids": [rows[1]["block_id"]],
+            }), encoding="utf-8")
+
+            rendered = dae.render_annotation_html(out)
+
+        self.assertIn('class="repair-tag"', rendered)
+        self.assertIn('class="failed-extraction-tag"', rendered)
+        self.assertIn("const REPAIR_AUDIT =", rendered)
+        self.assertIn("function selectFailedExtraction(blockId)", rendered)
+        self.assertIn('e.target.closest("[data-failed-block]")', rendered)
+        self.assertIn("i sobliged", rendered)
+        self.assertIn("wordlist_fragment_repair", rendered)
+
     def test_narrow_layout_keeps_parse_results_visible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

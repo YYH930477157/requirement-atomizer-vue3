@@ -158,10 +158,14 @@ def _load_annotation_terms(out_dir: Path) -> dict[str, tuple[str, ...]]:
     return merged
 
 
-def _module_vocab() -> list[str]:
+def _module_vocab(out_dir: Path | None = None) -> list[str]:
     try:
         from ai_extract import MODULE_VOCAB
-        return list(MODULE_VOCAB)
+        values = list(MODULE_VOCAB)
+        if out_dir is not None:
+            from adjudication_bank import load_bank, module_vocabulary, resolve_bank_path
+            values.extend(module_vocabulary(load_bank(resolve_bank_path())))
+        return list(dict.fromkeys(values))
     except Exception:  # pragma: no cover - 兜底
         return ["其它"]
 
@@ -381,7 +385,14 @@ def _ensure_pdf_page_images(source_pdf: Path, out_dir: Path) -> tuple[list[dict[
     return pages, files
 
 
-def _covered_blocks(requirements: list[dict[str, Any]]) -> set[str]:
+def _covered_blocks(
+    requirements: list[dict[str, Any]],
+    blocks: list[dict[str, Any]] | None = None,
+) -> set[str]:
+    if blocks is not None:
+        from merged_consistency import covered_block_ids
+
+        return covered_block_ids(requirements, blocks)
     covered: set[str] = set()
     for req in requirements:
         for bid in req.get("source_block_ids") or []:
@@ -877,11 +888,26 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                      f'data-echo-reqs="{html.escape(" ".join(req_ids))}" '
                      'title="本段与已抽取需求的来源段落内容重复，点击查看汇总条目">'
                      f'{html.escape(label)}</button>')
+    repair_html = ""
+    failed_html = ""
+    if block and block.get("text_repaired"):
+        repair_html = (
+            '<button class="repair-tag" type="button" '
+            f'data-repair-block="{html.escape(bid, quote=True)}" '
+            f'title="原文断词已做 {len(block.get("text_repairs") or [])} 处确定性修复，点击查看审计记录">'
+            '原文修复</button>'
+        )
+    if block and block.get("extraction_failed"):
+        failed_html = (
+            '<button class="failed-extraction-tag" type="button" '
+            f'data-failed-block="{html.escape(bid, quote=True)}" '
+            'title="该章节 AI 抽取失败，点击定位">抽取失败</button>'
+        )
     if is_table and block is not None:
         table_html, placed_ids = _render_table_inner(block, anchored, numbers, state)
         fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
         sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
-        trailing_items = f'{fallback}{sub_chips}{omission_html}{echo_html}'
+        trailing_items = f'{fallback}{sub_chips}{repair_html}{failed_html}{omission_html}{echo_html}'
         trailing = f'<span class="chips inline-chips">{trailing_items}</span>' if trailing_items else ""
         content = f'{table_html}{trailing}'
     else:
@@ -907,7 +933,7 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                 f' data-translation="{html.escape(_active_translations.get(key, ""))}"'
                 f' data-translation-note="{html.escape(_active_translation_notes.get(key, ""))}"')
         content = (f'<p class="text" data-block-id="{html.escape(bid)}"{translation_attrs}>'
-                   f'{text_html}{fallback}{sub_chips}{omission_html}{echo_html}</p>')
+                   f'{text_html}{fallback}{sub_chips}{repair_html}{failed_html}{omission_html}{echo_html}</p>')
     return (
         f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}"'
         f'{f" data-outline={outline_level}" if outline_level else ""} style="--depth:{depth}">'
@@ -932,7 +958,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
     doc = build_document_blocks(out_dir)
     blocks = doc.get("blocks") or []
     requirements = build_ai_requirements(out_dir)
-    covered = _covered_blocks(requirements)
+    covered = _covered_blocks(requirements, blocks)
 
     anchor_map: dict[str, list[dict[str, Any]]] = {}
     for req in requirements:
@@ -1031,7 +1057,27 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
     omissions_json = json.dumps(omission_items, ensure_ascii=False).replace("</", "<\\/")
     pdf_context_json = json.dumps(pdf_context_map, ensure_ascii=False).replace("</", "<\\/")
-    vocab_json = json.dumps(_module_vocab(), ensure_ascii=False).replace("</", "<\\/")
+    repair_records = {
+        str(block.get("block_id") or ""): {
+            "raw_text": str(block.get("raw_text") or ""),
+            "text": str(block.get("text") or ""),
+            "version": str(block.get("text_repair_version") or ""),
+            "events": [
+                {
+                    "before": str(event.get("before") or ""),
+                    "after": str(event.get("after") or ""),
+                    "rule": str(event.get("rule") or ""),
+                }
+                for event in (block.get("text_repairs") or [])
+                if isinstance(event, dict)
+            ],
+            "extraction_failed": bool(block.get("extraction_failed")),
+        }
+        for block in blocks
+        if block.get("text_repaired") or block.get("extraction_failed")
+    }
+    repairs_json = json.dumps(repair_records, ensure_ascii=False).replace("</", "<\\/")
+    vocab_json = json.dumps(_module_vocab(out_dir), ensure_ascii=False).replace("</", "<\\/")
     pdf_href_json = json.dumps(str(pdf_href or ""), ensure_ascii=False).replace("</", "<\\/")
     generated_at = datetime.datetime.now().isoformat(timespec="seconds")
 
@@ -1051,6 +1097,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
         requirements_json=reqs_json,
         omissions_json=omissions_json,
         pdf_context_json=pdf_context_json,
+        repairs_json=repairs_json,
         module_vocab_json=vocab_json,
     )
 
@@ -1602,7 +1649,13 @@ def _pdf_block_semantics(blocks: list[dict[str, Any]], requirements: list[dict[s
             continue
         else:
             kind = "context"
-        item: dict[str, Any] = {"block_id": block_id, "text": text, "kind": kind}
+        item: dict[str, Any] = {
+            "block_id": block_id,
+            "text": text,
+            "kind": kind,
+            "text_repaired": bool(block.get("text_repaired")),
+            "extraction_failed": bool(block.get("extraction_failed")),
+        }
         if anchor_req_ids:
             item["req_id"] = anchor_req_ids[0]
             item["req_ids"] = list(anchor_req_ids)
@@ -1648,7 +1701,9 @@ def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, 
             if not page:
                 continue
             zone: dict[str, Any] = {"block_id": block_id, "page": page,
-                                    "rect": _pdf_zone_rect(region), "kind": kind}
+                                    "rect": _pdf_zone_rect(region), "kind": kind,
+                                    "text_repaired": bool(item.get("text_repaired")),
+                                    "extraction_failed": bool(item.get("extraction_failed"))}
             if item.get("req_id"):
                 zone["req_id"] = str(item["req_id"])
             if kind in {"req", "echo", "covered"}:
@@ -1692,6 +1747,8 @@ def _pdf_context_records(blocks: list[dict[str, Any]],
                   "translation_note": note,
                   "page": page_by_block.get(block_id, _page_number(block.get("page_number")) or 0),
                   "kind": str(zone.get("kind") or "context")}
+        record["text_repaired"] = bool(block.get("text_repaired"))
+        record["extraction_failed"] = bool(block.get("extraction_failed"))
         if zone.get("kind") == "echo":
             record["echo_req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
         elif zone.get("kind") == "covered":
@@ -1775,6 +1832,14 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
         echo_attr = ""
         covered_attr = ""
         echo_content = ""
+        audit_content = ""
+        if zone.get("text_repaired"):
+            audit_content += (
+                '<span class="pdf-audit-tag tag-repair" '
+                f'data-repair-block="{html.escape(str(zone["block_id"]), quote=True)}">修复</span>'
+            )
+        if zone.get("extraction_failed"):
+            audit_content += '<span class="pdf-audit-tag tag-failed">失败</span>'
         if kind == "req":
             req_ids = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
             reqs_attr = f' data-reqs="{html.escape(" ".join(req_ids), quote=True)}"'
@@ -1794,7 +1859,7 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
             f'data-zone-kind="{kind}" data-block-id="{html.escape(str(zone["block_id"]), quote=True)}"'
             f'{req_attr}{reqs_attr}{echo_attr}{covered_attr} data-page="{int(zone["page"])}" style="{style}" '
             f'title="{html.escape(title, quote=True)}" aria-label="{html.escape(title, quote=True)}" '
-            f'aria-pressed="false">{echo_content}</button>')
+            f'aria-pressed="false">{echo_content}{audit_content}</button>')
 
     page_html: list[str] = []
     for page in pages:
@@ -1903,7 +1968,7 @@ def build_pdf_annotation_payload(
             continue
         requirement_markers.append({"req_id": req_id, "page": page,
                                     "rect": _pdf_zone_rect(regions[0])})
-    covered = _covered_blocks(requirements)
+    covered = _covered_blocks(requirements, blocks)
     from merged_consistency import is_coverage_candidate
     omission_markers: list[dict[str, Any]] = []
     for block in blocks:
@@ -2065,6 +2130,10 @@ body {{ margin: 0; font-family: var(--sans);
   transition: opacity .12s; }}
 .pdf-block-zone.zone-echo:hover .pdf-echo-tag,
 .pdf-block-zone.zone-echo.selected .pdf-echo-tag {{ opacity: 1; }}
+.pdf-audit-tag {{ position: absolute; left: 2px; top: -13px; padding: 1px 3px; border-radius: 3px;
+  color: #53606f; background: rgba(255,255,255,.94); border-bottom: 1px dotted #8793a1;
+  font: 650 8px/1.15 var(--sans); pointer-events: auto; }}
+.pdf-audit-tag.tag-failed {{ left: auto; right: 2px; color: #9b3b32; border-bottom-color: #d7a7a2; }}
 .pdf-page .pdf-marker {{ position: absolute; right: -34px; z-index: 3; width: 25px; height: 25px; margin: 0;
   display: inline-flex; align-items: center; justify-content: center; padding: 0; border-radius: 50%;
   border: 2px solid #ffffff; color: #ffffff; cursor: pointer; pointer-events: auto;
@@ -2229,6 +2298,19 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
   font-family: var(--sans); transition: color .12s, border-color .12s, background .12s; }}
 .omission-tag:hover, .omission-tag.sel {{ color: var(--st-discussion-tx); border-color: var(--st-discussion-tx);
   background: rgba(248,239,217,.45); }}
+.repair-tag, .failed-extraction-tag {{ display: inline-flex; margin-left: 6px; padding: 0 2px 1px;
+  border: 0; border-bottom: 1px dotted #a8a29a; border-radius: 0; background: transparent;
+  color: #77736d; font: 500 9px/1 var(--sans); cursor: pointer; vertical-align: super; }}
+.repair-tag:hover {{ color: #465568; border-color: #465568; }}
+.failed-extraction-tag {{ color: #9b3b32; border-color: #d7a7a2; }}
+.repair-compare {{ display: grid; gap: 6px; margin-top: 6px; }}
+.repair-compare > div {{ padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }}
+.repair-compare small {{ display: block; color: var(--faint); }}
+.repair-compare p {{ margin: 2px 0 0; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }}
+.repair-events {{ max-height: 160px; margin-top: 7px; overflow: auto; font-size: 11px; }}
+.repair-events > div {{ display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr);
+  gap: 5px; padding: 3px 0; border-bottom: 1px solid var(--line); }}
+.repair-events small {{ grid-column: 1 / -1; color: var(--faint); }}
 .echo-tag {{ display: inline-flex; margin-left: 6px; padding: 0 2px 1px; border: 0;
   border-bottom: 1px dashed var(--line-strong); border-radius: 0; background: transparent;
   color: var(--faint); font-size: 10px; line-height: 1; cursor: pointer; vertical-align: super;
@@ -2274,7 +2356,7 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .dd-list li {{ margin-bottom: 2px; }}
 .dd-quote {{ font-size: 13px; color: #515761; border-left: 2px solid var(--line-strong); padding: 5px 10px;
   background: rgba(245,242,236,.7); border-radius: 0 4px 4px 0; }}
-select, textarea {{ width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 8px 9px;
+select, textarea, input.dd-select {{ width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 8px 9px;
   font-size: 13px; font-family: inherit; background: var(--paper); color: var(--ink); }}
 textarea {{ min-height: 52px; margin-top: 6px; resize: vertical; }}
 .actions {{ display: flex; gap: 8px; margin-top: 12px; }}
@@ -2343,6 +2425,7 @@ const STORAGE_KEY = "ratomizer-decisions:" + DOC_ID;
 const REQUIREMENTS = {requirements_json};
 const PDF_OMISSIONS = {omissions_json};
 const PDF_CONTEXT = {pdf_context_json};
+const REPAIR_AUDIT = {repairs_json};
 const MODULE_VOCAB = {module_vocab_json};
 const GENERATED_AT = "{generated_at}";
 const PDF_MODE = {pdf_mode};
@@ -2681,7 +2764,53 @@ const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），
 const ECHO_REASON = "该段与已抽取需求的来源段落内容重复（同文多次出现）。解析已汇总至对应需求条目，本段不重复挂批注；点击「重复·见」角标或下方链接可跳转查看该条目。";
 const COVERED_REASON = "该段已纳入一个或多个抽取需求的来源范围，用于补充该需求的约束、条件或上下文；它不是主锚点，因此不重复挂页边编号。";
 const REQUIREMENT_GROUP_REASON = "该段原文解析出了多条独立需求。为避免只展示第一条，下面列出该段的全部解析结果。";
+const FAILED_EXTRACTION_REASON = "该章节的 AI 抽取调用失败，当前段落没有得到完整分析。失败通常来自端点、密钥、限流或超时；请在重跑成功前不要把这里的空白视为“无需求”。";
 let selectedContextBlock = null;
+
+function repairAuditHtml(blockId) {{
+  const audit = REPAIR_AUDIT[blockId];
+  if (!audit) return "";
+  const failed = audit.extraction_failed
+    ? '<div class="dd-section"><div class="dd-label">抽取状态</div><div class="dd-suspicion">'+esc(FAILED_EXTRACTION_REASON)+'</div></div>'
+    : '';
+  if (!(audit.events || []).length) return failed;
+  const rules = Array.from(new Set((audit.events || []).map(event => event.rule).filter(Boolean))).join("、");
+  const events = (audit.events || []).map(event =>
+    '<div><code>'+esc(event.before || "")+'</code><span>→</span><code>'+esc(event.after || "")+'</code>'+
+    '<small>'+esc(event.rule || "")+'</small></div>').join("");
+  return failed+'<div class="dd-section repair-audit"><div class="dd-label">原文修复 · '+esc(audit.events.length)+' 处</div>'+
+    (rules ? '<div class="dd-meta">'+esc(rules)+'</div>' : '')+
+    '<div class="repair-compare"><div><small>修复前</small><p>'+esc(audit.raw_text || "")+'</p></div>'+
+    '<div><small>修复后</small><p>'+esc(audit.text || "")+'</p></div></div>'+
+    '<div class="repair-events">'+events+'</div></div>';
+}}
+
+function selectRepairAudit(blockId) {{
+  selected = null;
+  selectedContextBlock = blockId + "@repair";
+  document.querySelectorAll(".chip,.source-classification,.omission-tag,.pdf-marker").forEach(el => el.classList.remove("sel"));
+  document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span", "evidence"));
+  paintZoneSelection(blockId);
+  const block = document.querySelector('.doc-block[data-block-id="'+blockId+'"]');
+  if (block) block.classList.add("in-span", "evidence");
+  document.getElementById("detail").innerHTML =
+    '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">原文修复</span>'+
+     '<span class="badge">审计</span></div><div class="dd-title">断词修复记录</div>'+repairAuditHtml(blockId)+'</div>';
+}}
+
+function selectFailedExtraction(blockId) {{
+  selected = null;
+  selectedContextBlock = blockId + "@failed";
+  document.querySelectorAll(".chip,.source-classification,.omission-tag,.pdf-marker").forEach(el => el.classList.remove("sel"));
+  document.querySelectorAll(".doc-block").forEach(el => el.classList.remove("in-span", "evidence"));
+  paintZoneSelection(blockId);
+  const block = document.querySelector('.doc-block[data-block-id="'+blockId+'"]');
+  if (block) block.classList.add("in-span", "evidence");
+  document.getElementById("detail").innerHTML =
+    '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">抽取失败</span>'+
+    '<span class="badge">需重跑</span></div><div class="dd-title">该章节未完成需求抽取</div>'+
+    repairAuditHtml(blockId)+'</div>';
+}}
 
 function echoTargets(reqIds) {{
   return Array.from(new Set(reqIds || []))
@@ -2769,7 +2898,7 @@ function selectContextBlock(blk) {{
   if (echoTag) {{
     // 重复段卡片：本段解析（翻译/引用）+ 全部汇总条目，不再只保留第一条。
     const reqIds = (echoTag.getAttribute("data-echo-reqs") || "").split(/\s+/).filter(Boolean);
-    document.getElementById("detail").innerHTML = echoDetailsHtml(reqIds, text, translation, note, 0);
+    document.getElementById("detail").innerHTML = echoDetailsHtml(reqIds, text, translation, note, 0)+repairAuditHtml(bid);
     bindEchoJumps();
     return;
   }}
@@ -2780,6 +2909,7 @@ function selectContextBlock(blk) {{
     '<div class="dd-body">'+esc(CONTEXT_REASON)+'</div>'+
     translationHtml+
     (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
+    repairAuditHtml(bid)+
     '</div>';
 }}
 
@@ -2795,7 +2925,7 @@ function markWholeTextNodes(container) {{
   }});
 }}
 
-function renderOmissionDetails(text, translation, note, page) {{
+function renderOmissionDetails(text, translation, note, page, blockId) {{
   const location = page ? '<div class="dd-meta">原文位置 · PDF 第 '+esc(page)+' 页</div>' : '';
   const translationHtml = translation
     ? '<div class="dd-label">原文翻译</div><div class="dd-body">'+esc(translation)+'</div>'
@@ -2809,6 +2939,7 @@ function renderOmissionDetails(text, translation, note, page) {{
     '<div class="dd-title">为什么标为未覆盖</div>'+location+
     '<div class="dd-body">'+esc(OMISSION_REASON)+'</div>'+translationHtml+
     (text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(text)+'</div>' : '')+
+    repairAuditHtml(blockId || "")+
     '</div>';
 }}
 
@@ -2825,7 +2956,7 @@ function selectOmissionRecord(row) {{
   document.querySelectorAll(".text mark").forEach(m => {{ m.outerHTML = esc(m.textContent); }});
   clearSourceQuoteMarks();
   paintZoneSelection(row.block_id || "");
-  renderOmissionDetails(row.text || "", row.translation || "", row.translation_note || "", row.source_page || 0);
+  renderOmissionDetails(row.text || "", row.translation || "", row.translation_note || "", row.source_page || 0, row.block_id || "");
 }}
 
 // 全段落热区选中高亮（0714）：req 热区随 select() 走 data-req,块级热区按 block_id 走这里
@@ -2859,6 +2990,7 @@ function selectPdfContextRecord(blockId, info, clickedPage) {{
      : info.translation_note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(info.translation_note)+'）</div>'
      : '<div class="dd-body dd-empty">未生成翻译（开启 LLM 后重新导出批注 HTML 可自动补齐）</div>')+
     (info.text ? '<div class="dd-label">原文引用</div><div class="dd-quote">'+esc(info.text)+'</div>' : '')+
+    repairAuditHtml(blockId)+
     '</div>';
 }}
 
@@ -2875,7 +3007,7 @@ function selectPdfEchoRecord(blockId, info, clickedPage) {{
   paintZoneSelection(blockId);
   document.getElementById("detail").innerHTML = echoDetailsHtml(
     info.echo_req_ids || [], info.text || "", info.translation || "",
-    info.translation_note || "", sourcePage);
+    info.translation_note || "", sourcePage)+repairAuditHtml(blockId);
   bindEchoJumps();
 }}
 
@@ -2892,7 +3024,7 @@ function selectPdfCoveredRecord(blockId, info, clickedPage) {{
   paintZoneSelection(blockId);
   document.getElementById("detail").innerHTML = coveredDetailsHtml(
     info.covered_req_ids || [], info.text || "", info.translation || "",
-    info.translation_note || "", sourcePage);
+    info.translation_note || "", sourcePage)+repairAuditHtml(blockId);
   bindEchoJumps();
 }}
 
@@ -2908,7 +3040,7 @@ function selectPdfRequirementGroup(blockId, info, reqIds, clickedPage) {{
   document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
   paintZoneSelection(blockId);
   document.getElementById("detail").innerHTML = requirementGroupDetailsHtml(
-    reqIds, info.text || "", info.translation || "", info.translation_note || "", sourcePage);
+    reqIds, info.text || "", info.translation || "", info.translation_note || "", sourcePage)+repairAuditHtml(blockId);
   bindEchoJumps();
 }}
 
@@ -3036,7 +3168,8 @@ function select(id) {{
   const functionalHtml = isHardware ? "" : functionalMembershipHtml(r);
   const primaryHtml = summaryHtml + sourceQuoteHtml + (isHardware ? hardwareTranslationHtml(r) : functionalHtml);
   const detailHtml = isHardware ? "" : subItemsHtml(r) + thresholdHtml(r);
-  const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"'+(m===moduleOf(r)?' selected':'')+'>'+esc(m)+'</option>').join("");
+  const repairHtml = repairAuditHtml(String(r.anchor_block_id || (r.source_block_ids||[])[0] || ""));
+  const opts = MODULE_VOCAB.map(m => '<option value="'+esc(m)+'"></option>').join("");
   const ownershipOptions = [
     ["", "自动/不覆盖"],
     ["software", "软件"],
@@ -3055,10 +3188,12 @@ function select(id) {{
     ((r.consistency_flags||[]).length ? '<div class="dd-consistency">⇄ 全文档一致性：'+esc((r.consistency_flags||[]).join("；"))+'</div>' : '')+
     primaryHtml+
     detailHtml+
+    repairHtml+
     (dev ? '<div class="dd-label">研发指引 / 落地实现</div><ul class="dd-list">'+dev+'</ul>' : '')+
     (acc ? '<div class="dd-label">测试指引 / 验收</div><ul class="dd-list">'+acc+'</ul>' : '')+
     ownershipReasonHtml(r)+
-    '<div class="dd-label">模块（可改）</div><select id="mod-sel">'+opts+'</select>'+
+    '<div class="dd-label">模块（可改）</div><input id="mod-sel" class="dd-select" list="mod-options" autocomplete="off" value="'+esc(moduleOf(r))+'">'+
+    '<datalist id="mod-options">'+opts+'</datalist>'+
     '<div class="dd-section"><div class="dd-label">归属（可改）</div><select id="own-sel" class="dd-select">'+ownershipOptions+'</select></div>'+
     '<textarea id="cmt" placeholder="审查意见（可选）">'+esc(d.reason||"")+'</textarea>'+
     '<div class="actions"><button class="accept" data-st="accepted">接受</button>'+
@@ -3083,6 +3218,10 @@ function decide(id, status) {{
 }}
 
 document.getElementById("paper").addEventListener("click", e => {{
+  const failedTag = e.target.closest("[data-failed-block]");
+  if (failedTag) {{ selectFailedExtraction(failedTag.getAttribute("data-failed-block") || ""); return; }}
+  const repairTag = e.target.closest("[data-repair-block]");
+  if (repairTag) {{ selectRepairAudit(repairTag.getAttribute("data-repair-block") || ""); return; }}
   const chip = e.target.closest(".chip"); if (chip) {{ select(chip.getAttribute("data-req")); return; }}
   const pdfMarker = e.target.closest('.pdf-marker[data-req]');
   if (pdfMarker) {{ select(pdfMarker.getAttribute("data-req")); return; }}

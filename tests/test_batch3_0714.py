@@ -202,6 +202,19 @@ class PdfBlockZoneTests(unittest.TestCase):
             self.assertEqual(zone["page"], 1)
             self.assertEqual(sorted(zone["rect"]), ["height", "left", "top", "width"])
 
+    def test_production_coverage_does_not_trust_section_fallback_span(self) -> None:
+        import doc_annotation_export as dae
+        reqs = [{
+            "ai_req_id": "AIR-1",
+            "source_quote": "The meter shall measure volume.",
+            "source_block_ids": ["B1", "B2"],
+            "source_mapping": "section_fallback",
+        }]
+
+        covered = dae._covered_blocks(reqs, self.BLOCKS)
+
+        self.assertEqual(covered, {"B1"})
+
     def test_echo_zone_preserves_all_requirement_links(self) -> None:
         import doc_annotation_export as dae
         reqs = [

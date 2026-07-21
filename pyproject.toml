@@ -76,6 +76,7 @@ py-modules = [
   "corpus_eval",
   "clarification_report",
   "clarification_check_states",
+  "compliance",
   "omission_actions",
   "xlsx_io",
   "requirement_record",
@@ -101,6 +102,7 @@ version = {attr = "version.__version__"}
 
 [tool.setuptools.package-data]
 gui = ["theme.qss.template"]
+parsers = ["data/*.gz", "data/*.md"]
 
 [tool.setuptools.packages.find]
 include = ["gui*", "parsers*", "requirement_kb*"]

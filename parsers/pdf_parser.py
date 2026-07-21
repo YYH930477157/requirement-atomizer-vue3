@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import gzip
+import hashlib
 import logging
+import math
 import re
 from collections import Counter
+from functools import lru_cache
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +49,30 @@ _FRAG_CAP_RE = re.compile(r"\b([A-Z]) ([A-Z]{1,4})\b(?! [a-z])")   # "I SO"/"O N
 _FRAG_DIGIT_RE = re.compile(r"\b(\d) (\d{2,})\b")                   # "1 2007" → 12007
 _FRAG_PROBE_RE = re.compile(r"\b[A-Za-z] [a-z]{2,}\b")
 DEFRAG_RATIO_THRESHOLD = 0.02   # 每词碎片数 ≥2% 判定为破碎文档
+PDF_TEXT_REPAIR_VERSION = "pdf-text-repair-v2"
+PDF_TEXT_REPAIR_VOCAB_VERSION = "wordninja-top50000-v1+metering-v1"
+_REPAIR_VOCAB_RESOURCE = "data/english_words_top50000.txt.gz"
+_ALPHA_TOKEN_RE = re.compile(r"[A-Za-z]+")
+_COMMON_SHORT_WORDS = frozenset({
+    "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "if",
+    "in", "is", "it", "me", "my", "no", "of", "on", "or", "so", "to", "up",
+    "us", "we",
+})
+_GLUED_CONNECTORS = frozenset({
+    "a", "an", "and", "as", "at", "be", "by", "for", "from", "in", "is", "of",
+    "on", "or", "the", "to", "with",
+})
+_NUMERIC_UNIT_LETTERS = frozenset({"a", "h", "k", "l", "m", "s", "v", "w"})
+_REPAIR_EXTRA_WORDS = frozenset("""
+    active alarm alarms alphanumeric barcode bidirectional bidirectionally billing calibration
+    certificate certificates checksum climatic coll compliance conformity connector contracting
+    cosem deactivation deactivates decree dlms electricity electrical electromagnetic firmware
+    interoperability indirect lte measurement measurements meter meters metrological metrology
+    modem multitariff nameplate nameplates nonvolatile obliged obis optohead permissible plc profile
+    profiles quadrant reactive standardization tariff telecommunications translated verification
+""".split())
+_SEGMENT_WORD_PENALTY = 4.0
+_SEGMENT_CONFIDENCE_MARGIN = 3.0
 
 
 # 引用字母的前导词：这些词后面的单个大写字母是合法引用（"Annex B gives…"/"class A meters"），
@@ -54,19 +83,216 @@ _REF_LEAD_WORDS = frozenset((
 ))
 
 
+def _guarded_fragment_replacement(match: re.Match[str], text: str) -> str:
+    head = text[: match.start()].rstrip()
+    lead = head.rsplit(None, 1)[-1] if head else ""
+    # 引用字母保护：前词是 Annex/Class/Table 等，或前词本身是单个大写字母（引用链
+    # "Annex A B"——A 的前词是 Annex，B 的前词是 A）；and/or 后的单个大写字母同理
+    # （"classes A and B look…"），小写不豁免（"and b ecomes" 是真碎片）
+    if lead.lower() in _REF_LEAD_WORDS or (len(lead) == 1 and lead.isupper()):
+        return match.group(0)
+    if lead.lower() in ("and", "or") and match.group(1).isupper():
+        return match.group(0)
+    return match.group(1) + match.group(2)
+
+
 def _guarded_sub(pattern: re.Pattern[str], text: str) -> str:
-    def repl(m: re.Match[str]) -> str:
-        head = text[: m.start()].rstrip()
-        lead = head.rsplit(None, 1)[-1] if head else ""
-        # 引用字母保护：前词是 Annex/Class/Table 等，或前词本身是单个大写字母（引用链
-        # "Annex A B"——A 的前词是 Annex，B 的前词是 A）；and/or 后的单个大写字母同理
-        # （"classes A and B look…"），小写不豁免（"and b ecomes" 是真碎片）
-        if lead.lower() in _REF_LEAD_WORDS or (len(lead) == 1 and lead.isupper()):
-            return m.group(0)
-        if lead.lower() in ("and", "or") and m.group(1).isupper():
-            return m.group(0)
-        return m.group(1) + m.group(2)
-    return pattern.sub(repl, text)
+    return pattern.sub(lambda match: _guarded_fragment_replacement(match, text), text)
+
+
+def _repair_vocab_payload() -> bytes:
+    try:
+        return resources.files("parsers").joinpath(_REPAIR_VOCAB_RESOURCE).read_bytes()
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        LOGGER.warning("PDF repair vocabulary missing; using the conservative domain fallback")
+        return b""
+
+
+def text_repair_vocabulary_fingerprint() -> str:
+    digest = hashlib.sha256()
+    digest.update(PDF_TEXT_REPAIR_VOCAB_VERSION.encode("ascii"))
+    digest.update(_repair_vocab_payload())
+    digest.update("\n".join(sorted(_REPAIR_EXTRA_WORDS)).encode("ascii"))
+    return digest.hexdigest()[:16]
+
+
+@lru_cache(maxsize=1)
+def _repair_word_ranks() -> dict[str, int]:
+    payload = _repair_vocab_payload()
+    words: list[str] = []
+    if payload:
+        try:
+            words = gzip.decompress(payload).decode("utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            LOGGER.warning("PDF repair vocabulary is unreadable; using the domain fallback")
+    ranks = {word.casefold(): index for index, word in enumerate(words, start=1) if word}
+    next_rank = len(ranks) + 1
+    for word in sorted(_REPAIR_EXTRA_WORDS):
+        if word not in ranks:
+            ranks[word] = next_rank
+            next_rank += 1
+    return ranks
+
+
+def _is_known_repair_word(word: str) -> bool:
+    normalized = word.casefold()
+    return normalized in _repair_word_ranks() and (
+        len(normalized) >= 3 or normalized in _COMMON_SHORT_WORDS
+    )
+
+
+@lru_cache(maxsize=8192)
+def _segment_known_text(text: str, max_parts: int = 3) -> tuple[tuple[float, tuple[str, ...]], ...]:
+    ranks = _repair_word_ranks()
+
+    @lru_cache(maxsize=None)
+    def walk(position: int, remaining: int) -> tuple[tuple[float, tuple[str, ...]], ...]:
+        if position == len(text):
+            return ((0.0, ()),)
+        if remaining <= 0:
+            return ()
+        found: list[tuple[float, tuple[str, ...]]] = []
+        for end in range(position + 1, len(text) + 1):
+            word = text[position:end]
+            if not _is_known_repair_word(word):
+                continue
+            for tail_cost, tail in walk(end, remaining - 1):
+                cost = math.log(ranks[word] + 1) + tail_cost
+                if tail:
+                    cost += _SEGMENT_WORD_PENALTY
+                found.append((cost, (word,) + tail))
+        found.sort(key=lambda item: (item[0], item[1]))
+        return tuple(found[:8])
+
+    return walk(0, max_parts)
+
+
+def _recase_segments(parts: tuple[str, ...], original: str) -> list[str]:
+    if original.isupper() and len(original) > 1:
+        return [part.upper() for part in parts]
+    if original[:1].isupper():
+        return [parts[0].capitalize(), *parts[1:]]
+    return list(parts)
+
+
+def _fragment_start_is_protected(
+    text: str,
+    matches: list[re.Match[str]],
+    index: int,
+) -> bool:
+    token = matches[index].group(0)
+    previous = matches[index - 1].group(0) if index else ""
+    following = matches[index + 1].group(0).casefold() if index + 1 < len(matches) else ""
+    if token.isupper() and (
+        previous.casefold() in _REF_LEAD_WORDS
+        or (len(previous) == 1 and previous.isupper())
+        or previous.casefold() in {"and", "or"}
+        or following in _GLUED_CONNECTORS
+        or following in {"max", "min"}
+    ):
+        return True
+    prefix = text[:matches[index].start()].rstrip()
+    return bool(
+        token.islower()
+        and prefix[-1:].isdigit()
+        and token.casefold() in _NUMERIC_UNIT_LETTERS
+    )
+
+
+def _best_fragment_repair(tokens: list[str]) -> tuple[str, tuple[str, ...], float] | None:
+    original_words = [token.casefold() for token in tokens]
+    if all(_is_known_repair_word(token) for token in original_words):
+        return None
+    joined = "".join(original_words)
+    candidates = _segment_known_text(joined)
+    if not candidates:
+        return None
+    score, parts = candidates[0]
+    if list(parts) == original_words:
+        return None
+    if len(parts) == 1:
+        if len(parts[0]) < 3 and parts[0] not in _COMMON_SHORT_WORDS:
+            return None
+    elif len(candidates) > 1 and candidates[1][0] - score < _SEGMENT_CONFIDENCE_MARGIN:
+        return None
+    replacement = " ".join(_recase_segments(parts, "".join(tokens)))
+    return replacement, parts, score
+
+
+def _repair_alpha_text(text: str) -> tuple[str, list[dict[str, Any]]]:
+    matches = list(_ALPHA_TOKEN_RE.finditer(text))
+    if not matches:
+        return text, []
+    pieces: list[str] = []
+    events: list[dict[str, Any]] = []
+    cursor = 0
+    index = 0
+    while index < len(matches):
+        match = matches[index]
+        pieces.append(text[cursor:match.start()])
+        selected: tuple[tuple[int, int, float], int, str] | None = None
+        if len(match.group(0)) == 1 and not _fragment_start_is_protected(text, matches, index):
+            for end_index in range(index + 1, min(len(matches), index + 4)):
+                gap = text[matches[end_index - 1].end():matches[end_index].start()]
+                if not re.fullmatch(r"[ \t]+", gap):
+                    break
+                tokens = [item.group(0) for item in matches[index:end_index + 1]]
+                candidate = _best_fragment_repair(tokens)
+                if candidate is None:
+                    continue
+                replacement, parts, score = candidate
+                # When two candidates produce the same number of words, consume the
+                # shortest fragment first. This prevents ``i n t he`` becoming
+                # ``int he`` merely because ``int`` is also in the vocabulary; the
+                # next fragment must get its own chance to repair.
+                key = (len(parts), sum(len(token) for token in tokens), score)
+                if selected is None or key < selected[0]:
+                    selected = (key, end_index, replacement)
+        if selected is None:
+            token = match.group(0)
+            normalized = token.casefold()
+            candidates = _segment_known_text(normalized, max_parts=2)
+            if (
+                len(token) >= 5
+                and normalized not in _repair_word_ranks()
+                and candidates
+                and len(candidates[0][1]) == 2
+            ):
+                score, parts = candidates[0]
+                margin = candidates[1][0] - score if len(candidates) > 1 else float("inf")
+                if (
+                    margin >= _SEGMENT_CONFIDENCE_MARGIN
+                    and any(part in _GLUED_CONNECTORS for part in parts)
+                ):
+                    selected = (
+                        (len(parts), -len(token), score),
+                        index,
+                        " ".join(_recase_segments(parts, token)),
+                    )
+        if selected is None:
+            pieces.append(match.group(0))
+            cursor = match.end()
+            index += 1
+            continue
+
+        _key, end_index, replacement = selected
+        start = match.start()
+        end = matches[end_index].end()
+        before = text[start:end]
+        pieces.append(replacement)
+        events.append({
+            "rule": "wordlist_fragment_repair",
+            "start": start,
+            "end": end,
+            "before": before,
+            "after": replacement,
+            "position_basis": "current_text",
+            "vocab_version": PDF_TEXT_REPAIR_VOCAB_VERSION,
+        })
+        cursor = end
+        index = end_index + 1
+    pieces.append(text[cursor:])
+    return "".join(pieces), events
 
 
 _PAIR_RE = re.compile(r"(.)\1")
@@ -102,17 +328,117 @@ def dedouble_text(text: str) -> str:
     return " ".join(out)
 
 
+def _apply_regex_repair(
+    text: str,
+    pattern: re.Pattern[str],
+    replacement: Any,
+    rule: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    pieces: list[str] = []
+    events: list[dict[str, Any]] = []
+    cursor = 0
+    for match in pattern.finditer(text):
+        pieces.append(text[cursor:match.start()])
+        before = match.group(0)
+        after = replacement(match) if callable(replacement) else match.expand(replacement)
+        pieces.append(after)
+        if after != before:
+            events.append({
+                "rule": rule,
+                "start": match.start(),
+                "end": match.end(),
+                "before": before,
+                "after": after,
+                "position_basis": "current_text",
+                "vocab_version": PDF_TEXT_REPAIR_VOCAB_VERSION,
+            })
+        cursor = match.end()
+    pieces.append(text[cursor:])
+    return "".join(pieces), events
+
+
+def defragment_text_with_audit(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Repair PDF word fragments with deterministic, auditable evidence.
+
+    Only a vocabulary-backed repair is accepted. Ambiguous fragments remain as extracted;
+    this deliberately favors a visible defect over silently changing valid prose.
+    """
+    current = str(text or "")
+    events: list[dict[str, Any]] = []
+    dedoubled = dedouble_text(current)
+    if dedoubled != current:
+        events.append({
+            "rule": "dedouble",
+            "start": 0,
+            "end": len(current),
+            "before": current,
+            "after": dedoubled,
+            "position_basis": "original_text",
+            "vocab_version": PDF_TEXT_REPAIR_VOCAB_VERSION,
+        })
+        current = dedoubled
+
+    # Acronyms and split digits have explicit, narrow syntax. Keep their historical guards,
+    # but record each actual replacement and leave ordinary alpha fragments to the wordlist pass.
+    for _ in range(4):
+        previous = current
+        current, cap_events = _apply_regex_repair(
+            current,
+            _FRAG_CAP_RE,
+            lambda match: _guarded_fragment_replacement(match, current),
+            "capital_fragment_join",
+        )
+        current, digit_events = _apply_regex_repair(
+            current,
+            _FRAG_DIGIT_RE,
+            r"\1\2",
+            "digit_fragment_join",
+        )
+        events.extend(cap_events)
+        events.extend(digit_events)
+        if current == previous:
+            break
+
+    current, alpha_events = _repair_alpha_text(current)
+    events.extend(alpha_events)
+    return current, events
+
+
 def defragment_text(text: str) -> str:
-    """拼合词内空格碎片；迭代到稳定（"V a lue" 两轮收敛）。引用字母（Annex B 等）受保护。
-    假粗体双写先收缩（"TThhiiss"→"This"），再走碎片拼合（"D eevveellooppeedd"→"d eveloped"→"developed"）。"""
-    text = dedouble_text(text)
-    prev = None
-    while prev != text:
-        prev = text
-        text = _guarded_sub(_FRAG_ALPHA_RE, text)
-        text = _guarded_sub(_FRAG_CAP_RE, text)
-        text = _FRAG_DIGIT_RE.sub(r"\1\2", text)
-    return text
+    """Compatibility wrapper for callers that only need repaired text."""
+    return defragment_text_with_audit(text)[0]
+
+
+def _repair_matrix_with_audit(
+    matrix: list[list[str]],
+    *,
+    enabled: bool,
+) -> tuple[list[list[str]], dict[str, Any]]:
+    if not enabled:
+        return matrix, {}
+    repaired: list[list[str]] = []
+    events: list[dict[str, Any]] = []
+    for row_index, row in enumerate(matrix):
+        output_row: list[str] = []
+        for column_index, cell in enumerate(row):
+            output, cell_events = defragment_text_with_audit(cell)
+            output_row.append(output)
+            for event in cell_events:
+                event_copy = dict(event)
+                event_copy.update({"row_index": row_index, "column_index": column_index})
+                events.append(event_copy)
+        repaired.append(output_row)
+    raw_text = "\n".join(" | ".join(row) for row in matrix)
+    repaired_text = "\n".join(" | ".join(row) for row in repaired)
+    return repaired, {
+        "raw_text": raw_text,
+        "text_repair_checked": True,
+        "text_repairs": events,
+        "text_repair_words_before": len(raw_text.split()),
+        "text_repair_words_after": len(repaired_text.split()),
+        "text_repair_candidates_before": _fragmentation_signal_count(raw_text),
+        "text_repair_candidates_after": _fragmentation_signal_count(repaired_text),
+    }
 
 
 def _fragmentation_ratio(pdf: Any, sample_pages: int = 8) -> float:
@@ -122,6 +448,16 @@ def _fragmentation_ratio(pdf: Any, sample_pages: int = 8) -> float:
         words += max(1, len(text.split()))
         frags += len(_FRAG_PROBE_RE.findall(text))
     return frags / max(1, words)
+
+
+def _fragmentation_signal_count(text: str) -> int:
+    """Count conservative fragment signals without claiming they are all repairable.
+
+    The same probe gates document repair. It intentionally includes ambiguous phrases such as
+    ``a value`` so the post-repair metric cannot hide defects that the conservative repairer left
+    untouched. Actual mutations are counted separately from ``text_repairs``.
+    """
+    return len(_FRAG_PROBE_RE.findall(str(text or "")))
 
 
 # --- 无画线表格重建（2026-07-07，真实案例 UNI 12007：page.lines/rects=0，find_tables=0）----
@@ -162,10 +498,18 @@ def _split_line_cells(words: list[dict[str, Any]], *, defrag: bool = False) -> l
     cells = []
     for group in groups:
         # 水印串同样会落进无画线表格的格文本（E3a 残留实证:浪涌表格一格）——同一清洗
-        text = clean_text(_strip_watermark_runs(" ".join(str(w["text"]) for w in group)))
+        raw_text = clean_text(_strip_watermark_runs(" ".join(str(w["text"]) for w in group)))
+        text = raw_text
+        repairs: list[dict[str, Any]] = []
         if defrag:
-            text = defragment_text(text)
-        cells.append({"text": text, "x0": float(group[0]["x0"]), "x1": float(group[-1]["x1"])})
+            text, repairs = defragment_text_with_audit(text)
+        cells.append({
+            "text": text,
+            "raw_text": raw_text,
+            "text_repairs": repairs,
+            "x0": float(group[0]["x0"]),
+            "x1": float(group[-1]["x1"]),
+        })
     return cells
 
 
@@ -371,6 +715,18 @@ def _detect_text_tables(
             matrix = _validate_text_table(
                 matrix, region_lines=len(full_region), page_candidate_lines=page_candidate_lines)
             if matrix is not None:
+                raw_table_text = "\n".join(
+                    " | ".join(str(cell.get("raw_text") or cell.get("text") or "") for cell in line["cells"])
+                    for line in full_region
+                )
+                table_repairs: list[dict[str, Any]] = []
+                for row_index, line in enumerate(full_region):
+                    for column_index, cell in enumerate(line["cells"]):
+                        for event in cell.get("text_repairs") or []:
+                            event_copy = dict(event)
+                            event_copy.update({"row_index": row_index, "column_index": column_index})
+                            table_repairs.append(event_copy)
+                repaired_table_text = "\n".join(" | ".join(row) for row in matrix)
                 attached = len(full_region) - len(region)
                 tables.append({
                     "top": min(ln["top"] for ln in full_region),
@@ -378,6 +734,19 @@ def _detect_text_tables(
                     "x0": min(ln["x0"] for ln in full_region),
                     "x1": max(ln["x1"] for ln in full_region),
                     "matrix": matrix,
+                    "text_repair_meta": {
+                        "raw_text": raw_table_text,
+                        "text_repair_checked": bool(defrag),
+                        "text_repairs": table_repairs,
+                        "text_repair_words_before": len(raw_table_text.split()),
+                        "text_repair_words_after": len(repaired_table_text.split()),
+                        "text_repair_candidates_before": (
+                            _fragmentation_signal_count(raw_table_text) if defrag else 0
+                        ),
+                        "text_repair_candidates_after": (
+                            _fragmentation_signal_count(repaired_table_text) if defrag else 0
+                        ),
+                    },
                 })
                 consumed.update(region_idx)
                 consumed.update(header_idx[len(header_idx) - attached:])
@@ -417,17 +786,16 @@ def extract_pdf(
             # 画线表先验收再决定排除范围（2026-07-08 审计 C2）：此前 bbox 内的词无条件从
             # 段落流剔除，若该表随后被 _skip_table_matrix 丢弃（如 extract 拆格失败的框），
             # 词既不进表也不回段落——内容静默蒸发。现在只有验收通过的表才占用 bbox。
-            kept_ruled: list[tuple[Any, list[list[str]]]] = []
+            kept_ruled: list[tuple[Any, list[list[str]], dict[str, Any]]] = []
             for table in page.find_tables():
-                matrix = _clean_table_matrix(table.extract())
-                if defrag:
-                    matrix = [[defragment_text(cell) for cell in row] for row in matrix]
+                raw_matrix = _clean_table_matrix(table.extract())
+                matrix, repair_meta = _repair_matrix_with_audit(raw_matrix, enabled=defrag)
                 if _skip_table_matrix(matrix):
                     LOGGER.info("第 %d 页画线表拆格近空，内容回流段落（bbox=%s）",
                                 page_number, [round(v) for v in table.bbox])
                     continue
-                kept_ruled.append((table, matrix))
-            table_bboxes = [table.bbox for table, _ in kept_ruled]
+                kept_ruled.append((table, matrix, repair_meta))
+            table_bboxes = [table.bbox for table, _matrix, _repair_meta in kept_ruled]
             lines = _page_lines(page, table_bboxes, defrag=defrag)
             if not lines and not kept_ruled:
                 empty_pages += 1
@@ -437,7 +805,7 @@ def extract_pdf(
 
             # 画线表 + 文本重建表 + 段落按 top 统一排序，保阅读顺序
             events: list[tuple[float, str, Any]] = (
-                [(float(t.bbox[1]), "ruled", (t, m)) for t, m in kept_ruled]
+                [(float(t.bbox[1]), "ruled", (t, m, meta)) for t, m, meta in kept_ruled]
                 + [(t["top"], "text_table", t) for t in text_tables]
                 + [(p["top"], "paragraph", p) for p in page_paragraphs]
             )
@@ -461,16 +829,29 @@ def extract_pdf(
                         repeated_noise=repeated_noise,
                         last_caption=last_caption,
                         profile=profile,
+                        raw_text=payload.get("raw_text"),
+                        text_repairs=payload.get("text_repairs") or [],
+                        text_repair_checked=bool(payload.get("text_repair_checked")),
+                        text_repair_words_before=int(payload.get("text_repair_words_before") or 0),
+                        text_repair_words_after=int(payload.get("text_repair_words_after") or 0),
+                        text_repair_candidates_before=int(
+                            payload.get("text_repair_candidates_before") or 0
+                        ),
+                        text_repair_candidates_after=int(
+                            payload.get("text_repair_candidates_after") or 0
+                        ),
                     )
                     continue
                 if kind == "ruled":
                     matrix = payload[1]
                     table_bbox = payload[0].bbox
+                    repair_meta = payload[2]
                 else:
                     matrix = _clean_table_matrix(payload["matrix"])
                     if _skip_table_matrix(matrix):
                         continue
                     table_bbox = (payload["x0"], payload["top"], payload["x1"], payload["bottom"])
+                    repair_meta = payload.get("text_repair_meta") or {}
                 # 水印串终点兜底（E3a）：多行续接的格文本拼完才超过清洗阈值,在矩阵定稿处
                 # 统一再过一遍（词行/切格两处早清扫不掉的拼接产物在此归零）
                 matrix = [[(_strip_watermark_runs(cell) if isinstance(cell, str) else cell)
@@ -493,6 +874,29 @@ def extract_pdf(
                     _pdf_region(page_number, table_bbox, page.width, page.height)]
                 if kind == "text_table":
                     table_block["table_source"] = "text_layout"   # 溯源：无画线重建
+                if defrag:
+                    table_repairs = list(repair_meta.get("text_repairs") or [])
+                    table_block.update({
+                        "raw_text": str(repair_meta.get("raw_text") or table_block.get("text") or ""),
+                        "text_repaired": bool(table_repairs),
+                        "text_repair_checked": True,
+                        "text_repair_version": PDF_TEXT_REPAIR_VERSION,
+                        "text_repairs": table_repairs,
+                        "text_repair_words_before": int(
+                            repair_meta.get("text_repair_words_before") or 0
+                        ),
+                        "text_repair_words_after": int(
+                            repair_meta.get("text_repair_words_after") or 0
+                        ),
+                        "text_repair_candidates_before": int(
+                            repair_meta["text_repair_candidates_before"]
+                            if "text_repair_candidates_before" in repair_meta
+                            else len(table_repairs)
+                        ),
+                        "text_repair_candidates_after": int(
+                            repair_meta.get("text_repair_candidates_after") or 0
+                        ),
+                    })
                 for item in new_table_items:
                     item["page_number"] = page_number
                     item["pdf_regions"] = list(table_block["pdf_regions"])
@@ -545,6 +949,24 @@ def _merge_continuation_blocks(
                 else:
                     joined = f"{prev_text} {cur_text}"
                 target["text"] = joined
+                if target.get("text_repair_checked") or block.get("text_repair_checked"):
+                    target_raw = str(target.get("raw_text") or prev_text)
+                    block_raw = str(block.get("raw_text") or cur_text)
+                    if target_raw.endswith("-") and block_raw[:1].islower():
+                        joined_raw = target_raw[:-1] + block_raw
+                    else:
+                        joined_raw = f"{target_raw} {block_raw}"
+                    target["raw_text"] = joined_raw
+                    target["text_repair_checked"] = True
+                    target["text_repair_version"] = PDF_TEXT_REPAIR_VERSION
+                    target["text_repairs"] = list(target.get("text_repairs") or []) + list(
+                        block.get("text_repairs") or []
+                    )
+                    target["text_repaired"] = bool(target.get("text_repairs"))
+                    target["text_repair_words_before"] = len(joined_raw.split())
+                    target["text_repair_words_after"] = len(joined.split())
+                    target["text_repair_candidates_before"] = _fragmentation_signal_count(joined_raw)
+                    target["text_repair_candidates_after"] = _fragmentation_signal_count(joined)
                 target["requirement_like"] = is_requirement_like(joined)
                 section = " > ".join(target.get("section_path") or [])
                 target["kb_matches"] = match_knowledge(knowledge_bases, joined, section)
@@ -648,10 +1070,12 @@ def _word_lines(words: list[dict[str, Any]], *, defrag: bool = False) -> list[di
 
 def _merge_words(words: list[dict[str, Any]], *, defrag: bool = False) -> dict[str, Any]:
     ordered = sorted(words, key=lambda word: float(word["x0"]))
-    text = clean_text(_strip_watermark_runs(" ".join(str(word["text"]) for word in ordered)))
+    raw_text = clean_text(_strip_watermark_runs(" ".join(str(word["text"]) for word in ordered)))
+    text = raw_text
+    repairs: list[dict[str, Any]] = []
     if defrag:
-        text = defragment_text(text)
-    return {
+        text, repairs = defragment_text_with_audit(text)
+    result = {
         "text": text,
         "top": min(float(word["top"]) for word in ordered),
         "bottom": max(float(word["bottom"]) for word in ordered),
@@ -659,6 +1083,17 @@ def _merge_words(words: list[dict[str, Any]], *, defrag: bool = False) -> dict[s
         "x1": max(float(word["x1"]) for word in ordered),
         "words": ordered,   # 词级坐标保留给无画线表格检测（切格用）
     }
+    if defrag:
+        result.update({
+            "raw_text": raw_text,
+            "text_repair_checked": True,
+            "text_repairs": repairs,
+            "text_repair_words_before": len(raw_text.split()),
+            "text_repair_words_after": len(text.split()),
+            "text_repair_candidates_before": _fragmentation_signal_count(raw_text),
+            "text_repair_candidates_after": _fragmentation_signal_count(text),
+        })
+    return result
 
 
 # 版权水印噪声（0714 批次二 E3a）：IHS 类拷贝保护在文字层嵌入的长串反引号/逗号/破折号组合
@@ -684,19 +1119,41 @@ _REQ_KEYWORD_RE = re.compile(r"\b(?:shall|must|should|required)\b|要求|应当|
 def _merge_lines(lines: list[dict[str, Any]]) -> dict[str, Any]:
     # 去连字断词：行尾 "-" 且下行小写开头 → 去连字符无空格拼接（"require-" + "ments"）
     text = ""
-    for line in lines:
+    raw_text = ""
+    repairs: list[dict[str, Any]] = []
+    for line_index, line in enumerate(lines):
         part = line["text"]
+        raw_part = line.get("raw_text", part)
         if text.endswith("-") and part and part[0].islower():
             text = text[:-1] + part
         else:
             text = f"{text} {part}" if text else part
-    return {
+        if raw_text.endswith("-") and raw_part and raw_part[0].islower():
+            raw_text = raw_text[:-1] + raw_part
+        else:
+            raw_text = f"{raw_text} {raw_part}" if raw_text else raw_part
+        for event in line.get("text_repairs") or []:
+            event_copy = dict(event)
+            event_copy["line_index"] = line_index
+            repairs.append(event_copy)
+    result = {
         "text": clean_text(text),
         "top": min(line["top"] for line in lines),
         "bottom": max(line["bottom"] for line in lines),
         "x0": min(line["x0"] for line in lines),
         "x1": max(line["x1"] for line in lines),
     }
+    if any(line.get("text_repair_checked") for line in lines):
+        result.update({
+            "raw_text": clean_text(raw_text),
+            "text_repair_checked": True,
+            "text_repairs": repairs,
+            "text_repair_words_before": len(raw_text.split()),
+            "text_repair_words_after": len(text.split()),
+            "text_repair_candidates_before": _fragmentation_signal_count(raw_text),
+            "text_repair_candidates_after": _fragmentation_signal_count(text),
+        })
+    return result
 
 
 def _pdf_region(page_number: int, bbox: Any, page_width: float, page_height: float) -> dict[str, Any]:
@@ -804,6 +1261,13 @@ def _append_text_block(
     repeated_noise: set[str],
     last_caption: str | None,
     profile: DocumentProfile,
+    raw_text: str | None = None,
+    text_repairs: list[dict[str, Any]] | None = None,
+    text_repair_checked: bool = False,
+    text_repair_words_before: int = 0,
+    text_repair_words_after: int = 0,
+    text_repair_candidates_before: int = 0,
+    text_repair_candidates_after: int = 0,
 ) -> tuple[int, str | None]:
     text = clean_text(text)
     if not text:
@@ -847,6 +1311,18 @@ def _append_text_block(
         block["pdf_regions"] = [pdf_region]
     if heading:
         block["heading_level"] = heading[0]
+    if text_repair_checked:
+        block.update({
+            "raw_text": str(raw_text if raw_text is not None else text),
+            "text_repaired": bool(text_repairs),
+            "text_repair_checked": True,
+            "text_repair_version": PDF_TEXT_REPAIR_VERSION,
+            "text_repairs": list(text_repairs or []),
+            "text_repair_words_before": int(text_repair_words_before or len(str(raw_text or text).split())),
+            "text_repair_words_after": int(text_repair_words_after or len(text.split())),
+            "text_repair_candidates_before": int(text_repair_candidates_before),
+            "text_repair_candidates_after": int(text_repair_candidates_after),
+        })
     blocks.append(block)
 
     if looks_like_caption(text, document_profile=profile):
@@ -860,7 +1336,13 @@ def _append_text_block(
             blocks, trailing_body, order=order, page_number=page_number,
             pdf_region=pdf_region,
             sections=sections, knowledge_bases=knowledge_bases,
-            repeated_noise=repeated_noise, last_caption=last_caption, profile=profile)
+            repeated_noise=repeated_noise, last_caption=last_caption, profile=profile,
+            raw_text=raw_text, text_repairs=text_repairs,
+            text_repair_checked=text_repair_checked,
+            text_repair_words_before=text_repair_words_before,
+            text_repair_words_after=text_repair_words_after,
+            text_repair_candidates_before=text_repair_candidates_before,
+            text_repair_candidates_after=text_repair_candidates_after)
     return order, last_caption
 
 

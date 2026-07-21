@@ -35,6 +35,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from cosem_behavior_spec import extract_codes, extract_ints
+from compliance import (
+    COMPLIANCE_TYPE,
+    build_compliance_payload,
+    is_compliance_requirement,
+    is_compliance_umbrella_source,
+    normalize_obligations,
+    resolve_source_backed_instrument,
+)
 from llm_client import LLMClientConfig, LLMError, chat_json
 from io_utils import read_jsonl_recover_torn_tail
 from llm_pipeline import (
@@ -68,7 +76,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v20"  # v20：chapter 单元全文进入 prompt，不再静默截断 12000 字；v19：自检补充 target_slot 编号定位（同名并错目标,专家审核 0716）
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v21"  # v21：合规证书/法规/声明独立 compliance 类型；v20：chapter 单元全文进入 prompt
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -78,6 +86,7 @@ DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
 AI_REQUIREMENTS_META = "ai_requirements.meta.json"
+COMPLIANCE_REQUIREMENTS = "compliance_requirements.json"
 AI_REQUIREMENTS_PARTIAL = "ai_requirements.partial.json"
 AI_PARTIAL_SCHEMA = "ai-requirements-partial/v1"
 DEFAULT_CONCURRENCY = 8   # 4→8（2026-07-14 提速）：IO 等待型并发,mimo 端点 8 并发实测稳定
@@ -154,6 +163,7 @@ def write_ai_requirements_metadata(
     input_fingerprint: str = "",
     run_id: str = "",
     failed_sections: int = 0,
+    failed_section_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Bind the published final JSONL to the parsed document generation it consumed."""
     root = Path(out_dir).expanduser().resolve()
@@ -162,12 +172,88 @@ def write_ai_requirements_metadata(
         "input_fingerprint": str(input_fingerprint or extraction_input_fingerprint(root)),
         "run_id": str(run_id or ""),
         "failed_sections": int(failed_sections),
+        "failed_section_ids": list(failed_section_ids or []),
     }
     _atomic_write_bytes(
         root / AI_REQUIREMENTS_META,
         (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"),
     )
     return payload
+
+
+def write_compliance_requirements(
+    out_dir: Path,
+    requirements: list[dict[str, Any]],
+) -> dict[str, Any]:
+    payload = build_compliance_payload(requirements)
+    payload.update({
+        "producer": AI_EXTRACT_PROMPT_VERSION,
+        "source": AI_REQUIREMENTS,
+        "input_fingerprint": extraction_input_fingerprint(out_dir),
+    })
+    _atomic_write_bytes(
+        Path(out_dir).expanduser().resolve() / COMPLIANCE_REQUIREMENTS,
+        (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+    return payload
+
+
+def _coverage_quality_fields(
+    requirements: list[dict[str, Any]],
+    blocks: Any,
+    *,
+    allowed_block_ids: set[str] | None = None,
+    expert_excluded_block_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Build quality counters from the same coverage engine used by consistency/export."""
+    from merged_consistency import coverage_denominator_blocks, layered_coverage
+
+    source_blocks = [block for block in blocks if isinstance(block, dict)]
+    denominator = [
+        block for block in coverage_denominator_blocks(source_blocks)
+        if clean_block_text(block)
+        and (
+            allowed_block_ids is None
+            or str(block.get("block_id") or "") in allowed_block_ids
+        )
+    ]
+    coverage = layered_coverage(
+        requirements,
+        denominator,
+        source_blocks=source_blocks,
+        allowed_block_ids=allowed_block_ids,
+        expert_excluded_block_ids=expert_excluded_block_ids,
+    )
+    total = int(coverage.get("requirement_like") or 0)
+    covered = int(coverage.get("covered") or 0)
+    compliance = coverage.get("compliance") or {}
+    excluded = coverage.get("excluded") or {}
+    compliance_total = int(compliance.get("requirement_like") or 0)
+    compliance_covered = int(compliance.get("covered") or 0)
+    return {
+        "requirement_like_blocks": total,
+        "covered_blocks": covered,
+        "coverage_pct": round(covered * 100 / total, 1) if total else None,
+        "coverage_scope": "core",
+        "core_requirement_like_blocks": total,
+        "core_covered_blocks": covered,
+        "core_uncovered_blocks": int(coverage.get("uncovered_count") or 0),
+        "core_coverage_pct": round(covered * 100 / total, 1) if total else None,
+        "compliance_requirement_like_blocks": compliance_total,
+        "compliance_covered_blocks": compliance_covered,
+        "compliance_uncovered_blocks": int(compliance.get("uncovered_count") or 0),
+        "compliance_coverage_pct": (
+            round(compliance_covered * 100 / compliance_total, 1)
+            if compliance_total else None
+        ),
+        "excluded_requirement_like_blocks": int(excluded.get("count") or 0),
+    }
+
+
+def _current_non_requirement_ids(out_dir: Path) -> set[str]:
+    from omission_actions import current_non_requirement_block_ids
+
+    return current_non_requirement_block_ids(Path(out_dir))
 
 
 def refresh_ai_extract_quality(
@@ -184,16 +270,11 @@ def refresh_ai_extract_quality(
     if not isinstance(quality, dict):
         quality = {}
 
-    from merged_consistency import coverage_denominator_blocks
-
     blocks = body_blocks(read_jsonl(root / "blocks.jsonl"))
-    req_like = [block for block in coverage_denominator_blocks(blocks) if clean_block_text(block)]
-    quotes = [quote for quote in (_norm_ws(row.get("source_quote")) for row in requirements) if quote]
-    covered = sum(
-        1 for block in req_like
-        if (lambda text: text and any(quote in text or text in quote for quote in quotes))(
-            _norm_ws(block.get("text"))
-        )
+    coverage_fields = _coverage_quality_fields(
+        requirements,
+        blocks,
+        expert_excluded_block_ids=_current_non_requirement_ids(root),
     )
     by_module: dict[str, int] = {}
     for row in requirements:
@@ -208,10 +289,8 @@ def refresh_ai_extract_quality(
         "int_drift_flagged": sum(
             1 for row in requirements if "数字漂移" in str(row.get("notes") or "")
         ),
-        "requirement_like_blocks": len(req_like),
-        "covered_blocks": covered,
-        "coverage_pct": round(covered * 100 / len(req_like), 1) if req_like else None,
         "by_module": dict(sorted(by_module.items(), key=lambda item: -item[1])),
+        **coverage_fields,
     })
     from requirement_record import provenance
 
@@ -330,7 +409,7 @@ def resolve_verify_rounds(explicit: int | None = None) -> int:
         value = DEFAULT_VERIFY_ROUNDS
     return max(1, min(MAX_VERIFY_ROUNDS, value))
 
-VALID_TYPES = {"functional", "non_functional", "constraint", "business_rule"}
+VALID_TYPES = {"functional", "non_functional", "constraint", "business_rule", COMPLIANCE_TYPE}
 VALID_PRIORITIES = {"P0", "P1", "P2"}
 
 SYSTEM_PROMPT = (
@@ -341,7 +420,12 @@ SYSTEM_PROMPT = (
     "2-6 个词，不含数值/编码/章节号/标点；跨章节属同一研发功能时必须**逐字相同**。"
     "正例：「阀门关闭控制」「远程固件升级」「事件记录存储」；反例：「4.6 的设备要求」（带章节号）、「阀门在 5s 内关闭」（带数值））、"
     "description（自包含中文叙述：背景+具体要求+适用条件+参数）、"
-    "type（functional/non_functional/constraint/business_rule）、"
+    "type（functional/non_functional/constraint/business_rule/compliance）；证书、法令、法规、"
+    "初始检定周期、符合性声明等交付/法定义务必须标 compliance，不得归入软件功能。"
+    "compliance 条目可保留一个 umbrella 父条目并用 compliance_obligations/sub_items 列多项义务，"
+    "不要为了凑数量强拆；compliance_instrument 必须逐字来自当前章节原文。"
+    "技术性能、环境等级、通信或计量要求若只是引用标准/法规作为依据，仍按其技术实质标为"
+    "functional/non_functional/constraint；不得仅因出现标准号、法规号就标 compliance。"
     "priority（判级基准：P0=安全/计量准确性/法规强制项；P1=核心功能与协议一致性；P2=辅助/诊断/可选功能。"
     "**资料性内容不升格**：informative 附录、标注 not a priority/optional/推荐 的内容最高只到 P2——"
     "『某项不适用』是排除声明,不得反写成禁止实现的需求）、"
@@ -413,7 +497,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v6"  # v6:跨节引用追加到既有整章漂移基线;v5:情态软化按完整来源基线判定并排除 may not
+EXTRACT_GUARDS_VERSION = "guards-v9"  # v9:合规 umbrella/instrument 只认确定性证据;v8:混合技术/合规分流
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -619,12 +703,20 @@ def extract_drift(requirement: dict[str, Any], source_text: str) -> list[str]:
 
 
 def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[str, Any]:
-    rtype = str(raw.get("type") or "functional")
+    source_quote = str(raw.get("source_quote") or "").strip()
+    rtype = str(raw.get("type") or "functional").strip().casefold()
     if rtype not in VALID_TYPES:
         rtype = "functional"
-    priority = str(raw.get("priority") or "P2")
+    source_is_compliance = is_compliance_requirement({"source_quote": source_quote})
+    if source_is_compliance:
+        rtype = COMPLIANCE_TYPE
+    elif rtype == COMPLIANCE_TYPE:
+        # Compliance changes both delivery routing and the core coverage denominator. The model
+        # cannot make that structural decision without a deterministic source-text signal.
+        rtype = "functional"
+    priority = str(raw.get("priority") or ("P0" if rtype == COMPLIANCE_TYPE else "P2"))
     if priority not in VALID_PRIORITIES:
-        priority = "P2"
+        priority = "P0" if rtype == COMPLIANCE_TYPE else "P2"
     labels = [str(x) for x in (raw.get("labels") or []) if str(x).strip()]
     acceptance = [str(x) for x in (raw.get("acceptance_criteria") or []) if str(x).strip()]
     sub_items = [{"label": str(item.get("label") or "").strip()[:8],
@@ -633,7 +725,15 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
                  if isinstance(item, dict) and str(item.get("text") or "").strip()]
     dev_guidance = [str(x) for x in (raw.get("dev_guidance") or []) if str(x).strip()]
     design_options = [str(x) for x in (raw.get("design_options") or []) if str(x).strip()]
-    module = str(raw.get("module") or "").strip()  # LLM 受控分类，ensure_domain_labels 据此定首要领域
+    module = str(raw.get("module") or ("测试合规" if rtype == COMPLIANCE_TYPE else "")).strip()
+    compliance_obligations = normalize_obligations(
+        raw.get("compliance_obligations") or raw.get("obligations")
+    )
+    instrument, instrument_audit = ("", "")
+    if rtype == COMPLIANCE_TYPE:
+        instrument, instrument_audit = resolve_source_backed_instrument(
+            raw.get("compliance_instrument") or raw.get("instrument"), source_quote
+        )
     return {
         "title": str(raw.get("title") or "").strip()[:80],
         "functional_key": str(raw.get("functional_key") or "").strip()[:100],
@@ -643,17 +743,22 @@ def normalize_requirement(raw: dict[str, Any], section: dict[str, Any]) -> dict[
         "module": module,
         "status": "draft",
         "source_section": str(raw.get("source_section") or section.get("heading") or section.get("section_id") or "").strip(),
-        "source_quote": str(raw.get("source_quote") or "").strip(),
+        "source_quote": source_quote,
         "threshold_table": raw.get("threshold_table") if isinstance(raw.get("threshold_table"), dict) else None,
         "sub_items": sub_items,
         "acceptance_criteria": acceptance,
         "dev_guidance": dev_guidance,
         "design_options": design_options,
+        "compliance_instrument": instrument,
+        "compliance_obligations": compliance_obligations if rtype == COMPLIANCE_TYPE else [],
+        "compliance_umbrella": (
+            is_compliance_umbrella_source(source_quote) if rtype == COMPLIANCE_TYPE else False
+        ),
         "dependencies": [],
         "parent": None,
         "children": [],
         "labels": labels,
-        "notes": "",
+        "notes": instrument_audit,
         "extracted_by": "ai_extract",
         "source_block_ids": list(section.get("block_ids") or []),
     }
@@ -742,6 +847,33 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
             else:
                 kept.append(text)
         req[field] = kept
+    kept_obligations: list[dict[str, str]] = []
+    for obligation in normalize_obligations(req.get("compliance_obligations")):
+        text = str(obligation.get("text") or "").strip()
+        unsupported = produced_ints(strip_produced_refs(text)) - allowed
+        unsupported_codes = extract_codes(text) - allowed_codes
+        unsupported_refs = _foreign_standard_refs(
+            {"compliance_obligations": [obligation]}, source_text
+        )
+        unsupported_terms = _unsupported_implementation_terms(text, source_text)
+        if unsupported or unsupported_codes or unsupported_refs or unsupported_terms:
+            drifted |= unsupported
+            drifted_codes |= unsupported_codes
+            reasons: list[str] = []
+            if unsupported_codes:
+                reasons.append(f"无依据编码：{', '.join(sorted(unsupported_codes))}")
+            if unsupported:
+                reasons.append(f"无依据数字：{', '.join(sorted(unsupported))}")
+            if unsupported_refs:
+                reasons.append(f"无依据标准号：{', '.join(unsupported_refs)}")
+            if unsupported_terms:
+                reasons.append(f"无依据实现假设：{', '.join(unsupported_terms)}")
+            removed.append(
+                f"compliance_obligations: {text[:180]}（{'；'.join(reasons)}）"
+            )
+        else:
+            kept_obligations.append(obligation)
+    req["compliance_obligations"] = kept_obligations
     # C1（0710 评审）：design_options 本体同样要洗——它是"非规范候选"但直达交付描述，
     # 实现方案词条（FIFO/缓存）是其用途所以保留，无据数字/编码仍必须移除（其自身契约
     # "不得带无依据容量或默认值"此前只是提示词约定）。降级来的条目已验证干净，不受影响。
@@ -768,37 +900,18 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
 
 
 def _map_requirement_source(req: dict[str, Any], section: dict[str, Any]) -> None:
-    quote = _norm_ws(req.get("source_quote"))
     source_blocks = [row for row in (section.get("source_blocks") or []) if isinstance(row, dict)]
-    exact: list[str] = []
-    containing: list[str] = []
-    for row in source_blocks:
-        block_id = str(row.get("block_id") or "")
-        block_text = _norm_ws(row.get("text"))
-        if not block_id or not block_text or not quote:
-            continue
-        if quote == block_text:
-            exact.append(block_id)
-        elif quote in block_text or block_text in quote:
-            containing.append(block_id)
-    matched = exact or containing
-    mapping = "exact" if exact else ("multi_block" if len(containing) > 1 else "contains")
-    if not matched and quote and source_blocks:
-        for start in range(len(source_blocks)):
-            for width in range(2, min(5, len(source_blocks) - start + 1)):
-                window = source_blocks[start:start + width]
-                joined = _norm_ws(" ".join(str(row.get("text") or "") for row in window))
-                if joined and (quote in joined or joined in quote):
-                    matched = [str(row.get("block_id") or "") for row in window if row.get("block_id")]
-                    mapping = "multi_block"
-                    break
-            if matched:
-                break
+    from merged_consistency import compact_source_text, match_source_quote_blocks
+
+    matched, mapping = match_source_quote_blocks(req.get("source_quote"), source_blocks)
+    quote = compact_source_text(req.get("source_quote"))
     if not matched and quote and source_blocks:
         from difflib import SequenceMatcher
         scored = [
-            (SequenceMatcher(None, quote, _norm_ws(row.get("text"))).ratio(), str(row.get("block_id") or ""))
-            for row in source_blocks if row.get("block_id") and row.get("text")
+            (SequenceMatcher(None, quote, compact_source_text(row.get("text"))).ratio(),
+             str(row.get("block_id") or ""))
+            for row in source_blocks
+            if row.get("block_id") and len(compact_source_text(row.get("text"))) >= 12
         ]
         score, block_id = max(scored, default=(0.0, ""))
         if score >= 0.82 and block_id:
@@ -1252,7 +1365,14 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
     """
     if not block_info:
         return None
-    quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in existing) if q]
+    from merged_consistency import compact_source_text, covered_block_ids
+
+    section_blocks = [
+        block_info[str(block_id)]
+        for block_id in (section.get("block_ids") or [])
+        if str(block_id) in block_info
+    ]
+    covered_ids = covered_block_ids(existing, section_blocks)
     # 子项覆盖记账：条款族合并后 a)b)c) 各行活在 sub_items 里而非 source_quote 里——
     # 不认子项标签会把它们永远判"未覆盖"，定向自检轮轮追打、拆碎条款（真实案例 4.14）
     sub_labels = {str(s.get("label") or "").strip().lower()
@@ -1261,10 +1381,9 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
     # 子项文本也算覆盖(0715 自检并入):supplements 并进来的无标签子项/验收要能消掉
     # 对应未覆盖行,否则收敛循环轮轮追打同一句
     covered_texts = [t for t in (
-        [_norm_ws(s.get("text")) for r in existing for s in (r.get("sub_items") or [])]
-        + [_norm_ws(x) for r in existing for x in (r.get("acceptance_criteria") or [])])
+        [compact_source_text(s.get("text")) for r in existing for s in (r.get("sub_items") or [])]
+        + [compact_source_text(x) for r in existing for x in (r.get("acceptance_criteria") or [])])
         if len(t) >= 20]
-    quotes = quotes + covered_texts
     section_text = _norm_ws(section.get("text"))
     uncovered: list[str] = []
     seen: set[str] = set()
@@ -1279,7 +1398,10 @@ def _uncovered_requirement_lines(section: dict[str, Any], existing: list[dict[st
         if not bt or bt in seen or bt not in section_text:
             continue
         seen.add(bt)
-        if any(q in bt or bt in q for q in quotes):
+        compact = compact_source_text(cleaned)
+        if str(bid) in covered_ids or any(
+            text in compact or compact in text for text in covered_texts
+        ):
             continue
         m = re.match(r"^\(?([a-z])\)", bt)
         if m and m.group(1) in sub_labels:
@@ -1533,6 +1655,7 @@ def _anchored(fragment: str, hay: str, min_len: int = 8) -> bool:
 def _entry_produced_text(req: dict[str, Any]) -> str:
     return " ".join([str(req.get("title") or ""), str(req.get("description") or "")]
                     + [str(s.get("text") or "") for s in req.get("sub_items") or []]
+                    + [str(s.get("text") or "") for s in req.get("compliance_obligations") or []]
                     + [str(x) for x in req.get("acceptance_criteria") or []])
 
 
@@ -1779,6 +1902,7 @@ def extract_all(
     cached = total - len(pending)
     completed = cached
     failed = 0
+    failed_indexes: list[int] = []
 
     def publish(*, complete: bool = False) -> None:
         if partial_path is None or not run_id:
@@ -1836,6 +1960,7 @@ def extract_all(
                                                "requirements": prepared}])
                 else:
                     failed += 1
+                    failed_indexes.append(idx)
                 completed += 1
                 publish()
                 emit()
@@ -1844,6 +1969,16 @@ def extract_all(
         stats["total_sections"] = total
         stats["cached_sections"] = cached
         stats["failed_sections"] = failed
+        stats["failed_section_ids"] = [
+            str(sections[index].get("section_id") or sections[index].get("heading") or index)
+            for index in sorted(failed_indexes)
+        ]
+        stats["failed_section_block_ids"] = list(dict.fromkeys(
+            str(block_id)
+            for index in sorted(failed_indexes)
+            for block_id in (sections[index].get("block_ids") or [])
+            if str(block_id)
+        ))
 
     flat: list[dict[str, Any]] = []
     for reqs in results:
@@ -2005,14 +2140,40 @@ def _write_consistency_report(out_dir: Path, merged: dict[str, Any]) -> Path:
     # 覆盖分母统一口径（E3b）：剔除标题/引用书目/非正文假阳性,详见 is_coverage_candidate
     req_like = ([b for b in merged_consistency.coverage_denominator_blocks(blocks) if clean_block_text(b)]
                 if blocks else None)
-    report = merged_consistency.analyze_consistency(merged.get("requirements") or [], req_like)
+    report = merged_consistency.analyze_consistency(
+        merged.get("requirements") or [],
+        req_like,
+        source_blocks=blocks,
+        expert_excluded_block_ids=_current_non_requirement_ids(out_dir),
+    )
     path = out_dir / "consistency_report.json"
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_bytes(
+        path,
+        (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
     dg = report["summary"]["duplicate_groups"]
     vd = report["summary"]["obis_values_differ"]
     if dg or vd:
         LOGGER.info("全局一致性：疑似跨章重复 %d 组、OBIS 数值待核 %d 组（详见 consistency_report.json）", dg, vd)
     return path
+
+
+def refresh_consistency_report(
+    out_dir: Path,
+    fallback_requirements: list[dict[str, Any]],
+) -> Path:
+    """Refresh deterministic consistency output after expert-only coverage triage."""
+    root = Path(out_dir).expanduser().resolve()
+    merged: dict[str, Any] = {"requirements": fallback_requirements}
+    merged_path = root / "merged_spec_requirements.json"
+    if merged_path.exists():
+        try:
+            candidate = json.loads(merged_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            candidate = None
+        if isinstance(candidate, dict) and isinstance(candidate.get("requirements"), list):
+            merged = candidate
+    return _write_consistency_report(root, merged)
 
 
 def rebuild_merged_spec(out_dir: Path) -> dict[str, Any]:
@@ -2022,11 +2183,14 @@ def rebuild_merged_spec(out_dir: Path) -> dict[str, Any]:
     """
     out_dir = Path(out_dir).expanduser().resolve()
     ai_requirements = read_jsonl(out_dir / AI_REQUIREMENTS)
+    effective_requirements = apply_ai_decisions(out_dir, ai_requirements)
+    write_compliance_requirements(out_dir, effective_requirements)
     stats: dict[str, Any] = {}
     merged = build_merged_doc(out_dir, ai_requirements, source=out_dir.name,
                               extracted_at=datetime.datetime.now().isoformat(timespec="seconds"),
                               stats=stats)
     written = _write_merged_outputs(out_dir, merged)
+    written.append(COMPLIANCE_REQUIREMENTS)
     try:
         # 裁决学习回路：每次裁决回流后刷新 override 复盘报告（确定性，失败不阻断交付物）
         import review_insights
@@ -2169,6 +2333,7 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     code_flagged = 0
     int_flagged = 0
     failed_sections = 0
+    extract_stats: dict[str, Any] = {}
     model: str | None = None
     result_quality: dict[str, Any] | None = None
 
@@ -2201,7 +2366,6 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
         except Exception as exc:  # pragma: no cover - 样本库异常不影响抽取
             LOGGER.warning("裁决样本库加载失败（抽取零注入）：%s", exc)
             bank_exemplars = ""
-        extract_stats: dict[str, Any] = {}
         requirements = extract_all(sections, chat, model=config.model,
                                    cache_path=out_dir / AI_EXTRACT_CACHE,
                                    concurrency=resolve_concurrency(concurrency),
@@ -2229,16 +2393,16 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
         validate_rows(requirements, where=AI_REQUIREMENTS)  # 行契约告警（F2，不拦截）
 
         # 质量报表：这轮抽取的可核指标（覆盖率/漂移/自检补充/模块分布），落盘供追溯。
-        # 覆盖分母统一口径（E3b）：与 consistency/批注/澄清同用 is_coverage_candidate
-        from merged_consistency import coverage_denominator_blocks
-        req_like = [b for b in coverage_denominator_blocks(block_info.values()) if clean_block_text(b)]
-        if sampled:  # 试抽模式：覆盖率分母只算样本章节的块，否则数字必然假低
-            sampled_ids = {str(bid) for s in sections for bid in (s.get("block_ids") or [])}
-            req_like = [b for b in req_like if str(b.get("block_id")) in sampled_ids]
-        quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in requirements) if q]
-        covered = sum(
-            1 for b in req_like
-            if (lambda bt: bt and any(q in bt or bt in q for q in quotes))(_norm_ws(b.get("text")))
+        # 覆盖分母统一口径（E3b）：与 consistency/批注/澄清同用同一匹配底座。
+        sampled_ids = (
+            {str(bid) for section in sections for bid in (section.get("block_ids") or [])}
+            if sampled else None
+        )
+        coverage_fields = _coverage_quality_fields(
+            requirements,
+            block_info.values(),
+            allowed_block_ids=sampled_ids,
+            expert_excluded_block_ids=_current_non_requirement_ids(out_dir),
         )
         by_module: dict[str, int] = {}
         for r in requirements:
@@ -2246,16 +2410,19 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
             by_module[m] = by_module.get(m, 0) + 1
         quality = {
             "sections": len(sections),
+            "sections_total": len(sections),
             "requirements": len(requirements),
             "failed_sections": int(extract_stats.get("failed_sections", 0)),
+            "failed_section_ids": list(extract_stats.get("failed_section_ids") or []),
+            "failed_section_block_ids": list(
+                extract_stats.get("failed_section_block_ids") or []
+            ),
             "cached_sections": int(extract_stats.get("cached_sections", 0)),
             "self_check_added": sum(1 for r in requirements if r.get("self_check_added")),
             "code_drift_flagged": code_flagged,
             "int_drift_flagged": int_flagged,
-            "requirement_like_blocks": len(req_like),
-            "covered_blocks": covered,
-            "coverage_pct": round(covered * 100 / len(req_like), 1) if req_like else None,
             "by_module": dict(sorted(by_module.items(), key=lambda x: -x[1])),
+            **coverage_fields,
         }
         from requirement_record import provenance
         quality["provenance"] = provenance("ai_extract", AI_EXTRACT_PROMPT_VERSION)
@@ -2269,11 +2436,14 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     target = out_dir / AI_REQUIREMENTS
     atomic_write_jsonl(target, requirements)
     written.append(target.name)
+    compliance_payload = write_compliance_requirements(out_dir, requirements)
+    written.append(COMPLIANCE_REQUIREMENTS)
     write_ai_requirements_metadata(
         out_dir,
         input_fingerprint=input_fingerprint,
         run_id=run_id,
         failed_sections=failed_sections,
+        failed_section_ids=list(extract_stats.get("failed_section_ids") or []),
     )
     written.append(AI_REQUIREMENTS_META)
     write_partial_snapshot(
@@ -2291,6 +2461,11 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     result: dict[str, Any] = {"route": route_label, "sections": len(sections),
               "requirements": len(requirements), "code_drift_flagged": code_flagged,
               "int_drift_flagged": int_flagged, "failed_sections": failed_sections,
+              "failed_section_ids": list(extract_stats.get("failed_section_ids") or []),
+              "failed_section_block_ids": list(
+                  extract_stats.get("failed_section_block_ids") or []
+              ),
+              "compliance_requirements": int(compliance_payload.get("count") or 0),
               "written": written, "run_id": run_id}
     if sampled:
         result["sampled"] = {"sections": len(sections), "total_sections": len(all_sections)}

@@ -50,6 +50,34 @@ def seed_transition(tmp: Path, status: str, *, suspicious: bool = False) -> str:
 
 
 class BankTests(unittest.TestCase):
+    def test_custom_module_vocabulary_accumulates_across_documents_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bank_path = root / "bank.json"
+            for index in (1, 2):
+                out = root / f"out-{index}"
+                out.mkdir()
+                write_jsonl(out / "ai_requirements.jsonl", [{
+                    "ai_req_id": f"AI-{index}",
+                    "title": f"安全通信 {index}",
+                    "description": "The meter shall use a secure communication channel.",
+                    "source_quote": f"Secure communication channel {index} shall be used.",
+                    "source_block_ids": [f"B-{index}"],
+                    "module": "通信协议",
+                }])
+                write_jsonl(out / "ai_review_states.jsonl", [{
+                    "ai_req_id": f"AI-{index}",
+                    "status": "accepted",
+                    "module_override": "通信安全",
+                }])
+                ab.update_bank(bank_path, out)
+                ab.update_bank(bank_path, out)
+
+            bank = ab.load_bank(bank_path)
+
+        self.assertEqual(bank["modules"]["通信安全"]["count"], 2)
+        self.assertEqual(ab.module_vocabulary(bank), ["通信安全"])
+
     def test_harvest_accept_and_reject(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)

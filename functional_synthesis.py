@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from ai_review_actions import read_ai_review_states, source_ai_requirement_id
+from compliance import is_compliance_requirement
 from functional_catalog import CatalogChat, build_function_catalog
 from llm_pipeline import read_jsonl
 
-FUNCTIONAL_SYNTHESIS_VERSION = "functional-synthesis-v5"
+FUNCTIONAL_SYNTHESIS_VERSION = "functional-synthesis-v6"
 FUNCTIONAL_REQUIREMENTS = "functional_requirements.json"
 
 
@@ -52,10 +53,16 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
     requirements = read_jsonl(source)
     states = read_ai_review_states(out_dir)
     eligible: list[dict[str, Any]] = []
+    compliance_requirements = 0
     for requirement in requirements:
         stable_id = source_ai_requirement_id(requirement)
         state = states.get(stable_id, {})
         if str(state.get("status") or "").strip() == "rejected":
+            continue
+        # 合规交付项有独立生命周期，不参与研发功能聚类。否则证书/法令会被合成成
+        # “测试合规功能”，随后进入软硬件归属和软件模板，掩盖真实交付责任。
+        if is_compliance_requirement(requirement):
+            compliance_requirements += 1
             continue
         reviewed = dict(requirement)
         reviewed["ai_req_id"] = stable_id
@@ -98,6 +105,7 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
         "source": source.name,
         "source_requirements": len(requirements),
         "eligible_requirements": len(eligible),
+        "compliance_requirements": compliance_requirements,
         "functional_requirements": len(items),
         "conservation": {"missing_source_ids": missing[:20], "duplicate_assignments": dup_assigned[:20]},
         "items": items,
@@ -121,6 +129,7 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
         "kind": "functional_synthesis",
         "out_dir": str(out_dir),
         "source_requirements": len(requirements),
+        "compliance_requirements": compliance_requirements,
         "functional_requirements": len(items),
         "route_requested": route or "stub",
         "route": executed_route,

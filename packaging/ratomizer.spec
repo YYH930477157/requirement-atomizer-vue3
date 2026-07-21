@@ -15,6 +15,7 @@ datas = [
     (str(ROOT / "knowledge_bases" / "*.json"), "knowledge_bases"),
     (str(ROOT / "schemas" / "*.json"), "schemas"),
     (str(ROOT / "gui" / "theme.qss.template"), "gui"),
+    (str(ROOT / "parsers" / "data"), "parsers/data"),
 ]
 
 # 装配实现规格生成器 + AI 抽取/批注：被 GUI 的 AssembleSpecWorker / desktop_tasks 惰性
@@ -41,6 +42,7 @@ spec_generator_modules = [
     "template_writer",
     "corpus_eval",
     "clarification_report",
+    "compliance",
     "xlsx_io",
     "requirement_record",
     "adjudication_bank",

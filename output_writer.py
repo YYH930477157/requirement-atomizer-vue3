@@ -52,6 +52,24 @@ def build_quality_report(
     noise_blocks = [b for b in blocks if b.get("noise")]
     noise_chars = sum(len(str(b.get("text") or "")) for b in noise_blocks)
     total_chars = sum(len(str(b.get("text") or "")) for b in blocks)
+    hygiene_blocks = [b for b in blocks if b.get("text_repair_checked")]
+    repair_rules = Counter(
+        str(event.get("rule") or "unknown")
+        for block in hygiene_blocks
+        for event in (block.get("text_repairs") or [])
+        if isinstance(event, dict)
+    )
+    repair_words_before = sum(int(b.get("text_repair_words_before") or 0) for b in hygiene_blocks)
+    repair_words_after = sum(int(b.get("text_repair_words_after") or 0) for b in hygiene_blocks)
+    repair_candidates_before = sum(
+        int(b.get("text_repair_candidates_before") or 0) for b in hygiene_blocks
+    )
+    repair_candidates_after = sum(
+        int(b.get("text_repair_candidates_after") or 0) for b in hygiene_blocks
+    )
+    repair_events = sum(
+        len(b.get("text_repairs") or []) for b in hygiene_blocks
+    )
 
     return {
         "quality_report_version": "1.0",
@@ -61,6 +79,22 @@ def build_quality_report(
             "noise_chars": noise_chars,
             "noise_char_ratio": ratio(noise_chars, total_chars),
             "body_block_ratio": ratio(region_counts.get("body", 0), len(blocks)),
+        },
+        "text_hygiene": {
+            "checked_blocks": len(hygiene_blocks),
+            "repaired_blocks": sum(1 for block in hygiene_blocks if block.get("text_repaired")),
+            "repairs": repair_events,
+            "suspected_fragments_before": repair_candidates_before,
+            "suspected_fragments_after": repair_candidates_after,
+            "broken_ratio_before": ratio(repair_candidates_before, repair_words_before),
+            "broken_ratio_after": ratio(repair_candidates_after, repair_words_after),
+            "ratio_basis": "conservative_single_letter_fragment_signal",
+            "repair_rules": dict(repair_rules),
+            "repair_version": next(
+                (str(block.get("text_repair_version")) for block in hygiene_blocks
+                 if block.get("text_repair_version")),
+                None,
+            ),
         },
         "counts": {
             "blocks": len(blocks),

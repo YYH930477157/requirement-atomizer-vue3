@@ -27,7 +27,7 @@ from typing import Any, Iterator
 
 from clarification_check_states import (
     VALID_CHECK_ACTIONS,
-    apply_clarification_check_action,
+    apply_clarification_check_actions_batch,
     read_clarification_check_states,
 )
 from io_utils import read_jsonl
@@ -38,7 +38,7 @@ REPORT_MD = "clarification_questions.md"
 REPORT_XLSX = "clarification_questions.xlsx"
 ANSWERS_FILE = "clarification_answers.jsonl"   # 评审会答复回灌（answer 列填写后 import 回来）
 ANSWERS_LOCK = "clarification_answers.lock"
-CLARIFICATION_REPORT_VERSION = "clarification/v4-check-state"
+CLARIFICATION_REPORT_VERSION = "clarification/v6-coverage-basis"
 
 _ANSWER_LOCKS: dict[Path, RLock] = {}
 _ANSWER_LOCKS_GUARD = RLock()
@@ -96,6 +96,8 @@ SIGNAL_BLOCKER_LEVELS = {
     "consistency:duplicate": BLOCKER_IMPORTANT,
     "consistency:uncovered": BLOCKER_IMPORTANT,
     "consistency:uncovered_overflow": BLOCKER_IMPORTANT,
+    "consistency:compliance_uncovered": BLOCKER_BLOCKING,
+    "consistency:compliance_uncovered_overflow": BLOCKER_BLOCKING,
     "analyze:open_question": BLOCKER_IMPORTANT,
     "analyze:assumption": BLOCKER_IMPORTANT,
 }
@@ -316,6 +318,8 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
             payload = json.loads(ana_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             payload = {}
+        if not isinstance(payload, dict):
+            raise ValueError("engineering_analysis.json must contain a JSON object")
         for item in payload.get("items") or []:
             sec = str(item.get("source_section") or "")
             rid = (item.get("source_requirement_ids") or [""])[0]
@@ -344,6 +348,8 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
             con = json.loads(con_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             con = {}
+        if not isinstance(con, dict):
+            raise ValueError("consistency_report.json must contain a JSON object")
         for g in (con.get("obis_coreference") or []):
             if g.get("values_differ"):
                 code = g.get("obis") or g.get("code") or ""   # 生产方写 obis；兼容早期 code 夹具
@@ -374,6 +380,17 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
         # 30 条样本文本无处可看。兼容旧报表的裸字符串样本（无溯源字段按空处理）。
         coverage = con.get("coverage") or {}
         samples = coverage.get("uncovered_samples") or []
+        candidate_ids = {
+            str(value or "") for value in (coverage.get("uncovered_block_ids") or [])
+            if str(value or "")
+        }
+        if not candidate_ids:
+            # 兼容旧 consistency 报表：只对样本里能证明仍是候选的关闭项做减法。
+            candidate_ids = {
+                str(sample.get("block_id") or "")
+                for sample in samples if isinstance(sample, dict) and sample.get("block_id")
+            }
+        closed_current_candidates = closed_omission_blocks.intersection(candidate_ids)
         for sample_index, s in enumerate(samples, start=1):
             if isinstance(s, dict):
                 text = str(s.get("text") or "")
@@ -383,7 +400,7 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 text, bid, sec = str(s or ""), "", ""
             if not text.strip():
                 continue
-            if bid in closed_omission_blocks:
+            if bid in closed_current_candidates:
                 continue
             entries.append(_entry(
                 CAT_MISSING,
@@ -394,11 +411,11 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 evidence={"block_id": bid, "section": sec, "text": text},
                 subject_key=bid or f"legacy-uncovered:{sample_index}"))
         total_uncovered = int(coverage.get("uncovered_count") or 0)
-        effective_uncovered = max(0, total_uncovered - len(closed_omission_blocks))
+        effective_uncovered = max(0, total_uncovered - len(closed_current_candidates))
         listed_uncovered = sum(
             1 for sample in samples
             if not isinstance(sample, dict)
-            or str(sample.get("block_id") or "") not in closed_omission_blocks
+            or str(sample.get("block_id") or "") not in closed_current_candidates
         )
         if effective_uncovered > listed_uncovered and samples:
             # 无声截断禁令：报表样本有 30 条上限,超出部分必须留痕
@@ -409,6 +426,68 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 signal="consistency:uncovered_overflow", tier=TIER_GAP,
                 audience=AUDIENCE_INTERNAL, blocker_level=BLOCKER_IMPORTANT,
                 evidence={"uncovered_count": effective_uncovered, "listed": listed_uncovered}))
+
+        # 合规交付项单独计量：证书、法令、检定周期等漏项不会再稀释 core 覆盖率，但在
+        # 人工判定“非需求”或补抽覆盖之前必须阻塞 READY。
+        compliance_coverage = coverage.get("compliance") or {}
+        compliance_samples = compliance_coverage.get("uncovered_samples") or []
+        compliance_candidate_ids = {
+            str(value or "")
+            for value in (compliance_coverage.get("uncovered_block_ids") or [])
+            if str(value or "")
+        }
+        if not compliance_candidate_ids:
+            compliance_candidate_ids = {
+                str(sample.get("block_id") or "")
+                for sample in compliance_samples
+                if isinstance(sample, dict) and sample.get("block_id")
+            }
+        closed_compliance = closed_omission_blocks.intersection(compliance_candidate_ids)
+        for sample_index, sample in enumerate(compliance_samples, start=1):
+            if isinstance(sample, dict):
+                text = str(sample.get("text") or "")
+                block_id = str(sample.get("block_id") or "")
+                section = str(sample.get("section") or "")
+            else:
+                text, block_id, section = str(sample or ""), "", ""
+            if not text.strip() or block_id in closed_compliance:
+                continue
+            entries.append(_entry(
+                CAT_MISSING,
+                "该段疑似合规交付义务但未被合规需求覆盖——请补抽，或核对后明确标为非需求",
+                section=section,
+                quote=text,
+                source_id=block_id,
+                signal="consistency:compliance_uncovered",
+                tier=TIER_HARD,
+                audience=AUDIENCE_INTERNAL,
+                blocker_level=BLOCKER_BLOCKING,
+                evidence={"block_id": block_id, "section": section, "text": text},
+                subject_key=block_id or f"legacy-compliance-uncovered:{sample_index}",
+            ))
+        compliance_total_uncovered = int(compliance_coverage.get("uncovered_count") or 0)
+        effective_compliance_uncovered = max(
+            0, compliance_total_uncovered - len(closed_compliance)
+        )
+        listed_compliance_uncovered = sum(
+            1 for sample in compliance_samples
+            if not isinstance(sample, dict)
+            or str(sample.get("block_id") or "") not in closed_compliance
+        )
+        if effective_compliance_uncovered > listed_compliance_uncovered and compliance_samples:
+            entries.append(_entry(
+                CAT_MISSING,
+                f"另有 {effective_compliance_uncovered - listed_compliance_uncovered} 条合规漏项"
+                "超出样本上限未列出（全量块 ID 见 consistency_report.json）",
+                signal="consistency:compliance_uncovered_overflow",
+                tier=TIER_HARD,
+                audience=AUDIENCE_INTERNAL,
+                blocker_level=BLOCKER_BLOCKING,
+                evidence={
+                    "uncovered_count": effective_compliance_uncovered,
+                    "listed": listed_compliance_uncovered,
+                },
+            ))
 
     # 合成层冲突标记（C10，0710 评审）：确定性检出的"同一功能未限定参数冲突/归属覆盖冲突"
     # 此前只落 functional_requirements.json——评审会该裁的冲突在澄清清单上隐身
@@ -495,12 +574,33 @@ def readiness_verdict(
             quality = json.loads(qp.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             quality = {}
+        if not isinstance(quality, dict):
+            raise ValueError("ai_extract_quality.json must contain a JSON object")
+    blocks_path = out_dir / "blocks.jsonl"
+    requirements_path = out_dir / "ai_requirements.jsonl"
+    if blocks_path.exists() and requirements_path.exists():
+        from ai_extract import _coverage_quality_fields, _current_non_requirement_ids
+        from extract_units import body_blocks
+
+        live_coverage = _coverage_quality_fields(
+            read_jsonl(requirements_path),
+            body_blocks(read_jsonl(blocks_path)),
+            expert_excluded_block_ids=_current_non_requirement_ids(out_dir),
+        )
+        quality.update(live_coverage)
     failed = int(quality.get("failed_sections") or 0)
-    coverage = quality.get("coverage_pct")
+    core_coverage = quality.get("core_coverage_pct")
+    if isinstance(core_coverage, (int, float)):
+        coverage = core_coverage
+        coverage_basis = "core"
+    else:
+        coverage = quality.get("coverage_pct")
+        coverage_basis = "legacy" if isinstance(coverage, (int, float)) else "unavailable"
     if failed > 0:
         reasons.append(f"抽取失败单元 {failed} 个")
     if isinstance(coverage, (int, float)) and coverage < READY_MIN_COVERAGE:
-        reasons.append(f"覆盖率 {coverage}% < {READY_MIN_COVERAGE:g}%")
+        basis_label = "（旧版未分层口径）" if coverage_basis == "legacy" else ""
+        reasons.append(f"覆盖率{basis_label} {coverage}% < {READY_MIN_COVERAGE:g}%")
     if unresolved_blocking is None:
         unresolved_blocking = 0
     if unresolved_important is None:
@@ -521,16 +621,25 @@ def readiness_verdict(
             "unresolved": unresolved_total,
             "resolved": int(resolved),
             "ordinary_problem_limit": READY_MAX_QUESTIONS,
-            "coverage_pct": coverage, "failed_sections": failed}
+            "coverage_pct": coverage,
+            "coverage_basis": coverage_basis,
+            "legacy_coverage": coverage_basis == "legacy",
+            "failed_sections": failed}
 
 
 def render_markdown(entries: list[dict[str, Any]], readiness: dict[str, Any]) -> str:
     hard = [e for e in entries if e.get("tier", TIER_HARD) == TIER_HARD]
     soft = [e for e in entries if e.get("tier") == TIER_SOFT]
     gap = [e for e in entries if e.get("tier") == TIER_GAP]
+    coverage_basis_label = {
+        "core": "core 分层口径",
+        "legacy": "legacy 旧版未分层口径",
+        "unavailable": "不可用",
+    }.get(str(readiness.get("coverage_basis") or ""), "未标注")
     lines = ["# 需求澄清问题清单", "",
              f"**就绪判定：{readiness['verdict']}**"
              + (f"（{'；'.join(readiness['reasons'])}）" if readiness["reasons"] else ""),
+             f"覆盖率口径：{coverage_basis_label}",
              f"未解决必答 {readiness.get('questions', len(hard))} 条"
              f"（阻塞 {readiness.get('unresolved_blocking', 0)} / 普通 {readiness.get('unresolved_important', len(hard))}）"
              f" · 已确认内部核对 {readiness.get('resolved_internal', 0)} 条"
@@ -911,7 +1020,7 @@ def import_internal_checks(
         action_col = column("新处置", prefix=True)
         actor_col = column("核对人")
         note_col = column("备注")
-        imported = 0
+        submitted: list[dict[str, Any]] = []
         for row in ws.iter_rows(min_row=2, values_only=True):
             raw_action = str(row[action_col] if len(row) > action_col else "").strip()
             if not raw_action:
@@ -923,25 +1032,207 @@ def import_internal_checks(
             evidence_fingerprint = str(row[evidence_col] if len(row) > evidence_col else "").strip()
             row_actor = str(row[actor_col] if len(row) > actor_col else "").strip()
             note = str(row[note_col] if len(row) > note_col else "").strip()
-            apply_clarification_check_action(
-                out_dir,
-                clarification_id,
-                action,
-                evidence_fingerprint=evidence_fingerprint,
-                blocker_level=str(row[blocker_col] if len(row) > blocker_col else "").strip(),
-                module=str(row[module_col] if len(row) > module_col else "").strip(),
-                signal=str(row[signal_col] if len(row) > signal_col else "").strip(),
-                source_id=str(row[source_col] if len(row) > source_col else "").strip(),
-                actor=row_actor or actor,
-                note=note,
-            )
-            imported += 1
+            submitted.append({
+                "clarification_id": clarification_id,
+                "action": action,
+                "evidence_fingerprint": evidence_fingerprint,
+                # Workbook metadata is retained only for diagnostics. The stored event takes
+                # blocker/module/signal/source from the current report generation.
+                "workbook_blocker_level": str(
+                    row[blocker_col] if len(row) > blocker_col else ""
+                ).strip(),
+                "workbook_module": str(row[module_col] if len(row) > module_col else "").strip(),
+                "workbook_signal": str(row[signal_col] if len(row) > signal_col else "").strip(),
+                "workbook_source_id": str(row[source_col] if len(row) > source_col else "").strip(),
+                "actor": row_actor or actor,
+                "note": note,
+            })
     finally:
         wb.close()
+
+    from omission_actions import extraction_operation_lock
+
+    with extraction_operation_lock(out_dir, operation="clarification-check-import"):
+        accepted, missing, stale, ineligible, duplicate = _prepare_internal_check_rows(
+            out_dir, submitted
+        )
+        events = apply_clarification_check_actions_batch(out_dir, accepted)
     return {
-        "imported": imported,
+        "imported": len(events),
+        "requested": len(submitted),
+        "stale": stale,
+        "missing": missing,
+        "ineligible": ineligible,
+        "duplicates": duplicate,
         "total_states": len(read_clarification_check_states(out_dir)),
-        "written": ["clarification_check_states.jsonl"],
+        "written": ["clarification_check_states.jsonl"] if events else [],
+    }
+
+
+def batch_apply_internal_checks(
+    out_dir: Path,
+    checks: list[dict[str, Any]],
+    *,
+    action: str = "verified_ok",
+    actor: str | None = None,
+    note: str = "",
+) -> dict[str, Any]:
+    """Apply current internal checks in one audited batch.
+
+    Each submitted row must match the current clarification id and evidence fingerprint. Stale,
+    missing, duplicate, or customer-facing rows are reported and never written.
+    """
+    if action not in VALID_CHECK_ACTIONS:
+        raise ValueError(f"invalid clarification check action: {action}")
+    root = Path(out_dir).expanduser().resolve()
+    from omission_actions import extraction_operation_lock
+
+    # Keep the evidence generation fixed between validation and the single atomic state write.
+    # Without this lease a concurrent full/targeted extraction could turn an accepted row stale
+    # after validation but before persistence.
+    with extraction_operation_lock(root, operation="clarification-check-batch"):
+        accepted, missing, stale, ineligible, duplicate = _prepare_internal_check_batch(
+            root,
+            checks,
+            action=action,
+            actor=actor,
+            note=note,
+        )
+        events = apply_clarification_check_actions_batch(root, accepted)
+
+    def grouped(field: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for event in events:
+            key = str(event.get(field) or "未分类")
+            counts[key] = counts.get(key, 0) + 1
+        return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+    report = run_report(root) if events else None
+    return {
+        "requested": len(checks),
+        "applied": len(events),
+        "stale": stale,
+        "missing": missing,
+        "ineligible": ineligible,
+        "duplicates": duplicate,
+        "by_signal": grouped("signal"),
+        "by_module": grouped("module"),
+        "readiness": (report or {}).get("readiness"),
+        "written": ["clarification_check_states.jsonl"] if events else [],
+    }
+
+
+def _prepare_internal_check_batch(
+    root: Path,
+    checks: list[dict[str, Any]],
+    *,
+    action: str,
+    actor: str | None,
+    note: str,
+) -> tuple[list[dict[str, Any]], list[str], list[str], list[str], list[str]]:
+    submitted = [
+        {
+            **row,
+            "action": action,
+            "actor": actor,
+            "note": note,
+        }
+        for row in checks
+    ]
+    return _prepare_internal_check_rows(root, submitted)
+
+
+def _prepare_internal_check_rows(
+    root: Path,
+    checks: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], list[str], list[str], list[str]]:
+    current_entries = collect_questions(root)
+    all_current = {
+        str(entry.get("clarification_id") or ""): entry
+        for entry in current_entries
+    }
+    current = {
+        str(entry.get("clarification_id") or ""): entry
+        for entry in current_entries
+        if entry.get("tier", TIER_HARD) == TIER_HARD
+        and entry.get("audience") == AUDIENCE_INTERNAL
+    }
+    accepted: list[dict[str, Any]] = []
+    missing: list[str] = []
+    stale: list[str] = []
+    ineligible: list[str] = []
+    duplicate: list[str] = []
+    seen: set[str] = set()
+    for row in checks:
+        clarification_id = str(row.get("clarification_id") or "").strip()
+        if not clarification_id:
+            ineligible.append(clarification_id)
+            continue
+        if clarification_id in seen:
+            duplicate.append(clarification_id)
+            continue
+        seen.add(clarification_id)
+        entry = all_current.get(clarification_id)
+        if entry is None:
+            missing.append(clarification_id)
+            continue
+        if clarification_id not in current:
+            ineligible.append(clarification_id)
+            continue
+        action = str(row.get("action") or "").strip()
+        if action not in VALID_CHECK_ACTIONS:
+            ineligible.append(clarification_id)
+            continue
+        submitted_fingerprint = str(row.get("evidence_fingerprint") or "").strip()
+        if not submitted_fingerprint or submitted_fingerprint != str(
+            entry.get("evidence_fingerprint") or ""
+        ):
+            stale.append(clarification_id)
+            continue
+        accepted.append({
+            "clarification_id": clarification_id,
+            "action": action,
+            "evidence_fingerprint": submitted_fingerprint,
+            "blocker_level": entry.get("blocker_level") or BLOCKER_IMPORTANT,
+            "module": entry.get("module") or MODULE_UNASSIGNED,
+            "signal": entry.get("signal") or "",
+            "source_id": entry.get("source_id") or "",
+            "actor": row.get("actor"),
+            "note": str(row.get("note") or ""),
+        })
+    return accepted, missing, stale, ineligible, duplicate
+
+
+def current_internal_checks(out_dir: Path) -> dict[str, Any]:
+    """Return current hard internal checks with effective, fingerprint-validated states."""
+    root = Path(out_dir).expanduser().resolve()
+    entries = [
+        entry for entry in collect_questions(root)
+        if entry.get("tier", TIER_HARD) == TIER_HARD
+        and entry.get("audience") == AUDIENCE_INTERNAL
+    ]
+    _attach_internal_check_states(entries, root)
+    unresolved = [entry for entry in entries if not _internal_check_resolved(entry)]
+    groups: dict[str, dict[str, Any]] = {}
+    for entry in unresolved:
+        signal = str(entry.get("signal") or "未分类")
+        group = groups.setdefault(signal, {
+            "signal": signal,
+            "count": 0,
+            "blocking": 0,
+            "modules": {},
+        })
+        group["count"] += 1
+        if entry.get("blocker_level") == BLOCKER_BLOCKING:
+            group["blocking"] += 1
+        module = str(entry.get("module") or MODULE_UNASSIGNED)
+        group["modules"][module] = group["modules"].get(module, 0) + 1
+    return {
+        "schema": "clarification-internal-checks/v1",
+        "total": len(entries),
+        "unresolved": len(unresolved),
+        "entries": unresolved,
+        "groups": sorted(groups.values(), key=lambda row: (-row["blocking"], -row["count"], row["signal"])),
     }
 
 
@@ -1076,6 +1367,10 @@ def run_report(out_dir: Path) -> dict[str, Any]:
               "questions_total": len(entries),
               "soft_questions": sum(1 for e in entries if e.get("tier") == TIER_SOFT),
               "coverage_candidates": sum(1 for e in entries if e.get("tier") == TIER_GAP),
+              "compliance_gaps": sum(
+                  1 for e in entries
+                  if str(e.get("signal") or "").startswith("consistency:compliance_uncovered")
+              ),
               "customer_questions": sum(1 for e in entries
                                          if e.get("tier", TIER_HARD) == TIER_HARD
                                          and e.get("audience") != AUDIENCE_INTERNAL),

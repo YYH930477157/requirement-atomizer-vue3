@@ -181,6 +181,42 @@ describe("RequirementApiClient", () => {
     }))
   })
 
+  it("loads and batch acknowledges internal checks with evidence fingerprints", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          schema: "clarification-internal-checks/v1", total: 1, unresolved: 1,
+          entries: [{ clarification_id: "CLR-1", evidence_fingerprint: "FP-1" }], groups: [],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ requested: 1, applied: 1, stale: [], missing: [] }),
+      })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await client.loadClarificationInternalChecks()
+    await client.applyClarificationCheckBatch({
+      checks: [{ clarificationId: "CLR-1", evidenceFingerprint: "FP-1" }],
+      action: "verified_ok", actor: "reviewer", note: "逐项核对完成",
+    })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8770/clarification-check-actions/batch",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          checks: [{ clarification_id: "CLR-1", evidence_fingerprint: "FP-1" }],
+          action: "verified_ok", actor: "reviewer", note: "逐项核对完成",
+        }),
+      }),
+    )
+  })
+
   it("binds AI decisions to the displayed source and subject fingerprints", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -201,10 +237,28 @@ describe("RequirementApiClient", () => {
         body: JSON.stringify({
           ai_req_id: "AIR-1", status: "accepted",
           source_fingerprint: "source-v2", review_subject_fingerprint: "subject-v2",
-          module_override: "", ownership_override: "", reason: "", actor: "",
+          clear_module_override: false, ownership_override: "", reason: "", actor: "",
         }),
       }),
     )
+  })
+
+  it("uses an explicit flag to clear a module override", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ai_req_id: "AIR-1", status: "accepted", module_override: null }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await client.applyAiReviewAction({
+      aiReqId: "AIR-1", status: "accepted", clearModuleOverride: true,
+    })
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body).not.toHaveProperty("module_override")
+    expect(body.clear_module_override).toBe(true)
   })
 
   it("preserves structured 409 reconfirmation details", async () => {

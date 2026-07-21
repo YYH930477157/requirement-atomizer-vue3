@@ -63,6 +63,8 @@ class ReadinessTests(unittest.TestCase):
             v = cr.readiness_verdict(tmp, questions=5)
         self.assertEqual(v["verdict"], "READY")
         self.assertEqual(v["reasons"], [])
+        self.assertEqual(v["coverage_basis"], "legacy")
+        self.assertTrue(v["legacy_coverage"])
 
     def test_needs_work_reasons_accumulate(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -71,6 +73,71 @@ class ReadinessTests(unittest.TestCase):
             v = cr.readiness_verdict(tmp, questions=99)
         self.assertEqual(v["verdict"], "NEEDS WORK")
         self.assertEqual(len(v["reasons"]), 3)                 # 失败单元 + 覆盖率 + 待澄清
+
+    def test_readiness_prefers_core_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            seed(tmp, reqs=[], quality={
+                "failed_sections": 0,
+                "coverage_pct": 10.0,
+                "core_coverage_pct": 80.0,
+            })
+            verdict = cr.readiness_verdict(tmp)
+
+        self.assertEqual(verdict["verdict"], "READY")
+        self.assertEqual(verdict["coverage_pct"], 80.0)
+        self.assertEqual(verdict["coverage_basis"], "core")
+        self.assertFalse(verdict["legacy_coverage"])
+
+    def test_structurally_invalid_quality_json_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "ai_extract_quality.json").write_text("[]", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                cr.readiness_verdict(out)
+
+    def test_structurally_invalid_consistency_json_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "consistency_report.json").write_text("[]", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                cr.current_internal_checks(out)
+
+    def test_unresolved_compliance_gap_is_a_blocker_even_when_core_is_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            seed(
+                out,
+                reqs=[],
+                consistency={"coverage": {
+                    "scope": "core",
+                    "requirement_like": 1,
+                    "covered": 1,
+                    "uncovered_count": 0,
+                    "uncovered_samples": [],
+                    "compliance": {
+                        "requirement_like": 1,
+                        "covered": 0,
+                        "uncovered_count": 1,
+                        "uncovered_block_ids": ["B-COMP"],
+                        "uncovered_samples": [{
+                            "block_id": "B-COMP",
+                            "section": "2.1",
+                            "text": "A valid type certificate shall be supplied.",
+                        }],
+                    },
+                    "excluded": {"count": 0, "block_ids": [], "samples": []},
+                }},
+                quality={"failed_sections": 0, "core_coverage_pct": 100.0},
+            )
+            report = cr.run_report(out)
+
+        entry = next(row for row in report["entries"] if row["signal"] == "consistency:compliance_uncovered")
+        self.assertEqual(entry["tier"], cr.TIER_HARD)
+        self.assertEqual(entry["blocker_level"], cr.BLOCKER_BLOCKING)
+        self.assertEqual(report["readiness"]["verdict"], "NEEDS WORK")
 
 
 class TierTests(unittest.TestCase):
@@ -225,6 +292,37 @@ class AnswersRoundtripTests(unittest.TestCase):
         self.assertEqual(first["coverage_candidates"], 1)
         self.assertEqual(second["coverage_candidates"], 0)
 
+    def test_closed_block_outside_current_candidates_does_not_reduce_count(self) -> None:
+        from omission_actions import apply_omission_action
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            seed(
+                out,
+                reqs=[],
+                consistency={"coverage": {
+                    "uncovered_count": 1,
+                    "uncovered_block_ids": ["B3"],
+                    "uncovered_samples": [{
+                        "block_id": "B3", "section": "4",
+                        "text": "The device shall expose a diagnostic flag.",
+                    }],
+                }},
+                quality={"failed_sections": 0, "coverage_pct": 80.0},
+            )
+            (out / "blocks.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in [
+                    {"block_id": "B3", "text": "The device shall expose a diagnostic flag."},
+                    {"block_id": "B9", "text": "An unrelated old candidate."},
+                ]),
+                encoding="utf-8",
+            )
+            apply_omission_action(out, block_id="B9", status="non_requirement", actor="reviewer")
+
+            report = cr.run_report(out)
+
+        self.assertEqual(report["coverage_candidates"], 1)
+
 
 class AudienceSplitTests(unittest.TestCase):
     def test_internal_checks_separated_from_customer_questions(self) -> None:
@@ -252,7 +350,7 @@ class RunReportTests(unittest.TestCase):
 
             self.assertEqual(report["questions"], 1)
             self.assertEqual(report["provenance"]["producer_version"],
-                             "clarification/v4-check-state")
+                             "clarification/v6-coverage-basis")
             self.assertEqual(report["readiness"]["verdict"], "NEEDS WORK")
             self.assertEqual(report["readiness"]["unresolved_blocking"], 1)
             md = (tmp / cr.REPORT_MD).read_text(encoding="utf-8")
@@ -472,6 +570,31 @@ class InternalCheckClosureTests(unittest.TestCase):
         self.assertEqual(stored["blocker_level"], cr.BLOCKER_IMPORTANT)
         self.assertEqual(stored["module"], "计量")
 
+    def test_internal_xlsx_import_rejects_stale_evidence_without_writing(self) -> None:
+        from openpyxl import load_workbook
+        from clarification_check_states import read_clarification_check_states
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            self._seed_internal(out)
+            first = cr.run_report(out)
+            entry = first["entries"][0]
+            wb = load_workbook(out / cr.REPORT_XLSX)
+            ws = wb["必答-内部核对"]
+            headers = {str(cell.value): cell.column for cell in ws[1]}
+            ws.cell(2, headers["证据指纹"], "stale-fingerprint")
+            ws.cell(2, headers["新处置(确认无误/确认有问题/暂缓)"], "确认无误")
+            filled = out / "filled-stale-internal.xlsx"
+            wb.save(filled)
+            wb.close()
+
+            imported = cr.import_internal_checks(out, filled)
+            states = read_clarification_check_states(out)
+
+        self.assertEqual(imported["imported"], 0)
+        self.assertEqual(imported["stale"], [entry["clarification_id"]])
+        self.assertEqual(states, {})
+
     def test_json_is_organized_by_blocker_audience_and_module(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
@@ -479,6 +602,46 @@ class InternalCheckClosureTests(unittest.TestCase):
             report = cr.run_report(out)
         grouped = report["organized_entries"][cr.BLOCKER_IMPORTANT]
         self.assertIn("计量", grouped[cr.AUDIENCE_INTERNAL])
+
+
+class BatchInternalCheckTests(unittest.TestCase):
+    def test_batch_applies_only_current_evidence_and_reports_categories(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            seed(out, reqs=[
+                {
+                    "ai_req_id": "AI-1", "title": "A", "module": "计量",
+                    "source_section": "4", "source_quote": "The meter shall do A.",
+                    "suspicion_reasons": ["引用非逐字"],
+                },
+                {
+                    "ai_req_id": "AI-2", "title": "B", "module": "通信协议",
+                    "source_section": "5", "source_quote": "The meter shall do B.",
+                    "suspicion_reasons": ["引用非逐字"],
+                },
+            ], quality={"failed_sections": 0, "core_coverage_pct": 100.0})
+            entries = [
+                entry for entry in cr.collect_questions(out)
+                if entry["audience"] == cr.AUDIENCE_INTERNAL
+            ]
+            result = cr.batch_apply_internal_checks(out, [
+                {
+                    "clarification_id": entries[0]["clarification_id"],
+                    "evidence_fingerprint": entries[0]["evidence_fingerprint"],
+                },
+                {
+                    "clarification_id": entries[1]["clarification_id"],
+                    "evidence_fingerprint": "stale-fingerprint",
+                },
+            ], actor="reviewer", note="同类证据已逐项核对")
+
+            states = cr.read_clarification_check_states(out)
+
+        self.assertEqual(result["applied"], 1)
+        self.assertEqual(result["stale"], [entries[1]["clarification_id"]])
+        self.assertEqual(result["by_signal"], {"suspicion:引用": 1})
+        self.assertEqual(len(states), 1)
+        self.assertEqual(next(iter(states.values()))["note"], "同类证据已逐项核对")
 
 
 if __name__ == "__main__":
