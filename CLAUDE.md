@@ -45,13 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
-## 重大更新（2026-07-22）——Agent 化 Phase 0 骨架（分支待复核）
+## 重大更新（2026-07-22）——Agent 化 Phase 0 骨架（已合 main `4161f18`）
 
 - **范围边界**：本阶段不实现决策循环、不接 LLM 决策、不改 UI/既有状态账本；只冻结评测集、决策轨迹格式和策略版本锚点，Phase 1 未开始。
 - **评测基线**：新增 `golden_sets/agent_eval_v1/` 共 20 条（分类 8、分组 4、必问 4、幻觉 4）。客户场景仅保留脱敏改写并登记仓库内证据来源；后三类 Phase 0 仅校验 schema/计数。现有确定性分类实测 `5/8=62.5%`，如实保留英文 battery、IP enclosure、仅文号审批三处错分。项目审核人已于 2026-07-22 逐条核对 `classify-001/003/005/006` 与 `must-ask-001`，manifest 仅登记这 5 条，runner 回归锁定不得改写人工审核字段。
 - **冻结契约**：`agent_eval.py` 使用 JSON Schema 校验并输出 CLI JSON envelope；`schemas/decide_trace.schema.json` 冻结 `decide-trace-v1` 必填字段，`decide_trace.py` 按 `review_state.py` 同型跨进程锁在锁内 fsync 追加单行，并重试 Windows `PermissionError`。新增运行依赖 `jsonschema>=4.23.0`。
 - **版本纪律**：`agent_policy.AGENT_POLICY_VERSION=agent-policy-v0`；`desktop_tasks.stage_producer()` 只为未来 `agent-*` 阶段预留该后缀，现有阶段 producer 字符串逐项不变，因此不触发已有缓存或 ABNT golden 失效。
-- **验证**：Phase 0 聚焦 12 tests、全量后端 **1438 tests（26 skip）**、前端 **130 tests**、`vue-tsc` 与 Vite 临时目录构建、Python compileall 均通过；评测 CLI 输出 20 条计数及 62.5% 基线。
+- **验证**：Phase 0 聚焦 13 tests、隔离 worktree 全量后端 **1438 tests（26 skip）**、前端 **130 tests**、`vue-tsc` 与 Vite 临时目录构建、Python compileall 均通过；合入 main 后 golden **6/6** 实际执行通过，主检出全量后端 **1438 tests（20 skip）**；评测 CLI 输出 20 条计数及 62.5% 基线。
 
 ## 重大更新（2026-07-20）——test2 招标 PDF 解析、合规分流与审计闭环（分支待复核）
 
