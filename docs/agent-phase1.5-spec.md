@@ -1,6 +1,6 @@
 # Agent 化 Phase 1.5 实施规格：LLM 决策器对比实验
 
-状态：已冻结，实施中（实施/审核：本方案作者）
+状态：**已完成**（2026-07-22 合入 main `5cd03be`；主检出全量 1483 tests OK、golden 6/6、评测基线 0.625 不变）
 日期：2026-07-22
 前置：Phase 0（`4161f18`）、Phase 1（`baba522`）、agent-policy-v2 修复（`1d3b61c`）；
 总纲 `docs/agent-rollout-plan.md`；Phase 1 审核遗留 #1/#4 在本阶段内处理
