@@ -2,8 +2,8 @@
 
 当前进度：Phase 0 ✅ → Phase 1 ✅（含 v2 修复）→ Phase 1.5 功能 ✅（main `467ad49`）
 → **真实对比实验 ✅ 已裁定：规则保持默认**（n=4，详见 CLAUDE.md 里程碑）
-→ **评测集扩充 ✅ 功能已合 main `11af616`**（40 条 + 三类自动判定，验收 1502 tests / golden 6/6）。
-下一步主线：**新案例人工核对登记（#2 收尾）→ Phase 2 规格冻结（#3）**。
+→ **评测集扩充 ✅ 已合 main 并登记完毕**（40 条 + 三类自动判定，25 条已人工核对登记）。
+下一步主线：**Phase 2 规格确认冻结（#3，规格已起草待确认）→ Phase 2 实施**。
 
 ## 待办清单（按优先级）
 
@@ -21,10 +21,14 @@
 - **收尾项**：新 20 条标准答案人工逐条核对后，人工登记 manifest
   `curation.reviewed_case_ids`（runner 永不改 curation）。
 
-### 3. Phase 2 规格冻结（半天讨论 + 半天成文）
-- 主题：tool-using reviewer——`llm_agents/review_pipeline.yaml` operations 改
-  function calling，模型审查中自主调 KB/覆盖校验；
-- 软件需求按内部模板输出，无依据字段强制"待澄清"；
+### 3. Phase 2 规格冻结 ~~（半天讨论 + 半天成文）~~ **规格已起草，待审核人确认**
+- 规格：`docs/agent-phase2-spec.md`（2026-07-22 起草；**未冻结，确认前不动工**）。
+- 关键现状发现（规格据此立项）：yaml 五个 operations 目前是**声明性死代码**
+  （审查实为每条需求一次融合 prompt）；`llm_client` 无 tools 能力需新建；
+  merge_duplicates/gap_find 已有确定性等价物（按铁律不做 LLM 版）；
+  test_point_generate 零消费者（缓建）。
+- 五个冻结点待审核人确认（见规格第 9 节）：operations 处置表、工具面 5 件套、
+  预算口径、WP2 触发面、DeepSeek tools 探针优先。
 - 规格必须先冻结经确认再动工（总纲硬性前置）。
 
 ### 4. 观察项（不占专门时间）
@@ -32,6 +36,9 @@
   五连跑均绿，已留痕 CLAUDE.md；再出现需追查具体测试名。
 - test3 目录里的 agent 产物（25 行混合 v1/v2 轨迹、omission_states 36 行）
   建议保留作缺陷修复证据；待对比实验用干净副本，不动原件。
+- **Phase 2 开工第一任务**：有 key 环境对 deepseek-v4-flash 做 function-calling
+  支持探针（规格冻结点 5）；不支持则 WP1 暂停换端点，不得伪造 tool 调用。
+- API key 纪律：密钥只走环境变量/进程注入，聊天中明文出现过的 key 建议轮换。
 
 ## 已完成备案（不需要再做）
 
