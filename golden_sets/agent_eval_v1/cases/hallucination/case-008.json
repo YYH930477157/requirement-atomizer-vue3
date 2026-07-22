@@ -1,0 +1,27 @@
+{
+  "case_id": "hallucination-008",
+  "category": "hallucination",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": [
+      "T3-ANON-ROW-8"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall withstand overvoltage impulses of at least 6 kV according to STN EN 62052-11.",
+    "context": "Rejected candidate: The meter shall withstand overvoltage impulses of at least 6 kV according to STN EN 60999-1."
+  },
+  "expected": {
+    "verdict": "reject",
+    "detector": "foreign_standard_refs",
+    "rationale": "The candidate substitutes a different standard for the source instrument.",
+    "forbidden": [
+      "STN EN 60999-1"
+    ],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real overvoltage row; substituted standard number retained as evidence."
+}

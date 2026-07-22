@@ -14,10 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import ai_extract
 from extract_guards import (
-    _foreign_standard_refs,
+    foreign_standard_refs,
     _is_definition_stub,
     _modal_inflation,
-    _vague_acceptance,
+    vague_acceptance,
 )
 
 
@@ -78,17 +78,17 @@ class ForeignStandardRefTests(unittest.TestCase):
     def test_reference_absent_from_section_flagged(self) -> None:
         req = {"title": "符合性声明", "description": "制造商须声明符合 EN 99999 的要求。",
                "source_quote": "Conformity shall be declared."}
-        foreign = _foreign_standard_refs(req, self.BASE)
+        foreign = foreign_standard_refs(req, self.BASE)
         self.assertEqual([f.replace(" ", "") for f in foreign], ["EN99999"])
 
     def test_reference_present_in_section_clean(self) -> None:
         req = {"title": "符合性声明", "description": "符合 EN 54321 与 EN 60529 的要求。",
                "source_quote": "Conformity shall be declared."}
-        self.assertEqual(_foreign_standard_refs(req, self.BASE), [])
+        self.assertEqual(foreign_standard_refs(req, self.BASE), [])
 
     def test_spacing_variants_normalized(self) -> None:
         req = {"description": "依据 EN54321。", "title": "", "source_quote": ""}
-        self.assertEqual(_foreign_standard_refs(req, self.BASE), [])   # EN 54321 同号
+        self.assertEqual(foreign_standard_refs(req, self.BASE), [])   # EN 54321 同号
 
     def test_pipeline_appends_suspicion(self) -> None:
         section = {"section_id": "S", "heading": "9.1 General", "block_ids": [],
@@ -171,11 +171,11 @@ class VagueAcceptanceExpansionTests(unittest.TestCase):
     def test_new_phrases_flagged(self) -> None:
         for phrase in ("功能符合规定", "设备无异常", "系统正确运行", "device works as intended"):
             req = {"acceptance_criteria": [phrase]}
-            self.assertTrue(_vague_acceptance(req), phrase)
+            self.assertTrue(vague_acceptance(req), phrase)
 
     def test_testable_criteria_still_exempt(self) -> None:
         req = {"acceptance_criteria": ["恢复时间不超过 5 s,运行正常"]}
-        self.assertEqual(_vague_acceptance(req), [])
+        self.assertEqual(vague_acceptance(req), [])
 
 
 class SelfCheckSupplementTests(unittest.TestCase):
@@ -411,11 +411,11 @@ class StandardRefRootTests(unittest.TestCase):
     def test_prefix_variants_not_flagged(self) -> None:
         # "ISO 6270" vs 基线 "EN ISO 6270-1":同一主号,机构前缀写法差异不定罪
         req = {"title": "", "description": "依据 ISO 6270 进行冷凝试验。", "source_quote": ""}
-        self.assertEqual(_foreign_standard_refs(req, "tested per EN ISO 6270-1 procedures"), [])
+        self.assertEqual(foreign_standard_refs(req, "tested per EN ISO 6270-1 procedures"), [])
 
     def test_truly_foreign_root_still_flagged(self) -> None:
         req = {"title": "", "description": "依据 EN 99999。", "source_quote": ""}
-        foreign = _foreign_standard_refs(req, "tested per EN ISO 6270-1")
+        foreign = foreign_standard_refs(req, "tested per EN ISO 6270-1")
         self.assertEqual(len(foreign), 1)
 
 

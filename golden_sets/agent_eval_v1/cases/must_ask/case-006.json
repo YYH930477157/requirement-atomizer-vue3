@@ -1,0 +1,30 @@
+{
+  "case_id": "must-ask-006",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-55"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter batteries shall operate properly over the entire meter service life.",
+    "context": "Full-text check: no battery service-life figure is stated anywhere in the document."
+  },
+  "expected": {
+    "verdict": "ask",
+    "detector": "vague_acceptance",
+    "rationale": "'Operate properly' gives no measurable battery-life criterion.",
+    "forbidden": [
+      "15 years",
+      "10 years"
+    ],
+    "must_ask_questions": [
+      "What minimum battery service life is required?"
+    ]
+  },
+  "notes": "Anonymized from a real dual-battery row with untestable acceptance wording."
+}

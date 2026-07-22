@@ -16,7 +16,7 @@ _LEFT_BEHIND_MIN = 4      # 引句附近 ≥N 个数值没被带走才标（避�
 _LEFT_BEHIND_WINDOW = 800  # 引句起往后看的窗口（枚举清单/成分表通常紧跟引句）
 
 
-def _values_left_behind(req: dict[str, Any], source: str) -> int:
+def values_left_behind(req: dict[str, Any], source: str) -> int:
     """确定性漏值检测：引句附近的数值清单没进需求（真实案例：粉尘粒径/成分百分比全被
     "规定的范围"指代吞掉，threshold_table=None——研发拿不到数值等于没写）。只标记不拦截。
 
@@ -50,7 +50,7 @@ _VAGUE_PHRASES = ("符合要求", "满足要求", "正常工作", "工作正常"
 _TESTABLE_HINT_RE = re.compile(r"[0-9０-９]|≥|≤|>|<|＝|=|不超过|不少于|不小于|不大于|之内|以内|以上|以下")
 
 
-def _vague_acceptance(req: dict[str, Any]) -> list[str]:
+def vague_acceptance(req: dict[str, Any]) -> list[str]:
     """返回不可测的验收条目（命中空话且无任何可判定判据）。只标不拦。"""
     vague: list[str] = []
     for item in (req.get("acceptance_criteria") or []):
@@ -266,7 +266,7 @@ def _standard_ref_root(token: str) -> str:
     return m.group(0) if m else ""
 
 
-def _foreign_standard_refs(req: dict[str, Any], baseline: str) -> list[str]:
+def foreign_standard_refs(req: dict[str, Any], baseline: str) -> list[str]:
     """正文里出现、但本节基线(原文+被引条款+术语定义)没有的标准号——张冠李戴待核。
 
     背景整数豁免(context_ints)会放行标准号数字部分,误归属由此漏网(实证:本标准

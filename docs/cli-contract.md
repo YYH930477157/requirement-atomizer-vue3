@@ -16,10 +16,14 @@ python agent_eval.py --eval-dir DIR
 python agent_loop.py --out-dir DIR [--max-iterations N]
 ```
 
-`agent_eval.py` is the Phase 0 deterministic evaluation runner. It validates every case against
-`schemas/agent_eval_case.schema.json`, scores only the current rule-based classification cases,
-and reports grouping, must-ask, and hallucination cases as schema-only until later agent phases.
-It never calls an LLM. Missing/empty datasets return exit 2; malformed cases return exit 3.
+`agent_eval.py` is the deterministic evaluation runner (`agent-eval-v2`). It validates every case
+against `schemas/agent_eval_case.schema.json` and scores all four categories with zero-LLM
+production-path judges (`docs/agent-eval-v2-spec.md`): `classify` via the rule layer, `grouping`
+via pair-wise `build_function_catalog(chat=None)` merge checks, `must_ask` via forbidden-default
+leak checks plus declared suspicion detectors (`expected.detector`; cases without one are marked
+`manual` and excluded from the automatic pass rate), and `hallucination` via the declared guard
+family (drift guards, `foreign_standard_refs`, or `opposed_qualifiers`). It never calls an LLM.
+Missing/empty datasets return exit 2; malformed cases return exit 3.
 
 `agent_loop.py` is the bounded agent decision loop (`agent-policy-v3`). It reloads a read-only
 aggregate view of an existing extraction directory before each decision, appends every decision
@@ -164,7 +168,8 @@ Review output files:
 
 Agent Phase 0 contracts:
 
-- `golden_sets/agent_eval_v1/manifest.json` stores the deterministic classification baseline.
+- `golden_sets/agent_eval_v1/manifest.json` stores the deterministic baselines for all four
+  categories (classification / grouping / must_ask / hallucination, `agent-eval-v2`).
 - `schemas/decide_trace.schema.json` freezes the future decision trace row format.
 - `decide_trace.jsonl` is produced by Phase 1 as an append-only, schema-validated decision log.
 

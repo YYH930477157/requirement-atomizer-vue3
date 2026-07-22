@@ -14,6 +14,7 @@
   },
   "expected": {
     "verdict": "reject",
+    "detector": "foreign_standard_refs",
     "rationale": "The candidate substitutes a different compliance instrument for the two source instruments.",
     "forbidden": ["IEC 62053-22"],
     "must_ask_questions": []

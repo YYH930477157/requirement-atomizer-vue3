@@ -1,0 +1,27 @@
+{
+  "case_id": "must-ask-007",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": [
+      "T3-ANON-ROW-6"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The electricity meter must meet at least the following electrical requirements:",
+    "context": "The electricity meter must meet at least the following electrical requirements: Voltage transformation 110,000 / 100 V; current transformation VSD 100 / 1 A, ZSD 10 / 1 A; reference voltage 3x58/100 V; minimum current 0.01 A; rated current 1 A; maximum current 6 A."
+  },
+  "expected": {
+    "verdict": "ask",
+    "detector": "values_left_behind",
+    "rationale": "The delivered text carries no values while the adjacent source lists the full parameter set.",
+    "forbidden": [],
+    "must_ask_questions": [
+      "Which electrical parameter values apply (ratios, reference voltage, current limits)?"
+    ]
+  },
+  "notes": "Anonymized from a real electrical-parameters row; values retained as source evidence."
+}

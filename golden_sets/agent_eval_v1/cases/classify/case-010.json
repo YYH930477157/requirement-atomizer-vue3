@@ -1,0 +1,24 @@
+{
+  "case_id": "classify-010",
+  "category": "classify",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-99"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The modem shall be powered from all three phases of the meter; its power consumption shall not exceed 2 VA.",
+    "context": "Auxiliary devices"
+  },
+  "expected": {
+    "verdict": "hardware",
+    "rationale": "Power supply topology and consumption bound constrain a physical module.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real modem power-supply requirement row."
+}

@@ -154,7 +154,7 @@ def _family_identity(row: dict[str, Any]) -> tuple[str, str]:
     parts = key.split(":", 2)
     return (parts[2] if len(parts) == 3 else key), method
 
-def _opposed_qualifiers(a: dict[str, Any], b: dict[str, Any]) -> bool:
+def opposed_qualifiers(a: dict[str, Any], b: dict[str, Any]) -> bool:
     text_a = _source_text(a).casefold()
     text_b = _source_text(b).casefold()
     for left, right in _QUALIFIER_PAIRS:
@@ -167,7 +167,7 @@ def _opposed_qualifiers(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return False
 
 def _similar_legacy(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    if _opposed_qualifiers(a, b):
+    if opposed_qualifiers(a, b):
         return False
     identity_a, method_a = _family_identity(a)
     identity_b, method_b = _family_identity(b)
@@ -212,7 +212,7 @@ def _group_has_unqualified_parameter_conflict(rows: list[dict[str, Any]], method
     return method != "explicit_key" and bool(_unqualified_parameter_conflicts(rows, method))
 
 def _explicit_group_is_safe(rows: list[dict[str, Any]]) -> bool:
-    if any(_opposed_qualifiers(row, other) for index, row in enumerate(rows) for other in rows[index + 1:]):
+    if any(opposed_qualifiers(row, other) for index, row in enumerate(rows) for other in rows[index + 1:]):
         return False
     key = normalize_key(rows[0].get("functional_key"))
     if key not in {"事件", "事件管理", "事件处理", "event", "eventmanagement"}:
@@ -457,7 +457,7 @@ def _merge_group(rows: list[dict[str, Any]], method: str) -> dict[str, Any]:
 
 def _llm_group_is_safe(rows: list[dict[str, Any]]) -> bool:
     for index, row in enumerate(rows):
-        if any(_opposed_qualifiers(row, other) for other in rows[index + 1:]):
+        if any(opposed_qualifiers(row, other) for other in rows[index + 1:]):
             return False
     event_subjects = {_event_subject(_source_text(row)) for row in rows}
     event_subjects.discard("")
@@ -543,7 +543,7 @@ def _llm_groups(rows: list[dict[str, Any]], chat: CatalogChat) -> list[tuple[lis
 def _explicit_semantic_group_is_safe(rows: list[dict[str, Any]]) -> bool:
     if len(rows) < 2 or any(not normalize_key(row.get("functional_key")) for row in rows):
         return False
-    if any(_opposed_qualifiers(row, other) for index, row in enumerate(rows) for other in rows[index + 1:]):
+    if any(opposed_qualifiers(row, other) for index, row in enumerate(rows) for other in rows[index + 1:]):
         return False
     subjects = [_event_subject(_source_text(row)) for row in rows]
     if any(not subject for subject in subjects) or len(set(subjects)) != 1:

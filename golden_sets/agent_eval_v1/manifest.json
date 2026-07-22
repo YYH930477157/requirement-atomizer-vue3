@@ -2,12 +2,12 @@
   "dataset_id": "agent_eval_v1",
   "version": "agent-eval-v1",
   "created_at": "2026-07-22",
-  "case_count": 20,
+  "case_count": 40,
   "category_counts": {
-    "classify": 8,
-    "grouping": 4,
-    "must_ask": 4,
-    "hallucination": 4
+    "classify": 12,
+    "grouping": 8,
+    "must_ask": 10,
+    "hallucination": 10
   },
   "curation": {
     "prepared_by": "Codex",
@@ -45,15 +45,56 @@
   },
   "classification_baseline": {
     "policy_version": "agent-policy-v3",
-    "runner_version": "agent-eval-v1",
-    "evaluated": 8,
-    "passed": 5,
-    "failed": 3,
-    "pass_rate": 0.625,
+    "runner_version": "agent-eval-v2",
+    "evaluated": 12,
+    "passed": 8,
+    "failed": 4,
+    "pass_rate": 0.6667,
     "failed_case_ids": [
       "classify-003",
       "classify-004",
-      "classify-006"
+      "classify-006",
+      "classify-010"
     ]
+  },
+  "grouping_baseline": {
+    "policy_version": "agent-policy-v3",
+    "runner_version": "agent-eval-v2",
+    "evaluated": 8,
+    "passed": 4,
+    "failed": 4,
+    "pass_rate": 0.5,
+    "failed_case_ids": [
+      "grouping-001",
+      "grouping-002",
+      "grouping-003",
+      "grouping-004"
+    ]
+  },
+  "must_ask_baseline": {
+    "policy_version": "agent-policy-v3",
+    "runner_version": "agent-eval-v2",
+    "evaluated": 4,
+    "passed": 4,
+    "failed": 0,
+    "pass_rate": 1.0,
+    "failed_case_ids": [],
+    "manual_case_ids": [
+      "must-ask-001",
+      "must-ask-002",
+      "must-ask-003",
+      "must-ask-004",
+      "must-ask-009",
+      "must-ask-010"
+    ]
+  },
+  "hallucination_baseline": {
+    "policy_version": "agent-policy-v3",
+    "runner_version": "agent-eval-v2",
+    "evaluated": 10,
+    "passed": 10,
+    "failed": 0,
+    "pass_rate": 1.0,
+    "failed_case_ids": []
   }
 }

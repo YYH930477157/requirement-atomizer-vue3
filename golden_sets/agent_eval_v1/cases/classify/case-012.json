@@ -1,0 +1,24 @@
+{
+  "case_id": "classify-012",
+  "category": "classify",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-34"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "Umin - the minimum voltage value measured for the given measurement interval.",
+    "context": "Quality profile definitions"
+  },
+  "expected": {
+    "verdict": "non_requirement",
+    "rationale": "A quantity definition without any obligation is not a requirement.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real definition line inside a quality-profile clause."
+}

@@ -21,11 +21,11 @@ class AgentEvalDatasetTests(unittest.TestCase):
         cases = agent_eval.load_cases(EVAL_DIR)
         counts = agent_eval.category_counts(cases)
 
-        self.assertGreaterEqual(len(cases), 20)
-        self.assertGreaterEqual(counts["classify"], 8)
-        self.assertGreaterEqual(counts["grouping"], 4)
-        self.assertGreaterEqual(counts["must_ask"], 4)
-        self.assertGreaterEqual(counts["hallucination"], 4)
+        self.assertGreaterEqual(len(cases), 40)
+        self.assertGreaterEqual(counts["classify"], 12)
+        self.assertGreaterEqual(counts["grouping"], 8)
+        self.assertGreaterEqual(counts["must_ask"], 10)
+        self.assertGreaterEqual(counts["hallucination"], 10)
         self.assertEqual(len({case["case_id"] for case in cases}), len(cases))
         classify_verdicts = {
             case["expected"]["verdict"]
@@ -58,6 +58,9 @@ class AgentEvalDatasetTests(unittest.TestCase):
         self.assertEqual(manifest["case_count"], len(cases))
         self.assertEqual(manifest["category_counts"], agent_eval.category_counts(cases))
         self.assertEqual(manifest["classification_baseline"], report["classification"])
+        self.assertEqual(manifest["grouping_baseline"], report["grouping"])
+        self.assertEqual(manifest["must_ask_baseline"], report["must_ask"])
+        self.assertEqual(manifest["hallucination_baseline"], report["hallucination"])
         self.assertEqual(manifest["curation"]["human_review_status"], "reviewed")
         self.assertEqual(
             manifest["curation"]["reviewed_case_ids"],
@@ -88,7 +91,7 @@ class AgentEvalDatasetTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["command"], "agent-eval")
-        self.assertGreaterEqual(payload["summary"]["case_count"], 20)
+        self.assertGreaterEqual(payload["summary"]["case_count"], 40)
         self.assertEqual(after_manifest["curation"], before_manifest["curation"])
 
 

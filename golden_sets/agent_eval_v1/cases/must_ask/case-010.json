@@ -1,0 +1,29 @@
+{
+  "case_id": "must-ask-010",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": [
+      "T3-ANON-ROW-42"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "Access to stored diagnostic messages shall be protected by a password.",
+    "context": "Full-text check: no password policy (length, complexity, rotation) is stated anywhere in the document."
+  },
+  "expected": {
+    "verdict": "ask",
+    "rationale": "Semantic trap: a password control without any policy is not implementable or testable.",
+    "forbidden": [
+      "8 characters",
+      "12 characters"
+    ],
+    "must_ask_questions": [
+      "What password policy applies (minimum length, complexity, rotation)?"
+    ]
+  },
+  "notes": "Anonymized from a real diagnostics-access row; judged manually (no detector)."
+}

@@ -1,0 +1,26 @@
+{
+  "case_id": "hallucination-010",
+  "category": "hallucination",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": [
+      "T3-ANON-ROW-31"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The MPA output measures the period with a switching duration of 9 s.",
+    "context": "Rejected candidate: The MPA output measures the period with a switching duration of 5 s."
+  },
+  "expected": {
+    "verdict": "reject",
+    "rationale": "The candidate changes a source-backed switching duration.",
+    "forbidden": [
+      "5"
+    ],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real MPA-output row."
+}

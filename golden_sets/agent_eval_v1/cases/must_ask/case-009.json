@@ -1,0 +1,29 @@
+{
+  "case_id": "must-ask-009",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-112"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter modem shall respond to PING requests from the head-end system.",
+    "context": "Full-text check: no response-time requirement is stated anywhere in the document."
+  },
+  "expected": {
+    "verdict": "ask",
+    "rationale": "Semantic trap: implementability needs a response-time bound the document never gives.",
+    "forbidden": [
+      "30 s",
+      "60 s"
+    ],
+    "must_ask_questions": [
+      "What response time must the PING response meet?"
+    ]
+  },
+  "notes": "Semantic sibling of must-ask-005 without vague wording; judged manually (no detector)."
+}
