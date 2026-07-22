@@ -1,4 +1,4 @@
-"""Deterministic Phase 1 decision loop for bounded requirements triage."""
+"""Bounded agent decision loop (Phase 1/1.5): rule decider by default, LLM decider opt-in."""
 from __future__ import annotations
 
 import argparse
@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from agent_decider import AgentDeciderError, llm_decide
 from agent_policy import AGENT_POLICY_VERSION
 from agent_state import (
     AgentStateInputError,
@@ -29,7 +30,8 @@ from decide_trace import (
 
 DEFAULT_MAX_ITERATIONS = 10
 MAX_ITERATIONS = 50
-TOKENS_MAX = 0
+TOKENS_MAX = 0   # 规则模式 tokens 恒为 0（Phase 1 契约）
+DEFAULT_MAX_TOKENS = 20000   # llm 模式决策预算（仅决策调用,口径见 docs/agent-phase1.5-spec.md）
 SUMMARY_FILE = "agent_loop_summary.json"
 SUMMARY_SCHEMA = "agent-loop-summary/v1"
 ENVELOPE_SCHEMA_VERSION = "1.0"
@@ -87,12 +89,22 @@ def run_agent_loop(
     out_dir: Path,
     *,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    decider: str = "rule",
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    llm_config: Any = None,
     state_loader: StateLoader = load_analysis_state,
     tool_runner: ToolRunner = execute_action,
 ) -> dict[str, Any]:
     if not 1 <= int(max_iterations) <= MAX_ITERATIONS:
         raise AgentLoopInputError(
             f"max_iterations must be between 1 and {MAX_ITERATIONS}"
+        )
+    if decider not in ("rule", "llm"):
+        raise AgentLoopInputError(f"decider must be 'rule' or 'llm', got: {decider!r}")
+    if decider == "llm" and llm_config is None:
+        raise AgentLoopInputError(
+            "decider='llm' requires an LLM endpoint config (RATOMIZER_LLM_API_KEY 未设置时 "
+            "不得伪造 stub 决策)"
         )
     root = Path(out_dir).expanduser().resolve()
     state = state_loader(root)
@@ -104,11 +116,31 @@ def run_agent_loop(
     iterations = 0
     last_action = ""
     termination_reason = "stopped"
+    tokens_used = 0
+    token_accounting = "none" if decider == "rule" else "complete"
+    decider_usage = {"rule": 0, "llm": 0}
 
     for iteration in range(1, int(max_iterations) + 1):
         iterations = iteration
         candidates = build_candidates(state, excluded_actions=excluded_actions)
+        decision_decider = "rule"
         action, reason = rule_decider_v2(state, candidates)
+        if decider == "llm" and candidates != ["stop"]:
+            if tokens_used >= int(max_tokens):
+                reason = f"llm 决策预算耗尽回退（tokens_used={tokens_used} >= {max_tokens}）: {reason}"
+            else:
+                try:
+                    picked, picked_reason, meta = llm_decide(
+                        llm_config, state.state_digest(), candidates
+                    )
+                    tokens_used += int(meta["usage"]["total_tokens"])
+                    if not meta.get("usage_complete"):
+                        token_accounting = "partial"
+                    action, reason = picked, picked_reason
+                    decision_decider = "llm"
+                except AgentDeciderError as exc:
+                    reason = f"llm 决策失败回退: {exc}; {reason}"
+        decider_usage[decision_decider] += 1
         last_action = action
         if action == "stop":
             result: dict[str, Any] = stop(state)
@@ -164,13 +196,13 @@ def run_agent_loop(
             "state_digest": state.state_digest(),
             "candidates": candidates,
             "action": action,
-            "decider": "rule",
+            "decider": decision_decider,
             "reason": reason,
             "budget": {
                 "iterations_used": iteration,
                 "iterations_max": int(max_iterations),
-                "tokens_used": 0,
-                "tokens_max": TOKENS_MAX,
+                "tokens_used": tokens_used,
+                "tokens_max": int(max_tokens) if decider == "llm" else TOKENS_MAX,
             },
             "result": trace_result,
         })
@@ -197,6 +229,11 @@ def run_agent_loop(
         failed_actions=failed_actions,
         unavailable_actions=unavailable_actions,
         completed_actions=completed_actions,
+        decider=decider,
+        decider_usage=decider_usage,
+        tokens_used=tokens_used,
+        max_tokens=int(max_tokens) if decider == "llm" else TOKENS_MAX,
+        token_accounting=token_accounting,
     )
     _write_summary(root, summary)
     return summary
@@ -223,6 +260,11 @@ def _build_summary(
     failed_actions: set[str],
     unavailable_actions: set[str],
     completed_actions: set[str],
+    decider: str = "rule",
+    decider_usage: dict[str, int] | None = None,
+    tokens_used: int = 0,
+    max_tokens: int = TOKENS_MAX,
+    token_accounting: str = "none",
 ) -> dict[str, Any]:
     digest = state.state_digest()
     return {
@@ -232,8 +274,11 @@ def _build_summary(
         "output_dir": str(root),
         "iterations": iterations,
         "iterations_max": max_iterations,
-        "tokens_used": 0,
-        "tokens_max": TOKENS_MAX,
+        "decider": decider,
+        "decider_usage": dict(decider_usage or {"rule": iterations, "llm": 0}),
+        "tokens_used": tokens_used,
+        "tokens_max": max_tokens,
+        "token_accounting": token_accounting,
         "termination_reason": termination_reason,
         "last_action": last_action,
         "readiness": str(state.readiness.get("verdict") or "NEEDS WORK"),
@@ -275,10 +320,28 @@ def _utc_now() -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the bounded Phase 1 agent decision loop.")
+    parser = argparse.ArgumentParser(description="Run the bounded agent decision loop.")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
+    parser.add_argument("--decider", choices=["rule", "llm"], default="rule")
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     return parser
+
+
+def _llm_config_for_decider(decider: str) -> Any:
+    if decider != "llm":
+        return None
+    import os
+
+    from ai_extract import config_for_route
+
+    config = config_for_route("openai_compatible")
+    if config is None or not os.environ.get(str(getattr(config, "api_key_env", "")), "").strip():
+        raise AgentLoopInputError(
+            "decider=llm 需要可用的 openai_compatible 端点（检查 RATOMIZER_LLM_API_KEY "
+            "与 llm_agents/review_pipeline.yaml）"
+        )
+    return config
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -294,6 +357,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary = run_agent_loop(
             out_dir,
             max_iterations=args.max_iterations,
+            decider=args.decider,
+            max_tokens=args.max_tokens,
+            llm_config=_llm_config_for_decider(args.decider),
         )
         envelope = {
             "tool": "requirement-atomizer",

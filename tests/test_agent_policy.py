@@ -16,7 +16,7 @@ class AgentPolicyVersionTests(unittest.TestCase):
         schema = json.loads(
             (ROOT / "schemas" / "decide_trace.schema.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(AGENT_POLICY_VERSION, "agent-policy-v2")
+        self.assertEqual(AGENT_POLICY_VERSION, "agent-policy-v3")
         self.assertEqual(schema["properties"]["policy_version"]["const"], AGENT_POLICY_VERSION)
 
     def test_reserved_agent_stage_producer_includes_policy_version(self) -> None:

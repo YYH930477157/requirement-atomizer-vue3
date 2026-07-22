@@ -1292,6 +1292,71 @@ def _organize_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
     return organized
 
 
+def _find_answer(entry: dict[str, Any], answers: dict, answers_by_id: dict) -> dict | None:
+    hit = answers_by_id.get(str(entry.get("clarification_id") or ""))
+    if hit is None:
+        hit = answers.get((entry.get("source_id") or "", entry.get("question") or ""))
+    return hit
+
+
+def _answer_is_current(entry: dict[str, Any], answer: dict | None) -> bool:
+    return bool(
+        answer
+        and str(answer.get("evidence_fingerprint") or "")
+        == str(entry.get("evidence_fingerprint") or "")
+    )
+
+
+def _customer_answer_resolved(entry: dict[str, Any], answers: dict, answers_by_id: dict) -> bool:
+    """客户问题已消解的唯一判定：有答复 + 采纳 + 证据指纹当前（agent_state 与报告共用）。"""
+    if entry.get("audience") == AUDIENCE_INTERNAL:
+        return False
+    hit = _find_answer(entry, answers, answers_by_id)
+    return bool(hit and hit.get("adopted", True) and _answer_is_current(entry, hit))
+
+
+def unresolved_hard_questions(out_dir: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """「必答未解决」判定的唯一实现（Phase 1.5 口径收敛：agent_state 不再自维护一份）。
+
+    返回 (未解决必答条目, 计数)。计数键：blocking / important / internal /
+    resolved_internal / resolved。"""
+    out_dir = Path(out_dir).expanduser().resolve()
+    entries = [
+        e for e in collect_questions(out_dir)
+        if e.get("tier", TIER_HARD) == TIER_HARD
+    ]
+    _attach_internal_check_states(entries, out_dir)
+    answers = load_answers(out_dir)
+    answers_by_id = {
+        str(row.get("clarification_id") or ""): row
+        for row in answers.values()
+        if str(row.get("clarification_id") or "")
+    }
+    unresolved: list[dict[str, Any]] = []
+    resolved = 0
+    resolved_internal = 0
+    for e in entries:
+        if e.get("audience") == AUDIENCE_INTERNAL:
+            if _internal_check_resolved(e):
+                resolved_internal += 1
+                continue
+            unresolved.append(e)
+            continue
+        if _customer_answer_resolved(e, answers, answers_by_id):
+            resolved += 1
+            continue
+        unresolved.append(e)
+    blocking = sum(1 for e in unresolved if e.get("blocker_level") == BLOCKER_BLOCKING)
+    internal = sum(1 for e in unresolved if e.get("audience") == AUDIENCE_INTERNAL)
+    return unresolved, {
+        "blocking": blocking,
+        "important": len(unresolved) - blocking,
+        "internal": internal,
+        "resolved_internal": resolved_internal,
+        "resolved": resolved + resolved_internal,
+    }
+
+
 def run_report(out_dir: Path) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
     if not (out_dir / "ai_requirements.jsonl").exists():
@@ -1310,20 +1375,12 @@ def run_report(out_dir: Path) -> dict[str, Any]:
     if answers:
         kept: list[dict[str, Any]] = []
         for e in entries:
-            hit = answers_by_id.get(str(e.get("clarification_id") or ""))
-            if hit is None:
-                hit = answers.get((e.get("source_id") or "", e.get("question") or ""))
-            answer_is_current = bool(
-                hit
-                and str(hit.get("evidence_fingerprint") or "")
-                == str(e.get("evidence_fingerprint") or "")
-            )
-            if (e.get("audience") != AUDIENCE_INTERNAL
-                    and hit and hit.get("adopted", True) and answer_is_current):
+            if _customer_answer_resolved(e, answers, answers_by_id):
                 resolved += 1            # 已答复采纳 → 消解，不再出现在清单
                 continue
+            hit = _find_answer(e, answers, answers_by_id)
             if hit and e.get("audience") != AUDIENCE_INTERNAL:
-                e["answer_state_current"] = answer_is_current
+                e["answer_state_current"] = _answer_is_current(e, hit)
             kept.append(e)
         entries = kept
     hard_entries = [e for e in entries if e.get("tier", TIER_HARD) == TIER_HARD]

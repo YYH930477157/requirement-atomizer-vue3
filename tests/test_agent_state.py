@@ -168,6 +168,34 @@ class AnalysisStateTests(unittest.TestCase):
             with self.assertRaises(AgentStateValidationError):
                 load_analysis_state(out)
 
+    def test_open_questions_match_report_unresolved_hard(self) -> None:
+        """口径收敛（Phase 1.5 遗留 #1）：agent_state 与 clarification_report 单一实现同源。"""
+        import clarification_report
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            text = "The meter shall report code 7."
+            _seed(
+                out,
+                blocks=[{"block_id": "B1", "order": 1, "text": text,
+                         "requirement_like": True, "noise": False}],
+                requirements=[{
+                    "ai_req_id": "AIR-1",
+                    "title": "Code reporting",
+                    "source_section": "4",
+                    "source_quote": text,
+                    "source_block_ids": ["B1"],
+                    "suspicion_reasons": ["编码漂移"],
+                }],
+                quality={"failed_sections": 0},
+            )
+
+            state = load_analysis_state(out)
+            unresolved, counts = clarification_report.unresolved_hard_questions(out)
+
+        self.assertEqual(state.open_question_count, len(unresolved))
+        self.assertEqual(state.open_question_count, counts["blocking"] + counts["important"])
+
     def test_queued_omission_is_pending_and_not_unqueued(self) -> None:
         """已登记 needs_extraction/issue_confirmed 的块跨运行保持 pending，不再进入未排队集合。"""
         with tempfile.TemporaryDirectory() as td:
