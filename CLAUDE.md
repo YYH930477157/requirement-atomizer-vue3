@@ -45,6 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-22）——评测集扩充至 40 条 + 三类自动判定（agent-eval-v2，已合 main `11af616`；主检出全量 1502 tests OK、golden 6/6）
+
+- **判定接生产路径（零 LLM）**：grouping 经 `build_function_catalog(chat=None)` 成对判同组/异组（跨 key 负对自动派生）；must_ask 三档（forbidden 缺省值在零 LLM 派生链零泄漏 + 声明 `expected.detector` 必触发且 `suspicion_policy` 路由问客户/blocking + 语义型如实 manual 不进分母）；hallucination 按 `expected.detector` 声明的护栏族判定（漂移并集按编码∪整数原子匹配 / `foreign_standard_refs` / `opposed_qualifiers`）。
+- **提公开零行为**：`vague_acceptance`/`values_left_behind`/`foreign_standard_refs`/`opposed_qualifiers` 纯改名，`clarification_report` 加只读 `suspicion_policy`；225 个护栏/目录测试零改动通过。
+- **数据集**：20→40（12/8/10/10），新 20 条源自 test2/test3 真实 suspicion 记录脱敏改写 + 行号溯源；must_ask 金标准遵守全文缺席原则；schema 新增可选 `expected.detector`（按类别收窄枚举，向后兼容）。新基线：classification 8/12（如实保留 v1 三条错分 + classify-010 关键词缺口）、grouping 4/8（v1 四条 under-merge 已知缺口）、must_ask 4/4（manual 6 条另列）、hallucination 10/10；旧 0.625 转历史，合并门此后对照新基线。`EVAL_RUNNER_VERSION=agent-eval-v2`；`AGENT_POLICY_VERSION` 与护栏/缓存指纹版本不动。
+- **规格**：`docs/agent-eval-v2-spec.md`（已冻结，含三处冻结/实施修正记录）。**待办**：新 20 条由审核人逐条核对后人工登记 `curation.reviewed_case_ids`（runner 永不改 curation）。
+
 ## 重大更新（2026-07-22）——Agent Phase 1.5 真实对比实验裁定：规则保持默认（n=4，llm 决策器不升级；纯实验无代码改动）
 
 - **实验与证据**（机器本地产物，不进仓）：test3 干净副本（`decide_trace`/`agent_loop_summary`/`omission_states` 三文件删除，26 缺口回未登记）跑 `agent_compare`，llm 侧真实调用（deepseek-v4-flash，temperature 0.0）；随后 llm 侧同输入复跑 3 轮留档。证据：`C:\Users\YYHwudi\Desktop\Canna-29\...\test3-agent-compare-clean-20260722\agent_compare_result.json` 与 `test3-agent-compare-llm-reruns-20260722\run{1,2,3}\`（decide_trace + summary + 登记行）。

@@ -1,8 +1,9 @@
-# Agent 化待办方案（2026-07-22 下班快照；2026-07-22 晚更新：#1 已裁定）
+# Agent 化待办方案（2026-07-22 下班快照；2026-07-22 晚更新：#1 已裁定、#2 功能已合 main）
 
 当前进度：Phase 0 ✅ → Phase 1 ✅（含 v2 修复）→ Phase 1.5 功能 ✅（main `467ad49`）
-→ **真实对比实验 ✅ 已裁定：规则保持默认**（n=4，详见 CLAUDE.md 里程碑）。
-下一步主线：**评测集扩充（#2）→ Phase 2 规格冻结（#3）**。
+→ **真实对比实验 ✅ 已裁定：规则保持默认**（n=4，详见 CLAUDE.md 里程碑）
+→ **评测集扩充 ✅ 功能已合 main `11af616`**（40 条 + 三类自动判定，验收 1502 tests / golden 6/6）。
+下一步主线：**新案例人工核对登记（#2 收尾）→ Phase 2 规格冻结（#3）**。
 
 ## 待办清单（按优先级）
 
@@ -14,10 +15,11 @@
 - 证据（机器本地）：`test3-agent-compare-clean-20260722/agent_compare_result.json`、
   `test3-agent-compare-llm-reruns-20260722/run{1,2,3}/`。
 
-### 2. 评测集扩充到 ≥40（Phase 2 前置，1–2 天）
-- grouping / must_ask / hallucination 三类写自动判定逻辑，脱离 schema-only；
-- 案例从 20 扩到 ≥40，来源：test2/test3 真实 suspicion 记录；
-- 新案例标准答案人工核对后登记 manifest（沿用 Phase 0 流程）。
+### 2. ~~评测集扩充到 ≥40~~ **功能已完成（2026-07-22，main `11af616`）；收尾待人工核对**
+- 三类自动判定已脱离 schema-only（规格 `docs/agent-eval-v2-spec.md`，已冻结）；
+  案例 20→40（12/8/10/10），新基线 0.6667 / 0.5 / 1.0 / 1.0。
+- **收尾项**：新 20 条标准答案人工逐条核对后，人工登记 manifest
+  `curation.reviewed_case_ids`（runner 永不改 curation）。
 
 ### 3. Phase 2 规格冻结（半天讨论 + 半天成文）
 - 主题：tool-using reviewer——`llm_agents/review_pipeline.yaml` operations 改
