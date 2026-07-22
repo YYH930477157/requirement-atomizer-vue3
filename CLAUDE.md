@@ -45,13 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
-## 重大更新（2026-07-22）——Agent 化 Phase 1 有界决策循环（分支待审核）
+## 重大更新（2026-07-22）——Agent 化 Phase 1 有界决策循环（已合 main `baba522`）
 
 - **只读状态视图**：新增 `agent_state.AnalysisState`，每轮从 `run_manifest.json`、当前 AI 需求与 blocks、分层覆盖、澄清答复/内部核对状态、`ai_extract_quality.json` 重新聚合，不建立第二套状态账本。决策摘要严格输出冻结 schema 所需的需求数、当前 coverage gap、未解决必答、READY 门和阻塞原因。
 - **规则决策器 v1**：`AGENT_POLICY_VERSION` 升为 `agent-policy-v1`，schema const 同步。优先级冻结为 READY 停止 -> failed/uncovered block 按 block_id 补抽 -> 必答澄清 -> 停止；默认 10 轮、上限 50、tokens 恒为 0。每轮（包括 stop/error/skipped）均追加有效 `decide_trace.jsonl`，失败/不可执行动作后续剔除，预算耗尽时行数等于上限且最后一条为 skipped；终态另以锁内原子替换写 `agent_loop_summary.json`。
 - **零 LLM 冲突的诚实处理**：现有 `targeted_reextract` 强制 `openai_compatible` 且会实际调用模型，不能同时满足 Phase 1“全程不调 LLM”。v1 不伪造确定性补抽：`resample_section` 在 extraction operation lock 内将当前遗漏登记为 `needs_extraction`，轨迹如实记 skipped；薄封装仅在外部显式 `allow_llm=True` 时委托现有补抽。`recheck` 契约已暴露，但规则 v1 不选择；因现有语义复核没有可安全单独发布的零 LLM 入口，调用时同样如实 skipped。`ask_clarification` 直接复用现有报告生成器。
 - **范围**：新增 `agent_state.py` / `agent_tools.py` / `agent_loop.py` 并注册 py-modules；不改 `CHAIN_ORDER`、READY 阈值、现有抽取/复核实现、UI 或 `gui/`。CLI 为 `python agent_loop.py --out-dir DIR [--max-iterations N]`，遵循 JSON envelope 与 0/2/3 退出码。
-- **验证**：Phase 1/轨迹专项 **29 tests**；隔离 worktree 全量后端 **1461 tests（26 skip）**；Phase 0 评测仍为 `5/8=0.625`，manifest 仅将 policy v0 更新到 v1，人工审核 5 个 case ID/元数据未改写。真实 test2 产物复制到临时目录后跑 2 轮：2 条轨迹均过 schema、`decider=rule`、按 block_id 选择补抽、结果如实 skipped，摘要保持 `NEEDS WORK` 且 tokens=0。Python compileall 与 `git diff --check` 通过；因 worktree 无 `out/` 基线，golden 6/6 仍须审核合入 main 后在主检出执行。
+- **验证**：Phase 1/轨迹专项 **29 tests**；隔离 worktree 全量后端 **1461 tests（26 skip）**；Phase 0 评测仍为 `5/8=0.625`，manifest 仅将 policy v0 更新到 v1，人工审核 5 个 case ID/元数据未改写。真实 test2 产物复制到临时目录后跑 2 轮：2 条轨迹均过 schema、`decider=rule`、按 block_id 选择补抽、结果如实 skipped，摘要保持 `NEEDS WORK` 且 tokens=0。合入 main 后主检出验收：golden **6/6** 实跑通过，全量后端 **1461 tests（20 skip）** 两次全绿（首次运行曾现 1 个瞬时 error，复跑两次 + 专项五连跑均绿，判定为 Windows 文件占用类抖动，留痕待观察），评测基线 `0.625 / agent-policy-v1` 不变。审核人另以播种缺口夹具独立复验端到端：3 条轨迹过 schema、缺口如实登记 `needs_extraction`、摘要 NEEDS WORK。
 
 ## 重大更新（2026-07-22）——Agent 化 Phase 0 骨架（已合 main `4161f18`）
 

@@ -1,6 +1,6 @@
 # Agent 化 Phase 1 实施规格：有边界的决策循环（agentic triage）
 
-状态：已实施于 `codex/agent-phase1`，待审核与主检出验收
+状态：**已完成**（2026-07-22 合入 main `baba522`；主检出验收：全量 1461 tests OK、golden 6/6、评测基线 0.625 不变）
 日期：2026-07-22
 前置：`docs/agent-phase0-spec.md`（已完成，main `4161f18`）；本规格冻结的接口以该交付为准
 

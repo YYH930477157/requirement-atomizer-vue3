@@ -1,7 +1,7 @@
 # Agent 化总纲：路线、边界与各阶段验收口径
 
 日期：2026-07-22
-状态：Phase 0 已完成（main `4161f18`）；Phase 1 已在 `codex/agent-phase1` 实施，待审核与合入
+状态：Phase 0 已完成（main `4161f18`）；Phase 1 已完成（main `baba522`）；Phase 1.5 未开始
 
 ## 定位
 
@@ -22,7 +22,7 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | Phase 0 | 评测集骨架（20 条，分类基线 0.625）、`decide-trace-v1` 契约、`agent-policy-v0` 锚点 | ✅ 已完成 |
-| Phase 1 | 规则决策器 v1 的决策循环：补抽/复核/提问/停止四类动作，硬预算，全程不调 LLM | 已实施，待审核与主检出验收 |
+| Phase 1 | 规则决策器 v1 的决策循环：补抽/复核/提问/停止四类动作，硬预算，全程不调 LLM | ✅ 已完成（main `baba522`） |
 | Phase 1.5 | LLM 决策器对比实验：同一批真实 `out/`，rule vs llm 决策器并行跑，用 Phase 0 评测集 + 轨迹回放对比决策质量与成本；只有 llm 显著优于 rule 才允许成为默认 | 未开始 |
 | Phase 2 | Tool-using reviewer：`llm_agents/review_pipeline.yaml` 的 operations 改 function calling，模型审查中自主调 KB/覆盖校验；软件需求按内部模板输出，无依据字段强制"待澄清" | 未开始 |
 | Phase 3 | Orchestrator：自然语言任务 → 规划 `cli.py` 子命令序列。前两步见效后评估是否需要 | 未开始 |
@@ -34,6 +34,17 @@
 - 评测集随阶段扩充：Phase 1.5 前 grouping/must_ask/hallucination 三类要有自动
   判定逻辑并脱离 schema-only 状态，案例数从 20 扩到 ≥40；
 - 每阶段合入后在 `CLAUDE.md` 记里程碑（三段式 commit）。
+
+### Phase 1 审核遗留（Phase 1.5 开工前处理）
+
+1. **澄清口径收敛**：`agent_state._unresolved_hard_questions` 与 `clarification_report`
+   的已解决判定是两份实现，存在 READY 门口径分裂风险；抽成单一函数两边共调。
+2. **补测试钉死"已排队不算新缺口"语义**：同一 `out/` 连跑两次 `agent_loop`，
+   `omission_states.jsonl` 不得长出重复登记行（当前靠循环内 excluded 集合兜底）。
+3. **零 LLM 循环的真实效用实测**：在 test2 类真实产物上验证"登记缺口+澄清+停止"
+   能否缩短人工分诊，否则 Phase 1.5 的 rule 基线没有对照价值。
+4. **tokens 计量口径先入规格**：Phase 1.5 规格须先定义 `tokens_used` 口径
+   （仅决策调用 vs 含决策触发的补抽调用），否则成本对比指标无效。
 
 ## 不做的事（长期有效）
 
