@@ -1,7 +1,7 @@
 # Agent 化总纲：路线、边界与各阶段验收口径
 
 日期：2026-07-22
-状态：Phase 0 已完成（main `4161f18`）；Phase 1 待实施（规格见 `docs/agent-phase1-spec.md`）
+状态：Phase 0 已完成（main `4161f18`）；Phase 1 已在 `codex/agent-phase1` 实施，待审核与合入
 
 ## 定位
 
@@ -22,7 +22,7 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | Phase 0 | 评测集骨架（20 条，分类基线 0.625）、`decide-trace-v1` 契约、`agent-policy-v0` 锚点 | ✅ 已完成 |
-| Phase 1 | 规则决策器 v1 的决策循环：补抽/复核/提问/停止四类动作，硬预算，全程不调 LLM | 规格已冻结（`agent-phase1-spec.md`） |
+| Phase 1 | 规则决策器 v1 的决策循环：补抽/复核/提问/停止四类动作，硬预算，全程不调 LLM | 已实施，待审核与主检出验收 |
 | Phase 1.5 | LLM 决策器对比实验：同一批真实 `out/`，rule vs llm 决策器并行跑，用 Phase 0 评测集 + 轨迹回放对比决策质量与成本；只有 llm 显著优于 rule 才允许成为默认 | 未开始 |
 | Phase 2 | Tool-using reviewer：`llm_agents/review_pipeline.yaml` 的 operations 改 function calling，模型审查中自主调 KB/覆盖校验；软件需求按内部模板输出，无依据字段强制"待澄清" | 未开始 |
 | Phase 3 | Orchestrator：自然语言任务 → 规划 `cli.py` 子命令序列。前两步见效后评估是否需要 | 未开始 |

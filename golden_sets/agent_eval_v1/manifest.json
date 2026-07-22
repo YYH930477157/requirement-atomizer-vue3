@@ -44,7 +44,7 @@
     ]
   },
   "classification_baseline": {
-    "policy_version": "agent-policy-v0",
+    "policy_version": "agent-policy-v1",
     "runner_version": "agent-eval-v1",
     "evaluated": 8,
     "passed": 5,

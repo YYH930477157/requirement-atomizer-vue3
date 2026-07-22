@@ -13,12 +13,28 @@ ratomizer compose --out DIR [--quiet | --verbose]
 ratomizer analyze --out DIR [--template FILE.xlsx] [--llm-route stub|openai_compatible] [--quiet | --verbose]
 ratomizer --version
 python agent_eval.py --eval-dir DIR
+python agent_loop.py --out-dir DIR [--max-iterations N]
 ```
 
 `agent_eval.py` is the Phase 0 deterministic evaluation runner. It validates every case against
 `schemas/agent_eval_case.schema.json`, scores only the current rule-based classification cases,
 and reports grouping, must-ask, and hallucination cases as schema-only until later agent phases.
 It never calls an LLM. Missing/empty datasets return exit 2; malformed cases return exit 3.
+
+`agent_loop.py` is the Phase 1 bounded rule-decider. It reloads a read-only aggregate view of an
+existing extraction directory before each decision, appends every decision to
+`decide_trace.jsonl`, and writes `agent_loop_summary.json`. The default iteration budget is 10
+and the accepted range is 1 through 50; `tokens_max` and `tokens_used` are always zero. The
+frozen priority is READY -> stop, failed/uncovered block -> `resample_section`, unresolved hard
+question -> `ask_clarification`, otherwise stop. Phase 1 never calls an LLM or the network.
+
+The existing targeted omission extractor is LLM-only. Therefore a Phase 1
+`resample_section:<block_id>` decision records the current block as `needs_extraction` and
+truthfully returns `result.status: "skipped"`; it never claims that semantic extraction
+completed. The thin tool wrapper can delegate to the existing targeted extractor only when an
+external caller explicitly enables LLM execution. `recheck:<req_id>` is exposed as a tool
+contract but is not selected by the v1 rule priority and is skipped in zero-LLM mode because the
+existing semantic recheck has no standalone deterministic publisher.
 
 `analyze` runs the requirements analysis agent over a reviewed output directory (requires `ai_requirements.jsonl` produced by AI extraction; missing input is an input error, exit 2 semantics via error envelope). It writes `software_requirements.xlsx`, `engineering_analysis.json`, `hardware_items.md`, and `co_design_items.md`. An explicit `--template` path must exist.
 
@@ -129,7 +145,14 @@ Agent Phase 0 contracts:
 
 - `golden_sets/agent_eval_v1/manifest.json` stores the deterministic classification baseline.
 - `schemas/decide_trace.schema.json` freezes the future decision trace row format.
-- `decide_trace.jsonl` is reserved for Phase 1 and is not produced by the Phase 0 evaluator.
+- `decide_trace.jsonl` is produced by Phase 1 as an append-only, schema-validated decision log.
+
+Agent Phase 1 output files:
+
+- `decide_trace.jsonl`
+- `agent_loop_summary.json`
+- `omission_states.jsonl` when a zero-LLM resample target is queued as `needs_extraction`
+- clarification report files when `ask_clarification` is selected
 
 Export output files:
 
