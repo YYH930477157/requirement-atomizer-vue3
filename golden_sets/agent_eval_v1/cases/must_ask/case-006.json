@@ -11,20 +11,20 @@
     "curated_at": "2026-07-22"
   },
   "input": {
-    "text": "The meter batteries shall operate properly over the entire meter service life.",
-    "context": "Full-text check: no battery service-life figure is stated anywhere in the document."
+    "text": "With both batteries installed, the meter shall operate properly.",
+    "context": "Full-text check: the document specifies battery reading autonomy and service life in other clauses, but no measurable criterion defines proper operation for this requirement."
   },
   "expected": {
     "verdict": "ask",
     "detector": "vague_acceptance",
-    "rationale": "'Operate properly' gives no measurable battery-life criterion.",
+    "rationale": "'Operate properly' is untestable; a measurable operating criterion must be asked, not assumed.",
     "forbidden": [
-      "15 years",
-      "10 years"
+      "zero failures",
+      "100% uptime"
     ],
     "must_ask_questions": [
-      "What minimum battery service life is required?"
+      "What measurable condition defines proper operation (tolerance, error rate, permitted downtime)?"
     ]
   },
-  "notes": "Anonymized from a real dual-battery row with untestable acceptance wording."
+  "notes": "Anonymized from a real dual-battery row whose first acceptance criterion was untestable. The service-life figure exists elsewhere in the source document; the trap is only the vague operating criterion."
 }

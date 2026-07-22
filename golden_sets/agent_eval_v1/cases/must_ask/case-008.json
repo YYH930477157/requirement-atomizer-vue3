@@ -11,8 +11,8 @@
     "curated_at": "2026-07-22"
   },
   "input": {
-    "text": "The dial must be capable of displaying all numbers from zero to nine.",
-    "context": "The dial must be capable of displaying all numbers from zero to nine. Character size for the measured value: min. 8 mm high and min. 4 mm wide. Register values require at least 7 integer digits; dwell time is programmable from 5 s."
+    "text": "The display dial shall show all digits from zero to nine.",
+    "context": "The display dial shall show all digits from zero to nine. Character size for the measured value: min. 8 mm high and min. 4 mm wide. Register values require at least 7 integer digits; dwell time is programmable from 5 s."
   },
   "expected": {
     "verdict": "ask",

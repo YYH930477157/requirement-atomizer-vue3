@@ -12,7 +12,7 @@
   },
   "input": {
     "text": "Access to stored diagnostic messages shall be protected by a password.",
-    "context": "Full-text check: no password policy (length, complexity, rotation) is stated anywhere in the document."
+    "context": "Full-text check: the document constrains only APN credential characters (a separate clause, 30 characters); no password policy (length, complexity, rotation) is stated for diagnostic-message access."
   },
   "expected": {
     "verdict": "ask",
@@ -22,8 +22,8 @@
       "12 characters"
     ],
     "must_ask_questions": [
-      "What password policy applies (minimum length, complexity, rotation)?"
+      "What password policy applies to diagnostic-message access (minimum length, complexity, rotation)?"
     ]
   },
-  "notes": "Anonymized from a real diagnostics-access row; judged manually (no detector)."
+  "notes": "Anonymized from a real diagnostics-access row; judged manually (no detector). The full-text absence claim is scoped to the diagnostic-access password; the APN credential character rule belongs to a different subject."
 }

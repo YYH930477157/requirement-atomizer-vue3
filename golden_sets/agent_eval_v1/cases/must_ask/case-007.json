@@ -11,8 +11,8 @@
     "curated_at": "2026-07-22"
   },
   "input": {
-    "text": "The electricity meter must meet at least the following electrical requirements:",
-    "context": "The electricity meter must meet at least the following electrical requirements: Voltage transformation 110,000 / 100 V; current transformation VSD 100 / 1 A, ZSD 10 / 1 A; reference voltage 3x58/100 V; minimum current 0.01 A; rated current 1 A; maximum current 6 A."
+    "text": "The electricity meter must satisfy at least the following electrical requirements:",
+    "context": "The electricity meter must satisfy at least the following electrical requirements: Voltage transformation 110,000 / 100 V; current transformation VSD 100 / 1 A, ZSD 10 / 1 A; reference voltage 3x58/100 V; minimum current 0.01 A; rated current 1 A; maximum current 6 A."
   },
   "expected": {
     "verdict": "ask",

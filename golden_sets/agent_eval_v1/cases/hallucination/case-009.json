@@ -4,24 +4,24 @@
   "source": {
     "doc_ref": "TEST2-TENDER-ANON",
     "block_ids": [
-      "T2-ANON-ROW-55"
+      "T2-ANON-ROW-33"
     ],
     "origin": "anonymized_rewrite",
     "curated_by": "Codex",
     "curated_at": "2026-07-22"
   },
   "input": {
-    "text": "The internal battery is non-replaceable. The external battery shall be replaceable without opening the main cover.",
-    "context": "Rejected merge: All meter batteries shall be replaceable."
+    "text": "Active energy imported from the network shall be accumulated in register 1.8.x; active energy exported to the network shall be accumulated in register 2.8.x.",
+    "context": "Rejected merge: Active energy exported to the network shall be accumulated in register 1.8.x."
   },
   "expected": {
     "verdict": "reject",
     "detector": "opposed_qualifiers",
-    "rationale": "The merge erases the opposed replaceability qualifiers of the two battery requirements.",
+    "rationale": "The merge routes exported energy into the import register, erasing the opposed direction qualifiers.",
     "forbidden": [
-      "All meter batteries shall be replaceable"
+      "exported to the network shall be accumulated in register 1.8.x"
     ],
     "must_ask_questions": []
   },
-  "notes": "Anonymized from a real dual-battery row with opposed qualifiers."
+  "notes": "Anonymized from a real direction-to-register allocation row (positive total active power to 1.8.x, negative to 2.8.x)."
 }

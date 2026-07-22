@@ -11,7 +11,7 @@
     "curated_at": "2026-07-22"
   },
   "input": {
-    "text": "Umin - the minimum voltage value measured for the given measurement interval.",
+    "text": "Umin - the smallest voltage value recorded within a measurement interval.",
     "context": "Quality profile definitions"
   },
   "expected": {
