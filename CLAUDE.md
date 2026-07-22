@@ -45,6 +45,14 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-22）——Agent Phase 1.5 真实对比实验裁定：规则保持默认（n=4，llm 决策器不升级；纯实验无代码改动）
+
+- **实验与证据**（机器本地产物，不进仓）：test3 干净副本（`decide_trace`/`agent_loop_summary`/`omission_states` 三文件删除，26 缺口回未登记）跑 `agent_compare`，llm 侧真实调用（deepseek-v4-flash，temperature 0.0）；随后 llm 侧同输入复跑 3 轮留档。证据：`C:\Users\YYHwudi\Desktop\Canna-29\...\test3-agent-compare-clean-20260722\agent_compare_result.json` 与 `test3-agent-compare-llm-reruns-20260722\run{1,2,3}\`（decide_trace + summary + 登记行）。
+- **冻结口径四项**：动作序列完全一致率 **0/4**；llm 失败回退 **0%**（run2 的 `rule:1` 是仅剩 stop 的平凡轮，非回退）；tokens **870–1358/run**（均值 ≈1089，`token_accounting=complete`）；终态 readiness **4/4 与 rule 相同**（NEEDS WORK / stopped）。
+- **终态产物差异（复演实证）**：rule 确定性产出 `queue_all_gaps → ask_clarification → stop` + `omission_states.jsonl` 26 行 `needs_extraction`；llm 仅 1/4 追平——2/4 丢 26 行缺口登记（omission_states 不存在），1/4 在 62 个必答悬置时提前 stop（真决策错误）。run1 理由原文 "*Queuing gaps would add work that cannot be processed, so stopping is appropriate.*"——把零 LLM 登记簿记当无效忙等，根因是候选动作语义未进提示词。
+- **关键实测发现**：temperature=0.0 下同输入三次复跑三种序列——托管端点不保证可复现，对"同一输入同一产物"的审计纪律本身是否决项。
+- **裁定**：**规则保持默认**。llm 最好情况 = 追平 rule（run2）；3 候选有界循环无增值空间，提示词修得再好上限也只是镜像规则。llm 决策 revisit 留给 Phase 2（tool-using reviewer，动作空间 richer）。评测基线 0.625 / agent-policy-v3 不变。
+
 ## 重大更新（2026-07-22）——Agent 化 Phase 1.5：LLM 决策器对比实验（已合 main `5cd03be`；主检出全量 1483 tests OK、golden 6/6、评测基线 0.625/v3 不变）
 
 - **口径先行**：tokens 计量冻结为"仅决策调用"（含 JSON 修复/截断升级重发，usage 缺失计 0 标 partial，不估算）；澄清"必答未解决"判定收敛为 `clarification_report.unresolved_hard_questions` 单一实现，`agent_state` 委托调用（审核遗留 #1/#4 闭环，`run_report` 行为零变化靠既有测试锁死）。

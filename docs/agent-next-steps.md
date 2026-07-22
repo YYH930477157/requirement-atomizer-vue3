@@ -1,20 +1,18 @@
-# Agent 化待办方案（2026-07-22 下班快照）
+# Agent 化待办方案（2026-07-22 下班快照；2026-07-22 晚更新：#1 已裁定）
 
-当前进度：Phase 0 ✅ → Phase 1 ✅（含 v2 修复）→ Phase 1.5 功能 ✅（main `467ad49`）。
-下一步主线：**拿到真实对比数据 → 裁定 LLM 决策器去留 → Phase 2**。
+当前进度：Phase 0 ✅ → Phase 1 ✅（含 v2 修复）→ Phase 1.5 功能 ✅（main `467ad49`）
+→ **真实对比实验 ✅ 已裁定：规则保持默认**（n=4，详见 CLAUDE.md 里程碑）。
+下一步主线：**评测集扩充（#2）→ Phase 2 规格冻结（#3）**。
 
 ## 待办清单（按优先级）
 
-### 1. 真实 rule vs llm 对比实验（阻塞裁定，半天）
-- 前置：设好 `RATOMIZER_LLM_API_KEY`。
-- 复制 test3 到干净状态：`decide_trace.jsonl`、`agent_loop_summary.json`、
-  `omission_states.jsonl` 三个文件删掉（26 个缺口回到未登记）。
-- 跑：`python agent_compare.py --out-dir "<干净副本>"`。
-- 产出 comparison JSON 交审核人裁定。
-- 裁定口径（冻结）：动作序列一致率、llm 侧回退率（`decider_usage`）、
-  tokens 成本、终态 readiness 差异。**一致率高且回退率低 → llm 无增量价值，
-  规则保持默认**（这是最可能的结论，也是好结论：省钱且可解释）；
-  llm 在规则失误场景有实质更优选择 → 才考虑混合模式。
+### 1. ~~真实 rule vs llm 对比实验~~ **已完成（2026-07-22）**
+- 结果：序列完全一致率 0/4、失败回退 0%、tokens 870–1358/run、readiness 4/4 相同；
+  终态产物仅 1/4 追平 rule（2/4 丢 26 行缺口登记、1/4 提前 stop）。
+- 裁定：**规则保持默认**（llm 最好情况=追平 rule；temperature 0.0 下同输入三序列，
+  不可复现本身是否决项）。llm 决策 revisit 留 Phase 2。
+- 证据（机器本地）：`test3-agent-compare-clean-20260722/agent_compare_result.json`、
+  `test3-agent-compare-llm-reruns-20260722/run{1,2,3}/`。
 
 ### 2. 评测集扩充到 ≥40（Phase 2 前置，1–2 天）
 - grouping / must_ask / hallucination 三类写自动判定逻辑，脱离 schema-only；
