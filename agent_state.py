@@ -12,7 +12,10 @@ from clarification_check_states import read_clarification_check_states
 from desktop_tasks import read_run_manifest
 from io_utils import read_jsonl
 from merged_consistency import coverage_denominator_blocks, layered_coverage
-from omission_actions import current_non_requirement_block_ids
+from omission_actions import current_non_requirement_block_ids, read_current_omission_states
+
+# 已登记待抽取/已确认待处理的遗漏——agent 不得重复排队（test3 实测：跨运行重复登记同一批 block）。
+PENDING_OMISSION_STATUSES = frozenset({"needs_extraction", "issue_confirmed"})
 
 
 class AgentStateInputError(ValueError):
@@ -40,6 +43,7 @@ class AnalysisState:
     failed_sections: int
     failed_section_ids: tuple[str, ...]
     failed_section_block_ids: tuple[str, ...]
+    pending_extraction_block_ids: tuple[str, ...]
 
     @property
     def requirement_count(self) -> int:
@@ -91,10 +95,21 @@ class AnalysisState:
         return tuple(sorted(value for value in candidates if value))
 
     @property
+    def unqueued_gap_block_ids(self) -> tuple[str, ...]:
+        """Gaps not yet queued for extraction (cross-run dedup for the agent loop)."""
+        pending = set(self.pending_extraction_block_ids)
+        return tuple(
+            block_id
+            for block_id in sorted(set(self.coverage_gap_block_ids) | set(self.failed_section_block_ids))
+            if block_id not in pending
+        )
+
+    @property
     def action_inputs(self) -> dict[str, list[str]]:
         resample_ids = sorted(set(self.coverage_gap_block_ids) | set(self.failed_section_block_ids))
         return {
             "resample_section": resample_ids,
+            "unqueued_resample_section": list(self.unqueued_gap_block_ids),
             "recheck": list(self.recheck_requirement_ids),
             "ask_clarification": [
                 str(row.get("clarification_id") or "")
@@ -164,6 +179,12 @@ def load_analysis_state(out_dir: Path) -> AnalysisState:
     failed_block_ids = _string_tuple(
         quality.get("failed_section_block_ids"), "failed_section_block_ids"
     )
+    pending_block_ids = tuple(sorted({
+        str(state.get("block_id") or "")
+        for state in read_current_omission_states(root).values()
+        if str(state.get("status") or "") in PENDING_OMISSION_STATUSES
+        and str(state.get("block_id") or "")
+    }))
     return AnalysisState(
         out_dir=root,
         run_id=_resolve_run_id(root, manifest),
@@ -178,6 +199,7 @@ def load_analysis_state(out_dir: Path) -> AnalysisState:
         failed_sections=failed_sections,
         failed_section_ids=failed_section_ids,
         failed_section_block_ids=failed_block_ids,
+        pending_extraction_block_ids=pending_block_ids,
     )
 
 

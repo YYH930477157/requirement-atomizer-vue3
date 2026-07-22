@@ -8,7 +8,7 @@ Python pipeline that atomizes technical standards (DOCX/XLSX/PDF) into reviewabl
 
 Key entrypoints: `cli.py` (`ratomizer`), `atomize.py`, `api_server.py` (local review API), `desktop_tasks.py` (Electron task bridge). Machine-facing CLI contract: `docs/cli-contract.md` (exit codes 0/2/3/4, stdout = UTF-8 JSON envelope).
 
-Agent Phase 0/1: `agent_eval.py` runs `golden_sets/agent_eval_v1`; `agent_state.py` builds a read-only artifact view; `agent_loop.py` runs the bounded deterministic decider; `decide_trace.py` validates/appends `decide_trace.jsonl`. The cache lineage anchor is `agent_policy.AGENT_POLICY_VERSION` (`agent-policy-v1`). Phase 1 is deliberately outside `CHAIN_ORDER`.
+Agent Phase 0/1: `agent_eval.py` runs `golden_sets/agent_eval_v1`; `agent_state.py` builds a read-only artifact view; `agent_loop.py` runs the bounded deterministic decider; `decide_trace.py` validates/appends `decide_trace.jsonl`. The cache lineage anchor is `agent_policy.AGENT_POLICY_VERSION` (`agent-policy-v2`). Phase 1 is deliberately outside `CHAIN_ORDER`.
 
 ## Test & verify commands
 

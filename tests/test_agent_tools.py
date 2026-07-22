@@ -11,6 +11,7 @@ from agent_state import load_analysis_state
 from agent_tools import (
     ask_clarification,
     execute_action,
+    queue_all_gaps,
     recheck,
     resample_section,
     stop,
@@ -76,6 +77,52 @@ class AgentToolTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 resample_section(out, "B1")
+
+    def test_resample_already_queued_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _seed_gap(out)
+            first = resample_section(out, "B1")
+            second = resample_section(out, "B1")
+            rows = list(omission_actions.read_omission_states(out).values())
+
+        self.assertEqual(first["status"], "skipped")
+        self.assertEqual(second["status"], "skipped")
+        self.assertIn("already queued", second["summary"])
+        self.assertEqual(len(rows), 1)
+
+    def test_queue_all_gaps_batches_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _seed_gap(out)
+            _write_jsonl(out / "blocks.jsonl", [
+                {"block_id": "B1", "order": 1, "text": "The meter shall log events.",
+                 "requirement_like": True, "noise": False},
+                {"block_id": "B2", "order": 2, "text": "The meter shall store profiles.",
+                 "requirement_like": True, "noise": False},
+                {"block_id": "B3", "order": 3, "text": "The meter shall report alarms.",
+                 "requirement_like": True, "noise": False},
+            ])
+
+            first = queue_all_gaps(out)
+            second = queue_all_gaps(out)
+            rows = list(omission_actions.read_omission_states(out).values())
+
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(first["details"]["queued_block_ids"], ["B1", "B2", "B3"])
+        self.assertEqual(second["status"], "skipped")
+        self.assertEqual(second["details"]["queued_block_ids"], [])
+        self.assertEqual(len(rows), 3)
+
+    def test_dispatch_routes_queue_all_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _seed_gap(out)
+            state = load_analysis_state(out)
+            result = execute_action(out, "queue_all_gaps", state)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["details"]["queued_block_ids"], ["B1"])
 
     def test_recheck_is_truthfully_skipped_in_phase1(self) -> None:
         with tempfile.TemporaryDirectory() as td:

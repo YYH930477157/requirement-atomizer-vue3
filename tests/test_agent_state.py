@@ -168,6 +168,31 @@ class AnalysisStateTests(unittest.TestCase):
             with self.assertRaises(AgentStateValidationError):
                 load_analysis_state(out)
 
+    def test_queued_omission_is_pending_and_not_unqueued(self) -> None:
+        """已登记 needs_extraction/issue_confirmed 的块跨运行保持 pending，不再进入未排队集合。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _seed(
+                out,
+                blocks=[
+                    {"block_id": "B1", "order": 1, "text": "The meter shall log events.",
+                     "requirement_like": True, "noise": False},
+                    {"block_id": "B2", "order": 2, "text": "The meter shall store profiles.",
+                     "requirement_like": True, "noise": False},
+                ],
+                quality={"failed_sections": 0},
+            )
+            omission_actions.apply_omission_action(
+                out, block_id="B1", status="needs_extraction", actor="agent-loop"
+            )
+
+            state = load_analysis_state(out)
+
+        self.assertEqual(state.pending_extraction_block_ids, ("B1",))
+        self.assertEqual(state.coverage_gap_block_ids, ("B1", "B2"))
+        self.assertEqual(state.unqueued_gap_block_ids, ("B2",))
+        self.assertEqual(state.action_inputs["unqueued_resample_section"], ["B2"])
+
 
 if __name__ == "__main__":
     unittest.main()

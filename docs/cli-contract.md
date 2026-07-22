@@ -21,19 +21,26 @@ python agent_loop.py --out-dir DIR [--max-iterations N]
 and reports grouping, must-ask, and hallucination cases as schema-only until later agent phases.
 It never calls an LLM. Missing/empty datasets return exit 2; malformed cases return exit 3.
 
-`agent_loop.py` is the Phase 1 bounded rule-decider. It reloads a read-only aggregate view of an
-existing extraction directory before each decision, appends every decision to
-`decide_trace.jsonl`, and writes `agent_loop_summary.json`. The default iteration budget is 10
-and the accepted range is 1 through 50; `tokens_max` and `tokens_used` are always zero. The
-frozen priority is READY -> stop, failed/uncovered block -> `resample_section`, unresolved hard
-question -> `ask_clarification`, otherwise stop. Phase 1 never calls an LLM or the network.
+`agent_loop.py` is the Phase 1 bounded rule-decider (`agent-policy-v2`). It reloads a read-only
+aggregate view of an existing extraction directory before each decision, appends every decision
+to `decide_trace.jsonl`, and writes `agent_loop_summary.json`. The default iteration budget is
+10 and the accepted range is 1 through 50; `tokens_max` and `tokens_used` are always zero. The
+frozen priority is READY -> stop, unqueued gaps -> `queue_all_gaps`, unresolved hard question ->
+`ask_clarification`, otherwise stop. Phase 1 never calls an LLM or the network.
+
+`queue_all_gaps` registers every currently uncovered, not-yet-queued block as
+`needs_extraction` in one locked batch (per-block queueing exhausted the iteration budget on
+real documents). Blocks already carrying a current `needs_extraction` or `issue_confirmed`
+omission state are excluded from candidates, so re-running the loop over the same directory
+never appends duplicate omission rows; a repeated per-block `resample_section` call is likewise
+idempotent and returns `skipped` without appending.
 
 The existing targeted omission extractor is LLM-only. Therefore a Phase 1
 `resample_section:<block_id>` decision records the current block as `needs_extraction` and
 truthfully returns `result.status: "skipped"`; it never claims that semantic extraction
 completed. The thin tool wrapper can delegate to the existing targeted extractor only when an
 external caller explicitly enables LLM execution. `recheck:<req_id>` is exposed as a tool
-contract but is not selected by the v1 rule priority and is skipped in zero-LLM mode because the
+contract but is not selected by the rule priority and is skipped in zero-LLM mode because the
 existing semantic recheck has no standalone deterministic publisher.
 
 `analyze` runs the requirements analysis agent over a reviewed output directory (requires `ai_requirements.jsonl` produced by AI extraction; missing input is an input error, exit 2 semantics via error envelope). It writes `software_requirements.xlsx`, `engineering_analysis.json`, `hardware_items.md`, and `co_design_items.md`. An explicit `--template` path must exist.
