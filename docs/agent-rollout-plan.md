@@ -39,10 +39,13 @@
 
 1. **澄清口径收敛**：`agent_state._unresolved_hard_questions` 与 `clarification_report`
    的已解决判定是两份实现，存在 READY 门口径分裂风险；抽成单一函数两边共调。
-2. **补测试钉死"已排队不算新缺口"语义**：同一 `out/` 连跑两次 `agent_loop`，
-   `omission_states.jsonl` 不得长出重复登记行（当前靠循环内 excluded 集合兜底）。
-3. **零 LLM 循环的真实效用实测**：在 test2 类真实产物上验证"登记缺口+澄清+停止"
-   能否缩短人工分诊，否则 Phase 1.5 的 rule 基线没有对照价值。
+2. ~~补测试钉死"已排队不算新缺口"语义~~ **已完成（`agent-policy-v2`）**：test3 实测
+   证实这不只是测试缺失而是行为缺陷（跨运行重复登记同一批 block）。修复：状态层新增
+   `pending_extraction_block_ids`（needs_extraction/issue_confirmed），候选只含未排队
+   缺口；新增批量动作 `queue_all_gaps`（test3 实测逐块登记 26 缺口耗尽 10 轮预算）；
+   `resample_section` 幂等。复跑幂等已被测试钉死。
+3. **零 LLM 循环的真实效用实测**：v2 修复后形态为"一轮批量登记 → 澄清 → 停止"，
+   仍需在 test2/test3 类真实产物上复测一次端到端效用，作为 Phase 1.5 rule 基线。
 4. **tokens 计量口径先入规格**：Phase 1.5 规格须先定义 `tokens_used` 口径
    （仅决策调用 vs 含决策触发的补抽调用），否则成本对比指标无效。
 

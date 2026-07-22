@@ -12,7 +12,7 @@ import omission_actions
 from agent_loop import (
     build_candidates,
     main,
-    rule_decider_v1,
+    rule_decider_v2,
     run_agent_loop,
 )
 from agent_state import load_analysis_state
@@ -26,6 +26,7 @@ class _FakeState:
         ready: bool = False,
         gaps: tuple[str, ...] = (),
         failed: tuple[str, ...] = (),
+        pending: tuple[str, ...] = (),
         questions: int = 0,
     ) -> None:
         self.run_id = "fake-run"
@@ -35,6 +36,7 @@ class _FakeState:
         }
         self.coverage_gap_block_ids = gaps
         self.failed_section_block_ids = failed
+        self.pending_extraction_block_ids = pending
         self.open_questions = tuple({"clarification_id": f"CLR-{i}"} for i in range(questions))
         self.failed_sections = len(failed)
         self.requirement_count = 0
@@ -42,6 +44,15 @@ class _FakeState:
     @property
     def open_question_count(self) -> int:
         return len(self.open_questions)
+
+    @property
+    def unqueued_gap_block_ids(self) -> tuple[str, ...]:
+        pending = set(self.pending_extraction_block_ids)
+        return tuple(
+            block_id
+            for block_id in sorted(set(self.coverage_gap_block_ids) | set(self.failed_section_block_ids))
+            if block_id not in pending
+        )
 
     def state_digest(self) -> dict:
         return {
@@ -85,26 +96,34 @@ class RuleDeciderTests(unittest.TestCase):
     def test_ready_stops_even_when_other_inputs_exist(self) -> None:
         state = _FakeState(ready=True, gaps=("B2",), questions=1)
         candidates = build_candidates(state)
-        action, _reason = rule_decider_v1(state, candidates)
+        action, _reason = rule_decider_v2(state, candidates)
         self.assertEqual(candidates, ["stop"])
         self.assertEqual(action, "stop")
 
-    def test_resample_uses_first_sorted_block_id(self) -> None:
+    def test_gaps_yield_one_batch_queue_action(self) -> None:
         state = _FakeState(gaps=("B9", "B3"), failed=("B7",))
         candidates = build_candidates(state)
-        action, _reason = rule_decider_v1(state, candidates)
-        self.assertEqual(action, "resample_section:B3")
+        action, _reason = rule_decider_v2(state, candidates)
+        self.assertEqual(candidates, ["queue_all_gaps", "stop"])
+        self.assertEqual(action, "queue_all_gaps")
+
+    def test_pending_gaps_are_not_requeued(self) -> None:
+        state = _FakeState(gaps=("B9", "B3"), pending=("B3", "B9"))
+        candidates = build_candidates(state)
+        action, _reason = rule_decider_v2(state, candidates)
+        self.assertNotIn("queue_all_gaps", candidates)
+        self.assertEqual(action, "stop")
 
     def test_hard_question_is_asked_when_no_resample_exists(self) -> None:
         state = _FakeState(questions=1)
         candidates = build_candidates(state)
-        action, _reason = rule_decider_v1(state, candidates)
+        action, _reason = rule_decider_v2(state, candidates)
         self.assertEqual(action, "ask_clarification")
 
     def test_otherwise_stops(self) -> None:
         state = _FakeState()
         candidates = build_candidates(state)
-        action, _reason = rule_decider_v1(state, candidates)
+        action, _reason = rule_decider_v2(state, candidates)
         self.assertEqual(action, "stop")
 
 
@@ -135,8 +154,8 @@ class AgentLoopTests(unittest.TestCase):
             )
             traces = _read_traces(out)
 
-        self.assertEqual(calls, ["resample_section:B1"])
-        self.assertEqual([row["action"] for row in traces], ["resample_section:B1", "stop"])
+        self.assertEqual(calls, ["queue_all_gaps"])
+        self.assertEqual([row["action"] for row in traces], ["queue_all_gaps", "stop"])
         self.assertEqual(traces[0]["result"]["status"], "error")
         self.assertEqual(summary["termination_reason"], "stopped")
 
@@ -206,9 +225,33 @@ class AgentLoopTests(unittest.TestCase):
             traces = _read_traces(out)
 
         targeted.assert_not_called()
-        self.assertEqual(traces[0]["result"]["status"], "skipped")
+        self.assertEqual([row["action"] for row in traces], ["queue_all_gaps", "stop"])
+        self.assertEqual(traces[0]["result"]["status"], "ok")
         self.assertEqual(summary["tokens_used"], 0)
         self.assertEqual(summary["tokens_max"], 0)
+
+    def test_second_run_does_not_requeue_or_duplicate_omission_rows(self) -> None:
+        """跨运行幂等（test3 实测缺陷：同一批 block 被重复登记 needs_extraction）。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _seed_real_gap(out)
+            first = run_agent_loop(out, max_iterations=3)
+            second = run_agent_loop(out, max_iterations=3)
+            omission_rows = [
+                json.loads(line)
+                for line in (out / "omission_states.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            traces = _read_traces(out)
+
+        self.assertEqual(len(omission_rows), 1)
+        self.assertEqual(omission_rows[0]["status"], "needs_extraction")
+        self.assertEqual(
+            [row["action"] for row in traces],
+            ["queue_all_gaps", "stop", "stop"],
+        )
+        self.assertEqual(first["counts"]["coverage_gaps"], second["counts"]["coverage_gaps"])
+        self.assertEqual(second["termination_reason"], "stopped")
 
     def test_cli_rejects_iteration_limit_above_fifty(self) -> None:
         with tempfile.TemporaryDirectory() as td:

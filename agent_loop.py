@@ -52,33 +52,28 @@ def build_candidates(
     excluded = excluded_actions or set()
     if state.readiness.get("verdict") == "READY":
         return ["stop"]
-    block_ids = sorted(
-        set(state.failed_section_block_ids) | set(state.coverage_gap_block_ids)
-    )
-    candidates = [
-        f"resample_section:{block_id}"
-        for block_id in block_ids
-        if f"resample_section:{block_id}" not in excluded
-    ]
+    candidates: list[str] = []
+    # 批量登记：一个动作覆盖全部未排队缺口（test3 实测逐块登记 26 个缺口耗尽 10 轮预算,
+    # ask_clarification 轮不到）。已排队（needs_extraction/issue_confirmed）的块由
+    # state.unqueued_gap_block_ids 跨运行剔除,不再重复登记。
+    if state.unqueued_gap_block_ids and "queue_all_gaps" not in excluded:
+        candidates.append("queue_all_gaps")
     if state.open_question_count > 0 and "ask_clarification" not in excluded:
         candidates.append("ask_clarification")
     candidates.append("stop")
     return candidates
 
 
-def rule_decider_v1(
+def rule_decider_v2(
     state: AnalysisState,
     candidates: list[str],
 ) -> tuple[str, str]:
     if state.readiness.get("verdict") == "READY":
         return "stop", "The READY gate passed."
-    resample_actions = sorted(
-        action for action in candidates if action.startswith("resample_section:")
-    )
-    if resample_actions:
+    if "queue_all_gaps" in candidates:
         return (
-            resample_actions[0],
-            "A failed extraction section or current uncovered block remains.",
+            "queue_all_gaps",
+            "Failed extraction sections or uncovered blocks remain and are not yet queued.",
         )
     if "ask_clarification" in candidates and state.open_question_count > 0:
         return (
@@ -113,7 +108,7 @@ def run_agent_loop(
     for iteration in range(1, int(max_iterations) + 1):
         iterations = iteration
         candidates = build_candidates(state, excluded_actions=excluded_actions)
-        action, reason = rule_decider_v1(state, candidates)
+        action, reason = rule_decider_v2(state, candidates)
         last_action = action
         if action == "stop":
             result: dict[str, Any] = stop(state)

@@ -6,11 +6,22 @@ from typing import TYPE_CHECKING, Any
 
 import clarification_report
 import omission_actions
+from agent_state import PENDING_OMISSION_STATUSES
 from ai_review_actions import source_ai_requirement_id
 from io_utils import read_jsonl
 
 if TYPE_CHECKING:
     from agent_state import AnalysisState
+
+
+def _pending_omission_block_ids(root: Path) -> set[str]:
+    """Blocks whose current omission state is already in the extraction pipeline."""
+    return {
+        str(state.get("block_id") or "")
+        for state in omission_actions.read_current_omission_states(root).values()
+        if str(state.get("status") or "") in PENDING_OMISSION_STATUSES
+        and str(state.get("block_id") or "")
+    }
 
 
 def resample_section(
@@ -27,12 +38,21 @@ def resample_section(
     if not allow_llm:
         with omission_actions.extraction_operation_lock(root, operation="agent-queue"):
             block, omission_id, source_fingerprint = _current_omission(root, block_id)
+            if block_id in _pending_omission_block_ids(root):
+                return {
+                    "status": "skipped",
+                    "summary": (
+                        f"{block_id} is already queued for extraction; "
+                        "no duplicate omission row was appended."
+                    ),
+                    "details": {"already_queued": True},
+                }
             queued = omission_actions.apply_omission_action(
                 root,
                 block_id=block_id,
                 omission_id=omission_id,
                 status="needs_extraction",
-                reason="Queued by agent-policy-v1; semantic extraction requires an LLM-capable worker.",
+                reason="Queued by agent-policy-v2; semantic extraction requires an LLM-capable worker.",
                 actor="agent-loop",
                 expected_source_fingerprint=source_fingerprint,
             )
@@ -50,7 +70,7 @@ def resample_section(
         block_id=block_id,
         omission_id=omission_id,
         actor="agent-loop",
-        reason="Selected by agent-policy-v1.",
+        reason="Selected by agent-policy-v2.",
         route="openai_compatible",
         expected_source_fingerprint=source_fingerprint,
     )
@@ -58,6 +78,47 @@ def resample_section(
         "status": "ok",
         "summary": f"Targeted extraction completed for {block_id}.",
         "details": payload,
+    }
+
+
+def queue_all_gaps(out_dir: Path) -> dict[str, Any]:
+    """Queue every currently uncovered, not-yet-queued block in one locked batch.
+
+    Per-block queueing exhausted the iteration budget on real documents (test3: 26 gaps
+    vs 10 iterations); the batch keeps one iteration for clarification and stop.
+    """
+    root = Path(out_dir).expanduser().resolve()
+    with omission_actions.extraction_operation_lock(root, operation="agent-queue"):
+        candidates = sorted(
+            omission_actions.current_omission_candidate_ids(root) - _pending_omission_block_ids(root)
+        )
+        queued_ids: list[str] = []
+        for block_id in candidates:
+            block = _block_by_id(root, block_id)
+            text = str(block.get("text") or "")
+            omission_actions.apply_omission_action(
+                root,
+                block_id=block_id,
+                omission_id=omission_actions.make_omission_id(block_id, text),
+                status="needs_extraction",
+                reason="Queued by agent-policy-v2 (batch); semantic extraction requires an LLM-capable worker.",
+                actor="agent-loop",
+                expected_source_fingerprint=omission_actions.omission_source_fingerprint(block_id, text),
+            )
+            queued_ids.append(block_id)
+    if not queued_ids:
+        return {
+            "status": "skipped",
+            "summary": "No unqueued coverage gaps remain; nothing was appended.",
+            "details": {"queued_block_ids": []},
+        }
+    return {
+        "status": "ok",
+        "summary": (
+            f"Queued {len(queued_ids)} coverage gaps for extraction; "
+            "zero-LLM mode did not execute semantic resampling."
+        ),
+        "details": {"queued_block_ids": queued_ids},
     }
 
 
@@ -104,6 +165,8 @@ def execute_action(out_dir: Path, action: str, state: "AnalysisState") -> dict[s
     action = str(action or "").strip()
     if action.startswith("resample_section:"):
         return resample_section(out_dir, action.split(":", 1)[1], allow_llm=False)
+    if action == "queue_all_gaps":
+        return queue_all_gaps(out_dir)
     if action.startswith("recheck:"):
         return recheck(out_dir, action.split(":", 1)[1])
     if action == "ask_clarification":
