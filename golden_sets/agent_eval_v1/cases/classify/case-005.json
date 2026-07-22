@@ -1,0 +1,22 @@
+{
+  "case_id": "classify-005",
+  "category": "classify",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": ["T2-ANON-COMP-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The supplier shall provide a valid type certificate according to STN EN 62053-22.",
+    "context": "Qualification documents"
+  },
+  "expected": {
+    "verdict": "compliance",
+    "rationale": "The obligation requests a certificate deliverable rather than product behavior.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from the compliance-routing remediation evidence."
+}

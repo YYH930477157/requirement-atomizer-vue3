@@ -1,0 +1,22 @@
+{
+  "case_id": "classify-001",
+  "category": "classify",
+  "source": {
+    "doc_ref": "ABNT-NBR-16968-ANON",
+    "block_ids": ["ABNT-ANON-SW-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall support the xDLMS GET service for reading registered values.",
+    "context": "Communication profile / application services"
+  },
+  "expected": {
+    "verdict": "software",
+    "rationale": "The obligation defines protocol behavior implemented by meter software.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from the protocol-service regression family."
+}

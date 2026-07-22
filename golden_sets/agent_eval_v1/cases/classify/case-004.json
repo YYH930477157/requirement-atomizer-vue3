@@ -1,0 +1,22 @@
+{
+  "case_id": "classify-004",
+  "category": "classify",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": ["T2-ANON-HW-02"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The enclosure shall provide IP54 protection during normal operation.",
+    "context": "Environmental protection"
+  },
+  "expected": {
+    "verdict": "hardware",
+    "rationale": "Ingress protection is a physical enclosure requirement.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Known rule-layer gap: the current hardware vocabulary does not include enclosure or IP rating."
+}

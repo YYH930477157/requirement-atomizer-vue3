@@ -1,0 +1,22 @@
+{
+  "case_id": "hallucination-001",
+  "category": "hallucination",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": ["T3-ANON-HALL-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall support remote firmware update.",
+    "context": "Rejected candidate: The update is performed through OBIS 0-0:44.1.0.255."
+  },
+  "expected": {
+    "verdict": "reject",
+    "rationale": "The candidate invents a structured identifier that is absent from the source.",
+    "forbidden": ["0-0:44.1.0.255"],
+    "must_ask_questions": []
+  },
+  "notes": "Transcribed from the fabricated-code regression in tests/test_ai_extract.py."
+}

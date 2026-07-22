@@ -818,6 +818,8 @@ class ChainAndManifestTests(unittest.TestCase):
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
         from parsers.pdf_parser import PDF_TEXT_REPAIR_VERSION, text_repair_vocabulary_fingerprint
 
+        # Future agent stages have a separate policy suffix. Keep this current-stage snapshot
+        # unchanged so adding the Phase 0 anchor cannot invalidate existing cached outputs.
         expected = {
             "atomize": (
                 f"atomize+{PDF_TEXT_REPAIR_VERSION}"

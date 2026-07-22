@@ -1,0 +1,22 @@
+{
+  "case_id": "hallucination-002",
+  "category": "hallucination",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": ["T3-ANON-HALL-02"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall detect leakage at 5 l/h.",
+    "context": "Rejected candidate: Leakage is detected at 1 l/h."
+  },
+  "expected": {
+    "verdict": "reject",
+    "rationale": "The candidate changes a source-backed numeric threshold.",
+    "forbidden": ["1 l/h"],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from the numeric-pairing drift regression."
+}

@@ -1,0 +1,22 @@
+{
+  "case_id": "must-ask-001",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": ["T2-ANON-ASK-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The load profile shall be recorded periodically.",
+    "context": "No interval, channel list, or retention period is stated in adjacent blocks."
+  },
+  "expected": {
+    "verdict": "ask",
+    "rationale": "The source requires recording but omits parameters needed for an implementable profile.",
+    "forbidden": ["15-minute interval", "90-day retention"],
+    "must_ask_questions": ["What is the integration interval?", "Which channels are recorded?", "What retention period is required?"]
+  },
+  "notes": "A model must expose missing parameters instead of inserting conventional defaults."
+}

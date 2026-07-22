@@ -1,0 +1,22 @@
+{
+  "case_id": "classify-007",
+  "category": "classify",
+  "source": {
+    "doc_ref": "ABNT-NBR-16968-ANON",
+    "block_ids": ["ABNT-ANON-NR-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "This section describes terms used throughout the document.",
+    "context": "Terms and definitions"
+  },
+  "expected": {
+    "verdict": "non_requirement",
+    "rationale": "The sentence introduces explanatory content and contains no normative obligation.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized section-introduction example."
+}

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://requirement-atomizer.local/schemas/agent_eval_case.schema.json",
+  "title": "Requirement Atomizer agent evaluation case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["case_id", "category", "source", "input", "expected"],
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "pattern": "^(classify|grouping|must-ask|hallucination)-[0-9]{3}$"
+    },
+    "category": {
+      "enum": ["classify", "grouping", "must_ask", "hallucination"]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["doc_ref", "block_ids", "origin", "curated_by", "curated_at"],
+      "properties": {
+        "doc_ref": {"type": "string", "minLength": 1},
+        "block_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "origin": {"enum": ["real", "anonymized_rewrite"]},
+        "curated_by": {"type": "string", "minLength": 1},
+        "curated_at": {"type": "string", "format": "date"}
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "context"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "context": {"type": "string"}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "rationale", "forbidden", "must_ask_questions"],
+      "properties": {
+        "verdict": {"type": "string", "minLength": 1},
+        "group_key": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "forbidden": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "must_ask_questions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "notes": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"category": {"const": "classify"}}},
+      "then": {
+        "properties": {
+          "expected": {
+            "properties": {
+              "verdict": {
+                "enum": ["software", "hardware", "compliance", "non_requirement"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"category": {"const": "grouping"}}},
+      "then": {"properties": {"expected": {"required": ["group_key"]}}}
+    },
+    {
+      "if": {"properties": {"category": {"const": "must_ask"}}},
+      "then": {
+        "properties": {
+          "expected": {
+            "properties": {"must_ask_questions": {"minItems": 1}}
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"category": {"const": "hallucination"}}},
+      "then": {
+        "properties": {
+          "expected": {
+            "properties": {
+              "verdict": {"const": "reject"},
+              "forbidden": {"minItems": 1}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -12,7 +12,13 @@ ratomizer export --out DIR --format md|csv [--status all|accepted|expert_pending
 ratomizer compose --out DIR [--quiet | --verbose]
 ratomizer analyze --out DIR [--template FILE.xlsx] [--llm-route stub|openai_compatible] [--quiet | --verbose]
 ratomizer --version
+python agent_eval.py --eval-dir DIR
 ```
+
+`agent_eval.py` is the Phase 0 deterministic evaluation runner. It validates every case against
+`schemas/agent_eval_case.schema.json`, scores only the current rule-based classification cases,
+and reports grouping, must-ask, and hallucination cases as schema-only until later agent phases.
+It never calls an LLM. Missing/empty datasets return exit 2; malformed cases return exit 3.
 
 `analyze` runs the requirements analysis agent over a reviewed output directory (requires `ai_requirements.jsonl` produced by AI extraction; missing input is an input error, exit 2 semantics via error envelope). It writes `software_requirements.xlsx`, `engineering_analysis.json`, `hardware_items.md`, and `co_design_items.md`. An explicit `--template` path must exist.
 
@@ -118,6 +124,12 @@ Review output files:
 - `review_states.jsonl`
 - `review_state_events.jsonl`
 - `llm_review_cache.jsonl` when `openai_compatible` route is used
+
+Agent Phase 0 contracts:
+
+- `golden_sets/agent_eval_v1/manifest.json` stores the deterministic classification baseline.
+- `schemas/decide_trace.schema.json` freezes the future decision trace row format.
+- `decide_trace.jsonl` is reserved for Phase 1 and is not produced by the Phase 0 evaluator.
 
 Export output files:
 

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://requirement-atomizer.local/schemas/decide_trace.schema.json",
+  "title": "Requirement Atomizer agent decision trace",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "trace_version",
+    "run_id",
+    "iteration",
+    "ts",
+    "policy_version",
+    "state_digest",
+    "candidates",
+    "action",
+    "decider",
+    "reason",
+    "budget",
+    "result"
+  ],
+  "properties": {
+    "trace_version": {"const": "decide-trace-v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "iteration": {"type": "integer", "minimum": 1},
+    "ts": {"type": "string", "format": "date-time"},
+    "policy_version": {"const": "agent-policy-v0"},
+    "state_digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["counts", "ready_gate", "blocked_reasons"],
+      "properties": {
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requirements", "coverage_gaps", "open_questions"],
+          "properties": {
+            "requirements": {"type": "integer", "minimum": 0},
+            "coverage_gaps": {"type": "integer", "minimum": 0},
+            "open_questions": {"type": "integer", "minimum": 0}
+          }
+        },
+        "ready_gate": {"enum": ["pass", "blocked"]},
+        "blocked_reasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "action": {"type": "string", "minLength": 1},
+    "decider": {"enum": ["rule", "llm"]},
+    "reason": {"type": "string", "minLength": 1},
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["iterations_used", "iterations_max", "tokens_used", "tokens_max"],
+      "properties": {
+        "iterations_used": {"type": "integer", "minimum": 0},
+        "iterations_max": {"type": "integer", "minimum": 1},
+        "tokens_used": {"type": "integer", "minimum": 0},
+        "tokens_max": {"type": "integer", "minimum": 0}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary"],
+      "properties": {
+        "status": {"enum": ["ok", "error", "skipped"]},
+        "summary": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "case_id": "grouping-003",
+  "category": "grouping",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": ["T2-ANON-GRP-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The device shall detect removal of the terminal cover.",
+    "context": "Tamper detection"
+  },
+  "expected": {
+    "verdict": "same_group",
+    "group_key": "terminal-cover-event",
+    "rationale": "Detection is the trigger behavior of the terminal-cover event function.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Schema-only in Phase 0; paired with grouping-004."
+}

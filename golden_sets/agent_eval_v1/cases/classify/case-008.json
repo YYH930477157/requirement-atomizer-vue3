@@ -1,0 +1,22 @@
+{
+  "case_id": "classify-008",
+  "category": "classify",
+  "source": {
+    "doc_ref": "ABNT-NBR-16968-ANON",
+    "block_ids": ["ABNT-ANON-NR-02"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "Figure 7 - Communication architecture",
+    "context": "Figure caption"
+  },
+  "expected": {
+    "verdict": "non_requirement",
+    "rationale": "A figure caption is document structure, not an implementable obligation.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized caption false-positive control."
+}

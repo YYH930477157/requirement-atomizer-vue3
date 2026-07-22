@@ -1,0 +1,22 @@
+{
+  "case_id": "must-ask-003",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": ["T3-ANON-ASK-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall support secure remote firmware upgrade.",
+    "context": "No authentication, signature, rollback, or interruption behavior is specified."
+  },
+  "expected": {
+    "verdict": "ask",
+    "rationale": "The word secure does not define the controls needed to implement or verify upgrade behavior.",
+    "forbidden": ["ECDSA P-256", "dual-bank rollback", "OBIS 0-0:44.1.0.255"],
+    "must_ask_questions": ["How is an upgrade package authenticated?", "What happens after interruption or failed verification?", "Is rollback required?"]
+  },
+  "notes": "Pairs with the fabricated-OBIS hallucination regression."
+}

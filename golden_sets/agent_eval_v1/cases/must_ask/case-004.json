@@ -1,0 +1,22 @@
+{
+  "case_id": "must-ask-004",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": ["T2-ANON-ASK-02"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall support multiple tariffs.",
+    "context": "No tariff count, calendar structure, switching priority, or exceptional-day behavior is stated."
+  },
+  "expected": {
+    "verdict": "ask",
+    "rationale": "Multi-tariff capability is required, but the source omits the configuration envelope.",
+    "forbidden": ["four tariffs", "automatic daylight-saving adjustment"],
+    "must_ask_questions": ["How many tariffs are required?", "Which calendar and day types must be supported?", "How are overlapping switching rules resolved?"]
+  },
+  "notes": "A conventional four-tariff design must not be treated as source-backed."
+}

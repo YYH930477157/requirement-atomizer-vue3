@@ -1,0 +1,22 @@
+{
+  "case_id": "classify-006",
+  "category": "classify",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": ["T2-ANON-COMP-02"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall be approved according to STN EN 62053-22 before delivery.",
+    "context": "Qualification"
+  },
+  "expected": {
+    "verdict": "compliance",
+    "rationale": "Approval against a named standard is a pre-delivery compliance obligation.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Known rule-layer gap: an instrument reference alone does not trigger current compliance phrases."
+}

@@ -933,9 +933,12 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertIn("PyYAML>=6.0.0", dependencies)
         self.assertIn("openpyxl>=3.1.0", dependencies)
         self.assertIn("pdfplumber>=0.11", dependencies)
+        self.assertIn("jsonschema>=4.23.0", dependencies)
         self.assertIn("engineering_composer", py_modules)
         self.assertIn("desktop_backend", py_modules)
         self.assertIn("llm_client", py_modules)
+        for module in ("agent_eval", "agent_policy", "decide_trace"):
+            self.assertIn(module, py_modules)
         for module in REQUIREMENTS_ANALYSIS_MODULES:
             self.assertIn(module, py_modules)
         self.assertNotIn("kb_api", py_modules)

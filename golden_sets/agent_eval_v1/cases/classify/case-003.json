@@ -1,0 +1,22 @@
+{
+  "case_id": "classify-003",
+  "category": "classify",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": ["T2-ANON-HW-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall use a replaceable battery with a service life of at least ten years.",
+    "context": "Auxiliary power"
+  },
+  "expected": {
+    "verdict": "hardware",
+    "rationale": "Battery construction and service life constrain a physical component.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized hardware requirement; the duration is retained only as source evidence."
+}

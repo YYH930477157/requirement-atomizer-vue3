@@ -1,0 +1,23 @@
+{
+  "case_id": "grouping-001",
+  "category": "grouping",
+  "source": {
+    "doc_ref": "ABNT-NBR-16968-ANON",
+    "block_ids": ["ABNT-ANON-GRP-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall capture load-profile values at the configured integration period.",
+    "context": "Load profile behavior"
+  },
+  "expected": {
+    "verdict": "same_group",
+    "group_key": "load-profile-recording",
+    "rationale": "Capture cadence is part of the load-profile recording function.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Schema-only in Phase 0; paired with grouping-002."
+}

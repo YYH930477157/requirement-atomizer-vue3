@@ -8,6 +8,8 @@ Python pipeline that atomizes technical standards (DOCX/XLSX/PDF) into reviewabl
 
 Key entrypoints: `cli.py` (`ratomizer`), `atomize.py`, `api_server.py` (local review API), `desktop_tasks.py` (Electron task bridge). Machine-facing CLI contract: `docs/cli-contract.md` (exit codes 0/2/3/4, stdout = UTF-8 JSON envelope).
 
+Agent Phase 0: `agent_eval.py` runs `golden_sets/agent_eval_v1`; `decide_trace.py` validates/appends the future `decide_trace.jsonl`; the cache lineage anchor is `agent_policy.AGENT_POLICY_VERSION`.
+
 ## Test & verify commands
 
 Backend (run from repo root):

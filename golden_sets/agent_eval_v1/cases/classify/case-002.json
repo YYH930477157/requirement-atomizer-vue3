@@ -1,0 +1,22 @@
+{
+  "case_id": "classify-002",
+  "category": "classify",
+  "source": {
+    "doc_ref": "ABNT-NBR-16968-ANON",
+    "block_ids": ["ABNT-ANON-SW-02"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall record each power-failure event and expose the event log through the profile.",
+    "context": "Event handling"
+  },
+  "expected": {
+    "verdict": "software",
+    "rationale": "Event recording and profile exposure are software behaviors.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from the event-log semantic baseline."
+}

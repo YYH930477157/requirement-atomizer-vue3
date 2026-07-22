@@ -1,0 +1,22 @@
+{
+  "case_id": "must-ask-002",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST18-ANON",
+    "block_ids": ["T18-ANON-ASK-01"],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The relay shall disconnect the load when the configured limit is exceeded.",
+    "context": "The document does not define the limit, persistence time, or reconnection behavior."
+  },
+  "expected": {
+    "verdict": "ask",
+    "rationale": "Threshold and state-transition details are required but absent from the source.",
+    "forbidden": ["disconnect after 60 seconds", "automatic reconnection after 5 minutes"],
+    "must_ask_questions": ["Which limit triggers disconnection?", "How long must the limit persist?", "How is reconnection authorized?"]
+  },
+  "notes": "Derived from clarification traps around relay state handling."
+}

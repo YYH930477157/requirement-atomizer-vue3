@@ -16,6 +16,7 @@ from threading import RLock
 from typing import Any, Iterator
 
 import ai_extract
+from agent_policy import AGENT_POLICY_VERSION
 from assemble_spec import assemble
 from atomize import run_atomizer_pipeline
 from engineering_composer import compose_engineering_requirements, write_engineering_requirements
@@ -502,6 +503,10 @@ _STAGE_BASE_PRODUCERS = {
 def stage_producer(stage: str) -> str:
     """阶段 → 生产者版本戳（产物血统：今天拿 v9 数据当新结果看的事故，靠它绝迹）。"""
     producer = _STAGE_BASE_PRODUCERS.get(stage, stage)
+    # Phase 0 reserves policy lineage for future agent stages without invalidating any
+    # current pipeline cache. There is intentionally no agent stage in CHAIN_ORDER yet.
+    if stage.startswith("agent-"):
+        producer = f"{producer}+{AGENT_POLICY_VERSION}"
     try:
         if stage == "ai-extract":
             # 版本戳必须覆盖全部影响产物的代码层；否则 guards/verify 升级后

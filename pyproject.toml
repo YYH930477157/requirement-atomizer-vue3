@@ -13,6 +13,7 @@ dependencies = [
   "PyYAML>=6.0.0",
   "openpyxl>=3.1.0",
   "pdfplumber>=0.11",
+  "jsonschema>=4.23.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +37,8 @@ ratomizer-gui = "gui.app:main"
 
 [tool.setuptools]
 py-modules = [
+  "agent_eval",
+  "agent_policy",
   "ai_extract",
   "merged_consistency",
   "api_server",
@@ -64,6 +67,7 @@ py-modules = [
   "output_writer",
   "pattern_engine",
   "desktop_backend",
+  "decide_trace",
   "ai_review_actions",
   "doc_annotation_export",
   "requirement_schema",
