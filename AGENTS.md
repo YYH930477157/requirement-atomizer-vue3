@@ -8,7 +8,7 @@ Python pipeline that atomizes technical standards (DOCX/XLSX/PDF) into reviewabl
 
 Key entrypoints: `cli.py` (`ratomizer`), `atomize.py`, `api_server.py` (local review API), `desktop_tasks.py` (Electron task bridge). Machine-facing CLI contract: `docs/cli-contract.md` (exit codes 0/2/3/4, stdout = UTF-8 JSON envelope).
 
-Agent Phase 0: `agent_eval.py` runs `golden_sets/agent_eval_v1`; `decide_trace.py` validates/appends the future `decide_trace.jsonl`; the cache lineage anchor is `agent_policy.AGENT_POLICY_VERSION`.
+Agent Phase 0/1: `agent_eval.py` runs `golden_sets/agent_eval_v1`; `agent_state.py` builds a read-only artifact view; `agent_loop.py` runs the bounded deterministic decider; `decide_trace.py` validates/appends `decide_trace.jsonl`. The cache lineage anchor is `agent_policy.AGENT_POLICY_VERSION` (`agent-policy-v1`). Phase 1 is deliberately outside `CHAIN_ORDER`.
 
 ## Test & verify commands
 
@@ -42,6 +42,7 @@ README's `python -m pytest -q` is stale; trust the unittest command above.
 - Machine-local test assets (this machine only; parameterize if tests ever run elsewhere): `C:\Users\YYHwudi\Desktop\Canna-29\` (ABNT docx/pdf, Blue Book part 1/2 PDFs, company template).
 - Anti-hallucination discipline: structured fields (OBIS, class_id, access) are deterministic-join only; LLM enrichment fills narrative fields only, fabricated codes/numbers are rejected. "Better to miss than to guess" (宁漏勿错).
 - **Provenance is never falsified:** route degradation must record `route_requested` truthfully; stub output must never be labeled as LLM output; cached/merged results keep their true origin.
+- **Phase 1 is zero-LLM:** the rule loop has `tokens_max=0`. Its resample action queues the current omission as `needs_extraction` and records `skipped`; only an explicit external `allow_llm=True` tool call may delegate to `targeted_reextract`. A queued action must never be reported as completed extraction.
 - **Shared state files** (`review_states.jsonl`, `ai_review_states.jsonl`, `run_manifest.json`, append-only caches) require cross-process lock + atomic replace with `PermissionError` retry (Windows readers block `os.replace`). Copy the existing pattern in `review_state.py` / `ai_review_actions.py` / `desktop_tasks.py`; never bare-append without a lock.
 
 ## Environment gotchas

@@ -38,7 +38,10 @@ ratomizer-gui = "gui.app:main"
 [tool.setuptools]
 py-modules = [
   "agent_eval",
+  "agent_loop",
   "agent_policy",
+  "agent_state",
+  "agent_tools",
   "ai_extract",
   "merged_consistency",
   "api_server",

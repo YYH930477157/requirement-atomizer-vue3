@@ -1,6 +1,6 @@
 # Agent 化 Phase 1 实施规格：有边界的决策循环（agentic triage）
 
-状态：待实施（实施者另指派；审核人：本方案作者）
+状态：已实施于 `codex/agent-phase1`，待审核与主检出验收
 日期：2026-07-22
 前置：`docs/agent-phase0-spec.md`（已完成，main `4161f18`）；本规格冻结的接口以该交付为准
 
@@ -9,6 +9,14 @@
 Phase 0 冻结了评测集、决策轨迹格式和版本锚点。Phase 1 在此之上实现**最小可用的
 决策循环**：给定一次已跑完的抽取结果（`out/<run>/`），agent 在硬预算内自主执行
 "补抽 → 复核 → 提问 → 停止"四类动作，直到 READY 门通过或预算耗尽。
+
+> 实施裁定（2026-07-22）：冻结规格同时要求复用 `targeted_reextract` 和全程
+> `tokens_max=0`/不调 LLM，但该现有入口强制 `openai_compatible` 并实际调用模型，二者
+> 不能同时成立。Phase 1 不伪造“已补抽”：规则命中 `resample_section` 时只在现有
+> extraction operation lock 内登记 `needs_extraction`，轨迹如实记 `skipped`；薄封装仅供
+> 外部显式 `allow_llm=True` 时委托现有入口。`recheck` 同理只冻结工具契约，规则 v1 不选择，
+> 因现有语义复核没有可单独发布的零 LLM 入口而如实跳过。真实语义执行留给后续有 LLM
+> 预算且另行冻结的阶段。
 
 铁律不变（违反即打回）：
 
