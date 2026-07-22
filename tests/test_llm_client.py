@@ -259,6 +259,41 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(len(service.requests), 2)
         self.assertIn("Only output valid JSON", service.requests[1]["messages"][-1]["content"])
 
+    def test_chat_json_with_meta_aggregates_usage_across_calls(self) -> None:
+        """usage 汇聚覆盖首发+修复重发（Phase 1.5 tokens 口径：全部决策底层调用）。"""
+        from llm_client import chat_json_with_meta
+
+        bad = {"choices": [{"message": {"content": "not json"}}],
+               "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}
+        good = {"choices": [{"message": {"content": '{"ok": true}'}}],
+                "usage": {"prompt_tokens": 14, "completion_tokens": 3, "total_tokens": 17}}
+        with MockOpenAIService([{"body": bad}, {"body": good}]) as service:
+            data, meta = chat_json_with_meta(
+                LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="", timeout_s=2, max_retries=0),
+                "system",
+                "user",
+            )
+
+        self.assertEqual(data, {"ok": True})
+        self.assertEqual(len(service.requests), 2)
+        self.assertEqual(meta["usage"], {"prompt_tokens": 24, "completion_tokens": 5, "total_tokens": 29})
+        self.assertTrue(meta["usage_complete"])
+
+    def test_chat_json_with_meta_marks_missing_usage_as_partial(self) -> None:
+        """端点不返回 usage → 计 0 且 usage_complete=False（不得估算冒充精确值）。"""
+        from llm_client import chat_json_with_meta
+
+        body = {"choices": [{"message": {"content": '{"ok": true}'}}]}
+        with MockOpenAIService([{"body": body}]) as service:
+            _data, meta = chat_json_with_meta(
+                LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="", timeout_s=2, max_retries=0),
+                "system",
+                "user",
+            )
+
+        self.assertEqual(meta["usage"]["total_tokens"], 0)
+        self.assertFalse(meta["usage_complete"])
+
     def test_bad_json_after_repair_raises_response_error(self) -> None:
         with MockOpenAIService(
             [

@@ -198,16 +198,52 @@ class LLMClientConfig:
     max_retries: int = 3
 
 
-def chat_json(config: LLMClientConfig, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+def chat_json(
+    config: LLMClientConfig,
+    system_prompt: str,
+    user_prompt: str,
+    _usage_sink: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-    return chat_json_messages(config, messages)
+    return chat_json_messages(config, messages, _usage_sink=_usage_sink)
 
 
-def chat_json_messages(config: LLMClientConfig, messages: list[dict[str, str]]) -> dict[str, Any]:
-    content = _chat_content(config, messages)
+def chat_json_with_meta(
+    config: LLMClientConfig, system_prompt: str, user_prompt: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """chat_json + 全底层调用（首发/修复/截断升级重发）聚合的 token 用量。
+
+    返回 (data, meta)。meta = {"usage": {prompt_tokens, completion_tokens, total_tokens},
+    "usage_complete": bool}——端点未返回 usage 的调用计 0 且 usage_complete=False
+    （不得估算冒充精确值,见 Phase 1.5 tokens 口径）。"""
+    usage_sink: list[dict[str, Any]] = []
+    data = chat_json(config, system_prompt, user_prompt, _usage_sink=usage_sink)
+    prompt = sum(int(u.get("prompt_tokens") or 0) for u in usage_sink)
+    completion = sum(int(u.get("completion_tokens") or 0) for u in usage_sink)
+    total = sum(int(u.get("total_tokens") or 0) for u in usage_sink)
+    if not total and (prompt or completion):
+        total = prompt + completion
+    complete = bool(usage_sink) and all(
+        isinstance(u.get("total_tokens"), int) or (
+            isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int)
+        )
+        for u in usage_sink
+    )
+    return data, {
+        "usage": {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total},
+        "usage_complete": complete,
+    }
+
+
+def chat_json_messages(
+    config: LLMClientConfig,
+    messages: list[dict[str, str]],
+    _usage_sink: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    content = _chat_content(config, messages, _usage_sink=_usage_sink)
     try:
         return _loads_json_content(content)
     except (json.JSONDecodeError, LLMResponseError) as first_error:
@@ -222,7 +258,7 @@ def chat_json_messages(config: LLMClientConfig, messages: list[dict[str, str]]) 
                 ),
             },
         ]
-        repaired_content = _chat_content(config, repair_messages)
+        repaired_content = _chat_content(config, repair_messages, _usage_sink=_usage_sink)
         try:
             return _loads_json_content(repaired_content)
         except json.JSONDecodeError as second_error:
@@ -254,7 +290,11 @@ def _reset_json_mode_memory() -> None:
         _JSON_MODE_UNSUPPORTED.clear()
 
 
-def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> str:
+def _chat_content(
+    config: LLMClientConfig,
+    messages: list[dict[str, str]],
+    _usage_sink: list[dict[str, Any]] | None = None,
+) -> str:
     payload = {
         "model": config.model,
         "messages": messages,
@@ -281,6 +321,9 @@ def _chat_content(config: LLMClientConfig, messages: list[dict[str, str]]) -> st
                 response = _post_json(config, payload)
         else:
             response = _post_json(config, payload)
+        if _usage_sink is not None:
+            usage = response.get("usage")
+            _usage_sink.append(usage if isinstance(usage, dict) else {})
         try:
             choice = response["choices"][0]
             content = choice["message"]["content"]

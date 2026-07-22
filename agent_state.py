@@ -8,7 +8,6 @@ from typing import Any
 
 import clarification_report
 from ai_review_actions import source_ai_requirement_id
-from clarification_check_states import read_clarification_check_states
 from desktop_tasks import read_run_manifest
 from io_utils import read_jsonl
 from merged_consistency import coverage_denominator_blocks, layered_coverage
@@ -245,59 +244,9 @@ def _coverage_gap_rows(coverage: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _unresolved_hard_questions(root: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    entries = [
-        row for row in clarification_report.collect_questions(root)
-        if row.get("tier", clarification_report.TIER_HARD) == clarification_report.TIER_HARD
-    ]
-    answers = clarification_report.load_answers(root)
-    answers_by_id = {
-        str(row.get("clarification_id") or ""): row
-        for row in answers.values()
-        if str(row.get("clarification_id") or "")
-    }
-    check_states = read_clarification_check_states(root)
-    unresolved: list[dict[str, Any]] = []
-    resolved = 0
-    resolved_internal = 0
-    for entry in entries:
-        if entry.get("audience") == clarification_report.AUDIENCE_INTERNAL:
-            state = check_states.get(str(entry.get("clarification_id") or "")) or {}
-            action = str(state.get("state") or state.get("action") or "")
-            current = bool(state.get("evidence_fingerprint")) and str(
-                state.get("evidence_fingerprint")
-            ) == str(entry.get("evidence_fingerprint") or "")
-            if action == "verified_ok" and current:
-                resolved_internal += 1
-                continue
-            unresolved.append(entry)
-            continue
-
-        answer = answers_by_id.get(str(entry.get("clarification_id") or ""))
-        if answer is None:
-            answer = answers.get((entry.get("source_id") or "", entry.get("question") or ""))
-        current = bool(answer) and str(answer.get("evidence_fingerprint") or "") == str(
-            entry.get("evidence_fingerprint") or ""
-        )
-        if answer and answer.get("adopted", True) and current:
-            resolved += 1
-            continue
-        unresolved.append(entry)
-
-    blocking = sum(
-        1 for row in unresolved
-        if row.get("blocker_level") == clarification_report.BLOCKER_BLOCKING
-    )
-    internal = sum(
-        1 for row in unresolved
-        if row.get("audience") == clarification_report.AUDIENCE_INTERNAL
-    )
-    return unresolved, {
-        "blocking": blocking,
-        "important": len(unresolved) - blocking,
-        "internal": internal,
-        "resolved_internal": resolved_internal,
-        "resolved": resolved + resolved_internal,
-    }
+    """委托 clarification_report.unresolved_hard_questions——「必答未解决」口径单一实现
+    （Phase 1.5 收敛：此前此处为第二份实现，存在 READY 门口径分裂风险）。"""
+    return clarification_report.unresolved_hard_questions(root)
 
 
 def _resolve_run_id(root: Path, manifest: dict[str, Any]) -> str:

@@ -21,12 +21,26 @@ python agent_loop.py --out-dir DIR [--max-iterations N]
 and reports grouping, must-ask, and hallucination cases as schema-only until later agent phases.
 It never calls an LLM. Missing/empty datasets return exit 2; malformed cases return exit 3.
 
-`agent_loop.py` is the Phase 1 bounded rule-decider (`agent-policy-v2`). It reloads a read-only
+`agent_loop.py` is the bounded agent decision loop (`agent-policy-v3`). It reloads a read-only
 aggregate view of an existing extraction directory before each decision, appends every decision
 to `decide_trace.jsonl`, and writes `agent_loop_summary.json`. The default iteration budget is
-10 and the accepted range is 1 through 50; `tokens_max` and `tokens_used` are always zero. The
-frozen priority is READY -> stop, unqueued gaps -> `queue_all_gaps`, unresolved hard question ->
-`ask_clarification`, otherwise stop. Phase 1 never calls an LLM or the network.
+10 and the accepted range is 1 through 50. The frozen priority is READY -> stop, unqueued gaps
+-> `queue_all_gaps`, unresolved hard question -> `ask_clarification`, otherwise stop.
+
+`--decider rule` (default) is the Phase 1 zero-LLM behavior: `tokens_max`/`tokens_used` stay
+zero and no network calls happen. `--decider llm` (Phase 1.5, opt-in, never the default) asks
+the model to pick one candidate per iteration; any LLM failure, invalid pick, or exhausted
+`--max-tokens` budget (default 20000) falls back to the rule decider for that iteration, and
+each trace row truthfully records which mechanism decided (`decider: rule|llm`). `tokens_used`
+counts decision calls only (initial + JSON-repair + truncation-escalation), taken from endpoint
+`usage`; endpoints without usage report 0 and mark `token_accounting: "partial"` — never an
+estimate. `--decider llm` without a configured endpoint or API key exits 2.
+
+`agent_compare.py --out-dir DIR` (Phase 1.5) copies the directory twice and runs both deciders
+side by side without touching the source, reporting iterations, termination, readiness, action
+sequences, `decider_usage`, tokens, and sequence agreement. Without an API key the rule side
+still runs and the report marks `llm_ran: false` — a rule-only result is never presented as a
+comparison.
 
 `queue_all_gaps` registers every currently uncovered, not-yet-queued block as
 `needs_extraction` in one locked batch (per-block queueing exhausted the iteration budget on

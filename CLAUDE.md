@@ -45,6 +45,14 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-22）——Agent 化 Phase 1.5：LLM 决策器对比实验（分支待审核）
+
+- **口径先行**：tokens 计量冻结为"仅决策调用"（含 JSON 修复/截断升级重发，usage 缺失计 0 标 partial，不估算）；澄清"必答未解决"判定收敛为 `clarification_report.unresolved_hard_questions` 单一实现，`agent_state` 委托调用（审核遗留 #1/#4 闭环，`run_report` 行为零变化靠既有测试锁死）。
+- **LLM 决策器（非默认）**：`agent_loop --decider llm` 逐轮让模型从候选中选动作；非法选择/调用失败/超 `--max-tokens`（默认 20000）当轮回退规则决策，轨迹 `decider` 逐行如实标 rule/llm；无 key 响亮退出 2，不伪造 stub。汇总新增 `decider_usage`/`token_accounting`。
+- **对比器**：`agent_compare.py --out-dir DIR` 复制目录两版分跑 rule/llm，输出迭代/终止/readiness/动作序列/tokens/一致率；无 key 时 rule 照跑、如实标 `llm_ran: false`，不拿单侧结果冒充对比。
+- **llm_client 最小增量**：新增 `chat_json_with_meta`（usage 汇聚首发+修复+升级重发），既有 `chat_json` 签名兼容不变。`AGENT_POLICY_VERSION` 升 `agent-policy-v3`，schema const/评测 manifest 随行（基线 0.625 不变）。
+- **验证**：新增 17 tests（决策器/回退/预算/对比/usage 汇聚/口径收敛）；spec `docs/agent-phase1.5-spec.md` 冻结。
+
 ## 重大更新（2026-07-22）——agent-policy-v2：决策循环去重与批量登记（分支待审核）
 
 - **缺陷实证（test3 真实产物 dogfood）**：v1 循环两个真实问题——①逐块登记 26 个覆盖缺口耗尽 10 轮预算，`ask_clarification` 从未执行；②跨运行重复登记：同一 out/ 连跑两次，`omission_states.jsonl` 20 行仅 10 个唯一 block（审核遗留项 2 从"补测试"升级为行为缺陷）。
