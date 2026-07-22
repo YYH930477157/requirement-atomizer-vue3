@@ -129,6 +129,11 @@ READY_MAX_QUESTIONS = 30
 READY_MIN_COVERAGE = 60.0
 
 
+def suspicion_policy(reason: str) -> tuple[str, str, str, str, str] | None:
+    """公开只读访问 suspicion 路由表（agent_eval 判定器等外部消费方不得依赖私有名）。"""
+    return _SUSPICION_POLICIES.get(reason)
+
+
 def _hash_payload(payload: Any) -> str:
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

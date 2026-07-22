@@ -1,0 +1,26 @@
+{
+  "case_id": "hallucination-007",
+  "category": "hallucination",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-19"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The visor must be resistant to UV radiation for at least 16 years.",
+    "context": "Rejected candidate: The visor must be resistant to UV radiation for at least 6 years."
+  },
+  "expected": {
+    "verdict": "reject",
+    "rationale": "The candidate shortens a source-backed durability period.",
+    "forbidden": [
+      "6"
+    ],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real visor-durability row."
+}

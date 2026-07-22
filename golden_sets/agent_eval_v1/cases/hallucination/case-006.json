@@ -1,0 +1,26 @@
+{
+  "case_id": "hallucination-006",
+  "category": "hallucination",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": [
+      "T3-ANON-ROW-31"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "Pulse duration is adjustable from 10 ms to 200 ms in 10 ms steps, default 80 ms.",
+    "context": "Rejected candidate: Pulse duration is adjustable from 10 ms to 200 ms in 10 ms steps, default 50 ms."
+  },
+  "expected": {
+    "verdict": "reject",
+    "rationale": "The candidate changes the source-backed default pulse duration.",
+    "forbidden": [
+      "50"
+    ],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real pulse-output row."
+}

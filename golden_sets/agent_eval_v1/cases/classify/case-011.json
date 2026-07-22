@@ -1,0 +1,24 @@
+{
+  "case_id": "classify-011",
+  "category": "classify",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": [
+      "T3-ANON-ROW-4"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall hold a valid type-approval certificate according to Act 157/2018 Coll. and initial verification according to Decree 161/2019 Coll.",
+    "context": "Conformity instruments"
+  },
+  "expected": {
+    "verdict": "compliance",
+    "rationale": "Certificates and decrees are conformity instruments, not R&D requirements.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real conformity row; retained instrument numbers as evidence."
+}

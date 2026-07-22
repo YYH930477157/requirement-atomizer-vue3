@@ -70,9 +70,9 @@ from extract_units import (  # noqa: F401 —— F3 拆分门面：旧名保持�
 )
 from extract_guards import (  # noqa: F401
     _LEFT_BEHIND_MIN, _LEFT_BEHIND_WINDOW, _TESTABLE_HINT_RE, _VAGUE_PHRASES,
-    _foreign_standard_refs, _gram_jaccard, _is_definition_stub, _modal_inflation,
+    foreign_standard_refs, _gram_jaccard, _is_definition_stub, _modal_inflation,
     _multi_value_pairing_risk, _norm_ws, _num_multiset, _produced_text, _req_key,
-    _threshold_desc_mismatch, _vague_acceptance, _values_left_behind, strip_produced_refs,
+    _threshold_desc_mismatch, strip_produced_refs, vague_acceptance, values_left_behind,
 )
 
 LOGGER = logging.getLogger("requirement_atomizer")
@@ -905,7 +905,7 @@ def _move_unsupported_delivery_items(req: dict[str, Any], source_text: str) -> t
         text = str(obligation.get("text") or "").strip()
         unsupported = produced_ints(strip_produced_refs(text)) - allowed
         unsupported_codes = extract_codes(text) - allowed_codes
-        unsupported_refs = _foreign_standard_refs(
+        unsupported_refs = foreign_standard_refs(
             {"compliance_obligations": [obligation]}, source_text
         )
         unsupported_terms = _unsupported_implementation_terms(text, source_text)
@@ -1082,12 +1082,12 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
                 suspicion.append("引用跨段")
             else:
                 suspicion.append("引用非逐字")
-        left_behind = _values_left_behind(req, source)
+        left_behind = values_left_behind(req, source)
         if left_behind:
             suspicion.append("原文数值未带全")
             note = f"原文数值未带全（引句附近 {left_behind} 个数值未进需求，请核对参数清单）"
             _append_note(req, note)
-        vague = _vague_acceptance(req)
+        vague = vague_acceptance(req)
         if vague:
             suspicion.append("验收不可测")
             note = f"验收不可测（空话验收 {len(vague)} 条，如「{vague[0][:40]}」，请给出可判定条件）"
@@ -1118,7 +1118,7 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
                 item["text"] = _soften_modals(item.get("text"))
             suspicion.append("情态升格待核")
             _append_note(req, "情态已按引句校正（引句为 should/建议性表述,强制措辞已软化为「宜」,请复核约束强度）")
-        foreign_refs = _foreign_standard_refs(req, source)
+        foreign_refs = foreign_standard_refs(req, source)
         if foreign_refs:
             suspicion.append("标准号待核")
             _append_note(req, f"标准号待核（{', '.join(foreign_refs[:3])} 不在本节原文,请核对是否张冠李戴）")

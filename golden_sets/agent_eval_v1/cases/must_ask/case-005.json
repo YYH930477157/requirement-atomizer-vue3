@@ -1,0 +1,30 @@
+{
+  "case_id": "must-ask-005",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-112"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter modem shall respond to PING requests from the head-end system in a reasonable time.",
+    "context": "Full-text check: no maximum response time is stated anywhere in the document."
+  },
+  "expected": {
+    "verdict": "ask",
+    "detector": "vague_acceptance",
+    "rationale": "'Reasonable time' is untestable; the response-time bound must be asked, not assumed.",
+    "forbidden": [
+      "30 s",
+      "60 s"
+    ],
+    "must_ask_questions": [
+      "What maximum response time applies to PING responses?"
+    ]
+  },
+  "notes": "Anonymized from a real row whose acceptance included an untestable time phrase."
+}

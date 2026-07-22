@@ -46,6 +46,12 @@
       "properties": {
         "verdict": {"type": "string", "minLength": 1},
         "group_key": {"type": "string", "minLength": 1},
+        "detector": {
+          "enum": [
+            "vague_acceptance", "values_left_behind",
+            "code_drift", "int_drift", "foreign_standard_refs", "opposed_qualifiers"
+          ]
+        },
         "rationale": {"type": "string", "minLength": 1},
         "forbidden": {
           "type": "array",
@@ -85,7 +91,10 @@
       "then": {
         "properties": {
           "expected": {
-            "properties": {"must_ask_questions": {"minItems": 1}}
+            "properties": {
+              "must_ask_questions": {"minItems": 1},
+              "detector": {"enum": ["vague_acceptance", "values_left_behind"]}
+            }
           }
         }
       }
@@ -97,7 +106,10 @@
           "expected": {
             "properties": {
               "verdict": {"const": "reject"},
-              "forbidden": {"minItems": 1}
+              "forbidden": {"minItems": 1},
+              "detector": {
+                "enum": ["code_drift", "int_drift", "foreign_standard_refs", "opposed_qualifiers"]
+              }
             }
           }
         }

@@ -1,0 +1,25 @@
+{
+  "case_id": "grouping-007",
+  "category": "grouping",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-69"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall record average effective voltage and current in 10-minute intervals on each phase.",
+    "context": "Voltage and current average profile"
+  },
+  "expected": {
+    "verdict": "same_group",
+    "group_key": "voltage-current-average-profile",
+    "rationale": "The 10-minute average U/I profile is one function across both tender documents.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real 10-minute U/I average-profile row; paired with grouping-008."
+}

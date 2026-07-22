@@ -1,0 +1,27 @@
+{
+  "case_id": "hallucination-009",
+  "category": "hallucination",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-55"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The internal battery is non-replaceable. The external battery shall be replaceable without opening the main cover.",
+    "context": "Rejected merge: All meter batteries shall be replaceable."
+  },
+  "expected": {
+    "verdict": "reject",
+    "detector": "opposed_qualifiers",
+    "rationale": "The merge erases the opposed replaceability qualifiers of the two battery requirements.",
+    "forbidden": [
+      "All meter batteries shall be replaceable"
+    ],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real dual-battery row with opposed qualifiers."
+}

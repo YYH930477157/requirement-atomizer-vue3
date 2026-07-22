@@ -1,0 +1,25 @@
+{
+  "case_id": "grouping-008",
+  "category": "grouping",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": [
+      "T3-ANON-ROW-49"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall record average voltage and current values in a 10-minute profile.",
+    "context": "Voltage and current average profile"
+  },
+  "expected": {
+    "verdict": "same_group",
+    "group_key": "voltage-current-average-profile",
+    "rationale": "Same 10-minute average U/I profile function as grouping-007 (cross-document pair).",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real 10-minute U/I average-profile row; paired with grouping-007."
+}

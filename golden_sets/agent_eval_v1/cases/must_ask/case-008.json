@@ -1,0 +1,27 @@
+{
+  "case_id": "must-ask-008",
+  "category": "must_ask",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-41"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The dial must be capable of displaying all numbers from zero to nine.",
+    "context": "The dial must be capable of displaying all numbers from zero to nine. Character size for the measured value: min. 8 mm high and min. 4 mm wide. Register values require at least 7 integer digits; dwell time is programmable from 5 s."
+  },
+  "expected": {
+    "verdict": "ask",
+    "detector": "values_left_behind",
+    "rationale": "The display parameter values (8 mm, 4 mm, 7 digits, 5 s) next to the quote never reached the delivered text.",
+    "forbidden": [],
+    "must_ask_questions": [
+      "Which character size, digit count, and dwell-time values apply to the display?"
+    ]
+  },
+  "notes": "Anonymized from a real display-requirements row; values retained as source evidence. OBIS-style identifiers are deliberately not used here: the detector treats clause/identifier numbers as addresses, not values."
+}

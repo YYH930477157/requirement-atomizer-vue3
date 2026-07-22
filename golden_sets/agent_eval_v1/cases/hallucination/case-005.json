@@ -1,0 +1,26 @@
+{
+  "case_id": "hallucination-005",
+  "category": "hallucination",
+  "source": {
+    "doc_ref": "TEST2-TENDER-ANON",
+    "block_ids": [
+      "T2-ANON-ROW-35"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The backlight shall remain active for no more than 60 seconds after a button press.",
+    "context": "Rejected candidate: The backlight shall remain active for no more than 30 seconds after a button press."
+  },
+  "expected": {
+    "verdict": "reject",
+    "rationale": "The candidate halves a source-backed duration.",
+    "forbidden": [
+      "30"
+    ],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real backlight-duration row."
+}

@@ -14,6 +14,7 @@
   },
   "expected": {
     "verdict": "reject",
+    "detector": "opposed_qualifiers",
     "rationale": "The merge erases opposed qualifiers from two distinct battery requirements.",
     "forbidden": ["All batteries shall be field replaceable"],
     "must_ask_questions": []

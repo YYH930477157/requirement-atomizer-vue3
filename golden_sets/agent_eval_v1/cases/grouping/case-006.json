@@ -1,0 +1,25 @@
+{
+  "case_id": "grouping-006",
+  "category": "grouping",
+  "source": {
+    "doc_ref": "TEST3-FAILURE-ANON",
+    "block_ids": [
+      "T3-ANON-ROW-48"
+    ],
+    "origin": "anonymized_rewrite",
+    "curated_by": "Codex",
+    "curated_at": "2026-07-22"
+  },
+  "input": {
+    "text": "The meter shall record the load profile in 24-hour intervals.",
+    "context": "Load profile recording"
+  },
+  "expected": {
+    "verdict": "same_group",
+    "group_key": "load-profile-period-recording",
+    "rationale": "The daily variant shares the same function skeleton as the 15-minute variant.",
+    "forbidden": [],
+    "must_ask_questions": []
+  },
+  "notes": "Anonymized from a real daily load-profile row; paired with grouping-005."
+}
