@@ -532,8 +532,8 @@ def stage_producer(stage: str) -> str:
             producer = (f"{producer}+{ENRICH_PROMPT_VERSION}"
                         f"+{ENRICH_GUARDS_VERSION}")
         elif stage == "requirements-analysis":
-            from requirements_analysis import ANALYZE_PROMPT_VERSION
-            producer = ANALYZE_PROMPT_VERSION
+            from requirements_analysis import ANALYZE_PROMPT_VERSION, UNFOUNDED_RULE_VERSION
+            producer = f"{ANALYZE_PROMPT_VERSION}+{UNFOUNDED_RULE_VERSION}"
         elif stage == "functional-synthesis":
             producer = FUNCTIONAL_SYNTHESIS_VERSION
         elif stage == "export-annotation-html":

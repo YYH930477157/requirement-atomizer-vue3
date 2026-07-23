@@ -25,7 +25,7 @@
 | Phase 1 | 规则决策器 v1 的决策循环：补抽/复核/提问/停止四类动作，硬预算，全程不调 LLM | ✅ 已完成（main `baba522`） |
 | Phase 1.5 | LLM 决策器对比实验：同一批真实 `out/`，rule vs llm 决策器并行跑，用 Phase 0 评测集 + 轨迹回放对比决策质量与成本；只有 llm 显著优于 rule 才允许成为默认 | ✅ 功能已完成（main `5cd03be`）；真实对比数据待有 key 环境跑 `agent_compare` |
 | Phase 2 | Tool-using reviewer：`llm_agents/review_pipeline.yaml` 的 operations 改 function calling，模型审查中自主调 KB/覆盖校验；软件需求按内部模板输出，无依据字段强制"待澄清" | ✅ 已完成（main `9d548a9`；test3 真实验收 10/10） |
-| Phase 3 | Orchestrator：自然语言任务 → 规划 `cli.py` 子命令序列。前两步见效后评估是否需要 | 未开始 |
+| Phase 3 | Orchestrator：自然语言任务 → 规划 `cli.py` 子命令序列 | **搁置**（2026-07-23 用户裁定：Phase 1.5 裁定规则保持默认 + Phase 2 刚上线，编排层增量价值不明显，待 Phase 2 真实项目验证后再议） |
 
 ## 各阶段推进的硬性前置
 

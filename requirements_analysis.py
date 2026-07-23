@@ -42,7 +42,7 @@ SCHEMA_VERSION = "requirements-analysis/v1"
 ANALYZE_PROMPT_VERSION = "analyze-llm-v7"
 # WP2 待澄清规则版本——确定性后处理（拒/无据 → 待澄清 + open_questions 同步）变更必须
 # bump 并进 analyze_enrich_cache 指纹与阶段 producer（AGENTS.md 缓存指纹纪律）
-UNFOUNDED_RULE_VERSION = "analyze-unfounded-v1"
+UNFOUNDED_RULE_VERSION = "analyze-unfounded-v2"  # v2:渲染兜底（clarify_fallback 原始候选标注透出）
 CLARIFY_MARK = "待澄清"
 # WP2 触发面（冻结点 4）：仅富化叙述字段；确定性 join 字段（id/归属/引句/模块）永不标待澄清
 _UNFOUNDED_TEXT_FIELDS = ("software_requirement_text", "hardware_dependency")
@@ -576,7 +576,16 @@ def _software_prompt_parts(
 def _mark_unfounded_field(item: dict[str, Any], field: str, reason: str) -> None:
     """WP2：单字段写"待澄清"并同步一条 open_questions（内部核对受众,进既有澄清闭环——
     clarification_report 读 engineering_analysis.json 的 open_questions 通道已存在;
-    xlsx「待确认：…」/成文列渲染通道原样透出）。"""
+    xlsx「待确认：…」/成文列渲染通道原样透出）。
+
+    兜底（2026-07-23 用户裁定）：覆盖前的原值存入 item["clarify_fallback"][field]——
+    渲染层以"待澄清 + 标注的原始候选"呈现,交付物既诚实又保留可读内容;数据层字段本身
+    仍恒为待澄清（不做"看起来完整"的假交付）。"""
+    original = item.get(field)
+    if original and original != CLARIFY_MARK and original != [CLARIFY_MARK]:
+        fallback = item.setdefault("clarify_fallback", {})
+        if isinstance(fallback, dict):
+            fallback.setdefault(field, original)
     item[field] = [CLARIFY_MARK] if field in _UNFOUNDED_LIST_FIELDS else CLARIFY_MARK
     questions = item.setdefault("open_questions", [])
     if not isinstance(questions, list):
