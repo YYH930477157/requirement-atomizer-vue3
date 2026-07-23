@@ -18,6 +18,7 @@ from requirements_analysis import (
     UNFOUNDED_RULE_VERSION,
     _apply_llm_item,
     _enrich_key,
+    _llm_enrich_item,
     run_requirements_analysis,
 )
 
@@ -191,6 +192,101 @@ class AcceptedEnrichmentFieldDowngradeTests(unittest.TestCase):
         self.assertEqual(item["developer_guidance"], ["源文派生指引含数字 42"])   # base 不动
 
 
+class OwnershipGuardTests(unittest.TestCase):
+    """审计 r2 S1：采纳循环归属护栏——software 项不采纳 LLM 写入的 hardware_dependency
+    （内容级护栏不管归属，越权注入必须确定性拦下并留痕）。"""
+
+    def test_software_item_skips_llm_hardware_dependency_with_trace(self) -> None:
+        item = base_item()   # ownership=software
+        ok, issues = _apply_llm_item(
+            item, SOURCE,
+            {"software_requirement_text": "Log tamper events deterministically.",
+             "hardware_dependency": "needs a dedicated tamper mesh"},
+            CTX)
+
+        self.assertTrue(ok)   # 其余有据字段照常采纳
+        self.assertEqual(item["software_requirement_text"], "Log tamper events deterministically.")
+        self.assertEqual(item["hardware_dependency"], "")   # 归属护栏：不采纳
+        self.assertEqual(item["analysis_source"], "llm")
+        # 如实留痕：item 级 enrichment_warnings（随交付物透出）+ run 级 issues 双通道
+        warnings = item.get("enrichment_warnings") or []
+        self.assertTrue(any("归属护栏" in w for w in warnings))
+        self.assertTrue(any("needs a dedicated tamper mesh" in w for w in warnings))
+        self.assertTrue(any("归属护栏" in msg for msg in issues))
+
+    def test_co_design_item_still_adopts_hardware_dependency(self) -> None:
+        """hardware/co_design 路径不变——协同项照常采纳硬件依赖。"""
+        item = base_item(ownership="co_design")
+        ok, _issues = _apply_llm_item(
+            item, SOURCE,
+            {"software_requirement_text": "Log tamper events.",
+             "hardware_dependency": "tamper mesh"},
+            CTX)
+
+        self.assertTrue(ok)
+        self.assertEqual(item["hardware_dependency"], "tamper mesh")
+        self.assertFalse(item.get("enrichment_warnings"))
+
+    def test_only_hardware_dependency_offered_degrades_with_trace(self) -> None:
+        """LLM 唯一可采纳内容被护栏跳过 → 整体未采纳 → 标待澄清，护栏留痕不丢。"""
+        item = base_item()
+        ok, issues = _apply_llm_item(item, SOURCE, {"hardware_dependency": "tamper mesh"}, CTX)
+
+        self.assertFalse(ok)
+        self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
+        self.assertEqual(item["hardware_dependency"], "")   # 不采纳，也不因拒绝误标（纯软件留空是设计语义）
+        self.assertTrue(any("归属护栏" in msg for msg in issues))
+        self.assertTrue(any("未返回可采纳" in msg for msg in issues))
+
+
+class FailedEnrichmentMarkingTests(unittest.TestCase):
+    """审计 r2 S2：富化调用失败/返回非法与护栏拒绝同纪律——无依据字段标待澄清、
+    base 值保留进 clarify_fallback、open_questions 留痕，不再静默透出 base 文本。"""
+
+    def test_chat_exception_marks_unfounded_and_keeps_fallback(self) -> None:
+        def chat(_system: str, _user: str) -> dict:
+            raise RuntimeError("boom")
+
+        item = base_item()
+        ok, issues = _llm_enrich_item(item, SOURCE, {"modules": []}, chat, {}, "m", context=CTX)
+
+        self.assertFalse(ok)
+        self.assertTrue(any("调用失败" in msg for msg in issues))
+        self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
+        self.assertEqual(item["clarify_fallback"]["software_requirement_text"],
+                         "The meter shall log tamper events.")   # base 兜底保留
+        self.assertEqual(item["developer_guidance"], [CLARIFY_MARK])
+        self.assertEqual(item["hardware_dependency"], "")        # 纯软件项留空是设计语义
+        self.assertTrue(any("待澄清" in q for q in item["open_questions"]))
+
+    def test_invalid_payload_marks_unfounded_and_keeps_fallback(self) -> None:
+        item = base_item()
+        ok, issues = _llm_enrich_item(
+            item, SOURCE, {"modules": []},
+            lambda _system, _user: {"garbage": True},   # 无 items、非法形状
+            {}, "m", context=CTX)
+
+        self.assertFalse(ok)
+        self.assertTrue(any("格式非法" in msg for msg in issues))
+        self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
+        self.assertEqual(item["clarify_fallback"]["software_requirement_text"],
+                         "The meter shall log tamper events.")
+        self.assertEqual(item["design_options"], [CLARIFY_MARK])
+        self.assertTrue(any("待澄清" in q for q in item["open_questions"]))
+
+    def test_co_design_failure_also_marks_hardware_dependency(self) -> None:
+        """协同项失败路径：硬件依赖本应由此番富化产出——与拒绝路径一样标待澄清。"""
+        def chat(_system: str, _user: str) -> dict:
+            raise RuntimeError("boom")
+
+        item = base_item(ownership="co_design")
+        ok, _issues = _llm_enrich_item(item, SOURCE, {"modules": []}, chat, {}, "m", context=CTX)
+
+        self.assertFalse(ok)
+        self.assertEqual(item["hardware_dependency"], CLARIFY_MARK)
+        self.assertTrue(any("硬件依赖" in q for q in item["open_questions"]))
+
+
 class VersionAndCacheFingerprintTests(unittest.TestCase):
     def test_prompt_version_bumped(self) -> None:
         self.assertEqual(ANALYZE_PROMPT_VERSION, "analyze-llm-v7")
@@ -202,7 +298,7 @@ class VersionAndCacheFingerprintTests(unittest.TestCase):
         with patch("requirements_analysis.UNFOUNDED_RULE_VERSION", "analyze-unfounded-v0-hypothetical"):
             key_changed = _enrich_key(req, "model-x")
         self.assertNotEqual(key_now, key_changed)
-        self.assertEqual(UNFOUNDED_RULE_VERSION, "analyze-unfounded-v2")
+        self.assertEqual(UNFOUNDED_RULE_VERSION, "analyze-unfounded-v3")
 
 
 class IntegrationRenderAndClarificationLoopTests(unittest.TestCase):

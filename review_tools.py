@@ -20,7 +20,9 @@ from blue_book_lookup import condensed_text, load_index, lookup_class, lookup_cl
 from io_utils import read_jsonl
 
 # 工具定义/裁剪契约版本——TOOLS schema、返回字段、裁剪上限任何变更必须 bump
-REVIEW_TOOLS_VERSION = "review-tools-v2"  # v2:蓝皮书索引缺失优雅降级（v1 崩溃致 tool-loop 两连错中止）
+# v3：coverage_check 共引/重复/引句命中改走 A 轨适配层（v2 在 atomic 真实形状上三处恒空）
+# v2：蓝皮书索引缺失优雅降级（v1 崩溃致 tool-loop 两连错中止）
+REVIEW_TOOLS_VERSION = "review-tools-v3"
 
 # 返回裁剪上限（冻结契约的一部分，见规格 §2 表格）
 KB_SEARCH_MAX_RESULTS = 5
@@ -378,6 +380,35 @@ def _find_requirement(requirements: list[dict[str, Any]], requirement_id: str) -
     return None
 
 
+def _atomic_to_consistency_row(requirement: dict[str, Any]) -> dict[str, Any]:
+    """A 轨 atomic 行 → merged_consistency 函数期望的 B 轨形状（只读映射，不改 B 轨行为）。
+
+    审计 H1：find_obis_coreference/find_cross_section_duplicates 读 title/description/
+    source_quote/source_section/id，而 atomic_requirements.jsonl 的真实字段是
+    requirement/object/parameters/section_path/source_context——直接喂入三个检测全落空
+    （2337 条真实产物实测共引/重复 0/0、引句命中恒空）。结构化 OBIS 只从确定性位置
+    （parameters.cosem_object.obis）取并追加进 description，叙述未复述编码的需求也参与
+    共引分组——宁漏勿错，不解析不猜。"""
+    text = str(requirement.get("requirement") or "")
+    parameters = requirement.get("parameters")
+    cosem_object = parameters.get("cosem_object") if isinstance(parameters, dict) else None
+    structured = []
+    if isinstance(cosem_object, dict):
+        obis = str(cosem_object.get("obis") or "").strip()
+        if obis:
+            structured.append(f"OBIS {obis}")
+    context = requirement.get("source_context")
+    paragraph = str(context.get("paragraph_text") or "") if isinstance(context, dict) else ""
+    section_path = [str(value) for value in (requirement.get("section_path") or [])]
+    return {
+        "id": str(requirement.get("req_id") or ""),
+        "title": str(requirement.get("object") or "") or text[:40],
+        "description": f"{text} [{'; '.join(structured)}]" if structured else text,
+        "source_quote": paragraph or text,
+        "source_section": " / ".join(section_path),
+    }
+
+
 def _coverage_check(
     requirements: list[dict[str, Any]],
     blocks: list[dict[str, Any]],
@@ -395,30 +426,32 @@ def _coverage_check(
     if requirement is None:
         return {"error": f"unknown requirement_id: {requirement_id}"}
     candidate_ids = _requirement_candidate_ids(requirement)
-    # 引句命中块：source_quote/source_quotes 逐条确定性匹配，块序并集
-    quotes = [str(requirement.get("source_quote") or "")]
-    quotes.extend(str(value or "") for value in (requirement.get("source_quotes") or []))
+    # 共引/重复/引句命中三处全部走适配后的行（merged_consistency 为 B 轨 merged 形状设计,
+    # A 轨 atomic 行须经 _atomic_to_consistency_row 映射,否则在真实产物上三处检测恒空）
+    consistency_rows = [_atomic_to_consistency_row(row) for row in requirements]
+    target_row = _atomic_to_consistency_row(requirement)
+    # 引句命中块：适配后的 source_quote（source_context.paragraph_text,缺省退 requirement
+    # 文本）确定性匹配,块序并集
+    quote = str(target_row.get("source_quote") or "")
     hit_block_ids: list[str] = []
     methods: list[str] = []
-    for quote in quotes:
-        if not quote.strip():
-            continue
+    if quote.strip():
         matched, method = match_source_quote_blocks(quote, blocks)
         for block_id in matched:
             if block_id not in hit_block_ids:
                 hit_block_ids.append(block_id)
-        if method and method not in methods:
+        if method:
             methods.append(method)
     coreference = [
         {"obis": str(group.get("obis") or ""), "members": [str(m) for m in (group.get("members") or [])],
          "values_differ": bool(group.get("values_differ")), "count": group.get("count")}
-        for group in find_obis_coreference(requirements)
+        for group in find_obis_coreference(consistency_rows)
         if candidate_ids.intersection(str(m) for m in (group.get("members") or []))
     ][:_COVERAGE_GROUP_MAX]
     duplicates = [
         {"members": [str(m) for m in (group.get("members") or [])],
          "sections": [str(s) for s in (group.get("sections") or [])], "count": group.get("count")}
-        for group in find_cross_section_duplicates(requirements)
+        for group in find_cross_section_duplicates(consistency_rows)
         if candidate_ids.intersection(str(m) for m in (group.get("members") or []))
     ][:_COVERAGE_GROUP_MAX]
     return {

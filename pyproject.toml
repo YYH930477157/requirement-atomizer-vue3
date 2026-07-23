@@ -47,6 +47,7 @@ py-modules = [
   "ai_extract",
   "merged_consistency",
   "functional_catalog",
+  "functional_synthesis",
   "api_server",
   "assemble_spec",
   "atomic_requirement_schema",
@@ -73,6 +74,7 @@ py-modules = [
   "output_writer",
   "pattern_engine",
   "desktop_backend",
+  "desktop_tasks",
   "decide_trace",
   "ai_review_actions",
   "doc_annotation_export",
@@ -83,6 +85,7 @@ py-modules = [
   "review_tools",
   "requirements_analysis",
   "review_insights",
+  "semantic_quality",
   "template_writer",
   "corpus_eval",
   "clarification_report",
@@ -117,6 +120,10 @@ parsers = ["data/*.gz", "data/*.md"]
 # 顶层 schemas/ 以包形式随 wheel 分发——agent_eval/decide_trace 经 Path(__file__).parent
 # 相对定位 schema 文件,不打包则安装后 ModuleNotFoundError/FileNotFoundError（审计 P1）
 schemas = ["*.json"]
+# llm_agents/ 与 domain_packs/ 同为包根相对定位（llm_pipeline.DEFAULT_PIPELINE_PATH /
+# DEFAULT_DOMAIN_PACK_PATH），无 __init__.py，按 PEP 420 命名空间包随 wheel 分发（审计 R2）
+llm_agents = ["*.yaml"]
+domain_packs = ["**/*.yaml", "**/*.json"]
 
 [tool.setuptools.packages.find]
-include = ["gui*", "parsers*", "requirement_kb*", "schemas"]
+include = ["gui*", "parsers*", "requirement_kb*", "schemas", "llm_agents*", "domain_packs*"]

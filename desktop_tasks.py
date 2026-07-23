@@ -22,7 +22,7 @@ from atomize import run_atomizer_pipeline
 from engineering_composer import compose_engineering_requirements, write_engineering_requirements
 from functional_synthesis import FUNCTIONAL_REQUIREMENTS, FUNCTIONAL_SYNTHESIS_VERSION, run_functional_synthesis
 from export_requirements import export_requirements
-from llm_pipeline import DEFAULT_PIPELINE_PATH, read_jsonl, run_review_pipeline
+from llm_pipeline import DEFAULT_DOMAIN_PACK_PATH, DEFAULT_PIPELINE_PATH, read_jsonl, run_review_pipeline
 from requirement_kb.cli import default_kb_paths, package_root
 from requirements_analysis import requirements_analysis_enrichment_enabled, run_requirements_analysis
 from requirements_analysis_schema import normalize_ownership
@@ -144,11 +144,22 @@ def run_pipeline_task(
     # 却落回默认 KB 复核（KB 双轨错配）。None（未显式传 kb）保持旧默认行为；显式传入时
     # 同一份解析结果进 run_review_pipeline 与阶段指纹，两侧文件集合严格一致。
     review_kb_paths = resolve_kb_paths(kb_paths) if kb_paths is not None else None
-    review_config = (
-        {"kb_paths": [str(path) for path in review_kb_paths]}
-        if review_kb_paths is not None
-        else None
-    )
+    review_config: dict[str, Any] = {
+        # 审计 R2-H2：scope/limit 改变审查覆盖面，必须进阶段指纹——否则先 targeted 后
+        # all、或先限量后全量时指纹不变，阶段被整体跳过。
+        "review_scope": review_scope,
+        "llm_review_limit": llm_review_limit,
+    }
+    if review_kb_paths is not None:
+        review_config["kb_paths"] = [str(path) for path in review_kb_paths]
+    # 审计 R2-H2/H3：--domain-pack 同时喂审查（review_policy 合并）与阶段指纹，与
+    # atomize 同轨取解析后的包目录；未传时保持 review 默认捆绑包行为不变（显式 None
+    # 会关掉 merge_review_policy 的默认包合并）。
+    review_domain_pack_path: Path | None = None
+    resolved_domain_pack_dir = resolve_bundled_path(domain_pack_dir)
+    if resolved_domain_pack_dir is not None:
+        review_config["domain_pack_dir"] = str(resolved_domain_pack_dir)
+        review_domain_pack_path = resolved_domain_pack_dir / "pack.yaml"
     if skip_review:
         review = None
     elif atomize_reused and stage_is_reusable(out_dir, "llm-review", route=llm_route, config=review_config):
@@ -166,6 +177,7 @@ def run_pipeline_task(
                 llm_review_limit=llm_review_limit,
                 progress_callback=emit_progress,
                 kb_paths=review_kb_paths,
+                domain_pack_path=review_domain_pack_path or DEFAULT_DOMAIN_PACK_PATH,
             )
         except Exception as exc:
             update_run_manifest(out_dir, "llm-review", "failed", error=str(exc), config=review_config)
@@ -517,9 +529,10 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                    kb_paths: list[Any] | None = None) -> str:
     """阶段 → 生产者版本戳（产物血统：今天拿 v9 数据当新结果看的事故，靠它绝迹）。
 
-    llm-review 额外纳入工具证据内容指纹（KB/blocks/原子需求/蓝皮书索引，审计
-    P1-d）——审查实际读取的证据变了，旧审查产物不得继续复用；out_dir 缺席时
-    保持基础戳（无目录语境兼容）。"""
+    llm-review 额外拼入审查代码版本（prompt/cache/tools，审计 R2-H2）与工具证据
+    内容指纹（KB/blocks/原子需求/蓝皮书索引，审计 P1-d）——审查代码升级或实际
+    读取的证据变了，旧审查产物不得继续复用；out_dir 缺席时保持基础戳+代码版本
+    （无目录语境兼容）。"""
     producer = _STAGE_BASE_PRODUCERS.get(stage, stage)
     # Phase 0 reserves policy lineage for future agent stages without invalidating any
     # current pipeline cache. There is intentionally no agent stage in CHAIN_ORDER yet.
@@ -544,6 +557,12 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
             )
         elif stage == "llm-review":
+            # 代码版本必须进戳（审计 R2-H2）：prompt/cache/tools 任一 bump 后旧阶段
+            # 产物不得复用——此前 llm-review 是唯一不拼代码版本的阶段。
+            from llm_pipeline import LLM_REVIEW_CACHE_VERSION, PROMPT_VERSION
+            from review_tools import REVIEW_TOOLS_VERSION
+            producer = (f"{producer}+{PROMPT_VERSION}+{LLM_REVIEW_CACHE_VERSION}"
+                        f"+{REVIEW_TOOLS_VERSION}")
             if out_dir is not None:
                 from review_tools import evidence_fingerprint
                 producer = f"{producer}+evidence-{evidence_fingerprint(out_dir, kb_paths)}"
@@ -713,6 +732,17 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
                 ),
             }
             if stage == "atomize" else None
+        ),
+        # 审计 R2-H2：llm-review 合并 domain-pack 的 review_policy，包内容变必须令阶段
+        # 失效（仅当实际传入 domain pack 时；atomize 的包内容走上方 atomize_resources）。
+        "domain_pack": (
+            {
+                "path": str(Path((config or {}).get("domain_pack_dir")).expanduser().resolve()),
+                "sha256": _resource_content_fingerprint(
+                    Path((config or {}).get("domain_pack_dir"))
+                ),
+            }
+            if stage == "llm-review" and (config or {}).get("domain_pack_dir") else None
         ),
         "template": ({"path": str(template), "sha256": _hash_file(template)}
                      if template and template.exists() and template.is_file() else None),

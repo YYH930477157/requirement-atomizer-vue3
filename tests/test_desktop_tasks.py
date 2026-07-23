@@ -209,7 +209,7 @@ class DesktopTaskTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["counts"]["requirements"], 2)
         self.assertEqual(payload["summary"]["status_counts"]["accepted"], 1)
         atomize.assert_called_once()
-        review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, llm_review_limit=0, progress_callback=ANY, kb_paths=None)
+        review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, llm_review_limit=0, progress_callback=ANY, kb_paths=None, domain_pack_path=desktop_tasks.DEFAULT_DOMAIN_PACK_PATH)
 
     def test_run_pipeline_task_passes_explicit_kb_to_review(self) -> None:
         """审计 P1-d①：--kb 贯通到审查阶段——此前只传 atomize，review 工具落回默认 KB。"""
@@ -236,10 +236,44 @@ class DesktopTaskTests(unittest.TestCase):
 
                 run_pipeline_task(input_path, out_dir, skip_review=False, kb_paths=[kb])
 
-        review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, llm_review_limit=0, progress_callback=ANY, kb_paths=[kb])
+        review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, llm_review_limit=0, progress_callback=ANY, kb_paths=[kb], domain_pack_path=desktop_tasks.DEFAULT_DOMAIN_PACK_PATH)
+
+    def test_run_pipeline_task_forwards_domain_pack_to_review(self) -> None:
+        """审计 R2-H3：desktop run 的 --domain-pack 不再只喂 atomize——审查按同一包的
+        pack.yaml 合并 review_policy；未传时回落默认捆绑包（见上两个测试）。"""
+        from desktop_tasks import run_pipeline_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "input.docx"
+            out_dir = root / "out"
+            input_path.write_text("placeholder", encoding="utf-8")
+            out_dir.mkdir()
+            pack = root / "domain_packs" / "dlms_cosem"
+            pack.mkdir(parents=True)
+            (pack / "pack.yaml").write_text("review_policy: {}\n", encoding="utf-8")
+
+            with patch("desktop_tasks.run_atomizer_pipeline") as atomize, patch("desktop_tasks.run_review_pipeline") as review:
+                atomize.return_value = {
+                    "input": str(input_path),
+                    "output_dir": str(out_dir),
+                    "counts": {"atomic_requirements": 0},
+                }
+                review.return_value = {"reviews": 0}
+                write_jsonl(out_dir / "atomic_requirements.jsonl", [])
+                write_jsonl(out_dir / "review_states.jsonl", [])
+
+                run_pipeline_task(input_path, out_dir, skip_review=False, domain_pack_dir=pack)
+
+        review.assert_called_once_with(
+            out_dir.resolve(), route=None, scope=None, llm_review_limit=0,
+            progress_callback=ANY, kb_paths=None, domain_pack_path=pack / "pack.yaml")
 
     def test_llm_review_producer_tracks_evidence_content(self) -> None:
-        """llm-review 阶段 producer 纳入证据指纹：改 KB 内容阶段戳变；无 out_dir 保持基础戳。"""
+        """llm-review 阶段 producer 纳入证据指纹：改 KB 内容阶段戳变；无 out_dir 保持基础戳+代码版本。"""
+        from llm_pipeline import LLM_REVIEW_CACHE_VERSION, PROMPT_VERSION
+        from review_tools import REVIEW_TOOLS_VERSION
+
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             out = root / "out"
@@ -253,9 +287,90 @@ class DesktopTaskTests(unittest.TestCase):
             kb.write_text('{"kb_id": "k", "entries": [{"id": "x"}]}', encoding="utf-8")
             second = desktop_tasks.stage_producer("llm-review", out_dir=out, kb_paths=[kb])
 
-        self.assertTrue(first.startswith("review/v1+evidence-"))
+        self.assertTrue(first.startswith("review/v1+"))
+        self.assertIn("+evidence-", first)
         self.assertNotEqual(first, second)
-        self.assertEqual(desktop_tasks.stage_producer("llm-review"), "review/v1")
+        base = desktop_tasks.stage_producer("llm-review")
+        self.assertEqual(
+            base,
+            f"review/v1+{PROMPT_VERSION}+{LLM_REVIEW_CACHE_VERSION}+{REVIEW_TOOLS_VERSION}",
+        )
+
+    def test_llm_review_producer_tracks_code_versions(self) -> None:
+        """审计 R2-H2：prompt/cache/tools 任一 bump 都必须让 llm-review 阶段戳变化
+        （此前三者均不在戳内，bump 后 stage_is_reusable 仍判 True 整阶段复用旧结果）。"""
+        import llm_pipeline
+        import review_tools
+
+        current = desktop_tasks.stage_producer("llm-review")
+        for version in (
+            llm_pipeline.PROMPT_VERSION,
+            llm_pipeline.LLM_REVIEW_CACHE_VERSION,
+            review_tools.REVIEW_TOOLS_VERSION,
+        ):
+            self.assertIn(version, current)
+        with patch.object(review_tools, "REVIEW_TOOLS_VERSION", "review-tools-vNEXT"):
+            changed = desktop_tasks.stage_producer("llm-review")
+        with patch.object(llm_pipeline, "LLM_REVIEW_CACHE_VERSION", "llm-review-cache-vNEXT"):
+            changed_cache = desktop_tasks.stage_producer("llm-review")
+
+        self.assertNotEqual(current, changed)
+        self.assertIn("review-tools-vNEXT", changed)
+        self.assertNotEqual(current, changed_cache)
+        self.assertIn("llm-review-cache-vNEXT", changed_cache)
+
+    def test_llm_review_fingerprint_tracks_scope_and_limit(self) -> None:
+        """审计 R2-H2：review_scope/llm_review_limit 进阶段指纹——先 targeted 后 all、
+        先限量后全量时指纹必须不同，否则阶段被整体跳过。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            targeted = desktop_tasks.stage_input_fingerprint(
+                out, "llm-review", config={"review_scope": "targeted", "llm_review_limit": 0})
+            full = desktop_tasks.stage_input_fingerprint(
+                out, "llm-review", config={"review_scope": "all", "llm_review_limit": 0})
+            limited = desktop_tasks.stage_input_fingerprint(
+                out, "llm-review", config={"review_scope": "all", "llm_review_limit": 5})
+
+        self.assertNotEqual(targeted, full)
+        self.assertNotEqual(full, limited)
+
+    def test_llm_review_stage_not_reusable_after_scope_change(self) -> None:
+        """审计 R2-H2：先 targeted 后 all——scope 进指纹，旧审查产物不得复用。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            out = root / "out"
+            out.mkdir()
+            for name in ["blocks.jsonl", "atomic_requirements.jsonl", "llm_tasks.jsonl",
+                         "llm_review_results.jsonl", "review_states.jsonl"]:
+                (out / name).write_text("{}\n", encoding="utf-8")
+            targeted = {"review_scope": "targeted", "llm_review_limit": 0}
+            full = {"review_scope": "all", "llm_review_limit": 0}
+
+            desktop_tasks.update_run_manifest(out, "llm-review", "ok", route="stub", config=targeted)
+            reusable_same = desktop_tasks.stage_is_reusable(out, "llm-review", route="stub", config=targeted)
+            reusable_changed = desktop_tasks.stage_is_reusable(out, "llm-review", route="stub", config=full)
+
+        self.assertTrue(reusable_same)
+        self.assertFalse(reusable_changed)
+
+    def test_llm_review_fingerprint_tracks_domain_pack_contents(self) -> None:
+        """审计 R2-H2：llm-review 合并 domain-pack 的 review_policy——包内容变，阶段指纹变。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pack = root / "domain_packs" / "dlms_cosem"
+            pack.mkdir(parents=True)
+            pack_yaml = pack / "pack.yaml"
+            pack_yaml.write_text("review_policy: {}\n", encoding="utf-8")
+            config = {"review_scope": None, "llm_review_limit": 0, "domain_pack_dir": str(pack)}
+
+            first = desktop_tasks.stage_input_fingerprint(root, "llm-review", config=config)
+            pack_yaml.write_text("review_policy:\n  low_confidence_threshold: 0.5\n", encoding="utf-8")
+            second = desktop_tasks.stage_input_fingerprint(root, "llm-review", config=config)
+            no_pack = desktop_tasks.stage_input_fingerprint(
+                root, "llm-review", config={"review_scope": None, "llm_review_limit": 0})
+
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(first, no_pack)
 
     def test_llm_review_stage_not_reusable_after_kb_change(self) -> None:
         """阶段复用同样吃证据指纹：KB 内容变 → llm-review 旧产物不再复用。"""
@@ -903,7 +1018,7 @@ class ChainAndManifestTests(unittest.TestCase):
             ),
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v6+ai-supplement-v3-identity-preconditions+impl-v3",
-            "requirements-analysis": "analyze-llm-v7+analyze-unfounded-v2+ai-supplement-v3-identity-preconditions+impl-v6",
+            "requirements-analysis": "analyze-llm-v7+analyze-unfounded-v3+ai-supplement-v3-identity-preconditions+impl-v6",
             "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v4",
             "clarification-report": "clarification/v6-coverage-basis+ai-supplement-v3-identity-preconditions+impl-v5",
             "export-annotation-html": (
@@ -1459,7 +1574,10 @@ class ChainAndManifestTests(unittest.TestCase):
             }
             desktop_tasks.update_run_manifest(
                 out, "atomize", "ok", input_path=input_path, config=atomize_config)
-            desktop_tasks.update_run_manifest(out, "llm-review", "ok", route="stub")
+            # config 形状与 run_pipeline_task 当前生成的一致（scope/limit 已入指纹，R2-H2）
+            desktop_tasks.update_run_manifest(
+                out, "llm-review", "ok", route="stub",
+                config={"review_scope": None, "llm_review_limit": 0})
 
             with (mock.patch("desktop_tasks.run_atomizer_pipeline") as atomize,
                   mock.patch("desktop_tasks.run_review_pipeline") as review):

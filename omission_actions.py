@@ -298,8 +298,32 @@ def current_non_requirement_block_ids(out_dir: Path) -> set[str]:
     }
 
 
+def _failed_section_block_ids(root: Path) -> set[str]:
+    """Failed-section blocks recorded by the last extraction quality report.
+
+    Same source the agent queue scope aggregates (agent_state); a missing or
+    corrupt quality report degrades to the uncovered-only candidate scope.
+    """
+    try:
+        quality = json.loads((root / "ai_extract_quality.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(quality, dict):
+        return set()
+    values = quality.get("failed_section_block_ids")
+    if not isinstance(values, list):
+        return set()
+    return {str(value) for value in values if str(value)}
+
+
 def current_omission_candidate_ids(out_dir: Path) -> set[str]:
-    """Recompute the current uncovered denominator instead of trusting stale UI/report state."""
+    """Recompute the current uncovered denominator instead of trusting stale UI/report state.
+
+    The candidate scope is uncovered blocks union failed-section blocks: leftover
+    requirements or cross-section quotes can keep a failed block out of the
+    recomputed uncovered set, yet a registered failed block must still be
+    extractable via targeted_reextract (agent queue scope parity).
+    """
     root = Path(out_dir).expanduser().resolve()
     blocks = read_jsonl(root / "blocks.jsonl")
     requirements_path = root / "ai_requirements.jsonl"
@@ -315,7 +339,10 @@ def current_omission_candidate_ids(out_dir: Path) -> set[str]:
     )
     uncovered = list(coverage.get("uncovered_block_ids") or [])
     uncovered.extend((coverage.get("compliance") or {}).get("uncovered_block_ids") or [])
-    return {str(value) for value in uncovered if str(value)}
+    candidates = {str(value) for value in uncovered if str(value)}
+    known_block_ids = {str(block.get("block_id") or "") for block in blocks}
+    candidates |= _failed_section_block_ids(root) & known_block_ids
+    return candidates
 
 
 def apply_omission_action(

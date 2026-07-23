@@ -872,6 +872,67 @@ class LlmEnrichmentTests(unittest.TestCase):
         assert "原始候选" in report
         assert "concentrator buffer 4000 entries" in report
 
+    def test_co_design_report_renders_clarify_fallback_candidates(self) -> None:
+        """审计 r2 S5：co_design 分支四字段（正文/指引/设计候选/验收点）待澄清时走
+        clarify 通道——带"未经依据校验+原始候选"标注透出，不再裸值输出。"""
+        from requirements_analysis import _write_report
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "co_design_items.md"
+            _write_report(path, [{
+                "analysis_id": "SRA-001", "description": "费控切换",
+                "ownership": "co_design", "ownership_reason": "软硬件协同",
+                "software_requirement_text": "待澄清",
+                "developer_guidance": ["待澄清"],
+                "design_options": ["待澄清"],
+                "acceptance_criteria": ["待澄清"],
+                "hardware_dependency": "",
+                "clarify_fallback": {
+                    "software_requirement_text": "按费率时段切换继电器",
+                    "developer_guidance": ["订阅费率切换事件"],
+                    "design_options": ["方案甲"],
+                    "acceptance_criteria": ["切换后费率正确"],
+                },
+                "source_requirement_ids": ["AI-1"], "source_quote": "q",
+            }], "协同设计项", co_design=True)
+            report = path.read_text(encoding="utf-8")
+
+        label = "原始候选（未经依据校验，仅供参考，不得作为实现依据）"
+        assert "- 软件需求: 待澄清（未经依据校验，需专家核补）" in report
+        assert f"{label}：按费率时段切换继电器" in report
+        assert "- 研发指引: 待澄清（未经依据校验，需专家核补）" in report
+        assert f"- 研发指引: {label}：订阅费率切换事件" in report
+        assert f"- 设计候选: {label}：方案甲" in report
+        assert f"- 验收点: {label}：切换后费率正确" in report
+
+    def test_co_design_report_renders_unfounded_guidance_with_fallback(self) -> None:
+        """S5 集成：LLM 指引含无据数字被标待澄清后，co_design_items.md 透出标注的原始候选。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [{
+                "ai_req_id": "AI-CD",
+                "description": "Device with mobile data concentrator function.",
+                "source_quote": "Device with mobile data concentrator function.",
+                "source_block_ids": ["B-1"],
+                "module": "communication",
+            }])
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{
+                    "software_requirement_text": "Device with mobile data concentrator function.",
+                    "developer_guidance": ["concentrator buffer 4000 entries"],   # 4000 无据
+                }]}
+
+            run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            report = (tmp_path / "co_design_items.md").read_text(encoding="utf-8")
+
+        assert item["ownership"] == "co_design"
+        assert item["developer_guidance"] == ["待澄清"]
+        assert "- 研发指引: 待澄清（未经依据校验，需专家核补）" in report
+        assert "原始候选" in report
+        assert "concentrator buffer 4000 entries" in report
+
     def test_concurrent_enrichment_is_correct_and_reports_progress(self) -> None:
         """并发富化（288 条规模的关键）：多条并发跑、每条落对自己的 item、逐条进度上报。"""
         with tempfile.TemporaryDirectory() as td:
@@ -943,6 +1004,13 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert result["enrich_degraded"] == 1
             payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
             assert payload["items"][0]["analysis_source"] == "deterministic"
+            # 审计 r2 S2：非法返回与护栏拒绝同纪律——无依据字段标待澄清、base 值进兜底候选、
+            # open_questions 留痕，不再静默以 base 文本充当正文透出
+            item = payload["items"][0]
+            assert item["software_requirement_text"] == "待澄清"
+            assert item["clarify_fallback"]["software_requirement_text"] == \
+                "The meter shall log power-down events to OBIS 0-0:96.1.0."
+            assert any("待澄清" in q for q in item["open_questions"])
 
 
 if __name__ == "__main__":

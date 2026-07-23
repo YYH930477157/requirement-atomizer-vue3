@@ -57,6 +57,9 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
   （`functional_catalog.build_function_catalog` 零 LLM 路径）在一半案例对上
   合错/分错。这是评测集指出的第一个明确改进靶点，也是后续功能合成质量的
   前置。
+- 前置（硬约束）：待办 2 人工核对完成前不动聚类规则——grouping 8 条案例的
+  标准答案全部未经人工核对（2026-07-23 专家裁定），先调规则等于对着未验证的
+  靶子调参；也不许靠改案例刷分，案例修改必须走待办 2 的核对登记通道。
 - 动作：
   1. `python agent_eval.py --eval-dir golden_sets/agent_eval_v1` 查看
      `grouping_details` 的失败案例对，归类失败模式（误并 vs 误拆）；

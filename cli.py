@@ -75,6 +75,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     review = subparsers.add_parser("review", help="Run only the review stage.")
     review.add_argument("--out", type=Path, required=True)
     review.add_argument("--review-pipeline", type=Path, default=None, help="Review pipeline YAML")
+    review.add_argument("--kb", type=Path, action="append", default=[], help="Optional KB path (repeatable)")
     review.add_argument("--domain-pack", type=Path, default=None, help="Optional domain pack pack.yaml")
     review.add_argument("--limit", type=int, default=0, help="Optional max requirement count")
     add_review_route_arguments(review)
@@ -178,7 +179,14 @@ def command_run(args: argparse.Namespace, started: float, timing_ms: dict[str, i
     review_summary = None
     if not args.skip_review:
         review_started = time.perf_counter()
-        review_summary = run_review_pipeline(args.out, route=args.llm_route, scope=args.review_scope)
+        # 审计 R2-H3：--kb/--domain-pack 贯通到审查阶段（此前只喂 atomize，审查恒落
+        # 默认 KB/默认包）；未传时不给 kwargs，保留 run_review_pipeline 的默认包。
+        review_kwargs: dict[str, Any] = {"route": args.llm_route, "scope": args.review_scope}
+        if args.kb:
+            review_kwargs["kb_paths"] = args.kb
+        if args.domain_pack is not None:
+            review_kwargs["domain_pack_path"] = args.domain_pack / "pack.yaml"
+        review_summary = run_review_pipeline(args.out, **review_kwargs)
         timing_ms["review"] = elapsed_ms(review_started)
 
     exports: list[str] = []
@@ -217,6 +225,8 @@ def command_review(args: argparse.Namespace, started: float, timing_ms: dict[str
         "route": args.llm_route,
         "scope": args.review_scope,
     }
+    if args.kb:
+        kwargs["kb_paths"] = args.kb
     if args.review_pipeline is not None:
         kwargs["pipeline_path"] = args.review_pipeline
     if args.domain_pack is not None:

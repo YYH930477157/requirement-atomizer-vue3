@@ -34,10 +34,6 @@ def _build_wheel(target: Path) -> Path:
 class WheelPackagingSmokeTests(unittest.TestCase):
     def test_wheel_contents_and_installed_imports(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            wheel = _build_wheel(Path(td) / "dist")
-            Path(td + "/dist").mkdir(exist_ok=True)
-
-        with tempfile.TemporaryDirectory() as td:
             dist = Path(td) / "dist"
             dist.mkdir()
             wheel = _build_wheel(dist)
@@ -46,8 +42,10 @@ class WheelPackagingSmokeTests(unittest.TestCase):
             for required in (
                 "agent_eval.py", "agent_loop.py", "agent_state.py", "agent_tools.py",
                 "agent_compare.py", "agent_decider.py", "decide_trace.py",
-                "functional_catalog.py", "review_tools.py",
+                "functional_catalog.py", "functional_synthesis.py", "review_tools.py",
+                "desktop_tasks.py", "semantic_quality.py",
                 "schemas/decide_trace.schema.json", "schemas/agent_eval_case.schema.json",
+                "llm_agents/review_pipeline.yaml", "domain_packs/dlms_cosem/pack.yaml",
             ):
                 self.assertIn(required, names, f"wheel missing {required}")
 
@@ -63,12 +61,20 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "import agent_eval, decide_trace;"
                 "decide_trace.load_decide_trace_schema();"
                 "agent_eval.load_case_schema();"
-                "import functional_catalog, review_tools;"
+                "import functional_catalog, functional_synthesis, semantic_quality, review_tools;"
+                "import agent_state, agent_loop, agent_compare, llm_pipeline;"
+                "assert llm_pipeline.DEFAULT_PIPELINE_PATH.exists();"
+                "assert llm_pipeline.DEFAULT_DOMAIN_PACK_PATH.exists();"
                 "print('SMOKE OK')"
             )
+            # cwd 必须是与源码无关的空目录：python -c 的 sys.path[0]=''（即 cwd）优先于
+            # PYTHONPATH，从仓根跑测试时不隔离 cwd 会命中源码树而非隔离安装（假绿）。
+            empty_cwd = Path(td) / "cwd"
+            empty_cwd.mkdir()
             run = subprocess.run(
                 [sys.executable, "-c", probe],
                 capture_output=True, text=True, timeout=120,
+                cwd=empty_cwd,
                 env={"PYTHONPATH": str(site), "PATH": ""},
             )
             self.assertEqual(run.returncode, 0, f"{run.stdout[-300:]} {run.stderr[-500:]}")

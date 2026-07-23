@@ -221,21 +221,7 @@ def chat_json_with_meta(
     （不得估算冒充精确值,见 Phase 1.5 tokens 口径）。"""
     usage_sink: list[dict[str, Any]] = []
     data = chat_json(config, system_prompt, user_prompt, _usage_sink=usage_sink)
-    prompt = sum(int(u.get("prompt_tokens") or 0) for u in usage_sink)
-    completion = sum(int(u.get("completion_tokens") or 0) for u in usage_sink)
-    total = sum(int(u.get("total_tokens") or 0) for u in usage_sink)
-    if not total and (prompt or completion):
-        total = prompt + completion
-    complete = bool(usage_sink) and all(
-        isinstance(u.get("total_tokens"), int) or (
-            isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int)
-        )
-        for u in usage_sink
-    )
-    return data, {
-        "usage": {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total},
-        "usage_complete": complete,
-    }
+    return data, _aggregate_usage(usage_sink)
 
 
 def chat_json_messages(
@@ -299,7 +285,9 @@ def chat_with_tools(
     超限），meta.usage_complete 标 partial。
 
     meta = {"usage": {...}, "usage_complete": bool, "tool_calls": [{"round","name"}...],
-    "rounds": n}——tool_calls 摘要是审查结果行的审计锚（产出过程可解释性）。"""
+    "rounds": n, "history": [...]}——tool_calls 摘要是审查结果行的审计锚（产出过程
+    可解释性）；history 为收敛时的完整 transcript（含 assistant tool_calls 与 role=tool
+    回灌，不含最终 assistant JSON 消息），供调用方续接（如 schema 修复轮）。"""
     if max_rounds < 1:
         raise ValueError("max_rounds must be >= 1")
     usage_sink = _usage_sink if _usage_sink is not None else []
@@ -355,6 +343,7 @@ def chat_with_tools(
                 **_aggregate_usage(usage_sink),
                 "tool_calls": tool_call_summary,
                 "rounds": round_no,
+                "history": list(history),
             }
         # 工具轮：assistant 消息原样回灌（含 tool_calls，tool_call_id 需逐字对应）
         history.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
@@ -466,12 +455,19 @@ def _chat_tools_once(
 
 def _aggregate_usage(usage_sink: list[dict[str, Any]]) -> dict[str, Any]:
     """汇聚全部底层调用（首发/工具轮/修复/截断升级）的 usage——同 chat_json_with_meta 口径：
-    usage 缺失计 0 且 usage_complete=False（不得估算冒充精确值,见 Phase 1.5 tokens 口径）。"""
+    逐轮归一再求和（每轮 total_i = total_tokens；缺 total 且 prompt+completion 双明细
+    俱在则取二者之和）——混合序列不得被"全或无"兜底低计（如一轮报 total、一轮只报
+    明细时，旧兜底会丢弃明细轮）。usage 缺失计 0 且 usage_complete=False
+    （不得估算冒充精确值,见 Phase 1.5 tokens 口径）。"""
     prompt = sum(int(u.get("prompt_tokens") or 0) for u in usage_sink)
     completion = sum(int(u.get("completion_tokens") or 0) for u in usage_sink)
-    total = sum(int(u.get("total_tokens") or 0) for u in usage_sink)
-    if not total and (prompt or completion):
-        total = prompt + completion
+    total = 0
+    for u in usage_sink:
+        round_total = u.get("total_tokens")
+        if isinstance(round_total, int):
+            total += round_total
+        elif isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int):
+            total += int(u["prompt_tokens"]) + int(u["completion_tokens"])
     complete = bool(usage_sink) and all(
         isinstance(u.get("total_tokens"), int) or (
             isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int)

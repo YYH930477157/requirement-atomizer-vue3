@@ -346,6 +346,113 @@ class OmissionActionTests(unittest.TestCase):
         self.assertEqual(quality["excluded_requirement_like_blocks"], 1)
         self.assertEqual(consistency["coverage"]["excluded"]["block_ids"], ["B1"])
 
+    def test_current_candidates_include_failed_section_blocks(self) -> None:
+        """Failed-section blocks stay candidates even when a leftover quote covers them."""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_jsonl(out / "blocks.jsonl", [
+                {"block_id": "B1", "order": 1, "text": "The meter shall log events.",
+                 "requirement_like": True, "noise": False},
+                {"block_id": "B2", "order": 2, "text": "The meter shall expose alarms.",
+                 "requirement_like": True, "noise": False},
+            ])
+            _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [{
+                "source_quote": "The meter shall log events.",
+            }])
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "failed_sections": 1,
+                "failed_section_ids": ["S1"],
+                "failed_section_block_ids": ["B1"],
+            }), encoding="utf-8")
+
+            candidates = omission_actions.current_omission_candidate_ids(out)
+
+        self.assertEqual(candidates, {"B1", "B2"})
+
+    def test_current_candidates_drop_failed_blocks_absent_from_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_jsonl(out / "blocks.jsonl", [{
+                "block_id": "B1", "order": 1, "text": "The meter shall log events.",
+                "requirement_like": True, "noise": False,
+            }])
+            _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [])
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "failed_sections": 1,
+                "failed_section_ids": ["S9"],
+                "failed_section_block_ids": ["GHOST"],
+            }), encoding="utf-8")
+
+            candidates = omission_actions.current_omission_candidate_ids(out)
+
+        self.assertEqual(candidates, {"B1"})
+
+    def test_targeted_reextract_accepts_a_registered_failed_section_block(self) -> None:
+        """A failed-section block queued by the agent stays extractable when covered."""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            source_text = "The meter shall log events."
+            blocks = [{"block_id": "B1", "text": source_text, "requirement_like": True}]
+            _write_jsonl(out / "blocks.jsonl", blocks)
+            # The leftover row keeps B1 out of the recomputed uncovered set...
+            _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [{
+                "ai_req_id": "AI-1",
+                "title": "Event logging",
+                "description": "Old description",
+                "module": "事件",
+                "source_section": "4",
+                "source_quote": source_text,
+                "source_block_ids": ["B1"],
+            }])
+            # ...while the quality report still records the failed section.
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "failed_sections": 1,
+                "failed_section_ids": ["S1"],
+                "failed_section_block_ids": ["B1"],
+            }), encoding="utf-8")
+            queued = omission_actions.apply_omission_action(
+                out, block_id="B1", status="needs_extraction", actor="agent-loop",
+            )
+            self.assertEqual(omission_actions.current_omission_candidate_ids(out), {"B1"})
+            section = {"section_id": "S1", "text": source_text, "block_ids": ["B1"]}
+            config = mock.Mock(model="model-x")
+
+            def critique(_section, existing, *_args, **_kwargs):
+                existing[0]["description"] = "Guarded corrected description"
+                return [], []
+
+            with mock.patch.object(
+                omission_actions,
+                "_find_target_section",
+                return_value=(blocks, section, [section]),
+            ), mock.patch.object(
+                ai_extract, "config_for_route", return_value=config,
+            ), mock.patch.object(
+                ai_extract, "build_doc_context", return_value="",
+            ), mock.patch.object(
+                ai_extract, "critique_section", side_effect=critique,
+            ), mock.patch.object(
+                ai_extract, "rebuild_merged_spec", return_value={"written": []},
+            ), mock.patch(
+                "llm_client.apply_min_tokens", side_effect=lambda value, _purpose: value,
+            ):
+                result = omission_actions.targeted_reextract(
+                    out,
+                    block_id="B1",
+                    omission_id=queued["omission_id"],
+                    expected_source_fingerprint=omission_actions.omission_source_fingerprint(
+                        "B1", source_text
+                    ),
+                )
+
+            effective = ai_extract.read_jsonl(out / ai_extract.AI_REQUIREMENTS)
+            current = omission_actions.read_current_omission_states(out)
+
+        self.assertEqual(result["requirements"], 1)
+        self.assertEqual(effective[0]["description"], "Guarded corrected description")
+        self.assertEqual(result["supplement"]["block_id"], "B1")
+        self.assertEqual(current[queued["omission_id"]]["status"], "resolved")
+
     def test_targeted_reextract_rechecks_candidate_inside_operation_lease(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
