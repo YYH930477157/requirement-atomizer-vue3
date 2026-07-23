@@ -58,6 +58,17 @@ operations:
     path.write_text(text + operations, encoding="utf-8")
 
 
+def write_budget_tool_loop_pipeline_config(path: Path, base_url: str, budget: int) -> None:
+    """带每需求 tokens 上限（route.tool_loop_token_budget）的 tool-loop 审查 yaml。"""
+    write_tool_loop_pipeline_config(path, base_url)
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(
+        "    concurrency: 2",
+        f"    concurrency: 2\n    tool_loop_token_budget: {budget}",
+    )
+    path.write_text(text, encoding="utf-8")
+
+
 def seed_out(out_dir: Path, rows: list[dict[str, Any]]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(out_dir / "atomic_requirements.jsonl", rows)
@@ -319,6 +330,74 @@ class CacheFingerprintTests(unittest.TestCase):
         self.assertNotEqual(key, changed)
         self.assertEqual(original, REVIEW_TOOLS_VERSION)
         self.assertIsInstance(hashlib.sha256(key[3].encode()).hexdigest(), str)   # key 可用
+
+
+class SchemaRepairBudgetTests(unittest.TestCase):
+    """审计 P1-c：schema 修复调用与 tool-loop 首轮共享 usage/预算——修复不再免费放行。"""
+
+    def test_schema_repair_over_budget_falls_to_stub(self) -> None:
+        """首轮恰好花满预算 + 修复调用超 1 token → 抛错进 stub 记数（修复真实发出且被计量）。"""
+        responses = [
+            {"body": final_json_response(
+                {"decision": "bogus-decision", "risk": "low_risk", "confidence": 0.9,
+                 "review_notes": [], "expert_questions": []},
+                usage={"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100})},
+            {"body": final_json_response(
+                {"decision": "accept", "risk": "low_risk", "confidence": 0.9,
+                 "review_notes": [], "expert_questions": []},
+                usage={"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1})},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            seed_out(out_dir, [requirement("SREQ-00000000000000R1", confidence=0.70)])
+            pipeline_path = tmp_path / "review_pipeline.yaml"
+            with ScriptedOpenAIService(lambda body, count: responses.pop(0)) as service:
+                write_budget_tool_loop_pipeline_config(pipeline_path, service.base_url, 100)
+                summary = run_review_pipeline(
+                    out_dir, pipeline_path=pipeline_path, domain_pack_path=None,
+                    route="openai_compatible")
+            reviews = read_jsonl(out_dir / "llm_review_results.jsonl")
+
+        self.assertEqual(summary["llm_failed"], 1)
+        self.assertEqual(summary["llm_reviewed"], 0)
+        self.assertEqual(reviews[0]["generated_by"], "rule_stub")
+        notes = " ".join(reviews[0]["review_notes"])
+        self.assertIn("token budget", notes)
+        self.assertIn("101 > 100", notes)   # 修复调用的 1 token 已计入聚合
+        self.assertEqual(len(service.requests), 2)   # 恰花满仍放行修复，但超支即抛
+
+    def test_schema_repair_within_budget_converges_and_is_counted(self) -> None:
+        """修复后仍不超预算 → 正常收敛；usage 日志聚合含修复调用（99+1=100）。"""
+        responses = [
+            {"body": final_json_response(
+                {"decision": "bogus-decision", "risk": "low_risk", "confidence": 0.9,
+                 "review_notes": [], "expert_questions": []},
+                usage={"prompt_tokens": 90, "completion_tokens": 9, "total_tokens": 99})},
+            {"body": final_json_response(
+                {"decision": "accept", "risk": "low_risk", "confidence": 0.9,
+                 "review_notes": [], "expert_questions": []},
+                usage={"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1})},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            seed_out(out_dir, [requirement("SREQ-00000000000000R2", confidence=0.70)])
+            pipeline_path = tmp_path / "review_pipeline.yaml"
+            with ScriptedOpenAIService(lambda body, count: responses.pop(0)) as service:
+                write_budget_tool_loop_pipeline_config(pipeline_path, service.base_url, 100)
+                with self.assertLogs("requirement_atomizer", level="INFO") as logs:
+                    summary = run_review_pipeline(
+                        out_dir, pipeline_path=pipeline_path, domain_pack_path=None,
+                        route="openai_compatible")
+            reviews = read_jsonl(out_dir / "llm_review_results.jsonl")
+
+        self.assertEqual(summary["llm_reviewed"], 1)
+        self.assertEqual(summary["llm_failed"], 0)
+        self.assertEqual(reviews[0]["decision"], "accept")
+        self.assertEqual(reviews[0]["generated_by"], "llm:mock-review-model")
+        self.assertEqual(len(service.requests), 2)
+        self.assertTrue(any("tokens=100" in message for message in logs.output))
 
 
 if __name__ == "__main__":

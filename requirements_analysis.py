@@ -13,7 +13,7 @@ from ai_review_actions import read_ai_review_states, source_ai_requirement_id
 from compliance import build_compliance_payload, is_compliance_requirement
 from io_utils import read_jsonl
 from requirements_analysis_agent import build_analysis_prompt, validate_llm_item
-from requirements_analysis_excel import write_software_requirements_xlsx
+from requirements_analysis_excel import clarify_display_text, write_software_requirements_xlsx
 from requirements_analysis_rules import classify_ownership
 from requirements_analysis_schema import (
     OWNERSHIP_CO_DESIGN,
@@ -1217,6 +1217,11 @@ def _write_report(path: Path, rows: list[dict[str, Any]], title: str, *, co_desi
             lines.extend(f"- 研发指引: {value}" for value in row.get("developer_guidance") or [])
             lines.extend(f"- 设计候选: {value}" for value in row.get("design_options") or [])
             lines.extend(f"- 验收点: {value}" for value in row.get("acceptance_criteria") or [])
+            # 硬件依赖透出（审计 P1-b）——过 clarify_display_text：待澄清时带
+            # "未经依据校验+原始候选"标注，仅在字段非空时输出
+            hardware_dependency = clarify_display_text(row, "hardware_dependency").strip()
+            if hardware_dependency:
+                lines.append(f"- 硬件依赖: {hardware_dependency}")
         else:
             lines.extend([
                 f"- 中文翻译/说明: {row.get('hardware_summary') or row.get('hardware_translation') or row.get('description') or ''}",

@@ -46,12 +46,18 @@ sequences, `decider_usage`, tokens, and sequence agreement. Without an API key t
 still runs and the report marks `llm_ran: false` — a rule-only result is never presented as a
 comparison.
 
-`queue_all_gaps` registers every currently uncovered, not-yet-queued block as
-`needs_extraction` in one locked batch (per-block queueing exhausted the iteration budget on
-real documents). Blocks already carrying a current `needs_extraction` or `issue_confirmed`
-omission state are excluded from candidates, so re-running the loop over the same directory
-never appends duplicate omission rows; a repeated per-block `resample_section` call is likewise
-idempotent and returns `skipped` without appending.
+`queue_all_gaps` registers the decision-time snapshot candidates
+(`state.unqueued_gap_block_ids` = coverage gaps ∪ failed-section blocks, minus already
+queued) as `needs_extraction` in one locked batch (per-block queueing exhausted the
+iteration budget on real documents). Each candidate is revalidated inside the lock
+(exists in `blocks.jsonl`, not currently pending, source fingerprint matches the current
+text); candidates that fail revalidation are reported in `skipped_block_ids` with reasons
+instead of aborting the batch. Blocks already carrying a current `needs_extraction` or
+`issue_confirmed` omission state are excluded, so re-running the loop over the same
+directory never appends duplicate omission rows; a repeated per-block `resample_section`
+call is likewise idempotent and returns `skipped` without appending. External callers that
+invoke `queue_all_gaps` without snapshot candidates keep the legacy behavior of
+recomputing the currently uncovered set.
 
 The existing targeted omission extractor is LLM-only. Therefore a Phase 1
 `resample_section:<block_id>` decision records the current block as `needs_extraction` and

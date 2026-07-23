@@ -140,14 +140,23 @@ def run_pipeline_task(
                             action="ran", input_path=input_path, config=atomize_config)
         emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "ok", "percent": 100})
 
+    # 审计 P1-d：用户 --kb 必须贯通到审查阶段——此前 atomize 按客户 KB 匹配、审查工具
+    # 却落回默认 KB 复核（KB 双轨错配）。None（未显式传 kb）保持旧默认行为；显式传入时
+    # 同一份解析结果进 run_review_pipeline 与阶段指纹，两侧文件集合严格一致。
+    review_kb_paths = resolve_kb_paths(kb_paths) if kb_paths is not None else None
+    review_config = (
+        {"kb_paths": [str(path) for path in review_kb_paths]}
+        if review_kb_paths is not None
+        else None
+    )
     if skip_review:
         review = None
-    elif atomize_reused and stage_is_reusable(out_dir, "llm-review", route=llm_route):
+    elif atomize_reused and stage_is_reusable(out_dir, "llm-review", route=llm_route, config=review_config):
         review = skipped_stage_payload(out_dir, "llm-review")
-        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="skipped")
+        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="skipped", config=review_config)
         emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "skipped", "percent": 100})
     else:
-        update_run_manifest(out_dir, "llm-review", "running")
+        update_run_manifest(out_dir, "llm-review", "running", config=review_config)
         emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "running", "percent": 0})
         try:
             review = run_review_pipeline(
@@ -156,11 +165,12 @@ def run_pipeline_task(
                 scope=review_scope,
                 llm_review_limit=llm_review_limit,
                 progress_callback=emit_progress,
+                kb_paths=review_kb_paths,
             )
         except Exception as exc:
-            update_run_manifest(out_dir, "llm-review", "failed", error=str(exc))
+            update_run_manifest(out_dir, "llm-review", "failed", error=str(exc), config=review_config)
             raise
-        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="ran")
+        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="ran", config=review_config)
     return {
         "kind": "pipeline",
         "out_dir": str(out_dir),
@@ -483,8 +493,11 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     "ai-extract": "v4",
     "assemble": "v2",
     "functional-synthesis": "v3",
-    "requirements-analysis": "v5",
-    "template-write": "v3",
+    # v6：hardware_dependency 落交付物渲染（xlsx 说明列/co_design_items.md）——
+    # 纯渲染变更不动 analyze 缓存版本，靠 impl 戳让阶段重跑重渲染（审计 P1-b）
+    "requirements-analysis": "v6",
+    # v4：template_writer 走 _notes_text 同步获得硬件依赖行（审计 P1-b）
+    "template-write": "v4",
     "clarification-report": "v5",
 }
 
@@ -500,8 +513,13 @@ _STAGE_BASE_PRODUCERS = {
 }
 
 
-def stage_producer(stage: str) -> str:
-    """阶段 → 生产者版本戳（产物血统：今天拿 v9 数据当新结果看的事故，靠它绝迹）。"""
+def stage_producer(stage: str, *, out_dir: Path | None = None,
+                   kb_paths: list[Any] | None = None) -> str:
+    """阶段 → 生产者版本戳（产物血统：今天拿 v9 数据当新结果看的事故，靠它绝迹）。
+
+    llm-review 额外纳入工具证据内容指纹（KB/blocks/原子需求/蓝皮书索引，审计
+    P1-d）——审查实际读取的证据变了，旧审查产物不得继续复用；out_dir 缺席时
+    保持基础戳（无目录语境兼容）。"""
     producer = _STAGE_BASE_PRODUCERS.get(stage, stage)
     # Phase 0 reserves policy lineage for future agent stages without invalidating any
     # current pipeline cache. There is intentionally no agent stage in CHAIN_ORDER yet.
@@ -525,6 +543,10 @@ def stage_producer(stage: str) -> str:
                 f"{producer}+{PDF_TEXT_REPAIR_VERSION}"
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
             )
+        elif stage == "llm-review":
+            if out_dir is not None:
+                from review_tools import evidence_fingerprint
+                producer = f"{producer}+evidence-{evidence_fingerprint(out_dir, kb_paths)}"
         elif stage == "assemble":
             # assemble 会运行 spec_enrich；富化 prompt/护栏升级必须让阶段续跑失效，
             # 否则旧 run_manifest 会在富化缓存检查之前跳过整个阶段。
@@ -664,7 +686,11 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
     template = Path(template_path).expanduser().resolve() if template_path else None
     payload = {
         "stage": stage,
-        "producer": stage_producer(stage),
+        "producer": stage_producer(
+            stage,
+            out_dir=root,
+            kb_paths=(config or {}).get("kb_paths") if stage == "llm-review" else None,
+        ),
         "route": route or "",
         "inputs": inputs,
         "atomize_resources": (
@@ -826,7 +852,8 @@ def stage_is_reusable(out_dir: Path, stage: str, *,
     if entry:
         if entry.get("status") != "ok":
             return False
-        if entry.get("producer") and entry.get("producer") != stage_producer(stage):
+        if entry.get("producer") and entry.get("producer") != stage_producer(
+                stage, out_dir=out_dir, kb_paths=(config or {}).get("kb_paths")):
             return False
         recorded_fingerprint = str(entry.get("input_fingerprint") or "")
         recorded_route = str(entry.get("route") or "")
@@ -898,10 +925,11 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
             if not isinstance(stages, dict):
                 stages = {}
             entry = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+            producer = stage_producer(stage, out_dir=root, kb_paths=(config or {}).get("kb_paths"))
             if status == "running":
-                entry = {"status": "running", "started": now, "producer": stage_producer(stage)}
+                entry = {"status": "running", "started": now, "producer": producer}
             else:
-                entry.update({"status": status, "finished": now, "producer": stage_producer(stage)})
+                entry.update({"status": status, "finished": now, "producer": producer})
                 if route:
                     entry["route"] = route   # stub 降级 ≠ 真 LLM：账本必须可区分（2026-07-08 审计）
                 if outputs is not None:

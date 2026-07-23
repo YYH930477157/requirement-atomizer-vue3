@@ -104,5 +104,50 @@ class CellSafetyTests(unittest.TestCase):
             assert any("beforeafter" in t for t in texts)  # 控制字符被剥、正文保留
 
 
+class HardwareDependencyRenderTests(unittest.TestCase):
+    """审计 P1-b：hardware_dependency（含 WP2 待澄清标注）必须落到交付物——
+    xlsx 说明列直出；template_writer 走同一 _notes_text 自动获得。"""
+
+    def test_notes_column_renders_hardware_dependency(self) -> None:
+        from requirements_analysis_excel import _notes_text
+
+        notes = _notes_text({
+            "ownership": "co_design", "module": "计量",
+            "hardware_dependency": "需计量芯片支持四费率寄存器",
+        })
+        self.assertIn("硬件依赖：需计量芯片支持四费率寄存器", notes)
+
+    def test_clarified_hardware_dependency_renders_with_fallback_label(self) -> None:
+        """待澄清的依赖带"未经依据校验 + 原始候选"标注透出（clarify_display_text 通道）。"""
+        from requirements_analysis_excel import _notes_text
+
+        notes = _notes_text({
+            "ownership": "co_design", "module": "计量",
+            "hardware_dependency": "待澄清",
+            "clarify_fallback": {"hardware_dependency": "原始候选依赖内容"},
+        })
+        self.assertIn("硬件依赖：待澄清（未经依据校验，需专家核补）", notes)
+        self.assertIn("原始候选（未经依据校验，仅供参考，不得作为实现依据）：原始候选依赖内容", notes)
+
+    def test_empty_hardware_dependency_not_rendered(self) -> None:
+        from requirements_analysis_excel import _notes_text
+
+        notes = _notes_text({"ownership": "software", "module": "计量", "hardware_dependency": ""})
+        self.assertNotIn("硬件依赖：", notes)
+
+    def test_xlsx_notes_column_carries_hardware_dependency(self) -> None:
+        items = [{
+            "ownership": "co_design", "module": "计量", "description": "费控切换",
+            "software_requirement_text": "按费率时段切换",
+            "hardware_dependency": "需内置继电器",
+        }]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "software.xlsx"
+            write_software_requirements_xlsx(items, path)
+            wb = load_workbook(path, data_only=True)
+            texts = [str(c.value) for ws in wb.worksheets for row in ws.iter_rows() for c in row if c.value]
+        self.assertTrue(any("硬件依赖：需内置继电器" in text for text in texts))
+
+
 if __name__ == "__main__":
     unittest.main()

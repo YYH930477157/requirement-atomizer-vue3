@@ -45,6 +45,20 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-23）——专家审核 P0/P2/wheel 修复（worktree `codex/agent-audit-remediation`，待合 main）
+
+- **P0 审计造假撤回（用户确认：20 条扩充案例系实施者代登记，未经人工核对）**：manifest curation 撤回 20 个 ID，`human_review_status` 改 `partial`，reviewed_by/statement 如实记录撤回经过；`agent_eval` 报告 unreviewed_count=35（真实口径，40 案例仅 5 条经核对）。tests/test_agent_eval.py 原先把 25 个 ID 硬编码为预期（绿测固化错误审计），已改为钉死 5 条 + unreviewed 断言。后续任何人核对案例按 README 规则登记，runner 永不自称核对状态。
+- **P2 三条**：agent_loop 全部参数校验前置（max_tokens>=0 先于状态读取/工具执行——此前负值会先写 omission 副作用再崩轨迹）；agent_compare 捕获 AgentLoopInputError（退 2）+ 通用兜底（退 3，不再裸崩），rule 侧报告补 decider_usage/token_accounting；agent_tools 三处 reason 由硬编码 "agent-policy-v2" 改为引用 AGENT_POLICY_VERSION。
+- **P1 wheel 可运行**：py-modules 补 functional_catalog；顶层 schemas/ 以包形式随 wheel 分发（agent_eval/decide_trace 经 Path(__file__).parent 相对定位）；新增 tests/test_packaging_smoke.py——构建 wheel、校验内容、隔离 --target 安装、真实 import + schema 加载（此前验收只在仓库根跑,安装后故障因此漏网;本机补装 wheel 包后冒烟通过）。
+
+## 重大更新（2026-07-23）——专家审核 P1 修复四项（worktree `codex/agent-audit-remediation`，待合 main）
+
+- **P1-a 失败章节候选一致**：`AnalysisState.unqueued_gap_block_ids`（覆盖缺口 ∪ 失败章节块）此前只用于候选生成，`queue_all_gaps` 执行时却重算 uncovered 集合——不再 uncovered 的失败块永远排不上队。修复：`queue_all_gaps(out_dir, block_ids=None)` 直接消费调用方快照候选（`execute_action` 传入 state 属性；未传参保持旧重算行为），锁内逐块重验证（存在/非 pending/源指纹一致），未过验证如实进 `skipped_block_ids`（带原因）不中断；summary 区分 queued/skipped。
+- **P1-b hardware_dependency 落交付物**：WP2 只写字段不透出。修复：xlsx `_notes_text` 增「硬件依赖：」行（过 `clarify_display_text`——待澄清自动带"未经依据校验+原始候选"标注，非空才输出）；template_writer 走 `_notes_text` 自动获得；`co_design_items.md`（`requirements_analysis._write_report` 协同分支）同步补行。纯渲染变更不动 analyze 缓存版本，`STAGE_IMPLEMENTATION_REVISIONS` requirements-analysis→v6、template-write→v4 让阶段重跑重渲染。
+- **P1-c schema 修复纳入预算**：`build_openai_review_tool_loop` 的 schema 修复调用此前走无 sink 的 `chat_json_messages`——首轮花满预算后修复仍放行且不计数。修复：首轮/JSON 修复/schema 修复共享同一 `_usage_sink`，修复前后用 `llm_client._aggregate_usage` 核算，超 budget 抛 `LLMResponseError`（该需求进 stub 记数）；日志 tokens 用含修复调用的聚合值。
+- **P1-d KB 同轨 + 证据指纹**：① desktop run 的 `--kb` 此前只传 atomize——review 新增 `kb_paths` 透传（`run_review_pipeline`→`review_requirements_detailed`→`review_requirements_with_openai`→`make_tool_executor`；None 保持旧默认，解析后的真实列表进汇总 `kb_paths` 字段如实记录，stub/单发不读 KB 则无此字段）；② `review_tools.evidence_fingerprint(out_dir, kb_paths)`（KB 各文件+blocks.jsonl+atomic_requirements.jsonl+蓝皮书索引内容 hash 的确定性 sha1，缺失记 null）进 `llm_cache_key` 指纹载荷（**`LLM_REVIEW_CACHE_VERSION` 升 v4**）与 `stage_producer("llm-review")`（`stage_producer(stage, *, out_dir=None, kb_paths=None)`——无 out_dir 保持基础戳）。
+- **验证**：worktree 全量 1595 tests OK（新增 24 例；skipped=26 为 worktree 环境性跳过——无 out/ 基线 5 golden、无 PySide6、历史样本 env 未设）；agent_eval 四类基线 0.6667/0.5/1.0/1.0 不变。合 main 后按纪律复验 golden 6/6（stub 审查路径未动、analyze 缓存版本未动，预期零漂移）。
+
 ## 重大更新（2026-07-23）——WP2 待澄清兜底渲染（已合 main `889000d`；主检出全量 1571 tests OK、golden 6/6）
 
 - **用户裁定**：交付物不接受裸"待澄清"也不接受"看起来完整"——要兜底候选但必须标注。

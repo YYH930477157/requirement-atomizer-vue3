@@ -38,6 +38,33 @@ def _seed_gap(out: Path) -> None:
     )
 
 
+def _seed_failed_section_covered(out: Path) -> None:
+    """B1 已被需求引句覆盖（不再 uncovered），但被质量报告记为失败章节块。
+
+    审计 P1-a 的现场形态：残存需求/跨章引句/denominator 规则使失败块不再出现在
+    重算的 uncovered 集合里——旧 queue_all_gaps 只看重算集合，失败块永远排不上队。
+    """
+    _write_jsonl(out / "blocks.jsonl", [{
+        "block_id": "B1",
+        "order": 1,
+        "text": "The meter shall log events.",
+        "requirement_like": True,
+        "noise": False,
+    }])
+    _write_jsonl(out / "ai_requirements.jsonl", [{
+        "ai_req_id": "AIR-1",
+        "source_quote": "The meter shall log events.",
+    }])
+    (out / "ai_extract_quality.json").write_text(
+        json.dumps({
+            "failed_sections": 1,
+            "failed_section_ids": ["S1"],
+            "failed_section_block_ids": ["B1"],
+        }),
+        encoding="utf-8",
+    )
+
+
 class AgentToolTests(unittest.TestCase):
     def test_zero_llm_resample_queues_without_calling_targeted_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -121,6 +148,84 @@ class AgentToolTests(unittest.TestCase):
             state = load_analysis_state(out)
             result = execute_action(out, "queue_all_gaps", state)
 
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["details"]["queued_block_ids"], ["B1"])
+
+    def test_queue_all_gaps_snapshot_queues_failed_section_block(self) -> None:
+        """审计 P1-a：快照候选里的失败章节块即使不再 uncovered 也必须被登记——
+        重算路径（未传 block_ids）找不到它，正好作为对照。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _seed_failed_section_covered(out)
+
+            recompute = queue_all_gaps(out)   # 旧路径：B1 已被引句覆盖，不在 uncovered 集合
+            result = queue_all_gaps(out, block_ids=["B1"])
+            rows = list(omission_actions.read_omission_states(out).values())
+
+        self.assertEqual(recompute["status"], "skipped")
+        self.assertEqual(recompute["details"]["queued_block_ids"], [])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["details"]["queued_block_ids"], ["B1"])
+        self.assertEqual(result["details"]["skipped_block_ids"], [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["block_id"], "B1")
+        self.assertEqual(rows[0]["status"], "needs_extraction")
+
+    def test_queue_all_gaps_snapshot_revalidation_skips_with_reasons(self) -> None:
+        """锁内重验证：不存在的块/已 pending 的块不登记，如实进 skipped_block_ids（带原因）。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _write_jsonl(out / "blocks.jsonl", [
+                {"block_id": "B1", "order": 1, "text": "The meter shall log events.",
+                 "requirement_like": True, "noise": False},
+                {"block_id": "B2", "order": 2, "text": "The meter shall store profiles.",
+                 "requirement_like": True, "noise": False},
+            ])
+            _write_jsonl(out / "ai_requirements.jsonl", [])
+            (out / "ai_extract_quality.json").write_text(
+                json.dumps({"failed_sections": 0}), encoding="utf-8")
+            omission_actions.apply_omission_action(
+                out, block_id="B2", status="needs_extraction", reason="pre-queued")
+
+            result = queue_all_gaps(out, block_ids=["B1", "B2", "GHOST", "B1"])
+            rows = list(omission_actions.read_omission_states(out).values())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["details"]["queued_block_ids"], ["B1"])
+        skipped = result["details"]["skipped_block_ids"]
+        self.assertEqual([entry["block_id"] for entry in skipped], ["B2", "GHOST"])
+        self.assertTrue(all(entry["reason"] for entry in skipped))
+        self.assertIn("Queued 1", result["summary"])
+        self.assertIn("Skipped 2", result["summary"])
+        # B2 不重复追行（仍只有预先登记的一行）+ B1 一行
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sum(1 for row in rows if row["block_id"] == "B2"), 1)
+
+    def test_queue_all_gaps_all_candidates_invalid_reports_skipped(self) -> None:
+        """全部快照候选未过验证：不报错中断，status=skipped 且如实说明。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _seed_gap(out)
+            result = queue_all_gaps(out, block_ids=["GHOST"])
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["details"]["queued_block_ids"], [])
+        self.assertEqual(
+            result["details"]["skipped_block_ids"],
+            [{"block_id": "GHOST", "reason": "block 不存在于 blocks.jsonl"}],
+        )
+        self.assertIn("failed revalidation", result["summary"])
+
+    def test_execute_action_feeds_state_snapshot_to_queue_all_gaps(self) -> None:
+        """决策循环路径：execute_action 把 state.unqueued_gap_block_ids（缺口 ∪ 失败块）
+        传给 queue_all_gaps——不再 uncovered 的失败块经调度照样登记。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _seed_failed_section_covered(out)
+            state = load_analysis_state(out)
+            result = execute_action(out, "queue_all_gaps", state)
+
+        self.assertEqual(state.unqueued_gap_block_ids, ("B1",))
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["details"]["queued_block_ids"], ["B1"])
 
