@@ -1,6 +1,8 @@
 # Agent 化 Phase 2 实施规格：Tool-using Reviewer + 软件需求无依据字段强制"待澄清"
 
-状态：**待审核人确认（未冻结，确认前不动工）**
+状态：**已冻结**（2026-07-23 审核人确认 §9 全部五个冻结点，全量 1502 tests 绿；
+冻结时补充一条缓存语义——端点不可复现性下缓存按输入指纹命中、审计靠轨迹可解释性，
+见 §3，不改动任何冻结项实质）
 日期：2026-07-22
 前置：Phase 0（`4161f18`）、Phase 1（`baba522` + v2 `1d3b61c`）、Phase 1.5（`5cd03be`，
 对比裁定"规则保持默认"）、评测扩充（`11af616`，agent-eval-v2 基线 0.6667/0.5/1.0/1.0）；
@@ -81,6 +83,10 @@ Phase 2 把审查从"单次 prompt"升级为**有边界的工具调用审查**�
 - **缓存与版本**：tool-loop 审查为新的 prompt 路径——`PROMPT_VERSION` 升
   `m2-review-v2`，`LLM_REVIEW_CACHE_VERSION` 升 `llm-review-cache-v3`，缓存 key 增
   `REVIEW_TOOLS_VERSION`；stub 审查路径（`build_stub_review`）逐字不动。
+- **缓存语义与不可复现性**：Phase 1.5 实测托管端点同输入输出不可复现。审查缓存
+  按输入指纹命中即可，**不要求模型输出可复现**；但每条审查结果的产出过程必须可
+  由 `llm_trace.jsonl` + `tool_calls` 摘要完整解释（审计纪律落在轨迹可解释性上，
+  不落在输出逐字一致上）。
 - **下游零冲击**（契约锁）：decision 枚举、risk 值域、task_id/身份字段、
   source_refs、`review_states.jsonl` 状态机映射、api_server `/reviews`、
   cosem_behavior_spec.reviews_by_id、Vue 字段全部不变——tool-loop 只改变
