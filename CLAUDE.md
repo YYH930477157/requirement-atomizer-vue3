@@ -45,6 +45,15 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-23）——专家审核第二轮十三项修复（已合 main `e3ad2a7`；主检出全量 1627 tests OK、golden 6/6）
+
+- **正确性**：`coverage_check` 改走 A 轨适配层 `_atomic_to_consistency_row`（2337 条真实产物上共引/重复/引句命中 0/0/0 → 实测恢复；结构化 OBIS 仅从 `parameters.cosem_object.obis` 确定性取），fixture 改真实形状；蓝皮书测试隔离本机 `out/bluebook`；token 计量 `_aggregate_usage` 逐轮归一（混合格式应 125 不再低计成 100/25）；schema 修复续接原 transcript（`chat_with_tools` meta 导出 history）——修复轮保留取证上下文且仍带 tools，工具调用并入 `tool_calls` 摘要。
+- **缓存/指纹纪律**：llm-review 阶段指纹补齐 prompt/cache/tools 三版本 + domain-pack 内容 hash + `review_scope`/`llm_review_limit`（此前 llm-review 是唯一不拼代码版本的阶段，旧阶段产物自然失效）；`llm_review_cache` 锁内追加+fsync+`PermissionError` 重试（对齐 decide_trace）；CLI/Desktop 自定义 KB/domain-pack 全链贯通（review 子命令补 `--kb`，run/desktop 转发，默认包兜底行为不变）。
+- **补抽口径对齐**：`current_omission_candidate_ids` = uncovered ∪（失败章节块 ∩ 现存块）——失败章节登记后可真正 `targeted_reextract`（原必 409 死登记）；`AI_SUPPLEMENT_VERSION` 有意不动（准入闸变化双向兼容，bump 反令现存补丁静默失效）。
+- **分发**：pyproject 补 `desktop_tasks`/`functional_synthesis`/`semantic_quality` + `llm_agents`/`domain_packs` 包数据（AST 闭包无断链）；wheel 冒烟真隔离 cwd（原从源码仓导入假绿）+ 导入探针扩 agent 链 + DEFAULT 路径存在断言。
+- **WP2 一致性与审计收口**：software 项 `hardware_dependency` 归属护栏（跳过+留痕）；LLM 异常/非法返回入 `_mark_enrichment_rejected`（待澄清+fallback）；`co_design_items.md` 四字段走兜底渲染；`agent_compare` 预算预校验（违例 exit 2）+ 双侧 trace 明细落盘（原随临时目录删除）；待办 4 补硬前置（人工核对完成前不动聚类规则）。
+- 版本面：`REVIEW_TOOLS_VERSION`→v3、`LLM_REVIEW_CACHE_VERSION`→v5、`UNFOUNDED_RULE_VERSION`→v3；`AGENT_POLICY_VERSION`/`EXTRACT_GUARDS_VERSION`/`AI_SUPPLEMENT_VERSION`/`PROMPT_VERSION` 不动；stub 路径未动，golden 零漂移。
+
 ## 重大更新（2026-07-23）——专家审核 P0/P2/wheel 修复（已合 main `2cfc3bb`）
 
 - **P0 审计造假撤回（用户确认：20 条扩充案例系实施者代登记，未经人工核对）**：manifest curation 撤回 20 个 ID，`human_review_status` 改 `partial`，reviewed_by/statement 如实记录撤回经过；`agent_eval` 报告 unreviewed_count=35（真实口径，40 案例仅 5 条经核对）。tests/test_agent_eval.py 原先把 25 个 ID 硬编码为预期（绿测固化错误审计），已改为钉死 5 条 + unreviewed 断言。后续任何人核对案例按 README 规则登记，runner 永不自称核对状态。

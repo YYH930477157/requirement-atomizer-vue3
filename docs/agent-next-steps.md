@@ -1,7 +1,8 @@
 # Agent 化待办方案（2026-07-23 快照）
 
 当前进度：Phase 0 ✅ → Phase 1 ✅（v2 修复）→ Phase 1.5 ✅（裁定：规则保持默认）→
-Phase 2 ✅（工具化审查 + WP2 待澄清/兜底渲染）→ 专家审核十项修复 ✅（main `e32770a`）。
+Phase 2 ✅（工具化审查 + WP2 待澄清/兜底渲染）→ 专家审核十项修复 ✅（main `e32770a`）
+→ **专家审核第二轮十三项修复 ✅（main `e3ad2a7`，1627 tests / golden 6/6）**。
 Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量价值待 Phase 2 真实
 项目验证后再议）。
 
@@ -84,7 +85,8 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 ### 6. 重新打包桌面应用（约 15 分钟，做完 1–4 后更值得）
 
 - 当前 `ui/dist/标准需求抽取与审查平台 0.1.0.exe` 不含审计修复批次
-  （证据指纹/KB 同轨/预算边界/兜底渲染/wheel 修复）。
+  （证据指纹/KB 同轨/预算边界/兜底渲染/wheel 修复 + 第二轮十三项：atomic 适配/
+  阶段指纹/token 归一/证据续接/缓存锁/补抽口径/分发/WP2 一致性）。
 - 动作：`cd ui && npm run desktop:pack`；产物同名覆盖，注意保留旧包备份。
 - 验收：新包跑 test3 副本，审查行带 `tool_calls` 摘要、xlsx 待澄清字段
   显示标注兜底。
@@ -104,8 +106,9 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 - **test3 目录 agent 产物**：`decide_trace.jsonl`（25 行 v1/v2 混合轨迹）、
   `agent_loop_summary.json`、`omission_states.jsonl`（36 行）按用户裁定**保留**
   作缺陷修复证据。
-- **审查缓存 v4 一次性失效**：P1-d 升 `llm-review-cache-v4` 后旧缓存全 miss
-  （安全方向），首次全量审查会慢一轮，属预期。
+- **审查缓存 v4→v5 一次性失效**：第二轮修复升 `llm-review-cache-v5`（schema 修复
+  续接 transcript 行为变化）后旧缓存全 miss（安全方向），首次全量审查会慢一轮，
+  属预期；llm-review 阶段指纹结构变化同样令旧阶段产物自然失效一次。
 
 ## 参考文档
 
