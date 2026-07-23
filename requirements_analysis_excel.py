@@ -162,6 +162,11 @@ def _notes_text(item: dict[str, Any]) -> str:
     related = [str(value).strip() for value in item.get("related_dlms_objects") or [] if str(value).strip()]
     if related:
         notes.append("关联 DLMS 对象：" + "、".join(related))
+    # 硬件依赖落交付列（审计 P1-b：WP2 只写字段不透出，研发看不到依赖内容及其待澄清
+    # 状态）——clarify_display_text 处理：待澄清时自动带"未经依据校验+原始候选"标注
+    hardware_dependency = clarify_display_text(item, "hardware_dependency").strip()
+    if hardware_dependency:
+        notes.append(f"硬件依赖：{hardware_dependency}")
     notes.extend(f"待澄清冲突：{value}" for value in item.get("conflict_flags") or [])
     # 富化软标随交付物同行：编造数字/遗漏漂移必须在研发看的列里可见（2026-07-08 审计 B1）
     notes.extend(f"⚠ 富化待核：{value}" for value in item.get("enrichment_warnings") or [])

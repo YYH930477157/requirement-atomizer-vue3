@@ -817,6 +817,61 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert "实现移动采集协议流程" in report
             assert "验证移动采集协议联通" in report
 
+    def test_co_design_report_renders_hardware_dependency(self) -> None:
+        """审计 P1-b：协同项的硬件依赖透出到 co_design_items.md——此前研发看不到依赖内容。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [{
+                "ai_req_id": "AI-CD",
+                "description": "Device with mobile data concentrator function.",
+                "source_quote": "Device with mobile data concentrator function.",
+                "source_block_ids": ["B-1"],
+                "module": "communication",
+            }])
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{
+                    "software_requirement_text": "Device with mobile data concentrator function.",
+                    "hardware_dependency": "mobile data concentrator hardware",
+                }]}
+
+            run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            report = (tmp_path / "co_design_items.md").read_text(encoding="utf-8")
+
+        assert item["ownership"] == "co_design"
+        assert item["hardware_dependency"] == "mobile data concentrator hardware"
+        assert "- 硬件依赖: mobile data concentrator hardware" in report
+
+    def test_co_design_report_renders_clarified_hardware_dependency_with_label(self) -> None:
+        """待澄清的硬件依赖带标注透出（未经依据校验 + 原始候选）——依赖与其待澄清状态同行。"""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_path = Path(td)
+            write_jsonl(tmp_path / "ai_requirements.jsonl", [{
+                "ai_req_id": "AI-CD",
+                "description": "Device with mobile data concentrator function.",
+                "source_quote": "Device with mobile data concentrator function.",
+                "source_block_ids": ["B-1"],
+                "module": "communication",
+            }])
+
+            def fake_chat(system: str, user: str) -> dict:
+                return {"items": [{
+                    "software_requirement_text": "Device with mobile data concentrator function.",
+                    "hardware_dependency": "concentrator buffer 4000 entries",   # 4000 无据
+                }]}
+
+            run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
+            payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
+            item = payload["items"][0]
+            report = (tmp_path / "co_design_items.md").read_text(encoding="utf-8")
+
+        assert item["hardware_dependency"] == "待澄清"
+        assert "- 硬件依赖: 待澄清（未经依据校验，需专家核补）" in report
+        assert "原始候选" in report
+        assert "concentrator buffer 4000 entries" in report
+
     def test_concurrent_enrichment_is_correct_and_reports_progress(self) -> None:
         """并发富化（288 条规模的关键）：多条并发跑、每条落对自己的 item、逐条进度上报。"""
         with tempfile.TemporaryDirectory() as td:

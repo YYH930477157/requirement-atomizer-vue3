@@ -9,10 +9,12 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from blue_book_lookup import condensed_text, load_index, lookup_class, lookup_class_by_name
 from io_utils import read_jsonl
@@ -219,6 +221,62 @@ def _resolve_blue_book_index(explicit: Path | None, out_dir: Path) -> Path | Non
         if candidate.exists():
             return candidate
     return None
+
+
+def _hash_file_content(path: Path | None) -> str | None:
+    """文件内容 sha256；缺失/非文件如实返回 None（指纹里记 null，不猜不跳过）。"""
+    if path is None:
+        return None
+    candidate = Path(path).expanduser()
+    if not candidate.is_file():
+        return None
+    digest = hashlib.sha256()
+    with candidate.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _evidence_payload(out_dir: Path, kb_paths: Iterable[str | Path] | None) -> dict[str, Any]:
+    """工具实际加载的证据文件集合 + 内容 hash（KB/原文块/原子需求/蓝皮书索引）。
+
+    KB 与蓝皮书索引按 make_tool_executor 同一回退路径解析——指纹覆盖的文件集合
+    必须等于工具真实读取的集合，否则改证据后旧审查被静默复用（审计 P1-d）。"""
+    root = Path(out_dir).expanduser().resolve()
+    if kb_paths is None:
+        from requirement_kb.cli import default_kb_paths
+        resolved_kb = list(default_kb_paths())
+    else:
+        resolved_kb = [Path(path) for path in kb_paths]
+    index_path = _resolve_blue_book_index(None, root)
+    return {
+        "kb": [
+            {
+                "path": str(Path(path).expanduser().resolve()),
+                "sha256": _hash_file_content(Path(path)),
+            }
+            for path in resolved_kb
+        ],
+        "blocks_jsonl": _hash_file_content(root / "blocks.jsonl"),
+        "atomic_requirements_jsonl": _hash_file_content(root / "atomic_requirements.jsonl"),
+        "blue_book_index": {
+            "path": str(index_path) if index_path is not None else None,
+            "sha256": _hash_file_content(index_path),
+        },
+    }
+
+
+def evidence_fingerprint(out_dir: Path, kb_paths: Iterable[str | Path] | None = None) -> str:
+    """工具证据的内容指纹（确定性聚合 sha1）。
+
+    改 KB 任一文件、blocks.jsonl、atomic_requirements.jsonl 或蓝皮书索引的内容 →
+    指纹变 → 审查缓存 key（llm_pipeline.llm_cache_key）与 llm-review 阶段 producer
+    （desktop_tasks.stage_producer）随之失效；缺失文件如实记 null。"""
+    canonical = json.dumps(
+        _evidence_payload(out_dir, kb_paths),
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
 
 
 def _trim(text: Any, max_chars: int) -> str:

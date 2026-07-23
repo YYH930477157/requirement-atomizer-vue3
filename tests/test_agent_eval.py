@@ -52,8 +52,9 @@ class AgentEvalDatasetTests(unittest.TestCase):
 
     def test_manifest_classification_baseline_matches_current_rules(self) -> None:
         cases = agent_eval.load_cases(EVAL_DIR)
-        report = agent_eval.evaluate_cases(cases)
         manifest = json.loads((EVAL_DIR / "manifest.json").read_text(encoding="utf-8"))
+        reviewed_ids = set(manifest["curation"]["reviewed_case_ids"])
+        report = agent_eval.evaluate_cases(cases, reviewed_ids=reviewed_ids)
 
         self.assertEqual(manifest["case_count"], len(cases))
         self.assertEqual(manifest["category_counts"], agent_eval.category_counts(cases))
@@ -61,7 +62,9 @@ class AgentEvalDatasetTests(unittest.TestCase):
         self.assertEqual(manifest["grouping_baseline"], report["grouping"])
         self.assertEqual(manifest["must_ask_baseline"], report["must_ask"])
         self.assertEqual(manifest["hallucination_baseline"], report["hallucination"])
-        self.assertEqual(manifest["curation"]["human_review_status"], "reviewed")
+        self.assertEqual(manifest["curation"]["human_review_status"], "partial")
+        # 审计纪律（2026-07-23 用户裁定）：只有经审核人逐条核对的 5 条可登记 reviewed；
+        # 实施者代登记的 20 条已撤回——本断言钉死"未核对不得入册"，绿测不得再固化错误审计
         self.assertEqual(
             manifest["curation"]["reviewed_case_ids"],
             [
@@ -70,28 +73,9 @@ class AgentEvalDatasetTests(unittest.TestCase):
                 "classify-005",
                 "classify-006",
                 "must-ask-001",
-                "classify-009",
-                "classify-010",
-                "classify-011",
-                "classify-012",
-                "grouping-005",
-                "grouping-006",
-                "grouping-007",
-                "grouping-008",
-                "must-ask-005",
-                "must-ask-006",
-                "must-ask-007",
-                "must-ask-008",
-                "must-ask-009",
-                "must-ask-010",
-                "hallucination-005",
-                "hallucination-006",
-                "hallucination-007",
-                "hallucination-008",
-                "hallucination-009",
-                "hallucination-010",
             ],
         )
+        self.assertEqual(len(report["unreviewed_case_ids"]), len(cases) - 5)
 
     def test_cli_writes_one_success_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

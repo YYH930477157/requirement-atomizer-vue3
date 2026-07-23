@@ -78,7 +78,6 @@ class AppendTests(unittest.TestCase):
             items = [item("时钟", "硬件 RTC 选型", ownership="hardware", seq_hint=1),
                      item("时钟", "温补校准", ownership="co_design", seq_hint=2)]
             report = tw.append_analysis_to_template(template, items, out)
-
             self.assertEqual(report["skipped_hardware"], 1)                  # 硬件独占不进列表
             ws = load_workbook(out)["时钟需求"]
             self.assertEqual(ws.cell(row=4, column=4).value, "温补校准")
@@ -119,6 +118,18 @@ class AppendTests(unittest.TestCase):
             ws = load_workbook(out)["时钟需求"]
             self.assertNotEqual(ws.cell(row=4, column=4).data_type, "f")
             self.assertNotEqual(ws.cell(row=4, column=6).data_type, "f")
+
+    def test_notes_column_inherits_hardware_dependency(self) -> None:
+        """审计 P1-b：template_writer 走 _notes_text——硬件依赖（含待澄清标注）自动落成文列。"""
+        with tempfile.TemporaryDirectory() as td:
+            template = Path(td) / "t.xlsx"
+            out = Path(td) / "written.xlsx"
+            make_template(template)
+            row = item("时钟", "温补校准", ownership="co_design", seq_hint=1)
+            row["hardware_dependency"] = "需温补晶振"
+            tw.append_analysis_to_template(template, [row], out)
+            ws = load_workbook(out)["时钟需求"]
+            self.assertIn("硬件依赖：需温补晶振", str(ws.cell(row=4, column=7).value))
 
 
 class RunWriterTests(unittest.TestCase):

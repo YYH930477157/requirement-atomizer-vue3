@@ -46,6 +46,7 @@ py-modules = [
   "agent_tools",
   "ai_extract",
   "merged_consistency",
+  "functional_catalog",
   "api_server",
   "assemble_spec",
   "atomic_requirement_schema",
@@ -113,6 +114,9 @@ version = {attr = "version.__version__"}
 [tool.setuptools.package-data]
 gui = ["theme.qss.template"]
 parsers = ["data/*.gz", "data/*.md"]
+# 顶层 schemas/ 以包形式随 wheel 分发——agent_eval/decide_trace 经 Path(__file__).parent
+# 相对定位 schema 文件,不打包则安装后 ModuleNotFoundError/FileNotFoundError（审计 P1）
+schemas = ["*.json"]
 
 [tool.setuptools.packages.find]
-include = ["gui*", "parsers*", "requirement_kb*"]
+include = ["gui*", "parsers*", "requirement_kb*", "schemas"]

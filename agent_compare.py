@@ -14,7 +14,12 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent_loop import DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_TOKENS, run_agent_loop
+from agent_loop import (
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_MAX_TOKENS,
+    AgentLoopInputError,
+    run_agent_loop,
+)
 from decide_trace import DECIDE_TRACE_FILE
 
 ENVELOPE_SCHEMA_VERSION = "1.0"
@@ -98,7 +103,9 @@ def run_comparison(
             "termination_reason": rule_summary["termination_reason"],
             "readiness": rule_summary["readiness"],
             "actions": rule_actions,
+            "decider_usage": rule_summary["decider_usage"],
             "tokens_used": rule_summary["tokens_used"],
+            "token_accounting": rule_summary["token_accounting"],
         },
         "llm": (
             {
@@ -167,7 +174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "comparison": report,
         }
         code = 0
-    except AgentCompareInputError as exc:
+    except (AgentCompareInputError, AgentLoopInputError) as exc:
         envelope = {
             "tool": "requirement-atomizer",
             "schema_version": ENVELOPE_SCHEMA_VERSION,
@@ -177,6 +184,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "error": {"type": "input_error", "message": str(exc)},
         }
         code = 2
+    except Exception as exc:  # 与 agent_loop 同款最终兜底——运行时错误也出 envelope,不裸崩
+        envelope = {
+            "tool": "requirement-atomizer",
+            "schema_version": ENVELOPE_SCHEMA_VERSION,
+            "command": "agent-compare",
+            "ok": False,
+            "output_dir": str(out_dir),
+            "error": {"type": "pipeline_error", "message": f"{type(exc).__name__}: {exc}"},
+        }
+        code = 3
     print(json.dumps(envelope, ensure_ascii=False))
     return code
 

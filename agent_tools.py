@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterable
 
 import clarification_report
 import omission_actions
+from agent_policy import AGENT_POLICY_VERSION
 from agent_state import PENDING_OMISSION_STATUSES
 from ai_review_actions import source_ai_requirement_id
 from io_utils import read_jsonl
@@ -52,7 +53,7 @@ def resample_section(
                 block_id=block_id,
                 omission_id=omission_id,
                 status="needs_extraction",
-                reason="Queued by agent-policy-v2; semantic extraction requires an LLM-capable worker.",
+                reason=f"Queued by {AGENT_POLICY_VERSION}; semantic extraction requires an LLM-capable worker.",
                 actor="agent-loop",
                 expected_source_fingerprint=source_fingerprint,
             )
@@ -70,7 +71,7 @@ def resample_section(
         block_id=block_id,
         omission_id=omission_id,
         actor="agent-loop",
-        reason="Selected by agent-policy-v2.",
+        reason=f"Selected by {AGENT_POLICY_VERSION}.",
         route="openai_compatible",
         expected_source_fingerprint=source_fingerprint,
     )
@@ -81,45 +82,85 @@ def resample_section(
     }
 
 
-def queue_all_gaps(out_dir: Path) -> dict[str, Any]:
+def queue_all_gaps(out_dir: Path, block_ids: Iterable[str] | None = None) -> dict[str, Any]:
     """Queue every currently uncovered, not-yet-queued block in one locked batch.
 
     Per-block queueing exhausted the iteration budget on real documents (test3: 26 gaps
     vs 10 iterations); the batch keeps one iteration for clarification and stop.
+
+    block_ids（可选）：调用方的状态快照候选——决策循环经 execute_action 把
+    ``AnalysisState.unqueued_gap_block_ids``（覆盖缺口 ∪ 失败章节块）传入；不再
+    uncovered 的失败块（残存需求/跨章引句/denominator 规则所致）因此仍能登记，
+    否则重算路径永远排不上它们、failed_sections 无人处理。None（外部直接调用）
+    保持旧行为：锁内重算当前 uncovered 集合。无论哪条路径，锁内逐块重新验证
+    （存在于 blocks.jsonl、当前 omission 不在 pending、源指纹与当前文本一致），
+    未过验证的块记入 details 的 skipped_block_ids（带原因），不报错中断。
     """
     root = Path(out_dir).expanduser().resolve()
     with omission_actions.extraction_operation_lock(root, operation="agent-queue"):
-        candidates = sorted(
-            omission_actions.current_omission_candidate_ids(root) - _pending_omission_block_ids(root)
-        )
-        queued_ids: list[str] = []
-        for block_id in candidates:
-            block = _block_by_id(root, block_id)
-            text = str(block.get("text") or "")
-            omission_actions.apply_omission_action(
-                root,
-                block_id=block_id,
-                omission_id=omission_actions.make_omission_id(block_id, text),
-                status="needs_extraction",
-                reason="Queued by agent-policy-v2 (batch); semantic extraction requires an LLM-capable worker.",
-                actor="agent-loop",
-                expected_source_fingerprint=omission_actions.omission_source_fingerprint(block_id, text),
+        if block_ids is None:
+            candidates = sorted(
+                omission_actions.current_omission_candidate_ids(root) - _pending_omission_block_ids(root)
             )
+        else:
+            candidates = sorted({str(value).strip() for value in block_ids if str(value).strip()})
+        pending = _pending_omission_block_ids(root)
+        queued_ids: list[str] = []
+        skipped: list[dict[str, str]] = []
+        for block_id in candidates:
+            try:
+                block = _block_by_id(root, block_id)
+            except ValueError:
+                skipped.append({"block_id": block_id, "reason": "block 不存在于 blocks.jsonl"})
+                continue
+            if block_id in pending:
+                skipped.append({
+                    "block_id": block_id,
+                    "reason": "omission 已登记（needs_extraction/issue_confirmed），不重复排队",
+                })
+                continue
+            text = str(block.get("text") or "")
+            try:
+                omission_actions.apply_omission_action(
+                    root,
+                    block_id=block_id,
+                    omission_id=omission_actions.make_omission_id(block_id, text),
+                    status="needs_extraction",
+                    reason=f"Queued by {AGENT_POLICY_VERSION} (batch); semantic extraction requires an LLM-capable worker.",
+                    actor="agent-loop",
+                    expected_source_fingerprint=omission_actions.omission_source_fingerprint(block_id, text),
+                )
+            except (ValueError, omission_actions.OmissionConflictError) as exc:
+                # 快照 → 登记的窗口内文本/身份被改写：如实记 skipped，不中断整批
+                skipped.append({"block_id": block_id, "reason": str(exc)})
+                continue
             queued_ids.append(block_id)
+    details: dict[str, Any] = {"queued_block_ids": queued_ids, "skipped_block_ids": skipped}
     if not queued_ids:
+        if skipped:
+            return {
+                "status": "skipped",
+                "summary": (
+                    f"No blocks were queued; {len(skipped)} candidate(s) failed "
+                    "revalidation (see skipped_block_ids)."
+                ),
+                "details": details,
+            }
         return {
             "status": "skipped",
             "summary": "No unqueued coverage gaps remain; nothing was appended.",
-            "details": {"queued_block_ids": []},
+            "details": details,
         }
-    return {
-        "status": "ok",
-        "summary": (
-            f"Queued {len(queued_ids)} coverage gaps for extraction; "
-            "zero-LLM mode did not execute semantic resampling."
-        ),
-        "details": {"queued_block_ids": queued_ids},
-    }
+    summary = (
+        f"Queued {len(queued_ids)} blocks for extraction; "
+        "zero-LLM mode did not execute semantic resampling."
+    )
+    if skipped:
+        summary += (
+            f" Skipped {len(skipped)} candidate(s) that failed revalidation "
+            "(see skipped_block_ids)."
+        )
+    return {"status": "ok", "summary": summary, "details": details}
 
 
 def recheck(out_dir: Path, req_id: str) -> dict[str, Any]:
@@ -166,7 +207,9 @@ def execute_action(out_dir: Path, action: str, state: "AnalysisState") -> dict[s
     if action.startswith("resample_section:"):
         return resample_section(out_dir, action.split(":", 1)[1], allow_llm=False)
     if action == "queue_all_gaps":
-        return queue_all_gaps(out_dir)
+        # 决策循环路径消费状态快照候选（覆盖缺口 ∪ 失败章节块）——不再 uncovered 的
+        # 失败块也必须能登记；快照外的块绝不入队（与候选生成口径严格一致）
+        return queue_all_gaps(out_dir, block_ids=state.unqueued_gap_block_ids)
     if action.startswith("recheck:"):
         return recheck(out_dir, action.split(":", 1)[1])
     if action == "ask_clarification":

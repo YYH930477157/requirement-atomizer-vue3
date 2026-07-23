@@ -99,6 +99,10 @@ def run_agent_loop(
         raise AgentLoopInputError(
             f"max_iterations must be between 1 and {MAX_ITERATIONS}"
         )
+    # 审计纪律：全部参数校验必须先于状态读取与工具执行——此前 max_tokens=-1 会
+    # 先写 omission 副作用、再因轨迹 schema 拒负值崩掉（有副作用、无轨迹）
+    if int(max_tokens) < 0:
+        raise AgentLoopInputError(f"max_tokens must be >= 0, got {max_tokens}")
     if decider not in ("rule", "llm"):
         raise AgentLoopInputError(f"decider must be 'rule' or 'llm', got: {decider!r}")
     if decider == "llm" and llm_config is None:

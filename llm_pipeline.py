@@ -19,6 +19,7 @@ from llm_client import (
     LLMConnectionError,
     LLMError,
     LLMResponseError,
+    _aggregate_usage,
     chat_json,
     chat_json_messages,
     chat_with_tools,
@@ -26,7 +27,7 @@ from llm_client import (
 from llm_review_schema import validate_llm_review_result_payload, validate_llm_review_results
 from resources import package_root
 from review_state import RequirementReviewState, merge_review_states, review_event_key, review_state_lock
-from review_tools import REVIEW_TOOLS_VERSION, TOOLS as REVIEW_TOOLS, make_tool_executor
+from review_tools import REVIEW_TOOLS_VERSION, TOOLS as REVIEW_TOOLS, evidence_fingerprint, make_tool_executor
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
@@ -38,8 +39,10 @@ DEFAULT_DOMAIN_PACK_PATH = _PACKAGE_ROOT / "domain_packs" / "dlms_cosem" / "pack
 PROMPT_VERSION = "m2-review-v2"
 # Cache rows contain policy-normalized output. Bump this whenever deterministic
 # review post-processing changes so an older normalized decision cannot leak through.
+# v4：缓存 key 纳入工具证据内容指纹（review_tools.evidence_fingerprint——KB/blocks/
+# 原子需求/蓝皮书索引），改证据后旧审查不再静默复用；schema 修复纳入共享预算计量
 # v3：缓存 key 纳入 REVIEW_TOOLS_VERSION 与执行器模式（tool_loop/single_shot）
-LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v3"
+LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v4"
 # Agent Phase 2 冻结口径：每需求 tool-loop tokens 上限（yaml route.tool_loop_token_budget 可调）；
 # 超限的需求进 stub 并在 llm_failed 记数（全跑不设总顶——审查本质是批处理）
 TOOL_LOOP_DEFAULT_TOKEN_BUDGET = 20000
@@ -77,6 +80,9 @@ class ReviewBatchResult:
     llm_reviewed: int
     rule_stub: int
     llm_failed: int
+    # tool-loop 审查实际使用的 KB 路径（显式传入或默认回退解析后的真实值）——
+    # 审查汇总如实记录 KB 选择；空 = 本次未走工具化审查（stub/单发不读 KB）
+    kb_paths: tuple[str, ...] = ()
 
 
 def load_review_pipeline(path: Path) -> ReviewPipeline:
@@ -182,6 +188,7 @@ def review_requirements_detailed(
     scope: str | None = None,
     llm_review_limit: int = 0,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    kb_paths: list[Path] | None = None,
 ) -> ReviewBatchResult:
     route_name = resolve_route_name(pipeline, route)
     if route_name == "stub":
@@ -204,6 +211,7 @@ def review_requirements_detailed(
         scope=scope,
         llm_review_limit=llm_review_limit,
         progress_callback=progress_callback,
+        kb_paths=kb_paths,
     )
 
 
@@ -240,6 +248,7 @@ def review_requirements_with_openai(
     scope: str | None,
     llm_review_limit: int = 0,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    kb_paths: list[Path] | None = None,
 ) -> ReviewBatchResult:
     # env 覆盖先行（真实反馈 2026-07-14：审核 33 分钟成瓶颈）——llm_config_from_route 内部
     # 会对 model/base_url 应用覆盖,但 concurrency 此前从**原始 yaml** 读,GUI 设置的并发
@@ -254,9 +263,23 @@ def review_requirements_with_openai(
     # Phase 2：yaml operations 声明 executor=tool_loop → 工具化融合审查（每条需求一次
     # 有界 tool-loop 调用，模型可调用 review_tools 的确定性只读工具取证）；未声明保持单发。
     tool_loop: dict[str, Any] | None = None
+    evidence = ""
+    used_kb_paths: tuple[str, ...] = ()
     if tool_loop_enabled(pipeline):
         token_budget = int(route_payload.get("tool_loop_token_budget") or TOOL_LOOP_DEFAULT_TOKEN_BUDGET)
-        tool_loop = {"executor": make_tool_executor(out_dir), "token_budget": token_budget}
+        # 显式 kb_paths 透传（审计 P1-d：调用方 --kb 必须与 atomize 同轨，不得落回默认
+        # KB 复核）；None 时按工具执行器同一回退解析为默认 KB——解析后的真实列表同时
+        # 进工具执行器与证据指纹，两侧文件集合严格一致
+        if kb_paths is None:
+            from requirement_kb.cli import default_kb_paths
+            resolved_kb = [Path(path) for path in default_kb_paths()]
+        else:
+            resolved_kb = [Path(path) for path in kb_paths]
+        used_kb_paths = tuple(str(path) for path in resolved_kb)
+        tool_loop = {"executor": make_tool_executor(out_dir, kb_paths=resolved_kb), "token_budget": token_budget}
+        # 证据指纹必须先于缓存查询——工具实际读取的证据（KB/blocks/原子需求/蓝皮书
+        # 索引）变了，旧审查缓存不得命中
+        evidence = evidence_fingerprint(out_dir, resolved_kb)
 
     reviews: list[dict[str, Any] | None] = [None] * len(requirements)
     pending: list[int] = []
@@ -274,7 +297,7 @@ def review_requirements_with_openai(
             reviews[index] = build_stub_review(requirement, pipeline)
             rule_stub += 1
             continue
-        cache_key = llm_cache_key(requirement, client_config.model, pipeline, scope_config)
+        cache_key = llm_cache_key(requirement, client_config.model, pipeline, scope_config, evidence=evidence)
         cached_review = cache.get(cache_key)
         if cached_review is not None:
             reviews[index] = apply_deterministic_review_policy(requirement, pipeline, cached_review)
@@ -321,7 +344,7 @@ def review_requirements_with_openai(
             completed_llm += 1
             record_progress()
             new_cache_rows.append(llm_cache_row(
-                requirement, client_config.model, pipeline, scope_config, review,
+                requirement, client_config.model, pipeline, scope_config, review, evidence=evidence,
             ))
         reviews[index] = review
 
@@ -365,7 +388,7 @@ def review_requirements_with_openai(
                     completed_llm += 1
                     record_progress()
                     new_cache_rows.append(llm_cache_row(
-                        requirement, client_config.model, pipeline, scope_config, review,
+                        requirement, client_config.model, pipeline, scope_config, review, evidence=evidence,
                     ))
                 reviews[index] = review
         finally:
@@ -381,6 +404,7 @@ def review_requirements_with_openai(
         llm_reviewed=llm_reviewed,
         rule_stub=rule_stub,
         llm_failed=llm_failed,
+        kb_paths=used_kb_paths,
     )
 
 
@@ -559,6 +583,9 @@ def build_openai_review_tool_loop(
     schema additionalProperties 允许）。轮顶耗尽/token 超预算/端点不支持 tools → 抛
     LLMError，调用方按现有失败路径进 stub 并记数（不得伪造模型已审）。"""
     user_prompt = build_user_prompt(requirement)
+    # tool-loop 首轮、JSON 解析修复、schema 修复共享同一 usage 汇聚（审计 P1-c）——
+    # 此前 schema 修复走无 sink 的 chat_json_messages：首轮花满预算后修复仍放行且不计数
+    usage_sink: list[dict[str, Any]] = []
     payload, meta = chat_with_tools(
         config,
         [
@@ -568,6 +595,7 @@ def build_openai_review_tool_loop(
         REVIEW_TOOLS,
         on_tool_call=tool_executor,
         token_budget=token_budget,
+        _usage_sink=usage_sink,
     )
     review, errors = review_with_validation_errors(requirement, pipeline, payload, model=config.model)
     if errors:
@@ -576,6 +604,11 @@ def build_openai_review_tool_loop(
             "The previous JSON schema validation failed: "
             + "; ".join(f"{issue.path}: {issue.message}" for issue in errors[:5])
         )
+        spent = _aggregate_usage(usage_sink)["usage"]["total_tokens"]
+        if token_budget is not None and spent > token_budget:
+            raise LLMResponseError(
+                f"tool loop token budget exhausted before schema repair: "
+                f"{spent} > {token_budget} tokens")
         payload = chat_json_messages(
             config,
             [
@@ -584,20 +617,26 @@ def build_openai_review_tool_loop(
                 {"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)},
                 {"role": "user", "content": repair_prompt},
             ],
+            _usage_sink=usage_sink,
         )
+        spent = _aggregate_usage(usage_sink)["usage"]["total_tokens"]
+        if token_budget is not None and spent > token_budget:
+            raise LLMResponseError(
+                f"tool loop token budget exceeded: {spent} > {token_budget} tokens "
+                "(schema repair)")
         review, errors = review_with_validation_errors(requirement, pipeline, payload, model=config.model)
     if errors:
         message = "; ".join(f"{issue.path}: {issue.message}" for issue in errors[:5])
         raise LLMResponseError(f"invalid LLM review result: {message}")
     review["tool_calls"] = list(meta.get("tool_calls") or [])
-    usage = meta.get("usage") or {}
+    aggregated = _aggregate_usage(usage_sink)   # 含修复调用的真实聚合值
     LOGGER.info(
         "tool-loop 审查 %s：%s 轮、%s 次工具调用、tokens=%s%s",
         requirement_identity(requirement),
         meta.get("rounds"),
         len(review["tool_calls"]),
-        usage.get("total_tokens", 0),
-        "" if meta.get("usage_complete") else "(usage partial)",
+        aggregated["usage"].get("total_tokens", 0),
+        "" if aggregated["usage_complete"] else "(usage partial)",
     )
     return review
 
@@ -702,6 +741,8 @@ def llm_cache_key(
     model: str,
     pipeline: ReviewPipeline,
     scope_config: dict[str, Any],
+    *,
+    evidence: str = "",
 ) -> tuple[str, str, str, str]:
     fingerprint_payload = {
         "cache_version": LLM_REVIEW_CACHE_VERSION,
@@ -710,6 +751,9 @@ def llm_cache_key(
         # 否则旧执行器/旧工具面的缓存审查会静默冒充新产物（AGENTS.md 缓存纪律）
         "review_tools_version": REVIEW_TOOLS_VERSION,
         "review_executor": "tool_loop" if tool_loop_enabled(pipeline) else "single_shot",
+        # 工具实际读取的证据内容指纹（审计 P1-d）：改 KB/blocks/原子需求/蓝皮书索引
+        # 后旧审查不得命中；single_shot 不读证据，恒为空串
+        "evidence_fingerprint": evidence,
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -751,9 +795,11 @@ def llm_cache_row(
     pipeline: ReviewPipeline,
     scope_config: dict[str, Any],
     review: dict[str, Any],
+    *,
+    evidence: str = "",
 ) -> dict[str, Any]:
     requirement_id = requirement_identity(requirement)
-    cache_key = llm_cache_key(requirement, model, pipeline, scope_config)
+    cache_key = llm_cache_key(requirement, model, pipeline, scope_config, evidence=evidence)
     return {
         "stable_req_id": requirement_id,
         "requirement_id": requirement_id,
@@ -869,6 +915,7 @@ def run_review_pipeline(
     scope: str | None = None,
     llm_review_limit: int = 0,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    kb_paths: list[Path] | None = None,
 ) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     pipeline_path = pipeline_path.expanduser().resolve()
@@ -887,6 +934,7 @@ def run_review_pipeline(
         scope=scope,
         llm_review_limit=llm_review_limit,
         progress_callback=progress_callback,
+        kb_paths=kb_paths,
     )
     reviews = result.reviews
     states = result.states
@@ -896,7 +944,7 @@ def run_review_pipeline(
         states = merge_review_states(read_jsonl(out_dir / "review_states.jsonl"), states)
         atomic_write_jsonl(out_dir / "review_states.jsonl", states)
         event_count = append_review_state_events(out_dir / "review_state_events.jsonl", states)
-    return {
+    summary = {
         "pipeline_id": pipeline.pipeline_id,
         "out": str(out_dir),
         "requirements": len(requirements),
@@ -913,6 +961,10 @@ def run_review_pipeline(
             "review_state_events": "review_state_events.jsonl",
         },
     }
+    if result.kb_paths:
+        # 如实记录本次工具化审查实际使用的 KB（审计 P1-d；stub/单发不读 KB 则无此字段）
+        summary["kb_paths"] = list(result.kb_paths)
+    return summary
 
 
 def main() -> int:

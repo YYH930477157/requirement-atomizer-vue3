@@ -209,7 +209,76 @@ class DesktopTaskTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["counts"]["requirements"], 2)
         self.assertEqual(payload["summary"]["status_counts"]["accepted"], 1)
         atomize.assert_called_once()
-        review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, llm_review_limit=0, progress_callback=ANY)
+        review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, llm_review_limit=0, progress_callback=ANY, kb_paths=None)
+
+    def test_run_pipeline_task_passes_explicit_kb_to_review(self) -> None:
+        """审计 P1-d①：--kb 贯通到审查阶段——此前只传 atomize，review 工具落回默认 KB。"""
+        from desktop_tasks import run_pipeline_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "input.docx"
+            out_dir = root / "out"
+            input_path.write_text("placeholder", encoding="utf-8")
+            out_dir.mkdir()
+            kb = root / "kb.json"
+            kb.write_text('{"kb_id": "k", "entries": []}', encoding="utf-8")
+
+            with patch("desktop_tasks.run_atomizer_pipeline") as atomize, patch("desktop_tasks.run_review_pipeline") as review:
+                atomize.return_value = {
+                    "input": str(input_path),
+                    "output_dir": str(out_dir),
+                    "counts": {"atomic_requirements": 0},
+                }
+                review.return_value = {"reviews": 0}
+                write_jsonl(out_dir / "atomic_requirements.jsonl", [])
+                write_jsonl(out_dir / "review_states.jsonl", [])
+
+                run_pipeline_task(input_path, out_dir, skip_review=False, kb_paths=[kb])
+
+        review.assert_called_once_with(out_dir.resolve(), route=None, scope=None, llm_review_limit=0, progress_callback=ANY, kb_paths=[kb])
+
+    def test_llm_review_producer_tracks_evidence_content(self) -> None:
+        """llm-review 阶段 producer 纳入证据指纹：改 KB 内容阶段戳变；无 out_dir 保持基础戳。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            out = root / "out"
+            out.mkdir()
+            (out / "blocks.jsonl").write_text("{}\n", encoding="utf-8")
+            (out / "atomic_requirements.jsonl").write_text("{}\n", encoding="utf-8")
+            kb = root / "kb.json"
+            kb.write_text('{"kb_id": "k", "entries": []}', encoding="utf-8")
+
+            first = desktop_tasks.stage_producer("llm-review", out_dir=out, kb_paths=[kb])
+            kb.write_text('{"kb_id": "k", "entries": [{"id": "x"}]}', encoding="utf-8")
+            second = desktop_tasks.stage_producer("llm-review", out_dir=out, kb_paths=[kb])
+
+        self.assertTrue(first.startswith("review/v1+evidence-"))
+        self.assertNotEqual(first, second)
+        self.assertEqual(desktop_tasks.stage_producer("llm-review"), "review/v1")
+
+    def test_llm_review_stage_not_reusable_after_kb_change(self) -> None:
+        """阶段复用同样吃证据指纹：KB 内容变 → llm-review 旧产物不再复用。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            out = root / "out"
+            out.mkdir()
+            for name in ["blocks.jsonl", "atomic_requirements.jsonl", "llm_tasks.jsonl",
+                         "llm_review_results.jsonl", "review_states.jsonl"]:
+                (out / name).write_text("{}\n", encoding="utf-8")
+            kb = root / "kb.json"
+            kb.write_text('{"kb_id": "k", "entries": []}', encoding="utf-8")
+            config = {"kb_paths": [str(kb)]}
+
+            desktop_tasks.update_run_manifest(out, "llm-review", "ok", route="openai_compatible", config=config)
+            reusable_before = desktop_tasks.stage_is_reusable(
+                out, "llm-review", route="openai_compatible", config=config)
+            kb.write_text('{"kb_id": "k", "entries": [{"id": "x"}]}', encoding="utf-8")
+            reusable_after = desktop_tasks.stage_is_reusable(
+                out, "llm-review", route="openai_compatible", config=config)
+
+        self.assertTrue(reusable_before)
+        self.assertFalse(reusable_after)
 
     def test_main_run_command_passes_kb_and_domain_pack_to_pipeline(self) -> None:
         import desktop_tasks
@@ -834,8 +903,8 @@ class ChainAndManifestTests(unittest.TestCase):
             ),
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v6+ai-supplement-v3-identity-preconditions+impl-v3",
-            "requirements-analysis": "analyze-llm-v7+analyze-unfounded-v2+ai-supplement-v3-identity-preconditions+impl-v5",
-            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v3",
+            "requirements-analysis": "analyze-llm-v7+analyze-unfounded-v2+ai-supplement-v3-identity-preconditions+impl-v6",
+            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v4",
             "clarification-report": "clarification/v6-coverage-basis+ai-supplement-v3-identity-preconditions+impl-v5",
             "export-annotation-html": (
                 "doc_annotation_export/v10+annotation-translation-v2-segment-fallback"
