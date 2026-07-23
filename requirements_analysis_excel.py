@@ -10,6 +10,36 @@ from openpyxl.styles import Font, PatternFill
 from requirements_analysis_schema import OWNERSHIP_CO_DESIGN, OWNERSHIP_SOFTWARE
 from text_normalize import formula_safe
 
+# WP2 兜底渲染（2026-07-23 用户裁定）：被标"待澄清"的字段若留有原始候选
+# （clarify_fallback），透出时带上完整标注——读者一眼知道这不是可实施依据。
+CLARIFY_MARK = "待澄清"
+_CLARIFY_FALLBACK_LABEL = "原始候选（未经依据校验，仅供参考，不得作为实现依据）"
+
+
+def clarify_display_text(item: dict[str, Any], field: str) -> str:
+    """正文类字段的透出文本：标了待澄清且有原始候选 → 待澄清标注 + 兜底候选；
+    否则原样返回字段值（非待澄清字段不受影响）。"""
+    value = str(item.get(field) or "")
+    if value != CLARIFY_MARK:
+        return value
+    fallback = (item.get("clarify_fallback") or {}).get(field)
+    if not fallback:
+        return value
+    return f"{CLARIFY_MARK}（未经依据校验，需专家核补）\n{_CLARIFY_FALLBACK_LABEL}：{fallback}"
+
+
+def _fallback_lines(item: dict[str, Any], field: str, prefix: str = "") -> list[str]:
+    """列表字段的兜底行：整列被标待澄清且有原始候选 → 标注行 + 逐条带标注的候选。"""
+    value = item.get(field)
+    if value != [CLARIFY_MARK]:
+        return []
+    fallback = (item.get("clarify_fallback") or {}).get(field)
+    if not isinstance(fallback, list) or not fallback:
+        return []
+    lines = [f"{prefix}{CLARIFY_MARK}（未经依据校验，需专家核补）"]
+    lines.extend(f"{prefix}{_CLARIFY_FALLBACK_LABEL}：{entry}" for entry in fallback)
+    return lines
+
 
 HEADERS = [
     "关闭",
@@ -87,7 +117,7 @@ def _excel_row(index: int, item: dict[str, Any]) -> list[Any]:
         item.get("submodule") or "",
         item.get("description") or "",
         "",
-        item.get("software_requirement_text") or item.get("requirement") or "",
+        clarify_display_text(item, "software_requirement_text") or item.get("requirement") or "",
         _notes_text(item),
         "是",
         source_chapter,
@@ -143,10 +173,22 @@ def _notes_text(item: dict[str, Any]) -> str:
             notes.append("参数表：" + " | ".join(columns))
         for row in table.get("rows") or []:
             notes.append("  " + " | ".join(str(cell) for cell in (row if isinstance(row, list) else [row])))
-    notes.extend(str(value) for value in item.get("developer_guidance") or [])
-    notes.extend(f"设计候选（非规范约束）：{value}" for value in item.get("design_options") or [])
+    guidance_fallback = _fallback_lines(item, "developer_guidance")
+    if guidance_fallback:
+        notes.extend(guidance_fallback)
+    else:
+        notes.extend(str(value) for value in item.get("developer_guidance") or [])
+    options_fallback = _fallback_lines(item, "design_options", "设计候选（非规范约束）：")
+    if options_fallback:
+        notes.extend(options_fallback)
+    else:
+        notes.extend(f"设计候选（非规范约束）：{value}" for value in item.get("design_options") or [])
     # 验收建议进交付列（此前 acceptance_criteria 不落 xlsx 任何列——富化白算）
-    notes.extend(f"验收建议：{value}" for value in item.get("acceptance_criteria") or [])
+    criteria_fallback = _fallback_lines(item, "acceptance_criteria", "验收建议：")
+    if criteria_fallback:
+        notes.extend(criteria_fallback)
+    else:
+        notes.extend(f"验收建议：{value}" for value in item.get("acceptance_criteria") or [])
     notes.extend(f"假设：{value}" for value in item.get("assumptions") or [])
     # 归属判定随行（真实反馈 2026-07-12：软件件全链路无"为什么"）
     ownership = str(item.get("ownership") or "").strip()

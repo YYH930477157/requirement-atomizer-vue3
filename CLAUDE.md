@@ -45,6 +45,12 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-23）——WP2 待澄清兜底渲染（分支 codex/wp2-fallback 待审核）
+
+- **用户裁定**：交付物不接受裸"待澄清"也不接受"看起来完整"——要兜底候选但必须标注。
+- **实现**：`_mark_unfounded_field` 覆盖前把原值存入 `clarify_fallback`（数据层字段仍恒为待澄清）；渲染层（`clarify_display_text`/`_fallback_lines`，xlsx 需求列/说明列 + template_writer 成文列共用）透出"待澄清（未经依据校验，需专家核补）+ 原始候选（仅供参考，不得作为实现依据）"。`UNFOUNDED_RULE_VERSION` 升 `analyze-unfounded-v2` 并进 `requirements-analysis` chain 版本戳（此前戳只含 prompt 版本,确定性后处理漏覆盖）。
+- **验证**：既有 WP2 测试按新渲染口径更新（端到端用例断言标注+兜底文本透出），专项 122 tests 绿。
+
 ## 重大更新（2026-07-23）——Agent Phase 2 实施：Tool-using Reviewer + 无依据字段强制"待澄清"（已合 main `9d548a9`）
 
 - **范围**：`llm_client.py`（新增 `chat_with_tools` 有界 tool-loop）、新增 `review_tools.py`（五工具+TOOLS schema+`make_tool_executor`）、`llm_pipeline.py`（executor 处置+缓存版本）、`requirements_analysis.py`（WP2 待澄清规则）、`llm_agents/review_pipeline.yaml`（operations 增 executor）、tests（4 个新文件）、文档；规格 `docs/agent-phase2-spec.md`（已冻结）。

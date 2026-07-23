@@ -202,7 +202,7 @@ class VersionAndCacheFingerprintTests(unittest.TestCase):
         with patch("requirements_analysis.UNFOUNDED_RULE_VERSION", "analyze-unfounded-v0-hypothetical"):
             key_changed = _enrich_key(req, "model-x")
         self.assertNotEqual(key_now, key_changed)
-        self.assertEqual(UNFOUNDED_RULE_VERSION, "analyze-unfounded-v1")
+        self.assertEqual(UNFOUNDED_RULE_VERSION, "analyze-unfounded-v2")
 
 
 class IntegrationRenderAndClarificationLoopTests(unittest.TestCase):
@@ -242,14 +242,18 @@ class IntegrationRenderAndClarificationLoopTests(unittest.TestCase):
             self.assertEqual(item["developer_guidance"], [CLARIFY_MARK])
             self.assertTrue(any("待澄清" in q for q in item["open_questions"]))
 
-            # 渲染透出：需求列=待澄清;说明列经既有「待确认：…」通道透出 open_questions
+            # 渲染透出：需求列=待澄清标注 + 兜底原始候选（2026-07-23 用户裁定：既要诚实
+            # 标注也要可读内容;数据层字段仍恒为待澄清,渲染层才透出标注候选）
             from openpyxl import load_workbook
             wb = load_workbook(tmp_path / "software_requirements.xlsx")
             ws = wb[wb.sheetnames[0]]
             header = [cell.value for cell in ws[1]]
             req_col = header.index("需求")
             notes_col = header.index("说明、示例、注意事项")
-            self.assertEqual(ws.cell(2, req_col + 1).value, CLARIFY_MARK)
+            req_cell = str(ws.cell(2, req_col + 1).value or "")
+            self.assertIn(CLARIFY_MARK, req_cell)
+            self.assertIn("未经依据校验", req_cell)
+            self.assertIn("The meter shall log power-down events to OBIS 0-0:96.1.0.", req_cell)  # 兜底候选带标注
             notes = str(ws.cell(2, notes_col + 1).value or "")
             self.assertIn("待确认：内部核对·待澄清", notes)
             wb.close()

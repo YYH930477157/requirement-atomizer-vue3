@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from requirements_analysis_excel import _notes_text, _safe_cell
+from requirements_analysis_excel import _notes_text, _safe_cell, clarify_display_text
 from requirements_analysis_schema import OWNERSHIP_CO_DESIGN, OWNERSHIP_HARDWARE
 from compliance import is_compliance_requirement
 
@@ -104,7 +104,7 @@ def build_row_values(item: dict[str, Any], seq: int) -> dict[int, Any]:
         _COL_SEQ: seq,
         _COL_SUBMODULE: item.get("submodule") or item.get("module") or "",
         _COL_QUESTION: item.get("description") or "",
-        _COL_ANSWER: item.get("software_requirement_text") or item.get("requirement") or "",
+        _COL_ANSWER: clarify_display_text(item, "software_requirement_text") or item.get("requirement") or "",
         _COL_NOTES: _notes_text(item),
         _COL_IS_CUSTOMER: "是",
         _COL_SECTION: item.get("source_section") or "",

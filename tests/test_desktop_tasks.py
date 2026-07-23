@@ -834,7 +834,7 @@ class ChainAndManifestTests(unittest.TestCase):
             ),
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v6+ai-supplement-v3-identity-preconditions+impl-v3",
-            "requirements-analysis": "analyze-llm-v7+ai-supplement-v3-identity-preconditions+impl-v5",
+            "requirements-analysis": "analyze-llm-v7+analyze-unfounded-v2+ai-supplement-v3-identity-preconditions+impl-v5",
             "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v3",
             "clarification-report": "clarification/v6-coverage-basis+ai-supplement-v3-identity-preconditions+impl-v5",
             "export-annotation-html": (
