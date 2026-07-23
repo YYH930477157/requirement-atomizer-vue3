@@ -18,7 +18,7 @@ from blue_book_lookup import condensed_text, load_index, lookup_class, lookup_cl
 from io_utils import read_jsonl
 
 # 工具定义/裁剪契约版本——TOOLS schema、返回字段、裁剪上限任何变更必须 bump
-REVIEW_TOOLS_VERSION = "review-tools-v1"
+REVIEW_TOOLS_VERSION = "review-tools-v2"  # v2:蓝皮书索引缺失优雅降级（v1 崩溃致 tool-loop 两连错中止）
 
 # 返回裁剪上限（冻结契约的一部分，见规格 §2 表格）
 KB_SEARCH_MAX_RESULTS = 5
@@ -177,7 +177,11 @@ def make_tool_executor(
         if state["bb_index"] is None:
             with lock:
                 if state["bb_index"] is None:
-                    state["bb_index"] = load_index(_resolve_blue_book_index(blue_book_index_path, out_dir)) or {}
+                    # 索引路径可能不存在（无蓝皮书环境）——如实按空索引降级（工具返回未命中
+                    # null），不得让 load_index(None) 的 AttributeError 连环触发两次失败
+                    # 中止整条 tool-loop（test3 验收实证：2 条需求因此进 stub）
+                    index_path = _resolve_blue_book_index(blue_book_index_path, out_dir)
+                    state["bb_index"] = load_index(index_path) if index_path is not None else {}
         return state["bb_index"]
 
     def execute(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

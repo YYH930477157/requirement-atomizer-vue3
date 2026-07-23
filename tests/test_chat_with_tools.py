@@ -6,8 +6,12 @@ tool_calls 响应构造助手——mock 本体零改动（它本就透传任意 
 from __future__ import annotations
 
 import json
+import sys
 import unittest
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # 允许 tests.test_* 直跑时解析同级测试模块
 
 from llm_client import LLMClientConfig, LLMResponseError, chat_with_tools
 from test_llm_client import MockOpenAIService

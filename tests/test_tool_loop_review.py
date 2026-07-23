@@ -21,6 +21,10 @@ from llm_pipeline import (
     run_review_pipeline,
     tool_loop_enabled,
 )
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))  # 同上：直跑兼容
+
 from test_llm_pipeline_routes import (
     ScriptedOpenAIService,
     openai_review,

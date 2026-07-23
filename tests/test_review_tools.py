@@ -170,6 +170,20 @@ class BlueBookClassToolTests(ToolExecutorFixture):
         self.assertIsNone(result["result"])
         self.assertIn("不可用", result["note"])
 
+    def test_no_index_candidate_path_never_raises(self) -> None:
+        """回归（test3 验收实证）：无显式路径且探测不到任何候选索引时,_resolve 返回 None,
+        v1 直接 load_index(None) 抛 AttributeError → 同一需求 tool-loop 两连错中止进 stub。
+        v2 起按空索引优雅降级（未命中 null + note）。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = _seed_out(Path(td))
+            executor = make_tool_executor(out, kb_paths=[], blue_book_index_path=None)
+            result = executor("blue_book_class", {"class_id": 3})
+            again = executor("blue_book_class", {"name": "Extended register"})
+        self.assertNotIn("error", result)
+        self.assertIsNone(result["result"])
+        self.assertIn("不可用", result["note"])
+        self.assertNotIn("error", again)
+
 
 class SourceReadToolTests(ToolExecutorFixture):
     def test_hit_returns_text_and_section_path(self) -> None:
@@ -229,7 +243,7 @@ class ToolContractTests(unittest.TestCase):
     # review-tools-v1 的 TOOLS 规范指纹（canonical JSON sha256）；变更工具面时连同
     # REVIEW_TOOLS_VERSION 一起更新本指纹（缓存失效靠它,见 llm_pipeline.llm_cache_key）
     _PINNED_TOOLS_FINGERPRINT = "529a90d7ac78c05543dd009811b73e710ad674e5e45305e1b2c50faba2084b02"
-    _PINNED_VERSION = "review-tools-v1"
+    _PINNED_VERSION = "review-tools-v2"
 
     def test_version_constant(self) -> None:
         self.assertEqual(REVIEW_TOOLS_VERSION, self._PINNED_VERSION)
