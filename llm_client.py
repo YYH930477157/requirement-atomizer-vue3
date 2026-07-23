@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
@@ -265,6 +265,223 @@ def chat_json_messages(
             raise LLMResponseError(f"LLM response is not valid JSON after repair: {second_error}") from second_error
         except LLMResponseError as second_error:
             raise LLMResponseError(f"LLM response is not a JSON object after repair: {second_error}") from second_error
+
+
+# --- Agent Phase 2 WP1-A：OpenAI 兼容 tools 调用与有界 tool-loop -----------------------
+# 审查器从"单次 prompt"升级为有边界的工具调用：模型在审查单条需求时可请求确定性只读
+# 工具（review_tools.py），工具结果以 role=tool 消息回灌，模型再续审。证据仍由确定性
+# 层供给——本函数只搬运消息，绝不替模型/工具生成任何内容。
+
+# tool-loop 默认轮顶（含首轮；模型连续请求工具则每轮 +1）。超过轮顶抛 LLMResponseError，
+# 调用方按现有失败路径处理（该需求进 stub 审查并记数，不得伪造模型已审）。
+TOOL_LOOP_DEFAULT_MAX_ROUNDS = 8
+
+
+def chat_with_tools(
+    config: LLMClientConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    max_rounds: int = TOOL_LOOP_DEFAULT_MAX_ROUNDS,
+    on_tool_call: Callable[[str, dict[str, Any]], dict[str, Any]],
+    token_budget: int | None = None,
+    _usage_sink: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """OpenAI 兼容 tools 有界 tool-loop：返回 (final_dict, meta)。
+
+    循环：发请求 → 响应含 tool_calls 则逐个经 on_tool_call(tool_name, arguments) 执行、
+    结果以 role=tool 回灌 → 下一轮；无 tool_calls 则按 chat_json 同口径解析最终 JSON
+    （解析失败修复重发一次，占一轮）。硬顶 max_rounds（默认 8，含首轮）；轮顶耗尽抛
+    LLMResponseError。非法 tool_call（结构畸形/未知工具/参数非法/执行异常）以
+    {"error": ...} 回灌一次让其纠正；同一工具同一轮连续错 2 次视为轮顶耗尽同等处理。
+    端点不支持 tools（4xx）响亮报错，不静默降级为无工具审查。token_budget（tokens 上限）
+    按全部轮次 usage 累计，超限即抛 LLMResponseError；usage 缺失计 0（无法计量即无法
+    超限），meta.usage_complete 标 partial。
+
+    meta = {"usage": {...}, "usage_complete": bool, "tool_calls": [{"round","name"}...],
+    "rounds": n}——tool_calls 摘要是审查结果行的审计锚（产出过程可解释性）。"""
+    if max_rounds < 1:
+        raise ValueError("max_rounds must be >= 1")
+    usage_sink = _usage_sink if _usage_sink is not None else []
+    history = [dict(message) for message in messages]
+    tool_call_summary: list[dict[str, Any]] = []
+    round_no = 0
+    while True:
+        round_no += 1
+        if round_no > max_rounds:
+            raise LLMResponseError(
+                f"tool loop did not converge within max_rounds={max_rounds} "
+                f"(model kept requesting tools or never returned final JSON)")
+        response = _chat_tools_once(config, history, tools, usage_sink)
+        if token_budget is not None:
+            spent = _aggregate_usage(usage_sink)["usage"]["total_tokens"]
+            if spent > token_budget:
+                raise LLMResponseError(
+                    f"tool loop token budget exceeded: {spent} > {token_budget} tokens "
+                    f"(round {round_no})")
+        try:
+            choice = response["choices"][0]
+            message = choice["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMResponseError("LLM response missing choices[0].message") from exc
+        if not isinstance(message, dict):
+            raise LLMResponseError("LLM response message must be an object")
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            content = message.get("content")
+            if not isinstance(content, str):
+                raise LLMResponseError("LLM response content must be a string")
+            try:
+                final = _loads_json_content(content)
+            except (json.JSONDecodeError, LLMResponseError) as first_error:
+                if round_no >= max_rounds:
+                    raise LLMResponseError(
+                        f"tool loop final response is not valid JSON and max_rounds={max_rounds} "
+                        f"is exhausted: {first_error}") from first_error
+                # 与 chat_json 同口径：修复重发一次（占一轮）；模型修复轮改调工具也自然成环
+                history = [
+                    *history,
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Only output valid JSON. Do not include Markdown fences, prose, or comments. "
+                            f"Repair the previous response. JSON parser error: {first_error}"
+                        ),
+                    },
+                ]
+                continue
+            return final, {
+                **_aggregate_usage(usage_sink),
+                "tool_calls": tool_call_summary,
+                "rounds": round_no,
+            }
+        # 工具轮：assistant 消息原样回灌（含 tool_calls，tool_call_id 需逐字对应）
+        history.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
+        error_streak: dict[str, int] = {}
+        for call in tool_calls:
+            name, arguments, parse_error = _parse_tool_call(call)
+            if parse_error is not None:
+                result = {"error": parse_error}
+            else:
+                try:
+                    result = on_tool_call(name, arguments)
+                except Exception as exc:  # 工具执行异常 → error 回灌一次（provenance 如实）
+                    result = {"error": f"tool {name} raised: {exc}"}
+                if not isinstance(result, dict):
+                    result = {"error": f"tool {name} returned a non-object result"}
+            tool_call_summary.append({"round": round_no, "name": name or "<malformed>"})
+            if "error" in result:
+                error_streak[name] = error_streak.get(name, 0) + 1
+                if error_streak[name] >= 2:
+                    raise LLMResponseError(
+                        f"tool {name} failed twice in a row within round {round_no} "
+                        f"(invalid tool_call correction exhausted): {result['error']}")
+            else:
+                error_streak[name] = 0
+            history.append({
+                "role": "tool",
+                "tool_call_id": str(call.get("id") or "") if isinstance(call, dict) else "",
+                "content": json.dumps(result, ensure_ascii=False),
+            })
+
+
+def _parse_tool_call(call: Any) -> tuple[str, dict[str, Any], str | None]:
+    """解析 OpenAI tool_call 结构 → (name, arguments, error)；error 非空则前两者无效。"""
+    if not isinstance(call, dict):
+        return "<malformed>", {}, "malformed tool_call: not an object"
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return "<malformed>", {}, "malformed tool_call: missing function object"
+    name = str(function.get("name") or "").strip()
+    if not name:
+        return "<malformed>", {}, "malformed tool_call: empty function name"
+    raw_arguments = function.get("arguments", "")
+    if isinstance(raw_arguments, dict):
+        return name, raw_arguments, None
+    try:
+        arguments = json.loads(str(raw_arguments or "{}"))
+    except json.JSONDecodeError as exc:
+        return name, {}, f"invalid tool arguments JSON for {name}: {exc}"
+    if not isinstance(arguments, dict):
+        return name, {}, f"tool arguments for {name} must be a JSON object"
+    return name, arguments, None
+
+
+def _chat_tools_once(
+    config: LLMClientConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    _usage_sink: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """一轮 tools 请求（含截断/空响应的 max_tokens 升级重试，口径同 _chat_content）。
+
+    不带 response_format——json_object 模式与 tool_calls 在多数端点互斥。空 content +
+    无 tool_calls 才视为空响应（模型调工具时 content 常为 null，那是正常工具轮）。"""
+    payload: dict[str, Any] = {
+        "model": config.model,
+        "messages": messages,
+        "temperature": config.temperature,
+        "tools": tools,
+    }
+    max_tokens = int(config.max_tokens)
+    while True:
+        payload["max_tokens"] = max_tokens
+        try:
+            response = _post_json(config, payload)
+        except LLMResponseError as exc:
+            # 端点 4xx（tools 不支持）响亮报错并点名 tools 语境——绝不静默降级为无工具重发
+            # （provenance：无工具审查不得冒充 tool-using 审查）。其余响应错误原样抛出。
+            if str(exc).startswith("LLM service returned HTTP 4"):
+                raise LLMResponseError(
+                    f"LLM endpoint rejected the tool-calling request "
+                    f"(endpoint does not support tools?): {exc}") from exc
+            raise
+        if _usage_sink is not None:
+            usage = response.get("usage")
+            _usage_sink.append(usage if isinstance(usage, dict) else {})
+        try:
+            choice = response["choices"][0]
+            message = choice["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMResponseError("LLM response missing choices[0].message") from exc
+        if not isinstance(message, dict):
+            raise LLMResponseError("LLM response message must be an object")
+        content = message.get("content")
+        has_tool_calls = bool(message.get("tool_calls"))
+        finish_reason = str(choice.get("finish_reason") or "")
+        empty_content = content is None or (isinstance(content, str) and not content.strip())
+        truncated = finish_reason == "length" or (empty_content and not has_tool_calls)
+        if not truncated:
+            return response
+        if max_tokens >= MAX_TOKENS_ESCALATION_CAP:
+            LOGGER.warning("tool 轮输出截断/空响应且 max_tokens 已到升级上限 %d（finish=%s）,按原样返回",
+                           MAX_TOKENS_ESCALATION_CAP, finish_reason)
+            return response
+        escalated = min(max_tokens * 2, MAX_TOKENS_ESCALATION_CAP)
+        LOGGER.warning("tool 轮输出截断/空响应（finish=%s）——max_tokens %d→%d 自动升级重试 model=%s",
+                       finish_reason, max_tokens, escalated, config.model)
+        max_tokens = escalated
+
+
+def _aggregate_usage(usage_sink: list[dict[str, Any]]) -> dict[str, Any]:
+    """汇聚全部底层调用（首发/工具轮/修复/截断升级）的 usage——同 chat_json_with_meta 口径：
+    usage 缺失计 0 且 usage_complete=False（不得估算冒充精确值,见 Phase 1.5 tokens 口径）。"""
+    prompt = sum(int(u.get("prompt_tokens") or 0) for u in usage_sink)
+    completion = sum(int(u.get("completion_tokens") or 0) for u in usage_sink)
+    total = sum(int(u.get("total_tokens") or 0) for u in usage_sink)
+    if not total and (prompt or completion):
+        total = prompt + completion
+    complete = bool(usage_sink) and all(
+        isinstance(u.get("total_tokens"), int) or (
+            isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int)
+        )
+        for u in usage_sink
+    )
+    return {
+        "usage": {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total},
+        "usage_complete": complete,
+    }
 
 
 JSON_MODE_ENV = "RATOMIZER_LLM_JSON_SCHEMA"   # 默认开;=0 关闭（0714 批次二 S6）

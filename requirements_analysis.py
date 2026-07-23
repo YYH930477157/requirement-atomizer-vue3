@@ -36,7 +36,24 @@ LOGGER = logging.getLogger("requirement_atomizer")
 ChatFn = Callable[[str, str], dict[str, Any]]
 
 SCHEMA_VERSION = "requirements-analysis/v1"
-ANALYZE_PROMPT_VERSION = "analyze-llm-v6"  # v6：冻结归属注入 prompt（模型不再重判,只按给定归属定正文深度）；v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
+# v7：无依据富化字段强制"待澄清"（Agent Phase 2 WP2，规则版本 analyze-unfounded-v1 随行）；
+# v6：冻结归属注入 prompt（模型不再重判,只按给定归属定正文深度）；
+# v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
+ANALYZE_PROMPT_VERSION = "analyze-llm-v7"
+# WP2 待澄清规则版本——确定性后处理（拒/无据 → 待澄清 + open_questions 同步）变更必须
+# bump 并进 analyze_enrich_cache 指纹与阶段 producer（AGENTS.md 缓存指纹纪律）
+UNFOUNDED_RULE_VERSION = "analyze-unfounded-v1"
+CLARIFY_MARK = "待澄清"
+# WP2 触发面（冻结点 4）：仅富化叙述字段；确定性 join 字段（id/归属/引句/模块）永不标待澄清
+_UNFOUNDED_TEXT_FIELDS = ("software_requirement_text", "hardware_dependency")
+_UNFOUNDED_LIST_FIELDS = ("developer_guidance", "design_options", "acceptance_criteria")
+_UNFOUNDED_FIELD_LABELS = {
+    "software_requirement_text": "软件需求正文",
+    "hardware_dependency": "硬件依赖",
+    "developer_guidance": "研发指引",
+    "design_options": "设计候选",
+    "acceptance_criteria": "验收标准",
+}
 ANALYZE_MIN_MAX_TOKENS = 8192  # 连贯多段正文+更长输入;推理模型思维链挤占,低于下限 JSON 截断
 ANALYZE_ENRICH_CACHE = "analyze_enrich_cache.json"
 # W1 上下文注入帽：条款原文与 prompt/指纹/校验三处用同一字符串（单一构造点）
@@ -479,6 +496,7 @@ def _enrich_key(req: dict[str, Any], model: str, template_refs: str = "") -> str
         str(req.get("module") or ""),
         template_refs,   # 模板行内容变 → 缓存失效（镜像 spec_enrich 折 entry hash 的做法）
         ANALYZE_PROMPT_VERSION,
+        UNFOUNDED_RULE_VERSION,   # WP2：待澄清确定性后处理变更必须使缓存失效（防旧产物漏标）
         model,
     ])
     return hashlib.sha1(basis.encode("utf-8")).hexdigest()
@@ -555,6 +573,83 @@ def _software_prompt_parts(
     return slim_vocab, prompt_req, _enrich_key(source_req, model, context_basis)
 
 
+def _mark_unfounded_field(item: dict[str, Any], field: str, reason: str) -> None:
+    """WP2：单字段写"待澄清"并同步一条 open_questions（内部核对受众,进既有澄清闭环——
+    clarification_report 读 engineering_analysis.json 的 open_questions 通道已存在;
+    xlsx「待确认：…」/成文列渲染通道原样透出）。"""
+    item[field] = [CLARIFY_MARK] if field in _UNFOUNDED_LIST_FIELDS else CLARIFY_MARK
+    questions = item.setdefault("open_questions", [])
+    if not isinstance(questions, list):
+        questions = []
+        item["open_questions"] = questions
+    label = _UNFOUNDED_FIELD_LABELS.get(field, field)
+    entry = f"内部核对·待澄清：{label}无依据（{reason}），需专家核补"
+    if entry not in questions:
+        questions.append(entry)
+
+
+def _mark_enrichment_rejected(item: dict[str, Any], reason: str) -> None:
+    """WP2 规则 1：富化被护栏整体拒绝（回退 base 值）→ 无依据字段写"待澄清"，
+    不再静默以 base 文本充当软件需求正文。
+
+    只标"本应由此番富化产出"的字段：软件需求正文恒标（base 是原始描述而非分析正文）；
+    硬件依赖仅协同项（纯软件项留空是设计语义,非缺失）；列表字段仅在 base 为空时标
+    （base 非空=源文有据内容——只对"无依据"下手,有据字段逐字节不动）。"""
+    _mark_unfounded_field(item, "software_requirement_text", reason)
+    if str(item.get("ownership") or "") == OWNERSHIP_CO_DESIGN:
+        _mark_unfounded_field(item, "hardware_dependency", reason)
+    for field in _UNFOUNDED_LIST_FIELDS:
+        if not item.get(field):
+            _mark_unfounded_field(item, field, reason)
+
+
+def _replace_unfounded_adopted_fields(
+    item: dict[str, Any],
+    source_req: dict[str, Any],
+    ctx: dict[str, str],
+    adopted_fields: set[str],
+) -> list[str]:
+    """WP2 规则 2：富化被接受但某采纳字段证据校验降级（validate_llm_item 软标判据细化
+    到字段）→ 该字段写"待澄清"。返回追加的 issue 说明。
+
+    判据与 validate_llm_item 同源：extract_ints 差集（正文基线=源文∪条款原文∪答复,
+    指引基线=源文∪模板注入,均豁免 doc_context 背景整数）；字段侧先剥枚举标号
+    （"1. 2. 3."是格式归一不是编造数字,test18 已立此判例）。编造编码在整体硬拒阶段
+    已拦截,走不到这里;模板来源编码/遗漏类软标不标待澄清（有依据,归专家审查）。
+    只查本次 LLM 采纳的字段——base 值（源文派生）永不标。"""
+    from cosem_behavior_spec import extract_ints
+    from text_normalize import strip_enum_markers
+
+    union_text = " ".join(
+        str(source_req.get(field) or "")
+        for field in ("source_quote", "description", "requirement", "clarification_answers_text")
+    ) + " " + str(ctx.get("section_context") or "")
+    context_ints = extract_ints(str(ctx.get("doc_context") or ""))
+    union_ints = extract_ints(union_text)
+    guidance_basis_ints = extract_ints(f"{union_text} {ctx.get('template_refs') or ''}")
+    issues: list[str] = []
+    for field in _UNFOUNDED_TEXT_FIELDS:
+        if field not in adopted_fields:
+            continue
+        unfounded = sorted(
+            extract_ints(strip_enum_markers(str(item.get(field) or ""))) - union_ints - context_ints)
+        if unfounded:
+            detail = f"含源文/条款/背景均无据的数字: {', '.join(unfounded[:6])}"
+            _mark_unfounded_field(item, field, detail)
+            issues.append(f"{_UNFOUNDED_FIELD_LABELS[field]}无依据已标待澄清: {detail}")
+    for field in _UNFOUNDED_LIST_FIELDS:
+        if field not in adopted_fields:
+            continue
+        field_text = " ".join(str(value) for value in _as_list(item.get(field)))
+        unfounded = sorted(
+            extract_ints(strip_enum_markers(field_text)) - guidance_basis_ints - context_ints)
+        if unfounded:
+            detail = f"含源文/模板/背景均无据的数字: {', '.join(unfounded[:6])}"
+            _mark_unfounded_field(item, field, detail)
+            issues.append(f"{_UNFOUNDED_FIELD_LABELS[field]}无依据已标待澄清: {detail}")
+    return issues
+
+
 def _apply_llm_item(
     item: dict[str, Any],
     source_req: dict[str, Any],
@@ -563,24 +658,32 @@ def _apply_llm_item(
 ) -> tuple[bool, list[str]]:
     """验证 + 采纳（单条与合批共用）——合批不放宽任何护栏：validate 逐条，
     基线只含本条自己的条款原文/答复，批内其它条的数值不进有据基线
-    （模型跨条借数即硬拒/软标）。"""
+    （模型跨条借数即硬拒/软标）。
+
+    WP2（Agent Phase 2）：无依据富化字段强制"待澄清"——整体拒绝（回退 base）
+    或采纳字段证据校验降级时,该字段写"待澄清"并同步 open_questions,不再静默放行。"""
     drift = validate_llm_item(llm_item, source_req, template_text=ctx.get("template_refs", ""),
                               section_context=ctx.get("section_context", ""),
                               context_text=ctx.get("doc_context", ""))
     fabricated_codes = [d for d in drift if d.startswith("fabricated code")]
     if fabricated_codes:
+        _mark_enrichment_rejected(item, "LLM 富化编造结构编码被护栏整体拒绝")
         return False, [f"LLM 富化编造结构编码，已拒绝并降级: {'; '.join(fabricated_codes)}"]
 
     accepted = False
+    adopted_fields: set[str] = set()
     for field in _ENRICH_FIELDS_TEXT:
         value = str(llm_item.get(field) or "").strip()
         if value:
             item[field] = value
+            adopted_fields.add(field)
             accepted = True
     for field in _ENRICH_FIELDS_LIST:
         values = [str(x).strip() for x in _as_list(llm_item.get(field)) if str(x).strip()]
         if values:
             item[field] = values
+            if field in _UNFOUNDED_LIST_FIELDS:
+                adopted_fields.add(field)
             accepted = True
     reason = str(llm_item.get("ownership_reason") or "").strip()
     # 恒真 guard 修复（2026-07-12）：classify_ownership 对所有类别都前置填了规则原因,
@@ -605,8 +708,10 @@ def _apply_llm_item(
             reason_issues.append(
                 f"LLM 归属叙述与冻结归属不一致（{llm_ownership} vs {item.get('ownership')}），保留规则原因")
     if not accepted:
+        _mark_enrichment_rejected(item, "LLM 富化未返回可采纳的叙述字段")
         return False, ["LLM 富化未返回可采纳的叙述字段，已降级为确定性"]
     item["analysis_source"] = "llm"
+    clarify_issues = _replace_unfounded_adopted_fields(item, source_req, ctx, adopted_fields)
 
     soft = [d for d in drift if not d.startswith("fabricated code")]
     # 软标必须随交付物同行（2026-07-08 审计 B1）：此前只进 run 级 issues（excel/成文不读），
@@ -615,7 +720,7 @@ def _apply_llm_item(
         item["enrichment_warnings"] = soft
     else:
         item.pop("enrichment_warnings", None)   # 重富化后旧警告不残留
-    issues = reason_issues + ([f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"]
+    issues = reason_issues + clarify_issues + ([f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"]
                               if soft else [])
     return True, issues
 

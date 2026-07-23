@@ -79,6 +79,7 @@ py-modules = [
   "resources",
   "review_actions",
   "review_state",
+  "review_tools",
   "requirements_analysis",
   "review_insights",
   "template_writer",
