@@ -400,5 +400,55 @@ class SchemaRepairBudgetTests(unittest.TestCase):
         self.assertTrue(any("tokens=100" in message for message in logs.output))
 
 
+class SchemaRepairTranscriptTests(unittest.TestCase):
+    """审计 H5：schema 修复续接原 transcript（含 role=tool 取证回灌），不再另起四消息列表。"""
+
+    def test_schema_repair_continues_transcript_with_tool_context(self) -> None:
+        """取证轮后 schema 校验失败 → 修复请求携带完整 transcript（assistant tool_calls
+        与 role=tool 结果俱在）且仍带 tools；修复轮轮次预算为首轮剩余。"""
+        responses = [
+            {"body": tool_call_response([("c1", "source_read", {"block_id": "B1"})],
+                                        usage={"prompt_tokens": 5, "completion_tokens": 1,
+                                               "total_tokens": 6})},
+            {"body": final_json_response(
+                {"decision": "bogus-decision", "risk": "low_risk", "confidence": 0.9,
+                 "review_notes": [], "expert_questions": []},
+                usage={"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11})},
+            {"body": final_json_response(
+                {"decision": "accept", "risk": "low_risk", "confidence": 0.9,
+                 "review_notes": [], "expert_questions": []},
+                usage={"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4})},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            seed_out(out_dir, [requirement("SREQ-00000000000000R3", confidence=0.70)])
+            pipeline_path = tmp_path / "review_pipeline.yaml"
+            with ScriptedOpenAIService(lambda body, count: responses.pop(0)) as service:
+                write_tool_loop_pipeline_config(pipeline_path, service.base_url)
+                summary = run_review_pipeline(
+                    out_dir, pipeline_path=pipeline_path, domain_pack_path=None,
+                    route="openai_compatible")
+            reviews = read_jsonl(out_dir / "llm_review_results.jsonl")
+
+        self.assertEqual(summary["llm_reviewed"], 1)
+        self.assertEqual(summary["llm_failed"], 0)
+        self.assertEqual(reviews[0]["decision"], "accept")
+        self.assertEqual(reviews[0]["generated_by"], "llm:mock-review-model")
+        self.assertEqual(len(service.requests), 3)   # 取证轮 + 产出轮 + 续接修复轮
+        repair_request = service.requests[2]
+        # 修复请求 = 原 transcript 续接：role=tool 的取证结果回灌仍在（修复前不丢上下文）
+        tool_msgs = [m for m in repair_request["messages"] if m.get("role") == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertEqual(tool_msgs[0]["tool_call_id"], "c1")
+        self.assertIn("tools", repair_request)   # 修复轮仍带 tools，模型可继续取证
+        # 尾部 = 首轮产出的 assistant JSON + 修复指令（与环内 JSON 修复同型）
+        self.assertEqual(repair_request["messages"][-2]["role"], "assistant")
+        self.assertIn("bogus-decision", repair_request["messages"][-2]["content"])
+        self.assertIn("schema validation failed", repair_request["messages"][-1]["content"])
+        # 首轮取证仍如实进 tool_calls 审计摘要
+        self.assertEqual(reviews[0]["tool_calls"], [{"round": 1, "name": "source_read"}])
+
+
 if __name__ == "__main__":
     unittest.main()

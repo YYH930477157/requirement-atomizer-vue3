@@ -17,6 +17,7 @@ from typing import Any, Sequence
 from agent_loop import (
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_MAX_TOKENS,
+    MAX_ITERATIONS,
     AgentLoopInputError,
     run_agent_loop,
 )
@@ -48,6 +49,30 @@ def _trace_actions(run_dir: Path) -> list[str]:
     ]
 
 
+def _trace_details(run_dir: Path) -> list[dict[str, Any]]:
+    """逐轮 trace 明细——必须在临时目录清理前读出,否则 reason/result 随副本丢失。"""
+    path = run_dir / DECIDE_TRACE_FILE
+    if not path.exists():
+        return []
+    details: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        result = row.get("result") or {}
+        details.append({
+            "iteration": row.get("iteration"),
+            "action": str(row.get("action") or ""),
+            "decider": str(row.get("decider") or ""),
+            "reason": str(row.get("reason") or ""),
+            "result": {
+                "status": str(result.get("status") or ""),
+                "summary": str(result.get("summary") or ""),
+            },
+        })
+    return details
+
+
 def _agreement(rule_actions: list[str], llm_actions: list[str]) -> dict[str, Any]:
     overlap = min(len(rule_actions), len(llm_actions))
     same = sum(
@@ -68,6 +93,14 @@ def run_comparison(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     llm_config: Any = None,
 ) -> dict[str, Any]:
+    # 预算预校验必须先于任何循环：rule 侧不传 max_tokens、无 key 时 llm 侧根本不跑,
+    # 依赖循环内部校验会让非法 --max-tokens 静默 exit 0（2026-07-23 审计实证 -1 退出 0）
+    if not 1 <= int(max_iterations) <= MAX_ITERATIONS:
+        raise AgentCompareInputError(
+            f"max_iterations must be between 1 and {MAX_ITERATIONS}"
+        )
+    if int(max_tokens) < 0:
+        raise AgentCompareInputError(f"max_tokens must be >= 0, got {max_tokens}")
     root = Path(out_dir).expanduser().resolve()
     if not root.is_dir():
         raise AgentCompareInputError(f"Output directory does not exist: {root}")
@@ -77,9 +110,11 @@ def run_comparison(
         _copy_run_dir(root, rule_dir)
         rule_summary = run_agent_loop(rule_dir, max_iterations=max_iterations, decider="rule")
         rule_actions = _trace_actions(rule_dir)
+        rule_trace = _trace_details(rule_dir)
 
         llm_summary: dict[str, Any] | None = None
         llm_actions: list[str] = []
+        llm_trace: list[dict[str, Any]] = []
         llm_error = ""
         if llm_config is not None:
             _copy_run_dir(root, llm_dir)
@@ -92,6 +127,7 @@ def run_comparison(
                     llm_config=llm_config,
                 )
                 llm_actions = _trace_actions(llm_dir)
+                llm_trace = _trace_details(llm_dir)
             except Exception as exc:  # 对比器不因 llm 侧失败丢弃 rule 侧结果
                 llm_error = f"{type(exc).__name__}: {exc}"
 
@@ -103,6 +139,7 @@ def run_comparison(
             "termination_reason": rule_summary["termination_reason"],
             "readiness": rule_summary["readiness"],
             "actions": rule_actions,
+            "trace": rule_trace,
             "decider_usage": rule_summary["decider_usage"],
             "tokens_used": rule_summary["tokens_used"],
             "token_accounting": rule_summary["token_accounting"],
@@ -113,6 +150,7 @@ def run_comparison(
                 "termination_reason": llm_summary["termination_reason"],
                 "readiness": llm_summary["readiness"],
                 "actions": llm_actions,
+                "trace": llm_trace,
                 "decider_usage": llm_summary["decider_usage"],
                 "tokens_used": llm_summary["tokens_used"],
                 "token_accounting": llm_summary["token_accounting"],

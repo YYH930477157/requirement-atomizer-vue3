@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -19,6 +20,7 @@ from llm_client import (
     LLMConnectionError,
     LLMError,
     LLMResponseError,
+    TOOL_LOOP_DEFAULT_MAX_ROUNDS,
     _aggregate_usage,
     chat_json,
     chat_json_messages,
@@ -39,10 +41,12 @@ DEFAULT_DOMAIN_PACK_PATH = _PACKAGE_ROOT / "domain_packs" / "dlms_cosem" / "pack
 PROMPT_VERSION = "m2-review-v2"
 # Cache rows contain policy-normalized output. Bump this whenever deterministic
 # review post-processing changes so an older normalized decision cannot leak through.
+# v5：schema 修复改为续接原 transcript 的 chat_with_tools（含 role=tool 取证上下文、
+# 仍带 tools，修复轮工具调用并入 tool_calls 摘要）——修复路径行为变化影响缓存行
 # v4：缓存 key 纳入工具证据内容指纹（review_tools.evidence_fingerprint——KB/blocks/
 # 原子需求/蓝皮书索引），改证据后旧审查不再静默复用；schema 修复纳入共享预算计量
 # v3：缓存 key 纳入 REVIEW_TOOLS_VERSION 与执行器模式（tool_loop/single_shot）
-LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v4"
+LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v5"
 # Agent Phase 2 冻结口径：每需求 tool-loop tokens 上限（yaml route.tool_loop_token_budget 可调）；
 # 超限的需求进 stub 并在 llm_failed 记数（全跑不设总顶——审查本质是批处理）
 TOOL_LOOP_DEFAULT_TOKEN_BUDGET = 20000
@@ -598,6 +602,7 @@ def build_openai_review_tool_loop(
         _usage_sink=usage_sink,
     )
     review, errors = review_with_validation_errors(requirement, pipeline, payload, model=config.model)
+    repair_meta: dict[str, Any] | None = None
     if errors:
         repair_prompt = (
             "Only output valid JSON matching the required review schema. "
@@ -609,14 +614,19 @@ def build_openai_review_tool_loop(
             raise LLMResponseError(
                 f"tool loop token budget exhausted before schema repair: "
                 f"{spent} > {token_budget} tokens")
-        payload = chat_json_messages(
+        # schema 修复续接原 transcript（含 assistant tool_calls 与 role=tool 回灌，
+        # 与环内 JSON 修复同型）——不再丢弃取证上下文另起四消息列表；修复轮仍带 tools
+        # 可调工具，轮次预算为首轮剩余
+        repair_messages = list(meta.get("history") or [])
+        repair_messages.append({"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)})
+        repair_messages.append({"role": "user", "content": repair_prompt})
+        payload, repair_meta = chat_with_tools(
             config,
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-                {"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)},
-                {"role": "user", "content": repair_prompt},
-            ],
+            repair_messages,
+            REVIEW_TOOLS,
+            max_rounds=max(1, TOOL_LOOP_DEFAULT_MAX_ROUNDS - int(meta.get("rounds") or 0)),
+            on_tool_call=tool_executor,
+            token_budget=token_budget,
             _usage_sink=usage_sink,
         )
         spent = _aggregate_usage(usage_sink)["usage"]["total_tokens"]
@@ -628,7 +638,15 @@ def build_openai_review_tool_loop(
     if errors:
         message = "; ".join(f"{issue.path}: {issue.message}" for issue in errors[:5])
         raise LLMResponseError(f"invalid LLM review result: {message}")
-    review["tool_calls"] = list(meta.get("tool_calls") or [])
+    tool_calls = list(meta.get("tool_calls") or [])
+    if repair_meta is not None:
+        # 修复轮的工具调用并入审计摘要（轮次续接首轮之后）——摘要如实覆盖修复路径
+        base_rounds = int(meta.get("rounds") or 0)
+        tool_calls.extend(
+            {"round": base_rounds + int(call.get("round") or 0), "name": call.get("name")}
+            for call in repair_meta.get("tool_calls") or []
+        )
+    review["tool_calls"] = tool_calls
     aggregated = _aggregate_usage(usage_sink)   # 含修复调用的真实聚合值
     LOGGER.info(
         "tool-loop 审查 %s：%s 轮、%s 次工具调用、tokens=%s%s",
@@ -811,15 +829,29 @@ def llm_cache_row(
     }
 
 
+_CACHE_APPEND_ATTEMPTS = 5
+_CACHE_APPEND_RETRY_DELAY_S = 0.02
+
+
 def append_llm_review_cache(path: Path, rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
-    count = 0
-    with path.open("a", encoding="utf-8", newline="\n") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            count += 1
-    return count
+    # 共享状态纪律（同 review_states.jsonl）：锁内追加 + fsync + PermissionError 重试，
+    # 模式对齐 decide_trace._append_with_retry——此前锁外裸追加，并发批可能丢行/撕裂
+    payload = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+    with review_state_lock(path.parent):
+        for attempt in range(_CACHE_APPEND_ATTEMPTS):
+            try:
+                with path.open("a", encoding="utf-8", newline="\n") as f:
+                    f.write(payload)
+                    f.flush()
+                    os.fsync(f.fileno())
+                break
+            except PermissionError:
+                if attempt + 1 >= _CACHE_APPEND_ATTEMPTS:
+                    raise
+                time.sleep(_CACHE_APPEND_RETRY_DELAY_S)
+    return len(rows)
 
 
 def assert_valid_review_results(rows: list[dict[str, Any]]) -> None:

@@ -13,11 +13,12 @@ from ai_review_actions import read_ai_review_states, source_ai_requirement_id
 from compliance import build_compliance_payload, is_compliance_requirement
 from io_utils import read_jsonl
 from requirements_analysis_agent import build_analysis_prompt, validate_llm_item
-from requirements_analysis_excel import clarify_display_text, write_software_requirements_xlsx
+from requirements_analysis_excel import _fallback_lines, clarify_display_text, write_software_requirements_xlsx
 from requirements_analysis_rules import classify_ownership
 from requirements_analysis_schema import (
     OWNERSHIP_CO_DESIGN,
     OWNERSHIP_HARDWARE,
+    OWNERSHIP_SOFTWARE,
     apply_ownership_override,
     build_analysis_id,
     normalize_ownership,
@@ -42,7 +43,8 @@ SCHEMA_VERSION = "requirements-analysis/v1"
 ANALYZE_PROMPT_VERSION = "analyze-llm-v7"
 # WP2 待澄清规则版本——确定性后处理（拒/无据 → 待澄清 + open_questions 同步）变更必须
 # bump 并进 analyze_enrich_cache 指纹与阶段 producer（AGENTS.md 缓存指纹纪律）
-UNFOUNDED_RULE_VERSION = "analyze-unfounded-v2"  # v2:渲染兜底（clarify_fallback 原始候选标注透出）
+# v3：归属护栏（software 项不采纳 LLM 写入的 hardware_dependency）+ 富化调用失败/返回非法同样标待澄清
+UNFOUNDED_RULE_VERSION = "analyze-unfounded-v3"  # v2:渲染兜底（clarify_fallback 原始候选标注透出）
 CLARIFY_MARK = "待澄清"
 # WP2 触发面（冻结点 4）：仅富化叙述字段；确定性 join 字段（id/归属/引句/模块）永不标待澄清
 _UNFOUNDED_TEXT_FIELDS = ("software_requirement_text", "hardware_dependency")
@@ -681,12 +683,19 @@ def _apply_llm_item(
 
     accepted = False
     adopted_fields: set[str] = set()
+    # 归属护栏（审计 r2 S1）：hardware_dependency 仅 hardware/co_design 可采纳——software 项
+    # 被 LLM 写入硬件依赖属越权注入（内容护栏不管归属），确定性跳过；非空值如实留痕，不静默吞
+    ownership_skips: list[str] = []
     for field in _ENRICH_FIELDS_TEXT:
         value = str(llm_item.get(field) or "").strip()
-        if value:
-            item[field] = value
-            adopted_fields.add(field)
-            accepted = True
+        if not value:
+            continue
+        if field == "hardware_dependency" and str(item.get("ownership") or "") == OWNERSHIP_SOFTWARE:
+            ownership_skips.append(f"归属护栏：software 项不采纳 LLM 写入的硬件依赖，需人工核对: {value}")
+            continue
+        item[field] = value
+        adopted_fields.add(field)
+        accepted = True
     for field in _ENRICH_FIELDS_LIST:
         values = [str(x).strip() for x in _as_list(llm_item.get(field)) if str(x).strip()]
         if values:
@@ -718,19 +727,20 @@ def _apply_llm_item(
                 f"LLM 归属叙述与冻结归属不一致（{llm_ownership} vs {item.get('ownership')}），保留规则原因")
     if not accepted:
         _mark_enrichment_rejected(item, "LLM 富化未返回可采纳的叙述字段")
-        return False, ["LLM 富化未返回可采纳的叙述字段，已降级为确定性"]
+        return False, ownership_skips + ["LLM 富化未返回可采纳的叙述字段，已降级为确定性"]
     item["analysis_source"] = "llm"
     clarify_issues = _replace_unfounded_adopted_fields(item, source_req, ctx, adopted_fields)
 
     soft = [d for d in drift if not d.startswith("fabricated code")]
     # 软标必须随交付物同行（2026-07-08 审计 B1）：此前只进 run 级 issues（excel/成文不读），
     # 编造数字以零可见标记落进公司模板成文 xlsx。现在钉在 item 上，_notes_text/成文同列渲染。
-    if soft:
-        item["enrichment_warnings"] = soft
+    warnings = soft + ownership_skips   # 归属护栏跳过同样钉 item（审计 r2 S1：留痕随交付物同行）
+    if warnings:
+        item["enrichment_warnings"] = warnings
     else:
         item.pop("enrichment_warnings", None)   # 重富化后旧警告不残留
-    issues = reason_issues + clarify_issues + ([f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"]
-                              if soft else [])
+    issues = reason_issues + clarify_issues + ownership_skips + (
+        [f"富化软提示（数字/遗漏漂移，未阻断，请对照 source_quote 核）: {'; '.join(soft)}"] if soft else [])
     return True, issues
 
 
@@ -767,9 +777,13 @@ def _llm_enrich_item(
         try:
             payload = chat(prompt["system"], prompt["user"])
         except Exception as exc:  # 调用失败非致命
+            # 与护栏拒绝同纪律（审计 r2 S2）：没采到 LLM 内容 → 无依据字段标待澄清、
+            # base 值保留进 clarify_fallback、open_questions 留痕，base 文本不得静默充当正文透出
+            _mark_enrichment_rejected(item, "LLM 富化调用失败")
             return False, [f"LLM 富化调用失败，已降级为确定性: {exc}"]
         llm_item = _first_item(payload)
         if llm_item is None:
+            _mark_enrichment_rejected(item, "LLM 富化返回空或格式非法")
             return False, ["LLM 富化返回空或格式非法，已降级为确定性"]
         with guard:
             cache[key] = llm_item
@@ -1210,13 +1224,20 @@ def _write_report(path: Path, rows: list[dict[str, Any]], title: str, *, co_desi
     for row in rows:
         lines.append(f"## {row.get('analysis_id')} {row.get('description') or ''}".rstrip())
         if co_design:
+            # 待澄清渲染兜底（审计 r2 S5）：四字段与硬件依赖同走 clarify 通道——标了待澄清
+            # 且留有原始候选时带"未经依据校验+候选"标注透出，不再裸值输出
             lines.extend([
-                f"- 软件需求: {row.get('software_requirement_text') or row.get('requirement') or ''}",
+                f"- 软件需求: {clarify_display_text(row, 'software_requirement_text') or row.get('requirement') or ''}",
                 f"- 为什么判断为协同设计: {row.get('ownership_reason') or ''}",
             ])
-            lines.extend(f"- 研发指引: {value}" for value in row.get("developer_guidance") or [])
-            lines.extend(f"- 设计候选: {value}" for value in row.get("design_options") or [])
-            lines.extend(f"- 验收点: {value}" for value in row.get("acceptance_criteria") or [])
+            for field, label in (("developer_guidance", "研发指引"),
+                                 ("design_options", "设计候选"),
+                                 ("acceptance_criteria", "验收点")):
+                fallback = _fallback_lines(row, field, f"- {label}: ")
+                if fallback:
+                    lines.extend(fallback)
+                else:
+                    lines.extend(f"- {label}: {value}" for value in row.get(field) or [])
             # 硬件依赖透出（审计 P1-b）——过 clarify_display_text：待澄清时带
             # "未经依据校验+原始候选"标注，仅在字段非空时输出
             hardware_dependency = clarify_display_text(row, "hardware_dependency").strip()

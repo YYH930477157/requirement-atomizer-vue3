@@ -42,7 +42,8 @@ def _seed_failed_section_covered(out: Path) -> None:
     """B1 已被需求引句覆盖（不再 uncovered），但被质量报告记为失败章节块。
 
     审计 P1-a 的现场形态：残存需求/跨章引句/denominator 规则使失败块不再出现在
-    重算的 uncovered 集合里——旧 queue_all_gaps 只看重算集合，失败块永远排不上队。
+    重算的 uncovered 集合里——候选口径并入失败章节块（H6）后，重算与快照两条
+    路径都能登记它，登记后可经 targeted_reextract 真正补抽。
     """
     _write_jsonl(out / "blocks.jsonl", [{
         "block_id": "B1",
@@ -151,22 +152,25 @@ class AgentToolTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["details"]["queued_block_ids"], ["B1"])
 
-    def test_queue_all_gaps_snapshot_queues_failed_section_block(self) -> None:
-        """审计 P1-a：快照候选里的失败章节块即使不再 uncovered 也必须被登记——
-        重算路径（未传 block_ids）找不到它，正好作为对照。"""
+    def test_queue_all_gaps_recompute_queues_failed_section_block(self) -> None:
+        """审计 H6 修复后：重算候选 = 未覆盖块 ∪ 失败章节块——不再 uncovered 的
+        失败块经重算路径同样登记（修复前只有快照路径能登记，且登记后无法补抽）。"""
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             _seed_failed_section_covered(out)
 
-            recompute = queue_all_gaps(out)   # 旧路径：B1 已被引句覆盖，不在 uncovered 集合
+            recompute = queue_all_gaps(out)   # 新口径：失败块经重算也排得上队
             result = queue_all_gaps(out, block_ids=["B1"])
             rows = list(omission_actions.read_omission_states(out).values())
 
-        self.assertEqual(recompute["status"], "skipped")
-        self.assertEqual(recompute["details"]["queued_block_ids"], [])
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["details"]["queued_block_ids"], ["B1"])
-        self.assertEqual(result["details"]["skipped_block_ids"], [])
+        self.assertEqual(recompute["status"], "ok")
+        self.assertEqual(recompute["details"]["queued_block_ids"], ["B1"])
+        # 已登记后快照路径幂等：不重复追加，如实记 skipped
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["details"]["queued_block_ids"], [])
+        skipped = result["details"]["skipped_block_ids"]
+        self.assertEqual([entry["block_id"] for entry in skipped], ["B1"])
+        self.assertTrue(skipped[0]["reason"])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["block_id"], "B1")
         self.assertEqual(rows[0]["status"], "needs_extraction")

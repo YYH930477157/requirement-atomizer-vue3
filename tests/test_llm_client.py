@@ -294,6 +294,52 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(meta["usage"]["total_tokens"], 0)
         self.assertFalse(meta["usage_complete"])
 
+    def test_aggregate_usage_normalizes_each_round_before_summing(self) -> None:
+        """审计 H4：逐轮归一——{total:100}+{prompt:15,completion:10} = 125；
+        旧"全或无"兜底会把明细轮丢弃只报 100。"""
+        from llm_client import _aggregate_usage
+
+        meta = _aggregate_usage([
+            {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100},
+            {"prompt_tokens": 15, "completion_tokens": 10},
+        ])
+
+        self.assertEqual(meta["usage"]["total_tokens"], 125)
+        self.assertEqual(meta["usage"]["prompt_tokens"], 105)
+        self.assertEqual(meta["usage"]["completion_tokens"], 20)
+        self.assertTrue(meta["usage_complete"])
+
+    def test_aggregate_usage_detail_round_before_total_round(self) -> None:
+        """审计 H4 反向混合：{prompt:70,completion:30}+{total:25} = 125（旧兜底报 25）。"""
+        from llm_client import _aggregate_usage
+
+        meta = _aggregate_usage([
+            {"prompt_tokens": 70, "completion_tokens": 30},
+            {"total_tokens": 25},
+        ])
+
+        self.assertEqual(meta["usage"]["total_tokens"], 125)
+        self.assertTrue(meta["usage_complete"])   # 一轮双明细、一轮 total——两轮均可计量
+
+    def test_chat_json_with_meta_normalizes_mixed_usage_per_round(self) -> None:
+        """审计 H4 共用路径：首发带 total、修复轮只带双明细 → total 逐轮归一为 125。"""
+        from llm_client import chat_json_with_meta
+
+        bad = {"choices": [{"message": {"content": "not json"}}],
+               "usage": {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}}
+        good = {"choices": [{"message": {"content": '{"ok": true}'}}],
+                "usage": {"prompt_tokens": 15, "completion_tokens": 10}}
+        with MockOpenAIService([{"body": bad}, {"body": good}]) as service:
+            data, meta = chat_json_with_meta(
+                LLMClientConfig(base_url=service.base_url, model="mock-model", api_key_env="", timeout_s=2, max_retries=0),
+                "system",
+                "user",
+            )
+
+        self.assertEqual(data, {"ok": True})
+        self.assertEqual(meta["usage"]["total_tokens"], 125)
+        self.assertTrue(meta["usage_complete"])
+
     def test_bad_json_after_repair_raises_response_error(self) -> None:
         with MockOpenAIService(
             [
