@@ -600,7 +600,8 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert item["source_requirement_ids"] == ["AI-1"]
 
     def test_fabricated_code_rejects_enrichment_and_degrades(self) -> None:
-        """LLM 编造原文没有的 OBIS（换位）→ 整条富化拒绝、item 保持确定性空值、记 issue。"""
+        """LLM 编造原文没有的 OBIS（换位）→ 整条富化拒绝、记 issue；WP2（Agent Phase 2）起
+        无依据字段不再静默回退 base 充当正文——写"待澄清"并同步 open_questions（内部核对）。"""
         with tempfile.TemporaryDirectory() as td:
             tmp_path = Path(td)
             self._seed(tmp_path)
@@ -623,8 +624,10 @@ class LlmEnrichmentTests(unittest.TestCase):
             payload = json.loads((tmp_path / "engineering_analysis.json").read_text(encoding="utf-8"))
             assert payload["route"] == "stub"
             item = payload["items"][0]
-            assert item["software_requirement_text"] == "The meter shall log power-down events to OBIS 0-0:96.1.0."  # 保留确定性基线
-            assert item["developer_guidance"] == []
+            # WP2：拒绝字段标"待澄清"（确定性 join 字段——归属/引句/id 永不标）
+            assert item["software_requirement_text"] == "待澄清"
+            assert item["developer_guidance"] == ["待澄清"]
+            assert any("待澄清" in q for q in item["open_questions"])
             assert item["analysis_source"] == "deterministic"
             assert any("编造结构编码" in msg
                        for row in payload["issues"] for msg in row["issues"])

@@ -14,20 +14,35 @@ import yaml
 
 from domain_pack import load_domain_pack
 from io_utils import read_jsonl, read_jsonl_recover_torn_tail
-from llm_client import LLMClientConfig, LLMConnectionError, LLMError, LLMResponseError, chat_json, chat_json_messages
+from llm_client import (
+    LLMClientConfig,
+    LLMConnectionError,
+    LLMError,
+    LLMResponseError,
+    chat_json,
+    chat_json_messages,
+    chat_with_tools,
+)
 from llm_review_schema import validate_llm_review_result_payload, validate_llm_review_results
 from resources import package_root
 from review_state import RequirementReviewState, merge_review_states, review_event_key, review_state_lock
+from review_tools import REVIEW_TOOLS_VERSION, TOOLS as REVIEW_TOOLS, make_tool_executor
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
 _PACKAGE_ROOT = package_root()
 DEFAULT_PIPELINE_PATH = _PACKAGE_ROOT / "llm_agents" / "review_pipeline.yaml"
 DEFAULT_DOMAIN_PACK_PATH = _PACKAGE_ROOT / "domain_packs" / "dlms_cosem" / "pack.yaml"
-PROMPT_VERSION = "m2-review-v1"
+# m2-review-v2：Agent Phase 2 工具化融合审查（tool-loop 调用 review_tools 只读工具取证）；
+# v1：单次融合 prompt（无工具）
+PROMPT_VERSION = "m2-review-v2"
 # Cache rows contain policy-normalized output. Bump this whenever deterministic
 # review post-processing changes so an older normalized decision cannot leak through.
-LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v2"
+# v3：缓存 key 纳入 REVIEW_TOOLS_VERSION 与执行器模式（tool_loop/single_shot）
+LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v3"
+# Agent Phase 2 冻结口径：每需求 tool-loop tokens 上限（yaml route.tool_loop_token_budget 可调）；
+# 超限的需求进 stub 并在 llm_failed 记数（全跑不设总顶——审查本质是批处理）
+TOOL_LOOP_DEFAULT_TOKEN_BUDGET = 20000
 FAST_FAIL_SAMPLE_SIZE = 5
 PROGRESS_INTERVAL = 20
 SOURCE_TYPE_CONFIDENCE_THRESHOLD = 0.85
@@ -198,6 +213,25 @@ def resolve_route_name(pipeline: ReviewPipeline, route: str | None) -> str:
     return str(pipeline.model_routes.get("default") or "stub")
 
 
+def operation_executor_map(pipeline: ReviewPipeline) -> dict[str, str]:
+    """yaml operations 的 executor 处置表（Phase 2 首次实现执行器；load_review_pipeline 透传原值）。
+
+    tool_loop=工具化融合审查（classify_risk/correct_errors 合并为每条需求一次 tool-loop 调用）；
+    deterministic=确定性承担（merge_duplicates/gap_find 已在 consistency_report，不做 LLM 版）；
+    deferred=有据缓建（test_point_generate 零消费者）。未声明 executor 的 operation 不触发
+    tool-loop——旧 yaml 保持单发融合审查（向后兼容）。"""
+    executors: dict[str, str] = {}
+    for operation in pipeline.operations:
+        if isinstance(operation, dict) and operation.get("operation_id"):
+            executors[str(operation["operation_id"])] = str(operation.get("executor") or "")
+    return executors
+
+
+def tool_loop_enabled(pipeline: ReviewPipeline) -> bool:
+    executors = operation_executor_map(pipeline)
+    return any(executors.get(operation_id) == "tool_loop" for operation_id in ("classify_risk", "correct_errors"))
+
+
 def review_requirements_with_openai(
     requirements: list[dict[str, Any]],
     pipeline: ReviewPipeline,
@@ -217,6 +251,12 @@ def review_requirements_with_openai(
     connection_failure_abort = max(1, int(route_payload.get("connection_failure_abort", 10) or 10))
     cache_path = out_dir / "llm_review_cache.jsonl"
     cache = read_llm_review_cache(cache_path)
+    # Phase 2：yaml operations 声明 executor=tool_loop → 工具化融合审查（每条需求一次
+    # 有界 tool-loop 调用，模型可调用 review_tools 的确定性只读工具取证）；未声明保持单发。
+    tool_loop: dict[str, Any] | None = None
+    if tool_loop_enabled(pipeline):
+        token_budget = int(route_payload.get("tool_loop_token_budget") or TOOL_LOOP_DEFAULT_TOKEN_BUDGET)
+        tool_loop = {"executor": make_tool_executor(out_dir), "token_budget": token_budget}
 
     reviews: list[dict[str, Any] | None] = [None] * len(requirements)
     pending: list[int] = []
@@ -265,7 +305,7 @@ def review_requirements_with_openai(
     for index in sample:
         requirement = requirements[index]
         try:
-            review = build_openai_review(requirement, pipeline, client_config)
+            review = dispatch_openai_review(requirement, pipeline, client_config, tool_loop)
         except LLMConnectionError as exc:
             sample_connection_failures += 1
             sample_connection_errors.append(str(exc))
@@ -295,7 +335,7 @@ def review_requirements_with_openai(
         executor = ThreadPoolExecutor(max_workers=concurrency)
         try:
             futures = {
-                executor.submit(build_openai_review, requirements[index], pipeline, client_config): index
+                executor.submit(dispatch_openai_review, requirements[index], pipeline, client_config, tool_loop): index
                 for index in remaining
             }
             for future in as_completed(futures):
@@ -481,6 +521,87 @@ def build_openai_review(
     return review
 
 
+def dispatch_openai_review(
+    requirement: dict[str, Any],
+    pipeline: ReviewPipeline,
+    config: LLMClientConfig,
+    tool_loop: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """按 yaml operations 的 executor 处置分发：tool_loop → 工具化融合审查；否则单发（旧行为）。
+
+    tool_loop=None 时逐字调用既有 build_openai_review（三位置参数签名不变——
+    测试/嵌入方的 patch 点保持兼容）。"""
+    if tool_loop is None:
+        return build_openai_review(requirement, pipeline, config)
+    return build_openai_review_tool_loop(
+        requirement,
+        pipeline,
+        config,
+        tool_executor=tool_loop["executor"],
+        token_budget=tool_loop["token_budget"],
+    )
+
+
+def build_openai_review_tool_loop(
+    requirement: dict[str, Any],
+    pipeline: ReviewPipeline,
+    config: LLMClientConfig,
+    *,
+    tool_executor: Any,
+    token_budget: int = TOOL_LOOP_DEFAULT_TOKEN_BUDGET,
+) -> dict[str, Any]:
+    """工具化融合审查（Phase 2）：同一融合 prompt，模型可经 chat_with_tools 调用
+    review_tools 的确定性只读工具（KB/蓝皮书/原文块/覆盖）取证后再裁决。
+
+    输出契约与单发完全一致（decision/risk/confidence/revised_requirement/review_notes/
+    expert_questions 过 llm_review_schema + 确定性政策层，均不动）——tool-loop 只改变
+    产出这些字段的过程。审查结果行附加 tool_calls 摘要（工具名+轮次，审计可解释性锚；
+    schema additionalProperties 允许）。轮顶耗尽/token 超预算/端点不支持 tools → 抛
+    LLMError，调用方按现有失败路径进 stub 并记数（不得伪造模型已审）。"""
+    user_prompt = build_user_prompt(requirement)
+    payload, meta = chat_with_tools(
+        config,
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        REVIEW_TOOLS,
+        on_tool_call=tool_executor,
+        token_budget=token_budget,
+    )
+    review, errors = review_with_validation_errors(requirement, pipeline, payload, model=config.model)
+    if errors:
+        repair_prompt = (
+            "Only output valid JSON matching the required review schema. "
+            "The previous JSON schema validation failed: "
+            + "; ".join(f"{issue.path}: {issue.message}" for issue in errors[:5])
+        )
+        payload = chat_json_messages(
+            config,
+            [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)},
+                {"role": "user", "content": repair_prompt},
+            ],
+        )
+        review, errors = review_with_validation_errors(requirement, pipeline, payload, model=config.model)
+    if errors:
+        message = "; ".join(f"{issue.path}: {issue.message}" for issue in errors[:5])
+        raise LLMResponseError(f"invalid LLM review result: {message}")
+    review["tool_calls"] = list(meta.get("tool_calls") or [])
+    usage = meta.get("usage") or {}
+    LOGGER.info(
+        "tool-loop 审查 %s：%s 轮、%s 次工具调用、tokens=%s%s",
+        requirement_identity(requirement),
+        meta.get("rounds"),
+        len(review["tool_calls"]),
+        usage.get("total_tokens", 0),
+        "" if meta.get("usage_complete") else "(usage partial)",
+    )
+    return review
+
+
 def review_with_validation_errors(
     requirement: dict[str, Any],
     pipeline: ReviewPipeline,
@@ -585,6 +706,10 @@ def llm_cache_key(
     fingerprint_payload = {
         "cache_version": LLM_REVIEW_CACHE_VERSION,
         "prompt_version": PROMPT_VERSION,
+        # 工具定义（名称/参数/返回裁剪）与执行器模式都是产物成因——必须进指纹，
+        # 否则旧执行器/旧工具面的缓存审查会静默冒充新产物（AGENTS.md 缓存纪律）
+        "review_tools_version": REVIEW_TOOLS_VERSION,
+        "review_executor": "tool_loop" if tool_loop_enabled(pipeline) else "single_shot",
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},

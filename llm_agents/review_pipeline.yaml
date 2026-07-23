@@ -30,22 +30,33 @@ operations:
     description: "Classify candidate requirements by review risk."
     input_type: "atomic_requirement"
     output_schema: "schemas/llm_review_result.schema.json"
+    # Agent Phase 2：classify_risk 与 correct_errors 合并为每条需求一次 tool-loop 调用
+    # （有界 max_rounds=8；模型可调用 review_tools.py 的确定性只读工具取证）
+    executor: "tool_loop"
   - operation_id: "correct_errors"
     description: "Correct terminology, identifiers, and scope while preserving source references."
     input_type: "atomic_requirement"
     output_schema: "schemas/llm_review_result.schema.json"
+    executor: "tool_loop"
   - operation_id: "merge_duplicates"
     description: "Identify duplicate or overlapping requirements."
     input_type: "atomic_requirement_batch"
     output_schema: "schemas/llm_review_result.schema.json"
+    # 结构化裁决确定性优先：find_cross_section_duplicates/find_obis_coreference 已在
+    # consistency_report 承担，不做 LLM 版（Phase 2 冻结处置）
+    executor: "deterministic"
   - operation_id: "gap_find"
     description: "Find likely missing requirements from source context."
     input_type: "llm_task"
     output_schema: "schemas/llm_review_result.schema.json"
+    # coverage_gaps + 澄清遗漏档已承担；语义漏抽归既有 ai-extract 自检轨
+    executor: "deterministic"
   - operation_id: "test_point_generate"
     description: "Generate candidate verification test points."
     input_type: "atomic_requirement"
     output_schema: "schemas/test_point.schema.json"
+    # 有据缓建：schema 存在但零生产者零消费者，消费者出现再立项
+    executor: "deferred"
 
 model_routing:
   low_risk:
