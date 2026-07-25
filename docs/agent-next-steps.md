@@ -66,14 +66,13 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
   `git branch -d` 删除全部 10 个分支。
 - 终态：单一 worktree（main `97c3ce7`），本地仅剩 main 分支。
 
-### 6. 重新打包桌面应用（约 15 分钟，做完 1–4 后更值得）
-
-- 当前 `ui/dist/标准需求抽取与审查平台 0.1.0.exe` 不含审计修复批次
-  （证据指纹/KB 同轨/预算边界/兜底渲染/wheel 修复 + 第二轮十三项：atomic 适配/
-  阶段指纹/token 归一/证据续接/缓存锁/补抽口径/分发/WP2 一致性）。
-- 动作：`cd ui && npm run desktop:pack`；产物同名覆盖，注意保留旧包备份。
-- 验收：新包跑 test3 副本，审查行带 `tool_calls` 摘要、xlsx 待澄清字段
-  显示标注兜底。
+### 6. ~~重新打包桌面应用~~ **已完成（2026-07-23）**
+- 新包 `ui/dist/标准需求抽取与审查平台 0.1.0.exe`（192MB，与旧包同量级），含全部
+  修复：专家审核两轮、锚点一致化（guards-v11/review-tools-v3）、WP2 v3、
+  grouping v7；包内代码版本已抽查核实。旧包备份在 `ui/.pkg-backup/`。
+- **打包教训（留痕）**：electron-builder `files` 含 `dist/**/*`，构建前必须清
+  `dist/`——否则历史 win-unpacked/旧 exe 被递归打进新包（本次先产出 581MB 废包，
+  清 dist 后回 192MB）。
 
 ### 7. must_ask 语义档自动判定评估（不急，Phase 2 稳定后）
 
