@@ -52,24 +52,10 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 - 产出：复验结果（条数、样本截图或 JSON 摘录）记录进 `CLAUDE.md` WP2 条目；
   如有假标/漏标，按"只对无依据下手"口径回归讨论。
 
-### 4. grouping 基线 0.5 改进（确定性聚类规则，独立小任务，1–2 天）
-
-- 背景：agent-eval-v2 基线 grouping 4/8——现有确定性聚类
-  （`functional_catalog.build_function_catalog` 零 LLM 路径）在一半案例对上
-  合错/分错。这是评测集指出的第一个明确改进靶点，也是后续功能合成质量的
-  前置。
-- 前置（硬约束）：待办 2 人工核对完成前不动聚类规则——grouping 8 条案例的
-  标准答案全部未经人工核对（2026-07-23 专家裁定），先调规则等于对着未验证的
-  靶子调参；也不许靠改案例刷分，案例修改必须走待办 2 的核对登记通道。
-- 动作：
-  1. `python agent_eval.py --eval-dir golden_sets/agent_eval_v1` 查看
-     `grouping_details` 的失败案例对，归类失败模式（误并 vs 误拆）；
-  2. 修 `functional_catalog` 聚类规则（`_catalog_groups`/`_legacy_family`），
-     只对规则层下手，不引入 LLM；
-  3. 每轮修改跑 agent_eval 对比基线（目标 ≥0.75，不许靠改案例刷分——
-     案例修改必须走待办 2 的人工核对通道）。
-- 注意：该改动影响 functional-synthesis 产物 → 按缓存指纹纪律 bump
-  `FUNCTIONAL_SYNTHESIS_VERSION` 并更新 chain 戳测试。
+### 4. ~~grouping 基线 0.5 改进（确定性聚类规则）~~ **已完成（2026-07-23，main `67216b5`）**
+- 三规则落地：周期档位分家（审核人裁定）、对象词组合并（误拆修复）、变体护栏
+  （编号/制式不同不并）；agent_eval grouping **4/8 → 8/8**，生产影响实测为零
+  （test2/test3 新旧逐组一致）；`FUNCTIONAL_SYNTHESIS_VERSION` 升 v7。
 
 ### 5. worktree 清理（10 分钟）——✅ 已完成（2026-07-25，Kimi Work 执行）
 
