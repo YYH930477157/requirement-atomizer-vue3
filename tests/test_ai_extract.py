@@ -1502,6 +1502,68 @@ class SourceMappingTests(unittest.TestCase):
         self.assertEqual(req["anchor_block_id"], "B14")
         self.assertEqual(req["source_mapping"], "multi_block")
 
+    def test_section_fallback_narrows_span_to_requirement_section(self) -> None:
+        """跨小节单元的 fallback 只留所属小节块（test5 实证：24 块跨 3.4.4/3.4.5/3.4.6，
+        无关清单段 "- DAY1" 被误标分析范围）。"""
+        section = {
+            "block_ids": ["B1", "B2", "B3", "B4", "B5"],
+            "source_blocks": [
+                {"block_id": "B1", "text": "3.4.4 Marking of terminals",
+                 "section_path": ["3", "3.4.4 Marking of terminals"]},
+                {"block_id": "B2", "text": "- DAY1",
+                 "section_path": ["3", "3.4.4 Marking of terminals"]},
+                {"block_id": "B3", "text": "3.4.5 Screws",
+                 "section_path": ["3", "3.4.5 Screws"]},
+                {"block_id": "B4", "text": "The terminal box must be supplied with crosshead combi screws.",
+                 "section_path": ["3", "3.4.5 Screws"]},
+                {"block_id": "B5", "text": "3.4.6 Packaging",
+                 "section_path": ["3", "3.4.6 Packaging"]},
+            ],
+        }
+        req = {"source_quote": "a paraphrased quote not in source",
+               "source_section": "3.4.5 Screws", "notes": ""}
+
+        ai_extract._map_requirement_source(req, section)
+
+        self.assertEqual(req["source_block_ids"], ["B3", "B4"])
+        self.assertEqual(req["anchor_block_id"], "B3")
+        self.assertEqual(req["source_mapping"], "section_fallback")
+        self.assertIn("收窄", str(req.get("notes") or ""))
+
+    def test_section_fallback_keeps_full_span_when_section_unmatched(self) -> None:
+        """所属小节一个块都匹配不上时退回整单元（如实保留"定位不精"原口径，不猜）。"""
+        section = {
+            "block_ids": ["B1", "B2"],
+            "source_blocks": [
+                {"block_id": "B1", "text": "3.4.4 Marking of terminals",
+                 "section_path": ["3", "3.4.4 Marking of terminals"]},
+                {"block_id": "B2", "text": "- DAY1",
+                 "section_path": ["3", "3.4.4 Marking of terminals"]},
+            ],
+        }
+        req = {"source_quote": "a paraphrased quote not in source",
+               "source_section": "9.9 Nowhere", "notes": ""}
+
+        ai_extract._map_requirement_source(req, section)
+
+        self.assertEqual(req["source_block_ids"], ["B1", "B2"])
+        self.assertEqual(req["source_mapping"], "section_fallback")
+
+    def test_section_fallback_keeps_full_span_without_source_section(self) -> None:
+        section = {
+            "block_ids": ["B1"],
+            "source_blocks": [
+                {"block_id": "B1", "text": "- DAY1",
+                 "section_path": ["3", "3.4.4 Marking of terminals"]},
+            ],
+        }
+        req = {"source_quote": "a paraphrased quote not in source", "notes": ""}
+
+        ai_extract._map_requirement_source(req, section)
+
+        self.assertEqual(req["source_block_ids"], ["B1"])
+        self.assertEqual(req["source_mapping"], "section_fallback")
+
 
 class ComplianceExtractionTests(unittest.TestCase):
     def test_legal_certificate_is_deterministically_retyped_and_source_backed(self) -> None:

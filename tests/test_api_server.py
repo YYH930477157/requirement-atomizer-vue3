@@ -242,6 +242,27 @@ class AiRequirementsEndpointTests(unittest.TestCase):
         # 无 quote/无 span → 空
         self.assertEqual(api_server.anchor_block_id({}, text_by_block), "")
 
+    def test_quote_matched_block_ids_returns_full_quote_span(self) -> None:
+        """证据区应覆盖原句实际跨越的全部块——多段引句只亮首块会丢后半段（test5 实证）。"""
+        text_by_block = {
+            "BLK-1": "The terminal box must be supplied with crosshead screws.",
+            "BLK-2": "Condition upon delivery - screws must be firmly tightened.",
+            "BLK-3": "Unrelated packaging text.",
+        }
+        req = {
+            "source_quote": (
+                "The terminal box must be supplied with crosshead screws.\n"
+                "Condition upon delivery - screws must be firmly tightened."
+            ),
+            "source_block_ids": ["BLK-1", "BLK-2", "BLK-3"],
+        }
+        self.assertEqual(
+            api_server.quote_matched_block_ids(req, text_by_block), ["BLK-1", "BLK-2"]
+        )
+        # 无匹配 → 空（调用方如实回退锚点单块）
+        req_none = {"source_quote": "totally nonexistent", "source_block_ids": ["BLK-3"]}
+        self.assertEqual(api_server.quote_matched_block_ids(req_none, text_by_block), [])
+
     def test_anchor_block_id_ignores_pdf_word_internal_spaces(self) -> None:
         text_by_block = {
             "BLK-1": "Unrelated introductory paragraph.",

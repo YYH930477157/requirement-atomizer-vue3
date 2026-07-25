@@ -395,7 +395,14 @@ def _covered_blocks(
         return covered_block_ids(requirements, blocks)
     covered: set[str] = set()
     for req in requirements:
-        for bid in req.get("source_block_ids") or []:
+        # section_fallback 行只认原句匹配块——跨小节回退跨度若整段计入，
+        # 无关清单段会被误标"分析范围"（test5 "- DAY1" 实证）；其余映射照旧。
+        span = (
+            (req.get("quote_block_ids") or [])
+            if str(req.get("source_mapping") or "") == "section_fallback"
+            else (req.get("source_block_ids") or [])
+        )
+        for bid in span:
             covered.add(str(bid))
         for bid in req.get("echo_block_ids") or []:   # 回声段有条目覆盖,不算遗漏/背景
             covered.add(str(bid))
@@ -2616,15 +2623,21 @@ function markSpan() {{
   const r = selected && byId[selected]; if (!r) return;
   document.querySelectorAll('.pdf-source-zone[data-zone-req="' + selected + '"]').forEach(el =>
     el.classList.add("selected"));
-  const ids = (r.source_block_ids || []).concat(r.echo_block_ids || []).concat([r.anchor_block_id]).filter(Boolean);
+  const spanIds = (r.source_mapping === "section_fallback" ? (r.quote_block_ids || []) : (r.source_block_ids || []));
+  const ids = spanIds.concat(r.echo_block_ids || []).concat([r.anchor_block_id]).filter(Boolean);
   ids.forEach(bid => {{
     const el = document.querySelector('.doc-block[data-block-id="' + bid + '"]');
     if (el) el.classList.add("in-span");
   }});
-  // 证据块（蓝填充）：引用所在锚点段 + 子项批注所在段；其余仅左侧细条=分析上下文
+  // 证据块（蓝填充）：原句实际跨越的块集（quote_block_ids，多段引句不再丢后半段）
+  // + 子项批注所在段；其余仅左侧细条=分析上下文
   const anchor = r.anchor_block_id || (r.source_block_ids||[])[0];
-  const anchorEl = anchor ? document.querySelector('.doc-block[data-block-id="' + anchor + '"]') : null;
-  if (anchorEl) anchorEl.classList.add("evidence");
+  const quoteIds = (r.quote_block_ids || []).filter(Boolean);
+  const evidenceIds = quoteIds.length ? quoteIds : [anchor].filter(Boolean);
+  evidenceIds.forEach(bid => {{
+    const el = document.querySelector('.doc-block[data-block-id="' + bid + '"]');
+    if (el) el.classList.add("evidence");
+  }});
   document.querySelectorAll('.chip.sub[data-req="' + selected + '"]').forEach(chip => {{
     const blk = chip.closest(".doc-block");
     if (blk) blk.classList.add("evidence");

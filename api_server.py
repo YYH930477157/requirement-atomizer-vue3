@@ -862,10 +862,11 @@ def compute_echo_block_ids(req: dict, blocks: list[dict]) -> list[str]:
     return reliable_echo_block_ids(req, blocks)
 
 
-def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
-    """需求精确锚点：含其 source_quote 原句的那一小段（段落级），否则回退 source_block_ids 首块。
+def quote_matched_block_ids(req: dict, text_by_block: dict[str, str]) -> list[str]:
+    """原句匹配块集：source_quote 在来源块上的确定性匹配全集（锚点只是首块）。
 
-    批注挂在需求实际所在的小段上（而非整章节段首），符合"一小段一个需求点"。
+    视图层证据区应覆盖原句实际跨越的全部块——多段引句只亮首块会丢后半段
+    （test5 实证：引句跨 097+098 两块，蓝区只亮 097，与原句左右不一致）。
     """
     span = [str(b) for b in (req.get("source_block_ids") or [])]
     from merged_consistency import compact_source_text, match_source_quote_blocks
@@ -875,8 +876,20 @@ def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
         for order, block_id in enumerate(span)
     ]
     matched, _mapping = match_source_quote_blocks(req.get("source_quote"), source_blocks)
+    return [str(b) for b in matched]
+
+
+def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
+    """需求精确锚点：含其 source_quote 原句的那一小段（段落级），否则回退 source_block_ids 首块。
+
+    批注挂在需求实际所在的小段上（而非整章节段首），符合"一小段一个需求点"。
+    """
+    span = [str(b) for b in (req.get("source_block_ids") or [])]
+    matched = quote_matched_block_ids(req, text_by_block)
     if matched:
         return matched[0]
+    from merged_consistency import compact_source_text
+
     quote = compact_source_text(req.get("source_quote"))
     if quote:
         # LLM 引用偶有尾部偏差。保留旧的“含空格前 40 字”兜底，并额外支持 PDF
@@ -1042,6 +1055,12 @@ def _enrich_ai_requirement_rows(
         row.update(membership.get(rid, {}))
         row.update(analysis_map.get(rid, {}))   # 兼容保留；当前视图不消费富化叙述字段
         row["anchor_block_id"] = anchor_block_id(req, text_by_block)
+        # 原句匹配块集（证据区应覆盖原句实际跨越的全部块，多段引句不只亮首块）；
+        # 匹配不到时如实回退锚点单块。
+        quote_block_ids = quote_matched_block_ids(req, text_by_block)
+        row["quote_block_ids"] = (
+            quote_block_ids or ([row["anchor_block_id"]] if row["anchor_block_id"] else [])
+        )
         # 回声锚点(0715 电表招标实证:同文重复出现的第二处显示"未覆盖",用户误判整段没解析)
         row["echo_block_ids"] = compute_echo_block_ids(row, block_rows)
         row["review_state"] = state

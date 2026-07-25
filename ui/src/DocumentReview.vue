@@ -179,11 +179,16 @@ const echoByBlock = computed(() => {
 })
 
 // 来源跨度中除锚点外的段落也参与了需求解析。点击时应展示关联需求，不能误称为背景。
+// section_fallback 行只认原句匹配块——跨小节回退跨度若整段计入，无关清单段会被
+// 误标"分析范围"（test5 "- DAY1" 实证）。
 const coveredByBlock = computed(() => {
   const map = new Map<string, AiRequirement[]>()
   for (const req of requirements.value) {
     const anchor = req.anchor_block_id || (req.source_block_ids || [])[0]
-    for (const source of req.source_block_ids || []) {
+    const span = req.source_mapping === "section_fallback"
+      ? (req.quote_block_ids || [])
+      : (req.source_block_ids || [])
+    for (const source of span) {
       if (!source || source === anchor) continue
       const list = map.get(source) || []
       if (!list.some((item) => item.ai_req_id === req.ai_req_id)) list.push(req)
@@ -562,19 +567,25 @@ function pdfMarkerLabel(m: PdfMarker): string {
 function pdfMarkerSelected(m: PdfMarker): boolean {
   return m.kind === "req" ? m.id === selectedId.value : m.id === selectedBlockId.value
 }
-// 只高亮选中的片段（锚点小段），不把整个章节跨度刷蓝
+// 只高亮选中的片段（原句实际跨越的块集），不把整个章节跨度刷蓝
 const evidenceBlocks = computed(() => {
-  // 证据块（蓝填充）= 引用所在锚点段；其余跨度块仅左侧细条 = 分析上下文（模型通读范围）
+  // 证据块（蓝填充）= 原句实际跨越的块集（quote_block_ids，多段引句不再丢后半段——
+  // test5 实证：引句跨 097+098，只亮首块与原句左右不一致）；其余跨度块仅左侧细条
   const r = selectedReq.value
   const anchor = r?.anchor_block_id || (r?.source_block_ids || [])[0]
-  return new Set(anchor ? [anchor as string] : [])
+  const quoteIds = (r?.quote_block_ids || []).filter(Boolean) as string[]
+  return new Set(quoteIds.length ? quoteIds : (anchor ? [anchor as string] : []))
 })
 const selectedSpan = computed(() => {
-  // 整个被分析的跨度都亮淡底（source_block_ids），引句黄标只在锚点段内——
-  // 只黄一句会让"分析了一整段"的需求看起来像没选中（真实反馈）
+  // 整个被分析的跨度都亮淡底（source_block_ids；section_fallback 行只认原句匹配块——
+  // 跨小节回退跨度会把无关清单段刷进"分析范围"，test5 "- DAY1" 实证），引句黄标只在
+  // 锚点段内——只黄一句会让"分析了一整段"的需求看起来像没选中（真实反馈）
   const r = selectedReq.value
   const anchor = r?.anchor_block_id || (r?.source_block_ids || [])[0]
-  const ids = [...(r?.source_block_ids || []), ...(r?.echo_block_ids || []), anchor]
+  const spanIds = (r?.source_mapping === "section_fallback"
+    ? (r?.quote_block_ids || [])
+    : (r?.source_block_ids || []))
+  const ids = [...spanIds, ...(r?.echo_block_ids || []), anchor]
     .filter(Boolean) as string[]
   return new Set(ids)
 })
