@@ -12,13 +12,13 @@
   },
   "input": {
     "text": "Umin - the smallest voltage value recorded within a measurement interval.",
-    "context": "Quality profile definitions"
+    "context": "From the quality-profile clause: the meter must measure and record the following quality profiles: Umin, Ustred, Umax, Istred, Imax."
   },
   "expected": {
-    "verdict": "non_requirement",
-    "rationale": "A quantity definition without any obligation is not a requirement.",
+    "verdict": "software",
+    "rationale": "The line names a measurement object (Umin) that the quality-profile clause requires the meter to record; that is a data-recording software function (reviewer ruling 2026-07-23).",
     "forbidden": [],
     "must_ask_questions": []
   },
-  "notes": "Anonymized from a real definition line inside a quality-profile clause."
+  "notes": "Anonymized from a real quality-profile object list. Verdict changed from non_requirement after reviewer ruling: in clause context the list of objects is an obligation, not a glossary definition."
 }

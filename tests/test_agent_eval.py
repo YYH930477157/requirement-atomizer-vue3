@@ -48,7 +48,9 @@ class AgentEvalDatasetTests(unittest.TestCase):
             if case["category"] == "grouping"
         )
         self.assertTrue(grouping_keys)
-        self.assertTrue(all(count >= 2 for count in grouping_keys.values()))
+        # 负例锚点允许单成员组（审核人 2026-07-23 拆分裁定：004/006 改判不同组，
+        # 跨 key 负对由运行器自动派生）；至少保留一对同组正例对
+        self.assertTrue(any(count >= 2 for count in grouping_keys.values()))
 
     def test_manifest_classification_baseline_matches_current_rules(self) -> None:
         cases = agent_eval.load_cases(EVAL_DIR)

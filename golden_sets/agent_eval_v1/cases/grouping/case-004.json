@@ -13,11 +13,11 @@
     "context": "Tamper event retention"
   },
   "expected": {
-    "verdict": "same_group",
-    "group_key": "terminal-cover-event",
-    "rationale": "Event retention is a lifecycle behavior of the same tamper function.",
+    "verdict": "event-log-retention",
+    "group_key": "event-log-retention",
+    "rationale": "Event retention belongs to the event-log function, not the tamper-detection function: detection (003) is the trigger, retention is the log's job (reviewer ruling 2026-07-23).",
     "forbidden": [],
     "must_ask_questions": []
   },
-  "notes": "Schema-only in Phase 0; paired with grouping-003."
+  "notes": "Paired with grouping-003 as a NEGATIVE pair: the reviewer ruled detection and retention are distinct functions, so 003/004 must not merge."
 }

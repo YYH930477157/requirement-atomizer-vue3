@@ -15,11 +15,11 @@
     "context": "Load profile recording"
   },
   "expected": {
-    "verdict": "same_group",
-    "group_key": "load-profile-period-recording",
-    "rationale": "The daily variant shares the same function skeleton as the 15-minute variant.",
+    "verdict": "daily-profile-recording",
+    "group_key": "daily-profile-recording",
+    "rationale": "The 15-minute and 24-hour profiles are two distinct profile objects (two separate requirements), not one function's period variants (reviewer ruling 2026-07-23).",
     "forbidden": [],
     "must_ask_questions": []
   },
-  "notes": "Anonymized from a real daily load-profile row; paired with grouping-005."
+  "notes": "Anonymized from a real daily load-profile row; paired with grouping-005 as a NEGATIVE pair after the reviewer ruling: two independent profile requirements must not merge."
 }
