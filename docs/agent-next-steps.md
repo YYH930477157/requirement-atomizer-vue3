@@ -71,16 +71,14 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 - 注意：该改动影响 functional-synthesis 产物 → 按缓存指纹纪律 bump
   `FUNCTIONAL_SYNTHESIS_VERSION` 并更新 chain 戳测试。
 
-### 5. worktree 清理（10 分钟）
+### 5. worktree 清理（10 分钟）——✅ 已完成（2026-07-25，Kimi Work 执行）
 
-- 已合并可删：`.worktrees/agent-phase0`、`agent-phase1`、`agent-loop-v2`、
-  `agent-phase15`、`agent-phase2`、`wp2-fallback`、`audit-remediation`。
-- 动作：`git worktree remove <路径>`（逐个），随后
-  `git branch -d codex/agent-phase0 codex/agent-phase1 codex/agent-loop-v2
-  codex/agent-phase15 codex/agent-phase2 codex/wp2-fallback codex/agent-audit-remediation`；
-  `git worktree prune`。
-- 保留：`requirements-analysis-agent-impl`、`test2-audit-fixes`（历史分支，
-  确认无未合并内容后再删）。
+- 执行时文档所列 7 个 worktree/分支已被此前清理删除；实际剩余为
+  `requirement-atomizer-vue3-remediation` worktree + 10 个 `codex/*` 分支。
+- 核实全部 10 个分支均已合并进 main、remediation worktree 工作区干净且
+  落后 main 38 个提交后：移除该 worktree、`git worktree prune`、
+  `git branch -d` 删除全部 10 个分支。
+- 终态：单一 worktree（main `97c3ce7`），本地仅剩 main 分支。
 
 ### 6. 重新打包桌面应用（约 15 分钟，做完 1–4 后更值得）
 
@@ -106,6 +104,10 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 - **test3 目录 agent 产物**：`decide_trace.jsonl`（25 行 v1/v2 混合轨迹）、
   `agent_loop_summary.json`、`omission_states.jsonl`（36 行）按用户裁定**保留**
   作缺陷修复证据。
+- **锚点一致化已修（main `24a7b21`，guards-v11）**：批注蓝区=原句跨越块集、
+  section_fallback 按小节收窄；**test5 需用新 key 重跑抽取**才能吃到收窄
+  （可与待办 3 的 WP2 复验合并成一次重跑）；块内相邻句仍可能进框（块粒度），
+  句级裁剪留作后续立项。
 - **审查缓存 v4→v5 一次性失效**：第二轮修复升 `llm-review-cache-v5`（schema 修复
   续接 transcript 行为变化）后旧缓存全 miss（安全方向），首次全量审查会慢一轮，
   属预期；llm-review 阶段指纹结构变化同样令旧阶段产物自然失效一次。

@@ -45,6 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-23）——批注锚点与原句一致化 + section_fallback 按小节收窄（guards-v11，已合 main `24a7b21`；主检出全量 1631 tests OK、golden 6/6、前端 vitest 131 + vue-tsc）
+
+- **用户实证（test5 招标 PDF 批注视图）**：无关清单段（"- DAY1"，BLK-000089）显示"已纳入需求解析→查看批注 22"；批注蓝区与右侧原句一多一缺——蓝区只有锚点块（含原句没有的编号句、缺原句末段"Condition upon delivery"）。
+- **根因**：抽取层 `_map_requirement_source` 的 section_fallback 在引句匹配失败（块内碎句截断 + fuzzy < 0.82）后把跨小节抽取单元整段（24 块跨 3.4.4/3.4.5/3.4.6）写入溯源，视图"分析范围"照单全收；视图证据蓝区只亮锚点首块，多段引句后半段出框。
+- **修复**：抽取层 fallback 按 `req.source_section` 与块 `section_path` 末段逐字收窄（24→3 块；一个都匹配不上退整单元并记 note，不猜），`EXTRACT_GUARDS_VERSION` 升 **guards-v11**（缓存存映射后结果）；视图层 `api_server` 新增 `quote_matched_block_ids` 并下发 `quote_block_ids`（匹配不到如实回退锚点单块），Vue 与静态 HTML 双渲染器同步——证据蓝区 = 原句跨越块集（多段引句不再丢后半段），section_fallback 行"分析范围"只认原句匹配块（"- DAY1" 类无关段消失）。
+- **版本面**：guards v10→v11（影响 ai_extract 缓存指纹与阶段戳）；golden 基线纯 A 轨无 ai_extract 产物，零漂移坐实。**test5 需用新 key 重跑抽取**才能吃到收窄（旧产物不重抽不变）；块粒度高亮仍可能含块内相邻句（编号句类），句级裁剪留作后续立项。
+
 ## 重大更新（2026-07-23）——专家审核第二轮十三项修复（已合 main `e3ad2a7`；主检出全量 1627 tests OK、golden 6/6）
 
 - **正确性**：`coverage_check` 改走 A 轨适配层 `_atomic_to_consistency_row`（2337 条真实产物上共引/重复/引句命中 0/0/0 → 实测恢复；结构化 OBIS 仅从 `parameters.cosem_object.obis` 确定性取），fixture 改真实形状；蓝皮书测试隔离本机 `out/bluebook`；token 计量 `_aggregate_usage` 逐轮归一（混合格式应 125 不再低计成 100/25）；schema 修复续接原 transcript（`chat_with_tools` meta 导出 history）——修复轮保留取证上下文且仍带 tools，工具调用并入 `tool_calls` 摘要。
