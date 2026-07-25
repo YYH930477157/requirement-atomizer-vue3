@@ -24,7 +24,7 @@ _GENERIC_TERMS = (
 # 不同前缀/不同概念绝不跨并。
 _PROFILE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{1,4})[-_]?(\d{1,3})(?![A-Za-z0-9])")
 _PERIOD_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>分钟|分|小时|时|天|日|个月|月|秒|s|sec(?:ond)?s?|min(?:ute)?s?|h(?:our)?s?|days?|months?)",
+    r"(?<![A-Za-z0-9])(?P<value>\d+(?:\.\d+)?)\s*-?\s*(?P<unit>分钟|分|小时|时|天|日|个月|月|秒|s|sec(?:ond)?s?|min(?:ute)?s?|h(?:our)?s?|days?|months?)",
     re.IGNORECASE,
 )
 _MEASURE_RE = re.compile(
@@ -173,14 +173,128 @@ def _similar_legacy(a: dict[str, Any], b: dict[str, Any]) -> bool:
     identity_b, method_b = _family_identity(b)
     same_module = normalize_key(a.get("module")) == normalize_key(b.get("module"))
     if method_a == method_b and method_a in {"event_subject", "protocol_profile_variant", "period_variant"}:
+        if method_a == "period_variant":
+            # 周期值分家（审核人 2026-07-23 裁定）：15 min 与 24 h 是两条独立负荷曲线,
+            # 不是一条曲线的周期变体——period_variant 对周期档位不同的对绝不合并
+            return identity_a == identity_b and _periods_compatible(a, b)
         return identity_a == identity_b
+    if {method_a, method_b} == {"period_variant", "legacy_concept"}:
+        # 混合对：写档 × 未写档——概念同键且周期相容才合（未写档不等于冲突档）
+        return identity_a == identity_b and _periods_compatible(a, b)
     if not same_module or method_a != "legacy_concept" or method_b != "legacy_concept":
         return False
     if identity_a == identity_b:
         return True
-    if min(len(identity_a), len(identity_b)) < 6:
+    # 长度门只约束相似度路径；对象词组判定有自己的 ≥2 词/≥4 字门槛，不被短键误拦
+    if min(len(identity_a), len(identity_b)) >= 6 and SequenceMatcher(
+        None, identity_a, identity_b
+    ).ratio() >= 0.88:
+        return True
+    return _shared_object_phrase(a, b)
+
+
+# 周期单位同义归一（不做跨单位换算——60 min ≠ 1 h，宁漏勿错）
+_PERIOD_UNIT_NORM = {
+    "分钟": "min", "分": "min", "min": "min", "minute": "min", "minutes": "min",
+    "小时": "h", "时": "h", "h": "h", "hour": "h", "hours": "h",
+    "天": "day", "日": "day", "day": "day", "days": "day",
+    "个月": "month", "月": "month", "month": "month", "months": "month",
+    "秒": "s", "s": "s", "sec": "s", "secs": "s", "second": "s", "seconds": "s",
+}
+
+
+def _period_signature(row: dict[str, Any]) -> frozenset[tuple[str, str]]:
+    """行内全部具体周期档位（值, 归一单位）的集合；空 = 未写明周期。"""
+    return frozenset(
+        (
+            str(m.group("value")),
+            _PERIOD_UNIT_NORM.get(str(m.group("unit")).casefold(), str(m.group("unit")).casefold()),
+        )
+        for m in _PERIOD_RE.finditer(_source_text(row))
+    )
+
+
+def _periods_compatible(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """周期档位相容：任一侧未写明不算冲突（缺失≠冲突，与"未限定冲突参数"口径一致）；
+    两侧都写明时必须同档（15 min × 24 h 分家，10 min × 10 min 合并）。"""
+    sig_a, sig_b = _period_signature(a), _period_signature(b)
+    if not sig_a or not sig_b:
+        return True
+    return sig_a == sig_b
+
+
+# 标题对象词组判定的停用词——只滤连接词与"需求/要求"类空话，对象词
+# （load profile/事件记录/负荷曲线）必须保留
+_OBJECT_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "for", "and", "to", "in", "on", "per", "each",
+    "requirement", "requirements", "function", "需求", "要求", "功能",
+})
+_OBJECT_TOKEN_RE = re.compile(r"[0-9a-z]+|[一-鿿]+", re.IGNORECASE)
+_PROPER_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+
+
+def _variant_conflicts(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """同名但型号/制式/编号不同的对象不并（变体护栏）：标题里的数字编号
+    （安全套件0×安全套件1）与专有缩写/制式名（NB-IoT×LoRa、PM1×PM2）
+    任一侧独有即否决——对象词组相同不代表是同一变体。"""
+    title_a = str(a.get("title") or "") or _source_text(a)
+    title_b = str(b.get("title") or "") or _source_text(b)
+    nums_a = set(re.findall(r"\d+", title_a))
+    nums_b = set(re.findall(r"\d+", title_b))
+    if nums_a != nums_b and (nums_a or nums_b):
+        return True
+
+    def proper_tokens(title: str) -> set[str]:
+        values: set[str] = set()
+        for token in _PROPER_TOKEN_RE.findall(title):
+            # 专有名词/缩写：含非首字母大写（IoT/LoRa）或全大写（NB/PM）；
+            # 句首单词首字母大写不算（Load/Voltage 这类普通词）
+            if any(char.isupper() for char in token[1:]) or (token.isupper() and len(token) >= 2):
+                values.add(token.casefold())
+        return values
+
+    return proper_tokens(title_a) != proper_tokens(title_b)
+
+
+def _shared_object_phrase(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """误拆修复：标题共享核心对象词组的 legacy_concept 对视为同一功能对象
+    （"Load profile behavior" × "Load profile storage" 同属负荷曲线功能；仅共享
+    "tamper"/"meter" 这类单词不算）。拉丁文需 ≥2 个连续词、中文需 ≥4 个连续字；
+    opposed_qualifiers、周期值分家与变体护栏的否决均在本判定之前/之中生效。"""
+    if _variant_conflicts(a, b):
         return False
-    return SequenceMatcher(None, identity_a, identity_b).ratio() >= 0.88
+
+    def tokens(row: dict[str, Any]) -> list[str]:
+        title = str(row.get("title") or "") or _source_text(row)
+        return [
+            token.casefold() for token in _OBJECT_TOKEN_RE.findall(title)
+            if token.casefold() not in _OBJECT_STOPWORDS
+            and token.casefold() not in _ACTION_TERMS
+            and token.casefold() not in _GENERIC_TERMS
+        ]
+
+    tokens_a, tokens_b = tokens(a), tokens(b)
+    if not tokens_a or not tokens_b:
+        return False
+    joined_b = " ".join(tokens_b)
+    latin_run = 0
+    for start in range(len(tokens_a)):
+        for end in range(start + 2, len(tokens_a) + 1):
+            if " ".join(tokens_a[start:end]) in joined_b:
+                latin_run = max(latin_run, end - start)
+    if latin_run >= 2:
+        return True
+    # 中文路径只比 CJK 字符段（"事件记录" 这类对象词）；绝不让 "profile" 等
+    # 拉丁单词借 ≥4 字符子串通道蒙混成对象词
+    runs_a = re.findall(r"[一-鿿]+", str(a.get("title") or "") or _source_text(a))
+    runs_b = re.findall(r"[一-鿿]+", str(b.get("title") or "") or _source_text(b))
+    for run_a in runs_a:
+        for run_b in runs_b:
+            for i in range(len(run_a)):
+                for j in range(i + 4, len(run_a) + 1):
+                    if run_a[i:j] in run_b:
+                        return True
+    return False
 
 
 def _numeric_constraints_by_unit(row: dict[str, Any]) -> dict[str, set[str]]:

@@ -96,15 +96,10 @@
     "policy_version": "agent-policy-v3",
     "runner_version": "agent-eval-v2",
     "evaluated": 8,
-    "passed": 4,
-    "failed": 4,
-    "pass_rate": 0.5,
-    "failed_case_ids": [
-      "grouping-001",
-      "grouping-002",
-      "grouping-005",
-      "grouping-006"
-    ]
+    "passed": 8,
+    "failed": 0,
+    "pass_rate": 1.0,
+    "failed_case_ids": []
   },
   "must_ask_baseline": {
     "policy_version": "agent-policy-v3",

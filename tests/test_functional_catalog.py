@@ -178,7 +178,9 @@ class FunctionalSynthesisIdentityTests(unittest.TestCase):
 
 
 class StructuredFunctionalRequirementTests(unittest.TestCase):
-    def test_structured_output_preserves_constraints_and_provenance(self) -> None:
+    def test_different_period_variants_split_per_reviewer_ruling(self) -> None:
+        """周期档位分家（审核人 2026-07-23 裁定，取代旧"周期变体合并为 variants"行为）：
+        15 min × 1 h 是两条独立曲线/对象，拆成两个功能项、各自保留约束与溯源。"""
         from functional_catalog import build_function_catalog
 
         rows = [
@@ -190,16 +192,14 @@ class StructuredFunctionalRequirementTests(unittest.TestCase):
              "source_block_ids": ["B60"], "design_options": ["可使用统一调度器"]},
         ]
 
-        item = build_function_catalog(rows)[0]
+        catalog = build_function_catalog(rows)
 
-        self.assertTrue(item["objective"])
-        self.assertEqual(len(item["behaviors"]), 2)
-        self.assertTrue(any("15" in value for value in item["data_constraints"]))
-        self.assertTrue(any("1" in value for value in item["data_constraints"]))
-        self.assertEqual(item["source_block_ids"], ["B15", "B60"])
-        self.assertEqual(len(item["evidence"]), 2)
-        self.assertIn("设计候选", item["description"])
-        self.assertNotEqual(item["description"], "\n".join(row["description"] for row in rows))
+        self.assertEqual(len(catalog), 2)
+        by_id = {item["source_ai_requirement_ids"][0]: item for item in catalog}
+        self.assertEqual(by_id["AI-15"]["source_block_ids"], ["B15"])
+        self.assertEqual(by_id["AI-60"]["source_block_ids"], ["B60"])
+        self.assertTrue(any("15" in value for value in by_id["AI-15"]["data_constraints"]))
+        self.assertTrue(any("1" in value for value in by_id["AI-60"]["data_constraints"]))
 
     def test_same_unqualified_parameter_with_conflicting_values_is_flagged(self) -> None:
         from functional_catalog import build_function_catalog
@@ -562,3 +562,90 @@ class OptionalLlmCatalogTests(unittest.TestCase):
         self.assertEqual(len(catalog), 2)
         self.assertCountEqual(assigned, ["AI-1", "AI-2"])
         self.assertTrue(all(item["merge_method"] != "llm_catalog" for item in catalog))
+
+
+class PeriodSplitAndObjectMergeRuleTests(unittest.TestCase):
+    """聚类两规则（审核人 2026-07-23 裁定 + agent-eval-v2 靶点）：
+    period_variant 周期档位不同分家；legacy_concept 标题共享对象词组合并。"""
+
+    @staticmethod
+    def _row(rid: str, title: str, text: str = "", module: str = "曲线") -> dict:
+        return {"ai_req_id": rid, "title": title,
+                "description": text or title, "source_quote": text or title,
+                "module": module}
+
+    def test_different_period_values_do_not_merge(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("A", "Load profile recording", "The meter shall record the load profile in 15-minute intervals.")
+        b = self._row("B", "Load profile recording", "The meter shall record the load profile in 24-hour intervals.")
+        self.assertFalse(_similar_legacy(a, b))
+
+    def test_same_period_values_merge(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("A", "Voltage and current average profile",
+                      "The meter shall record average effective voltage and current in 10-minute intervals on each phase.")
+        b = self._row("B", "Voltage and current average profile",
+                      "The meter shall record average voltage and current values in a 10-minute profile.")
+        self.assertTrue(_similar_legacy(a, b))
+
+    def test_unspecified_period_does_not_conflict(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("A", "Load profile recording", "The meter shall record the load profile in 15-minute intervals.")
+        b = self._row("B", "Load profile recording", "The meter shall record the load profile.")
+        self.assertTrue(_similar_legacy(a, b))
+
+    def test_shared_title_object_phrase_merges_under_merge_pair(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("A", "Load profile behavior",
+                      "The meter shall capture load-profile values at the configured integration period.")
+        b = self._row("B", "Load profile storage",
+                      "The meter shall store each load-profile entry with its timestamp and status.")
+        self.assertTrue(_similar_legacy(a, b))
+
+    def test_single_shared_word_does_not_merge(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("A", "Tamper detection", "The device shall detect removal of the terminal cover.",
+                      module="机械结构")
+        b = self._row("B", "Tamper event retention",
+                      "The terminal-cover event shall be stored in the event log.",
+                      module="机械结构")
+        self.assertFalse(_similar_legacy(a, b))
+
+    def test_cjk_shared_object_substring_merges(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("A", "事件记录与报警功能", module="事件记录")
+        b = self._row("B", "事件记录最低存储数量", module="事件记录")
+        self.assertTrue(_similar_legacy(a, b))
+
+    def test_opposed_qualifiers_still_veto_object_phrase_merge(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("A", "Battery replacement", "The battery is replaceable.", module="机械结构")
+        b = self._row("B", "Battery sealing", "The backup battery is non-replaceable.", module="机械结构")
+        self.assertFalse(_similar_legacy(a, b))
+
+
+class VariantGuardTests(unittest.TestCase):
+    """变体护栏：同名但编号/制式不同的对象不因共享对象词组被误并
+    （安全套件0×1、NB-IoT×LoRa——语义基线 semantic_v1 实证）。"""
+
+    @staticmethod
+    def _row(rid: str, title: str, module: str = "安全") -> dict:
+        return {"ai_req_id": rid, "title": title, "description": title, "module": module}
+
+    def test_numbered_variants_do_not_merge(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("AI-S0", "安全套件0支持")
+        b = self._row("AI-S1", "安全套件1支持")
+        self.assertFalse(_similar_legacy(a, b))
+
+    def test_different_radio_technologies_do_not_merge(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("AI-NB", "NB-IoT远程通信要求", module="通信协议")
+        b = self._row("AI-LORA", "LoRa远程通信要求", module="通信协议")
+        self.assertFalse(_similar_legacy(a, b))
+
+    def test_same_numbered_variant_still_merges_by_identity(self) -> None:
+        from functional_catalog import _similar_legacy
+        a = self._row("AI-S0", "安全套件0支持")
+        b = self._row("AI-S0B", "安全套件0支持")
+        self.assertTrue(_similar_legacy(a, b))

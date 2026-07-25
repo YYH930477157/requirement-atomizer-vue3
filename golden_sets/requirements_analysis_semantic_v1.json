@@ -192,21 +192,20 @@
         }
       ],
       "expected": {
-        "functional_count": 1,
+        "functional_count": 2,
         "groups": [
           [
-            "AI-15",
+            "AI-15"
+          ],
+          [
             "AI-60"
           ]
-        ],
-        "variants": [
-          "15 分钟",
-          "1 小时"
         ],
         "protected_values": [
           "15",
           "1"
-        ]
+        ],
+        "ruling": "审核人 2026-07-23 裁定：周期档位不同分家（15 min × 1 h 是两条独立曲线，不并为一个功能项的 variants），各自保留约束。"
       }
     },
     {

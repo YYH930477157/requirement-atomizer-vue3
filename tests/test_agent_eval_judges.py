@@ -192,7 +192,7 @@ class MustAskJudgeTests(unittest.TestCase):
 
 
 class GroupingJudgeTests(unittest.TestCase):
-    def test_same_family_pair_merges_and_scores(self) -> None:
+    def test_same_period_pair_merges_and_scores(self) -> None:
         a = _case(
             "grouping-901", "grouping",
             "The meter shall record the load profile every 15 minutes.",
@@ -201,7 +201,7 @@ class GroupingJudgeTests(unittest.TestCase):
         )
         b = _case(
             "grouping-902", "grouping",
-            "The meter shall record the load profile every 30 minutes.",
+            "The meter shall record the load profile in 15-minute intervals.",
             "Load profile recording",
             {"group_key": "lp"},
         )
@@ -219,6 +219,24 @@ class GroupingJudgeTests(unittest.TestCase):
             if pair["merged"]
         }
         self.assertIn(("grouping-901", "grouping-902"), methods)
+
+    def test_different_period_pair_is_not_merged(self) -> None:
+        # 审核人 2026-07-23 裁定：15 min × 30 min 是两条独立曲线（period_variant 分家）
+        a = _case(
+            "grouping-906", "grouping",
+            "The meter shall record the load profile every 15 minutes.",
+            "Load profile recording",
+            {"group_key": "lp15"},
+        )
+        b = _case(
+            "grouping-907", "grouping",
+            "The meter shall record the load profile every 30 minutes.",
+            "Load profile recording",
+            {"group_key": "lp30"},
+        )
+        report = agent_eval.evaluate_cases([a, b])
+        self.assertEqual(report["grouping"]["passed"], 2)
+        self.assertFalse(any(pair["merged"] for pair in report["grouping_pairs"]))
 
     def test_unmerged_same_key_pair_is_honest_fail(self) -> None:
         a = _case(
