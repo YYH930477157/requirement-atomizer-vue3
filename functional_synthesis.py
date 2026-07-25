@@ -10,7 +10,7 @@ from compliance import is_compliance_requirement
 from functional_catalog import CatalogChat, build_function_catalog
 from llm_pipeline import read_jsonl
 
-FUNCTIONAL_SYNTHESIS_VERSION = "functional-synthesis-v6"
+FUNCTIONAL_SYNTHESIS_VERSION = "functional-synthesis-v7"  # v7:聚类两规则——period_variant 周期档位不同分家(15min×24h 不并)、legacy_concept 标题共享对象词组合并(误拆修复)
 FUNCTIONAL_REQUIREMENTS = "functional_requirements.json"
 
 
