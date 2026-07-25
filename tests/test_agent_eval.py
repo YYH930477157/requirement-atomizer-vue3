@@ -64,9 +64,10 @@ class AgentEvalDatasetTests(unittest.TestCase):
         self.assertEqual(manifest["grouping_baseline"], report["grouping"])
         self.assertEqual(manifest["must_ask_baseline"], report["must_ask"])
         self.assertEqual(manifest["hallucination_baseline"], report["hallucination"])
-        self.assertEqual(manifest["curation"]["human_review_status"], "partial")
-        # 审计纪律（2026-07-23 用户裁定）：只有经审核人逐条核对的 5 条可登记 reviewed；
-        # 实施者代登记的 20 条已撤回——本断言钉死"未核对不得入册"，绿测不得再固化错误审计
+        self.assertEqual(manifest["curation"]["human_review_status"], "reviewed")
+        # 审计纪律（2026-07-23 审核人本人逐条核对）：登记列表必须与 manifest 完全一致——
+        # 2026-07-22 实施者代登记被撤回后，本断言继续钉死"登记内容即真实核对结果"，
+        # 绿测不得再固化错误审计
         self.assertEqual(
             manifest["curation"]["reviewed_case_ids"],
             [
@@ -75,9 +76,44 @@ class AgentEvalDatasetTests(unittest.TestCase):
                 "classify-005",
                 "classify-006",
                 "must-ask-001",
+                "grouping-001",
+                "grouping-002",
+                "grouping-003",
+                "grouping-004",
+                "grouping-005",
+                "grouping-006",
+                "grouping-007",
+                "grouping-008",
+                "must-ask-002",
+                "must-ask-003",
+                "must-ask-004",
+                "must-ask-005",
+                "must-ask-006",
+                "must-ask-007",
+                "must-ask-008",
+                "must-ask-009",
+                "must-ask-010",
+                "hallucination-001",
+                "hallucination-002",
+                "hallucination-003",
+                "hallucination-004",
+                "hallucination-005",
+                "hallucination-006",
+                "hallucination-007",
+                "hallucination-008",
+                "hallucination-009",
+                "hallucination-010",
+                "classify-002",
+                "classify-004",
+                "classify-007",
+                "classify-008",
+                "classify-009",
+                "classify-010",
+                "classify-011",
+                "classify-012",
             ],
         )
-        self.assertEqual(len(report["unreviewed_case_ids"]), len(cases) - 5)
+        self.assertEqual(report["unreviewed_case_ids"], [])
 
     def test_cli_writes_one_success_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
