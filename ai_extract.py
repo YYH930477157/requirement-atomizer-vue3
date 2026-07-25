@@ -550,7 +550,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v10"  # v10:引用三层分流(标点差异软标/跨块逐字降级)+合规兜底补行进 jsonl;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v11"  # v11:section_fallback 按所属小节收窄(跨节单元不再整段计入溯源);v10:引用三层分流(标点差异软标/跨块逐字降级)+合规兜底补行进 jsonl;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -975,10 +975,36 @@ def _map_requirement_source(req: dict[str, Any], section: dict[str, Any]) -> Non
         req["anchor_block_id"] = req["source_block_ids"][0]
         req["source_mapping"] = mapping
     else:
-        req["source_block_ids"] = list(section.get("block_ids") or [])
+        span = list(section.get("block_ids") or [])
+        narrowed = _narrow_span_to_req_section(req, source_blocks, span)
+        req["source_block_ids"] = narrowed or span
         if req["source_block_ids"]:
             req["anchor_block_id"] = req["source_block_ids"][0]
         req["source_mapping"] = "section_fallback"
+        if narrowed and len(narrowed) < len(span):
+            _append_note(req, f"来源回退已按所属小节收窄（{len(span)}→{len(narrowed)} 块）")
+
+
+def _narrow_span_to_req_section(
+    req: dict[str, Any], source_blocks: list[dict[str, Any]], span: list[str]
+) -> list[str]:
+    """section_fallback 收窄：抽取单元跨小节时只留需求所属小节的块（溯源宁窄勿滥）。
+
+    真实案例（test5 招标 PDF）：单元跨 3.4.4/3.4.5/3.4.6 三小节，引句被块内碎句
+    截断匹配失败后，旧口径把 24 块全标来源——无关清单段（端子列表 "- DAY1"）被
+    误标"分析范围"。按 req.source_section 与块的 section_path 末段逐字匹配收窄；
+    一个都匹配不上时返回空（调用方退回整单元，如实保留"定位不精"原口径），不猜。
+    """
+    wanted = _norm_verbatim(req.get("source_section"))
+    if not wanted:
+        return []
+    scoped: set[str] = set()
+    for block in source_blocks:
+        block_id = str(block.get("block_id") or "")
+        path = block.get("section_path") or []
+        if block_id and path and _norm_verbatim(path[-1]) == wanted:
+            scoped.add(block_id)
+    return [block_id for block_id in span if block_id in scoped]
 
 
 def _norm_verbatim(text: str) -> str:

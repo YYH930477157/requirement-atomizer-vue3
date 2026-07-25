@@ -413,6 +413,54 @@ describe("DocumentReview", () => {
     expect(echoBlock!.classes()).toContain("in-span")
   })
 
+  it("evidence zone covers every quote-matched block and fallback span stays scoped", async () => {
+    // 锚点一致性（test5 实证）：证据区 = 原句实际跨越的块集（不再只亮首块，否则与原句
+    // 左右不一致）；section_fallback 行的"分析范围"只认原句匹配块——跨小节回退跨度
+    // 不会把无关清单段（"- DAY1"）刷进跨度。
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 4,
+        blocks: [
+          { block_id: "B1", order: 1, type: "paragraph", text: "- DAY1",
+            section_path: ["3.4.4 Marking"], requirement_like: false, noise: false },
+          { block_id: "B2", order: 2, type: "paragraph",
+            text: "The terminal box must be supplied with crosshead screws.",
+            section_path: ["3.4.5 Screws"], requirement_like: true, noise: false },
+          { block_id: "B3", order: 3, type: "paragraph",
+            text: "Condition upon delivery - screws must be firmly tightened.",
+            section_path: ["3.4.5 Screws"], requirement_like: true, noise: false },
+          { block_id: "B4", order: 4, type: "paragraph", text: "3.4.6 Packaging",
+            section_path: ["3.4.6 Packaging"], requirement_like: false, noise: false },
+        ],
+      }),
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        {
+          ai_req_id: "AIR-1", title: "螺丝要求", description: "螺丝要求", module: "机械结构",
+          module_effective: "机械结构", type: "constraint", priority: "P1", status: "draft",
+          source_section: "3.4.5 Screws",
+          source_quote: "The terminal box must be supplied with crosshead screws.\nCondition upon delivery - screws must be firmly tightened.",
+          source_block_ids: ["B1", "B2", "B3", "B4"], source_mapping: "section_fallback",
+          anchor_block_id: "B2", quote_block_ids: ["B2", "B3"],
+          acceptance_criteria: [], dev_guidance: [], labels: ["机械结构"],
+          ownership: "hardware", ownership_effective: "hardware", review_state: null,
+        },
+      ]),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find(".anno-chip").trigger("click")
+    const block = (id: string) => wrapper.find(`.doc-block[data-block-id="${id}"]`)
+    // 证据区 = 原句跨越块集（B2+B3），不再只亮首块
+    expect(block("B2").classes()).toContain("evidence")
+    expect(block("B3").classes()).toContain("evidence")
+    // section_fallback：无关清单段 B1 与下一节 B4 不进分析跨度
+    expect(block("B1").classes()).not.toContain("in-span")
+    expect(block("B4").classes()).not.toContain("in-span")
+    // 无关块也不显示"分析范围"卡片语义（未被 coveredByBlock 收录即不刷细条）
+    expect(block("B2").classes()).toContain("in-span")
+  })
+
   it("pdf echo zones show a marker, open the echo card, and retain every target", async () => {
     const requirements = [
       { ai_req_id: "AIR-1", title: "需求一", description: "d1", module: "计量",
