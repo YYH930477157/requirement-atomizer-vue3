@@ -45,6 +45,12 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-26）——噪声贯通抽取路径（guards-v15，已合 main `6b4b0cf`；主检出全量 1664 tests OK、golden 6/6）
+
+- **test10 复查发现**：12 条需求来源仍含页码/水印块——guards-v14 的噪声排除只在 serve 路径生效；抽取时 `section.source_blocks` 没有 noise 标记，匹配器在抽取时是盲的（端子标记需求仍掉 section_fallback 且 span 带水印 081/082）。
+- **修复**：`extract_units.assemble_sections` 的 source_blocks 补 noise 标记；`_map_requirement_source` 的 fuzzy 候选剔噪声、`section_fallback` span（收窄或整单元）一律不纳噪声块。`EXTRACT_GUARDS_VERSION` 升 v15。
+- **实测（test10 数据复算）**：端子标记需求由 section_fallback（带水印）变 **multi_block [080,083,084]**；12 条含噪声行 12/12 出清；新测试 3 例；全量 1664 绿 + golden 6/6。重跑即可得干净来源（test11+）。
+
 ## 重大更新（2026-07-26）——噪声块永不成来源 + 影印模式选中高亮原句全跨度（guards-v14，已合 main `be8ecd4`；主检出全量 1661 tests OK、golden 6/6、前端 vitest 132 + vue-tsc）
 
 - **用户实证（test8 原版核对）**：选中端子标记需求，左框只框住 3.4.4 标题，原句涉及的正文段落没框；且该需求来源里混进了 "Machine Translated by Google" 水印块（082/102）。
