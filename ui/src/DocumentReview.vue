@@ -540,6 +540,14 @@ function pdfZoneSelected(z: PdfBlockZone): boolean {
   if (z.kind === "echo" && selectedId.value) return (z.req_ids || []).includes(selectedId.value)
   return z.block_id === selectedBlockId.value
 }
+// 选中需求时把原句跨越的块全部框出（test8 实证：只框锚点块，原句后半段出框）——
+// quote_block_ids 是后端原句确定性匹配全集；框 = 轻量高亮（quote-sel），锚点仍是主框
+const selectedQuoteBlockIds = computed(
+  () => new Set((selectedReq.value?.quote_block_ids || []) as string[]),
+)
+function pdfZoneQuoteHighlighted(z: PdfBlockZone): boolean {
+  return !!selectedId.value && selectedQuoteBlockIds.value.has(z.block_id)
+}
 function pdfZoneTitle(z: PdfBlockZone): string {
   if (z.kind === "req") return (z.req_ids || []).length > 1 ? "查看该段的全部需求解析" : "查看需求批注"
   if (z.kind === "covered") return "查看该段关联的需求解析"
@@ -1234,7 +1242,7 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
             <div class="pdf-overlay">
               <button v-for="(z, zi) in (pdfZonesByPage.get(p.page_number) || [])"
                       :key="'z-' + z.block_id + '-' + zi" type="button"
-                      class="pdf-block-zone" :class="['zone-' + z.kind, { sel: pdfZoneSelected(z) }]"
+                      class="pdf-block-zone" :class="['zone-' + z.kind, { sel: pdfZoneSelected(z), 'quote-sel': pdfZoneQuoteHighlighted(z) }]"
                       :style="{ left: z.rect.left + '%', top: z.rect.top + '%',
                                 width: z.rect.width + '%', height: z.rect.height + '%' }"
                       :data-testid="`pdf-zone-${z.block_id}`"
@@ -1603,6 +1611,7 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
   transition: background .12s, border-color .12s; }
 .pdf-block-zone:hover { background: rgba(89, 120, 247, .04); border-color: rgba(89, 120, 247, .42); }
 .pdf-block-zone.sel { background: rgba(89, 120, 247, .06); border-color: rgba(89, 120, 247, .72); }
+.pdf-block-zone.quote-sel { background: rgba(89, 120, 247, .04); border-color: rgba(89, 120, 247, .55); border-style: dashed; }
 .pdf-block-zone.zone-omission:hover { background: rgba(204, 137, 37, .05); border-color: rgba(204, 137, 37, .48); }
 .pdf-block-zone.zone-omission.sel { background: rgba(204, 137, 37, .07); border-color: rgba(180, 83, 9, .7); }
 .pdf-block-zone.zone-echo:hover, .pdf-block-zone.zone-echo.sel {

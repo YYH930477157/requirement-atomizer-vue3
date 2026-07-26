@@ -499,6 +499,44 @@ describe("DocumentReview", () => {
     expect(zone.classes()).toContain("sel")
   })
 
+  it("selecting a requirement highlights every quote block zone in pdf mode", async () => {
+    // 影印模式选中高亮（test8 实证）：原句跨越的块全部框出（quote-sel），不再只框锚点标题块
+    const client = makeClient({
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        { ai_req_id: "AIR-1", title: "端子标记", description: "d", module: "机械结构",
+          module_effective: "机械结构", type: "functional", priority: "P1", status: "draft",
+          source_section: "3.4.4", source_quote: "q",
+          source_block_ids: ["B1", "B2", "B3"], anchor_block_id: "B1",
+          quote_block_ids: ["B1", "B2", "B3"],
+          acceptance_criteria: [], labels: [], review_state: null },
+      ]),
+      loadPdfAnnotation: vi.fn().mockResolvedValue({
+        available: true,
+        pages: [{ page_number: 1, file: "page-0001.png", width: 595, height: 842 }],
+        requirement_markers: [], omission_markers: [],
+        block_zones: [
+          { block_id: "B1", page: 1, rect: { left: 8, top: 10, width: 60, height: 4 },
+            kind: "req", req_id: "AIR-1", req_ids: ["AIR-1"] },
+          { block_id: "B2", page: 1, rect: { left: 8, top: 20, width: 60, height: 4 },
+            kind: "covered", req_ids: ["AIR-1"] },
+          { block_id: "B3", page: 1, rect: { left: 8, top: 30, width: 60, height: 4 }, kind: "context" },
+          { block_id: "B4", page: 1, rect: { left: 8, top: 40, width: 60, height: 4 }, kind: "context" },
+        ],
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="mode-pdf"]').trigger("click")
+    await flushPromises()
+    await wrapper.find('[data-testid="pdf-zone-B1"]').trigger("click")
+
+    // 锚点主框 + 原句跨越块全部 quote-sel；无关块不框
+    expect(wrapper.find('[data-testid="pdf-zone-B1"]').classes()).toContain("sel")
+    expect(wrapper.find('[data-testid="pdf-zone-B2"]').classes()).toContain("quote-sel")
+    expect(wrapper.find('[data-testid="pdf-zone-B3"]').classes()).toContain("quote-sel")
+    expect(wrapper.find('[data-testid="pdf-zone-B4"]').classes()).not.toContain("quote-sel")
+  })
+
   it("marks notes and list groups so paragraph rhythm is preserved", async () => {
     const client = makeClient({
       loadDocument: vi.fn().mockResolvedValue({

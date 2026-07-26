@@ -198,3 +198,53 @@ class NarrowSpanRobustFormTests(unittest.TestCase):
                "source_section": "4.1", "notes": ""}
         ai_extract._map_requirement_source(req, section)
         self.assertEqual(req["source_block_ids"], ["B1"])
+
+
+class NoiseExclusionTests(unittest.TestCase):
+    """噪声块（页码/水印）永不成来源；水印类摘录按噪声内容跳过（test8 实证）。"""
+
+    def test_watermark_blocks_never_in_match_results(self) -> None:
+        blocks = [
+            {"block_id": "B1", "order": 1, "type": "paragraph",
+             "text": "The wiring diagram of the meter must be indelibly marked."},
+            {"block_id": "B2", "order": 2, "type": "paragraph",
+             "text": "Machine Translated by Google", "noise": True},
+            {"block_id": "B3", "order": 3, "type": "paragraph",
+             "text": "All terminals located on the electricity meter must be clearly marked."},
+        ]
+        # 水印摘录（"Machine Translated by Google"）跳过而非否决；内容块照配
+        quote = ("The wiring diagram of the meter must be indelibly marked.\n"
+                 "Machine Translated by Google\n"
+                 "All terminals located on the electricity meter must be clearly marked.")
+
+        matched, method = match_source_quote_blocks(quote, blocks)
+
+        self.assertNotIn("B2", matched)
+        self.assertIn("B1", matched)
+        self.assertIn("B3", matched)
+        self.assertEqual(method, "multi_block")
+
+    def test_content_excerpt_unmatched_still_fails(self) -> None:
+        blocks = [
+            {"block_id": "B1", "order": 1, "type": "paragraph",
+             "text": "The wiring diagram of the meter must be indelibly marked."},
+            {"block_id": "B2", "order": 2, "type": "paragraph",
+             "text": "Machine Translated by Google", "noise": True},
+        ]
+        quote = ("The wiring diagram of the meter must be indelibly marked.\n"
+                 "Machine Translated by Google\n"
+                 "A sentence that appears absolutely nowhere in the document.")
+
+        matched, _method = match_source_quote_blocks(quote, blocks)
+
+        self.assertEqual(matched, [])
+
+    def test_noise_block_is_not_returned_by_containing(self) -> None:
+        blocks = [
+            {"block_id": "B1", "order": 1, "type": "paragraph",
+             "text": "Machine Translated by Google", "noise": True},
+            {"block_id": "B2", "order": 2, "type": "paragraph",
+             "text": "The meter shall record events."},
+        ]
+        matched, _method = match_source_quote_blocks("Machine Translated by Google", blocks)
+        self.assertEqual(matched, [])
