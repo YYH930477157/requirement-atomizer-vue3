@@ -45,6 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-25）——引句匹配三处断链修复（guards-v12、merged-consistency v3，已合 main `ed0331a`；主检出全量 1655 tests OK、golden 6/6）
+
+- **用户实证（test7）**：清单并块后整段引句仍匹配失败掉 fallback，清单块被回退 span 误标"关联·见24"且十行各挂一个标签，右侧无"查看批注 24"入口。
+- **根因**：①引句多段窗口被噪声微块（页码/水印）掐死——blob 引句走不到多段摘录豁免；且宽度 2 反包含（≥0.75）提前截胡更大窗口的整句命中；②guards-v11 的 fallback 收窄是死代码（`extract_units` 的 source_blocks 无 section_path，恒失效）；③热区语义源按原始 span 标"关联"不过滤 fallback，与重排视图口径分叉；同块同页多区域逐行重复挂标。
+- **修复**：匹配窗口在非噪声块上搜索并改两段式（先整句命中再反包含）；`extract_units` 补 section_path 使收窄生效（guards-v12）；热区 fallback 行"关联"只认 `quote_block_ids`；同块同页多区域并为一个热区。test7 实测：引句命中 080/083/084 三块（含清单块），清单块语义 covered——点击即达"查看批注 24"。
+- **验证**：新测试 6 例；相关套件 374 项零回归；全量 1655 绿 + golden 6/6。**test7 需用新包重跑**：该需求将从 section_fallback 变 multi_block，数据层同步干净。
+
 ## 重大更新（2026-07-25）——PDF 名词式清单段合并（atomize impl-v5，已合 main `a987313`；主检出全量 1649 tests OK、golden 6/6）
 
 - **用户实证（test6 招标 PDF）**：端子清单（"Terminals:" + RS485/MPA/+AA/…/辅助电源 9 行）被切成 10 个 5–8 字符微块，过不了锚点匹配的 12 字符门槛（防页码误锚设计），清单中段永远无法锚定/显示覆盖；用户裁定"那一小段是整体的，可以将上下那几个成一个块"。
