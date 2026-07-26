@@ -45,6 +45,12 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-25）——引句匹配断链修复 + fallback 收窄全生效（guards-v13、merged-consistency v3，已合 main `ed0331a`/`13e95ba`；主检出全量 1658 tests OK、golden 6/6；test8 实测验证）
+
+- **修复链**：引句多段窗口跳过噪声块（页码/水印夹缝不再掐死整句匹配）+ 两段式（先整句命中再反包含）；`extract_units` 补 section_path 使收窄从死代码变活；收窄再支持裸节号前缀（"4.1" 命中 "4.1 For..."）与多节号（"4.2, 4.3"）；热区 fallback 行"关联"只认原句匹配块、同块同页多区域并为一个热区。
+- **test8 实测（新代码全链重跑）**：producer 全对（guards-v12→v13、consistency v3、impl-v5）；`section_fallback` 从高频降到 **7/119**；端子标记需求 `multi_block [080,083,084,094,095]`（含清单块）；螺丝需求 `[097,098]`；清单块（BLK-000084，86 字符并块）语义 **covered**——点击即达"查看批注"；两个 24 块误例收窄为 4.1 仅 10 块、4.2+4.3 仅 13 块。
+- **遗留观察**：fallback 收窄按 `req.source_section` 匹配，LLM 节号标注异常时仍退整单元（如实保留）；重跑请用 23:06 新包（含 v13）。
+
 ## 重大更新（2026-07-25）——引句匹配三处断链修复（guards-v12、merged-consistency v3，已合 main `ed0331a`；主检出全量 1655 tests OK、golden 6/6）
 
 - **用户实证（test7）**：清单并块后整段引句仍匹配失败掉 fallback，清单块被回退 span 误标"关联·见24"且十行各挂一个标签，右侧无"查看批注 24"入口。
