@@ -550,7 +550,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v14"  # v14:匹配各路径噪声块不成来源+水印摘录按噪声跳过(不再混进 source_block_ids);v13:fallback 收窄支持裸节号前缀与多节号;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v15"  # v15:噪声贯通抽取路径——source_blocks 带 noise 标记(匹配器噪声排除在抽取时真正生效)、fuzzy 候选剔噪声、fallback span 不纳噪声块;v14:匹配各路径噪声块不成来源+水印摘录按噪声跳过;v13:fallback 收窄支持裸节号前缀与多节号;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -964,7 +964,8 @@ def _map_requirement_source(req: dict[str, Any], section: dict[str, Any]) -> Non
             (SequenceMatcher(None, quote, compact_source_text(row.get("text"))).ratio(),
              str(row.get("block_id") or ""))
             for row in source_blocks
-            if row.get("block_id") and len(compact_source_text(row.get("text"))) >= 12
+            if row.get("block_id") and not row.get("noise")
+            and len(compact_source_text(row.get("text"))) >= 12
         ]
         score, block_id = max(scored, default=(0.0, ""))
         if score >= 0.82 and block_id:
@@ -977,7 +978,10 @@ def _map_requirement_source(req: dict[str, Any], section: dict[str, Any]) -> Non
     else:
         span = list(section.get("block_ids") or [])
         narrowed = _narrow_span_to_req_section(req, source_blocks, span)
-        req["source_block_ids"] = narrowed or span
+        # 页码/水印等噪声块不成来源（guards-v15，test10 实证：fallback span 带进噪声块）
+        noise_ids = {str(row.get("block_id") or "") for row in source_blocks if row.get("noise")}
+        req["source_block_ids"] = [
+            block_id for block_id in (narrowed or span) if block_id not in noise_ids]
         if req["source_block_ids"]:
             req["anchor_block_id"] = req["source_block_ids"][0]
         req["source_mapping"] = "section_fallback"

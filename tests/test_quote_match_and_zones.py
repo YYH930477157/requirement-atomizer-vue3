@@ -248,3 +248,53 @@ class NoiseExclusionTests(unittest.TestCase):
         ]
         matched, _method = match_source_quote_blocks("Machine Translated by Google", blocks)
         self.assertEqual(matched, [])
+
+
+class NoiseEndToEndTests(unittest.TestCase):
+    """噪声贯通抽取路径（test10 实证）：source_blocks 带 noise、模糊候选与 fallback
+    span 都不纳噪声块。"""
+
+    def test_units_source_blocks_carry_noise_flag(self) -> None:
+        from extract_units import assemble_sections
+        blocks = [
+            {"block_id": "B1", "type": "paragraph", "text": "All terminals must be marked.",
+             "section_path": ["3.4.4"], "noise": False},
+            {"block_id": "B2", "type": "paragraph", "text": "Machine Translated by Google",
+             "section_path": ["3.4.4"], "noise": True},
+        ]
+        sections = assemble_sections(blocks)
+        flat = [row for section in sections for row in section.get("source_blocks") or []]
+        self.assertEqual([bool(row.get("noise")) for row in flat], [False, True])
+
+    def test_fallback_span_excludes_noise_blocks(self) -> None:
+        import ai_extract
+        section = {
+            "block_ids": ["B1", "B2", "B3"],
+            "source_blocks": [
+                {"block_id": "B1", "text": "The meter shall record data.",
+                 "section_path": ["3.4.4"], "noise": False},
+                {"block_id": "B2", "text": "6", "section_path": ["3.4.4"], "noise": True},
+                {"block_id": "B3", "text": "Machine Translated by Google",
+                 "section_path": ["3.4.4"], "noise": True},
+            ],
+        }
+        req = {"source_quote": "a paraphrased quote not in source",
+               "source_section": "3.4.4", "notes": ""}
+        ai_extract._map_requirement_source(req, section)
+        self.assertEqual(req["source_block_ids"], ["B1"])
+
+    def test_fuzzy_candidate_skips_noise(self) -> None:
+        import ai_extract
+        section = {
+            "block_ids": ["B1", "B2"],
+            "source_blocks": [
+                {"block_id": "B1", "text": "Machine Translated by Google",
+                 "section_path": ["3.4.4"], "noise": True},
+                {"block_id": "B2", "text": "All terminals must be clearly marked.",
+                 "section_path": ["3.4.4"], "noise": False},
+            ],
+        }
+        req = {"source_quote": "All terminals must be clearly marked.",
+               "source_section": "3.4.4", "notes": ""}
+        ai_extract._map_requirement_source(req, section)
+        self.assertNotIn("B1", req["source_block_ids"])
