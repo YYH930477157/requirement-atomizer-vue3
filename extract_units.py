@@ -58,11 +58,12 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             unit["texts"].append(text)
         if block.get("block_id"):
             unit["block_ids"].append(block["block_id"])
-            # section_path 必须随行（guards-v12）：fallback 收窄按需求所属小节过滤 span，
-            # 此前只有 block_id+text 使收窄因取不到 section_path 静默失效
+            # section_path/noise 必须随行（guards-v12/v15）：fallback 收窄按需求所属小节
+            # 过滤 span、匹配器按噪声排除——缺字段时两条规则都静默失效
             unit.setdefault("source_blocks", []).append({
                 "block_id": block["block_id"], "text": text,
                 "section_path": list(block.get("section_path") or []),
+                "noise": bool(block.get("noise")),
             })
 
     sections: list[dict[str, Any]] = []
