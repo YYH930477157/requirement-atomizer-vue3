@@ -90,15 +90,18 @@ def _match_compact_quote(
     quote: str,
     normalized: list[tuple[dict[str, Any], str]],
 ) -> tuple[list[str], str]:
+    # 噪声块（页码/水印）永不成来源（2026-07-26 test8 实证：LLM 把 "Machine Translated
+    # by Google" 抄进引句，水印块经 containing 路径混进 source_block_ids）——各命中
+    # 路径一律过滤噪声；多段摘录里只命中噪声的片段按噪声内容跳过（见调用方）。
     exact = [
         str(block.get("block_id")) for block, text in normalized
-        if len(text) >= _MIN_SOURCE_MATCH_CHARS and text == quote
+        if len(text) >= _MIN_SOURCE_MATCH_CHARS and text == quote and not block.get("noise")
     ]
     if exact:
         return exact, "exact" if len(exact) == 1 else "multi_block"
     containing = [
         str(block.get("block_id")) for block, text in normalized
-        if len(text) >= _MIN_SOURCE_MATCH_CHARS and quote in text
+        if len(text) >= _MIN_SOURCE_MATCH_CHARS and quote in text and not block.get("noise")
     ]
     if containing:
         return containing, "contains" if len(containing) == 1 else "multi_block"
@@ -109,6 +112,7 @@ def _match_compact_quote(
         if len(text) >= _MIN_SOURCE_MATCH_CHARS
         and text in quote
         and len(text) / len(quote) >= _MIN_REVERSE_CONTAINMENT_RATIO
+        and not block.get("noise")
     ]
     if reverse_containing:
         return (
@@ -145,6 +149,15 @@ def _match_compact_quote(
     return [], ""
 
 
+def _matches_only_noise(excerpt: str, normalized: list[tuple[dict[str, Any], str]]) -> bool:
+    """片段是否只命中噪声块（页码/水印）——用于把水印类摘录按噪声内容跳过
+    （test8 实证：LLM 把页内 "Machine Translated by Google" 抄进引句）。"""
+    for block, text in normalized:
+        if len(text) >= _MIN_SOURCE_MATCH_CHARS and excerpt in text and block.get("noise"):
+            return True
+    return False
+
+
 def match_source_quote_blocks(source_quote: Any, blocks: Any) -> tuple[list[str], str]:
     """把逐字引句映射到一个或多个原文块。
 
@@ -167,6 +180,10 @@ def match_source_quote_blocks(source_quote: Any, blocks: Any) -> tuple[list[str]
         for excerpt in excerpts:
             matched, _method = _match_compact_quote(excerpt, normalized)
             if not matched:
+                # 只命中噪声块的片段按噪声内容跳过（水印混入引句——test8 实证），
+                # 不因此否决整条引句；正文内容匹配不到仍整体否决（多段摘录纪律）
+                if _matches_only_noise(excerpt, normalized):
+                    continue
                 return [], ""
             excerpt_matches.extend(matched)
         excerpt_matches = list(dict.fromkeys(excerpt_matches))
