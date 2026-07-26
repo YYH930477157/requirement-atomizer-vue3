@@ -862,30 +862,43 @@ def compute_echo_block_ids(req: dict, blocks: list[dict]) -> list[str]:
     return reliable_echo_block_ids(req, blocks)
 
 
-def quote_matched_block_ids(req: dict, text_by_block: dict[str, str]) -> list[str]:
+def quote_matched_block_ids(
+    req: dict,
+    text_by_block: dict[str, str],
+    *,
+    noise_block_ids: set[str] | None = None,
+) -> list[str]:
     """原句匹配块集：source_quote 在来源块上的确定性匹配全集（锚点只是首块）。
 
     视图层证据区应覆盖原句实际跨越的全部块——多段引句只亮首块会丢后半段
     （test5 实证：引句跨 097+098 两块，蓝区只亮 097，与原句左右不一致）。
+    噪声块 id 随行：页码/水印夹缝不再掐死窗口匹配（test7 实证）。
     """
+    noise = noise_block_ids or set()
     span = [str(b) for b in (req.get("source_block_ids") or [])]
     from merged_consistency import compact_source_text, match_source_quote_blocks
 
     source_blocks = [
-        {"block_id": block_id, "order": order, "text": text_by_block.get(block_id, "")}
+        {"block_id": block_id, "order": order,
+         "text": text_by_block.get(block_id, ""), "noise": block_id in noise}
         for order, block_id in enumerate(span)
     ]
     matched, _mapping = match_source_quote_blocks(req.get("source_quote"), source_blocks)
     return [str(b) for b in matched]
 
 
-def anchor_block_id(req: dict, text_by_block: dict[str, str]) -> str:
+def anchor_block_id(
+    req: dict,
+    text_by_block: dict[str, str],
+    *,
+    noise_block_ids: set[str] | None = None,
+) -> str:
     """需求精确锚点：含其 source_quote 原句的那一小段（段落级），否则回退 source_block_ids 首块。
 
     批注挂在需求实际所在的小段上（而非整章节段首），符合"一小段一个需求点"。
     """
     span = [str(b) for b in (req.get("source_block_ids") or [])]
-    matched = quote_matched_block_ids(req, text_by_block)
+    matched = quote_matched_block_ids(req, text_by_block, noise_block_ids=noise_block_ids)
     if matched:
         return matched[0]
     from merged_consistency import compact_source_text
@@ -1040,6 +1053,8 @@ def _enrich_ai_requirement_rows(
     analysis_map = _analysis_enrichment(output_dir) if artifact_is_current("engineering_analysis.json") else {}
     block_rows = read_jsonl(output_dir / "blocks.jsonl")
     text_by_block = {str(b.get("block_id")): (b.get("text") or "") for b in block_rows}
+    # 噪声块 id 随行进锚点/原句匹配——页码/水印夹缝不再掐死窗口（test7 实证）
+    noise_block_ids = {str(b.get("block_id")) for b in block_rows if b.get("noise")}
     from requirements_analysis_rules import classify_ownership  # 规则初判（确定性、零 LLM）
     dup_quotes, differ_codes = _consistency_markers(output_dir)
 
@@ -1054,10 +1069,11 @@ def _enrich_ai_requirement_rows(
         effective_state = None if needs_reconfirmation else state
         row.update(membership.get(rid, {}))
         row.update(analysis_map.get(rid, {}))   # 兼容保留；当前视图不消费富化叙述字段
-        row["anchor_block_id"] = anchor_block_id(req, text_by_block)
+        row["anchor_block_id"] = anchor_block_id(req, text_by_block, noise_block_ids=noise_block_ids)
         # 原句匹配块集（证据区应覆盖原句实际跨越的全部块，多段引句不只亮首块）；
         # 匹配不到时如实回退锚点单块。
-        quote_block_ids = quote_matched_block_ids(req, text_by_block)
+        quote_block_ids = quote_matched_block_ids(
+            req, text_by_block, noise_block_ids=noise_block_ids)
         row["quote_block_ids"] = (
             quote_block_ids or ([row["anchor_block_id"]] if row["anchor_block_id"] else [])
         )

@@ -1629,7 +1629,12 @@ def _pdf_block_semantics(blocks: list[dict[str, Any]], requirements: list[dict[s
                 if req_id not in block_ids:
                     block_ids.append(req_id)
             echo_ids = {str(value) for value in (req.get("echo_block_ids") or []) if str(value)}
-            for source_id in req.get("source_block_ids") or []:
+            # section_fallback 行只认原句匹配块（与重排 coveredByBlock 同口径）——
+            # 跨小节回退 span 若整段计入，无关段落会被误标"关联·见NN"（test7 实证）
+            span = ((req.get("quote_block_ids") or [])
+                    if str(req.get("source_mapping") or "") == "section_fallback"
+                    else (req.get("source_block_ids") or []))
+            for source_id in span:
                 block_id = str(source_id)
                 if not block_id or block_id == anchor or block_id in echo_ids:
                     continue
@@ -1703,12 +1708,26 @@ def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, 
     for item in semantic_items:
         block_id = str(item.get("block_id") or "")
         kind = str(item.get("kind") or "context")
+        regions_by_page: dict[int, list[dict[str, Any]]] = {}
         for region in geometry.get(block_id) or []:
             page = _page_number(region.get("page_number"))
-            if not page:
-                continue
+            if page:
+                regions_by_page.setdefault(page, []).append(region)
+        # 同块同页多区域合并为一个热区（清单段并块后成员区域不再逐行刷屏——
+        # test7 实证：合并清单块带 10 个行区域，旧逻辑每行各挂一个"关联·见24"）
+        for page, regions in regions_by_page.items():
+            union = {
+                "bbox": (
+                    min(region["bbox"][0] for region in regions),
+                    min(region["bbox"][1] for region in regions),
+                    max(region["bbox"][2] for region in regions),
+                    max(region["bbox"][3] for region in regions),
+                ),
+                "page_width": regions[0]["page_width"],
+                "page_height": regions[0]["page_height"],
+            }
             zone: dict[str, Any] = {"block_id": block_id, "page": page,
-                                    "rect": _pdf_zone_rect(region), "kind": kind,
+                                    "rect": _pdf_zone_rect(union), "kind": kind,
                                     "text_repaired": bool(item.get("text_repaired")),
                                     "extraction_failed": bool(item.get("extraction_failed"))}
             if item.get("req_id"):

@@ -550,7 +550,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v11"  # v11:section_fallback 按所属小节收窄(跨节单元不再整段计入溯源);v10:引用三层分流(标点差异软标/跨块逐字降级)+合规兜底补行进 jsonl;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v12"  # v12:引句多段窗口跳过噪声块(匹配不再因页码/水印夹缝掉 fallback)+fallback 收窄经 source_path 生效;v11:section_fallback 按所属小节收窄(跨节单元不再整段计入溯源);v10:引用三层分流(标点差异软标/跨块逐字降级)+合规兜底补行进 jsonl;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:

@@ -1012,8 +1012,8 @@ class ChainAndManifestTests(unittest.TestCase):
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
             "ai-extract": (
-                "ai-extract-v21+guards-v11+ai-verify-v2"
-                "+merged-consistency/v2-triage-strict-evidence"
+                "ai-extract-v21+guards-v12+ai-verify-v2"
+                "+merged-consistency/v3-noise-tolerant-window"
                 "+ai-supplement-v3-identity-preconditions+impl-v4"
             ),
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",

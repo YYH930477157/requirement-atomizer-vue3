@@ -14,7 +14,7 @@ from typing import Any
 
 from cosem_behavior_spec import extract_codes, extract_ints
 
-MERGED_CONSISTENCY_VERSION = "merged-consistency/v2-triage-strict-evidence"
+MERGED_CONSISTENCY_VERSION = "merged-consistency/v3-noise-tolerant-window"  # v3：引句多段窗口跳过噪声块（页码/水印夹缝不再掐死整句匹配）;v2:分诊严证据
 _MIN_QUOTE_CHARS = 12  # 太短的引用片段（如"see 4.2"）不作重复判据，防误判
 _MIN_SOURCE_MATCH_CHARS = 12
 _MAX_SOURCE_WINDOW_BLOCKS = 12
@@ -117,20 +117,30 @@ def _match_compact_quote(
         )
 
     # 引句可能恰好跨段落边界，单块均不完整。按最小窗口优先，避免把邻接无关块带入来源。
-    for width in range(2, min(_MAX_SOURCE_WINDOW_BLOCKS, len(normalized)) + 1):
-        for start in range(0, len(normalized) - width + 1):
-            window = normalized[start:start + width]
+    # 窗口在非噪声块上搜索（2026-07-25 test7 实证）：页码/水印等噪声块夹在引句块中间时，
+    # 旧逻辑把含微块的窗口整体掐死、整句掉到 section_fallback——噪声块既不提供引句内容
+    # 也不应成为来源，跳过它们再按连续窗口匹配；返回的仍只是非噪声块。
+    searchable = [(block, text) for block, text in normalized if not block.get("noise")]
+    max_width = min(_MAX_SOURCE_WINDOW_BLOCKS, len(searchable))
+    # 先整句命中（quote ⊆ 窗口）再反包含：整句完整落窗永远比部分反包含忠实——
+    # test7 实证：362 字整句落在三块窗口内，旧单循环被宽度 2 的反包含（0.82≥0.75）
+    # 提前截胡，漏掉最后一个清单块
+    for width in range(2, max_width + 1):
+        for start in range(0, len(searchable) - width + 1):
+            window = searchable[start:start + width]
+            texts = [text for _block, text in window]
+            if any(len(text) < _MIN_SOURCE_MATCH_CHARS for text in texts):
+                continue
+            if quote in "".join(texts):
+                return [str(block.get("block_id")) for block, _text in window], "multi_block"
+    for width in range(2, max_width + 1):
+        for start in range(0, len(searchable) - width + 1):
+            window = searchable[start:start + width]
             texts = [text for _block, text in window]
             if any(len(text) < _MIN_SOURCE_MATCH_CHARS for text in texts):
                 continue
             joined = "".join(texts)
-            if (
-                quote in joined
-                or (
-                    joined in quote
-                    and len(joined) / len(quote) >= _MIN_REVERSE_CONTAINMENT_RATIO
-                )
-            ):
+            if joined in quote and len(joined) / len(quote) >= _MIN_REVERSE_CONTAINMENT_RATIO:
                 return [str(block.get("block_id")) for block, _text in window], "multi_block"
     return [], ""
 
