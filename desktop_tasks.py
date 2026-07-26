@@ -501,7 +501,8 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 
 
 STAGE_IMPLEMENTATION_REVISIONS = {
-    "atomize": "v4",
+    # v5：PDF 清单段合并（名词式清单项并整段，微块可锚定）——块结构变化，PDF 输入须重解析
+    "atomize": "v5",
     "ai-extract": "v4",
     "assemble": "v2",
     "functional-synthesis": "v3",

@@ -927,7 +927,102 @@ def extract_pdf(
                            empty_pages, len(pdf.pages))
 
     blocks = _merge_continuation_blocks(blocks, knowledge_bases)
+    blocks = _merge_list_item_blocks(blocks, knowledge_bases)
     return blocks, table_items
+
+
+_LIST_INTRO_RE = re.compile(r"^[^\n]{1,80}[:：]\s*$")
+_LIST_MERGE_MAX_ITEM_CHARS = 120
+_LIST_MERGE_MAX_TOTAL_CHARS = 4000
+
+
+def _is_coalescible_list_item(block: dict[str, Any]) -> bool:
+    """可并清单行：paragraph、非噪声、列表起笔、短行、非需求语义。
+    枚举型需求行（"a) 电表应…"）必须留在独立块里——只并名词式清单项。"""
+    if block.get("type") != "paragraph" or block.get("noise"):
+        return False
+    text = str(block.get("text") or "")
+    if len(text) > _LIST_MERGE_MAX_ITEM_CHARS or not _LIST_ITEM_RE.match(text):
+        return False
+    return not block.get("requirement_like")
+
+
+def _merge_list_item_blocks(
+    blocks: list[dict[str, Any]],
+    knowledge_bases: KnowledgeRepository,
+) -> list[dict[str, Any]]:
+    """清单段合并：连续的名词式清单项（及末尾带冒号的引导行）并成一整段。
+
+    真实案例（test6 招标 PDF）："Terminals:" + 9 个端子清单行被切成 10 个 5-8 字符
+    微块——微块过不了锚点匹配的 12 字符门槛，清单中段全部无法锚定/显示覆盖；并段后
+    整段成为一个可锚块。只并同页同小节的连续短清单项；枚举型需求行
+    （requirement_like）不并；总长度有帽。溯源块 id 保留段首原 id，后续块编号不变。
+    """
+    merged: list[dict[str, Any]] = []
+    index = 0
+    while index < len(blocks):
+        block = blocks[index]
+        if not _is_coalescible_list_item(block):
+            merged.append(block)
+            index += 1
+            continue
+        run = [block]
+        follower = index + 1
+        while follower < len(blocks) and _is_coalescible_list_item(blocks[follower]):
+            candidate = blocks[follower]
+            if (candidate.get("page_number") != block.get("page_number")
+                    or list(candidate.get("section_path") or []) != list(block.get("section_path") or [])):
+                break
+            run.append(candidate)
+            follower += 1
+        if len(run) < 2:
+            merged.append(block)
+            index += 1
+            continue
+        head: dict[str, Any] | None = None
+        if merged:
+            prev = merged[-1]
+            prev_text = str(prev.get("text") or "")
+            if (prev.get("type") == "paragraph" and not prev.get("noise")
+                    and not prev.get("requirement_like")
+                    and prev.get("page_number") == block.get("page_number")
+                    and list(prev.get("section_path") or []) == list(block.get("section_path") or [])
+                    and _LIST_INTRO_RE.match(prev_text)):
+                head = merged.pop()
+        members = ([head] if head else []) + run
+        joined = "\n".join(str(member["text"]) for member in members)
+        if len(joined) > _LIST_MERGE_MAX_TOTAL_CHARS:
+            merged.extend(members)
+            index = follower
+            continue
+        target = members[0]
+        target["text"] = joined
+        target["requirement_like"] = is_requirement_like(joined)
+        section = " > ".join(target.get("section_path") or [])
+        target["kb_matches"] = match_knowledge(knowledge_bases, joined, section)
+        target["domain_tags"] = merge_tags(
+            tag_domains(joined, section), kb_domain_tags(target["kb_matches"]))
+        regions: list[dict[str, Any]] = []
+        for member in members:
+            regions.extend(member.get("pdf_regions") or [])
+        if regions:
+            target["pdf_regions"] = regions
+        if any(member.get("text_repair_checked") for member in members):
+            raw_joined = "\n".join(
+                str(member.get("raw_text") or member.get("text") or "") for member in members)
+            target["raw_text"] = raw_joined
+            target["text_repair_checked"] = True
+            target["text_repair_version"] = PDF_TEXT_REPAIR_VERSION
+            target["text_repairs"] = [
+                repair for member in members for repair in (member.get("text_repairs") or [])]
+            target["text_repaired"] = bool(target["text_repairs"])
+            target["text_repair_words_before"] = len(raw_joined.split())
+            target["text_repair_words_after"] = len(joined.split())
+            target["text_repair_candidates_before"] = _fragmentation_signal_count(raw_joined)
+            target["text_repair_candidates_after"] = _fragmentation_signal_count(joined)
+        merged.append(target)
+        index = follower
+    return merged
 
 
 def _merge_continuation_blocks(
