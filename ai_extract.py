@@ -550,7 +550,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v12"  # v12:引句多段窗口跳过噪声块(匹配不再因页码/水印夹缝掉 fallback)+fallback 收窄经 source_path 生效;v11:section_fallback 按所属小节收窄(跨节单元不再整段计入溯源);v10:引用三层分流(标点差异软标/跨块逐字降级)+合规兜底补行进 jsonl;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v13"  # v13:fallback 收窄支持裸节号前缀("4.1"命中"4.1 For...")与多节号("4.2, 4.3");v12:引句多段窗口跳过噪声块(匹配不再因页码/水印夹缝掉 fallback)+fallback 收窄经 source_path 生效;v11:section_fallback 按所属小节收窄(跨节单元不再整段计入溯源);v10:引用三层分流(标点差异软标/跨块逐字降级)+合规兜底补行进 jsonl;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -985,6 +985,39 @@ def _map_requirement_source(req: dict[str, Any], section: dict[str, Any]) -> Non
             _append_note(req, f"来源回退已按所属小节收窄（{len(span)}→{len(narrowed)} 块）")
 
 
+_SECTION_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)*$")
+_SECTION_LEADING_NUMBER_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)\b")
+
+
+def _wanted_section_matchers(source_section: str) -> list[str]:
+    """source_section 归一成可匹配的节号/节名集合。
+
+    真实形态（test8 实证）：裸节号 "4.1"（块末段却是 "4.1 For local ..."）、
+    多节号 "4.2, 4.3"。裸节号按块末段的引导数字前缀精确匹配（"4.1" 可命中
+    "4.1 For local..."，"4.10" 不会误中）；含文字的节名仍逐字匹配。"""
+    wanted: list[str] = []
+    for part in re.split(r"[,，、/]", str(source_section or "")):
+        wanted_part = _norm_verbatim(part)
+        if wanted_part:
+            wanted.append(wanted_part)
+    return wanted
+
+
+def _section_path_tail_matches(path_tail: str, wanted: list[str]) -> bool:
+    tail = _norm_verbatim(path_tail)
+    if not tail:
+        return False
+    leading = _SECTION_LEADING_NUMBER_RE.match(tail)
+    leading_number = leading.group(1) if leading else ""
+    for wanted_part in wanted:
+        if _SECTION_NUMBER_RE.match(wanted_part):
+            if leading_number == wanted_part:
+                return True
+        elif tail == wanted_part:
+            return True
+    return False
+
+
 def _narrow_span_to_req_section(
     req: dict[str, Any], source_blocks: list[dict[str, Any]], span: list[str]
 ) -> list[str]:
@@ -992,17 +1025,18 @@ def _narrow_span_to_req_section(
 
     真实案例（test5 招标 PDF）：单元跨 3.4.4/3.4.5/3.4.6 三小节，引句被块内碎句
     截断匹配失败后，旧口径把 24 块全标来源——无关清单段（端子列表 "- DAY1"）被
-    误标"分析范围"。按 req.source_section 与块的 section_path 末段逐字匹配收窄；
-    一个都匹配不上时返回空（调用方退回整单元，如实保留"定位不精"原口径），不猜。
+    误标"分析范围"。按 req.source_section 与块的 section_path 末段匹配收窄
+    （支持裸节号前缀与多节号）；一个都匹配不上时返回空（调用方退回整单元，
+    如实保留"定位不精"原口径），不猜。
     """
-    wanted = _norm_verbatim(req.get("source_section"))
+    wanted = _wanted_section_matchers(str(req.get("source_section") or ""))
     if not wanted:
         return []
     scoped: set[str] = set()
     for block in source_blocks:
         block_id = str(block.get("block_id") or "")
         path = block.get("section_path") or []
-        if block_id and path and _norm_verbatim(path[-1]) == wanted:
+        if block_id and path and _section_path_tail_matches(str(path[-1]), wanted):
             scoped.add(block_id)
     return [block_id for block_id in span if block_id in scoped]
 

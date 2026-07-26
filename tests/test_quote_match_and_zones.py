@@ -149,3 +149,52 @@ class PdfZoneFallbackScopeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NarrowSpanRobustFormTests(unittest.TestCase):
+    """fallback 收窄的真实形态（test8 实证）：裸节号前缀与多节号。"""
+
+    def _section(self):
+        return {
+            "block_ids": ["B1", "B2", "B3", "B4"],
+            "source_blocks": [
+                {"block_id": "B1", "text": "a",
+                 "section_path": ["4 Software", "4.1 For local and remote management"]},
+                {"block_id": "B2", "text": "b",
+                 "section_path": ["4 Software", "4.1 For local and remote management"]},
+                {"block_id": "B3", "text": "c",
+                 "section_path": ["4 Software", "4.2 Security of communication"]},
+                {"block_id": "B4", "text": "d",
+                 "section_path": ["4 Software", "4.3 Service Software Access Levels"]},
+            ],
+        }
+
+    def test_bare_section_number_matches_full_title_tail(self) -> None:
+        import ai_extract
+        req = {"source_quote": "a paraphrased quote not in source",
+               "source_section": "4.1", "notes": ""}
+        section = self._section()
+        ai_extract._map_requirement_source(req, section)
+        self.assertEqual(req["source_block_ids"], ["B1", "B2"])
+
+    def test_multi_section_source_section(self) -> None:
+        import ai_extract
+        req = {"source_quote": "a paraphrased quote not in source",
+               "source_section": "4.2, 4.3", "notes": ""}
+        section = self._section()
+        ai_extract._map_requirement_source(req, section)
+        self.assertEqual(req["source_block_ids"], ["B3", "B4"])
+
+    def test_number_prefix_does_not_collide(self) -> None:
+        import ai_extract
+        section = {
+            "block_ids": ["B1", "B2"],
+            "source_blocks": [
+                {"block_id": "B1", "text": "a", "section_path": ["4", "4.1 Something"]},
+                {"block_id": "B2", "text": "b", "section_path": ["4", "4.10 Other"]},
+            ],
+        }
+        req = {"source_quote": "a paraphrased quote not in source",
+               "source_section": "4.1", "notes": ""}
+        ai_extract._map_requirement_source(req, section)
+        self.assertEqual(req["source_block_ids"], ["B1"])
