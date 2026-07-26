@@ -45,6 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-26）——噪声块永不成来源 + 影印模式选中高亮原句全跨度（guards-v14，已合 main `be8ecd4`；主检出全量 1661 tests OK、golden 6/6、前端 vitest 132 + vue-tsc）
+
+- **用户实证（test8 原版核对）**：选中端子标记需求，左框只框住 3.4.4 标题，原句涉及的正文段落没框；且该需求来源里混进了 "Machine Translated by Google" 水印块（082/102）。
+- **修复一（数据）**：引句匹配各路径（exact/containing/reverse/多段摘录）一律过滤噪声块——页码/水印永不成来源；多段摘录里只命中噪声的片段按噪声内容跳过、不否决整条引句。`EXTRACT_GUARDS_VERSION` 升 v14。test8 实测：端子标记需求匹配 079/080/083/084/094/095 六块（082/102 水印出源）。
+- **修复二（视图）**：影印模式选中需求时把 `quote_block_ids` 全部块加 quote-sel 虚线框（锚点保留主框 sel）——原句涉及的原文全部框出。
+- **验证**：匹配器 3 例、Vue 1 例（选中后原句块 quote-sel、无关块不框）；全量 1661 绿 + golden 6/6 + 前端 132 + vue-tsc。重跑可用新包；旧产物 serve 层重算同样出清（`quote_block_ids` 现算）。
+
 ## 重大更新（2026-07-25）——引句匹配断链修复 + fallback 收窄全生效（guards-v13、merged-consistency v3，已合 main `ed0331a`/`13e95ba`；主检出全量 1658 tests OK、golden 6/6；test8 实测验证）
 
 - **修复链**：引句多段窗口跳过噪声块（页码/水印夹缝不再掐死整句匹配）+ 两段式（先整句命中再反包含）；`extract_units` 补 section_path 使收窄从死代码变活；收窄再支持裸节号前缀（"4.1" 命中 "4.1 For..."）与多节号（"4.2, 4.3"）；热区 fallback 行"关联"只认原句匹配块、同块同页多区域并为一个热区。
