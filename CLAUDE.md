@@ -45,6 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-25）——PDF 名词式清单段合并（atomize impl-v5，已合 main `a987313`；主检出全量 1649 tests OK、golden 6/6）
+
+- **用户实证（test6 招标 PDF）**：端子清单（"Terminals:" + RS485/MPA/+AA/…/辅助电源 9 行）被切成 10 个 5–8 字符微块，过不了锚点匹配的 12 字符门槛（防页码误锚设计），清单中段永远无法锚定/显示覆盖；用户裁定"那一小段是整体的，可以将上下那几个成一个块"。
+- **修复**：`pdf_parser` 新增 `_merge_list_item_blocks`——连续名词式短清单项（≤120 字符、非需求语义、同页同小节）连同冒号引导行并成一整段；枚举型需求行（`requirement_like`）绝不并；段首保留原 block_id、后续块编号不变；atomize 阶段 impl 升 v5（块结构变化，PDF 输入须重解析）。
+- **实测**：test6 真实 PDF 上 "Terminals:" + 9 行并成 BLK-000084 一块（86 字符），全清单引句 exact 命中；合成测试 7 例（引导行并入/枚举需求保护/页界/节界/噪声豁免）；golden 基线为 DOCX 轨不受影响。
+- **重打包**：新 exe（192MB）已含清单合并解析器；**test6 需用新包重跑**才能看到清单段整段锚定/覆盖的效果。
+
 ## 重大更新（2026-07-23）——grouping 聚类三规则（functional-synthesis-v7，已合 main `67216b5`；主检出全量 1642 tests OK、golden 6/6、agent_eval grouping 4/8→8/8）
 
 - **周期档位分家**（审核人裁定）：period_variant 对周期档位（值+归一单位，不做跨单位换算）不同的对绝不合并——15 min × 24 h 两条独立曲线；任一侧未写档不算冲突；混合对（写档 × 未写档）概念同键且相容才合。`_PERIOD_RE` 补连字符形态（"15-minute"）。
