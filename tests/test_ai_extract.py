@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
 import ai_extract
+import claim_ledger
 
 
 class TocAndReferenceNoiseTests(unittest.TestCase):
@@ -624,19 +628,766 @@ class ExtractAllProgressTests(unittest.TestCase):
 
 
 class RouteTests(unittest.TestCase):
+    def test_controlled_term_aliases_load_from_the_extraction_term_map(self) -> None:
+        source_terms = ["indicator channel", "operator"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / ai_extract.TERM_MAP_FILE).write_text(json.dumps({
+                "schema": ai_extract.TERM_MAP_SCHEMA,
+                "hash": hashlib.sha256(
+                    json.dumps(source_terms, ensure_ascii=False).encode("utf-8")
+                ).hexdigest()[:16],
+                "source_terms": source_terms,
+                "terms": [
+                    {"en": " indicator channel ", "zh": "\u6307\u793a\u901a\u9053"},
+                    {"en": "Indicator Channel", "zh": "\u72b6\u6001\u901a\u9053"},
+                    {"en": "operator", "zh": "\u64cd\u4f5c\u4eba\u5458"},
+                ],
+            }), encoding="utf-8")
+
+            aliases = ai_extract.load_controlled_term_aliases(out)
+
+        self.assertEqual(
+            aliases,
+            {
+                "indicator channel": ["\u6307\u793a\u901a\u9053", "\u72b6\u6001\u901a\u9053"],
+                "operator": ["\u64cd\u4f5c\u4eba\u5458"],
+            },
+        )
+
+    def test_controlled_term_aliases_reject_a_malformed_term_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / ai_extract.TERM_MAP_FILE).write_text(
+                '{"hash":"not-a-fingerprint","terms":[]}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "term map"):
+                ai_extract.load_controlled_term_aliases(out)
+
+    def test_controlled_term_aliases_reject_legacy_map_without_source_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / ai_extract.TERM_MAP_FILE).write_text(json.dumps({
+                "hash": "0123456789abcdef",
+                "terms": [{"en": "meter", "zh": "\u7535\u8868"}],
+            }), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "source-backed schema lineage"):
+                ai_extract.load_controlled_term_aliases(out)
+
+    def test_term_map_producer_persists_source_backed_alias_lineage(self) -> None:
+        def chat(_system: str, _user: str) -> dict:
+            return {"terms": [
+                {"en": "Indicator Channel", "zh": "\u6307\u793a\u901a\u9053"},
+                {"en": "invented term", "zh": "\u4e34\u65f6\u731c\u8bd1"},
+            ]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            rendered = ai_extract.ensure_term_map(
+                out,
+                chat,
+                [("indicator channel", "A channel used for indication.")],
+            )
+            payload = json.loads(
+                (out / ai_extract.TERM_MAP_FILE).read_text(encoding="utf-8")
+            )
+            aliases = ai_extract.load_controlled_term_aliases(out)
+
+        self.assertEqual(payload["schema"], ai_extract.TERM_MAP_SCHEMA)
+        self.assertEqual(payload["source_terms"], ["indicator channel"])
+        self.assertEqual(aliases, {"indicator channel": ["\u6307\u793a\u901a\u9053"]})
+        self.assertIn("\u6307\u793a\u901a\u9053", rendered)
+        self.assertNotIn("\u4e34\u65f6\u731c\u8bd1", rendered)
+
+    def test_cold_shadow_publisher_receives_controlled_term_aliases(self) -> None:
+        source_terms = ["meter"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                encoding="utf-8",
+            )
+            (out / ai_extract.TERM_MAP_FILE).write_text(json.dumps({
+                "schema": ai_extract.TERM_MAP_SCHEMA,
+                "hash": hashlib.sha256(
+                    json.dumps(source_terms, ensure_ascii=False).encode("utf-8")
+                ).hexdigest()[:16],
+                "source_terms": source_terms,
+                "terms": [{"en": "meter", "zh": "\u7535\u8868"}],
+            }), encoding="utf-8")
+            with patch(
+                "claim_ledger.publish_b_track_shadow",
+                wraps=claim_ledger.publish_b_track_shadow,
+            ) as publish:
+                ai_extract.run_ai_extract(out, route="stub")
+
+        self.assertEqual(
+            publish.call_args.kwargs["controlled_term_aliases"],
+            {"meter": ["\u7535\u8868"]},
+        )
+
     def test_stub_route_produces_no_requirements(self) -> None:
+        import claim_artifacts
+
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             (out / "blocks.jsonl").write_text(
                 '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n', encoding="utf-8")
             result = ai_extract.run_ai_extract(out, route="stub")
+            attempts = claim_artifacts.read_claim_verifier_attempts(out)
+            generation = claim_artifacts.load_committed_shadow(out)["generation_meta"]
         self.assertEqual(result["route"], "stub")
         self.assertEqual(result["requirements"], 0)
         self.assertGreaterEqual(result["sections"], 1)
+        self.assertEqual(result["claim_shadow"]["status"], "published")
+        self.assertIn("claim_generation.meta.json", result["written"])
+        self.assertIn("claim_effective.meta.json", result["written"])
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]["attempt_kind"], "cold")
+        self.assertEqual(attempts[0]["attempt_status"], "complete")
+        self.assertEqual(generation["attempt_chain"]["attempt_id"], attempts[0]["attempt_id"])
+
+    def test_shadow_failure_does_not_fail_or_remove_primary_output(self) -> None:
+        import claim_artifacts
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                encoding="utf-8",
+            )
+            with patch("claim_ledger.publish_b_track_shadow", side_effect=RuntimeError("shadow")):
+                result = ai_extract.run_ai_extract(out, route="stub")
+            self.assertEqual(result["failed_sections"], 0)
+            self.assertEqual(result["claim_shadow"]["status"], "failed")
+            self.assertTrue((out / ai_extract.AI_REQUIREMENTS).exists())
+            attempts = claim_artifacts.read_claim_verifier_attempts(out)
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0]["attempt_kind"], "cold")
+            self.assertEqual(attempts[0]["attempt_status"], "failed")
+            self.assertEqual(attempts[0]["attempt_metrics"][
+                "verifier_operation_failure_count"
+            ], 1)
+            self.assertTrue(
+                attempts[0]["attempt_metrics"]["verifier_usage_complete"]
+            )
+            self.assertIn("RuntimeError:shadow", attempts[0]["error"])
+
+    def test_claim_shadow_refresh_never_calls_initial_extraction(self) -> None:
+        import claim_artifacts
+
+        source_terms = ["meter"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                encoding="utf-8",
+            )
+            ai_extract.run_ai_extract(out, route="stub")
+            initial = claim_artifacts.load_committed_shadow(out)["generation_meta"]
+            (out / ai_extract.TERM_MAP_FILE).write_text(json.dumps({
+                "schema": ai_extract.TERM_MAP_SCHEMA,
+                "hash": hashlib.sha256(
+                    json.dumps(source_terms, ensure_ascii=False).encode("utf-8")
+                ).hexdigest()[:16],
+                "source_terms": source_terms,
+                "terms": [{"en": "meter", "zh": "\u7535\u8868"}],
+            }), encoding="utf-8")
+            with (patch.object(ai_extract, "extract_all") as extract_all,
+                  patch.object(ai_extract, "chat_json") as chat,
+                  patch(
+                      "claim_ledger.publish_b_track_shadow",
+                      wraps=claim_ledger.publish_b_track_shadow,
+                  ) as publish):
+                refreshed = ai_extract.refresh_claim_shadow(out, route="stub")
+            loaded = claim_artifacts.load_committed_shadow(out)
+            attempts = claim_artifacts.read_claim_verifier_attempts(out)
+
+        extract_all.assert_not_called()
+        chat.assert_not_called()
+        self.assertTrue(refreshed["ledger_only"])
+        self.assertEqual(refreshed["claim_shadow"]["status"], "published")
+        self.assertEqual(loaded["generation_meta"]["shadow_meta"]["route_mode"], "stub")
+        self.assertEqual(
+            loaded["generation_meta"]["shadow_meta"]["extraction_status"],
+            "success",
+        )
+        self.assertEqual([row["attempt_kind"] for row in attempts], ["cold", "ledger_only"])
+        self.assertEqual(
+            publish.call_args.kwargs["controlled_term_aliases"],
+            {"meter": ["\u7535\u8868"]},
+        )
+        binding = loaded["generation_meta"]["attempt_chain"]
+        self.assertEqual(binding["attempt_count"], 2)
+        self.assertEqual(binding["source_locator"]["reuse_generation_run_id"], initial["run_id"])
+        self.assertEqual(
+            binding["source_locator"]["reuse_attempt_id"],
+            initial["attempt_chain"]["attempt_id"],
+        )
+
+    def test_failed_cold_shadow_refresh_resumes_same_attempt_chain(self) -> None:
+        import claim_artifacts
+        from llm_client import LLMClientConfig
+
+        source = "Auxiliary outputs are user-programmable."
+        requirement = {
+            "ai_req_id": "AIR-1",
+            "title": "\u8f85\u52a9\u8f93\u51fa",
+            "description": (
+                "\u8be5\u4ea7\u54c1\u5e94\u652f\u6301\u7528\u6237\u914d\u7f6e"
+                "\u8f85\u52a9\u8f93\u51fa\u3002"
+            ),
+            "type": "functional",
+            "priority": "P1",
+            "labels": ["other"],
+            "source_quote": source,
+            "source_block_ids": ["B1"],
+            "sub_items": [],
+            "acceptance_criteria": [],
+        }
+
+        def extract_all_once(_sections, chat, **kwargs):
+            chat("extract-system", "extract-user")
+            stats = kwargs.get("stats")
+            if isinstance(stats, dict):
+                stats.update({"failed_sections": 0, "cached_sections": 0})
+            return [dict(requirement)]
+
+        verifier_calls = 0
+
+        def accounted(_config, system: str, user: str, *, request_budget=None):
+            nonlocal verifier_calls
+            if "independent coverage verifier" in system:
+                verifier_calls += 1
+                payload = json.loads(user)
+                usage = {"total_tokens": 10}
+                reservation = request_budget.reserve({
+                    "messages": [],
+                    "max_tokens": 1,
+                })
+                request_budget.commit(reservation, usage)
+                if verifier_calls == 1:
+                    return ({"decisions": []}, {
+                        "usage": usage,
+                        "usage_complete": True,
+                    })
+                return ({"decisions": [[
+                    payload["groups"][0][0],
+                    True,
+                    [True] * len(claim_ledger.SEMANTIC_COVERAGE_CHECKS),
+                ]]}, {"usage": usage, "usage_complete": True})
+            return ({"requirements": []}, {
+                "usage": {"total_tokens": 100},
+                "usage_complete": True,
+            })
+
+        block = {
+            "block_id": "B1",
+            "order": 1,
+            "type": "paragraph",
+            "text": source,
+            "raw_text": source,
+            "text_repair_checked": True,
+            "text_repair_version": "identity-v1",
+            "raw_to_repaired_spans": [{
+                "raw_start": 0,
+                "raw_end": len(source),
+                "repaired_start": 0,
+                "repaired_end": len(source),
+                "operation": "equal",
+            }],
+            "section_path": ["4"],
+            "noise": False,
+        }
+        config = LLMClientConfig(
+            base_url="http://unused",
+            model="test",
+            max_tokens=8192,
+        )
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ai_extract, "config_for_route", return_value=config), \
+                patch.object(ai_extract, "extract_all", side_effect=extract_all_once), \
+                patch.object(ai_extract, "ensure_term_map", return_value=""), \
+                patch.object(ai_extract, "_chat_json_accounted", side_effect=accounted), \
+                patch.dict(os.environ, {
+                    ai_extract.CLAIM_SHADOW_VERIFY_ENV: "1",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_CALLS_ENV: "4",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS_ENV: "100000",
+                }):
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                json.dumps(block) + "\n",
+                encoding="utf-8",
+            )
+            cold_result = ai_extract.run_ai_extract(
+                out,
+                route="openai_compatible",
+                self_check=False,
+            )
+            failed = claim_artifacts.read_claim_verifier_attempts(out)[-1]
+            cold_metrics = claim_artifacts.load_committed_shadow(out)["metrics"]
+
+            refreshed = ai_extract.refresh_claim_shadow(
+                out,
+                route="openai_compatible",
+            )
+            attempts = claim_artifacts.read_claim_verifier_attempts(out)
+            committed = claim_artifacts.load_committed_shadow(out)
+
+        self.assertEqual(cold_result["claim_shadow"]["status"], "published")
+        self.assertEqual(failed["attempt_kind"], "cold")
+        self.assertEqual(failed["attempt_status"], "failed")
+        self.assertEqual(
+            failed["attempt_metrics"]["verifier_operation_failure_count"],
+            1,
+        )
+        self.assertEqual(failed["attempt_metrics"]["verifier_call_count"], 1)
+        self.assertEqual(failed["attempt_metrics"]["verifier_tokens"], 10)
+        self.assertEqual([row["attempt_kind"] for row in attempts], [
+            "cold",
+            "ledger_only",
+        ])
+        self.assertEqual(attempts[-1]["attempt_status"], "complete")
+        self.assertEqual(attempts[-1]["chain_id"], failed["chain_id"])
+        self.assertEqual(
+            attempts[-1]["chain_identity"],
+            failed["chain_identity"],
+        )
+        self.assertEqual(
+            attempts[-1]["source_locator"]["reuse_attempt_id"],
+            failed["attempt_id"],
+        )
+        self.assertTrue(refreshed["ledger_only"])
+        metrics = committed["metrics"]
+        self.assertEqual(verifier_calls, 2)
+        self.assertEqual(metrics["no_ledger_baseline_call_count"], 1)
+        self.assertEqual(metrics["no_ledger_baseline_tokens"], 100)
+        self.assertEqual(
+            metrics["no_ledger_baseline_call_count"],
+            cold_metrics["no_ledger_baseline_call_count"],
+        )
+        self.assertEqual(
+            metrics["no_ledger_baseline_tokens"],
+            cold_metrics["no_ledger_baseline_tokens"],
+        )
+        binding = committed["generation_meta"]["attempt_chain"]
+        self.assertEqual(binding["chain_id"], failed["chain_id"])
+        self.assertEqual(binding["attempt_kind"], "ledger_only")
+        self.assertEqual(binding["attempt_status"], "complete")
+        self.assertEqual(binding["cumulative_metrics"]["verifier_call_count"], 2)
+        self.assertEqual(binding["cumulative_metrics"]["verifier_tokens"], 20)
+        self.assertEqual(
+            committed["attempt_cost_chain"]["tail_attempt_status"],
+            "complete",
+        )
+        self.assertEqual(
+            committed["attempt_cost_chain"]["tail_attempt_kind"],
+            "ledger_only",
+        )
+
+    def test_real_route_runs_independent_claim_verifier_and_reports_cost(self) -> None:
+        from llm_client import LLMClientConfig
+
+        source = "Auxiliary outputs are user-programmable."
+        requirement = {
+            "ai_req_id": "AIR-1",
+            "title": "辅助输出",
+            "description": "辅助输出可由用户编程。",
+            "type": "functional",
+            "priority": "P1",
+            "labels": ["其它"],
+            "source_quote": source,
+            "source_block_ids": ["B1"],
+            "sub_items": [],
+            "acceptance_criteria": [],
+        }
+        calls: list[str] = []
+
+        def extract_all_once(_sections, chat, **kwargs):
+            calls.append("extract")
+            chat("extract-system", "extract-user")
+            stats = kwargs.get("stats")
+            if isinstance(stats, dict):
+                stats.update({"failed_sections": 0, "cached_sections": 0})
+            return [dict(requirement)]
+
+        def accounted(_config, system: str, user: str, *, request_budget=None):
+            if "independent coverage verifier" in system:
+                calls.append("verify")
+                payload = json.loads(user)
+                usage = {"total_tokens": 10}
+                reservation = request_budget.reserve({
+                    "messages": [], "max_tokens": 1,
+                })
+                request_budget.commit(reservation, usage)
+                return ({"decisions": [[
+                    payload["groups"][0][0],
+                    True,
+                    [True] * len(claim_ledger.SEMANTIC_COVERAGE_CHECKS),
+                ]]}, {"usage": usage, "usage_complete": True})
+            return ({"requirements": []}, {
+                "usage": {"total_tokens": 100}, "usage_complete": True,
+            })
+
+        block = {
+            "block_id": "B1", "order": 1, "type": "paragraph", "text": source,
+            "raw_text": source, "text_repair_checked": True,
+            "text_repair_version": "identity-v1",
+            "raw_to_repaired_spans": [{
+                "raw_start": 0, "raw_end": len(source),
+                "repaired_start": 0, "repaired_end": len(source), "operation": "equal",
+            }],
+            "section_path": ["4"], "noise": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ai_extract, "config_for_route", return_value=LLMClientConfig(
+                    base_url="http://unused", model="test", max_tokens=8192,
+                )), \
+                patch.object(ai_extract, "extract_all", side_effect=extract_all_once), \
+                patch.object(ai_extract, "ensure_term_map", return_value=""), \
+                patch.object(ai_extract, "_chat_json_accounted", side_effect=accounted), \
+                patch.dict(os.environ, {
+                    ai_extract.CLAIM_SHADOW_VERIFY_ENV: "1",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_CALLS_ENV: "4",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS_ENV: "100000",
+                }):
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(json.dumps(block) + "\n", encoding="utf-8")
+            result = ai_extract.run_ai_extract(
+                out, route="openai_compatible", self_check=False,
+            )
+            metadata = json.loads((out / ai_extract.AI_REQUIREMENTS_META).read_text(encoding="utf-8"))
+
+        self.assertEqual(calls, ["extract", "verify"])
+        self.assertEqual(result["claim_shadow"]["resolution_status"], "resolved")
+        metrics = result["claim_shadow"]["metrics"]
+        self.assertEqual(metrics["verifier_call_count"], 1)
+        self.assertEqual(metrics["verifier_tokens"], 10)
+        self.assertEqual(metrics["relative_verifier_call_increase"]["value"], 1.0)
+        self.assertEqual(metrics["relative_verifier_token_increase"]["value"], 0.1)
+        self.assertTrue(metrics["no_ledger_baseline_lineage_match"])
+        self.assertEqual(metadata["no_ledger_baseline_cost"]["total_tokens"], 100)
+        self.assertEqual(
+            metadata["no_ledger_baseline_cost"]["lineage_version"],
+            ai_extract.NO_LEDGER_BASELINE_LINEAGE_VERSION,
+        )
+        self.assertTrue(metadata["no_ledger_baseline_cost"]["lineage_match"])
+        self.assertTrue(
+            metadata["no_ledger_baseline_cost"]["lineage_fingerprint"].startswith(
+                "sha256:"
+            )
+        )
+
+    def test_claim_shadow_refresh_invalidates_baseline_from_another_model(self) -> None:
+        import claim_artifacts
+        from llm_client import LLMClientConfig, apply_min_tokens
+
+        original = apply_min_tokens(LLMClientConfig(
+            base_url="http://example.test",
+            model="model-a",
+            max_tokens=8192,
+        ), "extract")
+        changed = apply_min_tokens(LLMClientConfig(
+            base_url="http://example.test",
+            model="model-b",
+            max_tokens=8192,
+        ), "extract")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],"text":"Source"}\n',
+                encoding="utf-8",
+            )
+            ai_extract.atomic_write_jsonl(out / ai_extract.AI_REQUIREMENTS, [])
+            input_fingerprint = ai_extract.extraction_input_fingerprint(out)
+            lineage = ai_extract.no_ledger_baseline_lineage(
+                input_fingerprint=input_fingerprint,
+                route_mode="llm",
+                config=original,
+                unit_mode="clause",
+                concurrency=ai_extract.DEFAULT_CONCURRENCY,
+                merge_chars=ai_extract.DEFAULT_MERGE_CHARS,
+                limit_sections=None,
+                sample_ratio=None,
+                scope="full",
+                self_check=False,
+                self_check_rounds=0,
+                verify_enabled=False,
+                verify_rounds=0,
+            )
+            ai_extract.write_ai_requirements_metadata(
+                out,
+                input_fingerprint=input_fingerprint,
+                failed_sections=1,
+                failed_section_ids=["4"],
+                failed_section_block_ids=["B1"],
+                no_ledger_baseline_cost={
+                    "call_count": 10,
+                    "failed_call_count": 0,
+                    "total_tokens": 1000,
+                    "usage_complete": True,
+                    "lineage_match": True,
+                    **lineage,
+                },
+            )
+            published = {
+                "shadow": {
+                    "meta": {
+                        "accounting_status": "complete",
+                        "resolution_status": "open",
+                    },
+                    "metrics": {},
+                },
+            }
+            previous = {
+                "generation_meta": {
+                    "run_id": "cold-generation-1",
+                    "attempt_chain": {
+                        "attempt_id": "sha256:" + "1" * 64,
+                    },
+                },
+            }
+            with (
+                patch.object(ai_extract, "config_for_route", return_value=changed),
+                patch.object(
+                    claim_artifacts,
+                    "load_committed_shadow",
+                    return_value=previous,
+                ),
+                patch.object(
+                    claim_artifacts,
+                    "load_committed_attempt_lineage",
+                    return_value={
+                        "generation_run_id": "cold-generation-1",
+                        "attempt_chain": {
+                            "attempt_id": "sha256:" + "1" * 64,
+                        },
+                    },
+                ),
+                patch.object(
+                    claim_artifacts,
+                    "claim_verifier_attempt_scope",
+                    side_effect=lambda *args, **kwargs: nullcontext(),
+                ),
+                patch("claim_ledger.publish_b_track_shadow", return_value=published) as publish,
+                patch.dict(os.environ, {ai_extract.CLAIM_SHADOW_VERIFY_ENV: "0"}),
+            ):
+                result = ai_extract.refresh_claim_shadow(
+                    out,
+                    route="openai_compatible",
+                )
+
+        baseline = publish.call_args.kwargs["baseline_cost"]
+        self.assertFalse(baseline["lineage_match"])
+        self.assertFalse(baseline["usage_complete"])
+        self.assertEqual(publish.call_args.kwargs["failed_section_block_ids"], ["B1"])
+        self.assertEqual(publish.call_args.kwargs["extraction_status"], "partial")
+        self.assertTrue(result["ledger_only"])
+
+    def test_baseline_lineage_tracks_concurrency_and_attempt_policy(self) -> None:
+        import llm_client
+        from llm_client import LLMClientConfig
+
+        config = LLMClientConfig(
+            base_url="http://example.test",
+            model="model-a",
+            max_tokens=8192,
+        )
+        common = {
+            "input_fingerprint": "a" * 64,
+            "route_mode": "llm",
+            "config": config,
+            "unit_mode": "clause",
+            "merge_chars": ai_extract.DEFAULT_MERGE_CHARS,
+            "limit_sections": None,
+            "sample_ratio": None,
+            "scope": "full",
+            "self_check": False,
+            "self_check_rounds": 0,
+            "verify_enabled": False,
+            "verify_rounds": 0,
+        }
+        with patch.dict(os.environ, {llm_client.ADAPTIVE_ENV: "1"}):
+            baseline = ai_extract.no_ledger_baseline_lineage(
+                **common, concurrency=4,
+            )
+            changed_concurrency = ai_extract.no_ledger_baseline_lineage(
+                **common, concurrency=5,
+            )
+        with patch.dict(os.environ, {llm_client.ADAPTIVE_ENV: "0"}):
+            changed_adaptive = ai_extract.no_ledger_baseline_lineage(
+                **common, concurrency=4,
+            )
+        with (
+            patch.dict(os.environ, {llm_client.ADAPTIVE_ENV: "1"}),
+            patch.object(
+                llm_client,
+                "RATE_LIMIT_MIN_ATTEMPTS",
+                llm_client.RATE_LIMIT_MIN_ATTEMPTS + 1,
+            ),
+        ):
+            changed_429_policy = ai_extract.no_ledger_baseline_lineage(
+                **common, concurrency=4,
+            )
+
+        fingerprints = {
+            row["lineage_fingerprint"]
+            for row in (
+                baseline,
+                changed_concurrency,
+                changed_adaptive,
+                changed_429_policy,
+            )
+        }
+        self.assertEqual(len(fingerprints), 4)
+        self.assertEqual(
+            baseline["lineage_context"]["concurrency"],
+            4,
+        )
+
+    def test_real_route_proposes_and_independently_verifies_semantic_negative(self) -> None:
+        from llm_client import LLMClientConfig
+
+        source = "For guidance only, the following example is provided."
+        calls: list[str] = []
+
+        def extract_none(_sections, chat, **kwargs):
+            calls.append("extract")
+            # A two-request negative closure needs enough no-ledger baseline
+            # calls to fit the current relative cost planner.
+            for _ in range(12):
+                chat("extract-system", "extract-user")
+            stats = kwargs.get("stats")
+            if isinstance(stats, dict):
+                stats.update({"failed_sections": 0, "cached_sections": 0})
+            return []
+
+        def accounted(_config, system: str, user: str, *, request_budget=None):
+            if "propose, but never validate" in system:
+                calls.append("negative_propose")
+                payload = json.loads(user)
+                claim = payload["claims"][0]
+                usage = {"total_tokens": 9}
+                reservation = request_budget.reserve({
+                    "messages": [], "max_tokens": 1,
+                })
+                request_budget.commit(reservation, usage)
+                return ({"proposals": [{
+                    "claim_id": claim["claim_id"],
+                    "non_normative": True,
+                    "reason": "informative",
+                    "evidence": [{"start": 0, "end": len(source), "text": source}],
+                    "rationale": "Guidance only.",
+                }]}, {"usage": usage, "usage_complete": True})
+            if "independently verify semantic non-normative" in system:
+                calls.append("negative_verify")
+                payload = json.loads(user)
+                claim = payload["claims"][0]
+                usage = {"total_tokens": 11}
+                reservation = request_budget.reserve({
+                    "messages": [], "max_tokens": 1,
+                })
+                request_budget.commit(reservation, usage)
+                self.assertNotIn("reason", claim)
+                self.assertNotIn("proposal", claim)
+                return ({"decisions": [{
+                    "claim_id": claim["claim_id"],
+                    "non_normative": True,
+                    "reason": "informative",
+                    "checks": {
+                        name: True for name in claim_ledger.SEMANTIC_NEGATIVE_CHECKS
+                    },
+                    "evidence": [{"start": 0, "end": len(source), "text": source}],
+                    "rationale": "No obligation is present.",
+                }]}, {"usage": usage, "usage_complete": True})
+            return ({"requirements": []}, {
+                "usage": {"total_tokens": 100}, "usage_complete": True,
+            })
+
+        block = {
+            "block_id": "B1", "order": 1, "type": "paragraph", "text": source,
+            "raw_text": source, "text_repair_checked": True,
+            "text_repair_version": "identity-v1",
+            "raw_to_repaired_spans": [{
+                "raw_start": 0, "raw_end": len(source),
+                "repaired_start": 0, "repaired_end": len(source), "operation": "equal",
+            }],
+            "section_path": ["4"], "noise": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ai_extract, "config_for_route", return_value=LLMClientConfig(
+                    base_url="http://unused", model="test", max_tokens=8192,
+                )), \
+                patch.object(ai_extract, "extract_all", side_effect=extract_none), \
+                patch.object(ai_extract, "ensure_term_map", return_value=""), \
+                patch.object(ai_extract, "_chat_json_accounted", side_effect=accounted), \
+                patch.dict(os.environ, {
+                    ai_extract.CLAIM_SHADOW_VERIFY_ENV: "1",
+                    ai_extract.CLAIM_SHADOW_VERIFY_ROUNDS_ENV: "1",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_CALLS_ENV: "4",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS_ENV: "100000",
+                }):
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(json.dumps(block) + "\n", encoding="utf-8")
+            result = ai_extract.run_ai_extract(
+                out, route="openai_compatible", self_check=False,
+            )
+
+        self.assertEqual(calls, ["extract", "negative_propose", "negative_verify"])
+        self.assertEqual(result["claim_shadow"]["resolution_status"], "resolved")
+        metrics = result["claim_shadow"]["metrics"]
+        self.assertEqual(metrics["semantic_excluded_count"], 1)
+        self.assertEqual(metrics["negative_proposer_call_count"], 1)
+        self.assertEqual(metrics["negative_verifier_call_count"], 1)
+        self.assertEqual(metrics["verifier_tokens"], 20)
 
     def test_config_for_route_stub_is_none(self) -> None:
         self.assertIsNone(ai_extract.config_for_route("stub"))
         self.assertIsNone(ai_extract.config_for_route(None))
+
+    def test_claim_shadow_verifier_rounds_are_bounded_and_environment_driven(self) -> None:
+        self.assertEqual(ai_extract.resolve_claim_shadow_verify_rounds(0), 1)
+        self.assertEqual(ai_extract.resolve_claim_shadow_verify_rounds(99), 3)
+        with patch.dict(os.environ, {ai_extract.CLAIM_SHADOW_VERIFY_ROUNDS_ENV: "2"}):
+            self.assertEqual(ai_extract.resolve_claim_shadow_verify_rounds(), 2)
+
+    def test_semantic_validation_reuse_requires_identical_runtime_fingerprint(self) -> None:
+        snapshot = {
+            "groups": [{"coverage_group_id": "CGR-1", "status": "validated"}],
+            "ledger": [{"semantic_negative": {
+                "claim_id": "CLM-1", "status": "validated",
+            }}],
+            "generation_meta": {"shadow_meta": {
+                "verifier_runtime": {"fingerprint": "sha256:same"},
+            }},
+        }
+        self.assertEqual(
+            len(ai_extract.reusable_claim_groups_for_runtime(
+                snapshot, {"fingerprint": "sha256:same"},
+            )),
+            1,
+        )
+        self.assertEqual(
+            ai_extract.reusable_claim_groups_for_runtime(
+                snapshot, {"fingerprint": "sha256:changed"},
+            ),
+            [],
+        )
+        self.assertEqual(
+            len(ai_extract.reusable_claim_negatives_for_runtime(
+                snapshot, {"fingerprint": "sha256:same"},
+            )),
+            1,
+        )
+        self.assertEqual(
+            ai_extract.reusable_claim_negatives_for_runtime(
+                snapshot, {"fingerprint": "sha256:changed"},
+            ),
+            [],
+        )
 
     def test_run_ai_extract_floors_max_tokens_for_reasoning_models(self) -> None:
         """推理模型 max_tokens 太小会截断 JSON → 整章节失败；run_ai_extract 须把预算抬到下限。"""
@@ -1458,7 +2209,110 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("忠实性", ai_extract.SYSTEM_PROMPT)
         self.assertIn("不得升格约束强度", ai_extract.SYSTEM_PROMPT)
         self.assertIn("测试装置/夹具/图例说明", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v21")
+        self.assertIn("产品义务主体", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("产品应支持/允许 Y 配置 X", ai_extract.SYSTEM_PROMPT)
+        self.assertIn("每个 description 句子和 sub_items 叶子", ai_extract.SYSTEM_PROMPT)
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v23")
+        self.assertEqual(ai_extract.AI_VERIFY_PROMPT_VERSION, "ai-verify-v4")
+
+    def test_normative_framing_guard_wraps_weak_capability_leaves(self) -> None:
+        requirement = {
+            "title": "演示界面主题要求",
+            "description": (
+                "产品应显示演示首页。"
+                "演示界面主题可通过本地配置档选择，候选项包括TEST-A和TEST-B。"
+            ),
+            "sub_items": [
+                {"label": "a", "text": "产品应显示演示首页。"},
+                {
+                    "label": "b",
+                    "text": "演示界面主题可通过本地配置档选择，候选项包括TEST-A和TEST-B。",
+                },
+            ],
+            "acceptance_criteria": ["演示界面主题可通过本地配置档选择"],
+            "source_quote": (
+                "A demo interface theme can be selected through a local profile."
+            ),
+            "notes": "",
+        }
+
+        stats = ai_extract.enforce_normative_framing([requirement])
+
+        expected = (
+            "产品应支持以下能力："
+            "演示界面主题可通过本地配置档选择，候选项包括TEST-A和TEST-B。"
+        )
+        self.assertIn(expected, requirement["description"])
+        self.assertEqual(requirement["sub_items"][1]["text"], expected)
+        self.assertEqual(
+            requirement["acceptance_criteria"],
+            ["演示界面主题可通过本地配置档选择"],
+        )
+        self.assertEqual(stats["rewritten_leaf_count"], 2)
+        self.assertEqual(stats["rewritten_requirement_count"], 1)
+        self.assertIn(ai_extract.AI_NORMATIVE_FRAMING_VERSION, requirement["notes"])
+
+        second = ai_extract.enforce_normative_framing([requirement])
+        self.assertEqual(second["rewritten_leaf_count"], 0)
+        self.assertEqual(requirement["description"].count("产品应支持以下能力："), 1)
+
+    def test_normative_framing_guard_preserves_normative_sentence_with_embedded_option(self) -> None:
+        requirement = {
+            "description": "产品应提供接线图，接线图可位于标签或端子盒盖内侧。",
+            "sub_items": [],
+            "notes": "",
+        }
+
+        stats = ai_extract.enforce_normative_framing([requirement])
+
+        self.assertEqual(stats["rewritten_leaf_count"], 0)
+        self.assertEqual(
+            requirement["description"],
+            "产品应提供接线图，接线图可位于标签或端子盒盖内侧。",
+        )
+
+    def test_normative_framing_guard_covers_generic_capability_grammar(self) -> None:
+        requirements = [{
+            "description": text,
+            "sub_items": [],
+            "source_quote": "The product shall support the stated configurable capability.",
+            "notes": "",
+        } for text in (
+            "报警响应可由用户配置。",
+            "输出可配置为脉冲模式。",
+            "检定人员可选择状态指示。",
+            "操作人员应能够配置通道。",
+        )]
+
+        stats = ai_extract.enforce_normative_framing(requirements)
+
+        self.assertEqual(stats["rewritten_leaf_count"], 4)
+        self.assertTrue(all(
+            row["description"].startswith("产品应支持以下能力：")
+            for row in requirements
+        ))
+
+    def test_normative_framing_guard_does_not_upgrade_weak_source_modality(self) -> None:
+        requirements = [{
+            "description": "用户可以配置输出。",
+            "sub_items": [],
+            "source_quote": source,
+            "notes": "",
+        } for source in (
+            "The user may configure the output.",
+            "The user should configure the output.",
+            "Optional: the user configures the output.",
+            "Annex A (informative): the user configures the output.",
+        )]
+
+        stats = ai_extract.enforce_normative_framing(requirements)
+
+        self.assertEqual(stats["rewritten_leaf_count"], 0)
+        self.assertEqual(stats["source_modality_blocked_leaf_count"], 4)
+        for row in requirements:
+            self.assertEqual(row["description"], "用户可以配置输出。")
+            self.assertIn("规范性成文待核", row.get("suspicion_reasons") or [])
+            self.assertNotIn("产品应支持", row["description"])
 
     def test_normalize_captures_dev_guidance(self) -> None:
         sec = {"section_id": "S", "heading": "S", "text": "t", "block_ids": []}
@@ -1666,6 +2520,47 @@ class ComplianceExtractionTests(unittest.TestCase):
 
 
 class QualityReportTests(unittest.TestCase):
+    def test_partial_snapshot_contains_normative_framing_guard_output(self) -> None:
+        section = {
+            "section_id": "4",
+            "heading": "4",
+            "text": "A demo interface theme can be selected through a local profile.",
+            "block_ids": ["B1"],
+        }
+
+        def chat(_system: str, _user: str) -> dict:
+            return {"requirements": [{
+                "title": "演示界面主题",
+                "description": "演示界面主题可通过本地配置档选择。",
+                "type": "functional",
+                "priority": "P1",
+                "labels": ["界面测试"],
+                "source_quote": (
+                    "A demo interface theme can be selected through a local profile."
+                ),
+            }]}
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            ai_extract, "resolve_verify_enabled", return_value=False,
+        ):
+            partial_path = Path(tmp) / ai_extract.AI_REQUIREMENTS_PARTIAL
+            ai_extract.extract_all(
+                [section],
+                chat,
+                model="m",
+                cache_path=Path(tmp) / "cache.jsonl",
+                self_check=False,
+                partial_path=partial_path,
+                run_id="run-1",
+                partial_input_fingerprint="input-1",
+            )
+            partial = ai_extract.read_partial_snapshot(partial_path)
+
+        self.assertEqual(
+            partial["rows"][0]["description"],
+            "产品应支持以下能力：演示界面主题可通过本地配置档选择。",
+        )
+
     def test_section_failure_publishes_terminal_non_reusable_snapshot(self) -> None:
         from llm_client import LLMClientConfig, LLMConnectionError
 
@@ -1698,6 +2593,11 @@ class QualityReportTests(unittest.TestCase):
         self.assertTrue(partial["failed"])
         self.assertEqual(metadata["failed_sections"], 1)
         self.assertEqual(metadata["failed_section_ids"], ["4"])
+        self.assertEqual(metadata["failed_section_block_ids"], ["B1"])
+        self.assertEqual(
+            result["claim_shadow"]["metrics"]["failed_extraction_units"],
+            1,
+        )
 
     def test_run_ai_extract_writes_quality_report_with_coverage(self) -> None:
         from llm_client import LLMClientConfig

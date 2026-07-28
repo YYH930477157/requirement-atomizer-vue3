@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import unittest
 
-from atomize import DEFAULT_DOCUMENT_PROFILE, detect_heading
+from atomize import DEFAULT_DOCUMENT_PROFILE, SectionState, detect_heading
 from parsers.pdf_parser import (
+    _append_text_block,
     _detect_text_tables,
     _group_paragraphs,
     _merge_continuation_blocks,
@@ -16,6 +17,7 @@ from parsers.pdf_parser import (
     _split_line_cells,
 )
 from requirement_kb import KnowledgeRepository
+from source_spans import validate_source_alignment
 
 
 def word(text: str, x0: float, x1: float, top: float) -> dict:
@@ -235,6 +237,39 @@ class HeadingRefineTests(unittest.TestCase):
         self.assertEqual(title, "4.2.7 Service: Software Update")
         self.assertTrue(body and body.startswith("The service must"))
 
+    def test_glued_heading_split_partitions_raw_source_between_blocks(self) -> None:
+        repaired = (
+            "4.2.7 Service: Software Update The service must allow remote updates "
+            "and record every attempt"
+        )
+        raw = (
+            "4.2.7 Service: Software Update   The ser vice must allow remote updates "
+            "and record every attempt"
+        )
+        blocks: list[dict] = []
+
+        _append_text_block(
+            blocks,
+            repaired,
+            order=0,
+            page_number=1,
+            sections=SectionState(),
+            knowledge_bases=KnowledgeRepository.from_paths([]),
+            repeated_noise=set(),
+            last_caption=None,
+            profile=DEFAULT_DOCUMENT_PROFILE,
+            raw_text=raw,
+            text_repair_checked=True,
+        )
+
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[0]["raw_text"] + blocks[1]["raw_text"], raw)
+        self.assertNotEqual(blocks[0]["raw_text"], raw)
+        self.assertNotEqual(blocks[1]["raw_text"], raw)
+        for block in blocks:
+            validate_source_alignment(
+                block["raw_text"], block["text"], block["source_alignment"])
+
     def test_unsplittable_long_text_degraded(self) -> None:
         raw = "5.5.2 " + "clock synchronization data " * 8   # >160 且找不到句首拆点
         heading, _, body = self._refine(raw.strip())
@@ -261,6 +296,23 @@ class ContinuationBlockMergeTests(unittest.TestCase):
         merged = _merge_continuation_blocks(blocks, kb)
         self.assertEqual(len(merged), 2)   # B2 并入 B1，噪声块保留
         self.assertEqual(merged[0]["text"], "The device shall record the measurement in the event log.")
+        validate_source_alignment(
+            merged[0]["raw_text"], merged[0]["text"], merged[0]["source_alignment"])
+        self.assertTrue(merged[0]["raw_to_repaired_spans"])
+
+    def test_cross_page_continuation_preserves_raw_trailing_characters(self) -> None:
+        kb = KnowledgeRepository.from_paths([])
+        first = self._block("B1", "The device shall record the", page_number=1)
+        second = self._block("B2", "measurement in the log.", page_number=2)
+        first["raw_text"] = "The device shall record the  "
+        second["raw_text"] = "meas urement in the log."
+        expected_raw = first["raw_text"] + " " + second["raw_text"]
+
+        merged = _merge_continuation_blocks([first, second], kb)
+
+        self.assertEqual(merged[0]["raw_text"], expected_raw)
+        validate_source_alignment(
+            merged[0]["raw_text"], merged[0]["text"], merged[0]["source_alignment"])
 
     def test_same_page_paragraph_break_is_not_merged_back(self) -> None:
         kb = KnowledgeRepository.from_paths([])

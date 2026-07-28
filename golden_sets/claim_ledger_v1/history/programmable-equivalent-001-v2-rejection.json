@@ -1,0 +1,98 @@
+{
+  "schema": "claim-ledger-golden-baseline-revision/v1",
+  "revision_id": "programmable-equivalent-001-v2-rejection",
+  "dataset_id": "claim_ledger_v1",
+  "dataset_version": "claim-ledger-golden-v2",
+  "fixture_hash_version": "claim-golden-heldout-fixture-hash-v1",
+  "declaration": {
+    "case_id": "programmable-equivalent-001",
+    "scenario": "programmable_equivalent",
+    "partition": "held_out",
+    "tuning_eligible": false
+  },
+  "input": {
+    "case_id": "programmable-equivalent-001",
+    "source": {
+      "origin": "synthetic",
+      "contains_customer_wording": false
+    },
+    "scope": "full",
+    "blocks": [
+      {
+        "block_id": "PROG-B1",
+        "order": 1,
+        "type": "paragraph",
+        "text": "The indicator channel can be configured by the operator.",
+        "section_path": ["Synthetic functions"],
+        "noise": false
+      }
+    ],
+    "table_items": [],
+    "requirements": [
+      {
+        "ai_req_id": "AIR-PROG-1",
+        "title": "Indicator channel configuration",
+        "description": "操作员可配置指示通道。",
+        "source_quote": "The indicator channel can be configured by the operator.",
+        "source_block_ids": ["PROG-B1"],
+        "sub_items": [],
+        "acceptance_criteria": []
+      }
+    ],
+    "review_states": {},
+    "controlled_term_aliases": {}
+  },
+  "expected": {
+    "case_id": "programmable-equivalent-001",
+    "catalog_count": 1,
+    "group_count": 1,
+    "container_mapping_count": 0,
+    "accounting_status": "complete",
+    "resolution_status": "open",
+    "claims": [
+      {
+        "selector": {
+          "block_id": "PROG-B1",
+          "text": "The indicator channel can be configured by the operator."
+        },
+        "catalog": {
+          "source_kind": "paragraph_sentence",
+          "eligibility": "claim"
+        },
+        "ledger": {
+          "resolution": "uncertain",
+          "classification": "unknown",
+          "classification_status": "needs_review",
+          "exclusion_kind": null
+        },
+        "coverage": {
+          "validation_method": "independent_semantic",
+          "status": "proposed",
+          "prefilter_status": "not_applicable",
+          "edge_count": 1
+        }
+      }
+    ]
+  },
+  "adjudication": {
+    "review_contract_version": "claim-golden-heldout-review-v2",
+    "prepared_by": "Codex",
+    "reviewed_by": "YYH",
+    "reviewed_at": "2026-07-27T15:16:00.000Z",
+    "case_id": "programmable-equivalent-001",
+    "claim_id": "CLM-8465d2904bfc03ad",
+    "claim_hash": "sha256:8465d2904bfc03ad4fb6f86b491905cfac7a5e0ea386d4e53cc5a065c58d3c80",
+    "fixture_hash": "sha256:e777a181d4e1e7f893c7ffa458621ac9d49d8c9731d08e7a19bf2991975e2940",
+    "dimension_verdicts": {
+      "claim_boundary": "not_reviewed",
+      "eligibility": "not_reviewed",
+      "resolution": "not_reviewed",
+      "coverage": "not_reviewed",
+      "target_obligation_subject": "disagree",
+      "target_modality": "not_reviewed",
+      "role_object_preservation": "not_reviewed"
+    },
+    "overall_verdict": "disagree",
+    "rationale": "当前 target 虽表达了操作人员可以配置指示通道的能力，但未以产品为义务主体形成清晰的规范性需求。正式需求建议改为“该产品应支持操作人员配置指示通道。”后续冻结标准还应检查产品主体、操作人员角色和指示通道对象是否完整保留。"
+  }
+}

@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_ledger.schema.json",
+  "title": "Claim Ledger Row v3",
+  "type": "object",
+  "required": [
+    "schema",
+    "ledger_schema_version",
+    "document_generation_id",
+    "catalog_generation_id",
+    "claim_id",
+    "claim_hash",
+    "owner_unit_id",
+    "resolution",
+    "classification",
+    "classification_status",
+    "exclusion_kind",
+    "coverage_group_ids",
+    "semantic_negative",
+    "invalid_reasons",
+    "claim_effective_revision"
+  ],
+  "properties": {
+    "schema": {"const": "claim-ledger/v3"},
+    "ledger_schema_version": {"const": "claim-ledger-v3"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "claim_hash": {"$ref": "#/$defs/hash"},
+    "owner_unit_id": {
+      "oneOf": [
+        {"type": "string", "pattern": "^UNIT-[0-9a-f]{16}$"},
+        {"type": "null"}
+      ]
+    },
+    "resolution": {"enum": ["covered", "excluded", "uncertain"]},
+    "classification": {"enum": ["normative", "non_normative", "unknown"]},
+    "classification_status": {"enum": ["validated", "needs_review", "invalid", "proposed"]},
+    "exclusion_kind": {"type": ["string", "null"], "enum": ["semantic", "structural", null]},
+    "coverage_group_ids": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^CGR-[0-9a-f]{16}$"},
+      "uniqueItems": true
+    },
+    "semantic_negative": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/semantic_negative"}
+      ]
+    },
+    "invalid_reasons": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "claim_effective_revision": {"$ref": "#/$defs/hash"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"resolution": {"const": "covered"}}},
+      "then": {
+        "properties": {
+          "classification": {"const": "normative"},
+          "classification_status": {"const": "validated"},
+          "exclusion_kind": {"type": "null"},
+          "coverage_group_ids": {"minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"resolution": {"const": "excluded"}}},
+      "then": {
+        "properties": {
+          "classification": {"const": "non_normative"},
+          "classification_status": {"const": "validated"},
+          "exclusion_kind": {"enum": ["semantic", "structural"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resolution": {"const": "excluded"},
+          "exclusion_kind": {"const": "structural"}
+        },
+        "required": ["resolution", "exclusion_kind"]
+      },
+      "then": {"properties": {"owner_unit_id": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"resolution": {"const": "uncertain"}}},
+      "then": {
+        "properties": {
+          "classification": {"const": "unknown"},
+          "classification_status": {"enum": ["needs_review", "invalid"]},
+          "exclusion_kind": {"type": "null"}
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "negative_evidence": {
+      "type": "object",
+      "required": ["start", "end", "text"],
+      "properties": {
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "negative_checks": {
+      "type": "object",
+      "properties": {
+        "reason_supported": {"type": ["boolean", "null"]},
+        "no_normative_obligation": {"type": ["boolean", "null"]},
+        "context_complete": {"type": ["boolean", "null"]},
+        "no_requirement_dependency": {"type": ["boolean", "null"]},
+        "homogeneous_span": {"type": ["boolean", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "semantic_negative": {
+      "type": "object",
+      "required": [
+        "schema", "document_generation_id", "catalog_generation_id", "claim_id",
+        "claim_hash", "verifier_runtime_fingerprint", "validation_input_hash",
+        "proposal", "validation", "validation_source", "status", "invalid_reason",
+        "validation_reused"
+      ],
+      "properties": {
+        "schema": {"const": "claim-semantic-negative/v3"},
+        "document_generation_id": {"$ref": "#/$defs/hash"},
+        "catalog_generation_id": {"$ref": "#/$defs/hash"},
+        "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+        "claim_hash": {"$ref": "#/$defs/hash"},
+        "verifier_runtime_fingerprint": {"$ref": "#/$defs/hash"},
+        "validation_input_hash": {"$ref": "#/$defs/hash"},
+        "proposal": {
+          "type": "object",
+          "required": ["request_id", "version", "reason", "evidence", "rationale"],
+          "properties": {
+            "request_id": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1},
+            "reason": {
+              "enum": ["", "scope_statement", "definition", "informative", "example", "instrument_only"]
+            },
+            "evidence": {
+              "type": "array", "items": {"$ref": "#/$defs/negative_evidence"}
+            },
+            "rationale": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        "validation": {
+          "type": "object",
+          "required": ["request_id", "version", "reason", "checks", "evidence", "rationale"],
+          "properties": {
+            "request_id": {"type": "string"},
+            "version": {"type": "string", "minLength": 1},
+            "reason": {
+              "enum": ["", "scope_statement", "definition", "informative", "example", "instrument_only"]
+            },
+            "checks": {"$ref": "#/$defs/negative_checks"},
+            "evidence": {
+              "type": "array", "items": {"$ref": "#/$defs/negative_evidence"}
+            },
+            "rationale": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        "validation_source": {
+          "type": "object",
+          "required": ["generation_run_id", "request_id"],
+          "properties": {
+            "generation_run_id": {"type": "string", "minLength": 1},
+            "request_id": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        "status": {"enum": ["proposed", "validated", "invalid"]},
+        "invalid_reason": {"type": "string"},
+        "validation_reused": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "proposed"}}, "required": ["status"]},
+          "then": {
+            "properties": {
+              "invalid_reason": {"const": ""},
+              "proposal": {
+                "properties": {
+                  "reason": {
+                    "enum": ["scope_statement", "definition", "informative", "example", "instrument_only"]
+                  },
+                  "evidence": {"minItems": 1}
+                }
+              },
+              "validation": {
+                "properties": {"request_id": {"const": ""}, "reason": {"const": ""}}
+              },
+              "validation_source": {
+                "properties": {"request_id": {"const": ""}}
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "validated"}}, "required": ["status"]},
+          "then": {
+            "properties": {
+              "invalid_reason": {"const": ""},
+              "proposal": {
+                "properties": {
+                  "reason": {
+                    "enum": ["scope_statement", "definition", "informative", "example", "instrument_only"]
+                  },
+                  "evidence": {"minItems": 1}
+                }
+              },
+              "validation": {
+                "properties": {
+                  "request_id": {"minLength": 1},
+                  "reason": {
+                    "enum": ["scope_statement", "definition", "informative", "example", "instrument_only"]
+                  },
+                  "checks": {
+                    "required": [
+                      "reason_supported", "no_normative_obligation", "context_complete",
+                      "no_requirement_dependency", "homogeneous_span"
+                    ],
+                    "properties": {
+                      "reason_supported": {"const": true},
+                      "no_normative_obligation": {"const": true},
+                      "context_complete": {"const": true},
+                      "no_requirement_dependency": {"const": true},
+                      "homogeneous_span": {"const": true}
+                    }
+                  },
+                  "evidence": {"minItems": 1}
+                }
+              },
+              "validation_source": {
+                "properties": {"request_id": {"minLength": 1}}
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "invalid"}}, "required": ["status"]},
+          "then": {"properties": {"invalid_reason": {"minLength": 1}}}
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

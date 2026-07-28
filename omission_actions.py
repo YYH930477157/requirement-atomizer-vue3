@@ -613,6 +613,10 @@ def targeted_reextract(
             raise OmissionConflictError(
                 "AI extraction belongs to an older parsed document; rerun full extraction first"
             )
+        if not ai_extract.ai_requirements_producer_is_current(root):
+            raise OmissionConflictError(
+                "AI extraction belongs to an older producer version; rerun full extraction first"
+            )
         if block_id not in current_omission_candidate_ids(root):
             raise OmissionConflictError(
                 "block is no longer an uncovered requirement candidate; refresh before extracting"

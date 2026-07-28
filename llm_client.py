@@ -36,6 +36,7 @@ def apply_min_tokens(config, purpose: str):
 
 
 RATE_LIMIT_MIN_ATTEMPTS = 8
+LLM_ATTEMPT_POLICY_VERSION = "llm-attempt-policy-v1"
 
 # 截断自动升级上限（test3 实证：3.22 章推理模型 reasoning 吃光 6144 预算 → 空响应 →
 # JSON 修复调用同样被截 → 整章稳定失败）。finish_reason=length 或空 content 时 max_tokens
@@ -110,6 +111,18 @@ _GATES_LOCK = threading.Lock()
 
 def _adaptive_enabled() -> bool:
     return os.environ.get(ADAPTIVE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def llm_attempt_policy() -> dict[str, Any]:
+    """Return the key-free effective policy that can change provider attempts."""
+    return {
+        "version": LLM_ATTEMPT_POLICY_VERSION,
+        "adaptive_enabled": _adaptive_enabled(),
+        "rate_limit_min_attempts": RATE_LIMIT_MIN_ATTEMPTS,
+        "gate_ceiling": GATE_CEILING,
+        "gate_recovery_successes": GATE_RECOVERY_SUCCESSES,
+        "max_tokens_escalation_cap": MAX_TOKENS_ESCALATION_CAP,
+    }
 
 
 def _gate_for(base_url: str) -> _AdaptiveRateGate:
@@ -187,6 +200,195 @@ class LLMResponseFormatUnsupported(LLMResponseError):
     """Raised only when an endpoint explicitly rejects response_format=json_object."""
 
 
+class LLMBudgetExceeded(LLMError):
+    """Raised before an HTTP request that would exceed a shared hard budget."""
+
+
+def _normalized_usage(usage: object) -> dict[str, int] | None:
+    """Return trustworthy token counts for one successful provider response."""
+    if not isinstance(usage, dict):
+        return None
+
+    def count(name: str) -> int | None:
+        value = usage.get(name)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
+
+    total = count("total_tokens")
+    prompt = count("prompt_tokens")
+    completion = count("completion_tokens")
+    if "total_tokens" in usage:
+        if total is None or total <= 0:
+            return None
+        if "prompt_tokens" in usage and prompt is None:
+            return None
+        if "completion_tokens" in usage and completion is None:
+            return None
+        if prompt is not None and prompt > total:
+            return None
+        if completion is not None and completion > total:
+            return None
+        if prompt is not None and completion is not None and prompt + completion != total:
+            return None
+        return {
+            "prompt_tokens": prompt or 0,
+            "completion_tokens": completion or 0,
+            "total_tokens": total,
+        }
+    if prompt is None or completion is None or prompt + completion <= 0:
+        return None
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    }
+
+
+class LLMRequestBudget:
+    """Thread-safe hard budget covering every underlying HTTP attempt."""
+
+    VERSION = "llm-request-budget-v1"
+
+    def __init__(self, *, max_calls: int, max_tokens: int) -> None:
+        if isinstance(max_calls, bool) or int(max_calls) <= 0:
+            raise ValueError("max_calls must be a positive integer")
+        if isinstance(max_tokens, bool) or int(max_tokens) <= 0:
+            raise ValueError("max_tokens must be a positive integer")
+        self.max_calls = int(max_calls)
+        self.max_tokens = int(max_tokens)
+        self._lock = threading.RLock()
+        self._checkpoint_lock = threading.RLock()
+        self._next_id = 0
+        self._reservations: dict[int, int] = {}
+        self._attempted_calls = 0
+        self._failed_calls = 0
+        self._tokens = 0
+        self._usage_complete = True
+        self._denied = False
+        self._termination_reason = ""
+        self._checkpoint: Callable[[dict[str, Any]], None] | None = None
+
+    def _snapshot_unlocked(self) -> dict[str, Any]:
+        reserved = sum(self._reservations.values())
+        return {
+            "version": self.VERSION,
+            "max_calls": self.max_calls,
+            "max_tokens": self.max_tokens,
+            "attempted_calls": self._attempted_calls,
+            "failed_calls": self._failed_calls,
+            "tokens": self._tokens,
+            "reserved_tokens": reserved,
+            "remaining_calls": max(0, self.max_calls - self._attempted_calls),
+            "remaining_tokens": max(0, self.max_tokens - self._tokens - reserved),
+            "usage_complete": self._usage_complete,
+            "denied": self._denied,
+            "termination_reason": self._termination_reason,
+        }
+
+    def set_checkpoint(
+        self,
+        checkpoint: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        """Synchronously persist budget mutations before an HTTP attempt proceeds."""
+        with self._checkpoint_lock:
+            with self._lock:
+                if checkpoint is not None and self._checkpoint is not None:
+                    raise RuntimeError("LLM request budget already has a checkpoint")
+                previous = self._checkpoint
+                self._checkpoint = checkpoint
+                snapshot = self._snapshot_unlocked()
+            try:
+                if checkpoint is not None:
+                    checkpoint(snapshot)
+            except BaseException:
+                with self._lock:
+                    self._checkpoint = previous
+                raise
+
+    @staticmethod
+    def _token_ceiling(payload: dict[str, Any]) -> int:
+        # UTF-8 bytes are a conservative upper bound for input tokens.  Add the
+        # provider's maximum completion allowance and a small envelope margin.
+        # Keep serialization identical to _post_json; escaped CJK and default
+        # separators are larger than the compact ensure_ascii=False form.
+        body_bytes = len(serialize_json_request_body(payload))
+        return body_bytes + max(0, int(payload.get("max_tokens") or 0)) + 256
+
+    def reserve(self, payload: dict[str, Any]) -> int:
+        ceiling = self._token_ceiling(payload)
+        with self._checkpoint_lock:
+            with self._lock:
+                reserved = sum(self._reservations.values())
+                if self._attempted_calls >= self.max_calls:
+                    self._denied = True
+                    self._termination_reason = "call_budget_exhausted"
+                    raise LLMBudgetExceeded("LLM request call budget exhausted")
+                if self._tokens + reserved + ceiling > self.max_tokens:
+                    self._denied = True
+                    self._termination_reason = "token_budget_exhausted"
+                    raise LLMBudgetExceeded("LLM request token budget exhausted")
+                self._next_id += 1
+                reservation_id = self._next_id
+                self._reservations[reservation_id] = ceiling
+                self._attempted_calls += 1
+                checkpoint = self._checkpoint
+                snapshot = self._snapshot_unlocked()
+            try:
+                if checkpoint is not None:
+                    checkpoint(snapshot)
+            except BaseException:
+                # Persistence failed before the caller could issue the HTTP request.
+                with self._lock:
+                    if self._reservations.pop(reservation_id, None) is not None:
+                        self._attempted_calls -= 1
+                raise
+        return reservation_id
+
+    @staticmethod
+    def _usage_total(usage: object) -> int | None:
+        normalized = _normalized_usage(usage)
+        return normalized["total_tokens"] if normalized is not None else None
+
+    def commit(self, reservation_id: int, usage: object) -> None:
+        with self._checkpoint_lock:
+            with self._lock:
+                ceiling = self._reservations.pop(reservation_id)
+                total = self._usage_total(usage)
+                if total is None:
+                    self._tokens += ceiling
+                    self._usage_complete = False
+                else:
+                    self._tokens += total
+                if self._tokens > self.max_tokens:
+                    self._denied = True
+                    self._termination_reason = "reported_token_budget_exceeded"
+                checkpoint = self._checkpoint
+                snapshot = self._snapshot_unlocked()
+            if checkpoint is not None:
+                checkpoint(snapshot)
+
+    def fail(self, reservation_id: int) -> None:
+        with self._checkpoint_lock:
+            with self._lock:
+                ceiling = self._reservations.pop(reservation_id, None)
+                if ceiling is None:
+                    return
+                # Failed responses do not carry trustworthy usage.  Charge the
+                # reservation so the hard financial ceiling remains conservative.
+                self._tokens += ceiling
+                self._failed_calls += 1
+                self._usage_complete = False
+                checkpoint = self._checkpoint
+                snapshot = self._snapshot_unlocked()
+            if checkpoint is not None:
+                checkpoint(snapshot)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return self._snapshot_unlocked()
+
+
 @dataclass(frozen=True)
 class LLMClientConfig:
     base_url: str
@@ -198,21 +400,57 @@ class LLMClientConfig:
     max_retries: int = 3
 
 
+def build_chat_json_request_payload(
+    config: LLMClientConfig,
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: int | None = None,
+    json_mode: bool,
+) -> dict[str, Any]:
+    """Build the exact payload shape sent by the JSON chat path."""
+    payload: dict[str, Any] = {
+        "model": config.model,
+        "messages": messages,
+        "temperature": config.temperature,
+        "max_tokens": int(config.max_tokens if max_tokens is None else max_tokens),
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+def serialize_json_request_body(payload: dict[str, Any]) -> bytes:
+    """Serialize exactly as the HTTP transport and request budget do."""
+    return json.dumps(payload).encode("utf-8")
+
+
 def chat_json(
     config: LLMClientConfig,
     system_prompt: str,
     user_prompt: str,
     _usage_sink: list[dict[str, Any]] | None = None,
+    _request_budget: LLMRequestBudget | None = None,
+    _request_stats: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-    return chat_json_messages(config, messages, _usage_sink=_usage_sink)
+    return chat_json_messages(
+        config,
+        messages,
+        _usage_sink=_usage_sink,
+        _request_budget=_request_budget,
+        _request_stats=_request_stats,
+    )
 
 
 def chat_json_with_meta(
-    config: LLMClientConfig, system_prompt: str, user_prompt: str
+    config: LLMClientConfig,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    request_budget: LLMRequestBudget | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """chat_json + 全底层调用（首发/修复/截断升级重发）聚合的 token 用量。
 
@@ -220,16 +458,35 @@ def chat_json_with_meta(
     "usage_complete": bool}——端点未返回 usage 的调用计 0 且 usage_complete=False
     （不得估算冒充精确值,见 Phase 1.5 tokens 口径）。"""
     usage_sink: list[dict[str, Any]] = []
-    data = chat_json(config, system_prompt, user_prompt, _usage_sink=usage_sink)
-    return data, _aggregate_usage(usage_sink)
+    request_stats = {"call_count": 0, "failed_call_count": 0}
+    data = chat_json(
+        config,
+        system_prompt,
+        user_prompt,
+        _usage_sink=usage_sink,
+        _request_budget=request_budget,
+        _request_stats=request_stats,
+    )
+    aggregate = _aggregate_usage(usage_sink)
+    if request_stats["failed_call_count"]:
+        aggregate["usage_complete"] = False
+    return data, {**aggregate, **request_stats}
 
 
 def chat_json_messages(
     config: LLMClientConfig,
     messages: list[dict[str, str]],
     _usage_sink: list[dict[str, Any]] | None = None,
+    _request_budget: LLMRequestBudget | None = None,
+    _request_stats: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    content = _chat_content(config, messages, _usage_sink=_usage_sink)
+    content = _chat_content(
+        config,
+        messages,
+        _usage_sink=_usage_sink,
+        _request_budget=_request_budget,
+        _request_stats=_request_stats,
+    )
     try:
         return _loads_json_content(content)
     except (json.JSONDecodeError, LLMResponseError) as first_error:
@@ -244,7 +501,13 @@ def chat_json_messages(
                 ),
             },
         ]
-        repaired_content = _chat_content(config, repair_messages, _usage_sink=_usage_sink)
+        repaired_content = _chat_content(
+            config,
+            repair_messages,
+            _usage_sink=_usage_sink,
+            _request_budget=_request_budget,
+            _request_stats=_request_stats,
+        )
         try:
             return _loads_json_content(repaired_content)
         except json.JSONDecodeError as second_error:
@@ -459,21 +722,12 @@ def _aggregate_usage(usage_sink: list[dict[str, Any]]) -> dict[str, Any]:
     俱在则取二者之和）——混合序列不得被"全或无"兜底低计（如一轮报 total、一轮只报
     明细时，旧兜底会丢弃明细轮）。usage 缺失计 0 且 usage_complete=False
     （不得估算冒充精确值,见 Phase 1.5 tokens 口径）。"""
-    prompt = sum(int(u.get("prompt_tokens") or 0) for u in usage_sink)
-    completion = sum(int(u.get("completion_tokens") or 0) for u in usage_sink)
-    total = 0
-    for u in usage_sink:
-        round_total = u.get("total_tokens")
-        if isinstance(round_total, int):
-            total += round_total
-        elif isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int):
-            total += int(u["prompt_tokens"]) + int(u["completion_tokens"])
-    complete = bool(usage_sink) and all(
-        isinstance(u.get("total_tokens"), int) or (
-            isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int)
-        )
-        for u in usage_sink
-    )
+    normalized = [_normalized_usage(usage) for usage in usage_sink]
+    valid = [usage for usage in normalized if usage is not None]
+    prompt = sum(usage["prompt_tokens"] for usage in valid)
+    completion = sum(usage["completion_tokens"] for usage in valid)
+    total = sum(usage["total_tokens"] for usage in valid)
+    complete = bool(usage_sink) and len(valid) == len(usage_sink)
     return {
         "usage": {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total},
         "usage_complete": complete,
@@ -507,22 +761,29 @@ def _chat_content(
     config: LLMClientConfig,
     messages: list[dict[str, str]],
     _usage_sink: list[dict[str, Any]] | None = None,
+    _request_budget: LLMRequestBudget | None = None,
+    _request_stats: dict[str, int] | None = None,
 ) -> str:
-    payload = {
-        "model": config.model,
-        "messages": messages,
-        "temperature": config.temperature,
-    }
     endpoint_key = f"{config.base_url}|{config.model}"
     with _JSON_MODE_LOCK:
         endpoint_supported = endpoint_key not in _JSON_MODE_UNSUPPORTED
     max_tokens = int(config.max_tokens)
     while True:
-        payload["max_tokens"] = max_tokens
-        if _json_mode_enabled() and endpoint_supported:
-            payload["response_format"] = {"type": "json_object"}
+        json_mode = _json_mode_enabled() and endpoint_supported
+        payload = build_chat_json_request_payload(
+            config,
+            messages,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+        )
+        if json_mode:
             try:
-                response = _post_json(config, payload)
+                response = _post_json(
+                    config,
+                    payload,
+                    _request_budget=_request_budget,
+                    _request_stats=_request_stats,
+                )
             except LLMResponseFormatUnsupported:
                 # 只有端点明确指出 response_format/json_object 不受支持才记忆并降级。
                 # 其它 4xx、畸形 200 和响应结构错误原样抛出,避免掩盖真实故障并重复调用。
@@ -530,10 +791,25 @@ def _chat_content(
                     _JSON_MODE_UNSUPPORTED.add(endpoint_key)
                 endpoint_supported = False
                 LOGGER.warning("端点疑似不支持 response_format=json_object,已记住并降级重发: %s", endpoint_key)
-                payload.pop("response_format", None)
-                response = _post_json(config, payload)
+                payload = build_chat_json_request_payload(
+                    config,
+                    messages,
+                    max_tokens=max_tokens,
+                    json_mode=False,
+                )
+                response = _post_json(
+                    config,
+                    payload,
+                    _request_budget=_request_budget,
+                    _request_stats=_request_stats,
+                )
         else:
-            response = _post_json(config, payload)
+            response = _post_json(
+                config,
+                payload,
+                _request_budget=_request_budget,
+                _request_stats=_request_stats,
+            )
         if _usage_sink is not None:
             usage = response.get("usage")
             _usage_sink.append(usage if isinstance(usage, dict) else {})
@@ -561,9 +837,15 @@ def _chat_content(
         max_tokens = escalated
 
 
-def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, Any]:
+def _post_json(
+    config: LLMClientConfig,
+    payload: dict[str, Any],
+    *,
+    _request_budget: LLMRequestBudget | None = None,
+    _request_stats: dict[str, int] | None = None,
+) -> dict[str, Any]:
     url = f"{config.base_url.rstrip('/')}/chat/completions"
-    body = json.dumps(payload).encode("utf-8")
+    body = serialize_json_request_body(payload)
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     api_key = os.environ.get(config.api_key_env, "") if config.api_key_env else ""
     if api_key:
@@ -580,11 +862,20 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
     attempt = 0
     rate_hits = 0
     while attempt < max_attempts:
+        reservation_id = (
+            _request_budget.reserve(payload) if _request_budget is not None else None
+        )
+        budget_settled = False
+        request_succeeded = False
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         if gate is not None:
             gate.acquire()   # 冷却期内阻塞新请求;在飞数受 AIMD 上限约束
         started = time.monotonic()
         try:
+            if _request_stats is not None:
+                _request_stats["call_count"] = int(
+                    _request_stats.get("call_count") or 0
+                ) + 1
             with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
                 raw = response.read().decode("utf-8")
                 duration = time.monotonic() - started
@@ -593,6 +884,10 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                 LOGGER.info("LLM 调用 model=%s dur=%.1fs attempt=%d bytes=%d",
                             config.model, duration, attempt + 1, len(raw))
                 parsed = _loads_response_json(raw)
+                request_succeeded = True
+                if _request_budget is not None and reservation_id is not None:
+                    _request_budget.commit(reservation_id, parsed.get("usage"))
+                    budget_settled = True
                 _write_trace({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "model": config.model,
                               "dur_s": round(duration, 1), "attempt": attempt + 1,
                               "messages": _truncate_for_trace(payload.get("messages")),
@@ -646,6 +941,13 @@ def _post_json(config: LLMClientConfig, payload: dict[str, Any]) -> dict[str, An
                 continue
             raise LLMConnectionError(f"LLM service is unavailable: {exc}") from exc
         finally:
+            if _request_stats is not None and not request_succeeded:
+                _request_stats["failed_call_count"] = int(
+                    _request_stats.get("failed_call_count") or 0
+                ) + 1
+            if (_request_budget is not None and reservation_id is not None
+                    and not budget_settled):
+                _request_budget.fail(reservation_id)
             if gate is not None:
                 gate.release()
     raise LLMConnectionError("LLM service is unavailable")

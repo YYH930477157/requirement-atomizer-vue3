@@ -1,1 +1,2 @@
 *.pdf binary
+golden_sets/claim_ledger_v1/history/*.json text eol=lf

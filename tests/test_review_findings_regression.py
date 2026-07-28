@@ -68,24 +68,46 @@ class StageLineageRegressionTests(unittest.TestCase):
 
 class ChainPreconditionRegressionTests(unittest.TestCase):
     def test_stub_request_can_reuse_valid_openai_ai_extract_output(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        import ai_extract
         from desktop_tasks import stage_input_fingerprint, stage_is_reusable, update_run_manifest
+        from llm_client import LLMClientConfig
 
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             _write_jsonl(out / "blocks.jsonl", [{"block_id": "B-1", "text": "The meter shall record data."}])
             _write_jsonl(out / "llm_review_results.jsonl", [])
             _write_jsonl(out / "review_states.jsonl", [])
-            _write_jsonl(out / "ai_requirements.jsonl", [{"ai_req_id": "AI-1", "title": "记录数据"}])
-            (out / "merged_spec_requirements.json").write_text("{}", encoding="utf-8")
             config = {"sample_ratio": None, "limit_sections": None}
-            fingerprint = stage_input_fingerprint(out, "ai-extract", route="openai_compatible", config=config)
-            update_run_manifest(
-                out, "ai-extract", "ok", route="openai_compatible",
-                outputs=["ai_requirements.jsonl", "merged_spec_requirements.json"],
-                input_fingerprint=fingerprint, config=config,
-            )
-
-            self.assertTrue(stage_is_reusable(out, "ai-extract", route="stub", config=config))
+            llm_config = LLMClientConfig(base_url="http://example.test", model="model-a")
+            requirement = {
+                "ai_req_id": "AI-1",
+                "title": "记录数据",
+                "description": "电表应记录数据。",
+                "source_quote": "The meter shall record data.",
+                "source_block_ids": ["B-1"],
+                "sub_items": [],
+                "acceptance_criteria": [],
+            }
+            with (
+                patch.object(ai_extract, "config_for_route", return_value=llm_config),
+                patch.object(ai_extract, "extract_all", return_value=[requirement]),
+                patch.object(ai_extract, "ensure_term_map", return_value=""),
+                patch.dict(os.environ, {ai_extract.CLAIM_SHADOW_VERIFY_ENV: "0"}),
+            ):
+                result = ai_extract.run_ai_extract(out, route="openai_compatible", self_check=False)
+                fingerprint = stage_input_fingerprint(
+                    out, "ai-extract", route="openai_compatible", config=config,
+                )
+                update_run_manifest(
+                    out, "ai-extract", "ok", route="openai_compatible",
+                    outputs=result["written"], input_fingerprint=fingerprint, config=config,
+                )
+                self.assertTrue(
+                    stage_is_reusable(out, "ai-extract", route="stub", config=config)
+                )
 
     def test_stub_chain_allows_deterministic_annotation_export(self) -> None:
         from unittest import mock
