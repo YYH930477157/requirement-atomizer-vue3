@@ -102,7 +102,7 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **WP2 一致性与审计收口**：software 项 `hardware_dependency` 归属护栏（跳过+留痕）；LLM 异常/非法返回入 `_mark_enrichment_rejected`（待澄清+fallback）；`co_design_items.md` 四字段走兜底渲染；`agent_compare` 预算预校验（违例 exit 2）+ 双侧 trace 明细落盘（原随临时目录删除）；待办 4 补硬前置（人工核对完成前不动聚类规则）。
 - 版本面：`REVIEW_TOOLS_VERSION`→v3、`LLM_REVIEW_CACHE_VERSION`→v5、`UNFOUNDED_RULE_VERSION`→v3；`AGENT_POLICY_VERSION`/`EXTRACT_GUARDS_VERSION`/`AI_SUPPLEMENT_VERSION`/`PROMPT_VERSION` 不动；stub 路径未动，golden 零漂移。
 
-## 重大更新（2026-07-27）——参数表逐行确定性展开（分支 codex/param-row-expand，guards-v16，待合 main）
+## 重大更新（2026-07-27）——参数表逐行确定性展开（已合 main；主检出 golden 6/6、全量 1677 tests OK）
 
 - **用户裁定**：参数表每行都是需求。STO 实证链路诊断：初版 `[:5000]` 截断（已修,impl-v6）之外还有第二处 `render_table_text(max_rows=20)`——143 行参数表扁平文本尾部只有 "... 123 more rows",LLM 永远只看到前 20 行。
 - **实现**：① render_table_text 默认渲染全部数据行（atomize impl v6→v7,STO 实测 BLK-000098 扁平文本 49k→184k 字符/144 行全量）；② ai_extract 新增 `_supplement_parameter_table_rows`——需求型参数表（表头含要求类列,非术语/定义表,叶子节不在术语/参考文献区）每个未被 LLM 覆盖的数据行确定性生成一条 draft 需求（逐字渲染行引句、`deterministic_fallback`、suspicion「参数表行确定性展开」进澄清必答）；分组标题行（合并单元格全同值）与多级节号单元格不算需求/不作标题;覆盖判定按最长实质单元格 compact 命中,判不出宁补勿漏。
