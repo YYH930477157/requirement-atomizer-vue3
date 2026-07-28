@@ -8,6 +8,7 @@ from parsers.pdf_parser import (
     _COPYRIGHT_FOOTER_RE,
     _fragmentation_signal_count,
     _merge_words,
+    _merge_lines,
     _normalize_repeated_line,
     defragment_text,
     defragment_text_with_audit,
@@ -76,6 +77,17 @@ class DefragTests(unittest.TestCase):
         self.assertIn("end", event)
         self.assertIn("vocab_version", event)
 
+    def test_multiline_repair_replays_each_line_independently(self) -> None:
+        raw = "H ighest threshold\nL owest threshold\nH umidity 9 5%"
+
+        repaired, events = defragment_text_with_audit(raw)
+
+        self.assertEqual(
+            repaired,
+            "Highest threshold\nLowest threshold\nHumidity 95%",
+        )
+        self.assertEqual({event["line_index"] for event in events}, {0, 1, 2})
+
     def test_residual_metric_is_independent_from_repairability(self) -> None:
         repaired, events = defragment_text_with_audit("a nice day")
 
@@ -120,6 +132,45 @@ class DedoubleTests(unittest.TestCase):
     def test_legit_double_letter_words_safe(self) -> None:
         text = "The book keeper took a good look at the wood floor"
         self.assertEqual(defragment_text(text), text)
+
+    def test_numeric_and_time_tokens_are_never_dedoubled(self) -> None:
+        text = "TThhiiss interval is 11:00 and code 2200"
+        self.assertEqual(
+            defragment_text(text),
+            "This interval is 11:00 and code 2200",
+        )
+
+
+class ParagraphRepairTests(unittest.TestCase):
+    def test_final_paragraph_repair_is_replayable_at_paragraph_scope(self) -> None:
+        lines = [
+            {
+                "text": "The m eter shall",
+                "raw_text": "The m eter shall",
+                "top": 0,
+                "bottom": 10,
+                "x0": 0,
+                "x1": 80,
+                "text_repair_checked": True,
+                "text_repairs": [],
+            },
+            {
+                "text": "record the out put.",
+                "raw_text": "record the out put.",
+                "top": 12,
+                "bottom": 22,
+                "x0": 0,
+                "x1": 90,
+                "text_repair_checked": True,
+                "text_repairs": [],
+            },
+        ]
+
+        paragraph = _merge_lines(lines)
+        replayed, _events = defragment_text_with_audit(paragraph["raw_text"])
+
+        self.assertEqual(paragraph["text"], replayed)
+        self.assertEqual(paragraph["text_repairs"], _events)
 
 
 class FooterNoiseTests(unittest.TestCase):

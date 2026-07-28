@@ -431,6 +431,7 @@ def ai_extract_task(out_dir: Path, *, route: str | None, limit_sections: int | N
         "quality": result.get("quality", {}),
         "sampled": result.get("sampled"),
         "consistency": result.get("consistency", {}),
+        "claim_shadow": result.get("claim_shadow", {}),
         "written": [str(out_dir / name) for name in result.get("written", [])],
         "summary": _stage_summary(out_dir),
     }
@@ -451,7 +452,7 @@ CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-a
 STAGE_INPUTS: dict[str, list[str]] = {
     "atomize": [],
     "llm-review": ["atomic_requirements.jsonl", "llm_tasks.jsonl"],
-    "ai-extract": ["blocks.jsonl", "llm_review_results.jsonl", "review_states.jsonl",
+    "ai-extract": ["blocks.jsonl", "table_items.jsonl", "llm_review_results.jsonl", "review_states.jsonl",
                    "ai_supplements.jsonl"],
     "assemble": ["table_items.jsonl", "atomic_requirements.jsonl", "llm_review_results.jsonl",
                  "ai_supplements.jsonl"],
@@ -489,6 +490,15 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
         "ai_requirements.meta.json",
         "compliance_requirements.json",
         "merged_spec_requirements.json",
+        "claim_catalog.jsonl",
+        "claim_catalog.meta.json",
+        "claim_coverage_groups.jsonl",
+        "claim_ledger.jsonl",
+        "claim_effective_ledger.jsonl",
+        "claim_shadow_metrics.json",
+        "claim_verifier_attempts.jsonl",
+        "claim_generation.meta.json",
+        "claim_effective.meta.json",
     ],
     "functional-synthesis": [FUNCTIONAL_REQUIREMENTS],
     "assemble": [ASSEMBLED_JSON],
@@ -543,19 +553,33 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
         if stage == "ai-extract":
             # 版本戳必须覆盖全部影响产物的代码层；否则 guards/verify 升级后
             # chain 续跑仍可能复用旧结果。
-            from ai_extract import (AI_EXTRACT_PROMPT_VERSION, AI_VERIFY_PROMPT_VERSION,
-                                    EXTRACT_GUARDS_VERSION)
+            from ai_extract import (
+                AI_EXTRACT_PROMPT_VERSION,
+                AI_NORMATIVE_FRAMING_VERSION,
+                AI_VERIFY_PROMPT_VERSION,
+                EXTRACT_GUARDS_VERSION,
+            )
             from merged_consistency import MERGED_CONSISTENCY_VERSION
             producer = (f"{AI_EXTRACT_PROMPT_VERSION}+{EXTRACT_GUARDS_VERSION}"
-                        f"+{AI_VERIFY_PROMPT_VERSION}+{MERGED_CONSISTENCY_VERSION}")
+                        f"+{AI_VERIFY_PROMPT_VERSION}+{AI_NORMATIVE_FRAMING_VERSION}"
+                        f"+{MERGED_CONSISTENCY_VERSION}")
         elif stage == "atomize":
             # PDF text repair changes blocks consumed by every downstream stage. Include both
             # the algorithm version and the bundled vocabulary content in the producer so a
-            # repaired parser cannot silently reuse an old atomize run.
+            # repaired parser cannot silently reuse an old atomize run. Source alignment is a
+            # separate parser-output contract used by the claim catalog conservation audit.
             from parsers.pdf_parser import PDF_TEXT_REPAIR_VERSION, text_repair_vocabulary_fingerprint
+            from source_spans import (
+                SOURCE_ALIGNMENT_VERSION,
+                SOURCE_TRANSFORMATION_POLICY_VERSION,
+                SOURCE_TRANSFORMATION_RULESET_VERSION,
+            )
             producer = (
                 f"{producer}+{PDF_TEXT_REPAIR_VERSION}"
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
+                f"+{SOURCE_ALIGNMENT_VERSION}"
+                f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
+                f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"
             )
         elif stage == "llm-review":
             # 代码版本必须进戳（审计 R2-H2）：prompt/cache/tools 任一 bump 后旧阶段
@@ -634,7 +658,13 @@ def _outputs_exist(out_dir: Path, outputs: list[str]) -> bool:
         if not path.exists() or path.is_dir():
             return False
         try:
-            if path.stat().st_size <= 0:
+            if path.stat().st_size <= 0 and name not in {
+                "ai_requirements.jsonl",
+                "claim_catalog.jsonl",
+                "claim_coverage_groups.jsonl",
+                "claim_ledger.jsonl",
+                "claim_effective_ledger.jsonl",
+            }:
                 return False
         except OSError:
             return False
@@ -651,6 +681,18 @@ def _hash_file(path: Path) -> str:
 
 _STAGE_MUTABLE_INPUTS = {
     "export-annotation-html": {"annotation_translations.json"},
+}
+
+_CLAIM_STAGE_OUTPUTS = {
+    "claim_catalog.jsonl",
+    "claim_catalog.meta.json",
+    "claim_coverage_groups.jsonl",
+    "claim_ledger.jsonl",
+    "claim_effective_ledger.jsonl",
+    "claim_shadow_metrics.json",
+    "claim_verifier_attempts.jsonl",
+    "claim_generation.meta.json",
+    "claim_effective.meta.json",
 }
 
 
@@ -865,11 +907,12 @@ def _write_stage_manifest(out_dir: Path, stage: str, entry: dict[str, Any]) -> N
     _atomic_write_json(path, json.dumps({"stage": stage, **entry}, ensure_ascii=False, indent=2) + "\n")
 
 
-def stage_is_reusable(out_dir: Path, stage: str, *,
-                      route: str | None = None,
-                      input_path: Path | None = None,
-                      template_path: Path | None = None,
-                      config: dict[str, Any] | None = None) -> bool:
+def _stage_is_reusable(out_dir: Path, stage: str, *,
+                       route: str | None = None,
+                       input_path: Path | None = None,
+                       template_path: Path | None = None,
+                       config: dict[str, Any] | None = None,
+                       require_claim_generation: bool = True) -> bool:
     data = read_run_manifest(out_dir)
     stages = data.get("stages") if isinstance(data.get("stages"), dict) else {}
     entry = stages.get(stage) if isinstance(stages.get(stage), dict) else None
@@ -897,8 +940,38 @@ def stage_is_reusable(out_dir: Path, stage: str, *,
         recorded_files = str(entry.get("input_files_fingerprint") or "")
         if recorded_files and recorded_files != stage_input_files_fingerprint(out_dir, stage):
             return False
-    if not _outputs_exist(out_dir, _stage_outputs(stage, entry)):
+    outputs = _stage_outputs(stage, entry)
+    if stage == "ai-extract" and not require_claim_generation:
+        outputs = [name for name in outputs if Path(name).name not in _CLAIM_STAGE_OUTPUTS]
+    if not _outputs_exist(out_dir, outputs):
         return False
+    if stage == "ai-extract" and require_claim_generation:
+        try:
+            from claim_artifacts import (
+                committed_shadow_versions_are_current,
+                load_committed_shadow,
+            )
+
+            snapshot = load_committed_shadow(out_dir)
+            if not committed_shadow_versions_are_current(snapshot):
+                return False
+            from ai_extract import (
+                resolve_claim_shadow_verify,
+                resolve_claim_shadow_verify_max_calls,
+                resolve_claim_shadow_verify_max_total_tokens,
+            )
+
+            shadow_meta = dict(snapshot.get("generation_meta", {}).get("shadow_meta") or {})
+            expected_verifier = bool(
+                route not in {None, "stub"}
+                and resolve_claim_shadow_verify()
+                and resolve_claim_shadow_verify_max_calls() > 0
+                and resolve_claim_shadow_verify_max_total_tokens() > 0
+            )
+            if shadow_meta.get("semantic_verifier_enabled") is not expected_verifier:
+                return False
+        except Exception:
+            return False
     if stage == "atomize" and input_path is not None:
         try:
             manifest = json.loads((Path(out_dir) / "manifest.json").read_text(encoding="utf-8"))
@@ -907,6 +980,57 @@ def stage_is_reusable(out_dir: Path, stage: str, *,
         if Path(str(manifest.get("input") or "")).expanduser().resolve() != Path(input_path).expanduser().resolve():
             return False
     return True
+
+
+def stage_is_reusable(out_dir: Path, stage: str, *,
+                      route: str | None = None,
+                      input_path: Path | None = None,
+                      template_path: Path | None = None,
+                      config: dict[str, Any] | None = None) -> bool:
+    return _stage_is_reusable(
+        out_dir,
+        stage,
+        route=route,
+        input_path=input_path,
+        template_path=template_path,
+        config=config,
+        require_claim_generation=True,
+    )
+
+
+def ai_requirements_are_reusable(
+    out_dir: Path,
+    *,
+    route: str | None,
+    config: dict[str, Any] | None = None,
+) -> bool:
+    """Validate the extraction layer while deliberately ignoring claim artifacts."""
+    if not _stage_is_reusable(
+        out_dir,
+        "ai-extract",
+        route=route,
+        config=config,
+        require_claim_generation=False,
+    ):
+        return False
+    root = Path(out_dir).expanduser().resolve()
+    requirements_path = root / "ai_requirements.jsonl"
+    metadata_path = root / "ai_requirements.meta.json"
+    if not requirements_path.is_file() or not metadata_path.is_file():
+        return False
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        from ai_extract import extraction_input_fingerprint
+
+        return (
+            isinstance(metadata, dict)
+            and metadata.get("schema") == "ai-requirements-final/v1"
+            and str(metadata.get("input_fingerprint") or "")
+            == extraction_input_fingerprint(root)
+            and int(metadata.get("failed_sections") or 0) == 0
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
 
 
 # 链内跳过各阶段 summary（0714 批次二 S7）：8 个阶段各算一遍 build_output_summary
@@ -927,12 +1051,28 @@ def skipped_stage_payload(out_dir: Path, stage: str) -> dict[str, Any]:
     entry = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
     outputs = _stage_outputs(stage, entry)
     root = Path(out_dir).expanduser().resolve()
-    return {
+    payload = {
         "kind": stage.replace("-", "_"),
         "out_dir": str(root),
         "resume_action": "skipped",
         "written": [str(root / name) for name in outputs],
     }
+    if stage == "ai-extract":
+        try:
+            from claim_artifacts import load_committed_shadow
+
+            snapshot = load_committed_shadow(root)
+            shadow_meta = dict(snapshot.get("generation_meta", {}).get("shadow_meta") or {})
+            payload["claim_shadow"] = {
+                "status": "published",
+                "accounting_status": shadow_meta.get("accounting_status"),
+                "resolution_status": shadow_meta.get("resolution_status"),
+                "termination_reason": shadow_meta.get("termination_reason"),
+                "metrics": snapshot.get("metrics") or {},
+            }
+        except Exception as exc:
+            payload["claim_shadow"] = {"status": "stale", "error": str(exc)[:300]}
+    return payload
 
 
 def update_run_manifest(out_dir: Path, stage: str, status: str, *,
@@ -1071,8 +1211,70 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 stage_config = {"layout_mode": annotation_layout_mode}
             else:
                 stage_config = None
-            if stage_is_reusable(out_dir, stage, route=stage_route, template_path=stage_template,
-                                 config=stage_config):
+            reusable = stage_is_reusable(
+                out_dir,
+                stage,
+                route=stage_route,
+                template_path=stage_template,
+                config=stage_config,
+            )
+            if (stage == "ai-extract" and not reusable
+                    and ai_requirements_are_reusable(
+                        out_dir,
+                        route=stage_route,
+                        config=stage_config,
+                    )):
+                scope = "sample" if sample_ratio or limit_sections else "full"
+                try:
+                    refresh = ai_extract.refresh_claim_shadow(
+                        out_dir,
+                        route=stage_route,
+                        scope=scope,
+                    )
+                except Exception as exc:
+                    error = f"ai-extract claim shadow refresh failed: {exc}"
+                    update_run_manifest(
+                        out_dir,
+                        stage,
+                        "failed",
+                        route=stage_route,
+                        error=error,
+                        action="ledger_refresh_failed",
+                        template_path=stage_template,
+                        config=stage_config,
+                    )
+                    raise RuntimeError(error) from exc
+                existing_stages = read_run_manifest(out_dir).get("stages", {})
+                existing_entry = (
+                    existing_stages.get(stage, {}) if isinstance(existing_stages, dict) else {}
+                )
+                outputs = list(dict.fromkeys([
+                    *_stage_outputs(stage, existing_entry),
+                    *(refresh.get("written") or []),
+                ]))
+                refresh["written"] = [str(out_dir / name) for name in outputs]
+                refresh["resume_action"] = "ledger_refreshed"
+                update_run_manifest(
+                    out_dir,
+                    stage,
+                    "ok",
+                    route=str(existing_entry.get("route") or stage_route or "") or None,
+                    outputs=outputs,
+                    action="ledger_refreshed",
+                    template_path=stage_template,
+                    config=stage_config,
+                )
+                results[stage] = refresh
+                emit_progress({
+                    "stage": "chain",
+                    "step": stage,
+                    "status": "ledger_refreshed",
+                    "completed": index,
+                    "total": len(ordered),
+                    "percent": int(index * 100 / len(ordered)),
+                })
+                continue
+            if reusable:
                 stage_payload = skipped_stage_payload(out_dir, stage)
                 skipped_stages.append(stage)
                 existing_stages = read_run_manifest(out_dir).get("stages", {})
@@ -1108,7 +1310,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             results[stage] = stage_payload
             # 顶层聚合：GUI 消息只看这几个键，不必翻 results
             if stage == "ai-extract":
-                for key in ("consistency", "sampled", "quality", "count"):
+                for key in ("consistency", "sampled", "quality", "count", "claim_shadow"):
                     if stage_payload.get(key) is not None:
                         payload[key] = stage_payload[key]
             elif stage == "requirements-analysis":
@@ -1354,6 +1556,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     import_parser = subparsers.add_parser("import-ai-decisions")
     import_parser.add_argument("--out", type=Path, required=True)
     import_parser.add_argument("--file", type=Path, required=True, help="HTML 导出的裁决 JSON")
+
+    claim_acceptance_parser = subparsers.add_parser("claim-shadow-acceptance")
+    claim_acceptance_parser.add_argument("--input", type=Path, required=True)
+    claim_acceptance_parser.add_argument("--output", type=Path)
+
+    claim_packet_parser = subparsers.add_parser("claim-shadow-review-packet")
+    claim_packet_parser.add_argument("--input", type=Path, required=True)
+    claim_packet_parser.add_argument("--output-dir", type=Path, required=True)
+
+    claim_import_parser = subparsers.add_parser("claim-shadow-review-import")
+    claim_import_parser.add_argument("--input", type=Path, required=True)
+    claim_import_parser.add_argument("--decisions", type=Path, required=True)
+    claim_import_parser.add_argument("--output", type=Path, required=True)
+    claim_import_parser.add_argument("--golden-manifest", type=Path, required=True)
     return parser.parse_args(argv)
 
 
@@ -1423,6 +1639,26 @@ def teardown_run_logging() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.command == "claim-shadow-acceptance":
+        from claim_acceptance import main as claim_acceptance_main
+        forwarded = ["--input", str(args.input)]
+        if args.output is not None:
+            forwarded.extend(["--output", str(args.output)])
+        return claim_acceptance_main(forwarded)
+    if args.command == "claim-shadow-review-packet":
+        from claim_review_packet import main as claim_review_packet_main
+        return claim_review_packet_main([
+            "--input", str(args.input),
+            "--output-dir", str(args.output_dir),
+        ])
+    if args.command == "claim-shadow-review-import":
+        from claim_review_import import main as claim_review_import_main
+        return claim_review_import_main([
+            "--input", str(args.input),
+            "--decisions", str(args.decisions),
+            "--output", str(args.output),
+            "--golden-manifest", str(args.golden_manifest),
+        ])
     setup_run_logging(getattr(args, "out", None))
     logging.getLogger("requirement_atomizer").info("desktop task 开始：%s", args.command)
     try:

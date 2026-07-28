@@ -21,6 +21,7 @@ from atomize import (
     parse_access_rights,
     run_atomizer_pipeline,
 )
+from source_spans import validate_source_alignment
 
 
 class AtomizeTableTests(unittest.TestCase):
@@ -177,6 +178,36 @@ class AtomizeTableTests(unittest.TestCase):
         self.assertEqual(items[0]["cosem_object_context"]["object_name"], "SAP Assignment")
         self.assertEqual(items[0]["cosem_object_context"]["class_id"], 17)
         self.assertTrue(any(item["matrix_facts"] for item in items))
+
+    def test_large_table_marks_display_text_truncated_but_preserves_complete_rows(self) -> None:
+        matrix = [["Name", "Requirement"]] + [
+            [f"Output {index}", f"The meter shall expose output {index}."]
+            for index in range(25)
+        ]
+        raw_matrix = [list(row) for row in matrix]
+        raw_matrix[1][1] = "The me ter shall expose output 0."
+
+        block, items = build_table_artifacts(
+            matrix,
+            raw_matrix=raw_matrix,
+            table_id="TBL-000001",
+            block_id="BLK-000010",
+            order=10,
+            table_title="Outputs",
+            section_path=["Interfaces"],
+            knowledge_bases=[],
+        )
+
+        self.assertTrue(block["text_truncated"])
+        self.assertFalse(block["parse_incomplete"])
+        self.assertEqual(len(block["data_rows"]), 25)
+        self.assertEqual(items[0]["raw_fields"]["Requirement"], raw_matrix[1][1])
+        validate_source_alignment(
+            items[0]["raw_fields"]["Requirement"],
+            items[0]["fields"]["Requirement"],
+            items[0]["field_alignments"]["Requirement"],
+        )
+        self.assertTrue(items[0]["raw_to_repaired_spans"])
 
     def test_stable_req_id_does_not_depend_on_candidate_order(self) -> None:
         first_block = {

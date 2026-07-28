@@ -24,6 +24,7 @@ from domain_pack import load_domain_pack
 from output_writer import build_quality_report, write_json, write_jsonl, write_summary
 from requirement_kb import KnowledgeRepository
 from requirement_kb.matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
+from source_spans import source_alignment_fields
 from table_pattern_engine import load_table_patterns, match_table_pattern
 from version import __version__
 
@@ -197,6 +198,20 @@ def has_numbering(paragraph: Paragraph) -> bool:
     return p_pr is not None and p_pr.numPr is not None
 
 
+def numbering_level(paragraph: Paragraph) -> int | None:
+    p_pr = paragraph._p.pPr
+    num_pr = p_pr.numPr if p_pr is not None else None
+    if num_pr is None:
+        return None
+    ilvl = num_pr.ilvl
+    if ilvl is None or ilvl.val is None:
+        return 0
+    try:
+        return int(ilvl.val)
+    except (TypeError, ValueError):
+        return 0
+
+
 def detect_heading(
     text: str,
     style_name: str,
@@ -284,12 +299,15 @@ def table_matrix(table: Table) -> list[list[str]]:
 def build_table_artifacts(
     matrix: list[list[str]],
     *,
+    raw_matrix: list[list[str]] | None = None,
     table_id: str,
     block_id: str,
     order: int,
     table_title: str,
     section_path: list[str],
     knowledge_bases: KnowledgeRepository,
+    parse_incomplete: bool = False,
+    parse_incomplete_reason: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     table_model = interpret_table_matrix(matrix)
     width = table_model["width"]
@@ -298,7 +316,14 @@ def build_table_artifacts(
     header_rows = table_model["header_rows"]
     headers = table_model["headers"]
     data_rows = table_model["data_rows"]
-    table_text = render_table_text(headers, data_rows)
+    table_text_full = render_table_text(headers, data_rows)
+    table_text = table_text_full[:5000]
+    text_truncated = len(data_rows) > 20 or len(table_text_full) > 5000
+    raw_rows = [[str(value or "") for value in row] for row in (raw_matrix or matrix)]
+    raw_header_rows = [pad_row(row, width) for row in raw_rows[:header_count]]
+    raw_data_rows = [pad_row(row, width) for row in raw_rows[header_count:]]
+    raw_headers = effective_table_headers(raw_header_rows, width)
+    raw_table_text = render_table_text(raw_headers, raw_data_rows)[:5000]
     kb_matches = match_knowledge(knowledge_bases, table_title, table_text, " > ".join(section_path))
     domain_tags = merge_tags(tag_domains(table_title, table_text, " > ".join(section_path)), kb_domain_tags(kb_matches))
     block = {
@@ -315,12 +340,18 @@ def build_table_artifacts(
         "headers": headers,
         # 完整数据行进块：批注视图渲染真表格（此前只有扁平 text，画线/无画线表都糊成一坨）
         "data_rows": data_rows,
-        "text": table_text[:5000],
+        "text": table_text,
+        "raw_text": raw_table_text,
+        **source_alignment_fields(raw_table_text, table_text),
+        "text_truncated": text_truncated,
+        "parse_incomplete": bool(parse_incomplete),
         "domain_tags": domain_tags,
         "kb_matches": kb_matches,
         "requirement_like": is_requirement_like(table_text),
         "noise": False,
     }
+    if parse_incomplete_reason:
+        block["parse_incomplete_reason"] = dict(parse_incomplete_reason)
 
     table_items: list[dict[str, Any]] = []
     current_cosem_object: dict[str, Any] | None = None
@@ -333,6 +364,26 @@ def build_table_artifacts(
             for col_index in range(width)
         }
         compact_fields = {key: value for key, value in fields.items() if value}
+        raw_row = raw_data_rows[row_offset - 1] if row_offset <= len(raw_data_rows) else row
+        raw_fields = {
+            headers[col_index]: raw_row[col_index] if col_index < len(raw_row) else ""
+            for col_index in range(width)
+            if headers[col_index] in compact_fields
+        }
+        field_provenance = {
+            key: source_alignment_fields(str(raw_fields.get(key) or ""), str(value or ""))
+            for key, value in compact_fields.items()
+        }
+        field_alignments = {
+            key: provenance["source_alignment"] for key, provenance in field_provenance.items()
+        }
+        field_raw_to_repaired_spans = {
+            key: provenance["raw_to_repaired_spans"] for key, provenance in field_provenance.items()
+        }
+        canonical_row_text = " | ".join(f"{key}={value}" for key, value in compact_fields.items())
+        raw_row_text = " | ".join(
+            f"{key}={raw_fields.get(key, '')}" for key in compact_fields)
+        row_alignment = source_alignment_fields(raw_row_text, canonical_row_text)
         item_id = f"{table_id}-R{row_index:06d}"
         if is_cosem_object_header(compact_fields):
             current_cosem_object = build_cosem_object_context(item_id, row_index, compact_fields)
@@ -351,6 +402,12 @@ def build_table_artifacts(
             "section_path": section_path,
             "row_index": row_index,
             "fields": compact_fields,
+            "raw_fields": raw_fields,
+            "field_alignments": field_alignments,
+            "field_raw_to_repaired_spans": field_raw_to_repaired_spans,
+            "text": canonical_row_text,
+            "raw_text": raw_row_text,
+            **row_alignment,
             "matrix_facts": matrix_facts,
             "domain_tags": item_tags,
             "kb_matches": item_matches,
@@ -673,12 +730,15 @@ def extract_docx(
 
     for item in iter_body_items(document):
         if isinstance(item, Paragraph):
-            text = clean_text(item.text)
+            raw_text = str(item.text or "")
+            text = clean_text(raw_text)
             if not text:
                 continue
 
             style_name = item.style.name if item.style is not None else ""
-            heading = detect_heading(text, style_name, is_list_item=has_numbering(item), document_profile=profile)
+            list_level = numbering_level(item)
+            is_list_item = list_level is not None
+            heading = detect_heading(text, style_name, is_list_item=is_list_item, document_profile=profile)
             block_type = "paragraph"
             if heading:
                 level, title = heading
@@ -697,6 +757,10 @@ def extract_docx(
                 "type": block_type,
                 "style": style_name,
                 "text": text,
+                "raw_text": raw_text,
+                **source_alignment_fields(raw_text, text),
+                "is_list_item": is_list_item,
+                "list_level": list_level,
                 "section_path": section_path,
                 "domain_tags": domain_tags,
                 "kb_matches": kb_matches,
@@ -716,7 +780,8 @@ def extract_docx(
                     last_caption = None
 
         elif isinstance(item, Table):
-            matrix = table_matrix(item)
+            raw_matrix = [[str(cell.text or "") for cell in row.cells] for row in item.rows]
+            matrix = [[clean_text(value) for value in row] for row in raw_matrix]
             if not matrix:
                 continue
             table_count += 1
@@ -728,6 +793,7 @@ def extract_docx(
             block_id = f"BLK-{order:06d}"
             table_block, new_table_items = build_table_artifacts(
                 matrix,
+                raw_matrix=raw_matrix,
                 table_id=table_id,
                 block_id=block_id,
                 order=order,

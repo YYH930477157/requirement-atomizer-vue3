@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://requirement-atomizer.local/schemas/claim_shadow_acceptance_input.schema.json",
+  "title": "Claim shadow acceptance input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "dataset_id", "runs", "curation"],
+  "properties": {
+    "schema": {"const": "claim-shadow-acceptance-input/v3"},
+    "dataset_id": {"$ref": "#/$defs/safe_id"},
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "generation_run_id",
+          "document_id",
+          "sequence",
+          "output_dir",
+          "attempt_chain_id"
+        ],
+        "properties": {
+          "run_id": {"$ref": "#/$defs/safe_id"},
+          "generation_run_id": {"$ref": "#/$defs/safe_id"},
+          "document_id": {"$ref": "#/$defs/safe_id"},
+          "sequence": {"type": "integer", "minimum": 1},
+          "output_dir": {"type": "string", "minLength": 1},
+          "attempt_chain_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "curation": {"$ref": "#/$defs/curation"}
+  },
+  "$defs": {
+    "safe_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "curation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "human_review_status",
+        "reviewed_by",
+        "reviewed_at",
+        "adjudications",
+        "known_omissions"
+      ],
+      "properties": {
+        "human_review_status": {"enum": ["pending", "reviewed"]},
+        "reviewed_by": {"type": "string", "maxLength": 120},
+        "reviewed_at": {"type": "string", "maxLength": 64},
+        "adjudications": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/adjudication"}
+        },
+        "known_omissions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/claim_ref"}
+        }
+      }
+    },
+    "claim_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "claim_id", "claim_hash"],
+      "properties": {
+        "run_id": {"$ref": "#/$defs/safe_id"},
+        "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+        "claim_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "adjudication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "claim_id",
+        "claim_hash",
+        "review_evidence_fingerprint",
+        "ledger_resolution",
+        "category",
+        "verdict",
+        "rationale"
+      ],
+      "properties": {
+        "run_id": {"$ref": "#/$defs/safe_id"},
+        "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+        "claim_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "review_evidence_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "ledger_resolution": {"enum": ["covered", "excluded", "uncertain"]},
+        "category": {
+          "enum": [
+            "semantic_positive",
+            "semantic_negative",
+            "structural_exclusion",
+            "uncertain"
+          ]
+        },
+        "verdict": {"enum": ["agree", "disagree", "needs_followup"]},
+        "rationale": {"type": "string", "maxLength": 4000}
+      }
+    }
+  }
+}

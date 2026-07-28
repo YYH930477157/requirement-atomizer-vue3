@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_shadow_meta.schema.json",
+  "title": "Claim Shadow Ledger Result Meta v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "ledger_schema_version",
+    "catalog_generation_id",
+    "target_generation_id",
+    "target_review_authority_revision",
+    "delivery_track",
+    "target_kind",
+    "route_mode",
+    "semantic_verifier_enabled",
+    "coverage_verifier_enabled",
+    "semantic_negative_proposer_enabled",
+    "semantic_negative_verifier_enabled",
+    "verifier_runtime",
+    "verifier_budget",
+    "scope",
+    "extraction_status",
+    "accounting_status",
+    "resolution_status",
+    "termination_reason",
+    "document_ready",
+    "versions"
+  ],
+  "properties": {
+    "schema": {"const": "claim-shadow-result/v1"},
+    "ledger_schema_version": {"const": "claim-ledger-v3"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "target_generation_id": {"$ref": "#/$defs/hash"},
+    "target_review_authority_revision": {"$ref": "#/$defs/hash"},
+    "delivery_track": {"enum": ["A", "B"]},
+    "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
+    "route_mode": {"enum": ["llm", "stub"]},
+    "semantic_verifier_enabled": {"type": "boolean"},
+    "coverage_verifier_enabled": {"type": "boolean"},
+    "semantic_negative_proposer_enabled": {"type": "boolean"},
+    "semantic_negative_verifier_enabled": {"type": "boolean"},
+    "verifier_runtime": {
+      "type": "object",
+      "required": [
+        "version",
+        "policy_source",
+        "route_mode",
+        "enabled",
+        "rounds",
+        "model",
+        "base_url",
+        "temperature",
+        "max_tokens",
+        "credential_available",
+        "budget_policy_version",
+        "max_calls",
+        "max_total_tokens",
+        "prompt_version",
+        "validator_version",
+        "negative_policy_version",
+        "negative_validator_version",
+        "batch_policy_version",
+        "cost_policy_version",
+        "fingerprint"
+      ],
+      "properties": {
+        "version": {"const": "claim-coverage-runtime-v10"},
+        "policy_source": {"enum": ["explicit", "environment"]},
+        "route_mode": {"enum": ["llm", "stub"]},
+        "enabled": {"type": "boolean"},
+        "rounds": {"type": "integer", "minimum": 0, "maximum": 3},
+        "model": {"type": "string"},
+        "base_url": {"type": "string"},
+        "temperature": {"type": "number"},
+        "max_tokens": {"type": "integer", "minimum": 0},
+        "credential_available": {"type": "boolean"},
+        "budget_policy_version": {"type": "string", "minLength": 1},
+        "max_calls": {"type": "integer", "minimum": 0},
+        "max_total_tokens": {"type": "integer", "minimum": 0},
+        "prompt_version": {"type": "string", "minLength": 1},
+        "validator_version": {"type": "string", "minLength": 1},
+        "negative_policy_version": {"type": "string", "minLength": 1},
+        "negative_validator_version": {"type": "string", "minLength": 1},
+        "batch_policy_version": {"const": "claim-verifier-batch-v3-full-http-body"},
+        "cost_policy_version": {"const": "claim-cost-policy-v3-user-approved"},
+        "fingerprint": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "verifier_budget": {
+      "type": "object",
+      "required": [
+        "schema",
+        "policy_version",
+        "max_calls",
+        "max_total_tokens",
+        "attempted_calls",
+        "failed_calls",
+        "accounted_tokens",
+        "remaining_calls",
+        "remaining_tokens",
+        "usage_complete",
+        "denied",
+        "exhaustion_reason"
+      ],
+      "properties": {
+        "schema": {"const": "claim-verifier-budget-outcome/v1"},
+        "policy_version": {"type": "string", "minLength": 1},
+        "max_calls": {"type": "integer", "minimum": 0},
+        "max_total_tokens": {"type": "integer", "minimum": 0},
+        "attempted_calls": {"type": "integer", "minimum": 0},
+        "failed_calls": {"type": "integer", "minimum": 0},
+        "accounted_tokens": {"type": "integer", "minimum": 0},
+        "remaining_calls": {"type": "integer", "minimum": 0},
+        "remaining_tokens": {"type": "integer", "minimum": 0},
+        "usage_complete": {"type": "boolean"},
+        "denied": {"type": "boolean"},
+        "exhaustion_reason": {
+          "enum": [
+            "",
+            "call_budget_exhausted",
+            "token_budget_exhausted",
+            "reported_token_budget_exceeded",
+            "external_budget_exhausted"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "scope": {"enum": ["full", "sample"]},
+    "extraction_status": {"enum": ["success", "partial", "failed"]},
+    "accounting_status": {"enum": ["complete", "incomplete"]},
+    "resolution_status": {"enum": ["resolved", "open"]},
+    "termination_reason": {
+      "enum": [
+        "converged",
+        "budget_exhausted",
+        "round_cap",
+        "llm_error",
+        "validation_error",
+        "stalled_open",
+        "cancelled"
+      ]
+    },
+    "document_ready": {"type": "boolean"},
+    "versions": {
+      "type": "object",
+      "required": [
+        "ledger",
+        "prompt",
+        "candidate_policy",
+        "prefilter",
+        "coverage_validator",
+        "batch_policy",
+        "cost_policy",
+        "negative_policy",
+        "negative_validator",
+        "review_adapter",
+        "review_bridge",
+        "reducer",
+        "queue",
+        "audit"
+      ],
+      "properties": {
+        "ledger": {"type": "string", "minLength": 1},
+        "prompt": {"type": "string", "minLength": 1},
+        "candidate_policy": {"type": "string", "minLength": 1},
+        "prefilter": {"type": "string", "minLength": 1},
+        "coverage_validator": {"type": "string", "minLength": 1},
+        "batch_policy": {"const": "claim-verifier-batch-v3-full-http-body"},
+        "cost_policy": {"const": "claim-cost-policy-v3-user-approved"},
+        "negative_policy": {"type": "string", "minLength": 1},
+        "negative_validator": {"type": "string", "minLength": 1},
+        "review_adapter": {"type": "string", "minLength": 1},
+        "review_bridge": {"type": "string", "minLength": 1},
+        "reducer": {"type": "string", "minLength": 1},
+        "queue": {"type": "string", "minLength": 1},
+        "audit": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"document_ready": {"const": true}},
+        "required": ["document_ready"]
+      },
+      "then": {
+        "properties": {
+          "delivery_track": {"enum": ["A", "B"]},
+          "route_mode": {"const": "llm"},
+          "scope": {"const": "full"},
+          "extraction_status": {"const": "success"},
+          "accounting_status": {"const": "complete"},
+          "resolution_status": {"const": "resolved"},
+          "termination_reason": {"const": "converged"}
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

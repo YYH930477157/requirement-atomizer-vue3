@@ -1,0 +1,109 @@
+{
+  "schema": "claim-ledger-golden-baseline-revision/v1",
+  "revision_id": "status-indication-mapping-001-v3-rejection",
+  "dataset_id": "claim_ledger_v1",
+  "dataset_version": "claim-ledger-golden-v3",
+  "fixture_hash_version": "claim-golden-heldout-fixture-hash-v1",
+  "declaration": {
+    "case_id": "status-indication-mapping-001",
+    "scenario": "status_indication_mapping",
+    "partition": "held_out",
+    "tuning_eligible": false
+  },
+  "input": {
+    "case_id": "status-indication-mapping-001",
+    "source": {
+      "origin": "synthetic",
+      "contains_customer_wording": false
+    },
+    "scope": "full",
+    "blocks": [
+      {
+        "block_id": "STATUS-MAP-B1",
+        "order": 1,
+        "type": "paragraph",
+        "text": "The status indication mapping shall be selectable by an authorized maintainer.",
+        "section_path": ["Synthetic functions"],
+        "noise": false
+      }
+    ],
+    "table_items": [],
+    "requirements": [
+      {
+        "ai_req_id": "AIR-STATUS-MAP-1",
+        "title": "状态指示映射选择",
+        "description": "产品应支持授权维护人员选择状态指示映射。",
+        "source_quote": "The status indication mapping shall be selectable by an authorized maintainer.",
+        "source_block_ids": ["STATUS-MAP-B1"],
+        "sub_items": [],
+        "acceptance_criteria": []
+      }
+    ],
+    "review_states": {},
+    "controlled_term_aliases": {
+      "authorized maintainer": ["授权维护人员"],
+      "status indication mapping": ["状态指示映射"]
+    },
+    "review_expectations": {
+      "target_obligation_subject": "产品",
+      "target_modality": "应支持",
+      "role_object_preservation": {
+        "role": {"source": "authorized maintainer", "target": "授权维护人员"},
+        "object": {"source": "status indication mapping", "target": "状态指示映射"}
+      }
+    }
+  },
+  "expected": {
+    "case_id": "status-indication-mapping-001",
+    "catalog_count": 1,
+    "group_count": 1,
+    "container_mapping_count": 0,
+    "accounting_status": "complete",
+    "resolution_status": "open",
+    "claims": [
+      {
+        "selector": {
+          "block_id": "STATUS-MAP-B1",
+          "text": "The status indication mapping shall be selectable by an authorized maintainer."
+        },
+        "catalog": {
+          "source_kind": "paragraph_sentence",
+          "eligibility": "claim"
+        },
+        "ledger": {
+          "resolution": "uncertain",
+          "classification": "unknown",
+          "classification_status": "needs_review",
+          "exclusion_kind": null
+        },
+        "coverage": {
+          "validation_method": "independent_semantic",
+          "status": "proposed",
+          "prefilter_status": "pass",
+          "edge_count": 1
+        }
+      }
+    ]
+  },
+  "adjudication": {
+    "review_contract_version": "claim-golden-heldout-review-v2",
+    "prepared_by": "Codex",
+    "reviewed_by": "YYH",
+    "reviewed_at": "2026-07-28T12:18:00.000Z",
+    "case_id": "status-indication-mapping-001",
+    "claim_id": "CLM-24fc4484bbafac71",
+    "claim_hash": "sha256:24fc4484bbafac7115d8cecb5a4b9f7ac45ec4df3907f5b7ea4cbbd5f0b0fef7",
+    "fixture_hash": "sha256:40c065202f1836388720e8739b0bb8e45276eefc791ca9f27715a028efa47a6a",
+    "dimension_verdicts": {
+      "claim_boundary": "disagree",
+      "eligibility": "disagree",
+      "resolution": "disagree",
+      "coverage": "disagree",
+      "target_obligation_subject": "agree",
+      "target_modality": "disagree",
+      "role_object_preservation": "disagree"
+    },
+    "overall_verdict": "disagree",
+    "rationale": "有点多了，这里体现接口输出可配置就好了，没必要往用户场景考虑"
+  }
+}

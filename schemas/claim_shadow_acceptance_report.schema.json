@@ -1,0 +1,468 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://requirement-atomizer.local/schemas/claim_shadow_acceptance_report.schema.json",
+  "title": "Claim shadow Phase 0 acceptance report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "runner_version",
+    "dataset_id",
+    "status",
+    "phase1_entry_recommendation",
+    "gates",
+    "totals",
+    "curation_summary",
+    "golden_held_out_summary",
+    "runs",
+    "blocking_reasons"
+  ],
+  "properties": {
+    "schema": {"const": "claim-shadow-acceptance-report/v7"},
+    "runner_version": {"const": "claim-shadow-acceptance-v9"},
+    "dataset_id": {"$ref": "#/$defs/safe_id"},
+    "status": {"enum": ["pass", "blocked", "fail"]},
+    "phase1_entry_recommendation": {
+      "enum": ["eligible_for_user_decision", "not_eligible"]
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_integrity",
+        "consecutive_runs",
+        "current_component_versions",
+        "component_version_consistency",
+        "full_scope",
+        "extraction_success",
+        "source_accounting",
+        "real_semantic_verifier",
+        "verifier_budget",
+        "baseline_lineage",
+        "verifier_cost",
+        "golden_held_out_adjudication",
+        "human_adjudication",
+        "negative_audit",
+        "known_omissions"
+      ],
+      "properties": {
+        "artifact_integrity": {"$ref": "#/$defs/gate"},
+        "consecutive_runs": {"$ref": "#/$defs/gate"},
+        "current_component_versions": {"$ref": "#/$defs/gate"},
+        "component_version_consistency": {"$ref": "#/$defs/gate"},
+        "full_scope": {"$ref": "#/$defs/gate"},
+        "extraction_success": {"$ref": "#/$defs/gate"},
+        "source_accounting": {"$ref": "#/$defs/gate"},
+        "real_semantic_verifier": {"$ref": "#/$defs/gate"},
+        "verifier_budget": {"$ref": "#/$defs/gate"},
+        "baseline_lineage": {"$ref": "#/$defs/gate"},
+        "verifier_cost": {"$ref": "#/$defs/gate"},
+        "golden_held_out_adjudication": {"$ref": "#/$defs/gate"},
+        "human_adjudication": {"$ref": "#/$defs/gate"},
+        "negative_audit": {"$ref": "#/$defs/gate"},
+        "known_omissions": {"$ref": "#/$defs/gate"}
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_count",
+        "valid_run_count",
+        "document_count",
+        "catalog_total_count",
+        "failed_extraction_units",
+        "eligible_claim_count",
+        "covered_count",
+        "uncertain_count",
+        "verifier_call_count",
+        "verifier_tokens",
+        "final_verifier_call_count",
+        "final_verifier_tokens",
+        "cumulative_verifier_call_count",
+        "cumulative_verifier_failed_call_count",
+        "cumulative_verifier_operation_failure_count",
+        "cumulative_verifier_tokens",
+        "reused_group_count",
+        "candidate_group_count",
+        "reused_group_ratio",
+        "independent_verifier_call_count",
+        "independent_verifier_tokens"
+      ],
+      "properties": {
+        "run_count": {"type": "integer", "minimum": 0},
+        "valid_run_count": {"type": "integer", "minimum": 0},
+        "document_count": {"type": "integer", "minimum": 0},
+        "catalog_total_count": {"type": "integer", "minimum": 0},
+        "failed_extraction_units": {"type": "integer", "minimum": 0},
+        "eligible_claim_count": {"type": "integer", "minimum": 0},
+        "covered_count": {"type": "integer", "minimum": 0},
+        "uncertain_count": {"type": "integer", "minimum": 0},
+        "verifier_call_count": {"type": "integer", "minimum": 0},
+        "verifier_tokens": {"type": "integer", "minimum": 0},
+        "final_verifier_call_count": {"type": "integer", "minimum": 0},
+        "final_verifier_tokens": {"type": "integer", "minimum": 0},
+        "cumulative_verifier_call_count": {"type": "integer", "minimum": 0},
+        "cumulative_verifier_failed_call_count": {"type": "integer", "minimum": 0},
+        "cumulative_verifier_operation_failure_count": {"type": "integer", "minimum": 0},
+        "cumulative_verifier_tokens": {"type": "integer", "minimum": 0},
+        "reused_group_count": {"type": "integer", "minimum": 0},
+        "candidate_group_count": {"type": "integer", "minimum": 0},
+        "reused_group_ratio": {"$ref": "#/$defs/ratio"},
+        "independent_verifier_call_count": {"type": "integer", "minimum": 0},
+        "independent_verifier_tokens": {"type": "integer", "minimum": 0}
+      }
+    },
+    "curation_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "human_review_status",
+        "reviewed_run_count",
+        "reviewed_claim_count",
+        "stale_adjudication_count",
+        "duplicate_adjudication_count",
+        "missing_rationale_count",
+        "known_omission_total",
+        "known_omission_passed",
+        "verifier_disagreement_count",
+        "negative_audit_policy_version",
+        "negative_audit_sample_count",
+        "negative_audit_reviewed_count",
+        "audit_disagreement_rate"
+      ],
+      "properties": {
+        "human_review_status": {"enum": ["pending", "reviewed"]},
+        "reviewed_run_count": {"type": "integer", "minimum": 0},
+        "reviewed_claim_count": {"type": "integer", "minimum": 0},
+        "stale_adjudication_count": {"type": "integer", "minimum": 0},
+        "duplicate_adjudication_count": {"type": "integer", "minimum": 0},
+        "missing_rationale_count": {"type": "integer", "minimum": 0},
+        "known_omission_total": {"type": "integer", "minimum": 0},
+        "known_omission_passed": {"type": "integer", "minimum": 0},
+        "verifier_disagreement_count": {"type": "integer", "minimum": 0},
+        "negative_audit_policy_version": {
+          "const": "claim-negative-audit-v2"
+        },
+        "negative_audit_sample_count": {"type": "integer", "minimum": 0},
+        "negative_audit_reviewed_count": {"type": "integer", "minimum": 0},
+        "audit_disagreement_rate": {"$ref": "#/$defs/ratio"}
+      }
+    },
+    "golden_held_out_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_status",
+        "error_code",
+        "dataset_id",
+        "dataset_version",
+        "human_review_status",
+        "evidence_status",
+        "held_out_case_count",
+        "held_out_claim_count",
+        "reviewed_case_count",
+        "reviewed_claim_count",
+        "approved_claim_count",
+        "stale_adjudication_count",
+        "duplicate_adjudication_count",
+        "missing_adjudication_count",
+        "extra_adjudication_count",
+        "invalid_adjudication_count",
+        "disagreement_count",
+        "followup_count",
+        "historical_review_count",
+        "historical_disagreement_count",
+        "baseline_revision_count"
+      ],
+      "properties": {
+        "artifact_status": {"enum": ["valid", "invalid"]},
+        "error_code": {"type": ["string", "null"]},
+        "dataset_id": {"type": ["string", "null"]},
+        "dataset_version": {"type": ["string", "null"]},
+        "human_review_status": {"enum": ["pending", "reviewed"]},
+        "evidence_status": {"enum": ["pending", "invalid", "not_approved", "complete"]},
+        "held_out_case_count": {"type": "integer", "minimum": 0},
+        "held_out_claim_count": {"type": "integer", "minimum": 0},
+        "reviewed_case_count": {"type": "integer", "minimum": 0},
+        "reviewed_claim_count": {"type": "integer", "minimum": 0},
+        "approved_claim_count": {"type": "integer", "minimum": 0},
+        "stale_adjudication_count": {"type": "integer", "minimum": 0},
+        "duplicate_adjudication_count": {"type": "integer", "minimum": 0},
+        "missing_adjudication_count": {"type": "integer", "minimum": 0},
+        "extra_adjudication_count": {"type": "integer", "minimum": 0},
+        "invalid_adjudication_count": {"type": "integer", "minimum": 0},
+        "disagreement_count": {"type": "integer", "minimum": 0},
+        "followup_count": {"type": "integer", "minimum": 0},
+        "historical_review_count": {"type": "integer", "minimum": 0},
+        "historical_disagreement_count": {"type": "integer", "minimum": 0},
+        "baseline_revision_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "runs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/run"}
+    },
+    "blocking_reasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z0-9_]+$"}
+    }
+  },
+  "$defs": {
+    "safe_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason"],
+      "properties": {
+        "status": {"enum": ["pass", "blocked", "fail"]},
+        "reason": {"type": "string", "pattern": "^[a-z0-9_]+$"}
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "generation_run_id",
+        "document_id",
+        "sequence",
+        "artifact_status",
+        "error_code",
+        "committed_at",
+        "document_generation_id",
+        "catalog_generation_id",
+        "target_generation_id",
+        "component_versions_current",
+        "component_versions",
+        "scope",
+        "extraction_status",
+        "accounting_status",
+        "resolution_status",
+        "termination_reason",
+        "route_mode",
+        "semantic_verifier_enabled",
+        "verifier_runtime_fingerprint",
+        "attempt_chain",
+        "metrics"
+      ],
+      "properties": {
+        "run_id": {"$ref": "#/$defs/safe_id"},
+        "generation_run_id": {
+          "anyOf": [
+            {"$ref": "#/$defs/safe_id"},
+            {"type": "null"}
+          ]
+        },
+        "document_id": {"$ref": "#/$defs/safe_id"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "artifact_status": {"enum": ["valid", "invalid"]},
+        "error_code": {"type": ["string", "null"]},
+        "committed_at": {"type": ["string", "null"]},
+        "document_generation_id": {"type": ["string", "null"]},
+        "catalog_generation_id": {"type": ["string", "null"]},
+        "target_generation_id": {"type": ["string", "null"]},
+        "component_versions_current": {"type": ["boolean", "null"]},
+        "component_versions": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "scope": {"type": ["string", "null"]},
+        "extraction_status": {"type": ["string", "null"]},
+        "accounting_status": {"type": ["string", "null"]},
+        "resolution_status": {"type": ["string", "null"]},
+        "termination_reason": {"type": ["string", "null"]},
+        "route_mode": {"type": ["string", "null"]},
+        "semantic_verifier_enabled": {"type": ["boolean", "null"]},
+        "verifier_runtime_fingerprint": {"type": ["string", "null"]},
+        "attempt_chain": {
+          "anyOf": [
+            {"$ref": "#/$defs/attempt_chain"},
+            {"type": "null"}
+          ]
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "catalog_total_count",
+            "failed_extraction_units",
+            "eligible_claim_count",
+            "covered_count",
+            "semantic_excluded_count",
+            "structural_excluded_count",
+            "uncertain_count",
+            "invalid_group_count",
+            "invalid_edge_count",
+            "verifier_call_count",
+            "verifier_failed_calls",
+            "verifier_operation_failure_count",
+            "verifier_tokens",
+            "independent_verifier_call_count",
+            "independent_verifier_tokens",
+            "verifier_usage_complete",
+            "no_ledger_baseline_lineage_match",
+            "verifier_budget_policy_version",
+            "verifier_budget_max_calls",
+            "verifier_budget_max_total_tokens",
+            "verifier_budget_remaining_calls",
+            "verifier_budget_remaining_tokens",
+            "verifier_budget_denied",
+            "verifier_budget_exhaustion_reason",
+            "verifier_cost_policy_version",
+            "verifier_call_increase_limit",
+            "verifier_token_increase_limit",
+            "no_ledger_baseline_call_count",
+            "no_ledger_baseline_tokens",
+            "verifier_cost_gate_status",
+            "phase0_cost_gate_met"
+          ],
+          "properties": {
+            "catalog_total_count": {"type": "integer", "minimum": 0},
+            "failed_extraction_units": {"type": "integer", "minimum": 0},
+            "eligible_claim_count": {"type": "integer", "minimum": 0},
+            "covered_count": {"type": "integer", "minimum": 0},
+            "semantic_excluded_count": {"type": "integer", "minimum": 0},
+            "structural_excluded_count": {"type": "integer", "minimum": 0},
+            "uncertain_count": {"type": "integer", "minimum": 0},
+            "invalid_group_count": {"type": "integer", "minimum": 0},
+            "invalid_edge_count": {"type": "integer", "minimum": 0},
+            "verifier_call_count": {"type": "integer", "minimum": 0},
+            "verifier_failed_calls": {"type": "integer", "minimum": 0},
+            "verifier_operation_failure_count": {"type": "integer", "minimum": 0},
+            "verifier_tokens": {"type": "integer", "minimum": 0},
+            "independent_verifier_call_count": {"type": "integer", "minimum": 0},
+            "independent_verifier_tokens": {"type": "integer", "minimum": 0},
+            "verifier_usage_complete": {"type": "boolean"},
+            "no_ledger_baseline_lineage_match": {"type": "boolean"},
+            "verifier_budget_policy_version": {"type": "string"},
+            "verifier_budget_max_calls": {"type": "integer", "minimum": 0},
+            "verifier_budget_max_total_tokens": {"type": "integer", "minimum": 0},
+            "verifier_budget_remaining_calls": {"type": "integer", "minimum": 0},
+            "verifier_budget_remaining_tokens": {"type": "integer", "minimum": 0},
+            "verifier_budget_denied": {"type": "boolean"},
+            "verifier_budget_exhaustion_reason": {"type": "string"},
+            "verifier_cost_policy_version": {"type": "string"},
+            "verifier_call_increase_limit": {"type": "number", "minimum": 0, "maximum": 1},
+            "verifier_token_increase_limit": {"type": "number", "minimum": 0, "maximum": 1},
+            "no_ledger_baseline_call_count": {"type": "integer", "minimum": 0},
+            "no_ledger_baseline_tokens": {"type": "integer", "minimum": 0},
+            "verifier_call_increase_ratio": {"$ref": "#/$defs/ratio"},
+            "verifier_token_increase_ratio": {"$ref": "#/$defs/ratio"},
+            "avg_verifier_calls_per_unit": {"$ref": "#/$defs/ratio"},
+            "verifier_tokens_per_claim": {"$ref": "#/$defs/ratio"},
+            "prefilter_reject_rate": {"$ref": "#/$defs/ratio"},
+            "deterministic_verbatim_ratio": {"$ref": "#/$defs/ratio"},
+            "semantic_verifier_candidate_ratio": {"$ref": "#/$defs/ratio"},
+            "sibling_claim_open_rate": {"$ref": "#/$defs/ratio"},
+            "verifier_cost_gate_status": {
+              "enum": ["pass", "fail", "not_run", "insufficient_data"]
+            },
+            "phase0_cost_gate_met": {"type": ["boolean", "null"]}
+          }
+        }
+      }
+    },
+    "attempt_chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chain_id",
+        "attempt_id",
+        "attempt_count",
+        "attempt_kind",
+        "attempt_status",
+        "committed_attempt_id",
+        "committed_attempt_kind",
+        "committed_attempt_status",
+        "tail_is_committed",
+        "validated_ledger_event_count",
+        "cumulative_verifier_call_count",
+        "cumulative_verifier_failed_call_count",
+        "cumulative_verifier_operation_failure_count",
+        "cumulative_verifier_tokens",
+        "cumulative_verifier_usage_complete",
+        "cumulative_verifier_call_ratio",
+        "cumulative_verifier_token_ratio",
+        "reused_group_count",
+        "candidate_group_count",
+        "reused_group_ratio",
+        "source_generations"
+      ],
+      "properties": {
+        "chain_id": {"$ref": "#/$defs/sha256"},
+        "attempt_id": {"$ref": "#/$defs/sha256"},
+        "attempt_count": {"type": "integer", "minimum": 1},
+        "attempt_kind": {"enum": ["cold", "ledger_only"]},
+        "attempt_status": {"enum": ["complete", "incomplete", "failed"]},
+        "committed_attempt_id": {"$ref": "#/$defs/sha256"},
+        "committed_attempt_kind": {"enum": ["cold", "ledger_only"]},
+        "committed_attempt_status": {"enum": ["complete", "incomplete", "failed"]},
+        "tail_is_committed": {"type": "boolean"},
+        "validated_ledger_event_count": {"type": "integer", "minimum": 1},
+        "cumulative_verifier_call_count": {"type": "integer", "minimum": 0},
+        "cumulative_verifier_failed_call_count": {"type": "integer", "minimum": 0},
+        "cumulative_verifier_operation_failure_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cumulative_verifier_tokens": {"type": "integer", "minimum": 0},
+        "cumulative_verifier_usage_complete": {"type": "boolean"},
+        "cumulative_verifier_call_ratio": {"$ref": "#/$defs/ratio"},
+        "cumulative_verifier_token_ratio": {"$ref": "#/$defs/ratio"},
+        "reused_group_count": {"type": "integer", "minimum": 0},
+        "candidate_group_count": {"type": "integer", "minimum": 0},
+        "reused_group_ratio": {"$ref": "#/$defs/ratio"},
+        "source_generations": {"$ref": "#/$defs/source_generations"}
+      }
+    },
+    "source_generations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_generation_id",
+        "catalog_generation_id",
+        "target_generation_id",
+        "requirements_sha256",
+        "reuse_generation_run_id",
+        "reuse_attempt_id"
+      ],
+      "properties": {
+        "document_generation_id": {"$ref": "#/$defs/sha256"},
+        "catalog_generation_id": {"$ref": "#/$defs/sha256"},
+        "target_generation_id": {"$ref": "#/$defs/sha256"},
+        "requirements_sha256": {"$ref": "#/$defs/sha256"},
+        "reuse_generation_run_id": {
+          "anyOf": [
+            {"$ref": "#/$defs/safe_id"},
+            {"type": "null"}
+          ]
+        },
+        "reuse_attempt_id": {
+          "anyOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ratio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator", "value"],
+      "properties": {
+        "numerator": {"type": "integer", "minimum": 0},
+        "denominator": {"type": "integer", "minimum": 0},
+        "value": {"type": ["number", "null"], "minimum": 0}
+      }
+    }
+  }
+}

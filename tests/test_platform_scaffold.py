@@ -939,6 +939,8 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertIn("llm_client", py_modules)
         for module in ("agent_eval", "agent_policy", "decide_trace"):
             self.assertIn(module, py_modules)
+        for module in ("claim_acceptance", "claim_review_packet", "claim_review_import"):
+            self.assertIn(module, py_modules)
         for module in REQUIREMENTS_ANALYSIS_MODULES:
             self.assertIn(module, py_modules)
         self.assertNotIn("kb_api", py_modules)
@@ -957,6 +959,9 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertEqual(scripts["validate-vault"], "requirement_kb.vault:main")
         self.assertEqual(scripts["validate-atomic-requirements"], "atomic_requirement_schema:main")
         self.assertEqual(scripts["validate-llm-reviews"], "llm_review_schema:main")
+        self.assertEqual(scripts["claim-shadow-acceptance"], "claim_acceptance:main")
+        self.assertEqual(scripts["claim-shadow-review-packet"], "claim_review_packet:main")
+        self.assertEqual(scripts["claim-shadow-review-import"], "claim_review_import:main")
         self.assertIn("requirement_kb*", payload["tool"]["setuptools"]["packages"]["find"]["include"])
         self.assertEqual(payload["project"]["optional-dependencies"]["gui"], ["PySide6>=6.6"])
         self.assertEqual(payload["project"]["optional-dependencies"]["package"], ["pyinstaller>=6.0"])
@@ -968,6 +973,7 @@ class PlatformScaffoldTests(unittest.TestCase):
 
         for module in REQUIREMENTS_ANALYSIS_MODULES:
             self.assertIn(f'"{module}"', spec_text)
+        self.assertIn('"claim_review_import"', spec_text)
 
     def test_write_jsonl_writes_utf8_lines(self) -> None:
         path = ROOT / ".tmp_test_review_results.jsonl"

@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_coverage_group.schema.json",
+  "title": "Claim Coverage Group v3",
+  "type": "object",
+  "required": [
+    "schema",
+    "document_generation_id",
+    "catalog_generation_id",
+    "claim_id",
+    "claim_hash",
+    "coverage_group_id",
+    "source_evidence",
+    "edges",
+    "proposal_basis",
+    "prefilter",
+    "validation_method",
+    "verifier_runtime_fingerprint",
+    "validator_version",
+    "validator_request_id",
+    "validator_checks",
+    "validator_reason",
+    "validation_source",
+    "validation_input_hash",
+    "validation_reused",
+    "status",
+    "invalid_reason"
+  ],
+  "properties": {
+    "schema": {"const": "claim-coverage-group/v3"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "claim_hash": {"$ref": "#/$defs/hash"},
+    "coverage_group_id": {"type": "string", "pattern": "^CGR-[0-9a-f]{16}$"},
+    "source_evidence": {"$ref": "#/$defs/source_evidence"},
+    "edges": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/edge"}
+    },
+    "proposal_basis": {
+      "type": "array",
+      "items": {"enum": ["source_quote_span", "shared_block_locator"]},
+      "uniqueItems": true
+    },
+    "prefilter": {"$ref": "#/$defs/prefilter"},
+    "validation_method": {
+      "enum": ["deterministic_verbatim", "independent_semantic", "expert"]
+    },
+    "verifier_runtime_fingerprint": {"$ref": "#/$defs/hash"},
+    "validator_version": {"type": "string", "minLength": 1},
+    "validator_request_id": {"type": "string"},
+    "validator_checks": {
+      "type": "object",
+      "properties": {
+        "subject": {"type": "boolean"},
+        "modality": {"type": "boolean"},
+        "polarity": {"type": "boolean"},
+        "quantities_units": {"type": "boolean"},
+        "conditions_exceptions": {"type": "boolean"},
+        "scope": {"type": "boolean"},
+        "target_obligation_framing": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "validator_reason": {"type": "string"},
+    "validation_source": {
+      "type": "object",
+      "required": ["generation_run_id", "request_id"],
+      "properties": {
+        "generation_run_id": {"type": "string"},
+        "request_id": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "validation_input_hash": {"$ref": "#/$defs/hash"},
+    "validation_reused": {"type": "boolean"},
+    "status": {"enum": ["proposed", "validated", "invalid"]},
+    "invalid_reason": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "validation_method": {"const": "deterministic_verbatim"}
+        },
+        "required": ["validation_method"]
+      },
+      "then": {
+        "properties": {
+          "validator_version": {
+            "const": "deterministic-verbatim-v2-product-obligation"
+          },
+          "validator_request_id": {"const": ""},
+          "validation_source": {
+            "properties": {
+              "generation_run_id": {"const": ""},
+              "request_id": {"const": ""}
+            }
+          },
+          "validator_checks": {
+            "required": [
+              "subject",
+              "modality",
+              "polarity",
+              "quantities_units",
+              "conditions_exceptions",
+              "scope",
+              "target_obligation_framing"
+            ],
+            "properties": {
+              "subject": {"const": true},
+              "modality": {"const": true},
+              "polarity": {"const": true},
+              "quantities_units": {"const": true},
+              "conditions_exceptions": {"const": true},
+              "scope": {"const": true},
+              "target_obligation_framing": {"const": true}
+            }
+          },
+          "prefilter": {
+            "type": "object",
+            "properties": {"status": {"const": "not_required"}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "validation_method": {"const": "independent_semantic"},
+          "status": {"const": "validated"}
+        },
+        "required": ["validation_method", "status"]
+      },
+      "then": {
+        "properties": {
+          "validator_request_id": {"minLength": 1},
+          "validation_source": {
+            "properties": {
+              "generation_run_id": {"minLength": 1},
+              "request_id": {"minLength": 1}
+            }
+          },
+          "validator_checks": {
+            "required": [
+              "subject",
+              "modality",
+              "polarity",
+              "quantities_units",
+              "conditions_exceptions",
+              "scope",
+              "target_obligation_framing"
+            ],
+            "properties": {
+              "subject": {"const": true},
+              "modality": {"const": true},
+              "polarity": {"const": true},
+              "quantities_units": {"const": true},
+              "conditions_exceptions": {"const": true},
+              "scope": {"const": true},
+              "target_obligation_framing": {"const": true}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "validation_method": {"const": "independent_semantic"}
+        },
+        "required": ["validation_method"]
+      },
+      "then": {
+        "properties": {
+          "prefilter": {
+            "type": "object",
+            "properties": {
+              "status": {"enum": ["pass", "reject", "not_applicable"]}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "prefilter": {
+            "type": "object",
+            "properties": {"status": {"const": "reject"}},
+            "required": ["status"]
+          }
+        },
+        "required": ["prefilter"]
+      },
+      "then": {"properties": {"status": {"const": "invalid"}}}
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "target_fingerprint": {
+      "type": "string",
+      "pattern": "^(?:sha256:)?[0-9a-f]{64}$",
+      "description": "Current review-subject fingerprints are bare SHA-256 hex; prefixed values remain schema-compatible."
+    },
+    "source_evidence": {
+      "type": "object",
+      "required": ["text", "claim_start", "claim_end", "match_method", "locator"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "claim_start": {"type": "integer", "minimum": 0},
+        "claim_end": {"type": "integer", "minimum": 0},
+        "match_method": {"const": "verbatim_span"},
+        "locator": {
+          "type": "object",
+          "required": ["block_id", "position_basis"],
+          "properties": {
+            "block_id": {"type": "string", "minLength": 1},
+            "position_basis": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "produced_evidence": {
+      "type": "object",
+      "required": [
+        "field",
+        "item_index",
+        "start",
+        "end",
+        "position_basis",
+        "field_value_hash",
+        "text"
+      ],
+      "properties": {
+        "field": {"enum": ["title", "description", "sub_items", "acceptance_criteria"]},
+        "item_index": {"type": ["integer", "null"], "minimum": 0},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 0},
+        "position_basis": {"const": "target_field_unicode_codepoints"},
+        "field_value_hash": {"$ref": "#/$defs/hash"},
+        "text": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "edge": {
+      "type": "object",
+      "required": [
+        "edge_id",
+        "target_kind",
+        "target_generation_id",
+        "target_requirement_id",
+        "target_fingerprint",
+        "target_review_status",
+        "target_review_eligibility",
+        "target_review_revision",
+        "review_adapter_version",
+        "relation",
+        "produced_evidence"
+      ],
+      "properties": {
+        "edge_id": {"type": "string", "pattern": "^CED-[0-9a-f]{16}$"},
+        "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
+        "target_generation_id": {"$ref": "#/$defs/hash"},
+        "target_requirement_id": {"type": "string", "minLength": 1},
+        "target_fingerprint": {"$ref": "#/$defs/target_fingerprint"},
+        "target_review_status": {"type": "string", "minLength": 1},
+        "target_review_eligibility": {"enum": ["active", "rejected", "unknown"]},
+        "target_review_revision": {"$ref": "#/$defs/hash"},
+        "review_adapter_version": {"type": "string", "minLength": 1},
+        "relation": {"enum": ["generated_from", "merged_into"]},
+        "produced_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/produced_evidence"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "fact": {
+      "type": "object",
+      "required": ["kind", "value", "aliases"],
+      "properties": {
+        "kind": {"enum": ["code", "standard", "unit_value", "number", "controlled_term"]},
+        "value": {"type": "string", "minLength": 1},
+        "aliases": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "prefilter": {
+      "type": "object",
+      "required": ["version", "status", "protected_facts", "missing_protected_facts"],
+      "properties": {
+        "version": {"const": "claim-edge-prefilter-v3"},
+        "status": {"enum": ["pass", "reject", "not_applicable", "not_required"]},
+        "protected_facts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/fact"},
+          "uniqueItems": true
+        },
+        "missing_protected_facts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/fact"},
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

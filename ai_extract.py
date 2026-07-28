@@ -33,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable
 
 from cosem_behavior_spec import extract_codes, extract_ints
@@ -44,7 +45,13 @@ from compliance import (
     normalize_obligations,
     resolve_source_backed_instrument,
 )
-from llm_client import LLMClientConfig, LLMError, chat_json
+from llm_client import (
+    LLMClientConfig,
+    LLMError,
+    LLMRequestBudget,
+    chat_json,
+    llm_attempt_policy,
+)
 from io_utils import read_jsonl_recover_torn_tail
 from llm_pipeline import (
     DEFAULT_PIPELINE_PATH,
@@ -77,7 +84,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v21"  # v21：合规证书/法规/声明独立 compliance 类型；v20：chapter 单元全文进入 prompt
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v23"  # v23：正式 target 叶子强制自包含产品义务成文
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -87,6 +94,9 @@ DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
 AI_REQUIREMENTS_META = "ai_requirements.meta.json"
+AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION = "ai-requirements-producer-lineage-v2"
+AI_NORMATIVE_FRAMING_VERSION = "ai-normative-framing-v2"
+NO_LEDGER_BASELINE_LINEAGE_VERSION = "no-ledger-baseline-lineage-v2"
 COMPLIANCE_REQUIREMENTS = "compliance_requirements.json"
 AI_REQUIREMENTS_PARTIAL = "ai_requirements.partial.json"
 AI_PARTIAL_SCHEMA = "ai-requirements-partial/v1"
@@ -101,6 +111,90 @@ CONCURRENCY_ENV = "RATOMIZER_LLM_CONCURRENCY"
 AI_EXTRACT_MIN_MAX_TOKENS = 6144
 
 ChatFn = Callable[[str, str], dict[str, Any]]
+_DEFAULT_CHAT_JSON = chat_json
+CLAIM_SHADOW_VERIFY_ENV = "RATOMIZER_CLAIM_SHADOW_VERIFY"
+CLAIM_SHADOW_VERIFY_ROUNDS_ENV = "RATOMIZER_CLAIM_SHADOW_VERIFY_ROUNDS"
+CLAIM_SHADOW_VERIFY_MAX_CALLS_ENV = "RATOMIZER_CLAIM_SHADOW_VERIFY_MAX_CALLS"
+CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS_ENV = (
+    "RATOMIZER_CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS"
+)
+
+
+def resolve_claim_shadow_verify(explicit: bool | None = None) -> bool:
+    """Independent claim coverage verification is on for real LLM shadow runs."""
+    if explicit is not None:
+        return bool(explicit)
+    raw = os.environ.get(CLAIM_SHADOW_VERIFY_ENV, "").strip().lower()
+    if not raw:
+        return True
+    return raw not in ("0", "false", "no", "off")
+
+
+def resolve_claim_shadow_verify_rounds(explicit: int | None = None) -> int:
+    if explicit is None:
+        try:
+            explicit = int(os.environ.get(CLAIM_SHADOW_VERIFY_ROUNDS_ENV, "1"))
+        except ValueError:
+            explicit = 1
+    return max(1, min(3, int(explicit)))
+
+
+def _resolve_nonnegative_int_env(name: str, explicit: int | None = None) -> int:
+    if explicit is None:
+        try:
+            explicit = int(os.environ.get(name, "0"))
+        except ValueError:
+            explicit = 0
+    if isinstance(explicit, bool):
+        return 0
+    return max(0, int(explicit))
+
+
+def resolve_claim_shadow_verify_max_calls(explicit: int | None = None) -> int:
+    """Return the explicitly authorized verifier HTTP-attempt ceiling."""
+    return _resolve_nonnegative_int_env(CLAIM_SHADOW_VERIFY_MAX_CALLS_ENV, explicit)
+
+
+def resolve_claim_shadow_verify_max_total_tokens(explicit: int | None = None) -> int:
+    """Return the explicitly authorized verifier aggregate-token ceiling."""
+    return _resolve_nonnegative_int_env(
+        CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS_ENV,
+        explicit,
+    )
+
+
+def claim_shadow_verifier_budget() -> LLMRequestBudget | None:
+    """Create one generation-wide budget only when both hard limits are authorized."""
+    max_calls = resolve_claim_shadow_verify_max_calls()
+    max_total_tokens = resolve_claim_shadow_verify_max_total_tokens()
+    if max_calls <= 0 or max_total_tokens <= 0:
+        return None
+    return LLMRequestBudget(max_calls=max_calls, max_tokens=max_total_tokens)
+
+
+def _chat_json_accounted(
+    config: LLMClientConfig,
+    system: str,
+    user: str,
+    *,
+    request_budget: LLMRequestBudget | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Preserve test/injected chat functions while collecting exact production usage."""
+    if chat_json is _DEFAULT_CHAT_JSON:
+        from llm_client import chat_json_with_meta
+
+        return chat_json_with_meta(
+            config,
+            system,
+            user,
+            request_budget=request_budget,
+        )
+    return chat_json(config, system, user), {
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage_complete": False,
+        "call_count": 1,
+        "failed_call_count": 0,
+    }
 
 
 def _replace_with_retry(source: Path, target: Path, *, attempts: int = 8) -> None:
@@ -158,6 +252,173 @@ def extraction_input_fingerprint(out_dir: Path) -> str:
     return digest.hexdigest()
 
 
+def no_ledger_baseline_lineage(
+    *,
+    input_fingerprint: str,
+    route_mode: str,
+    config: LLMClientConfig | None,
+    unit_mode: str,
+    concurrency: int,
+    merge_chars: int,
+    limit_sections: int | None,
+    sample_ratio: float | None,
+    scope: str,
+    self_check: bool,
+    self_check_rounds: int,
+    verify_enabled: bool,
+    verify_rounds: int,
+) -> dict[str, Any]:
+    """Build a key-free lineage binding for the no-ledger extraction denominator."""
+    context = {
+        "input_fingerprint": str(input_fingerprint),
+        "route_mode": str(route_mode),
+        "unit_mode": str(unit_mode),
+        "concurrency": int(concurrency),
+        "merge_chars": int(merge_chars),
+        "limit_sections": int(limit_sections) if limit_sections is not None else None,
+        "sample_ratio": float(sample_ratio) if sample_ratio is not None else None,
+        "scope": str(scope),
+        "self_check": bool(self_check),
+        "self_check_rounds": int(self_check_rounds),
+        "verify_enabled": bool(verify_enabled),
+        "verify_rounds": int(verify_rounds),
+    }
+    config_payload = None if config is None else {
+        "base_url": str(config.base_url).rstrip("/"),
+        "model": str(config.model),
+        "api_key_env": str(config.api_key_env),
+        "temperature": float(config.temperature),
+        "max_tokens": int(config.max_tokens),
+        "timeout_s": float(config.timeout_s),
+        "max_retries": int(config.max_retries),
+    }
+    json_mode_raw = os.environ.get("RATOMIZER_LLM_JSON_SCHEMA", "").strip().lower()
+    json_mode_enabled = not json_mode_raw or json_mode_raw in {"1", "true", "yes", "on"}
+    payload = {
+        "version": NO_LEDGER_BASELINE_LINEAGE_VERSION,
+        "context": context,
+        "llm_config": config_payload,
+        "json_mode_enabled": json_mode_enabled,
+        "attempt_policy": llm_attempt_policy(),
+        "versions": {
+            "extract_prompt": AI_EXTRACT_PROMPT_VERSION,
+            "extract_guards": EXTRACT_GUARDS_VERSION,
+            "verify_prompt": AI_VERIFY_PROMPT_VERSION,
+            "normative_framing": AI_NORMATIVE_FRAMING_VERSION,
+        },
+    }
+    digest = hashlib.sha256(json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return {
+        "lineage_version": NO_LEDGER_BASELINE_LINEAGE_VERSION,
+        "lineage_fingerprint": f"sha256:{digest}",
+        "lineage_context": context,
+    }
+
+
+def no_ledger_baseline_lineage_matches(
+    baseline_cost: dict[str, Any],
+    *,
+    config: LLMClientConfig | None,
+) -> bool:
+    """Recompute saved baseline lineage under the current effective route config."""
+    context = baseline_cost.get("lineage_context")
+    expected_keys = {
+        "input_fingerprint", "route_mode", "unit_mode", "concurrency", "merge_chars",
+        "limit_sections", "sample_ratio", "scope", "self_check",
+        "self_check_rounds", "verify_enabled", "verify_rounds",
+    }
+    if not isinstance(context, dict) or set(context) != expected_keys:
+        return False
+    if (
+        context.get("route_mode") not in {"llm", "stub"}
+        or context.get("unit_mode") not in {"clause", "chapter"}
+        or context.get("scope") not in {"full", "sample"}
+        or not isinstance(context.get("input_fingerprint"), str)
+        or not context.get("input_fingerprint")
+        or not isinstance(context.get("merge_chars"), int)
+        or isinstance(context.get("merge_chars"), bool)
+        or context["merge_chars"] <= 0
+        or not isinstance(context.get("concurrency"), int)
+        or isinstance(context.get("concurrency"), bool)
+        or not 1 <= context["concurrency"] <= MAX_CONCURRENCY
+        or context.get("limit_sections") is not None
+        and (
+            not isinstance(context.get("limit_sections"), int)
+            or isinstance(context.get("limit_sections"), bool)
+            or context["limit_sections"] <= 0
+        )
+        or context.get("sample_ratio") is not None
+        and (
+            not isinstance(context.get("sample_ratio"), (int, float))
+            or isinstance(context.get("sample_ratio"), bool)
+            or not 0 < float(context["sample_ratio"]) <= 1
+        )
+        or not isinstance(context.get("self_check"), bool)
+        or not isinstance(context.get("verify_enabled"), bool)
+        or not isinstance(context.get("self_check_rounds"), int)
+        or isinstance(context.get("self_check_rounds"), bool)
+        or context["self_check_rounds"] < 0
+        or not isinstance(context.get("verify_rounds"), int)
+        or isinstance(context.get("verify_rounds"), bool)
+        or context["verify_rounds"] < 0
+    ):
+        return False
+    candidate = no_ledger_baseline_lineage(
+        input_fingerprint=context["input_fingerprint"],
+        route_mode=context["route_mode"],
+        config=config,
+        unit_mode=context["unit_mode"],
+        concurrency=context["concurrency"],
+        merge_chars=context["merge_chars"],
+        limit_sections=context["limit_sections"],
+        sample_ratio=context["sample_ratio"],
+        scope=context["scope"],
+        self_check=context["self_check"],
+        self_check_rounds=context["self_check_rounds"],
+        verify_enabled=context["verify_enabled"],
+        verify_rounds=context["verify_rounds"],
+    )
+    return (
+        baseline_cost.get("lineage_version") == candidate["lineage_version"]
+        and baseline_cost.get("lineage_fingerprint") == candidate["lineage_fingerprint"]
+        and context == candidate["lineage_context"]
+    )
+
+
+def current_ai_requirements_producer_lineage() -> dict[str, str]:
+    """Return the code lineage that defines the published B-track target text."""
+    from merged_consistency import MERGED_CONSISTENCY_VERSION
+
+    return {
+        "schema": AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION,
+        "producer": "ai_extract",
+        "extract_prompt_version": AI_EXTRACT_PROMPT_VERSION,
+        "verify_prompt_version": AI_VERIFY_PROMPT_VERSION,
+        "extract_guards_version": EXTRACT_GUARDS_VERSION,
+        "merged_consistency_version": MERGED_CONSISTENCY_VERSION,
+        "normative_framing_version": AI_NORMATIVE_FRAMING_VERSION,
+    }
+
+
+def ai_requirements_producer_is_current(out_dir: Path) -> bool:
+    """Return whether the complete published target was built by the current producer."""
+    path = Path(out_dir).expanduser().resolve() / AI_REQUIREMENTS_META
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("schema") == "ai-requirements-final/v1"
+        and metadata.get("producer_lineage") == current_ai_requirements_producer_lineage()
+    )
+
+
 def write_ai_requirements_metadata(
     out_dir: Path,
     *,
@@ -165,21 +426,293 @@ def write_ai_requirements_metadata(
     run_id: str = "",
     failed_sections: int = 0,
     failed_section_ids: list[str] | None = None,
+    failed_section_block_ids: list[str] | None = None,
+    no_ledger_baseline_cost: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind the published final JSONL to the parsed document generation it consumed."""
     root = Path(out_dir).expanduser().resolve()
     payload = {
         "schema": "ai-requirements-final/v1",
+        "producer_lineage": current_ai_requirements_producer_lineage(),
         "input_fingerprint": str(input_fingerprint or extraction_input_fingerprint(root)),
         "run_id": str(run_id or ""),
         "failed_sections": int(failed_sections),
         "failed_section_ids": list(failed_section_ids or []),
+        "failed_section_block_ids": list(failed_section_block_ids or []),
+        "no_ledger_baseline_cost": {
+            "call_count": max(0, int((no_ledger_baseline_cost or {}).get("call_count") or 0)),
+            "failed_call_count": max(
+                0, int((no_ledger_baseline_cost or {}).get("failed_call_count") or 0)
+            ),
+            "total_tokens": max(0, int((no_ledger_baseline_cost or {}).get("total_tokens") or 0)),
+            "usage_complete": (no_ledger_baseline_cost or {}).get("usage_complete") is True,
+            "lineage_version": str(
+                (no_ledger_baseline_cost or {}).get("lineage_version") or ""
+            ),
+            "lineage_fingerprint": str(
+                (no_ledger_baseline_cost or {}).get("lineage_fingerprint") or ""
+            ),
+            "lineage_context": dict(
+                (no_ledger_baseline_cost or {}).get("lineage_context") or {}
+            ),
+            "lineage_match": (no_ledger_baseline_cost or {}).get("lineage_match") is True,
+        },
     }
     _atomic_write_bytes(
         root / AI_REQUIREMENTS_META,
         (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"),
     )
     return payload
+
+
+def reusable_claim_groups_for_runtime(
+    snapshot: dict[str, Any] | None,
+    verifier_runtime: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Reuse terminal semantic decisions only under the identical verifier runtime."""
+    if not _claim_runtime_matches(snapshot, verifier_runtime):
+        return []
+    return [dict(group) for group in ((snapshot or {}).get("groups") or [])
+            if isinstance(group, dict)]
+
+
+def _claim_runtime_matches(
+    snapshot: dict[str, Any] | None,
+    verifier_runtime: dict[str, Any],
+) -> bool:
+    current_fingerprint = str(verifier_runtime.get("fingerprint") or "")
+    generation = dict((snapshot or {}).get("generation_meta") or {})
+    shadow_meta = dict(generation.get("shadow_meta") or {})
+    previous_runtime = dict(shadow_meta.get("verifier_runtime") or {})
+    return bool(
+        current_fingerprint
+        and previous_runtime.get("fingerprint") == current_fingerprint
+    )
+
+
+def reusable_claim_negatives_for_runtime(
+    snapshot: dict[str, Any] | None,
+    verifier_runtime: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Reuse validated negative facts only when their full runtime is unchanged."""
+    if not _claim_runtime_matches(snapshot, verifier_runtime):
+        return []
+    rows: list[dict[str, Any]] = []
+    for ledger_row in (snapshot or {}).get("ledger") or []:
+        negative = ledger_row.get("semantic_negative") if isinstance(ledger_row, dict) else None
+        if isinstance(negative, dict) and negative.get("status") == "validated":
+            rows.append(dict(negative))
+    return rows
+
+
+def refresh_claim_shadow(
+    out_dir: Path,
+    *,
+    route: str | None,
+    scope: str = "full",
+) -> dict[str, Any]:
+    """Rebuild only claim artifacts from committed requirements; never call extraction LLMs."""
+    from claim_artifacts import (
+        CLAIM_SNAPSHOT_FILES,
+        CLAIM_VERIFIER_ATTEMPTS,
+        ClaimArtifactError,
+        bootstrap_legacy_attempt_lineage,
+        claim_verifier_attempt_scope,
+        file_sha256,
+        load_committed_attempt_lineage,
+        load_committed_shadow,
+    )
+    from claim_ledger import (
+        b_track_authority_state,
+        make_semantic_coverage_verifier,
+        make_semantic_negative_proposer,
+        make_semantic_negative_verifier,
+        publish_b_track_shadow,
+        semantic_verifier_runtime,
+    )
+
+    root = Path(out_dir).expanduser().resolve()
+    requirements_path = root / AI_REQUIREMENTS
+    requirements_meta_path = root / AI_REQUIREMENTS_META
+    if not requirements_path.is_file() or not requirements_meta_path.is_file():
+        raise FileNotFoundError("committed AI requirements and metadata are required")
+    try:
+        requirements_meta = json.loads(requirements_meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid AI requirements metadata") from exc
+    if not isinstance(requirements_meta, dict):
+        raise ValueError("invalid AI requirements metadata")
+    expected_input = str(requirements_meta.get("input_fingerprint") or "")
+    if not expected_input or expected_input != extraction_input_fingerprint(root):
+        raise ValueError("AI requirements belong to a different parsed document")
+    failed_sections = int(requirements_meta.get("failed_sections") or 0)
+    failed_section_block_ids = [
+        str(block_id)
+        for block_id in (requirements_meta.get("failed_section_block_ids") or [])
+        if str(block_id)
+    ]
+    baseline_cost = dict(requirements_meta.get("no_ledger_baseline_cost") or {})
+    run_id = uuid.uuid4().hex
+    from omission_actions import extraction_operation_lock
+
+    with extraction_operation_lock(root, operation="claim-shadow-refresh"):
+        try:
+            committed_attempt_lineage = load_committed_attempt_lineage(root)
+        except ClaimArtifactError as lineage_error:
+            try:
+                committed_attempt_lineage = bootstrap_legacy_attempt_lineage(root)
+            except ClaimArtifactError:
+                raise lineage_error
+        try:
+            previous_snapshot = load_committed_shadow(root)
+        except Exception:
+            previous_snapshot = None
+        route_config = config_for_route(route)
+        baseline_context = baseline_cost.get("lineage_context")
+        baseline_unit_mode = (
+            str(baseline_context.get("unit_mode") or "")
+            if isinstance(baseline_context, dict)
+            else ""
+        )
+        baseline_config = route_config
+        if baseline_config is not None:
+            from llm_client import apply_min_tokens
+
+            baseline_config = apply_min_tokens(
+                baseline_config,
+                "extract-chapter" if baseline_unit_mode == "chapter" else "extract",
+            )
+        lineage_match = (
+            isinstance(baseline_context, dict)
+            and baseline_context.get("input_fingerprint") == expected_input
+            and no_ledger_baseline_lineage_matches(
+                baseline_cost,
+                config=baseline_config,
+            )
+        )
+        baseline_cost["lineage_match"] = lineage_match
+        if not lineage_match:
+            baseline_cost["usage_complete"] = False
+
+        config = route_config
+        if config is not None:
+            from llm_client import apply_min_tokens
+
+            config = apply_min_tokens(config, "extract")
+        verifier_requested = config is not None and resolve_claim_shadow_verify()
+        verifier_budget = claim_shadow_verifier_budget() if verifier_requested else None
+        verifier_enabled = verifier_requested and verifier_budget is not None
+        if verifier_requested and verifier_budget is None:
+            LOGGER.warning(
+                "claim shadow verifier requested but no positive call/token budget was authorized"
+            )
+        verifier_rounds = resolve_claim_shadow_verify_rounds()
+        budget_snapshot = verifier_budget.snapshot() if verifier_budget is not None else {}
+        verifier_runtime = semantic_verifier_runtime(
+            route_mode="stub" if config is None else "llm",
+            enabled=verifier_enabled,
+            rounds=verifier_rounds,
+            config=config,
+            policy_source="environment",
+            budget_policy_version=LLMRequestBudget.VERSION,
+            max_calls=int(budget_snapshot.get("max_calls") or 0),
+            max_total_tokens=int(budget_snapshot.get("max_tokens") or 0),
+        )
+        reusable_groups = reusable_claim_groups_for_runtime(
+            previous_snapshot,
+            verifier_runtime,
+        )
+        reusable_negatives = reusable_claim_negatives_for_runtime(
+            previous_snapshot,
+            verifier_runtime,
+        )
+        semantic_verifier = None
+        semantic_negative_proposer = None
+        semantic_negative_verifier = None
+        if verifier_enabled:
+            accounted_chat = lambda system, user: _chat_json_accounted(
+                config,
+                system,
+                user,
+                request_budget=verifier_budget,
+            )
+            semantic_verifier = make_semantic_coverage_verifier(
+                accounted_chat,
+                rounds=verifier_rounds,
+            )
+            semantic_negative_proposer = make_semantic_negative_proposer(accounted_chat)
+            semantic_negative_verifier = make_semantic_negative_verifier(
+                accounted_chat,
+                rounds=verifier_rounds,
+            )
+        current_requirements = read_jsonl(requirements_path)
+        from ai_review_actions import read_ai_review_states
+        from claim_catalog import build_catalog_from_directory
+
+        current_catalog = build_catalog_from_directory(root, scope=scope)
+        target_state = b_track_authority_state(
+            current_requirements,
+            read_ai_review_states(root),
+        )
+        previous_attempt = dict(committed_attempt_lineage.get("attempt_chain") or {})
+        reuse_generation_run_id = str(
+            committed_attempt_lineage.get("generation_run_id") or ""
+        )
+        reuse_attempt_id = str(previous_attempt.get("attempt_id") or "")
+        if not reuse_generation_run_id or not reuse_attempt_id:
+            raise ValueError("committed verifier attempt lineage is required for refresh")
+        requirements_request_id = str(requirements_meta.get("run_id") or run_id)
+        with claim_verifier_attempt_scope(
+            root,
+            attempt_kind="ledger_only",
+            attempt_request_id=run_id,
+            requirements_request_id=requirements_request_id,
+            reuse_generation_run_id=reuse_generation_run_id,
+            reuse_attempt_id=reuse_attempt_id,
+            failure_context={
+                "catalog_build": current_catalog,
+                "target_generation_id": target_state["target_generation_id"],
+                "requirements_sha256": file_sha256(requirements_path),
+                "verifier_runtime": verifier_runtime,
+                "baseline_cost": baseline_cost,
+                "verifier_budget": verifier_budget,
+            },
+        ):
+            published = publish_b_track_shadow(
+                root,
+                run_id=run_id,
+                route_mode="stub" if config is None else "llm",
+                extraction_status="partial" if failed_sections else "success",
+                catalog_build=current_catalog,
+                requirements=current_requirements,
+                scope=scope,
+                controlled_term_aliases=load_controlled_term_aliases(root),
+                failed_section_block_ids=failed_section_block_ids,
+                semantic_verifier=semantic_verifier,
+                semantic_negative_proposer=semantic_negative_proposer,
+                semantic_negative_verifier=semantic_negative_verifier,
+                reusable_groups=reusable_groups,
+                reusable_negatives=reusable_negatives,
+                baseline_cost=baseline_cost,
+                verifier_runtime=verifier_runtime,
+                verifier_budget=verifier_budget,
+            )
+    shadow = dict(published.get("shadow") or {})
+    shadow_meta = dict(shadow.get("meta") or {})
+    return {
+        "kind": "claim_shadow_refresh",
+        "route": "stub" if config is None else "openai_compatible",
+        "run_id": run_id,
+        "ledger_only": True,
+        "failed_sections": failed_sections,
+        "claim_shadow": {
+            "status": "published",
+            "accounting_status": shadow_meta.get("accounting_status"),
+            "resolution_status": shadow_meta.get("resolution_status"),
+            "metrics": shadow.get("metrics") or {},
+        },
+        "written": [*CLAIM_SNAPSHOT_FILES, CLAIM_VERIFIER_ATTEMPTS],
+    }
 
 
 def write_compliance_requirements(
@@ -436,7 +969,7 @@ def resolve_self_check_rounds(explicit: int | None = None) -> int:
 
 VERIFY_ENV = "RATOMIZER_AI_VERIFY"  # 二遍语义复核开关（默认开；=0/false/off 关）
 VERIFY_ROUNDS_ENV = "RATOMIZER_AI_VERIFY_ROUNDS"  # 复核投票轮数（默认 2,1..4）
-AI_VERIFY_PROMPT_VERSION = "ai-verify-v2"
+AI_VERIFY_PROMPT_VERSION = "ai-verify-v4"
 DEFAULT_VERIFY_ROUNDS = 2
 MAX_VERIFY_ROUNDS = 4
 
@@ -496,6 +1029,12 @@ SYSTEM_PROMPT = (
     "质量准则：description 必须自包含（研发不回原文即可实现：条件+动作+参数齐全）；"
     "acceptance_criteria 必须可测（有明确的通过/失败判据，避免\"符合要求\"这类空话）；"
     "一个需求点不拆散成多条，不同需求点不合并成一条。"
+    "**产品义务主体**：对已经判定为产品能力需求的句子，description 必须以产品、设备或对应组件"
+    "作为规范义务主体。原文使用被动能力句或角色能力表达（如 X can be configured by Y）时，"
+    "规范化为“产品应支持/允许 Y 配置 X”，不得只写成“Y 可以配置 X”；必须完整保留角色、动作、"
+    "对象、条件和原始约束强度，不得把具体对象泛化。"
+    "每个 description 句子和 sub_items 叶子都必须能脱离相邻句独立读成正式需求；不得借前一句的"
+    "产品主体，让后一个叶子只剩“可以/可由/可通过/能够”等描述性能力表达。"
     "示例：原文 \"The meter shall store at least 12 monthly billing records.\" → "
     "{\"title\": \"存储至少12个月的月结算记录\", "
     "\"description\": \"电表须在本地存储不少于12个月的月结算记录，供结算追溯读取。\", "
@@ -624,6 +1163,84 @@ def build_section_prompt(section: dict[str, Any]) -> str:
 # 像多份文档。对照表注入 doc_context（折进缓存指纹），全文统一译法。失败静默跳过（可选增强）。
 TERM_MAP_FILE = "term_map.json"
 TERM_MAP_MAX = 40
+TERM_MAP_SCHEMA = "ai-term-map/v1"
+_TERM_MAP_HASH_RE = re.compile(r"[0-9a-f]{16}")
+
+
+def _canonical_term_alias(value: str) -> str:
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip()
+
+
+def _term_map_basis(source_terms: list[str]) -> str:
+    return hashlib.sha256(
+        json.dumps(source_terms, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def load_controlled_term_aliases(out_dir: Path) -> dict[str, list[str]]:
+    """Load the source-to-target glossary already fixed before extraction.
+
+    The prefilter must not invent translations. ``term_map.json`` is the only
+    document-local bilingual glossary injected into the extraction prompt, so
+    the ledger consumes that exact mapping and never asks another model to
+    translate protected terms during verification.
+    """
+    path = Path(out_dir).expanduser().resolve() / TERM_MAP_FILE
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid extraction term map JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("extraction term map must be an object")
+    schema = payload.get("schema")
+    if schema != TERM_MAP_SCHEMA:
+        raise ValueError("extraction term map lacks source-backed schema lineage")
+    source_hash = payload.get("hash")
+    terms = payload.get("terms")
+    if (
+        not isinstance(source_hash, str)
+        or _TERM_MAP_HASH_RE.fullmatch(source_hash) is None
+        or not isinstance(terms, list)
+    ):
+        raise ValueError("extraction term map is missing its source fingerprint or terms")
+    source_terms = payload.get("source_terms")
+    if (
+        not isinstance(source_terms, list)
+        or not source_terms
+        or len(source_terms) > TERM_MAP_MAX
+        or not all(isinstance(value, str) and value.strip() for value in source_terms)
+        or _term_map_basis(source_terms) != source_hash
+        or len(terms) > TERM_MAP_MAX
+    ):
+        raise ValueError("extraction term map source lineage is invalid")
+    allowed_sources = {
+        _canonical_term_alias(value).casefold() for value in source_terms
+    }
+
+    aliases_by_source: dict[str, list[str]] = {}
+    seen_aliases: dict[str, set[str]] = {}
+    for index, row in enumerate(terms[:TERM_MAP_MAX]):
+        if not isinstance(row, dict):
+            raise ValueError(f"extraction term map row {index} must be an object")
+        source_value = row.get("en")
+        target_value = row.get("zh")
+        if not isinstance(source_value, str) or not isinstance(target_value, str):
+            raise ValueError(f"extraction term map row {index} must contain string en/zh")
+        source = _canonical_term_alias(source_value).casefold()
+        target = _canonical_term_alias(target_value)
+        if not source or not target:
+            raise ValueError(f"extraction term map row {index} contains an empty en/zh value")
+        if source not in allowed_sources:
+            raise ValueError(f"extraction term map row {index} is not source-backed")
+        aliases = aliases_by_source.setdefault(source, [])
+        normalized_targets = seen_aliases.setdefault(source, set())
+        normalized_target = target.casefold()
+        if normalized_target not in normalized_targets:
+            normalized_targets.add(normalized_target)
+            aliases.append(target)
+    return {source: aliases_by_source[source] for source in sorted(aliases_by_source)}
 
 
 def ensure_term_map(out_dir: Path, chat: ChatFn, entries: list[tuple[str, str]]) -> str:
@@ -631,29 +1248,58 @@ def ensure_term_map(out_dir: Path, chat: ChatFn, entries: list[tuple[str, str]])
     if not entries:
         return ""
     names = [term for term, _ in entries][:TERM_MAP_MAX]
-    basis = hashlib.sha256(json.dumps(names, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    basis = _term_map_basis(names)
     cache_path = out_dir / TERM_MAP_FILE
     if cache_path.exists():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
             if cached.get("hash") == basis and cached.get("terms"):
+                load_controlled_term_aliases(out_dir)
                 return _render_term_map(cached["terms"])
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, ValueError):
             pass
     try:
         payload = chat(
             "你是表计行业术语翻译员。给出每个英文术语的**统一中文译法**（简洁、行业惯用）。"
             "只输出 JSON：{\"terms\": [{\"en\": \"...\", \"zh\": \"...\"}]}。",
             json.dumps({"terms": names}, ensure_ascii=False))
-        terms = [t for t in (payload.get("terms") or [])
-                 if isinstance(t, dict) and t.get("en") and t.get("zh")]
+        allowed_sources = {
+            _canonical_term_alias(name).casefold(): _canonical_term_alias(name)
+            for name in names
+        }
+        terms: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in payload.get("terms") or []:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("en"), str)
+                or not isinstance(row.get("zh"), str)
+            ):
+                continue
+            source_key = _canonical_term_alias(row["en"]).casefold()
+            target = _canonical_term_alias(row["zh"])
+            dedupe_key = (source_key, target.casefold())
+            if (
+                source_key not in allowed_sources
+                or not target
+                or dedupe_key in seen
+            ):
+                continue
+            seen.add(dedupe_key)
+            terms.append({"en": allowed_sources[source_key], "zh": target})
+            if len(terms) >= TERM_MAP_MAX:
+                break
     except Exception as exc:  # 可选增强：失败不影响抽取
         LOGGER.warning("术语对照生成失败（跳过）：%s", str(exc)[:120])
         return ""
     if not terms:
         return ""
-    cache_path.write_text(json.dumps({"hash": basis, "terms": terms}, ensure_ascii=False, indent=2),
-                          encoding="utf-8")
+    cache_path.write_text(json.dumps({
+        "schema": TERM_MAP_SCHEMA,
+        "hash": basis,
+        "source_terms": names,
+        "terms": terms,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
     return _render_term_map(terms)
 
 
@@ -846,6 +1492,118 @@ def _is_reference_stub(req: dict[str, Any]) -> bool:
 
 def _append_note(req: dict[str, Any], note: str) -> None:
     req["notes"] = f"{req['notes']}；{note}" if req.get("notes") else note
+
+
+_TARGET_SENTENCE_SPLIT_RE = re.compile(r"([。！？!?；;\n]+)")
+_SOURCE_NON_MANDATORY_RE = re.compile(
+    r"\b(?:may|should|could|might|optional(?:ly)?|informative|advisory|"
+    r"recommend(?:ed|ation|s)?)\b|(?:资料性|非强制|可选|建议|宜)",
+    re.IGNORECASE,
+)
+
+
+def _source_allows_normative_framing(requirement: dict[str, Any]) -> bool:
+    quote = str(requirement.get("source_quote") or "").strip()
+    suspicion = " ".join(str(value) for value in (
+        requirement.get("suspicion_reasons") or []
+    ))
+    return bool(
+        quote
+        and not _SOURCE_NON_MANDATORY_RE.search(quote)
+        and "资料性" not in suspicion
+    )
+
+
+def _rewrite_weak_capability_leaves(text: str) -> tuple[str, int]:
+    """Make target-language capability leaves self-contained without changing their facts."""
+    value = str(text or "")
+    if not value:
+        return value, 0
+    parts = _TARGET_SENTENCE_SPLIT_RE.split(value)
+    rewritten = 0
+    for index in range(0, len(parts), 2):
+        segment = parts[index]
+        stripped = segment.strip()
+        from normative_framing import (
+            has_weak_capability,
+            target_is_self_contained_product_obligation,
+        )
+
+        if (not stripped or target_is_self_contained_product_obligation(stripped)
+                or not has_weak_capability(stripped)):
+            continue
+        leading = segment[:len(segment) - len(segment.lstrip())]
+        trailing = segment[len(segment.rstrip()):]
+        parts[index] = f"{leading}产品应支持以下能力：{stripped}{trailing}"
+        rewritten += 1
+    return "".join(parts), rewritten
+
+
+def enforce_normative_framing(requirements: list[dict[str, Any]]) -> dict[str, int]:
+    """Enforce a formal product-obligation contract on description/sub-item leaves.
+
+    The guard operates on target-language grammar rather than enumerating source verbs. It only
+    adds a normative wrapper, so roles, objects, conditions, codes, and numbers remain byte-for-byte
+    inside the original leaf.
+    """
+    rewritten_leaves = 0
+    rewritten_requirements = 0
+    source_modality_blocked_leaves = 0
+    source_modality_blocked_requirements = 0
+    for requirement in requirements:
+        changed = 0
+        blocked = 0
+        source_allows = _source_allows_normative_framing(requirement)
+        description, count = _rewrite_weak_capability_leaves(
+            str(requirement.get("description") or "")
+        )
+        if count:
+            if source_allows:
+                requirement["description"] = description
+                changed += count
+            else:
+                blocked += count
+        for item in requirement.get("sub_items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_text, count = _rewrite_weak_capability_leaves(
+                str(item.get("text") or "")
+            )
+            if count:
+                if source_allows:
+                    item["text"] = item_text
+                    changed += count
+                else:
+                    blocked += count
+        if changed:
+            rewritten_requirements += 1
+            rewritten_leaves += changed
+            _append_note(
+                requirement,
+                f"规范性成文护栏已补充产品义务主体（{AI_NORMATIVE_FRAMING_VERSION}）",
+            )
+        if blocked:
+            source_modality_blocked_requirements += 1
+            source_modality_blocked_leaves += blocked
+            reasons = list(requirement.get("suspicion_reasons") or [])
+            requirement["suspicion_reasons"] = list(dict.fromkeys([
+                *reasons,
+                "规范性成文待核",
+            ]))
+            note = (
+                f"规范性成文待核（来源缺少可安全升格的强制依据，"
+                f"未自动补充产品义务；{AI_NORMATIVE_FRAMING_VERSION}）"
+            )
+            if note not in str(requirement.get("notes") or ""):
+                _append_note(requirement, note)
+    return {
+        "rewritten_leaf_count": rewritten_leaves,
+        "rewritten_requirement_count": rewritten_requirements,
+        "source_modality_blocked_leaf_count": source_modality_blocked_leaves,
+        "source_modality_blocked_requirement_count": (
+            source_modality_blocked_requirements
+        ),
+    }
 
 
 def _unsupported_implementation_terms(text: str, source_text: str) -> list[str]:
@@ -1779,10 +2537,11 @@ _VERIFY_KINDS = {
     "value_pairing": "数值条件配对",
     "step_ref": "步骤编号错位",
     "attribution": "条款或标准归属",
+    "obligation_framing": "产品义务主体缺失",
 }
 
 VERIFY_SYSTEM_PROMPT = (
-    "你是需求抽取的语义复核员。对照【章节原文】逐条核查【已抽需求】,只查七类语义错误:"
+    "你是需求抽取的语义复核员。对照【章节原文】逐条核查【已抽需求】,只查八类语义错误:"
     "① 免责/例外从句方向(unless/without/except/provided that——豁免条件被写成禁止项或独立义务,"
     "如\"不得漂移超限——除非显示错误标志\"被写成\"不得显示错误标志\");"
     "② 范围/方向(\"at least X to Y\"的覆盖语义:声明范围须覆盖[X,Y]即下限≤X 且上限≥Y;"
@@ -1792,15 +2551,18 @@ VERIFY_SYSTEM_PROMPT = (
     "④ 主体/受试对象错置(原文约束甲对象,产出写成乙对象);"
     "⑤ 数值与适用条件配对(型号/压力/温度档张冠李戴:甲条件配了乙限值);"
     "⑥ 步骤编号引用(产出引用\"步骤 n\"时与原文该步骤内容是否对应,比较基准错位会误判合格品);"
-    "⑦ 条款/标准号归属(产出引用的编号是否确属原文所述标准/条款)。"
+    "⑦ 条款/标准号归属(产出引用的编号是否确属原文所述标准/条款);"
+    "⑧ 产品义务主体缺失(原文是产品应提供的可配置/可选择能力，产出却只写角色“可以做什么”，"
+    "没有写产品应支持或允许该能力；同时核对角色和具体对象是否保留)。"
     "**只报实错**:每个发现必须同时给出原文逐字片段(evidence_source,从章节原文原样复制)"
     "与产出逐字片段(evidence_produced,从该需求文本原样复制),两者对照能直接看出矛盾;"
-    "吃不准/需要推测的不报;表述风格、翻译措辞、粒度、遗漏问题都不报(不在本职责内)。"
+    "吃不准/需要推测的不报;纯表述风格、翻译措辞、粒度、遗漏问题都不报；产品规范义务主体缺失"
+    "属于上述第八类语义错误，不按风格问题忽略。"
     "每条已抽需求都带 verify_slot。发现必须原样回填对应 verify_slot；title 仅作辅助核对。"
     "correction 可选:给出把 evidence_produced 改正后的最小建议文本——只改错的部分,"
     "不新增原文没有的内容,数值/编码只准来自原文；系统只留痕建议,不会自动改写需求。"
     "只输出 JSON:{\"findings\": [{\"verify_slot\": 1, \"title\": \"<该需求 title 原样回填>\", \"kind\": "
-    "\"exemption_reversal|direction|quantifier|subject|value_pairing|step_ref|attribution\", "
+    "\"exemption_reversal|direction|quantifier|subject|value_pairing|step_ref|attribution|obligation_framing\", "
     "\"evidence_source\": \"…\", \"evidence_produced\": \"…\", \"correction\": \"<可选>\"}]}"
     "。无发现输出 {\"findings\": []}。"
 )
@@ -2073,6 +2835,7 @@ def extract_all(
         for index, reqs in enumerate(results):
             if section_done[index]:
                 visible.extend(reqs or [])
+        enforce_normative_framing(visible)
         write_partial_snapshot(
             partial_path,
             run_id=run_id,
@@ -2460,6 +3223,34 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
                            sample_ratio: float | None = None,
                            unit_mode: str | None = None) -> dict[str, Any]:
     """Implementation body for :func:`run_ai_extract` under the operation lease."""
+    try:
+        from claim_artifacts import load_committed_shadow
+
+        previous_claim_snapshot = load_committed_shadow(out_dir)
+    except Exception:
+        previous_claim_snapshot = None
+    catalog_scope = (
+        "sample"
+        if (limit_sections is not None and limit_sections > 0)
+        or (sample_ratio is not None and 0 < sample_ratio < 1)
+        else "full"
+    )
+    claim_catalog_build: dict[str, Any] | None = None
+    claim_shadow_error = ""
+    try:
+        from claim_artifacts import CLAIM_GENERATION_META, publish_catalog_probe
+        from claim_catalog import build_catalog_from_directory
+
+        claim_catalog_build = build_catalog_from_directory(out_dir, scope=catalog_scope)
+        if (
+            previous_claim_snapshot is None
+            and not (out_dir / CLAIM_GENERATION_META).is_file()
+        ):
+            publish_catalog_probe(out_dir, claim_catalog_build)
+    except Exception as exc:  # Shadow probe must not change extraction success semantics.
+        claim_shadow_error = f"catalog_probe_failed:{type(exc).__name__}:{exc}"
+        LOGGER.warning("claim catalog probe failed; AI extraction continues: %s", exc)
+
     blocks = read_jsonl(out_dir / "blocks.jsonl")
     blocks = body_blocks(blocks)   # 封面/目录区不进抽取（EN 16314：目录条目被抽成 11 条空壳需求）
     resolved_mode = (unit_mode or os.environ.get(UNIT_MODE_ENV) or "clause").strip().lower()
@@ -2491,6 +3282,50 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     )
 
     config = config_for_route(route, pipeline_path)
+    if config is not None:
+        from llm_client import apply_min_tokens
+
+        verifier_config = apply_min_tokens(config, "extract")
+    else:
+        verifier_config = None
+    verifier_requested = verifier_config is not None and resolve_claim_shadow_verify()
+    verifier_budget = claim_shadow_verifier_budget() if verifier_requested else None
+    verifier_enabled = verifier_requested and verifier_budget is not None
+    if verifier_requested and verifier_budget is None:
+        LOGGER.warning(
+            "claim shadow verifier requested but no positive call/token budget was authorized"
+        )
+    verifier_rounds = resolve_claim_shadow_verify_rounds()
+    from claim_ledger import semantic_verifier_runtime
+    budget_snapshot = verifier_budget.snapshot() if verifier_budget is not None else {}
+    verifier_runtime = semantic_verifier_runtime(
+        route_mode="stub" if config is None else "llm",
+        enabled=verifier_enabled,
+        rounds=verifier_rounds,
+        config=verifier_config,
+        policy_source="environment",
+        budget_policy_version=LLMRequestBudget.VERSION,
+        max_calls=int(budget_snapshot.get("max_calls") or 0),
+        max_total_tokens=int(budget_snapshot.get("max_tokens") or 0),
+    )
+    reusable_claim_groups = reusable_claim_groups_for_runtime(
+        previous_claim_snapshot,
+        verifier_runtime,
+    )
+    reusable_claim_negatives = reusable_claim_negatives_for_runtime(
+        previous_claim_snapshot,
+        verifier_runtime,
+    )
+    no_ledger_baseline_cost: dict[str, Any] = {
+        "call_count": 0,
+        "failed_call_count": 0,
+        "total_tokens": 0,
+        "usage_complete": config is not None,
+    }
+    baseline_cost_lock = Lock()
+    semantic_verifier = None
+    semantic_negative_proposer = None
+    semantic_negative_verifier = None
     written: list[str] = []
     code_flagged = 0
     int_flagged = 0
@@ -2498,6 +3333,43 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     extract_stats: dict[str, Any] = {}
     model: str | None = None
     result_quality: dict[str, Any] | None = None
+    normative_framing_stats = {
+        "rewritten_leaf_count": 0,
+        "rewritten_requirement_count": 0,
+    }
+
+    if config is not None:
+        from llm_client import apply_min_tokens
+
+        config = apply_min_tokens(
+            config,
+            "extract-chapter" if resolved_mode == "chapter" else "extract",
+        )
+    resolved_self_check = resolve_self_check(self_check)
+    resolved_self_check_rounds = (
+        resolve_self_check_rounds() if resolved_self_check else 0
+    )
+    resolved_verify_enabled = resolve_verify_enabled()
+    resolved_verify_rounds = (
+        resolve_verify_rounds() if resolved_verify_enabled else 0
+    )
+    resolved_concurrency = resolve_concurrency(concurrency)
+    no_ledger_baseline_cost.update(no_ledger_baseline_lineage(
+        input_fingerprint=input_fingerprint,
+        route_mode="stub" if config is None else "llm",
+        config=config,
+        unit_mode=resolved_mode,
+        concurrency=resolved_concurrency,
+        merge_chars=merge_chars,
+        limit_sections=limit_sections,
+        sample_ratio=sample_ratio,
+        scope=catalog_scope,
+        self_check=resolved_self_check,
+        self_check_rounds=resolved_self_check_rounds,
+        verify_enabled=resolved_verify_enabled,
+        verify_rounds=resolved_verify_rounds,
+    ))
+    no_ledger_baseline_cost["lineage_match"] = True
 
     if config is None:
         # stub 路由：不调 LLM，AI 行为需求为空——但确定性引擎（双引擎之一）仍照常
@@ -2509,12 +3381,52 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
         from omission_actions import apply_supplement_patches
         requirements = apply_supplement_patches(out_dir, requirements)
         ensure_domain_labels(requirements)
+        normative_framing_stats = enforce_normative_framing(requirements)
     else:
-        from llm_client import apply_min_tokens
-        config = apply_min_tokens(config, "extract-chapter" if resolved_mode == "chapter" else "extract")
-
         def chat(system: str, user: str) -> dict[str, Any]:
-            return chat_json(config, system, user)
+            try:
+                data, meta = _chat_json_accounted(config, system, user)
+            except Exception:
+                with baseline_cost_lock:
+                    no_ledger_baseline_cost["usage_complete"] = False
+                raise
+            usage = meta.get("usage") if isinstance(meta, dict) else None
+            with baseline_cost_lock:
+                no_ledger_baseline_cost["call_count"] += max(
+                    1, int((meta or {}).get("call_count") or 1)
+                )
+                no_ledger_baseline_cost["failed_call_count"] += max(
+                    0, int((meta or {}).get("failed_call_count") or 0)
+                )
+                no_ledger_baseline_cost["total_tokens"] += max(
+                    0, int((usage or {}).get("total_tokens") or 0)
+                )
+                if not isinstance(meta, dict) or meta.get("usage_complete") is not True:
+                    no_ledger_baseline_cost["usage_complete"] = False
+            return data
+
+        if verifier_enabled:
+            from claim_ledger import (
+                make_semantic_coverage_verifier,
+                make_semantic_negative_proposer,
+                make_semantic_negative_verifier,
+            )
+
+            accounted_chat = lambda system, user: _chat_json_accounted(
+                verifier_config,
+                system,
+                user,
+                request_budget=verifier_budget,
+            )
+            semantic_verifier = make_semantic_coverage_verifier(
+                accounted_chat,
+                rounds=verifier_rounds,
+            )
+            semantic_negative_proposer = make_semantic_negative_proposer(accounted_chat)
+            semantic_negative_verifier = make_semantic_negative_verifier(
+                accounted_chat,
+                rounds=verifier_rounds,
+            )
 
         doc_context = build_doc_context(out_dir, blocks)  # 上下文工程：文档全局背景注入每次抽取
         term_map = ensure_term_map(out_dir, chat, collect_term_entries(all_sections))
@@ -2530,11 +3442,12 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
             bank_exemplars = ""
         requirements = extract_all(sections, chat, model=config.model,
                                    cache_path=out_dir / AI_EXTRACT_CACHE,
-                                   concurrency=resolve_concurrency(concurrency),
+                                   concurrency=resolved_concurrency,
                                    progress_callback=progress_callback,
                                    stats=extract_stats,
                                    doc_context=doc_context,
-                                   self_check=resolve_self_check(self_check),
+                                   self_check=resolved_self_check,
+                                   self_check_rounds=resolved_self_check_rounds,
                                    block_info=block_info,
                                    exemplars=bank_exemplars,
                                    partial_path=partial_path,
@@ -2545,6 +3458,7 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
         from omission_actions import apply_supplement_patches
         requirements = apply_supplement_patches(out_dir, requirements)
         ensure_domain_labels(requirements)  # 确定性补领域标签，保证按域 Excel 不塌进未分类
+        normative_framing_stats = enforce_normative_framing(requirements)
         code_flagged = sum(1 for r in requirements if "结构漂移已拦截" in (r.get("notes") or ""))
         int_flagged = sum(1 for r in requirements if "数字漂移" in (r.get("notes") or ""))
         failed_sections = int(extract_stats.get("failed_sections", 0))
@@ -2583,7 +3497,14 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
             "self_check_added": sum(1 for r in requirements if r.get("self_check_added")),
             "code_drift_flagged": code_flagged,
             "int_drift_flagged": int_flagged,
+            "normative_framing_rewritten_leaf_count": normative_framing_stats[
+                "rewritten_leaf_count"
+            ],
+            "normative_framing_rewritten_requirement_count": normative_framing_stats[
+                "rewritten_requirement_count"
+            ],
             "by_module": dict(sorted(by_module.items(), key=lambda x: -x[1])),
+            "no_ledger_baseline_cost": dict(no_ledger_baseline_cost),
             **coverage_fields,
         }
         from requirement_record import provenance
@@ -2608,8 +3529,101 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
         run_id=run_id,
         failed_sections=failed_sections,
         failed_section_ids=list(extract_stats.get("failed_section_ids") or []),
+        failed_section_block_ids=list(
+            extract_stats.get("failed_section_block_ids") or []
+        ),
+        no_ledger_baseline_cost=no_ledger_baseline_cost,
     )
     written.append(AI_REQUIREMENTS_META)
+
+    claim_shadow_summary: dict[str, Any]
+    if claim_catalog_build is None:
+        claim_shadow_summary = {"status": "failed", "error": claim_shadow_error}
+    else:
+        try:
+            from claim_artifacts import (
+                CLAIM_CATALOG,
+                CLAIM_CATALOG_META,
+                CLAIM_COVERAGE_GROUPS,
+                CLAIM_EFFECTIVE_LEDGER,
+                CLAIM_EFFECTIVE_META,
+                CLAIM_GENERATION_META,
+                CLAIM_LEDGER,
+                CLAIM_SHADOW_METRICS,
+                CLAIM_VERIFIER_ATTEMPTS,
+                claim_verifier_attempt_scope,
+                file_sha256,
+            )
+            from ai_review_actions import read_ai_review_states
+            from claim_ledger import b_track_authority_state, publish_b_track_shadow
+
+            extraction_status = "partial" if failed_sections else "success"
+            requirements_sha256 = file_sha256(target)
+            target_state = b_track_authority_state(
+                requirements,
+                read_ai_review_states(out_dir),
+            )
+            with claim_verifier_attempt_scope(
+                out_dir,
+                attempt_kind="cold",
+                attempt_request_id=run_id,
+                requirements_request_id=run_id,
+                failure_context={
+                    "catalog_build": claim_catalog_build,
+                    "target_generation_id": target_state["target_generation_id"],
+                    "requirements_sha256": requirements_sha256,
+                    "verifier_runtime": verifier_runtime,
+                    "baseline_cost": no_ledger_baseline_cost,
+                    "verifier_budget": verifier_budget,
+                },
+            ):
+                published = publish_b_track_shadow(
+                    out_dir,
+                    run_id=run_id,
+                    route_mode="stub" if route_label == "stub" else "llm",
+                    extraction_status=extraction_status,
+                    catalog_build=claim_catalog_build,
+                    requirements=requirements,
+                    scope=catalog_scope,
+                    controlled_term_aliases=load_controlled_term_aliases(out_dir),
+                    failed_section_block_ids=list(
+                        extract_stats.get("failed_section_block_ids") or []
+                    ),
+                    semantic_verifier=semantic_verifier,
+                    semantic_negative_proposer=semantic_negative_proposer,
+                    semantic_negative_verifier=semantic_negative_verifier,
+                    reusable_groups=reusable_claim_groups,
+                    reusable_negatives=reusable_claim_negatives,
+                    baseline_cost=no_ledger_baseline_cost,
+                    verifier_runtime=verifier_runtime,
+                    verifier_budget=verifier_budget,
+                )
+            shadow = dict(published.get("shadow") or {})
+            shadow_meta = dict(shadow.get("meta") or {})
+            claim_shadow_summary = {
+                "status": "published",
+                "accounting_status": shadow_meta.get("accounting_status"),
+                "resolution_status": shadow_meta.get("resolution_status"),
+                "metrics": shadow.get("metrics") or {},
+            }
+            for name in (
+                CLAIM_CATALOG,
+                CLAIM_CATALOG_META,
+                CLAIM_COVERAGE_GROUPS,
+                CLAIM_LEDGER,
+                CLAIM_EFFECTIVE_LEDGER,
+                CLAIM_SHADOW_METRICS,
+                CLAIM_GENERATION_META,
+                CLAIM_EFFECTIVE_META,
+                CLAIM_VERIFIER_ATTEMPTS,
+            ):
+                if name not in written:
+                    written.append(name)
+        except Exception as exc:  # Shadow failure never turns a good extraction into a failed section.
+            claim_shadow_error = f"shadow_publish_failed:{type(exc).__name__}:{exc}"
+            claim_shadow_summary = {"status": "failed", "error": claim_shadow_error}
+            LOGGER.warning("claim shadow ledger failed; primary requirements remain valid: %s", exc)
+
     write_partial_snapshot(
         partial_path,
         run_id=run_id,
@@ -2625,12 +3639,14 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     result: dict[str, Any] = {"route": route_label, "sections": len(sections),
               "requirements": len(requirements), "code_drift_flagged": code_flagged,
               "int_drift_flagged": int_flagged, "failed_sections": failed_sections,
+              "normative_framing": normative_framing_stats,
               "failed_section_ids": list(extract_stats.get("failed_section_ids") or []),
               "failed_section_block_ids": list(
                   extract_stats.get("failed_section_block_ids") or []
               ),
               "compliance_requirements": int(compliance_payload.get("count") or 0),
-              "written": written, "run_id": run_id}
+              "written": written, "run_id": run_id,
+              "claim_shadow": claim_shadow_summary}
     if sampled:
         result["sampled"] = {"sections": len(sections), "total_sections": len(all_sections)}
     if model:

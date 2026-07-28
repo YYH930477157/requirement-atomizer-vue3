@@ -31,6 +31,9 @@ validate-kb = "requirement_kb.schema:main"
 validate-vault = "requirement_kb.vault:main"
 validate-atomic-requirements = "atomic_requirement_schema:main"
 validate-llm-reviews = "llm_review_schema:main"
+claim-shadow-acceptance = "claim_acceptance:main"
+claim-shadow-review-packet = "claim_review_packet:main"
+claim-shadow-review-import = "claim_review_import:main"
 
 [project.gui-scripts]
 ratomizer-gui = "gui.app:main"
@@ -45,7 +48,15 @@ py-modules = [
   "agent_state",
   "agent_tools",
   "ai_extract",
+  "claim_artifacts",
+  "claim_acceptance",
+  "claim_catalog",
+  "claim_ledger",
+  "claim_held_out",
+  "claim_review_import",
+  "claim_review_packet",
   "merged_consistency",
+  "normative_framing",
   "functional_catalog",
   "functional_synthesis",
   "api_server",
@@ -104,6 +115,7 @@ py-modules = [
   "requirements_analysis_schema",
   "requirements_analysis_template",
   "spec_enrich",
+  "source_spans",
   "spec_excel",
   "spec_export",
   "table_pattern_engine",
@@ -120,10 +132,11 @@ parsers = ["data/*.gz", "data/*.md"]
 # 顶层 schemas/ 以包形式随 wheel 分发——agent_eval/decide_trace 经 Path(__file__).parent
 # 相对定位 schema 文件,不打包则安装后 ModuleNotFoundError/FileNotFoundError（审计 P1）
 schemas = ["*.json"]
+"golden_sets.claim_ledger_v1" = ["*.json", "*.md", "history/*.json"]
 # llm_agents/ 与 domain_packs/ 同为包根相对定位（llm_pipeline.DEFAULT_PIPELINE_PATH /
 # DEFAULT_DOMAIN_PACK_PATH），无 __init__.py，按 PEP 420 命名空间包随 wheel 分发（审计 R2）
 llm_agents = ["*.yaml"]
 domain_packs = ["**/*.yaml", "**/*.json"]
 
 [tool.setuptools.packages.find]
-include = ["gui*", "parsers*", "requirement_kb*", "schemas", "llm_agents*", "domain_packs*"]
+include = ["gui*", "parsers*", "requirement_kb*", "schemas", "llm_agents*", "domain_packs*", "golden_sets.claim_ledger_v1"]

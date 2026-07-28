@@ -14,6 +14,7 @@ datas = [
     (str(ROOT / "domain_packs"), "domain_packs"),
     (str(ROOT / "knowledge_bases" / "*.json"), "knowledge_bases"),
     (str(ROOT / "schemas" / "*.json"), "schemas"),
+    (str(ROOT / "golden_sets" / "claim_ledger_v1"), "golden_sets/claim_ledger_v1"),
     (str(ROOT / "parsers" / "data"), "parsers/data"),
 ]
 
@@ -45,6 +46,15 @@ spec_generator_modules = [
     "extract_units",
     "extract_guards",
     "config",
+    "claim_artifacts",
+    "claim_acceptance",
+    "claim_catalog",
+    "claim_held_out",
+    "claim_ledger",
+    "claim_review_import",
+    "claim_review_packet",
+    "normative_framing",
+    "source_spans",
     "ai_review_actions",
     "doc_annotation_export",
     "desktop_tasks",

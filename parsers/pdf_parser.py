@@ -31,6 +31,12 @@ from atomize import (
     tag_domains,
 )
 from requirement_kb import KnowledgeRepository
+from source_spans import (
+    build_source_alignment,
+    pdf_text_repair_provenance,
+    raw_offset_for_repaired_offset,
+    source_alignment_fields,
+)
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
@@ -51,7 +57,7 @@ _FRAG_DECIMAL_RE = re.compile(r"\b(\d) ([.,]\d)")                   # "1 .5" →
 _FRAG_DIGIT_PAIR_RE = re.compile(r"\b(\d) (\d)\b")                  # "1 0" → 10
 _FRAG_PROBE_RE = re.compile(r"\b[A-Za-z] [a-z]{2,}\b")
 DEFRAG_RATIO_THRESHOLD = 0.02   # 每词碎片数 ≥2% 判定为破碎文档
-PDF_TEXT_REPAIR_VERSION = "pdf-text-repair-v3"
+PDF_TEXT_REPAIR_VERSION = "pdf-text-repair-v4"
 PDF_TEXT_REPAIR_VOCAB_VERSION = "wordninja-top50000-v1+metering-v1"
 _REPAIR_VOCAB_RESOURCE = "data/english_words_top50000.txt.gz"
 _ALPHA_TOKEN_RE = re.compile(r"[A-Za-z]+")
@@ -116,6 +122,13 @@ def text_repair_vocabulary_fingerprint() -> str:
     digest.update(_repair_vocab_payload())
     digest.update("\n".join(sorted(_REPAIR_EXTRA_WORDS)).encode("ascii"))
     return digest.hexdigest()[:16]
+
+
+def _source_repair_provenance() -> dict[str, str]:
+    return pdf_text_repair_provenance(
+        PDF_TEXT_REPAIR_VERSION,
+        text_repair_vocabulary_fingerprint(),
+    )
 
 
 @lru_cache(maxsize=1)
@@ -304,6 +317,11 @@ def _collapse_pairs(word: str) -> str | None:
     """相邻等对折半（"TThhiiss"→"This"，"002255.."→"025."）。几乎全部字符成对才算
     双写词（允许 1 个落单残字,容纳粘尾标点/奇数长度）,否则返回 None（"book" 折成
     "bok" 会损失信息——必须整词自证是双写才动）。"""
+    # Numeric identifiers and times legitimately contain repeated digits.  A
+    # doubled alpha word elsewhere in the line is not evidence that 2200 or
+    # 11:00 was rendered twice.
+    if any(character.isdigit() for character in word):
+        return None
     collapsed = _PAIR_RE.sub(r"\1", word)
     if 2 * len(collapsed) - len(word) in (0, 1):
         return collapsed
@@ -365,7 +383,23 @@ def defragment_text_with_audit(text: str) -> tuple[str, list[dict[str, Any]]]:
     Only a vocabulary-backed repair is accepted. Ambiguous fragments remain as extracted;
     this deliberately favors a visible defect over silently changing valid prose.
     """
-    current = str(text or "")
+    source = str(text or "")
+    if "\n" in source or "\r" in source:
+        parts = re.split(r"(\r\n|\r|\n)", source)
+        repaired_parts: list[str] = []
+        line_events: list[dict[str, Any]] = []
+        line_index = 0
+        for index in range(0, len(parts), 2):
+            repaired_line, events = defragment_text_with_audit(parts[index])
+            repaired_parts.append(repaired_line)
+            for event in events:
+                line_events.append({**event, "line_index": line_index})
+            if index + 1 < len(parts):
+                repaired_parts.append(parts[index + 1])
+                line_index += 1
+        return "".join(repaired_parts), line_events
+
+    current = source
     events: list[dict[str, Any]] = []
     dedoubled = dedouble_text(current)
     if dedoubled != current:
@@ -431,7 +465,7 @@ def _repair_matrix_with_audit(
     enabled: bool,
 ) -> tuple[list[list[str]], dict[str, Any]]:
     if not enabled:
-        return matrix, {}
+        return matrix, {"raw_matrix": [list(row) for row in matrix]}
     repaired: list[list[str]] = []
     events: list[dict[str, Any]] = []
     for row_index, row in enumerate(matrix):
@@ -447,6 +481,7 @@ def _repair_matrix_with_audit(
     raw_text = "\n".join(" | ".join(row) for row in matrix)
     repaired_text = "\n".join(" | ".join(row) for row in repaired)
     return repaired, {
+        "raw_matrix": [list(row) for row in matrix],
         "raw_text": raw_text,
         "text_repair_checked": True,
         "text_repairs": events,
@@ -731,6 +766,22 @@ def _detect_text_tables(
             matrix = _validate_text_table(
                 matrix, region_lines=len(full_region), page_candidate_lines=page_candidate_lines)
             if matrix is not None:
+                raw_region = [
+                    {
+                        **line,
+                        "cells": [
+                            {**cell, "text": str(cell.get("raw_text") or cell.get("text") or "")}
+                            for cell in line["cells"]
+                        ],
+                    }
+                    for line in full_region
+                ]
+                raw_matrix = _assemble_rows(raw_region, columns)
+                raw_matrix = _validate_text_table(
+                    raw_matrix,
+                    region_lines=len(full_region),
+                    page_candidate_lines=page_candidate_lines,
+                ) or [list(row) for row in matrix]
                 raw_table_text = "\n".join(
                     " | ".join(str(cell.get("raw_text") or cell.get("text") or "") for cell in line["cells"])
                     for line in full_region
@@ -751,6 +802,7 @@ def _detect_text_tables(
                     "x1": max(ln["x1"] for ln in full_region),
                     "matrix": matrix,
                     "text_repair_meta": {
+                        "raw_matrix": raw_matrix,
                         "raw_text": raw_table_text,
                         "text_repair_checked": bool(defrag),
                         "text_repairs": table_repairs,
@@ -878,6 +930,7 @@ def extract_pdf(
                 block_id = f"BLK-{order:06d}"
                 table_block, new_table_items = build_table_artifacts(
                     matrix,
+                    raw_matrix=repair_meta.get("raw_matrix") or matrix,
                     table_id=table_id,
                     block_id=block_id,
                     order=order,
@@ -892,8 +945,19 @@ def extract_pdf(
                     table_block["table_source"] = "text_layout"   # 溯源：无画线重建
                 if defrag:
                     table_repairs = list(repair_meta.get("text_repairs") or [])
+                    repair_provenance = _source_repair_provenance()
+                    table_block.update(source_alignment_fields(
+                        str(table_block.get("raw_text") or ""),
+                        str(table_block.get("text") or ""),
+                        repair_provenance=repair_provenance,
+                    ))
+                    for item in new_table_items:
+                        item.update(source_alignment_fields(
+                            str(item.get("raw_text") or ""),
+                            str(item.get("text") or ""),
+                            repair_provenance=repair_provenance,
+                        ))
                     table_block.update({
-                        "raw_text": str(repair_meta.get("raw_text") or table_block.get("text") or ""),
                         "text_repaired": bool(table_repairs),
                         "text_repair_checked": True,
                         "text_repair_version": PDF_TEXT_REPAIR_VERSION,
@@ -990,13 +1054,69 @@ def _merge_list_item_blocks(
                     and _LIST_INTRO_RE.match(prev_text)):
                 head = merged.pop()
         members = ([head] if head else []) + run
-        joined = "\n".join(str(member["text"]) for member in members)
+        member_snapshots = [
+            {
+                "block_id": str(member.get("block_id") or ""),
+                "text": str(member.get("text") or ""),
+                "raw_text": str(member.get("raw_text") or member.get("text") or ""),
+                "pdf_regions": list(member.get("pdf_regions") or []),
+                "text_repair_checked": bool(member.get("text_repair_checked")),
+                "text_repair_version": str(member.get("text_repair_version") or ""),
+                "text_repairs": list(member.get("text_repairs") or []),
+            }
+            for member in members
+        ]
+        joined = "\n".join(member["text"] for member in member_snapshots)
         if len(joined) > _LIST_MERGE_MAX_TOTAL_CHARS:
             merged.extend(members)
             index = follower
             continue
+        raw_joined = "\n".join(member["raw_text"] for member in member_snapshots)
         target = members[0]
         target["text"] = joined
+        target["raw_text"] = raw_joined
+        repair_checked = any(member.get("text_repair_checked") for member in members)
+        target.update(source_alignment_fields(
+            raw_joined,
+            joined,
+            repair_provenance=_source_repair_provenance() if repair_checked else None,
+        ))
+        target["is_list_container"] = True
+        repaired_cursor = 0
+        raw_cursor = 0
+        list_items: list[dict[str, Any]] = []
+        for member_index, member in enumerate(member_snapshots):
+            repaired_end = repaired_cursor + len(member["text"])
+            raw_end = raw_cursor + len(member["raw_text"])
+            list_items.append({
+                **member,
+                "role": "intro" if head is not None and member_index == 0 else "item",
+                "locator": {
+                    "block_id": str(target.get("block_id") or ""),
+                    "line": member_index + 1,
+                    "start": repaired_cursor,
+                    "end": repaired_end,
+                    "position_basis": "repaired_text",
+                },
+                "raw_locator": {
+                    "block_id": str(target.get("block_id") or ""),
+                    "line": member_index + 1,
+                    "start": raw_cursor,
+                    "end": raw_end,
+                    "position_basis": "raw_text",
+                },
+                **source_alignment_fields(
+                    member["raw_text"],
+                    member["text"],
+                    repair_provenance=(
+                        _source_repair_provenance()
+                        if member.get("text_repair_checked") else None
+                    ),
+                ),
+            })
+            repaired_cursor = repaired_end + 1
+            raw_cursor = raw_end + 1
+        target["list_items"] = list_items
         target["requirement_like"] = is_requirement_like(joined)
         section = " > ".join(target.get("section_path") or [])
         target["kb_matches"] = match_knowledge(knowledge_bases, joined, section)
@@ -1007,10 +1127,7 @@ def _merge_list_item_blocks(
             regions.extend(member.get("pdf_regions") or [])
         if regions:
             target["pdf_regions"] = regions
-        if any(member.get("text_repair_checked") for member in members):
-            raw_joined = "\n".join(
-                str(member.get("raw_text") or member.get("text") or "") for member in members)
-            target["raw_text"] = raw_joined
+        if repair_checked:
             target["text_repair_checked"] = True
             target["text_repair_version"] = PDF_TEXT_REPAIR_VERSION
             target["text_repairs"] = [
@@ -1060,14 +1177,24 @@ def _merge_continuation_blocks(
                 else:
                     joined = f"{prev_text} {cur_text}"
                 target["text"] = joined
-                if target.get("text_repair_checked") or block.get("text_repair_checked"):
-                    target_raw = str(target.get("raw_text") or prev_text)
-                    block_raw = str(block.get("raw_text") or cur_text)
-                    if target_raw.endswith("-") and block_raw[:1].islower():
-                        joined_raw = target_raw[:-1] + block_raw
-                    else:
-                        joined_raw = f"{target_raw} {block_raw}"
-                    target["raw_text"] = joined_raw
+                target_raw = str(target.get("raw_text") or prev_text)
+                block_raw = str(block.get("raw_text") or cur_text)
+                if target_raw.endswith("-") and block_raw[:1].islower():
+                    joined_raw = target_raw[:-1] + block_raw
+                else:
+                    joined_raw = f"{target_raw} {block_raw}"
+                target["raw_text"] = joined_raw
+                repair_checked = bool(
+                    target.get("text_repair_checked") or block.get("text_repair_checked")
+                )
+                target.update(source_alignment_fields(
+                    joined_raw,
+                    joined,
+                    repair_provenance=(
+                        _source_repair_provenance() if repair_checked else None
+                    ),
+                ))
+                if repair_checked:
                     target["text_repair_checked"] = True
                     target["text_repair_version"] = PDF_TEXT_REPAIR_VERSION
                     target["text_repairs"] = list(target.get("text_repairs") or []) + list(
@@ -1247,22 +1374,31 @@ def _merge_lines(lines: list[dict[str, Any]]) -> dict[str, Any]:
             event_copy = dict(event)
             event_copy["line_index"] = line_index
             repairs.append(event_copy)
+    merged_raw_text = clean_text(raw_text)
+    merged_text = clean_text(text)
+    repair_checked = any(line.get("text_repair_checked") for line in lines)
+    if repair_checked:
+        # Line-level repairs are useful while grouping layout, but the persisted
+        # paragraph must be reproducible from its own raw_text.  Replay once at
+        # the final paragraph scope and persist that exact audit transcript.
+        merged_text, repairs = defragment_text_with_audit(merged_raw_text)
+        merged_text = clean_text(merged_text)
     result = {
-        "text": clean_text(text),
+        "text": merged_text,
         "top": min(line["top"] for line in lines),
         "bottom": max(line["bottom"] for line in lines),
         "x0": min(line["x0"] for line in lines),
         "x1": max(line["x1"] for line in lines),
     }
-    if any(line.get("text_repair_checked") for line in lines):
+    if repair_checked:
         result.update({
-            "raw_text": clean_text(raw_text),
+            "raw_text": merged_raw_text,
             "text_repair_checked": True,
             "text_repairs": repairs,
-            "text_repair_words_before": len(raw_text.split()),
-            "text_repair_words_after": len(text.split()),
-            "text_repair_candidates_before": _fragmentation_signal_count(raw_text),
-            "text_repair_candidates_after": _fragmentation_signal_count(text),
+            "text_repair_words_before": len(merged_raw_text.split()),
+            "text_repair_words_after": len(merged_text.split()),
+            "text_repair_candidates_before": _fragmentation_signal_count(merged_raw_text),
+            "text_repair_candidates_after": _fragmentation_signal_count(merged_text),
         })
     return result
 
@@ -1384,10 +1520,33 @@ def _append_text_block(
     if not text:
         return order, last_caption
 
+    repaired_source_text = text
+    raw_source_text = str(raw_text if raw_text is not None else text)
+
     heading = detect_heading(text, "", document_profile=profile)
     trailing_body: str | None = None
     if heading:
         heading, text, trailing_body = _refine_pdf_heading(heading, text, profile)
+    trailing_raw_text: str | None = None
+    block_raw_text = raw_source_text
+    if trailing_body:
+        alignment = build_source_alignment(
+            raw_source_text,
+            repaired_source_text,
+            repair_provenance=(
+                _source_repair_provenance() if text_repair_checked else None
+            ),
+        )
+        repaired_boundary = len(repaired_source_text) - len(trailing_body)
+        raw_boundary = raw_offset_for_repaired_offset(
+            raw_source_text,
+            repaired_source_text,
+            alignment,
+            repaired_boundary,
+            bias="right",
+        )
+        block_raw_text = raw_source_text[:raw_boundary]
+        trailing_raw_text = raw_source_text[raw_boundary:]
     block_type = "paragraph"
     if heading:
         section_path = sections.update(heading[0], heading[1])
@@ -1411,6 +1570,7 @@ def _append_text_block(
         "type": block_type,
         "style": "",
         "text": text,
+        "raw_text": block_raw_text,
         "section_path": section_path,
         "page_number": page_number,
         "domain_tags": domain_tags,
@@ -1418,13 +1578,19 @@ def _append_text_block(
         "requirement_like": is_requirement_like(text),
         "noise": noise,
     }
+    block.update(source_alignment_fields(
+        block["raw_text"],
+        text,
+        repair_provenance=(
+            _source_repair_provenance() if text_repair_checked else None
+        ),
+    ))
     if pdf_region:
         block["pdf_regions"] = [pdf_region]
     if heading:
         block["heading_level"] = heading[0]
     if text_repair_checked:
         block.update({
-            "raw_text": str(raw_text if raw_text is not None else text),
             "text_repaired": bool(text_repairs),
             "text_repair_checked": True,
             "text_repair_version": PDF_TEXT_REPAIR_VERSION,
@@ -1448,7 +1614,7 @@ def _append_text_block(
             pdf_region=pdf_region,
             sections=sections, knowledge_bases=knowledge_bases,
             repeated_noise=repeated_noise, last_caption=last_caption, profile=profile,
-            raw_text=raw_text, text_repairs=text_repairs,
+            raw_text=trailing_raw_text, text_repairs=text_repairs,
             text_repair_checked=text_repair_checked,
             text_repair_words_before=text_repair_words_before,
             text_repair_words_after=text_repair_words_after,

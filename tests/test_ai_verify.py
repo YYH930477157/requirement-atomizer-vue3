@@ -52,6 +52,37 @@ class VerifySectionTests(unittest.TestCase):
         self.assertIn("二遍复核:方向或上下限反转", results[0]["suspicion_reasons"])
         self.assertIn("下限不低于+5°C", results[0]["notes"])
 
+    def test_missing_product_obligation_subject_is_flagged(self) -> None:
+        section = {
+            "section_id": "S",
+            "heading": "Synthetic capability",
+            "block_ids": [],
+            "text": "The indicator channel can be configured by the operator.",
+        }
+        results = [_entry(
+            title="指示通道配置",
+            description="操作人员可以配置指示通道。",
+            source_quote=section["text"],
+        )]
+
+        def chat(system: str, user: str) -> dict:
+            self.assertIn("产品义务主体缺失", system)
+            return {"findings": [{
+                "verify_slot": 1,
+                "title": "指示通道配置",
+                "kind": "obligation_framing",
+                "evidence_source": "indicator channel can be configured by the operator",
+                "evidence_produced": "操作人员可以配置指示通道",
+                "correction": "产品应支持操作人员配置指示通道",
+            }]}
+
+        self.assertEqual(ai_extract._verify_section(section, results, chat), 1)
+        self.assertIn(
+            "二遍复核:产品义务主体缺失",
+            results[0]["suspicion_reasons"],
+        )
+        self.assertIn("产品应支持操作人员配置指示通道", results[0]["notes"])
+
     def test_unanchored_source_evidence_dropped(self) -> None:
         results = [_entry()]
 

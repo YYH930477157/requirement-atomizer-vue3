@@ -37,7 +37,9 @@ def extract_xlsx(
         for sheet in workbook.worksheets:
             if sheet.sheet_state != "visible":
                 continue
-            matrix = _sheet_matrix(sheet, merge_ranges_by_sheet.get(sheet.title, []))
+            parse_audit: dict[str, Any] = {}
+            matrix = _sheet_matrix(
+                sheet, merge_ranges_by_sheet.get(sheet.title, []), audit=parse_audit)
             if not matrix:
                 continue
 
@@ -48,6 +50,7 @@ def extract_xlsx(
                     "block_id": f"BLK-{order:06d}",
                     "order": order,
                     "type": "heading",
+                    "source_format": "xlsx",
                     "heading_level": 1,
                     "text": sheet.title,
                     "section_path": section_path,
@@ -75,7 +78,12 @@ def extract_xlsx(
                 table_title=table_title,
                 section_path=section_path,
                 knowledge_bases=knowledge_bases,
+                parse_incomplete=bool(parse_audit.get("parse_incomplete")),
+                parse_incomplete_reason=parse_audit.get("parse_incomplete_reason"),
             )
+            table_block["source_format"] = "xlsx"
+            for item in new_table_items:
+                item["source_format"] = "xlsx"
             blocks.append(table_block)
             table_items.extend(new_table_items)
     finally:
@@ -98,13 +106,26 @@ def _merged_ranges_by_sheet(input_path: Path) -> dict[str, list[tuple[int, int, 
         workbook.close()
 
 
-def _sheet_matrix(sheet: Any, merge_ranges: list[tuple[int, int, int, int]]) -> list[list[str]]:
+def _sheet_matrix(
+    sheet: Any,
+    merge_ranges: list[tuple[int, int, int, int]],
+    *,
+    audit: dict[str, Any] | None = None,
+) -> list[list[str]]:
     max_row = sheet.max_row or 0
     max_column = sheet.max_column or 0
     if max_row == 0 or max_column == 0:
         return []
     if max_row > MAX_SHEET_ROWS:
         LOGGER.warning("sheet %s has %s rows; truncating to %s", sheet.title, max_row, MAX_SHEET_ROWS)
+        if audit is not None:
+            audit["parse_incomplete"] = True
+            audit["parse_incomplete_reason"] = {
+                "code": "xlsx_row_limit",
+                "observed_rows": max_row,
+                "parsed_rows": MAX_SHEET_ROWS,
+                "limit": MAX_SHEET_ROWS,
+            }
         max_row = MAX_SHEET_ROWS
 
     merged_values = _merged_fill_values(sheet, merge_ranges, max_row=max_row)

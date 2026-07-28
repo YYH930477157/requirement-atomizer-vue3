@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import io
 import multiprocessing
+import os
 import tempfile
 import threading
 import unittest
@@ -1001,18 +1002,26 @@ class ChainAndManifestTests(unittest.TestCase):
 
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
         from parsers.pdf_parser import PDF_TEXT_REPAIR_VERSION, text_repair_vocabulary_fingerprint
+        from source_spans import (
+            SOURCE_ALIGNMENT_VERSION,
+            SOURCE_TRANSFORMATION_POLICY_VERSION,
+            SOURCE_TRANSFORMATION_RULESET_VERSION,
+        )
 
         # Future agent stages have a separate policy suffix. Keep this current-stage snapshot
         # unchanged so adding the Phase 0 anchor cannot invalidate existing cached outputs.
         expected = {
             "atomize": (
                 f"atomize+{PDF_TEXT_REPAIR_VERSION}"
-                f"+repair-vocab-{text_repair_vocabulary_fingerprint()}+impl-v5"
+                f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
+                f"+{SOURCE_ALIGNMENT_VERSION}"
+                f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
+                f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}+impl-v5"
             ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
             "ai-extract": (
-                "ai-extract-v21+guards-v15+ai-verify-v2"
+                "ai-extract-v23+guards-v15+ai-verify-v4+ai-normative-framing-v2"
                 "+merged-consistency/v3-noise-tolerant-window"
                 "+ai-supplement-v3-identity-preconditions+impl-v4"
             ),
@@ -1051,6 +1060,38 @@ class ChainAndManifestTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertNotEqual(second, third)
 
+    def test_atomize_producer_tracks_source_alignment_version(self) -> None:
+        import source_spans
+
+        current = desktop_tasks.stage_producer("atomize")
+        with patch.object(source_spans, "SOURCE_ALIGNMENT_VERSION", "source-alignment-vNEXT"):
+            changed = desktop_tasks.stage_producer("atomize")
+
+        self.assertNotEqual(current, changed)
+        self.assertIn("source-alignment-vNEXT", changed)
+
+    def test_atomize_producer_tracks_source_transformation_versions(self) -> None:
+        import source_spans
+
+        current = desktop_tasks.stage_producer("atomize")
+        with (
+            patch.object(
+                source_spans,
+                "SOURCE_TRANSFORMATION_POLICY_VERSION",
+                "source-transform-policy-vNEXT",
+            ),
+            patch.object(
+                source_spans,
+                "SOURCE_TRANSFORMATION_RULESET_VERSION",
+                "source-transform-rules-vNEXT",
+            ),
+        ):
+            changed = desktop_tasks.stage_producer("atomize")
+
+        self.assertNotEqual(current, changed)
+        self.assertIn("source-transform-policy-vNEXT", changed)
+        self.assertIn("source-transform-rules-vNEXT", changed)
+
     def test_clarification_stage_tracks_all_resolution_sidecars(self) -> None:
         inputs = set(desktop_tasks.STAGE_INPUTS["clarification-report"])
         self.assertTrue({
@@ -1079,6 +1120,347 @@ class ChainAndManifestTests(unittest.TestCase):
 
         self.assertNotEqual(current, changed)
         self.assertIn("merged-consistency/vNEXT", changed)
+
+    def test_claim_reducer_version_does_not_change_initial_extraction_producer(self) -> None:
+        import claim_ledger
+
+        current = desktop_tasks.stage_producer("ai-extract")
+        with patch.object(claim_ledger, "CLAIM_REDUCER_VERSION", "claim-reducer-vNEXT"):
+            changed = desktop_tasks.stage_producer("ai-extract")
+
+        self.assertEqual(current, changed)
+
+    def test_claim_reducer_bump_uses_ledger_only_refresh(self) -> None:
+        import ai_extract
+        import claim_ledger
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                encoding="utf-8",
+            )
+            result = ai_extract.run_ai_extract(out, route="stub")
+            desktop_tasks.update_run_manifest(
+                out,
+                "ai-extract",
+                "ok",
+                route="stub",
+                outputs=result["written"],
+                config={"sample_ratio": None, "limit_sections": None},
+            )
+
+            with (patch.object(claim_ledger, "CLAIM_REDUCER_VERSION", "claim-reducer-vNEXT"),
+                  patch.object(desktop_tasks, "ai_extract_task") as full_extract):
+                payload = desktop_tasks.chain_task(
+                    out,
+                    stages=["ai-extract"],
+                    route="stub",
+                )
+
+            full_extract.assert_not_called()
+            self.assertTrue(payload["results"]["ai-extract"]["ledger_only"])
+            self.assertEqual(
+                payload["results"]["ai-extract"]["resume_action"],
+                "ledger_refreshed",
+            )
+
+    def test_failed_ledger_only_refresh_marks_ai_extract_manifest_failed(self) -> None:
+        import ai_extract
+        import claim_ledger
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                encoding="utf-8",
+            )
+            result = ai_extract.run_ai_extract(out, route="stub")
+            desktop_tasks.update_run_manifest(
+                out,
+                "ai-extract",
+                "ok",
+                route="stub",
+                outputs=result["written"],
+                config={"sample_ratio": None, "limit_sections": None},
+            )
+
+            with (
+                patch.object(
+                    claim_ledger,
+                    "CLAIM_REDUCER_VERSION",
+                    "claim-reducer-vNEXT",
+                ),
+                patch.object(
+                    ai_extract,
+                    "refresh_claim_shadow",
+                    side_effect=ValueError("legacy term map"),
+                ),
+                patch.object(desktop_tasks, "ai_extract_task") as full_extract,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "claim shadow refresh failed: legacy term map",
+                ):
+                    desktop_tasks.chain_task(
+                        out,
+                        stages=["ai-extract"],
+                        route="stub",
+                    )
+
+            full_extract.assert_not_called()
+            entry = desktop_tasks.read_run_manifest(out)["stages"]["ai-extract"]
+            self.assertEqual(entry["status"], "failed")
+            self.assertEqual(entry["route"], "stub")
+            self.assertEqual(entry["last_action"], "ledger_refresh_failed")
+            self.assertIn("legacy term map", entry["error"])
+
+    def test_claim_verifier_runtime_change_uses_ledger_only_refresh(self) -> None:
+        import os
+
+        import ai_extract
+        from llm_client import LLMClientConfig
+
+        source = "The meter shall expose the auxiliary output."
+        requirement = {
+            "ai_req_id": "AIR-1",
+            "title": "Auxiliary output",
+            "description": source,
+            "type": "functional",
+            "priority": "P1",
+            "labels": ["Other"],
+            "source_quote": source,
+            "source_block_ids": ["B1"],
+            "sub_items": [],
+            "acceptance_criteria": [],
+        }
+        config = LLMClientConfig(
+            base_url="http://unused",
+            model="test-model",
+            max_tokens=8192,
+        )
+
+        def extract_once(_sections, _chat, **kwargs):
+            stats = kwargs.get("stats")
+            if isinstance(stats, dict):
+                stats.update({"failed_sections": 0, "cached_sections": 0})
+            return [dict(requirement)]
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "blocks.jsonl").write_text(
+                json.dumps({
+                    "block_id": "B1",
+                    "section_path": ["4"],
+                    "text": source,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(ai_extract, "config_for_route", return_value=config),
+                patch.object(ai_extract, "extract_all", side_effect=extract_once),
+                patch.object(ai_extract, "ensure_term_map", return_value=""),
+                patch.dict(os.environ, {
+                    ai_extract.CLAIM_SHADOW_VERIFY_ENV: "0",
+                    ai_extract.CLAIM_SHADOW_VERIFY_ROUNDS_ENV: "1",
+                }),
+            ):
+                result = ai_extract.run_ai_extract(
+                    out,
+                    route="openai_compatible",
+                    self_check=False,
+                )
+                desktop_tasks.update_run_manifest(
+                    out,
+                    "ai-extract",
+                    "ok",
+                    route="openai_compatible",
+                    outputs=result["written"],
+                    config={"sample_ratio": None, "limit_sections": None},
+                )
+
+            with (
+                patch.object(ai_extract, "config_for_route", return_value=config),
+                patch.object(ai_extract, "extract_all") as initial_extract,
+                patch.object(desktop_tasks, "ai_extract_task") as full_extract,
+                patch.dict(os.environ, {
+                    ai_extract.CLAIM_SHADOW_VERIFY_ENV: "1",
+                    ai_extract.CLAIM_SHADOW_VERIFY_ROUNDS_ENV: "2",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_CALLS_ENV: "4",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS_ENV: "100000",
+                }),
+            ):
+                self.assertFalse(desktop_tasks.stage_is_reusable(
+                    out,
+                    "ai-extract",
+                    route="openai_compatible",
+                    config={"sample_ratio": None, "limit_sections": None},
+                ))
+                self.assertTrue(desktop_tasks.ai_requirements_are_reusable(
+                    out,
+                    route="openai_compatible",
+                    config={"sample_ratio": None, "limit_sections": None},
+                ))
+                payload = desktop_tasks.chain_task(
+                    out,
+                    stages=["ai-extract"],
+                    route="openai_compatible",
+                )
+
+            initial_extract.assert_not_called()
+            full_extract.assert_not_called()
+            self.assertTrue(payload["results"]["ai-extract"]["ledger_only"])
+            self.assertEqual(
+                payload["results"]["ai-extract"]["resume_action"],
+                "ledger_refreshed",
+            )
+
+    def test_low_token_verifier_runtime_is_floored_once_then_fully_reused(self) -> None:
+        import os
+
+        import ai_extract
+        import claim_artifacts
+        from llm_client import LLMClientConfig
+
+        source = "The meter shall expose the auxiliary output."
+        requirement = {
+            "ai_req_id": "AIR-1",
+            "title": "Auxiliary output",
+            "description": source,
+            "type": "functional",
+            "priority": "P1",
+            "labels": ["Other"],
+            "source_quote": source,
+            "source_block_ids": ["B1"],
+            "sub_items": [],
+            "acceptance_criteria": [],
+        }
+        low_config = LLMClientConfig(
+            base_url="http://unused",
+            model="test-model",
+            max_tokens=1024,
+        )
+
+        def extract_once(_sections, _chat, **kwargs):
+            stats = kwargs.get("stats")
+            if isinstance(stats, dict):
+                stats.update({"failed_sections": 0, "cached_sections": 0})
+            return [dict(requirement)]
+
+        with tempfile.TemporaryDirectory() as td, (
+            patch.object(ai_extract, "config_for_route", return_value=low_config)
+        ), patch.dict(os.environ, {
+            ai_extract.CLAIM_SHADOW_VERIFY_ENV: "1",
+            ai_extract.CLAIM_SHADOW_VERIFY_ROUNDS_ENV: "1",
+            ai_extract.CLAIM_SHADOW_VERIFY_MAX_CALLS_ENV: "4",
+            ai_extract.CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS_ENV: "100000",
+        }):
+            out = Path(td)
+            (out / "blocks.jsonl").write_text(
+                json.dumps({
+                    "block_id": "B1",
+                    "section_path": ["4"],
+                    "text": source,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(ai_extract, "extract_all", side_effect=extract_once),
+                patch.object(ai_extract, "ensure_term_map", return_value=""),
+            ):
+                result = ai_extract.run_ai_extract(
+                    out,
+                    route="openai_compatible",
+                    self_check=False,
+                )
+            desktop_tasks.update_run_manifest(
+                out,
+                "ai-extract",
+                "ok",
+                route="openai_compatible",
+                outputs=result["written"],
+                config={"sample_ratio": None, "limit_sections": None},
+            )
+
+            snapshot = claim_artifacts.load_committed_shadow(out)
+            runtime = snapshot["generation_meta"]["shadow_meta"]["verifier_runtime"]
+            self.assertEqual(runtime["max_tokens"], 6144)
+            self.assertTrue(desktop_tasks.stage_is_reusable(
+                out,
+                "ai-extract",
+                route="openai_compatible",
+                config={"sample_ratio": None, "limit_sections": None},
+            ))
+
+            with (
+                patch.object(desktop_tasks, "ai_extract_task") as full_extract,
+                patch.object(ai_extract, "refresh_claim_shadow") as refresh,
+            ):
+                payload = desktop_tasks.chain_task(
+                    out,
+                    stages=["ai-extract"],
+                    route="openai_compatible",
+                )
+
+            full_extract.assert_not_called()
+            refresh.assert_not_called()
+            self.assertEqual(
+                payload["results"]["ai-extract"]["resume_action"],
+                "skipped",
+            )
+
+    def test_claim_verifier_toggle_uses_ledger_only_refresh(self) -> None:
+        import ai_extract
+        from llm_client import LLMClientConfig
+
+        with tempfile.TemporaryDirectory() as td, \
+                patch.object(ai_extract, "config_for_route", return_value=LLMClientConfig(
+                    base_url="http://unused", model="test", max_tokens=8192,
+                )), \
+                patch.object(ai_extract, "extract_all", return_value=[]), \
+                patch.object(ai_extract, "ensure_term_map", return_value=""), \
+                patch.dict(os.environ, {ai_extract.CLAIM_SHADOW_VERIFY_ENV: "0"}):
+            out = Path(td)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                encoding="utf-8",
+            )
+            result = ai_extract.run_ai_extract(out, route="openai_compatible", self_check=False)
+            desktop_tasks.update_run_manifest(
+                out,
+                "ai-extract",
+                "ok",
+                route="openai_compatible",
+                outputs=result["written"],
+                config={"sample_ratio": None, "limit_sections": None},
+            )
+
+            refresh_result = {
+                "kind": "claim_shadow_refresh",
+                "route": "openai_compatible",
+                "ledger_only": True,
+                "written": result["written"],
+                "claim_shadow": {"status": "published", "resolution_status": "open"},
+            }
+            with patch.dict(os.environ, {
+                    ai_extract.CLAIM_SHADOW_VERIFY_ENV: "1",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_CALLS_ENV: "4",
+                    ai_extract.CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS_ENV: "100000",
+                }), \
+                    patch.object(desktop_tasks, "ai_extract_task") as full_extract, \
+                    patch.object(ai_extract, "refresh_claim_shadow", return_value=refresh_result) as refresh:
+                payload = desktop_tasks.chain_task(
+                    out, stages=["ai-extract"], route="openai_compatible",
+                )
+
+        full_extract.assert_not_called()
+        refresh.assert_called_once()
+        self.assertTrue(payload["results"]["ai-extract"]["ledger_only"])
+
+    def test_claim_attempt_ledger_is_a_claim_only_stage_output(self) -> None:
+        filename = "claim_verifier_attempts.jsonl"
+        self.assertIn(filename, desktop_tasks.STAGE_REQUIRED_OUTPUTS["ai-extract"])
+        self.assertIn(filename, desktop_tasks._CLAIM_STAGE_OUTPUTS)
 
     def test_annotation_producer_tracks_translation_guards_version(self) -> None:
         import doc_annotation_export
@@ -1589,7 +1971,7 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertEqual(payload["review"]["resume_action"], "skipped")
             self.assertEqual(payload["summary"]["run_manifest"]["stages"]["atomize"]["status"], "ok")
 
-    def test_chain_skips_completed_stage_with_existing_outputs(self) -> None:
+    def test_chain_reruns_completed_stage_without_claim_generation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             (out / "ai_requirements.jsonl").write_text("{}\n", encoding="utf-8")
@@ -1604,11 +1986,49 @@ class ChainAndManifestTests(unittest.TestCase):
                 config={"sample_ratio": None, "limit_sections": None},
             )
 
+            with mock.patch.object(
+                desktop_tasks,
+                "ai_extract_task",
+                return_value={
+                    "written": ["ai_requirements.jsonl", "merged_spec_requirements.json"],
+                    "route": "stub",
+                    "failed_sections": 0,
+                },
+            ) as task:
+                payload = desktop_tasks.chain_task(out, stages=["ai-extract"], route="stub")
+
+            task.assert_called_once()
+            self.assertNotIn("ai-extract", payload["skipped_stages"])
+
+    def test_chain_skips_completed_stage_with_committed_claim_generation(self) -> None:
+        import ai_extract
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],"text":"The meter shall do A."}\n',
+                encoding="utf-8",
+            )
+            result = ai_extract.run_ai_extract(out, route="stub")
+            desktop_tasks.update_run_manifest(
+                out,
+                "ai-extract",
+                "ok",
+                route="stub",
+                outputs=result["written"],
+                config={"sample_ratio": None, "limit_sections": None},
+            )
+
             with mock.patch.object(desktop_tasks, "ai_extract_task") as task:
                 payload = desktop_tasks.chain_task(out, stages=["ai-extract"], route="stub")
 
             task.assert_not_called()
             self.assertEqual(payload["results"]["ai-extract"]["resume_action"], "skipped")
+            self.assertEqual(
+                payload["results"]["ai-extract"]["claim_shadow"]["resolution_status"],
+                "open",
+            )
+            self.assertEqual(payload["claim_shadow"]["resolution_status"], "open")
             self.assertIn("ai-extract", payload["skipped_stages"])
 
     def test_chain_reruns_legacy_outputs_without_run_manifest(self) -> None:
