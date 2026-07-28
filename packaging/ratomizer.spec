@@ -65,6 +65,13 @@ spec_generator_modules = [
     "desktop_tasks",
     "desktop_backend",
     "meter_profile",
+    # 影印支路/点解析（函数内惰性 import,静态分析看不到——缺了冻结包里 COM/点解析静默死亡）
+    "doc_facsimile",
+    "spot_extract",
+    # Office COM 影印转换（pywin32 晚绑定 Dispatch,无需 makepy 生成层）
+    "pythoncom",
+    "win32com",
+    "win32com.client",
 ]
 
 hiddenimports = (

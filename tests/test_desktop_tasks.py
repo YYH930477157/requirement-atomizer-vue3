@@ -1016,12 +1016,12 @@ class ChainAndManifestTests(unittest.TestCase):
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
                 f"+{SOURCE_ALIGNMENT_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
-                f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}+impl-v5"
+                f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}+impl-v7"
             ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
             "ai-extract": (
-                "ai-extract-v23+guards-v15+ai-verify-v4+ai-normative-framing-v2"
+                "ai-extract-v23+guards-v16+ai-verify-v4+ai-normative-framing-v2"
                 "+merged-consistency/v3-noise-tolerant-window"
                 "+ai-supplement-v3-identity-preconditions+impl-v4"
             ),
@@ -1032,7 +1032,8 @@ class ChainAndManifestTests(unittest.TestCase):
             "clarification-report": "clarification/v6-coverage-basis+ai-supplement-v3-identity-preconditions+impl-v5",
             "export-annotation-html": (
                 "doc_annotation_export/v10+annotation-translation-v2-segment-fallback"
-                "+annotation-translation-guards-v1+ai-supplement-v3-identity-preconditions"
+                "+annotation-translation-guards-v1+doc-facsimile-v1"
+                "+ai-supplement-v3-identity-preconditions"
             ),
         }
         self.assertEqual(

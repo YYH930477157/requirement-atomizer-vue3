@@ -511,8 +511,11 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 
 
 STAGE_IMPLEMENTATION_REVISIONS = {
+    # v7：render_table_text 取消 20 行截断（大参数表 21 行起内容进不了管线,STO 实证）
+    # v6：表格块扁平文本取消 [:5000] 截断（初始提交遗留）——大参数表 88% 内容此前
+    # 进不了抽取管线（STO/俄标实证）；blocks 内容变化,docx 输入须重解析
     # v5：PDF 清单段合并（名词式清单项并整段，微块可锚定）——块结构变化，PDF 输入须重解析
-    "atomize": "v5",
+    "atomize": "v7",
     "ai-extract": "v4",
     "assemble": "v2",
     "functional-synthesis": "v3",
@@ -605,8 +608,10 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
         elif stage == "export-annotation-html":
             from doc_annotation_export import (ANNOTATION_TRANSLATION_GUARDS_VERSION,
                                                 ANNOTATION_TRANSLATION_STRATEGY_VERSION)
+            from doc_facsimile import DOC_FACSIMILE_VERSION
+            # docx/xlsx 影印支路（WP-A）进戳：转换层版本变化 → 旧影印产物不得复用
             producer = (f"{producer}+{ANNOTATION_TRANSLATION_STRATEGY_VERSION}"
-                        f"+{ANNOTATION_TRANSLATION_GUARDS_VERSION}")
+                        f"+{ANNOTATION_TRANSLATION_GUARDS_VERSION}+{DOC_FACSIMILE_VERSION}")
         if stage in {
             "ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
             "clarification-report", "compose", "export-annotation-html",

@@ -784,6 +784,142 @@ def _supplement_uncovered_compliance(
     return supplemented
 
 
+# --- 确定性参数表行展开（2026-07-27 STO 实证：143 行参数表 LLM 只合并出 31 条）---------
+# 用户裁定：参数表每行都是一条需求。行是结构化的（编号+名称+要求列），逐行展开不需要
+# LLM——确定性生成,引句逐字来自扁平渲染行,结构化字段不猜。
+
+_PARAM_REQ_CELL_RE = re.compile(r"requirement|technical|characteristic|要求|指标|参数值", re.IGNORECASE)
+_PARAM_DEF_CELL_RE = re.compile(r"^(term|definition|术语|定义|abbreviation|缩略语)", re.IGNORECASE)
+_PARAM_SECTION_RE = re.compile(r"terms|definitions|abbreviations|术语|定义|缩略语|bibliography|参考文献", re.IGNORECASE)
+_PARAM_INDEX_CELL_RE = re.compile(r"^\s*\d+(?:\.\d+)*[.)]?\s*$")
+_PARAM_ROW_MIN_CELLS = 2
+_PARAM_TABLE_MIN_ROWS = 3
+PARAM_ROW_EXPANSION_VERSION = "param-row-expand-v1"
+
+
+def _is_parameter_table(block: dict[str, Any]) -> bool:
+    """需求型参数表判定（保守,宁漏勿错）：≥3 数据行;表头含要求类列;不是术语/定义/
+    缩略语表（用户裁定：术语行不是需求）;章节不在术语/参考文献区。"""
+    headers = [str(h or "") for h in (block.get("headers") or [])]
+    data_rows = block.get("data_rows") or []
+    if len(data_rows) < _PARAM_TABLE_MIN_ROWS or not headers:
+        return False
+    if any(_PARAM_DEF_CELL_RE.search(h) for h in headers):
+        return False
+    if not any(_PARAM_REQ_CELL_RE.search(h) for h in headers):
+        return False
+    # 只看叶子节标题（STO 实证：全文嵌在 "2 Normative References" 下,按全路径过滤会
+    # 把所有参数表误杀）；参考文献区过滤靠 bibliography/参考文献 叶子匹配
+    leaf = next(
+        (str(s) for s in reversed([s for s in (block.get("section_path") or []) if str(s).strip()])),
+        "",
+    )
+    return not _PARAM_SECTION_RE.search(leaf)
+
+
+def _row_render_line(headers: list[str], row: list[Any]) -> str:
+    """与 render_table_text 完全同款的行渲染——引句逐字锚定块扁平文本的前提。"""
+    cells = [str(cell or "") for cell in row]
+    padded = cells + [""] * max(0, len(headers) - len(cells))
+    return " | ".join(padded[: len(headers)])
+
+
+def _row_name_cell(headers: list[str], row: list[Any]) -> str:
+    seen: set[str] = set()
+    for header, cell in zip(headers, row):
+        text = str(cell or "").strip()
+        if not text or _PARAM_INDEX_CELL_RE.match(text) or text in seen:
+            continue
+        seen.add(text)
+        if _PARAM_REQ_CELL_RE.search(str(header)):
+            continue
+        return text
+    for cell in row:
+        text = str(cell or "").strip()
+        if text and not _PARAM_INDEX_CELL_RE.match(text):
+            return text
+    return ""
+
+
+def _supplement_parameter_table_rows(
+    requirements: list[dict[str, Any]],
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """确定性参数表行展开：需求型参数表的每个未被 LLM 覆盖的数据行 → 一条 draft 需求
+    （逐字引句 + suspicion 标记进澄清）。已覆盖的行不重复补（compact 文本在引用该块的
+    任一需求的引句/描述中命中即视为已覆盖）。"""
+    from merged_consistency import compact_source_text
+
+    table_blocks = [
+        b for b in blocks
+        if isinstance(b, dict) and str(b.get("type") or "") == "table" and _is_parameter_table(b)
+    ]
+    if not table_blocks:
+        return requirements
+
+    covered_by_block: dict[str, str] = {}
+    for req in requirements:
+        haystack = compact_source_text(
+            f"{req.get('source_quote') or ''} {req.get('description') or ''} {req.get('title') or ''}"
+        )
+        for block_id in req.get("source_block_ids") or []:
+            covered_by_block[str(block_id)] = covered_by_block.get(str(block_id), "") + " " + haystack
+
+    supplemented = list(requirements)
+    added = 0
+    for block in sorted(table_blocks, key=lambda b: str(b.get("block_id") or "")):
+        block_id = str(block.get("block_id") or "")
+        headers = [str(h or "") for h in (block.get("headers") or [])]
+        data_rows = block.get("data_rows") or []
+        covered_text = covered_by_block.get(block_id, "")
+        section_path = [str(s) for s in (block.get("section_path") or []) if str(s).strip()]
+        for row_index, row in enumerate(data_rows, start=1):
+            cells = [str(cell or "").strip() for cell in row]
+            non_empty = [cell for cell in cells if cell]
+            if len(non_empty) < _PARAM_ROW_MIN_CELLS:
+                continue
+            # 分组标题行：合并单元格展开后所有非空单元格完全相同（STO 实证"3. TECHNICAL
+            # REQUIREMENTS"×6 列）——是章节标题不是需求行,跳过
+            if len(set(non_empty)) == 1:
+                continue
+            quote = _row_render_line(headers, row)
+            if not quote.strip():
+                continue
+            # 覆盖判定：行内最长实质单元格（≥16 字符防"230 V"类短词假命中）的 compact
+            # 文本已在引用本块的任一需求文本中出现 → 该行已被 LLM 覆盖,不重复补;
+            # 判不出来的行宁补勿漏（补行带 suspicion 进澄清,重复可在审核时剔除）
+            substantive = sorted(
+                (compact_source_text(cell) for cell in non_empty),
+                key=len,
+                reverse=True,
+            )
+            key_cell = next((cell for cell in substantive if len(cell) >= 16), "")
+            if key_cell and key_cell in covered_text:
+                continue
+            name = _row_name_cell(headers, row)
+            title = name[:120] if name else quote[:120]
+            supplemented.append({
+                "ai_req_id": f"PROW-DET-{block_id}-R{row_index:04d}",
+                "title": title,
+                "description": quote,
+                "type": "functional",
+                "priority": "P1",
+                "status": "draft",
+                "labels": ["参数表"],
+                "source_section": section_path[-1] if section_path else "",
+                "source_quote": quote,
+                "source_block_ids": [block_id],
+                "source_mapping": "deterministic_fallback",
+                "suspicion_reasons": ["参数表行确定性展开"],
+                "notes": "参数表行由确定性规则逐行展开（用户裁定：参数表每行都是需求），引句逐字来自原文表格渲染行，请人工审核后确认",
+            })
+            added += 1
+    if added:
+        LOGGER.info("参数表行展开：补入 %d 条 LLM 未逐行覆盖的参数行需求", added)
+    return supplemented
+
+
+
 def _coverage_quality_fields(
     requirements: list[dict[str, Any]],
     blocks: Any,
@@ -1089,7 +1225,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v15"  # v15:噪声贯通抽取路径——source_blocks 带 noise 标记(匹配器噪声排除在抽取时真正生效)、fuzzy 候选剔噪声、fallback span 不纳噪声块;v14:匹配各路径噪声块不成来源+水印摘录按噪声跳过;v13:fallback 收窄支持裸节号前缀与多节号;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v16"  # v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -3518,6 +3654,7 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     # 标成 complete，读侧不会观察到“运行完成但最终文件仍是旧内容”的窗口。
     _downgrade_cross_block_verbatim(requirements, blocks)   # 跨块逐字硬标→软标（写盘前统一过一遍）
     requirements = _supplement_uncovered_compliance(requirements, blocks)   # 合规漏抽兜底,进 jsonl+澄清
+    requirements = _supplement_parameter_table_rows(requirements, blocks)   # 参数表逐行确定性展开,LLM 未覆盖行进澄清
     target = out_dir / AI_REQUIREMENTS
     atomic_write_jsonl(target, requirements)
     written.append(target.name)

@@ -317,13 +317,15 @@ def build_table_artifacts(
     headers = table_model["headers"]
     data_rows = table_model["data_rows"]
     table_text_full = render_table_text(headers, data_rows)
-    table_text = table_text_full[:5000]
-    text_truncated = len(data_rows) > 20 or len(table_text_full) > 5000
+    # 2026-07-27 起扁平文本不再截断（impl-v6 取消 [:5000]、impl-v7 render 默认全行）：
+    # text 恒为完整渲染，text_truncated 恒 False；字段保留供账本与旧产物判别。
+    table_text = table_text_full
+    text_truncated = False
     raw_rows = [[str(value or "") for value in row] for row in (raw_matrix or matrix)]
     raw_header_rows = [pad_row(row, width) for row in raw_rows[:header_count]]
     raw_data_rows = [pad_row(row, width) for row in raw_rows[header_count:]]
     raw_headers = effective_table_headers(raw_header_rows, width)
-    raw_table_text = render_table_text(raw_headers, raw_data_rows)[:5000]
+    raw_table_text = render_table_text(raw_headers, raw_data_rows)
     kb_matches = match_knowledge(knowledge_bases, table_title, table_text, " > ".join(section_path))
     domain_tags = merge_tags(tag_domains(table_title, table_text, " > ".join(section_path)), kb_domain_tags(kb_matches))
     block = {
@@ -340,6 +342,9 @@ def build_table_artifacts(
         "headers": headers,
         # 完整数据行进块：批注视图渲染真表格（此前只有扁平 text，画线/无画线表都糊成一坨）
         "data_rows": data_rows,
+        # 完整扁平文本进块（2026-07-27 修复：初始提交的 [:5000] 截断让大参数表 88% 内容
+        # 进不了抽取管线——STO/俄标类文档规范全在百行级参数表里,B 轨只看到前几行。
+        # 下游章节合并本就有 ~5k 字符切分,长文本自然分 chunk;批注视图走独立 data_rows）
         "text": table_text,
         "raw_text": raw_table_text,
         **source_alignment_fields(raw_table_text, table_text),
@@ -928,13 +933,17 @@ def load_document_profile_from_domain_pack(domain_pack_dir: Path | None) -> Docu
     return DocumentProfile.from_payload(pack.payload.get("document_profile"))
 
 
-def render_table_text(headers: list[str], rows: list[list[str]], max_rows: int = 20) -> str:
+def render_table_text(headers: list[str], rows: list[list[str]], max_rows: int | None = None) -> str:
+    """扁平渲染整张表。2026-07-27 起默认渲染全部数据行——此前的 max_rows=20 截断
+    （初始提交遗留）让大参数表第 21 行起的内容进不了抽取管线（STO 实证：143 行参数表
+    扁平文本尾部只有 '... 123 more rows'）；调用方需要截断时显式传 max_rows。"""
     lines = [" | ".join(headers)]
-    for row in rows[:max_rows]:
+    limit = len(rows) if max_rows is None else max_rows
+    for row in rows[:limit]:
         padded = row + [""] * max(0, len(headers) - len(row))
         lines.append(" | ".join(padded[: len(headers)]))
-    if len(rows) > max_rows:
-        lines.append(f"... {len(rows) - max_rows} more rows")
+    if len(rows) > limit:
+        lines.append(f"... {len(rows) - limit} more rows")
     return "\n".join(lines)
 
 

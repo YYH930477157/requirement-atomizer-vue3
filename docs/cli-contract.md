@@ -232,6 +232,40 @@ sequences, `decider_usage`, tokens, and sequence agreement. Without an API key t
 still runs and the report marks `llm_ran: false` — a rule-only result is never presented as a
 comparison.
 
+Parameter-table row expansion (`guards-v16`): by user ruling every row of a requirement-shaped
+parameter table is a requirement. After LLM extraction, `_supplement_parameter_table_rows`
+deterministically emits one draft requirement per data row the LLM did not cover (verbatim
+rendered-row quote, `source_mapping: deterministic_fallback`, suspicion `参数表行确定性展开`
+into the clarification queue). Terms/definition tables and section-header rows are never
+expanded. Table blocks also keep their full flattened text (the legacy 5000-char and 20-row
+caps were removed; atomize `impl-v7`).
+
+Word/Excel facsimile branch (`doc-facsimile-v1`, 2026-07-28): docx/xlsx review surfaces gain
+the same facsimile view as native PDFs. `export-annotation-html` lazily converts the source
+document to `out/document_facsimile.pdf` — Word/Excel COM first (`SaveAs2(FileFormat=17)` /
+`ExportAsFixedFormat(0)`, hidden window, alerts suppressed, `Quit()` + `CoUninitialize()` in
+`finally`), LibreOffice `soffice --headless --convert-to pdf` as fallback — then renders page
+images and quote geometry through the identical native-PDF path (zero rendering fork). The
+cache key is input-content sha256 + `DOC_FACSIMILE_VERSION`; a fingerprint hit skips
+reconversion. When no converter is available the stage degrades honestly to the text
+annotation view and records `facsimile: "unavailable:<reason>"` in the export summary — page
+images are never faked. The in-app payload (`/document/pdf`) reuses the exported facsimile
+read-only and never converts on the request path. `pywin32` is a Windows-only dependency
+(`pywin32; sys_platform=="win32"`); other platforms degrade gracefully.
+
+Spot extract (`spot-extract-v1`, 2026-07-28): the review API endpoint `POST /spot-extract`
+(frozen-spec alias `/api/spot-extract`, same handler) runs a targeted analysis of one
+annotation block or table row (`{block_id, row_index?}`). A requirement-shaped parameter
+table row reuses the deterministic guards-v16 single-row expansion; any other row or
+paragraph goes through the same guarded LLM call as `targeted_reextract`, scoped to that
+single segment. Produced rows are appended to `ai_requirements.jsonl` under the extraction
+operation lease with `status: draft`, `source_mapping: "spot_extract"`, suspicion
+`用户定点解析` (clarification policy `suspicion:spot_extract`: ambiguous / internal-check /
+important / hard), and ids `SPOT-<block_id>[-R<row>]` with serial suffixes on conflict. Drafts
+stay in the clarification queue for human confirmation — never auto-promoted. An unavailable
+LLM route fails loudly with `ok: false` (HTTP 503); stub extraction results are never
+fabricated.
+
 `queue_all_gaps` registers the decision-time snapshot candidates
 (`state.unqueued_gap_block_ids` = coverage gaps ∪ failed-section blocks, minus already
 queued) as `needs_extraction` in one locked batch (per-block queueing exhausted the

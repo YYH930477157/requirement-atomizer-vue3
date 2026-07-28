@@ -14,6 +14,7 @@ dependencies = [
   "openpyxl>=3.1.0",
   "pdfplumber>=0.11",
   "jsonschema>=4.23.0",
+  "pywin32; sys_platform==\"win32\"",
 ]
 
 [project.optional-dependencies]
@@ -89,6 +90,7 @@ py-modules = [
   "decide_trace",
   "ai_review_actions",
   "doc_annotation_export",
+  "doc_facsimile",
   "requirement_schema",
   "resources",
   "review_actions",
@@ -118,6 +120,7 @@ py-modules = [
   "source_spans",
   "spec_excel",
   "spec_export",
+  "spot_extract",
   "table_pattern_engine",
   "text_normalize",
   "version",

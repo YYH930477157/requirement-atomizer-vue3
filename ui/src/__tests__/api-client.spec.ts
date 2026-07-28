@@ -181,6 +181,45 @@ describe("RequirementApiClient", () => {
     }))
   })
 
+  it("posts spot extraction for a single block or table row", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          schema: "spot-extract/v1", block_id: "BLK-T1", row_index: 2,
+          strategy: "deterministic_param_row", drafts: 1, draft_ids: ["SPOT-BLK-T1-R2"],
+          already_covered: false, written: ["ai_requirements.jsonl"],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: false, status: 503,
+        json: async () => ({ ok: false, error: "openai_compatible route is not configured" }),
+      })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    const payload = await client.spotExtract({ blockId: "BLK-T1", rowIndex: 2, actor: "reviewer" })
+    expect(payload.draft_ids).toEqual(["SPOT-BLK-T1-R2"])
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8770/spot-extract", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        block_id: "BLK-T1", row_index: 2, actor: "reviewer", reason: "", route: "",
+      }),
+    }))
+
+    // LLM 不可用：503 + ok:false → 抛出带真实后端原因的错误（按钮不假装可用）
+    await expect(client.spotExtract({ blockId: "B2" })).rejects.toMatchObject({
+      status: 503, message: "openai_compatible route is not configured",
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:8770/spot-extract", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        block_id: "B2", row_index: null, actor: "", reason: "", route: "",
+      }),
+    }))
+  })
+
   it("loads and batch acknowledges internal checks with evidence fingerprints", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({

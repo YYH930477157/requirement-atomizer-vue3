@@ -69,6 +69,14 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **审核裁决受控导入（2026-07-28）**：新增 `claim_review_import.py`、`claim_shadow_review_decisions.schema.json` 与 wheel/源码/PyInstaller 三类入口。导入器以已加载 input 的不可变临时快照重建审核包，并对 shadow/held-out identity 做精确集合校验；missing/extra/duplicate/stale、无时区时间、同人 held-out 审核、缺必填理由、output 覆盖 input/decisions/golden corpus 及覆盖不同既有 reviewed 输出全部 fail-closed。golden manifest 与 reviewed output 使用两个稳定资源锁并按确定顺序获取，共享任一资源的并发导入不会 last-write-wins；成功后生成新的 reviewed acceptance input，并原子更新显式 golden manifest。合法 disagree 不会被改写为 agree，最终仍由 acceptance 门判定。v14 旧 decisions 因 target/evidence/fixture fingerprint 已变化而不可复用；当前人工审核仍须重新完成 4 个 shadow 项和 1 个 held-out 项。
 - **Phase 0 CLI 输出保护（2026-07-28）**：acceptance report 和固定名 packet JSON/HTML 在运行前拒绝与 input 相同或互为硬链接，冲突不读取业务证据且原文件不变；packet/acceptance 写入失败统一返回契约规定的 exit 3，exit 4 继续只表示 LLM 服务不可用。
 
+## 重大更新（2026-07-28）——Word/Excel 影印支路 + 点解析（已合 main `2a1c2bd`；验收记录见下方 2026-07-28 条目）
+
+- **WP-A 影印支路**：新模块 `doc_facsimile.py`（`DOC_FACSIMILE_VERSION=doc-facsimile-v1`）——docx/xlsx 懒转换为 `out/document_facsimile.pdf`：Office COM 首选（Word `SaveAs2(FileFormat=17)`/Excel `ExportAsFixedFormat(0)`，`Visible=False`/`DisplayAlerts=0`，finally 里 `Quit()`+`CoUninitialize()`），LibreOffice `soffice --headless --convert-to pdf` 兜底（PATH + 默认安装目录探测，120s 超时），双缺如实 `unavailable:<reason>` 记 sidecar，**不伪造页图**。缓存键 = 输入内容 sha256 + 版本（`document_facsimile.pdf.meta.json`），命中不重转。pywin32 进依赖（`pywin32; sys_platform=="win32"`），非 win 环境 ImportError 优雅降级。
+- **接入零分叉**：懒转换挂 `doc_annotation_export.export_annotation_bundle`（`_facsimile_source_pdf`）；拿到 PDF 后走与原生 PDF 完全相同的 `_resolve_pdf_geometry`/`_ensure_pdf_page_images` 路径；应用内 `build_pdf_annotation_payload` 只读复用（绝不现场转换）。summary/payload 如实写 `facsimile: "com"|"libreoffice"|"unavailable:<reason>"|null`。export-annotation-html chain 戳纳入 `+doc-facsimile-v1`（契约快照测试已同步）。
+- **WP-B 点解析**：新模块 `spot_extract.py`（`SPOT_EXTRACT_VERSION=spot-extract-v1`）+ `POST /spot-extract`（冻结规格别名 `/api/spot-extract` 同处理器）。参数表需求行 → 复用 guards-v16 单行展开（`_is_parameter_table`/`_row_render_line`/`_row_name_cell` 直接 import，不复制）；其他行/段落 → 合成单段 section 走 `critique_section`（targeted_reextract 同款 chat_json+护栏，prompt 只见该段）。产出 `status=draft`、`source_mapping="spot_extract"`、suspicion「用户定点解析」（策略映射 `suspicion:spot_extract`：CAT_AMBIGUOUS/内部核对/IMPORTANT/HARD）、id `SPOT-<block>[-R<row>]` 冲突加序号；`extraction_operation_lock` 串行化 + 原子重写 + compliance/quality/merged_spec 同刷新。LLM 不可用抛 `SpotExtractUnavailableError` → 503 `ok:false`，不伪造 stub。
+- **UI**：`DocumentReview.vue` 段落块「解析此段」+ 表格行首格图标按钮（图标式保批注契约测试 td 文本断言），悬停显现，无 LLM 配置不隐藏、点击如实 toast 错误；`api-client.ts` 加 `spotExtract`。
+- **测试**：新增 41 例（`test_doc_facsimile` 16 / `test_facsimile_annotation` 8 / `test_spot_extract` 17）+ 前端 4 例，COM/soffice/LLM 单测全 mock；worktree 全量 discover 1718 绿（skipped=26 为 worktree 既有 golden/GUI 环境跳过）+ 前端 vitest 136 绿 + vue-tsc。**本机真实冒烟（隔离 venv + 真实 Office16 COM，已清理）**：合成 docx 经 Word COM 真转出文本层 PDF（`facsimile: com`）、`export_annotation_bundle` 出页图+几何+应用内 payload、点解析确定性行端到端（draft 行进澄清、二次点解析如实 already_covered）全通过。验收清单第 2/3 条的 **STO 真实 docx 与真实 LLM 路径**（STO 文档在本机用户目录不存在、LLM 需 key）需合并前在主检出人工过一遍。
+
 ## 重大更新（2026-07-26）——噪声贯通抽取路径（guards-v15，已合 main `6b4b0cf`；主检出全量 1664 tests OK、golden 6/6）
 
 - **test10 复查发现**：12 条需求来源仍含页码/水印块——guards-v14 的噪声排除只在 serve 路径生效；抽取时 `section.source_blocks` 没有 noise 标记，匹配器在抽取时是盲的（端子标记需求仍掉 section_fallback 且 span 带水印 081/082）。
@@ -125,6 +133,24 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **分发**：pyproject 补 `desktop_tasks`/`functional_synthesis`/`semantic_quality` + `llm_agents`/`domain_packs` 包数据（AST 闭包无断链）；wheel 冒烟真隔离 cwd（原从源码仓导入假绿）+ 导入探针扩 agent 链 + DEFAULT 路径存在断言。
 - **WP2 一致性与审计收口**：software 项 `hardware_dependency` 归属护栏（跳过+留痕）；LLM 异常/非法返回入 `_mark_enrichment_rejected`（待澄清+fallback）；`co_design_items.md` 四字段走兜底渲染；`agent_compare` 预算预校验（违例 exit 2）+ 双侧 trace 明细落盘（原随临时目录删除）；待办 4 补硬前置（人工核对完成前不动聚类规则）。
 - 版本面：`REVIEW_TOOLS_VERSION`→v3、`LLM_REVIEW_CACHE_VERSION`→v5、`UNFOUNDED_RULE_VERSION`→v3；`AGENT_POLICY_VERSION`/`EXTRACT_GUARDS_VERSION`/`AI_SUPPLEMENT_VERSION`/`PROMPT_VERSION` 不动；stub 路径未动，golden 零漂移。
+
+## 重大更新（2026-07-28）——Word/Excel 影印支路 + 点解析（已合 main `2a1c2bd`）
+
+- **WP-A 影印支路**：docx/xlsx 经 Office COM（首选）/LibreOffice（兜底）懒转换为 document_facsimile.pdf（指纹缓存），批注导出复用原生 PDF 影印渲染零分叉；无转换器如实降级文本批注不伪造页图。STO 真实验收：Word COM 转出 3MB PDF、82 页影印、几何锚定同构。依赖 `pywin32`（Windows 条件依赖）；打包 spec 已补 doc_facsimile/spot_extract/pywin32 hiddenimports（惰性 import 静态分析不可见）。
+- **WP-B 点解析**：批注行/块单点定向解析——参数表行走 guards-v16 确定性单行展开，其余走 LLM 单段抽取（同 targeted_reextract 护栏）；产出 draft+「用户定点解析」suspicion 进澄清待确认（不直接转正），LLM 不可用响亮报错。真实验收：参数行确定性产出（引句逐字）、术语行如实 already_covered、二次幂等。
+- **验证**：全量 1718 tests OK（新增 41）、前端 137 + vue-tsc 零错误、主检出 golden 6/6。
+
+## 重大更新（2026-07-27）——参数表逐行确定性展开（已合 main；主检出 golden 6/6、全量 1677 tests OK）
+
+- **用户裁定**：参数表每行都是需求。STO 实证链路诊断：初版 `[:5000]` 截断（已修,impl-v6）之外还有第二处 `render_table_text(max_rows=20)`——143 行参数表扁平文本尾部只有 "... 123 more rows",LLM 永远只看到前 20 行。
+- **实现**：① render_table_text 默认渲染全部数据行（atomize impl v6→v7,STO 实测 BLK-000098 扁平文本 49k→184k 字符/144 行全量）；② ai_extract 新增 `_supplement_parameter_table_rows`——需求型参数表（表头含要求类列,非术语/定义表,叶子节不在术语/参考文献区）每个未被 LLM 覆盖的数据行确定性生成一条 draft 需求（逐字渲染行引句、`deterministic_fallback`、suspicion「参数表行确定性展开」进澄清必答）；分组标题行（合并单元格全同值）与多级节号单元格不算需求/不作标题;覆盖判定按最长实质单元格 compact 命中,判不出宁补勿漏。
+- **STO 实测**：补行 243 条（BLK-000098×102/BLK-000100×118/BLK-000103×23）,引句逐字 243/243,标题为真实参数名。
+- **验证**：新增 13 专项测试（资格判定/逐行展开/逐字锚定/覆盖去重/分组标题过滤/多级节号）；全量 1677 tests OK。
+
+## 重大更新（2026-07-27）——表格块文本取消 5000 截断（已合 main `f5d2573`，impl-v6）
+
+- **硬伤实证（STO/俄标 docx）**：初始提交遗留 `table_text[:5000]`——规范主体是百行级参数表（143 行/4.9 万字符的表只剩 5000），88% 规范内容进不了 B 轨（17 节 9 节空抽、18 条需求、覆盖率 17.6%）；完整数据本在同块 data_rows（A 轨规则层能找到 1425 条）。
+- **修复与验证**：块 text 保留完整扁平文本（章节合并本就有 ~5k 切分，批注视图走独立 data_rows）；STO 实测 blocks 总字符 38818→102856；ABNT 金标无截断块，golden 6/6 零漂移实测坐实；主检出全量 1664 tests OK。旧结果需重跑（atomize impl-v6 使旧解析缓存自然失效）。
 
 ## 重大更新（2026-07-23）——专家审核 P0/P2/wheel 修复（已合 main `2cfc3bb`）
 

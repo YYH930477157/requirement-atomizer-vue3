@@ -179,7 +179,7 @@ class AtomizeTableTests(unittest.TestCase):
         self.assertEqual(items[0]["cosem_object_context"]["class_id"], 17)
         self.assertTrue(any(item["matrix_facts"] for item in items))
 
-    def test_large_table_marks_display_text_truncated_but_preserves_complete_rows(self) -> None:
+    def test_large_table_preserves_complete_text_and_rows(self) -> None:
         matrix = [["Name", "Requirement"]] + [
             [f"Output {index}", f"The meter shall expose output {index}."]
             for index in range(25)
@@ -198,8 +198,12 @@ class AtomizeTableTests(unittest.TestCase):
             knowledge_bases=[],
         )
 
-        self.assertTrue(block["text_truncated"])
+        # impl-v6/v7 起扁平文本不截断：25 行全部进 text/raw_text，无 "... N more rows"
+        self.assertFalse(block["text_truncated"])
         self.assertFalse(block["parse_incomplete"])
+        self.assertIn("Output 24", block["text"])
+        self.assertIn("Output 24", block["raw_text"])
+        self.assertNotIn("more rows", block["text"])
         self.assertEqual(len(block["data_rows"]), 25)
         self.assertEqual(items[0]["raw_fields"]["Requirement"], raw_matrix[1][1])
         validate_source_alignment(
