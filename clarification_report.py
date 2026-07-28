@@ -118,6 +118,7 @@ _SUSPICION_POLICIES: dict[str, tuple[str, str, str, str, str]] = {
     "数值配对待核": ("suspicion:value_pairing", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING, TIER_HARD),
     "表文数值不一致": ("suspicion:table_text_mismatch", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_BLOCKING, TIER_HARD),
     "确定性合规兜底（LLM 未覆盖）": ("suspicion:compliance_fallback", CAT_MISSING, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD),
+    "参数表行确定性展开": ("suspicion:param_row_expand", CAT_MISSING, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD),
     "自检补充（初抽遗漏）": ("suspicion:self_check_added", CAT_AMBIGUOUS, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD),
     "自检复核:描述与引句疑似矛盾": (
         "suspicion:self_check_conflict", CAT_CONFLICT, AUDIENCE_INTERNAL, BLOCKER_IMPORTANT, TIER_HARD

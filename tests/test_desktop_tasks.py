@@ -1007,12 +1007,12 @@ class ChainAndManifestTests(unittest.TestCase):
         expected = {
             "atomize": (
                 f"atomize+{PDF_TEXT_REPAIR_VERSION}"
-                f"+repair-vocab-{text_repair_vocabulary_fingerprint()}+impl-v6"
+                f"+repair-vocab-{text_repair_vocabulary_fingerprint()}+impl-v7"
             ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
             "ai-extract": (
-                "ai-extract-v21+guards-v15+ai-verify-v2"
+                "ai-extract-v21+guards-v16+ai-verify-v2"
                 "+merged-consistency/v3-noise-tolerant-window"
                 "+ai-supplement-v3-identity-preconditions+impl-v4"
             ),
