@@ -111,6 +111,12 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **WP2 一致性与审计收口**：software 项 `hardware_dependency` 归属护栏（跳过+留痕）；LLM 异常/非法返回入 `_mark_enrichment_rejected`（待澄清+fallback）；`co_design_items.md` 四字段走兜底渲染；`agent_compare` 预算预校验（违例 exit 2）+ 双侧 trace 明细落盘（原随临时目录删除）；待办 4 补硬前置（人工核对完成前不动聚类规则）。
 - 版本面：`REVIEW_TOOLS_VERSION`→v3、`LLM_REVIEW_CACHE_VERSION`→v5、`UNFOUNDED_RULE_VERSION`→v3；`AGENT_POLICY_VERSION`/`EXTRACT_GUARDS_VERSION`/`AI_SUPPLEMENT_VERSION`/`PROMPT_VERSION` 不动；stub 路径未动，golden 零漂移。
 
+## 重大更新（2026-07-28）——Word/Excel 影印支路 + 点解析（已合 main `2a1c2bd`）
+
+- **WP-A 影印支路**：docx/xlsx 经 Office COM（首选）/LibreOffice（兜底）懒转换为 document_facsimile.pdf（指纹缓存），批注导出复用原生 PDF 影印渲染零分叉；无转换器如实降级文本批注不伪造页图。STO 真实验收：Word COM 转出 3MB PDF、82 页影印、几何锚定同构。依赖 `pywin32`（Windows 条件依赖）；打包 spec 已补 doc_facsimile/spot_extract/pywin32 hiddenimports（惰性 import 静态分析不可见）。
+- **WP-B 点解析**：批注行/块单点定向解析——参数表行走 guards-v16 确定性单行展开，其余走 LLM 单段抽取（同 targeted_reextract 护栏）；产出 draft+「用户定点解析」suspicion 进澄清待确认（不直接转正），LLM 不可用响亮报错。真实验收：参数行确定性产出（引句逐字）、术语行如实 already_covered、二次幂等。
+- **验证**：全量 1718 tests OK（新增 41）、前端 137 + vue-tsc 零错误、主检出 golden 6/6。
+
 ## 重大更新（2026-07-27）——参数表逐行确定性展开（已合 main；主检出 golden 6/6、全量 1677 tests OK）
 
 - **用户裁定**：参数表每行都是需求。STO 实证链路诊断：初版 `[:5000]` 截断（已修,impl-v6）之外还有第二处 `render_table_text(max_rows=20)`——143 行参数表扁平文本尾部只有 "... 123 more rows",LLM 永远只看到前 20 行。
