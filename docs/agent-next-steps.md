@@ -2,7 +2,11 @@
 
 当前进度：Phase 0 ✅ → Phase 1 ✅（v2 修复）→ Phase 1.5 ✅（裁定：规则保持默认）→
 Phase 2 ✅（工具化审查 + WP2 待澄清/兜底渲染）→ 专家审核十项修复 ✅（main `e32770a`）
-→ **专家审核第二轮十三项修复 ✅（main `e3ad2a7`，1627 tests / golden 6/6）**。
+→ 专家审核第二轮十三项修复 ✅（main `e3ad2a7`，1627 tests / golden 6/6）
+→ **Claim Conservation Ledger Phase 0A/0B ✅（main `a08a60a`，shadow 双写不切生产门控；
+冻结规格 `docs/agent-claim-ledger-spec.md` v2.1；成本线用户批准调用 ≤25% / token ≤65%）**。
+下一步主线：Claim Ledger **Phase 1 生产双写**（claim 级只读 API/UI/导出 + effective
+reducer + review-state bridge，规格未冻结，等用户指示开工）。
 Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量价值待 Phase 2 真实
 项目验证后再议）。
 
