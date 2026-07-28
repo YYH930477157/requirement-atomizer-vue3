@@ -865,13 +865,17 @@ def load_document_profile_from_domain_pack(domain_pack_dir: Path | None) -> Docu
     return DocumentProfile.from_payload(pack.payload.get("document_profile"))
 
 
-def render_table_text(headers: list[str], rows: list[list[str]], max_rows: int = 20) -> str:
+def render_table_text(headers: list[str], rows: list[list[str]], max_rows: int | None = None) -> str:
+    """扁平渲染整张表。2026-07-27 起默认渲染全部数据行——此前的 max_rows=20 截断
+    （初始提交遗留）让大参数表第 21 行起的内容进不了抽取管线（STO 实证：143 行参数表
+    扁平文本尾部只有 '... 123 more rows'）；调用方需要截断时显式传 max_rows。"""
     lines = [" | ".join(headers)]
-    for row in rows[:max_rows]:
+    limit = len(rows) if max_rows is None else max_rows
+    for row in rows[:limit]:
         padded = row + [""] * max(0, len(headers) - len(row))
         lines.append(" | ".join(padded[: len(headers)]))
-    if len(rows) > max_rows:
-        lines.append(f"... {len(rows) - max_rows} more rows")
+    if len(rows) > limit:
+        lines.append(f"... {len(rows) - limit} more rows")
     return "\n".join(lines)
 
 

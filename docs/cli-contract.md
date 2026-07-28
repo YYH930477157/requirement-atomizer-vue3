@@ -46,6 +46,14 @@ sequences, `decider_usage`, tokens, and sequence agreement. Without an API key t
 still runs and the report marks `llm_ran: false` — a rule-only result is never presented as a
 comparison.
 
+Parameter-table row expansion (`guards-v16`): by user ruling every row of a requirement-shaped
+parameter table is a requirement. After LLM extraction, `_supplement_parameter_table_rows`
+deterministically emits one draft requirement per data row the LLM did not cover (verbatim
+rendered-row quote, `source_mapping: deterministic_fallback`, suspicion `参数表行确定性展开`
+into the clarification queue). Terms/definition tables and section-header rows are never
+expanded. Table blocks also keep their full flattened text (the legacy 5000-char and 20-row
+caps were removed; atomize `impl-v7`).
+
 `queue_all_gaps` registers the decision-time snapshot candidates
 (`state.unqueued_gap_block_ids` = coverage gaps ∪ failed-section blocks, minus already
 queued) as `needs_extraction` in one locked batch (per-block queueing exhausted the
