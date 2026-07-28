@@ -501,8 +501,10 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 
 
 STAGE_IMPLEMENTATION_REVISIONS = {
+    # v6：表格块扁平文本取消 [:5000] 截断（初始提交遗留）——大参数表 88% 内容此前
+    # 进不了抽取管线（STO/俄标实证）；blocks 内容变化,docx 输入须重解析
     # v5：PDF 清单段合并（名词式清单项并整段，微块可锚定）——块结构变化，PDF 输入须重解析
-    "atomize": "v5",
+    "atomize": "v6",
     "ai-extract": "v4",
     "assemble": "v2",
     "functional-synthesis": "v3",
