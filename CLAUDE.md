@@ -102,6 +102,11 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **WP2 一致性与审计收口**：software 项 `hardware_dependency` 归属护栏（跳过+留痕）；LLM 异常/非法返回入 `_mark_enrichment_rejected`（待澄清+fallback）；`co_design_items.md` 四字段走兜底渲染；`agent_compare` 预算预校验（违例 exit 2）+ 双侧 trace 明细落盘（原随临时目录删除）；待办 4 补硬前置（人工核对完成前不动聚类规则）。
 - 版本面：`REVIEW_TOOLS_VERSION`→v3、`LLM_REVIEW_CACHE_VERSION`→v5、`UNFOUNDED_RULE_VERSION`→v3；`AGENT_POLICY_VERSION`/`EXTRACT_GUARDS_VERSION`/`AI_SUPPLEMENT_VERSION`/`PROMPT_VERSION` 不动；stub 路径未动，golden 零漂移。
 
+## 重大更新（2026-07-27）——表格块文本取消 5000 截断（已合 main `f5d2573`，impl-v6）
+
+- **硬伤实证（STO/俄标 docx）**：初始提交遗留 `table_text[:5000]`——规范主体是百行级参数表（143 行/4.9 万字符的表只剩 5000），88% 规范内容进不了 B 轨（17 节 9 节空抽、18 条需求、覆盖率 17.6%）；完整数据本在同块 data_rows（A 轨规则层能找到 1425 条）。
+- **修复与验证**：块 text 保留完整扁平文本（章节合并本就有 ~5k 切分，批注视图走独立 data_rows）；STO 实测 blocks 总字符 38818→102856；ABNT 金标无截断块，golden 6/6 零漂移实测坐实；主检出全量 1664 tests OK。旧结果需重跑（atomize impl-v6 使旧解析缓存自然失效）。
+
 ## 重大更新（2026-07-23）——专家审核 P0/P2/wheel 修复（已合 main `2cfc3bb`）
 
 - **P0 审计造假撤回（用户确认：20 条扩充案例系实施者代登记，未经人工核对）**：manifest curation 撤回 20 个 ID，`human_review_status` 改 `partial`，reviewed_by/statement 如实记录撤回经过；`agent_eval` 报告 unreviewed_count=35（真实口径，40 案例仅 5 条经核对）。tests/test_agent_eval.py 原先把 25 个 ID 硬编码为预期（绿测固化错误审计），已改为钉死 5 条 + unreviewed 断言。后续任何人核对案例按 README 规则登记，runner 永不自称核对状态。
