@@ -315,7 +315,10 @@ def build_table_artifacts(
         "headers": headers,
         # 完整数据行进块：批注视图渲染真表格（此前只有扁平 text，画线/无画线表都糊成一坨）
         "data_rows": data_rows,
-        "text": table_text[:5000],
+        # 完整扁平文本进块（2026-07-27 修复：初始提交的 [:5000] 截断让大参数表 88% 内容
+        # 进不了抽取管线——STO/俄标类文档规范全在百行级参数表里,B 轨只看到前几行。
+        # 下游章节合并本就有 ~5k 字符切分,长文本自然分 chunk;批注视图走独立 data_rows）
+        "text": table_text,
         "domain_tags": domain_tags,
         "kb_matches": kb_matches,
         "requirement_like": is_requirement_like(table_text),
