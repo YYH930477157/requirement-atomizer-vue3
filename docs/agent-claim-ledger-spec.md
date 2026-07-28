@@ -1,9 +1,22 @@
-# 原文命题保全账本（Claim Conservation Ledger）实施规格 v2.1
+# 原文命题保全账本（Claim Conservation Ledger）实施规格 v2.2
 
-状态：**专家门禁修订稿 v2.1（待用户复核；复核通过前不改生产门控）**  
-日期：2026-07-26  
+状态：**已冻结（v2.2；冻结历史见文末修订记录）**  
+日期：2026-07-26（v2.2 修订 2026-07-28）  
 前置：Phase 0/1/1.5/2 及专家审核两轮修复（main `b8f8e34`）；
 `docs/agent-rollout-plan.md` 铁律全部适用
+
+**v2.2 修订记录（2026-07-28，Phase 1 详稿专家审查后修订，逐条留痕）**：
+
+1. **状态转正**：v2.1 已经用户复核并据以完成 Phase 0A/0B（main `a08a60a` 及后续整合
+   `5827482`），本条仅补记"已冻结"，无语义改动。
+2. **Phase 1 / Phase 1.5 边界澄清**（审查 P0-1）：§9 两分节原文存在张力——Phase 1 列有
+   "effective reducer 和 review-state bridge"，Phase 1.5 又把"自动重开、event hash/CAS、
+   bridge 补偿、实时 fold"并列。澄清为：**Phase 1 建成机制本体**（只读投影、effective fold、
+   必要的 WAL/崩溃恢复），全部只读、零 mutation；**Phase 1.5 验证闭环**（target invalidation、
+   专家拒绝、supplement replay 后自动重开的端到端故障恢复，event hash/CAS、bridge 补偿、
+   authoritative-state 实时 fold 的验证）通过后，才启用任何 claim/requirements mutation 与
+   authority CAS。阶段顺序不变（§14 第 10 条）。
+3. v2.2 不改变 Phase 0A/0B 已完成产物的任何口径与验收结论。
 
 ## 0. 定位、保证边界与目标
 
@@ -623,18 +636,26 @@ manifest 还须冻结一个不参与 prompt/阈值调优的 human-adjudicated he
 
 ### Phase 1：生产双写，不切门控
 
+**机制本体在本阶段建成，全部只读、零 mutation**（v2.2 澄清）：
+
 - 正式写 catalog、base/effective ledger、generation/effective meta；
-- 接入 claim 级只读 API/UI/导出、effective reducer 和 review-state bridge；
+- 接入 claim 级只读 API/UI/导出、effective reducer 和 review-state bridge——含只读投影
+  （requirement review authority → claim review event）、事件驱动 effective fold，以及支撑
+  fold 所必需的 WAL/崩溃恢复机制本体；
 - claim queue 与定点补抽在本阶段只生成 shadow/dry-run proposal，不修改 requirements 或 claim 终态；
   旧覆盖报表继续作为兼容字段；
 - 新旧 coverage 并列展示，生产 readiness 暂不依赖 ledger。
 
-### Phase 1.5：闭环与故障恢复
+### Phase 1.5：闭环验证与启用 mutation
 
-- target invalidation、专家拒绝、supplement replay 后自动重开；
+**Phase 1 建成的机制在本阶段完成闭环验证，验证通过前仍不启用任何 mutation**（v2.2 澄清）：
+
+- 端到端验证 target invalidation、专家拒绝、supplement replay 后的自动重开；
 - event hash/CAS、requirement-review bridge 补偿和 authoritative-state 实时 fold 验证通过后，才启用
   claim 级专家写入、claim queue 与定点补抽对生产 requirements 的 mutation——**mutation 唯一通道为
   现有 `targeted_reextract`**（前置条件指纹 + 补丁形态），不得长出第二条改写 requirements 的路径；
+- A/B 两轨 requirement 写入口补齐 review-revision CAS（总纲 §2.5 已定其为启用 claim mutation 前的
+  必改项）；
 - ledger-only cache rebuild；
 - 崩溃、并发、torn partial、Windows replace retry 全部验证；
 - downstream incomplete_inputs 贯通。
