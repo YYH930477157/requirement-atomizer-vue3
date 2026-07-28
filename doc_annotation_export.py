@@ -197,6 +197,28 @@ def _source_pdf_path(out_dir: Path) -> Path | None:
     return source if source and source.suffix.casefold() == ".pdf" and source.is_file() else None
 
 
+def _facsimile_source_pdf(out_dir: Path, *, allow_convert: bool) -> tuple[Path | None, str | None]:
+    """docx/xlsx 影印支路的 PDF 来源：office 输入 → out/document_facsimile.pdf。
+
+    导出阶段（allow_convert=True）懒转换：指纹命中跳过，失败如实记 sidecar；
+    应用内只读路径（allow_convert=False）绝不现场转换，只复用导出阶段已生成的
+    有效缓存。返回 (pdf_path, facsimile_status)：非 office 输入返回 (None, None)，
+    status 取值 "com" | "libreoffice" | "unavailable:<reason>"（None=从未尝试）。
+    """
+    source = _source_input_path(out_dir)
+    if source is None or source.suffix.casefold() == ".pdf":
+        return None, None
+    from doc_facsimile import CONVERTIBLE_SUFFIXES, _cached_facsimile, convert_to_pdf, read_facsimile_status
+    if source.suffix.casefold() not in CONVERTIBLE_SUFFIXES or not source.is_file():
+        return None, None
+    if allow_convert:
+        result = convert_to_pdf(source, out_dir)   # 指纹命中不重转；失败已记 sidecar
+        status = read_facsimile_status(out_dir)
+        return result, status or ("unavailable:转换失败" if result is None else None)
+    cached = _cached_facsimile(source, out_dir)
+    return cached, read_facsimile_status(out_dir)
+
+
 def _normalize_layout_mode(layout_mode: str | None) -> str:
     mode = str(layout_mode or LAYOUT_OPTIMIZED).strip().casefold()
     if mode not in ANNOTATION_LAYOUT_MODES:
@@ -1936,7 +1958,23 @@ def build_pdf_annotation_payload(
     （req_id/block_id + 页码 + 百分比矩形）,编号/文案由前端用它自己的编号器渲染。"""
     out_dir = Path(out_dir).expanduser().resolve()
     source_pdf = _source_pdf_path(out_dir)
+    facsimile_status: str | None = None
+    office_input = False
     if source_pdf is None:
+        # docx/xlsx 影印支路（只读）：复用导出阶段已转换的 document_facsimile.pdf，
+        # 绝不在请求路径现场转换（首次生成走「导出批注HTML·原版影印」）。
+        source_input = _source_input_path(out_dir)
+        office_input = bool(source_input and source_input.suffix.casefold() in (".docx", ".xlsx"))
+        source_pdf, facsimile_status = _facsimile_source_pdf(out_dir, allow_convert=False)
+    if source_pdf is None:
+        if office_input:
+            if facsimile_status and facsimile_status.startswith("unavailable"):
+                return {"available": False,
+                        "reason": f"影印转换不可用（{facsimile_status}）——批注视图维持文本模式，无伪造页图",
+                        "facsimile": facsimile_status}
+            return {"available": False,
+                    "reason": "docx/xlsx 影印页尚未生成——请重新导出批注 HTML（导出阶段懒转换生成后将常驻复用）",
+                    "facsimile": facsimile_status}
         return {"available": False, "reason": "非 PDF 输入或缺少源文档，无原版影印模式"}
     pages_dir = out_dir / ANNOTATION_PAGES_DIR
     try:
@@ -2009,6 +2047,8 @@ def build_pdf_annotation_payload(
                                          "rect": _pdf_zone_rect(region)})
     return {"available": True, "pages": pages, "pages_dir": ANNOTATION_PAGES_DIR,
             "requirement_markers": requirement_markers, "omission_markers": omission_markers,
+            # 影印来源血统：office 转换影印如实标引擎，原生 PDF 为 None——不冒充原生
+            "facsimile": facsimile_status,
             # 全段落热区（0714）：点一段出翻译和解析——语义与静态影印同源（_pdf_block_zones）
             "block_zones": _pdf_block_zones(blocks, requirements, geometry, covered)}
 
@@ -2018,6 +2058,12 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
     out_dir = Path(out_dir).expanduser().resolve()
     requested_mode = _normalize_layout_mode(layout_mode)
     source_pdf = _source_pdf_path(out_dir) if requested_mode == LAYOUT_PDF_ORIGINAL else None
+    facsimile_status: str | None = None
+    if requested_mode == LAYOUT_PDF_ORIGINAL and source_pdf is None:
+        # WP-A 影印支路：docx/xlsx 输入懒转换为 document_facsimile.pdf（指纹命中不重转），
+        # 之后走与原生 PDF 完全相同的页图渲染 + 几何 + 锚定路径——渲染代码零分叉。
+        # 无转换器时维持文本批注，facsimile_status 如实记 "unavailable:<reason>"。
+        source_pdf, facsimile_status = _facsimile_source_pdf(out_dir, allow_convert=True)
     actual_mode = (LAYOUT_PDF_ORIGINAL
                    if requested_mode == LAYOUT_PDF_ORIGINAL and source_pdf else LAYOUT_OPTIMIZED)
     copied_pdf: Path | None = None
@@ -2065,6 +2111,8 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
         "annotation_overlay": bool(pdf_pages and pdf_geometry),
         "page_files": page_files,
         "pdf_render_error": pdf_render_error or None,
+        # 影印支路血统（WP-A）："com"|"libreoffice"|"unavailable:<reason>"；原生 PDF/优化模式为 None
+        "facsimile": facsimile_status,
     })
     target.write_text(rendered, encoding="utf-8")
     return target, summary

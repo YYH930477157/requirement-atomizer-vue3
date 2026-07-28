@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
-import { Ban, Check, ChevronLeft, ChevronRight, Image, MessageSquareText, MessagesSquare, RefreshCw, Rows3 } from "@lucide/vue"
+import { Ban, Check, ChevronLeft, ChevronRight, Image, MessageSquareText, MessagesSquare, RefreshCw, Rows3, Wand2 } from "@lucide/vue"
 import type {
   AiExtractionStatusPayload,
   AiRequirement,
@@ -31,7 +31,7 @@ type DocClient = Pick<RequirementApiClient,
   "loadDocument" | "loadAiRequirements" | "applyAiReviewAction" | "loadPdfAnnotation" | "loadPdfPageBlob">
   & Partial<Pick<RequirementApiClient,
     "loadAiExtractionStatus" | "loadOmissionActions" | "applyOmissionAction" | "reextractOmission" |
-    "loadClarificationInternalChecks" | "applyClarificationCheckBatch">>
+    "loadClarificationInternalChecks" | "applyClarificationCheckBatch" | "spotExtract">>
 const props = withDefaults(defineProps<{
   client: DocClient | null
   active: boolean
@@ -53,6 +53,8 @@ const extractionStatus = ref<AiExtractionStatusPayload | null>(null)
 const omissionStates = ref<OmissionActionState[]>([])
 const omissionSaving = ref(false)
 const omissionNote = ref("")
+// 点解析（WP-B）：在飞的 "blockId:rowIndex" 键，空串=空闲；按钮不隐藏，无 LLM 配置点击返回真实错误
+const spotExtracting = ref("")
 const internalChecks = ref<ClarificationInternalChecksPayload | null>(null)
 const internalCheckSignal = ref("")
 const internalCheckSaving = ref(false)
@@ -1018,6 +1020,31 @@ async function reextractSelectedOmission() {
   }
 }
 
+// 点解析（WP-B）：批注视图单行/单块定向解析。产出 draft + 澄清待确认（先人工确认再转正）；
+// 失败如实 toast 错误原因（含无 LLM 配置的 503），不假装可用。
+async function spotExtractBlock(b: DocumentBlock, rowIndex?: number) {
+  const client = props.client
+  if (!client?.spotExtract || spotExtracting.value) return
+  const key = `${b.block_id}:${rowIndex ?? ""}`
+  spotExtracting.value = key
+  try {
+    const payload = await client.spotExtract({ blockId: b.block_id, rowIndex, actor: "reviewer" })
+    if (spotExtracting.value !== key) return
+    if (payload.drafts > 0) {
+      message.value = `已生成 ${payload.drafts} 条 draft 需求，进澄清待确认`
+      await refreshReviewData(client).catch(() => false)
+    } else {
+      message.value = "该段未发现新需求（可能已被现有需求覆盖）"
+    }
+  } catch (error) {
+    if (spotExtracting.value === key) {
+      message.value = error instanceof Error ? error.message : "点解析失败"
+    }
+  } finally {
+    if (spotExtracting.value === key) spotExtracting.value = ""
+  }
+}
+
 // 选中需求时，在锚段内的块里高亮 source_quote 原句；选中未覆盖/背景段时整段=引用本体 → 全黄。
 function segments(b: DocumentBlock): Array<{ text: string; mark: boolean }> {
   const text = b.text || ""
@@ -1300,7 +1327,16 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                     <tr v-for="(hr, hi) in b.header_rows" :key="hi"><th v-for="(c, ci) in padRow(b, hr)" :key="ci">{{ c }}</th></tr>
                   </thead>
                   <tbody>
-                    <tr v-for="(row, ri) in b.data_rows" :key="ri"><td v-for="(c, ci) in padRow(b, row)" :key="ci">{{ c }}</td></tr>
+                    <tr v-for="(row, ri) in b.data_rows" :key="ri"><td v-for="(c, ci) in padRow(b, row)" :key="ci"><button
+                      v-if="ci === 0 && props.client?.spotExtract"
+                      type="button"
+                      class="spot-extract-btn spot-row-btn"
+                      :data-testid="`spot-extract-row-${b.block_id}-${ri + 1}`"
+                      :disabled="spotExtracting === `${b.block_id}:${ri + 1}`"
+                      title="解析此行：生成 draft 需求进澄清待确认"
+                      :aria-label="`解析此行（第 ${ri + 1} 行）`"
+                      @click.stop="spotExtractBlock(b, ri + 1)"
+                    ><Wand2 :size="11" aria-hidden="true" /></button>{{ c }}</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -1373,6 +1409,15 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                 title="本段与已抽取需求的来源段落内容重复，点击查看汇总条目"
                 @click.stop="selectBlockCard(b)"
               >{{ echoLabel(echoReqsForBlock(b.block_id)) }}</button>
+              <button
+                v-if="props.client?.spotExtract && !isHeading(b)"
+                class="spot-extract-btn"
+                type="button"
+                :data-testid="`spot-extract-${b.block_id}`"
+                :disabled="spotExtracting === `${b.block_id}:`"
+                title="解析此段：生成 draft 需求进澄清待确认"
+                @click.stop="spotExtractBlock(b)"
+              >解析此段</button>
             </p>
           </div>
         </template>
@@ -1686,6 +1731,16 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
   border-bottom: 1px dashed #cbd5e1; border-radius: 0; background: transparent; color: #7a8496;
   font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super; }
 .echo-tag:hover { color: #1f5f58; border-color: #1f5f58; }
+/* 点解析（WP-B）：行/块悬停显现；无 LLM 配置不隐藏，点击返回真实错误 */
+.spot-extract-btn { display: inline-flex; align-items: center; margin-left: 6px; padding: 0 2px 1px;
+  border: 0; border-bottom: 1px dotted #b6c3f0; border-radius: 0; background: transparent;
+  color: #98a1b3; font-size: 9px; line-height: 1; cursor: pointer; vertical-align: super;
+  opacity: 0; pointer-events: none; transition: opacity .12s; }
+.doc-block:hover .spot-extract-btn, .doc-table tr:hover .spot-row-btn,
+.spot-extract-btn:focus-visible, .spot-extract-btn:disabled { opacity: 1; pointer-events: auto; }
+.spot-extract-btn:hover { color: #1e41c9; border-color: #1e41c9; background: #eef2ff; }
+.spot-extract-btn:disabled { cursor: wait; color: #b6c3f0; }
+.spot-row-btn { margin: 0 4px 0 0; vertical-align: middle; }
 .echo-jump { display: block; margin: 3px 0; padding: 0; border: 0; background: transparent;
   color: #1d7a5b; font: inherit; text-align: left; text-decoration: underline dotted; cursor: pointer; }
 .table-omission-tag { margin-top: 4px; vertical-align: baseline; }

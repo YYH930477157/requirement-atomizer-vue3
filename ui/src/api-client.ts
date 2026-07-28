@@ -269,6 +269,26 @@ export type OmissionReextractPayload = {
   written: string[]
 }
 
+// 点解析（WP-B）：批注视图单行/单块定向解析，draft 进澄清待确认
+export type SpotExtractInput = {
+  blockId: string
+  rowIndex?: number
+  actor?: string
+  reason?: string
+  route?: string
+}
+
+export type SpotExtractPayload = {
+  schema: "spot-extract/v1"
+  block_id: string
+  row_index: number | null
+  strategy: "deterministic_param_row" | "llm"
+  drafts: number
+  draft_ids: string[]
+  already_covered: boolean
+  written: string[]
+}
+
 type FetchLike = typeof fetch
 
 type RequirementApiClientOptions = {
@@ -420,6 +440,22 @@ export class RequirementApiClient {
         block_id: input.blockId,
         source_fingerprint: input.sourceFingerprint,
         focus_lines: input.focusLines || [],
+        actor: input.actor || "",
+        reason: input.reason || "",
+        route: input.route || "",
+      }),
+    })
+  }
+
+  // 点解析（WP-B）：成功/失败都以 ok 标志+error 如实呈现——无 LLM 配置时按钮不隐藏，
+  // 点击返回真实错误（后端 503 ok:false），不假装可用
+  async spotExtract(input: SpotExtractInput): Promise<SpotExtractPayload> {
+    return this.request<SpotExtractPayload>("/spot-extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        block_id: input.blockId,
+        row_index: input.rowIndex ?? null,
         actor: input.actor || "",
         reason: input.reason || "",
         route: input.route || "",
