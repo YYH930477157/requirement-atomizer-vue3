@@ -272,6 +272,11 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/omission-reextract":
             self.handle_omission_reextract()
             return
+        if parsed.path in ("/spot-extract", "/api/spot-extract"):
+            # 点解析（WP-B）：/spot-extract 为现有无前缀约定的正规路径，
+            # /api/spot-extract 为冻结规格字面别名——同一处理器，无行为分叉
+            self.handle_spot_extract()
+            return
         if parsed.path == "/clarification-check-actions/batch":
             self.handle_clarification_check_batch()
             return
@@ -523,6 +528,54 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
         self.send_json(result)
+
+    def handle_spot_extract(self) -> None:
+        """点解析（WP-B）：批注视图单行/单块定向解析，draft 进澄清待确认。
+
+        LLM 不可用响亮报错（ok:false + 503），绝不伪造 stub 抽取结果；
+        无 LLM 配置时按钮不隐藏、点击返回真实错误（冻结口径）。"""
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        from omission_actions import OmissionConflictError
+        from spot_extract import SpotExtractUnavailableError, spot_extract
+        block_id = str(payload.get("block_id") or "").strip()
+        if not block_id:
+            self.send_json({"ok": False, "error": "block_id is required"}, status=400)
+            return
+        row_index = payload.get("row_index")
+        if row_index is not None:
+            try:
+                row_index = int(row_index)
+            except (TypeError, ValueError):
+                self.send_json({"ok": False, "error": "row_index must be an integer"}, status=400)
+                return
+        try:
+            result = spot_extract(
+                self.output_dir,
+                block_id=block_id,
+                row_index=row_index,
+                route=str(payload.get("route") or "openai_compatible"),
+                actor=str(payload.get("actor") or "").strip() or None,
+                reason=str(payload.get("reason") or ""),
+            )
+        except OmissionConflictError as exc:
+            self.send_json({"ok": False, "error": str(exc), "retryable": True,
+                            "needs_reconfirmation": True}, status=409)
+            return
+        except SpotExtractUnavailableError as exc:
+            self.send_json({"ok": False, "error": str(exc), "retryable": False}, status=503)
+            return
+        except ValueError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+        except (LLMConnectionError, LLMResponseError) as exc:
+            self.send_json({"ok": False, "error": str(exc), "retryable": True}, status=502)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"ok": False, "error": str(exc), "retryable": True}, status=503)
+            return
+        self.send_json({"ok": True, **result})
 
     def handle_clarification_check_batch(self) -> None:
         payload = self.read_json_body()

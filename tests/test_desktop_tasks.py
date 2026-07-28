@@ -1023,7 +1023,8 @@ class ChainAndManifestTests(unittest.TestCase):
             "clarification-report": "clarification/v6-coverage-basis+ai-supplement-v3-identity-preconditions+impl-v5",
             "export-annotation-html": (
                 "doc_annotation_export/v10+annotation-translation-v2-segment-fallback"
-                "+annotation-translation-guards-v1+ai-supplement-v3-identity-preconditions"
+                "+annotation-translation-guards-v1+doc-facsimile-v1"
+                "+ai-supplement-v3-identity-preconditions"
             ),
         }
         self.assertEqual(

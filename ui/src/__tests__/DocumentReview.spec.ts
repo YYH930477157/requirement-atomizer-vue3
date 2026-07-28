@@ -1477,4 +1477,80 @@ describe("DocumentReview", () => {
     expect(source).toContain(".doc-paper.pdf-paper { padding: 14px 44px 14px 12px; }")
     expect(source).toContain("cursor: pointer; pointer-events: auto; border-radius: 3px;")
   })
+
+  // 点解析（WP-B）：段落块/表格行按钮 → /spot-extract；成功 toast + 刷新，失败如实原因
+  it("spot-extracts a paragraph block and toasts the draft count", async () => {
+    const spotExtract = vi.fn().mockResolvedValue({
+      schema: "spot-extract/v1", block_id: "B3", row_index: null,
+      strategy: "llm", drafts: 2, draft_ids: ["SPOT-B3", "SPOT-B3-2"],
+      already_covered: false, written: ["ai_requirements.jsonl"],
+    })
+    const client = makeClient({ spotExtract })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    const button = wrapper.find('[data-testid="spot-extract-B3"]')
+    expect(button.exists()).toBe(true)
+    await button.trigger("click")
+    await flushPromises()
+
+    expect(spotExtract).toHaveBeenCalledWith(expect.objectContaining({ blockId: "B3" }))
+    expect(wrapper.find('[data-testid="doc-message"]').text())
+      .toContain("已生成 2 条 draft 需求，进澄清待确认")
+  })
+
+  it("spot-extracts a table row with its 1-based row index", async () => {
+    const spotExtract = vi.fn().mockResolvedValue({
+      schema: "spot-extract/v1", block_id: "T1", row_index: 2,
+      strategy: "deterministic_param_row", drafts: 1, draft_ids: ["SPOT-T1-R2"],
+      already_covered: false, written: ["ai_requirements.jsonl"],
+    })
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 1,
+        blocks: [{
+          block_id: "T1", order: 1, type: "table", text: "No. | P | Req",
+          headers: ["No.", "Parameter", "Requirement"],
+          header_rows: [["No.", "Parameter", "Requirement"]],
+          data_rows: [["1.", "Voltage", "230 V"], ["2.", "Frequency", "50 Hz"]],
+          section_path: ["4"], requirement_like: true, noise: false,
+        }],
+      }),
+      spotExtract,
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    const button = wrapper.find('[data-testid="spot-extract-row-T1-2"]')
+    expect(button.exists()).toBe(true)
+    await button.trigger("click")
+    await flushPromises()
+
+    expect(spotExtract).toHaveBeenCalledWith(expect.objectContaining({ blockId: "T1", rowIndex: 2 }))
+    expect(wrapper.find('[data-testid="doc-message"]').text())
+      .toContain("已生成 1 条 draft 需求，进澄清待确认")
+  })
+
+  it("surfaces the honest backend error when spot extraction is unavailable", async () => {
+    const spotExtract = vi.fn().mockRejectedValue(
+      new RequirementApiError(503, { error: "openai_compatible route is not configured" }))
+    const client = makeClient({ spotExtract })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="spot-extract-B2"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="doc-message"]').text())
+      .toContain("openai_compatible route is not configured")
+  })
+
+  it("hides spot-extract buttons when the client lacks the capability", async () => {
+    const client = makeClient()   // 无 spotExtract 方法
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="spot-extract-B2"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="spot-extract-B3"]').exists()).toBe(false)
+  })
 })

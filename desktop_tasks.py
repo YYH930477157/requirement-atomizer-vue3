@@ -584,8 +584,10 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
         elif stage == "export-annotation-html":
             from doc_annotation_export import (ANNOTATION_TRANSLATION_GUARDS_VERSION,
                                                 ANNOTATION_TRANSLATION_STRATEGY_VERSION)
+            from doc_facsimile import DOC_FACSIMILE_VERSION
+            # docx/xlsx 影印支路（WP-A）进戳：转换层版本变化 → 旧影印产物不得复用
             producer = (f"{producer}+{ANNOTATION_TRANSLATION_STRATEGY_VERSION}"
-                        f"+{ANNOTATION_TRANSLATION_GUARDS_VERSION}")
+                        f"+{ANNOTATION_TRANSLATION_GUARDS_VERSION}+{DOC_FACSIMILE_VERSION}")
         if stage in {
             "ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
             "clarification-report", "compose", "export-annotation-html",
