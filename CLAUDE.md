@@ -45,6 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-28）——影印支路几何回填修复（分支 codex/facsimile-geometry，doc_annotation_export/v11，待合 main）
+
+- **实证缺陷链（STO result4）**：①几何锚定的"同页候选"假设对 docx/xlsx 全灭（块无 page_number，82 页文档仅 8 块有区）；②docx 扁平文本合并单元格展开重复（"3.1.1 | 3.1.1 | Req | Req"）与转换 PDF 文本层单次出现对不上，包含匹配全灭；③api 侧 normalize_text 吞掉行分隔使按行折叠失效；④全串包含对 184k 参数表过脆；⑤重构时丢了一行 `geometry[block_id] = regions` 赋值（插桩追了四层才现形）。
+- **修复**：无页号块走全局文本驱动匹配——全局精确 → 全局包含（>8000 字符大表放宽为前缀 80 字符锚定）→ 边际模糊（最优-次优 ≥0.05 才落区，宁缺不猜）；`_geometry_match_text` 增加合并单元格折叠 + 相邻重复词折叠；几何缓存升 v3；版本戳 doc_annotation_export/v10→v11。
+- **STO 实测**：有区块数 8→124/164、覆盖页 2→62；术语表归位第 6-11 页（此前错配 79 页）；单/三相参数表 47/50 区跨 15-64 页（点击表格行可正确定位右栏）。
+- **验证**：新增 6 专项测试（折叠/全局精确/前缀锚/边际不猜/清晰最优）；全量 1724 tests OK。
+
 ## 重大更新（2026-07-28）——Word/Excel 影印支路 + 点解析（分支 `codex/facsimile-spotextract`，待审核未合 main；规格 `docs/facsimile-spotextract-spec.md` 已冻结）
 
 - **WP-A 影印支路**：新模块 `doc_facsimile.py`（`DOC_FACSIMILE_VERSION=doc-facsimile-v1`）——docx/xlsx 懒转换为 `out/document_facsimile.pdf`：Office COM 首选（Word `SaveAs2(FileFormat=17)`/Excel `ExportAsFixedFormat(0)`，`Visible=False`/`DisplayAlerts=0`，finally 里 `Quit()`+`CoUninitialize()`），LibreOffice `soffice --headless --convert-to pdf` 兜底（PATH + 默认安装目录探测，120s 超时），双缺如实 `unavailable:<reason>` 记 sidecar，**不伪造页图**。缓存键 = 输入内容 sha256 + 版本（`document_facsimile.pdf.meta.json`），命中不重转。pywin32 进依赖（`pywin32; sys_platform=="win32"`），非 win 环境 ImportError 优雅降级。

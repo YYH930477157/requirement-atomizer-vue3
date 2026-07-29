@@ -523,7 +523,8 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v6-coverage-basis",
     "compose": "engineering_composer/v1",
-    "export-annotation-html": "doc_annotation_export/v10",
+    # v11：影印支路几何回填（docx/xlsx 块无页号 → 全局文本匹配+单调游标模糊,STO 实证同页假设致 82 页文档仅 8 块有区）
+    "export-annotation-html": "doc_annotation_export/v11",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }

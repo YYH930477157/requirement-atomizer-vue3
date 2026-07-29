@@ -266,10 +266,26 @@ def _valid_pdf_regions(value: Any) -> list[dict[str, Any]]:
     return regions
 
 
+def _dedupe_merged_cells(text: str) -> str:
+    """折叠表格渲染行里合并单元格展开成的连续重复单元格（STO 实证：docx 扁平行
+    "3.1.1 | 3.1.1 | Requirement… | Requirement…" 与转换 PDF 文本层单次出现对不上,
+    几何包含匹配全灭;原生 PDF 块无此重复,折叠是不动点）。"""
+    lines: list[str] = []
+    for line in str(text or "").split("\n"):
+        cells = [cell.strip() for cell in line.split("|")]
+        deduped = [cell for index, cell in enumerate(cells) if index == 0 or cell != cells[index - 1]]
+        lines.append(" | ".join(deduped))
+    return "\n".join(lines)
+
+
 def _geometry_match_text(value: Any) -> str:
-    text = normalize_text(str(value or ""))
+    text = normalize_text(_dedupe_merged_cells(str(value or "")))
     text = re.sub(r"\bcolumn_\d+\b", " ", text, flags=re.IGNORECASE).replace("|", " ")
-    return " ".join(text.split())
+    text = " ".join(text.split())
+    # 折叠相邻重复词（STO 实证：api 侧 normalize_text 把行分隔吞掉后,行界两侧的同值单元格
+    # 无法在 _dedupe_merged_cells 按行折叠——"…IPUE 3.1.1 | 3.1.1 |…"变成连写重复;
+    # 词级折叠后 docx 扁平方言与转换 PDF 文本层的包含关系才成立）
+    return re.sub(r"(\S+)( \1)+", r"\1", text)
 
 
 def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
@@ -285,7 +301,7 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             cached = {}
-        if (cached.get("version") == 2 and cached.get("source_sha256") == source_hash
+        if (cached.get("version") == 3 and cached.get("source_sha256") == source_hash
                 and cached.get("block_signature") == block_signature
                 and isinstance(cached.get("geometry"), dict)):
             return {
@@ -310,9 +326,11 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
 
     parsed_by_id = {str(block.get("block_id") or ""): block for block in parsed_blocks}
     parsed_by_text: dict[tuple[int | None, str], list[dict[str, Any]]] = {}
+    parsed_by_text_global: dict[str, list[dict[str, Any]]] = {}
     for block in parsed_blocks:
         key = (_page_number(block.get("page_number")), _geometry_match_text(block.get("text")))
         parsed_by_text.setdefault(key, []).append(block)
+        parsed_by_text_global.setdefault(key[1], []).append(block)
 
     for block in missing:
         block_id = str(block.get("block_id") or "")
@@ -347,11 +365,67 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
                     None, normalized, _geometry_match_text(best.get("text"))).ratio()
                 if ratio >= 0.72:
                     regions = _valid_pdf_regions(best.get("pdf_regions"))
+        # 影印支路几何回填（2026-07-28 STO 实证）：docx/xlsx 的块没有 page_number——
+        # 原生 PDF 路径的"同页候选"全部落空,82 页文档只有 8 块有区。无页号块改走
+        # 全局文本驱动匹配：全局精确 → 全局包含;模糊兜底在循环外统一做（见下）。
+        if not regions and normalized and _page_number(block.get("page_number")) is None:
+            global_exact = parsed_by_text_global.get(normalized) or []
+            if len(global_exact) == 1:
+                regions = _valid_pdf_regions(global_exact[0].get("pdf_regions"))
+        if not regions and normalized and _page_number(block.get("page_number")) is None:
+            # 大文本块（参数表级,>8000 字符）放宽为前缀锚定：解析块前 80 字符出现在块文本
+            # 即视为被该块覆盖——全串包含对碎片/空格差异过脆（STO 实证 184k 参数表全串
+            # 包含永远失败）;80 字符锚假命中概率极低。小块仍要求全串包含。
+            large_block = len(normalized) > 8000
+            contained_global = [
+                item for item in parsed_blocks
+                if len(_geometry_match_text(item.get("text"))) >= 16
+                and (
+                    _geometry_match_text(item.get("text")) in normalized
+                    or (large_block and _geometry_match_text(item.get("text"))[:80] in normalized)
+                )
+            ]
+            if contained_global:
+                for item in contained_global:
+                    regions.extend(_valid_pdf_regions(item.get("pdf_regions")))
+        if regions:
+            geometry[block_id] = regions
+    # 全局模糊兜底（无页号块专用）：全量比对取最优,但要求显著边际（最优-次优 ≥0.05）
+    # 才落区——单调游标窗口曾被实证：一次早期错配把游标拖过后续全部错位（术语表错配
+    # 到 79 页,真实位置第 6 页,最优比 0.95）。无显著边际则宁缺不猜（宁漏勿错）,
+    # 比较只看前 2000 字符控制 SequenceMatcher 成本。
+    fuzzy_pending = [
+        block for block in missing
+        if str(block.get("block_id") or "") not in geometry
+        and _page_number(block.get("page_number")) is None
+    ]
+    for block in fuzzy_pending:
+        normalized = _geometry_match_text(block.get("text"))[:2000]
+        if not normalized:
+            continue
+        block_id = str(block.get("block_id") or "")
+        scored: list[tuple[float, int]] = []
+        for index, item in enumerate(parsed_blocks):
+            candidate_text = _geometry_match_text(item.get("text"))[:2000]
+            if not candidate_text:
+                continue
+            ratio = difflib.SequenceMatcher(None, normalized, candidate_text).ratio()
+            if ratio >= 0.72:
+                scored.append((ratio, index))
+        if not scored:
+            continue
+        scored.sort(reverse=True)
+        best_ratio, best_index = scored[0]
+        second_ratio = scored[1][0] if len(scored) > 1 else 0.0
+        if best_ratio - second_ratio >= 0.05:
+            regions = _valid_pdf_regions(parsed_blocks[best_index].get("pdf_regions"))
+            if regions:
+                geometry[block_id] = regions
         if regions:
             geometry[block_id] = regions
     if cache_path:
         payload = {
-            "version": 2,
+            "version": 3,
             "source_sha256": source_hash,
             "block_signature": block_signature,
             "geometry": geometry,
