@@ -156,9 +156,8 @@
         "negative_policy",
         "negative_validator",
         "review_adapter",
-        "review_bridge",
         "reducer",
-        "queue",
+        "validation_reuse",
         "audit"
       ],
       "properties": {
@@ -172,9 +171,8 @@
         "negative_policy": {"type": "string", "minLength": 1},
         "negative_validator": {"type": "string", "minLength": 1},
         "review_adapter": {"type": "string", "minLength": 1},
-        "review_bridge": {"type": "string", "minLength": 1},
         "reducer": {"type": "string", "minLength": 1},
-        "queue": {"type": "string", "minLength": 1},
+        "validation_reuse": {"type": "string", "minLength": 1},
         "audit": {"type": "string", "minLength": 1}
       },
       "additionalProperties": false

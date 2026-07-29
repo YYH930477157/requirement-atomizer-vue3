@@ -415,6 +415,8 @@
         </template>
         <DocumentReview v-else-if="activeNav === 'document'" :client="apiClient" :session-key="reviewSessionKey"
                         :active="activeNav === 'document'" :refresh-token="documentRefreshToken" />
+        <ClaimLedger v-else-if="activeNav === 'claim'" :client="apiClient" :session-key="reviewSessionKey"
+                     :active="activeNav === 'claim'" :refresh-token="documentRefreshToken" />
 
         <footer class="status-bar">
           <span :title="currentOutputDir || undefined">输出目录：{{ currentOutputDir ? tailPath(currentOutputDir) : "尚未选择输出目录" }}</span>
@@ -602,6 +604,7 @@ import {
   FolderOutput,
   MessageSquareReply,
   MessagesSquare,
+  ListChecks,
   Play,
   PlugZap,
   RefreshCw,
@@ -616,12 +619,13 @@ import {
   X,
 } from "@lucide/vue"
 import { RequirementApiClient } from "./api-client"
+import ClaimLedger from "./ClaimLedger.vue"
 import DocumentReview from "./DocumentReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
 import { applyReviewState, mapBackendRequirement, statusDisplay as displayStatus } from "./requirement-mapper"
 import type { Requirement, ReviewStatus } from "./types"
 
-type PhaseNavId = "run" | "review" | "document" | "settings"
+type PhaseNavId = "run" | "review" | "document" | "claim" | "settings"
 type StatFilter = "all" | "accepted" | "expert_pending" | "ambiguous"
 type LlmSettings = {
   enabled: boolean
@@ -641,6 +645,7 @@ const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: Component }> =
   { id: "run", label: "运行", icon: Play },
   { id: "review", label: "审查工作台", icon: ClipboardCheck },
   { id: "document", label: "文档批注", icon: FileText },
+  { id: "claim", label: "Claim 账本", icon: ListChecks },
   { id: "settings", label: "设置", icon: Settings },
 ]
 

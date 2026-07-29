@@ -19,6 +19,7 @@ import ai_extract
 from agent_policy import AGENT_POLICY_VERSION
 from assemble_spec import assemble
 from atomize import run_atomizer_pipeline
+from claim_artifacts import ClaimArtifactError
 from engineering_composer import compose_engineering_requirements, write_engineering_requirements
 from functional_synthesis import FUNCTIONAL_REQUIREMENTS, FUNCTIONAL_SYNTHESIS_VERSION, run_functional_synthesis
 from export_requirements import export_requirements
@@ -465,11 +466,15 @@ STAGE_INPUTS: dict[str, list[str]] = {
     "clarification-report": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "engineering_analysis.json",
                              "consistency_report.json", "blocks.jsonl", "ai_review_states.jsonl",
                              "clarification_answers.jsonl", "clarification_check_states.jsonl",
-                             "omission_states.jsonl", "ai_requirements.meta.json", "ai_supplements.jsonl"],
+                             "omission_states.jsonl", "ai_requirements.meta.json", "ai_supplements.jsonl",
+                             "claim_effective_ledger.jsonl", "claim_effective.meta.json",
+                             "claim_queue_proposals.jsonl", "claim_effective_health.json"],
     "compose": ["atomic_requirements.jsonl", "table_items.jsonl", "ai_supplements.jsonl"],
     "export-annotation-html": ["blocks.jsonl", "ai_requirements.jsonl", "engineering_analysis.json",
                                "ai_review_states.jsonl", "annotation_translations.json",
-                               "ai_requirements.meta.json", "ai_supplements.jsonl"],
+                               "ai_requirements.meta.json", "ai_supplements.jsonl",
+                               "claim_catalog.jsonl", "claim_effective_ledger.jsonl",
+                               "claim_effective.meta.json"],
 }
 
 
@@ -494,11 +499,9 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
         "claim_catalog.meta.json",
         "claim_coverage_groups.jsonl",
         "claim_ledger.jsonl",
-        "claim_effective_ledger.jsonl",
         "claim_shadow_metrics.json",
         "claim_verifier_attempts.jsonl",
         "claim_generation.meta.json",
-        "claim_effective.meta.json",
     ],
     "functional-synthesis": [FUNCTIONAL_REQUIREMENTS],
     "assemble": [ASSEMBLED_JSON],
@@ -524,16 +527,16 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     "requirements-analysis": "v6",
     # v4：template_writer 走 _notes_text 同步获得硬件依赖行（审计 P1-b）
     "template-write": "v4",
-    "clarification-report": "v5",
+    "clarification-report": "v6",
 }
 
 _STAGE_BASE_PRODUCERS = {
     "atomize": "atomize",
     "assemble": "assemble_spec/v1",
     "template-write": "template_writer/v1",
-    "clarification-report": "clarification/v6-coverage-basis",
+    "clarification-report": "clarification/v7-claim-ledger-info",
     "compose": "engineering_composer/v1",
-    "export-annotation-html": "doc_annotation_export/v10",
+    "export-annotation-html": "doc_annotation_export/v11-claim-distribution",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
@@ -698,6 +701,14 @@ _CLAIM_STAGE_OUTPUTS = {
     "claim_verifier_attempts.jsonl",
     "claim_generation.meta.json",
     "claim_effective.meta.json",
+}
+
+_CLAIM_EFFECTIVE_RUNTIME_OUTPUTS = {
+    "claim_effective_ledger.jsonl",
+    "claim_effective.meta.json",
+    "claim_review_events.jsonl",
+    "claim_queue_proposals.jsonl",
+    "claim_effective_health.json",
 }
 
 
@@ -946,6 +957,14 @@ def _stage_is_reusable(out_dir: Path, stage: str, *,
         if recorded_files and recorded_files != stage_input_files_fingerprint(out_dir, stage):
             return False
     outputs = _stage_outputs(stage, entry)
+    if stage == "ai-extract":
+        # Runtime effective sidecars are independently recoverable. Legacy
+        # manifests may list them, but their absence/staleness never reruns extraction.
+        outputs = [
+            name
+            for name in outputs
+            if Path(name).name not in _CLAIM_EFFECTIVE_RUNTIME_OUTPUTS
+        ]
     if stage == "ai-extract" and not require_claim_generation:
         outputs = [name for name in outputs if Path(name).name not in _CLAIM_STAGE_OUTPUTS]
     if not _outputs_exist(out_dir, outputs):
@@ -953,12 +972,12 @@ def _stage_is_reusable(out_dir: Path, stage: str, *,
     if stage == "ai-extract" and require_claim_generation:
         try:
             from claim_artifacts import (
-                committed_shadow_versions_are_current,
-                load_committed_shadow,
+                committed_base_versions_are_current,
+                load_committed_claim_base,
             )
 
-            snapshot = load_committed_shadow(out_dir)
-            if not committed_shadow_versions_are_current(snapshot):
+            snapshot = load_committed_claim_base(out_dir)
+            if not committed_base_versions_are_current(snapshot):
                 return False
             from ai_extract import (
                 resolve_claim_shadow_verify,
@@ -975,7 +994,7 @@ def _stage_is_reusable(out_dir: Path, stage: str, *,
             )
             if shadow_meta.get("semantic_verifier_enabled") is not expected_verifier:
                 return False
-        except Exception:
+        except ClaimArtifactError:
             return False
     if stage == "atomize" and input_path is not None:
         try:
@@ -1050,6 +1069,57 @@ def _stage_summary(out_dir: Path) -> dict[str, Any]:
     return build_output_summary(out_dir)
 
 
+def _claim_effective_summary(out_dir: Path) -> dict[str, Any]:
+    try:
+        from claim_views import build_claim_view
+
+        view = build_claim_view(out_dir, "metrics")
+        effective_metrics = dict(view.get("effective_metrics") or {})
+        return {
+            "document_ready": view.get("document_ready"),
+            "effective_fresh": bool(view.get("effective_fresh")),
+            "open_claim_count": effective_metrics.get("uncertain_count"),
+        }
+    except Exception as exc:
+        return {
+            "document_ready": None,
+            "effective_fresh": False,
+            "open_claim_count": None,
+            "effective_error": str(exc)[:300],
+        }
+
+
+def _claim_component_manifest(out_dir: Path) -> dict[str, Any]:
+    try:
+        from claim_artifacts import load_committed_effective_snapshot_readonly
+
+        snapshot = load_committed_effective_snapshot_readonly(out_dir)
+        generation = dict(snapshot["generation_meta"])
+        shadow_meta = dict(generation.get("shadow_meta") or {})
+        effective = dict(snapshot["effective_meta"])
+        return {
+            "base_generation_id": effective.get("base_generation_id"),
+            "document_effective_revision": effective.get(
+                "document_effective_revision"
+            ),
+            "event_prefix_sha256": effective.get("event_prefix_sha256"),
+            "last_event_seq": effective.get("last_event_seq"),
+            "catalog": dict(snapshot.get("catalog_meta") or {}).get(
+                "catalog_version"
+            ),
+            "coverage": dict(shadow_meta.get("versions") or {}).get(
+                "coverage_validator"
+            ),
+            "effective": effective.get("effective_ledger_schema"),
+            "bridge": effective.get("bridge_version"),
+            "reducer": effective.get("reducer_version"),
+            "queue": effective.get("queue_version"),
+            "versions": dict(effective.get("versions") or {}),
+        }
+    except Exception as exc:
+        return {"status": "unavailable", "error": str(exc)[:300]}
+
+
 def skipped_stage_payload(out_dir: Path, stage: str) -> dict[str, Any]:
     data = read_run_manifest(out_dir)
     stages = data.get("stages") if isinstance(data.get("stages"), dict) else {}
@@ -1074,6 +1144,7 @@ def skipped_stage_payload(out_dir: Path, stage: str) -> dict[str, Any]:
                 "resolution_status": shadow_meta.get("resolution_status"),
                 "termination_reason": shadow_meta.get("termination_reason"),
                 "metrics": snapshot.get("metrics") or {},
+                **_claim_effective_summary(root),
             }
         except Exception as exc:
             payload["claim_shadow"] = {"status": "stale", "error": str(exc)[:300]}
@@ -1124,6 +1195,8 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
                     entry["error"] = str(error)[:300]
                 else:
                     entry.pop("error", None)
+                if stage == "ai-extract" and status in {"ok", "partial"}:
+                    entry["claim_components"] = _claim_component_manifest(root)
             stages[stage] = entry
             data.update({"manifest_version": 2, "stages": stages, "updated": now})
             _atomic_write_json(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
@@ -1575,6 +1648,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     claim_import_parser.add_argument("--decisions", type=Path, required=True)
     claim_import_parser.add_argument("--output", type=Path, required=True)
     claim_import_parser.add_argument("--golden-manifest", type=Path, required=True)
+
+    claim_fold_parser = subparsers.add_parser("claim-ledger-fold")
+    claim_fold_parser.add_argument(
+        "--out-dir",
+        "--out",
+        dest="out",
+        type=Path,
+        required=True,
+    )
     return parser.parse_args(argv)
 
 
@@ -1721,6 +1803,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "import-ai-decisions":
             payload = import_ai_decisions_task(args.out, args.file)
+        elif args.command == "claim-ledger-fold":
+            from claim_review_actions import fold_effective_ledger
+
+            payload = {
+                "kind": "claim_ledger_fold",
+                **fold_effective_ledger(
+                    args.out,
+                    actor_trigger="desktop-claim-ledger-fold",
+                ),
+            }
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:

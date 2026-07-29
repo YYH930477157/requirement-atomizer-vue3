@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_review_event.schema.json",
+  "title": "Claim review bridge event v1",
+  "type": "object",
+  "required": [
+    "schema", "event_seq", "event_id", "prev_event_hash", "event_hash",
+    "claim_id", "claim_hash", "document_generation_id", "catalog_generation_id",
+    "event_kind", "eligibility_before", "eligibility_after", "actor", "recorded_at",
+    "reason", "trigger_kind", "source_store", "source_event_revision", "target_review_revision",
+    "target_kind", "target_requirement_id", "target_fingerprint",
+    "observed_target_fingerprint", "linked_claim_ids", "idempotency_key",
+    "projection_mode", "expected_base_claim_row_hash",
+    "expected_claim_effective_revision", "bridge_version", "route"
+  ],
+  "properties": {
+    "schema": {"const": "claim-review-event/v1"},
+    "event_seq": {"type": "integer", "minimum": 1},
+    "event_id": {"type": "string", "pattern": "^CRE-[1-9][0-9]*-[0-9a-f]{12}$"},
+    "prev_event_hash": {"$ref": "#/$defs/hash"},
+    "event_hash": {"$ref": "#/$defs/hash"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "claim_hash": {"$ref": "#/$defs/hash"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "event_kind": {"enum": ["target_invalidated", "target_reactivated"]},
+    "eligibility_before": {"enum": ["active", "rejected", "unknown"]},
+    "eligibility_after": {"enum": ["active", "rejected", "unknown"]},
+    "actor": {"const": "system:claim-review-bridge"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "reason": {"type": "string", "minLength": 1},
+    "trigger_kind": {"enum": ["review_authority", "target_set"]},
+    "source_store": {
+      "enum": [
+        "ai_review_states.jsonl", "review_states.jsonl",
+        "ai_requirements.jsonl", "atomic_requirements.jsonl"
+      ]
+    },
+    "source_event_revision": {"$ref": "#/$defs/hash"},
+    "target_review_revision": {"$ref": "#/$defs/hash"},
+    "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
+    "target_requirement_id": {"type": "string", "minLength": 1},
+    "target_fingerprint": {"$ref": "#/$defs/hash"},
+    "observed_target_fingerprint": {
+      "oneOf": [
+        {"$ref": "#/$defs/hash"},
+        {"type": "null"}
+      ]
+    },
+    "linked_claim_ids": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "idempotency_key": {"$ref": "#/$defs/hash"},
+    "projection_mode": {"enum": ["cas_effective", "bootstrap_base"]},
+    "expected_base_claim_row_hash": {"$ref": "#/$defs/hash"},
+    "expected_claim_effective_revision": {
+      "oneOf": [
+        {"$ref": "#/$defs/hash"},
+        {"type": "null"}
+      ]
+    },
+    "bridge_version": {"type": "string", "minLength": 1},
+    "route": {"const": "deterministic"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"projection_mode": {"const": "cas_effective"}},
+        "required": ["projection_mode"]
+      },
+      "then": {
+        "properties": {
+          "expected_claim_effective_revision": {"$ref": "#/$defs/hash"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"projection_mode": {"const": "bootstrap_base"}},
+        "required": ["projection_mode"]
+      },
+      "then": {
+        "properties": {
+          "expected_claim_effective_revision": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"trigger_kind": {"const": "review_authority"}},
+        "required": ["trigger_kind"]
+      },
+      "then": {
+        "properties": {
+          "source_store": {"enum": ["ai_review_states.jsonl", "review_states.jsonl"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"trigger_kind": {"const": "target_set"}},
+        "required": ["trigger_kind"]
+      },
+      "then": {
+        "properties": {
+          "source_store": {"enum": ["ai_requirements.jsonl", "atomic_requirements.jsonl"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"event_kind": {"const": "target_invalidated"}},
+        "required": ["event_kind"]
+      },
+      "then": {
+        "properties": {
+          "eligibility_after": {"enum": ["rejected", "unknown"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"event_kind": {"const": "target_reactivated"}},
+        "required": ["event_kind"]
+      },
+      "then": {
+        "properties": {
+          "eligibility_after": {"const": "active"}
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

@@ -289,6 +289,68 @@ def read_current_omission_states(out_dir: Path) -> dict[str, dict[str, Any]]:
     return current
 
 
+def _read_jsonl_bytes_readonly(
+    path: Path,
+    raw: bytes | None,
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line_number, raw_line in enumerate(raw.splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        try:
+            row = json.loads(raw_line.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"invalid {label} row {line_number} during read-only read"
+            ) from exc
+        if not isinstance(row, dict):
+            raise ValueError(
+                f"invalid {label} row {line_number} during read-only read"
+            )
+        rows.append(row)
+    return rows
+
+
+def read_current_omission_states_readonly(out_dir: Path) -> dict[str, dict[str, Any]]:
+    """Read compatibility omissions without a lock, recovery, or sidecar writes."""
+    root = Path(out_dir).expanduser().resolve()
+    states_path = root / OMISSION_STATES
+    blocks_path = root / "blocks.jsonl"
+    states_before = states_path.read_bytes() if states_path.is_file() else None
+    blocks_before = blocks_path.read_bytes() if blocks_path.is_file() else None
+    latest: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl_bytes_readonly(
+        states_path,
+        states_before,
+        label=OMISSION_STATES,
+    ):
+        omission_id = str(row.get("omission_id") or "")
+        if omission_id:
+            latest[omission_id] = row
+    current: dict[str, dict[str, Any]] = {}
+    for block in _read_jsonl_bytes_readonly(
+        blocks_path,
+        blocks_before,
+        label="blocks.jsonl",
+    ):
+        block_id = str(block.get("block_id") or "")
+        if not block_id:
+            continue
+        omission_id = make_omission_id(block_id, str(block.get("text") or ""))
+        state = latest.get(omission_id)
+        if state is not None:
+            current[omission_id] = state
+    states_after = states_path.read_bytes() if states_path.is_file() else None
+    blocks_after = blocks_path.read_bytes() if blocks_path.is_file() else None
+    if states_after != states_before or blocks_after != blocks_before:
+        raise ValueError("omission authority changed during read-only read")
+    return current
+
+
 def current_non_requirement_block_ids(out_dir: Path) -> set[str]:
     """Return source-current blocks explicitly triaged as non-requirements."""
     return {

@@ -92,6 +92,42 @@ class PartialSnapshotTests(unittest.TestCase):
                 "rows": [],
             })
 
+    def test_partial_status_projects_both_legacy_quality_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "requirements": 3,
+                "coverage_pct": 82.5,
+                "core_coverage_pct": 75.0,
+            }), encoding="utf-8")
+
+            status = api_server.build_ai_extraction_status(out)
+
+        self.assertEqual(status["quality"], {
+            "coverage_pct": 82.5,
+            "core_coverage_pct": 75.0,
+        })
+        self.assertNotIn("requirements", status["quality"])
+
+    def test_malformed_quality_makes_status_endpoint_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            (out / "ai_extract_quality.json").write_text("[]", encoding="utf-8")
+            handler = object.__new__(api_server.RequirementAPIHandler)
+            handler.path = "/ai-extraction-status"
+            handler.headers = {}
+            handler.allowed_origins = set()
+            handler.local_token = ""
+            handler.output_dir = out
+            responses: list[tuple[int, dict]] = []
+            handler.send_json = lambda body, status=200: responses.append((status, body))
+
+            handler.do_GET()
+
+        self.assertEqual(responses[0][0], 503)
+        self.assertTrue(responses[0][1]["retryable"])
+        self.assertIn("must contain a JSON object", responses[0][1]["error"])
+
     def test_partial_status_does_not_project_stale_downstream_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)

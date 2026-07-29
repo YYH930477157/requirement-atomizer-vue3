@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_effective_publication_journal.schema.json",
+  "title": "Claim effective publication journal v1",
+  "type": "object",
+  "required": [
+    "schema", "transaction_kind", "transaction_id", "state", "created_at",
+    "base_generation_id", "generation_meta_sha256", "base_ledger_sha256",
+    "snapshot_files", "candidate", "journal_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "claim-effective-publication-journal/v1"},
+    "transaction_kind": {"const": "effective_fold"},
+    "transaction_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "state": {"const": "prepared"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "base_generation_id": {"$ref": "#/$defs/hash"},
+    "generation_meta_sha256": {"$ref": "#/$defs/hash"},
+    "base_ledger_sha256": {"$ref": "#/$defs/hash"},
+    "snapshot_files": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/snapshot_file"}
+    },
+    "candidate": {
+      "type": "object",
+      "required": [
+        "effective_ledger_sha256", "effective_ledger_count",
+        "queue_sha256", "queue_count", "effective_meta_sha256",
+        "document_effective_revision"
+      ],
+      "properties": {
+        "effective_ledger_sha256": {"$ref": "#/$defs/hash"},
+        "effective_ledger_count": {"type": "integer", "minimum": 0},
+        "queue_sha256": {"$ref": "#/$defs/hash"},
+        "queue_count": {"type": "integer", "minimum": 0},
+        "effective_meta_sha256": {"$ref": "#/$defs/hash"},
+        "document_effective_revision": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "journal_sha256": {"$ref": "#/$defs/hash"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "snapshot_file": {
+      "type": "object",
+      "required": ["name", "present", "sha256", "backup_name"],
+      "properties": {
+        "name": {
+          "enum": [
+            "claim_effective_ledger.jsonl",
+            "claim_queue_proposals.jsonl",
+            "claim_effective.meta.json"
+          ]
+        },
+        "present": {"type": "boolean"},
+        "sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/hash"},
+            {"type": "null"}
+          ]
+        },
+        "backup_name": {
+          "type": ["string", "null"],
+          "pattern": "^(?:claim_effective_ledger\\.jsonl|claim_queue_proposals\\.jsonl|claim_effective\\.meta\\.json)$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"present": {"const": true}},
+            "required": ["present"]
+          },
+          "then": {
+            "properties": {
+              "sha256": {"$ref": "#/$defs/hash"},
+              "backup_name": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"present": {"const": false}},
+            "required": ["present"]
+          },
+          "then": {
+            "properties": {
+              "sha256": {"type": "null"},
+              "backup_name": {"type": "null"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -166,6 +166,10 @@ describe("review workspace shell", () => {
     await wrapper.find('[data-testid="nav-文档批注"]').trigger("click")
     expect(wrapper.find('[data-testid="doc-review"]').exists()).toBe(true)  // 文档批注视图
 
+    await wrapper.find('[data-testid="nav-Claim 账本"]').trigger("click")
+    expect(wrapper.find('[data-testid="claim-ledger"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="claim-ledger"]').text()).toContain("双写观察期 · 不影响 READY 判定")
+
     await wrapper.find('[data-testid="nav-设置"]').trigger("click")
     expect(wrapper.find('[data-testid="settings-panel"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="settings-panel"]').text()).toContain("设置")
