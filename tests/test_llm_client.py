@@ -4,13 +4,22 @@ import json
 import os
 import io
 import threading
+import time
 import urllib.error
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from unittest.mock import patch
 
-from llm_client import LLMClientConfig, LLMConnectionError, LLMResponseError, _read_error_body, chat_json
+from llm_client import (
+    LLMBudgetExceeded,
+    LLMClientConfig,
+    LLMConnectionError,
+    LLMRequestBudget,
+    LLMResponseError,
+    _read_error_body,
+    chat_json,
+)
 
 
 def openai_response(payload: dict[str, Any] | str) -> dict[str, Any]:
@@ -66,6 +75,300 @@ class MockOpenAIService:
 
 
 class LLMClientTests(unittest.TestCase):
+    def test_request_budget_checkpoint_failure_blocks_network_and_rolls_back_reserve(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+
+        def checkpoint(snapshot: dict) -> None:
+            if snapshot["attempted_calls"]:
+                raise RuntimeError("checkpoint unavailable")
+
+        budget.set_checkpoint(checkpoint)
+        with MockOpenAIService([]) as service:
+            with self.assertRaisesRegex(RuntimeError, "checkpoint unavailable"):
+                chat_json(
+                    LLMClientConfig(
+                        base_url=service.base_url,
+                        model="mock-model",
+                        api_key_env="",
+                        timeout_s=2,
+                        max_retries=0,
+                    ),
+                    "system",
+                    "user",
+                    _request_budget=budget,
+                )
+
+        self.assertEqual(service.requests, [])
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["attempted_calls"], 0)
+        self.assertEqual(snapshot["reserved_tokens"], 0)
+
+    def test_request_budget_checkpoint_tracks_reserve_and_commit(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+        checkpoints: list[dict] = []
+        budget.set_checkpoint(lambda snapshot: checkpoints.append(dict(snapshot)))
+
+        reservation = budget.reserve({"messages": [], "max_tokens": 1})
+        budget.commit(reservation, {"total_tokens": 7})
+
+        self.assertEqual(checkpoints[0]["attempted_calls"], 0)
+        self.assertEqual(checkpoints[1]["attempted_calls"], 1)
+        self.assertGreater(checkpoints[1]["reserved_tokens"], 0)
+        self.assertEqual(checkpoints[2]["reserved_tokens"], 0)
+        self.assertEqual(checkpoints[2]["tokens"], 7)
+
+    def test_request_budget_serializes_concurrent_checkpoint_snapshots(self) -> None:
+        budget = LLMRequestBudget(max_calls=2, max_tokens=100_000)
+        checkpoints: list[int] = []
+        first_entered = threading.Event()
+        release_first = threading.Event()
+
+        def checkpoint(snapshot: dict) -> None:
+            calls = int(snapshot["attempted_calls"])
+            if calls == 1:
+                first_entered.set()
+                self.assertTrue(release_first.wait(timeout=2))
+            checkpoints.append(calls)
+
+        budget.set_checkpoint(checkpoint)
+        reservations: list[int] = []
+
+        def reserve() -> None:
+            reservations.append(
+                budget.reserve({"messages": [], "max_tokens": 1})
+            )
+
+        first = threading.Thread(target=reserve)
+        second = threading.Thread(target=reserve)
+        first.start()
+        self.assertTrue(first_entered.wait(timeout=2))
+        second.start()
+        time.sleep(0.05)
+        release_first.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        self.assertEqual(checkpoints[:3], [0, 1, 2])
+        self.assertEqual(len(reservations), 2)
+        for reservation in reservations:
+            budget.commit(reservation, {"total_tokens": 1})
+
+    def test_request_budget_checkpoint_does_not_hold_state_lock(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+        publication_lock = threading.Lock()
+        checkpoint_started = threading.Event()
+        snapshot_finished = threading.Event()
+        errors: list[BaseException] = []
+
+        def checkpoint(snapshot: dict) -> None:
+            if snapshot["attempted_calls"]:
+                checkpoint_started.set()
+                with publication_lock:
+                    pass
+
+        budget.set_checkpoint(checkpoint)
+        publication_lock.acquire()
+
+        def reserve() -> None:
+            try:
+                budget.reserve({"messages": [], "max_tokens": 1})
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        def take_snapshot() -> None:
+            try:
+                budget.snapshot()
+                snapshot_finished.set()
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        reserve_thread = threading.Thread(target=reserve)
+        snapshot_thread = threading.Thread(target=take_snapshot)
+        reserve_thread.start()
+        self.assertTrue(checkpoint_started.wait(timeout=2))
+        snapshot_thread.start()
+        try:
+            self.assertTrue(
+                snapshot_finished.wait(timeout=2),
+                "checkpoint callback retained the budget state lock",
+            )
+        finally:
+            publication_lock.release()
+        reserve_thread.join(timeout=2)
+        snapshot_thread.join(timeout=2)
+
+        self.assertFalse(reserve_thread.is_alive())
+        self.assertFalse(snapshot_thread.is_alive())
+        self.assertEqual(errors, [])
+
+    def test_request_budget_blocks_json_repair_before_second_http_call(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+        with MockOpenAIService([
+            {"body": {**openai_response("not json"), "usage": {"total_tokens": 10}}},
+        ]) as service:
+            with self.assertRaises(LLMBudgetExceeded):
+                chat_json(
+                    LLMClientConfig(
+                        base_url=service.base_url,
+                        model="mock-model",
+                        api_key_env="",
+                        timeout_s=2,
+                        max_retries=0,
+                    ),
+                    "system",
+                    "user",
+                    _request_budget=budget,
+                )
+
+        self.assertEqual(len(service.requests), 1)
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["attempted_calls"], 1)
+        self.assertEqual(snapshot["tokens"], 10)
+        self.assertTrue(snapshot["denied"])
+        self.assertEqual(snapshot["termination_reason"], "call_budget_exhausted")
+
+    def test_request_budget_blocks_oversized_request_before_network(self) -> None:
+        budget = LLMRequestBudget(max_calls=2, max_tokens=10)
+        with MockOpenAIService([]) as service:
+            with self.assertRaises(LLMBudgetExceeded):
+                chat_json(
+                    LLMClientConfig(
+                        base_url=service.base_url,
+                        model="mock-model",
+                        api_key_env="",
+                        timeout_s=2,
+                        max_retries=0,
+                        max_tokens=100,
+                    ),
+                    "system",
+                    "user",
+                    _request_budget=budget,
+                )
+
+        self.assertEqual(service.requests, [])
+        self.assertEqual(budget.snapshot()["termination_reason"], "token_budget_exhausted")
+
+    def test_request_budget_settles_to_reported_usage(self) -> None:
+        budget = LLMRequestBudget(max_calls=2, max_tokens=100_000)
+        response = {
+            **openai_response({"ok": True}),
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+        }
+        with MockOpenAIService([{"body": response}]) as service:
+            result = chat_json(
+                LLMClientConfig(
+                    base_url=service.base_url,
+                    model="mock-model",
+                    api_key_env="",
+                    timeout_s=2,
+                    max_retries=0,
+                ),
+                "system",
+                "user",
+                _request_budget=budget,
+            )
+
+        self.assertEqual(result, {"ok": True})
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["attempted_calls"], 1)
+        self.assertEqual(snapshot["tokens"], 10)
+        self.assertTrue(snapshot["usage_complete"])
+
+    def test_request_budget_charges_conservative_reservation_when_usage_missing(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+        with MockOpenAIService([{"body": openai_response({"ok": True})}]) as service:
+            result = chat_json(
+                LLMClientConfig(
+                    base_url=service.base_url,
+                    model="mock-model",
+                    api_key_env="",
+                    timeout_s=2,
+                    max_retries=0,
+                    max_tokens=100,
+                ),
+                "system",
+                "user",
+                _request_budget=budget,
+            )
+        self.assertTrue(result["ok"])
+        snapshot = budget.snapshot()
+        self.assertGreater(snapshot["tokens"], 100)
+        self.assertFalse(snapshot["usage_complete"])
+
+    def test_request_budget_rejects_zero_bool_negative_and_conflicting_usage(self) -> None:
+        invalid_usage = (
+            {"total_tokens": 0},
+            {"total_tokens": True},
+            {"total_tokens": -7},
+            {"prompt_tokens": 7, "total_tokens": 5},
+            {"completion_tokens": 7, "total_tokens": 5},
+            {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 1},
+        )
+        for usage in invalid_usage:
+            with self.subTest(usage=usage):
+                budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+                reservation = budget.reserve({"messages": [], "max_tokens": 1})
+                budget.commit(reservation, usage)
+                snapshot = budget.snapshot()
+                self.assertGreater(snapshot["tokens"], 0)
+                self.assertFalse(snapshot["usage_complete"])
+
+    def test_request_budget_reservation_uses_the_actual_http_serialization(self) -> None:
+        payload = {"messages": [{"content": "辅助输出"}], "max_tokens": 10}
+        expected = len(json.dumps(payload).encode("utf-8")) + 10 + 256
+        self.assertEqual(LLMRequestBudget._token_ceiling(payload), expected)
+
+    def test_request_budget_serializes_concurrent_reservations(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+        barrier = threading.Barrier(3)
+        reservations: list[int] = []
+        failures: list[Exception] = []
+
+        def reserve() -> None:
+            barrier.wait()
+            try:
+                reservations.append(budget.reserve({"messages": [], "max_tokens": 1}))
+            except Exception as exc:
+                failures.append(exc)
+
+        workers = [threading.Thread(target=reserve) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=2)
+
+        self.assertEqual(len(reservations), 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], LLMBudgetExceeded)
+        budget.commit(reservations[0], {"total_tokens": 1})
+        self.assertEqual(budget.snapshot()["attempted_calls"], 1)
+
+    def test_request_budget_blocks_rate_limit_retry_before_second_http_attempt(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+        with MockOpenAIService([
+            {"status": 429, "headers": {"Retry-After": "0"},
+             "body": {"error": "rate limit"}},
+        ]) as service, patch("llm_client.time.sleep", return_value=None):
+            with self.assertRaises(LLMBudgetExceeded):
+                chat_json(
+                    LLMClientConfig(
+                        base_url=service.base_url,
+                        model="mock-model",
+                        api_key_env="",
+                        timeout_s=2,
+                        max_retries=0,
+                    ),
+                    "system",
+                    "user",
+                    _request_budget=budget,
+                )
+        self.assertEqual(len(service.requests), 1)
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["attempted_calls"], 1)
+        self.assertEqual(snapshot["failed_calls"], 1)
+        self.assertFalse(snapshot["usage_complete"])
+
     def test_read_error_body_closes_http_error_response(self) -> None:
         body = io.BytesIO(b'{"error":"boom"}')
         error = urllib.error.HTTPError("http://example.test", 500, "Internal Server Error", {}, body)
@@ -278,6 +581,8 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(len(service.requests), 2)
         self.assertEqual(meta["usage"], {"prompt_tokens": 24, "completion_tokens": 5, "total_tokens": 29})
         self.assertTrue(meta["usage_complete"])
+        self.assertEqual(meta["call_count"], 2)
+        self.assertEqual(meta["failed_call_count"], 0)
 
     def test_chat_json_with_meta_marks_missing_usage_as_partial(self) -> None:
         """端点不返回 usage → 计 0 且 usage_complete=False（不得估算冒充精确值）。"""
@@ -320,6 +625,22 @@ class LLMClientTests(unittest.TestCase):
 
         self.assertEqual(meta["usage"]["total_tokens"], 125)
         self.assertTrue(meta["usage_complete"])   # 一轮双明细、一轮 total——两轮均可计量
+
+    def test_aggregate_usage_rejects_nonpositive_bool_and_conflicting_counts(self) -> None:
+        from llm_client import _aggregate_usage
+
+        for usage in (
+            {"total_tokens": 0},
+            {"total_tokens": True},
+            {"total_tokens": -7},
+            {"prompt_tokens": 7, "total_tokens": 5},
+            {"completion_tokens": 7, "total_tokens": 5},
+            {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 1},
+        ):
+            with self.subTest(usage=usage):
+                meta = _aggregate_usage([usage])
+                self.assertEqual(meta["usage"]["total_tokens"], 0)
+                self.assertFalse(meta["usage_complete"])
 
     def test_chat_json_with_meta_normalizes_mixed_usage_per_round(self) -> None:
         """审计 H4 共用路径：首发带 total、修复轮只带双明细 → total 逐轮归一为 125。"""
@@ -372,6 +693,29 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(result["decision"], "accept")
         self.assertEqual(len(service.requests), 2)
         self.assertEqual(sleeps, [1.0])
+
+    def test_chat_json_with_meta_counts_each_provider_retry_attempt(self) -> None:
+        from llm_client import chat_json_with_meta
+
+        with MockOpenAIService([
+            {"status": 500, "body": {"error": "try again"}},
+            {"body": {**openai_response({"ok": True}), "usage": {"total_tokens": 7}}},
+        ]) as service, patch("llm_client.time.sleep", return_value=None):
+            data, meta = chat_json_with_meta(
+                LLMClientConfig(
+                    base_url=service.base_url,
+                    model="mock-model",
+                    api_key_env="",
+                    timeout_s=2,
+                    max_retries=1,
+                ),
+                "system",
+                "user",
+            )
+        self.assertTrue(data["ok"])
+        self.assertEqual(meta["call_count"], 2)
+        self.assertEqual(meta["failed_call_count"], 1)
+        self.assertFalse(meta["usage_complete"])
 
     def test_429_retry_after_controls_sleep_delay(self) -> None:
         with MockOpenAIService(

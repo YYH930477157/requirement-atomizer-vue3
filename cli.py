@@ -97,6 +97,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     analyze.add_argument("--llm-route", choices=["stub", "openai_compatible"], default="stub")
     add_verbosity_arguments(analyze)
 
+    claim_acceptance = subparsers.add_parser(
+        "claim-shadow-acceptance",
+        help="Evaluate sanitized Phase 0 claim shadow transition evidence.",
+    )
+    claim_acceptance.add_argument("--input", type=Path, required=True)
+    claim_acceptance.add_argument("--output", type=Path)
+
+    claim_packet = subparsers.add_parser(
+        "claim-shadow-review-packet",
+        help="Generate a machine-local Phase 0 claim review packet.",
+    )
+    claim_packet.add_argument("--input", type=Path, required=True)
+    claim_packet.add_argument("--output-dir", type=Path, required=True)
+
+    claim_import = subparsers.add_parser(
+        "claim-shadow-review-import",
+        help="Validate and import Phase 0 claim review decisions.",
+    )
+    claim_import.add_argument("--input", type=Path, required=True)
+    claim_import.add_argument("--decisions", type=Path, required=True)
+    claim_import.add_argument("--output", type=Path, required=True)
+    claim_import.add_argument("--golden-manifest", type=Path, required=True)
+
     args = parser.parse_args(argv)
     if args.version:
         return args
@@ -130,6 +153,26 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "version", False):
         print(__version__)
         return 0
+    if args.command == "claim-shadow-acceptance":
+        from claim_acceptance import main as claim_acceptance_main
+        forwarded = ["--input", str(args.input)]
+        if args.output is not None:
+            forwarded.extend(["--output", str(args.output)])
+        return claim_acceptance_main(forwarded)
+    if args.command == "claim-shadow-review-packet":
+        from claim_review_packet import main as claim_review_packet_main
+        return claim_review_packet_main([
+            "--input", str(args.input),
+            "--output-dir", str(args.output_dir),
+        ])
+    if args.command == "claim-shadow-review-import":
+        from claim_review_import import main as claim_review_import_main
+        return claim_review_import_main([
+            "--input", str(args.input),
+            "--decisions", str(args.decisions),
+            "--output", str(args.output),
+            "--golden-manifest", str(args.golden_manifest),
+        ])
     configure_logging(args)
 
     started = time.perf_counter()

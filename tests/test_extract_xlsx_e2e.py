@@ -7,10 +7,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from openpyxl import Workbook
 from atomize import build_atomic_candidates, mark_doc_regions, run_atomizer_pipeline
 from parsers.xlsx_parser import extract_xlsx
 from tests.xlsx_fixtures import write_synthetic_xlsx
+import claim_catalog
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,12 +44,19 @@ class ExtractXlsxE2ETests(unittest.TestCase):
 
         headings = [block for block in blocks if block["type"] == "heading"]
         self.assertEqual([block["text"] for block in headings], ["Requirements", "Capability Matrix", "Mixed Types"])
+        self.assertTrue(all(block.get("source_format") == "xlsx" for block in blocks))
+        self.assertTrue(all(item.get("source_format") == "xlsx" for item in table_items))
         self.assertTrue(all(block.get("doc_region") == "body" for block in blocks))
         self.assertTrue(all(item.get("doc_region") == "body" for item in table_items))
 
         requirement_item = next(item for item in table_items if item["table_title"] == "Requirements" and item["row_index"] == 2)
         self.assertTrue(requirement_item["requirement_like"])
         self.assertEqual(requirement_item["fields"]["Requirement"], "The meter shall support xDLMS GET service.")
+        catalog_row = next(
+            row for row in claim_catalog.build_claim_catalog(blocks, table_items)["catalog"]
+            if row["locator"]["table_item_id"] == requirement_item["item_id"]
+        )
+        self.assertEqual(catalog_row["region_evidence"]["source_format"], "xlsx")
 
         matrix_block = next(block for block in blocks if block.get("table_title") == "Capability Matrix")
         self.assertEqual(matrix_block["header_row_count"], 2)
@@ -116,6 +126,35 @@ class ExtractXlsxE2ETests(unittest.TestCase):
         # write_synthetic_xlsx creates 3 visible sheets + 1 hidden
         self.assertEqual(headings, ["Requirements", "Capability Matrix", "Mixed Types"])
         self.assertGreater(len(table_items), 0)
+
+    def test_row_limit_marks_table_parse_incomplete_with_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "truncated.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Requirements"
+            sheet.append(["ID", "Requirement"])
+            sheet.append(["R1", "The meter shall support GET."])
+            sheet.append(["R2", "The meter shall support SET."])
+            workbook.save(input_path)
+            workbook.close()
+
+            with mock.patch("parsers.xlsx_parser.MAX_SHEET_ROWS", 2):
+                blocks, items = extract_xlsx(
+                    input_path, knowledge_bases=[], document_profile=None)
+
+        table = next(block for block in blocks if block["type"] == "table")
+        self.assertTrue(table["parse_incomplete"])
+        self.assertEqual(table["parse_incomplete_reason"], {
+            "code": "xlsx_row_limit",
+            "observed_rows": 3,
+            "parsed_rows": 2,
+            "limit": 2,
+        })
+        catalog = claim_catalog.build_claim_catalog(blocks, items)
+        self.assertGreater(len(catalog["catalog"]), 0)
+        self.assertEqual(catalog["meta"]["audit"]["parse_incomplete_count"], 1)
+        self.assertEqual(catalog["meta"]["accounting_status"], "incomplete")
 
     def test_unsupported_excel_and_unknown_formats_are_input_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

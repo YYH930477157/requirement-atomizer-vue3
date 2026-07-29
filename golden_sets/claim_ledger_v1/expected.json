@@ -1,0 +1,187 @@
+{
+  "schema": "claim-ledger-golden-expected/v1",
+  "cases": [
+    {
+      "case_id": "programmable-equivalent-001",
+      "catalog_count": 1,
+      "group_count": 1,
+      "container_mapping_count": 0,
+      "accounting_status": "complete",
+      "resolution_status": "open",
+      "claims": [
+        {
+          "selector": {"block_id": "PROG-B1", "text": "The indicator channel can be configured by the operator."},
+          "catalog": {"source_kind": "paragraph_sentence", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": {"validation_method": "independent_semantic", "status": "proposed", "prefilter_status": "pass", "edge_count": 1}
+        }
+      ]
+    },
+    {
+      "case_id": "same-block-partial-001",
+      "catalog_count": 2,
+      "group_count": 1,
+      "container_mapping_count": 0,
+      "accounting_status": "complete",
+      "resolution_status": "open",
+      "claims": [
+        {
+          "selector": {"block_id": "SIB-B1", "text": "Channel A is programmable. "},
+          "catalog": {"source_kind": "paragraph_sentence", "eligibility": "claim"},
+          "ledger": {"resolution": "covered", "classification": "normative", "classification_status": "validated", "exclusion_kind": null},
+          "coverage": {"validation_method": "deterministic_verbatim", "status": "validated", "prefilter_status": "not_required", "edge_count": 1}
+        },
+        {
+          "selector": {"block_id": "SIB-B1", "text": "Channel B is selectable."},
+          "catalog": {"source_kind": "paragraph_sentence", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": null
+        }
+      ]
+    },
+    {
+      "case_id": "page-furniture-001",
+      "catalog_count": 6,
+      "group_count": 0,
+      "container_mapping_count": 0,
+      "accounting_status": "complete",
+      "resolution_status": "open",
+      "claims": [
+        {
+          "selector": {"block_id": "PAGE-1"},
+          "catalog": {"source_kind": "noise", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": null
+        },
+        {
+          "selector": {"block_id": "WATERMARK-1"},
+          "catalog": {"source_kind": "noise", "eligibility": "excluded"},
+          "ledger": {"resolution": "excluded", "classification": "non_normative", "classification_status": "validated", "exclusion_kind": "structural"},
+          "coverage": null
+        },
+        {
+          "selector": {"block_id": "PAGE-2"},
+          "catalog": {"source_kind": "noise", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": null
+        },
+        {
+          "selector": {"block_id": "WATERMARK-2"},
+          "catalog": {"source_kind": "noise", "eligibility": "excluded"},
+          "ledger": {"resolution": "excluded", "classification": "non_normative", "classification_status": "validated", "exclusion_kind": "structural"},
+          "coverage": null
+        },
+        {
+          "selector": {"block_id": "PAGE-3"},
+          "catalog": {"source_kind": "noise", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": null
+        },
+        {
+          "selector": {"block_id": "WATERMARK-3"},
+          "catalog": {"source_kind": "noise", "eligibility": "excluded"},
+          "ledger": {"resolution": "excluded", "classification": "non_normative", "classification_status": "validated", "exclusion_kind": "structural"},
+          "coverage": null
+        }
+      ]
+    },
+    {
+      "case_id": "list-no-intro-001",
+      "catalog_count": 2,
+      "group_count": 0,
+      "container_mapping_count": 1,
+      "accounting_status": "complete",
+      "resolution_status": "open",
+      "claims": [
+        {
+          "selector": {"block_id": "LIST-B1", "text": "- Local indicator\n"},
+          "catalog": {"source_kind": "list_item", "list_role": "item", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": null
+        },
+        {
+          "selector": {"block_id": "LIST-B1", "text": "- Remote indicator"},
+          "catalog": {"source_kind": "list_item", "list_role": "item", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": null
+        }
+      ]
+    },
+    {
+      "case_id": "table-normal-001",
+      "catalog_count": 2,
+      "group_count": 1,
+      "container_mapping_count": 1,
+      "accounting_status": "complete",
+      "resolution_status": "open",
+      "claims": [
+        {
+          "selector": {"block_id": "TB-NORMAL", "table_item_id": "TB-NORMAL-R2", "text": "Signal=Relay A | Mode=programmable"},
+          "catalog": {"source_kind": "table_row", "eligibility": "claim"},
+          "ledger": {"resolution": "covered", "classification": "normative", "classification_status": "validated", "exclusion_kind": null},
+          "coverage": {"validation_method": "deterministic_verbatim", "status": "validated", "prefilter_status": "not_required", "edge_count": 1}
+        },
+        {
+          "selector": {"block_id": "TB-NORMAL", "table_item_id": "TB-NORMAL-R3", "text": "Signal=Relay B | Mode=selectable"},
+          "catalog": {"source_kind": "table_row", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": null
+        }
+      ]
+    },
+    {
+      "case_id": "table-fallback-001",
+      "catalog_count": 2,
+      "group_count": 0,
+      "container_mapping_count": 1,
+      "accounting_status": "complete",
+      "resolution_status": "open",
+      "claims": [
+        {
+          "selector": {"block_id": "TB-FALLBACK", "fallback_group_id": "TB-FALLBACK-FB-0001", "row_start": 1, "row_end": 21},
+          "catalog": {"source_kind": "table_fallback", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": null
+        },
+        {
+          "selector": {"block_id": "TB-FALLBACK", "fallback_group_id": "TB-FALLBACK-FB-0002", "row_start": 21, "row_end": 22},
+          "catalog": {"source_kind": "table_fallback", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": null
+        }
+      ]
+    },
+    {
+      "case_id": "semantic-negative-001",
+      "catalog_count": 1,
+      "group_count": 0,
+      "container_mapping_count": 0,
+      "accounting_status": "complete",
+      "resolution_status": "resolved",
+      "claims": [
+        {
+          "selector": {"block_id": "NEG-B1", "text": "This note provides an illustrative example only."},
+          "catalog": {"source_kind": "paragraph_sentence", "eligibility": "claim"},
+          "ledger": {"resolution": "excluded", "classification": "non_normative", "classification_status": "validated", "exclusion_kind": "semantic"},
+          "coverage": null
+        }
+      ]
+    },
+    {
+      "case_id": "configurable-interface-capability-001",
+      "catalog_count": 1,
+      "group_count": 1,
+      "container_mapping_count": 0,
+      "accounting_status": "complete",
+      "resolution_status": "open",
+      "claims": [
+        {
+          "selector": {"block_id": "CONFIG-IF-B1", "text": "The auxiliary output interface shall be configurable."},
+          "catalog": {"source_kind": "paragraph_sentence", "eligibility": "claim"},
+          "ledger": {"resolution": "uncertain", "classification": "unknown", "classification_status": "needs_review", "exclusion_kind": null},
+          "coverage": {"validation_method": "independent_semantic", "status": "proposed", "prefilter_status": "pass", "edge_count": 1}
+        }
+      ]
+    }
+  ]
+}

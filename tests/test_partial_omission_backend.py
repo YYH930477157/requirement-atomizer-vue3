@@ -23,6 +23,14 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     )
 
 
+def _write_current_ai_requirements_metadata(out: Path) -> None:
+    ai_extract.write_ai_requirements_metadata(
+        out,
+        input_fingerprint=ai_extract.extraction_input_fingerprint(out),
+        run_id="base-run",
+    )
+
+
 class PartialSnapshotTests(unittest.TestCase):
     def test_extract_all_publishes_only_terminal_sections(self) -> None:
         sections = [
@@ -410,6 +418,7 @@ class OmissionActionTests(unittest.TestCase):
                 "failed_section_ids": ["S1"],
                 "failed_section_block_ids": ["B1"],
             }), encoding="utf-8")
+            _write_current_ai_requirements_metadata(out)
             queued = omission_actions.apply_omission_action(
                 out, block_id="B1", status="needs_extraction", actor="agent-loop",
             )
@@ -456,6 +465,11 @@ class OmissionActionTests(unittest.TestCase):
     def test_targeted_reextract_rechecks_candidate_inside_operation_lease(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
+            _write_jsonl(out / "blocks.jsonl", [{
+                "block_id": "B1", "text": "The meter shall log events.",
+            }])
+            _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [])
+            _write_current_ai_requirements_metadata(out)
 
             with mock.patch.object(
                 omission_actions,
@@ -519,6 +533,7 @@ class OmissionActionTests(unittest.TestCase):
                 "source_block_ids": ["B1"],
             }
             _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [original])
+            _write_current_ai_requirements_metadata(out)
             section = {"section_id": "S1", "text": source_text, "block_ids": ["B1"]}
             config = mock.Mock(model="model-x")
 
@@ -572,6 +587,7 @@ class OmissionActionTests(unittest.TestCase):
                     "source_quote": "An older adjacent event requirement.",
                     "source_block_ids": ["B1"],
                 }])
+                _write_current_ai_requirements_metadata(out)
 
                 def critique(_section, existing, *_args, **_kwargs):
                     existing[0]["description"] = "Guarded corrected description"
@@ -607,6 +623,50 @@ class OmissionActionTests(unittest.TestCase):
         self.assertNotEqual(first["supplement"]["supplement_id"], second["supplement"]["supplement_id"])
         self.assertEqual(len(patches), 2)
         self.assertEqual(effective[0]["description"], "Guarded corrected description")
+
+    def test_targeted_reextract_rejects_old_base_producer_without_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            source_text = "The meter shall log events."
+            _write_jsonl(out / "blocks.jsonl", [{
+                "block_id": "B1", "text": source_text, "requirement_like": True,
+            }])
+            _write_jsonl(out / ai_extract.AI_REQUIREMENTS, [{
+                "ai_req_id": "AI-1",
+                "title": "Event logging",
+                "description": "Old description",
+                "source_quote": source_text,
+                "source_block_ids": ["B1"],
+            }])
+            _write_current_ai_requirements_metadata(out)
+            metadata_path = out / ai_extract.AI_REQUIREMENTS_META
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["producer_lineage"]["extract_prompt_version"] = "ai-extract-v22"
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            requirements_before = (out / ai_extract.AI_REQUIREMENTS).read_bytes()
+            metadata_before = metadata_path.read_bytes()
+
+            with mock.patch.object(
+                omission_actions, "current_omission_candidate_ids",
+            ) as candidates, mock.patch.object(
+                ai_extract, "critique_section",
+            ) as critique, self.assertRaisesRegex(
+                omission_actions.OmissionConflictError, "older producer version",
+            ):
+                omission_actions.targeted_reextract(
+                    out,
+                    block_id="B1",
+                    omission_id=omission_actions.make_omission_id("B1", source_text),
+                    expected_source_fingerprint=omission_actions.omission_source_fingerprint(
+                        "B1", source_text
+                    ),
+                )
+
+            candidates.assert_not_called()
+            critique.assert_not_called()
+            self.assertEqual((out / ai_extract.AI_REQUIREMENTS).read_bytes(), requirements_before)
+            self.assertEqual(metadata_path.read_bytes(), metadata_before)
+            self.assertFalse((out / omission_actions.AI_SUPPLEMENTS).exists())
 
     def test_current_supplement_upserts_and_source_drift_invalidates_it(self) -> None:
         with tempfile.TemporaryDirectory() as td:

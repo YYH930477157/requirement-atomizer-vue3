@@ -42,6 +42,10 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_AI_SELFCHECK_ROUNDS", "3", "自检收敛轮数上限（1..6）", False),
     EnvVar("RATOMIZER_AI_VERIFY", "1", "抽取二遍语义复核开关（七类误读清单,=0/false 关）", False),
     EnvVar("RATOMIZER_AI_VERIFY_ROUNDS", "2", "复核投票轮数（1..4;单轮细微语义错误命中率 ~1/3,并集提召回）", False),
+    EnvVar("RATOMIZER_CLAIM_SHADOW_VERIFY", "1", "Phase 0B 独立 coverage verifier 开关（仅真实 LLM 路由）", False),
+    EnvVar("RATOMIZER_CLAIM_SHADOW_VERIFY_ROUNDS", "1", "Phase 0B coverage verifier 独立复核轮数（1..3；分歧保持 uncertain）", False),
+    EnvVar("RATOMIZER_CLAIM_SHADOW_VERIFY_MAX_CALLS", "0", "Phase 0B verifier 真实 HTTP attempt 硬上限（0=未授权）", False),
+    EnvVar("RATOMIZER_CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS", "0", "Phase 0B verifier 总 token 硬上限（0=未授权）", False),
     EnvVar("RATOMIZER_AI_UNIT_MODE", "clause", "抽取单元模式：clause（条款族，默认）/ chapter（整章，实验，A/B 已裁决劣于 clause）", False),
     # --- 知识/资产路径 ---
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),

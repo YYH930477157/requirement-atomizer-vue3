@@ -10,6 +10,7 @@ import unittest
 
 from parsers.pdf_parser import _merge_list_item_blocks
 from requirement_kb.repository import KnowledgeRepository
+from source_spans import source_alignment_is_approved, validate_source_alignment
 
 
 KB = KnowledgeRepository(entries=[], infos=[])
@@ -26,6 +27,31 @@ def _block(bid: str, text: str, *, page: int = 6, section: list[str] | None = No
 
 
 class ListItemMergeTests(unittest.TestCase):
+    def test_repaired_members_keep_independent_replay_provenance(self) -> None:
+        first = _block("B1", "- Highest threshold")
+        first.update({
+            "raw_text": "- H ighest threshold",
+            "text_repair_checked": True,
+            "text_repair_version": "pdf-text-repair-v4",
+            "text_repairs": [{"rule": "wordlist_fragment_repair"}],
+        })
+        second = _block("B2", "- Lowest threshold")
+        second.update({
+            "raw_text": "- L owest threshold",
+            "text_repair_checked": True,
+            "text_repair_version": "pdf-text-repair-v4",
+            "text_repairs": [{"rule": "wordlist_fragment_repair"}],
+        })
+
+        merged = _merge_list_item_blocks([first, second], KB)
+
+        self.assertEqual(len(merged), 1)
+        for member in merged[0]["list_items"]:
+            self.assertTrue(member["text_repair_checked"])
+            self.assertTrue(source_alignment_is_approved(
+                member["raw_text"], member["text"], member["source_alignment"]
+            ))
+
     def test_intro_and_bullet_run_merge_into_one_anchorable_block(self) -> None:
         blocks = [
             _block("B1", "Terminals:"),
@@ -44,6 +70,24 @@ class ListItemMergeTests(unittest.TestCase):
         self.assertIn("Terminals:", merged[0]["text"])
         self.assertTrue(merged[0]["text"].endswith("- Auxiliary power supply"))
         self.assertEqual(len(merged[0]["pdf_regions"]), 5)
+        self.assertEqual(
+            [(item["block_id"], item["role"]) for item in merged[0]["list_items"]],
+            [("B1", "intro"), ("B2", "item"), ("B3", "item"),
+             ("B4", "item"), ("B5", "item")],
+        )
+        for item in merged[0]["list_items"]:
+            locator = item["locator"]
+            raw_locator = item["raw_locator"]
+            self.assertEqual(
+                merged[0]["text"][locator["start"]:locator["end"]], item["text"])
+            self.assertEqual(
+                merged[0]["raw_text"][raw_locator["start"]:raw_locator["end"]],
+                item["raw_text"],
+            )
+        validate_source_alignment(
+            merged[0]["raw_text"], merged[0]["text"], merged[0]["source_alignment"])
+        self.assertTrue(merged[0]["raw_to_repaired_spans"])
+        self.assertTrue(all(item["raw_to_repaired_spans"] for item in merged[0]["list_items"]))
         self.assertEqual(merged[1]["block_id"], "B6")
 
     def test_run_without_intro_merges(self) -> None:

@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_catalog_meta.schema.json",
+  "title": "Claim Catalog Generation Meta v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "catalog_version",
+    "packing_version",
+    "document_generation_id",
+    "blocks_sha256",
+    "table_items_sha256",
+    "parser_provenance",
+    "catalog_generation_id",
+    "scope",
+    "document_closure_claimed",
+    "packing_config",
+    "accounting_status",
+    "counts",
+    "audit",
+    "container_mappings",
+    "unit_prompt_hashes"
+  ],
+  "properties": {
+    "schema": {"const": "claim-catalog-meta/v1"},
+    "catalog_version": {"const": "claim-catalog-v4"},
+    "packing_version": {"const": "claim-unit-packing-v1"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "blocks_sha256": {"$ref": "#/$defs/hash"},
+    "table_items_sha256": {"$ref": "#/$defs/hash"},
+    "parser_provenance": {
+      "type": "object",
+      "required": [
+        "text_repair_versions",
+        "source_alignment_version",
+        "source_transformation_policy_version",
+        "source_transformation_ruleset_version",
+        "blocks_with_raw_mapping",
+        "table_items_with_raw_mapping"
+      ],
+      "properties": {
+        "text_repair_versions": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "source_alignment_version": {"const": "source-alignment-v6"},
+        "source_transformation_policy_version": {"const": "source-transform-policy-v4"},
+        "source_transformation_ruleset_version": {
+          "const": "source-transform-rules-v4-e0d5167acc73"
+        },
+        "blocks_with_raw_mapping": {"type": "integer", "minimum": 0},
+        "table_items_with_raw_mapping": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "scope": {"enum": ["full", "sample"]},
+    "document_closure_claimed": {"const": false},
+    "packing_config": {
+      "type": "object",
+      "required": ["target_chars", "unit_mode"],
+      "properties": {
+        "target_chars": {"type": "integer", "minimum": 1},
+        "unit_mode": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "accounting_status": {"enum": ["complete", "incomplete"]},
+    "counts": {
+      "type": "object",
+      "required": [
+        "catalog_total_count",
+        "eligible_claim_count",
+        "structural_excluded_count",
+        "owner_unit_count"
+      ],
+      "properties": {
+        "catalog_total_count": {"type": "integer", "minimum": 0},
+        "eligible_claim_count": {"type": "integer", "minimum": 0},
+        "structural_excluded_count": {"type": "integer", "minimum": 0},
+        "owner_unit_count": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "audit": {
+      "type": "object",
+      "required": [
+        "unmapped_source_span_count",
+        "unmapped_raw_span_count",
+        "overlapping_raw_span_count",
+        "overlapping_leaf_span_count",
+        "parse_incomplete_count",
+        "parent_child_duplicate_count",
+        "orphan_claim_count",
+        "multi_owner_count",
+        "owner_prompt_missing_count",
+        "duplicate_leaf_locator_count",
+        "duplicate_leaf_hash_count"
+      ],
+      "properties": {
+        "unmapped_source_span_count": {"type": "integer", "minimum": 0},
+        "unmapped_raw_span_count": {"type": "integer", "minimum": 0},
+        "overlapping_raw_span_count": {"type": "integer", "minimum": 0},
+        "overlapping_leaf_span_count": {"type": "integer", "minimum": 0},
+        "parse_incomplete_count": {"type": "integer", "minimum": 0},
+        "parent_child_duplicate_count": {"type": "integer", "minimum": 0},
+        "orphan_claim_count": {"type": "integer", "minimum": 0},
+        "multi_owner_count": {"type": "integer", "minimum": 0},
+        "owner_prompt_missing_count": {"type": "integer", "minimum": 0},
+        "duplicate_leaf_locator_count": {"type": "integer", "minimum": 0},
+        "duplicate_leaf_hash_count": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "container_mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["container_block_id", "kind", "leaf_ids"],
+        "properties": {
+          "container_block_id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["list", "table"]},
+          "leaf_ids": {
+            "type": "array",
+            "items": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+            "uniqueItems": true
+          },
+          "parse_incomplete": {"type": "boolean"},
+          "reason": {"type": "string", "minLength": 1},
+          "parse_incomplete_reason": {
+            "oneOf": [
+              {"type": "object"},
+              {"type": "null"}
+            ]
+          },
+          "members": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/list_member"}
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": "list"}}, "required": ["kind"]},
+            "then": {"required": ["members"]}
+          }
+        ]
+      }
+    },
+    "unit_prompt_hashes": {
+      "type": "object",
+      "propertyNames": {"pattern": "^UNIT-[0-9a-f]{16}$"},
+      "additionalProperties": {"$ref": "#/$defs/hash"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "list_member": {
+      "type": "object",
+      "required": ["block_id", "role", "locator", "raw_locator"],
+      "properties": {
+        "block_id": {"type": "string", "minLength": 1},
+        "role": {"enum": ["intro", "item"]},
+        "locator": {
+          "oneOf": [
+            {"$ref": "#/$defs/list_member_locator"},
+            {"type": "null"}
+          ]
+        },
+        "raw_locator": {
+          "oneOf": [
+            {"$ref": "#/$defs/list_member_raw_locator"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "list_member_locator": {
+      "type": "object",
+      "required": ["block_id", "line", "start", "end", "position_basis"],
+      "properties": {
+        "block_id": {"type": "string", "minLength": 1},
+        "line": {"type": "integer", "minimum": 1},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 0},
+        "position_basis": {"const": "repaired_text"}
+      },
+      "additionalProperties": false
+    },
+    "list_member_raw_locator": {
+      "type": "object",
+      "required": ["block_id", "line", "start", "end", "position_basis"],
+      "properties": {
+        "block_id": {"type": "string", "minLength": 1},
+        "line": {"type": "integer", "minimum": 1},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 0},
+        "position_basis": {"const": "raw_text"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

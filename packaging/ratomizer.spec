@@ -14,12 +14,14 @@ datas = [
     (str(ROOT / "domain_packs"), "domain_packs"),
     (str(ROOT / "knowledge_bases" / "*.json"), "knowledge_bases"),
     (str(ROOT / "schemas" / "*.json"), "schemas"),
+    (str(ROOT / "golden_sets" / "claim_ledger_v1"), "golden_sets/claim_ledger_v1"),
     (str(ROOT / "gui" / "theme.qss.template"), "gui"),
     (str(ROOT / "parsers" / "data"), "parsers/data"),
 ]
 
 # 装配实现规格生成器 + AI 抽取/批注：被 GUI 的 AssembleSpecWorker / desktop_tasks 惰性
-# import（函数体内），且这些是仓库根的顶层模块（未注册进 pyproject py-modules）。显式列出，
+# import（函数体内），且这些是仓库根的顶层模块。即使已注册进 pyproject py-modules，
+# PyInstaller 仍不会自动发现函数内动态 import，因此显式列出，
 # 确保打包收集，否则点「装配实现规格」/「AI 抽取」会在冻结环境里 ModuleNotFoundError。
 spec_generator_modules = [
     "assemble_spec",
@@ -49,6 +51,15 @@ spec_generator_modules = [
     "extract_units",
     "extract_guards",
     "config",
+    "claim_artifacts",
+    "claim_acceptance",
+    "claim_catalog",
+    "claim_held_out",
+    "claim_ledger",
+    "claim_review_import",
+    "claim_review_packet",
+    "normative_framing",
+    "source_spans",
     "ai_review_actions",
     "doc_annotation_export",
     "desktop_tasks",

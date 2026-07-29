@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_verifier_attempt.schema.json",
+  "title": "Claim Verifier Attempt Event v2",
+  "type": "object",
+  "required": [
+    "schema",
+    "event_seq",
+    "attempt_id",
+    "attempt_kind",
+    "attempt_status",
+    "recorded_at",
+    "chain_id",
+    "chain_attempt_seq",
+    "previous_event_hash",
+    "supersedes_event_hash",
+    "chain_identity",
+    "attempt_policy_identity",
+    "source_locator",
+    "attempt_metrics",
+    "error",
+    "event_hash"
+  ],
+  "properties": {
+    "schema": {"const": "claim-verifier-attempt/v2"},
+    "event_seq": {"type": "integer", "minimum": 1},
+    "attempt_id": {"$ref": "#/$defs/hash"},
+    "attempt_kind": {"enum": ["cold", "ledger_only"]},
+    "attempt_status": {"enum": ["complete", "incomplete", "failed"]},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "chain_id": {"$ref": "#/$defs/hash"},
+    "chain_attempt_seq": {"type": "integer", "minimum": 1},
+    "previous_event_hash": {"$ref": "#/$defs/hash"},
+    "supersedes_event_hash": {
+      "anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]
+    },
+    "chain_identity": {"$ref": "#/$defs/chainIdentity"},
+    "attempt_policy_identity": {"$ref": "#/$defs/attemptPolicyIdentity"},
+    "source_locator": {"$ref": "#/$defs/sourceLocator"},
+    "attempt_metrics": {"$ref": "#/$defs/metrics"},
+    "error": {"type": "string"},
+    "event_hash": {"$ref": "#/$defs/hash"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "optionalHash": {
+      "anyOf": [
+        {"$ref": "#/$defs/hash"},
+        {"const": ""},
+        {"type": "null"}
+      ]
+    },
+    "chainIdentity": {
+      "type": "object",
+      "required": [
+        "root_attempt_request_id",
+        "requirements_request_id",
+        "document_generation_id",
+        "requirements_sha256"
+      ],
+      "properties": {
+        "root_attempt_request_id": {"type": "string", "minLength": 1},
+        "requirements_request_id": {"type": "string", "minLength": 1},
+        "document_generation_id": {"$ref": "#/$defs/hash"},
+        "requirements_sha256": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "attemptPolicyIdentity": {
+      "type": "object",
+      "required": [
+        "target_generation_id",
+        "verifier_runtime_fingerprint",
+        "baseline_lineage_version",
+        "baseline_lineage_fingerprint",
+        "baseline_lineage_match",
+        "cost_policy_version"
+      ],
+      "properties": {
+        "target_generation_id": {"$ref": "#/$defs/hash"},
+        "verifier_runtime_fingerprint": {"$ref": "#/$defs/hash"},
+        "baseline_lineage_version": {"type": "string"},
+        "baseline_lineage_fingerprint": {"$ref": "#/$defs/optionalHash"},
+        "baseline_lineage_match": {"type": "boolean"},
+        "cost_policy_version": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "sourceLocator": {
+      "type": "object",
+      "required": [
+        "attempt_request_id",
+        "requirements_request_id",
+        "catalog_generation_id",
+        "document_generation_id",
+        "target_generation_id",
+        "requirements_sha256",
+        "reuse_generation_run_id",
+        "reuse_attempt_id",
+        "source_generation_run_id",
+        "source_attempt_id"
+      ],
+      "properties": {
+        "attempt_request_id": {"type": "string", "minLength": 1},
+        "requirements_request_id": {"type": "string", "minLength": 1},
+        "catalog_generation_id": {"$ref": "#/$defs/hash"},
+        "document_generation_id": {"$ref": "#/$defs/hash"},
+        "target_generation_id": {"$ref": "#/$defs/hash"},
+        "requirements_sha256": {"$ref": "#/$defs/hash"},
+        "reuse_generation_run_id": {"type": ["string", "null"], "minLength": 1},
+        "reuse_attempt_id": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "source_generation_run_id": {"type": ["string", "null"], "minLength": 1},
+        "source_attempt_id": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]}
+      },
+      "additionalProperties": false
+    },
+    "ratio": {
+      "type": "object",
+      "required": ["numerator", "denominator", "value"],
+      "properties": {
+        "numerator": {"type": "integer", "minimum": 0},
+        "denominator": {"type": "integer", "minimum": 0},
+        "value": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "verifier_call_count",
+        "verifier_failed_call_count",
+        "verifier_operation_failure_count",
+        "verifier_tokens",
+        "verifier_usage_complete",
+        "semantic_validation_reused_group_count",
+        "semantic_verifier_candidate_count",
+        "semantic_validation_reused_group_ratio"
+      ],
+      "properties": {
+        "verifier_call_count": {"type": "integer", "minimum": 0},
+        "verifier_failed_call_count": {"type": "integer", "minimum": 0},
+        "verifier_operation_failure_count": {"type": "integer", "minimum": 0},
+        "verifier_tokens": {"type": "integer", "minimum": 0},
+        "verifier_usage_complete": {"type": "boolean"},
+        "semantic_validation_reused_group_count": {"type": "integer", "minimum": 0},
+        "semantic_verifier_candidate_count": {"type": "integer", "minimum": 0},
+        "semantic_validation_reused_group_ratio": {"$ref": "#/$defs/ratio"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

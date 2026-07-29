@@ -1,0 +1,113 @@
+{
+  "schema": "claim-ledger-golden-manifest/v3",
+  "dataset_id": "claim_ledger_v1",
+  "version": "claim-ledger-golden-v4",
+  "created_at": "2026-07-26",
+  "case_count": 8,
+  "partition_counts": {
+    "development": 7,
+    "held_out": 1
+  },
+  "files": {
+    "inputs": "inputs.json",
+    "expected": "expected.json"
+  },
+  "runtime_schemas": {
+    "catalog": "../../schemas/claim_catalog.schema.json",
+    "catalog_meta": "../../schemas/claim_catalog_meta.schema.json",
+    "coverage_group": "../../schemas/claim_coverage_group.schema.json",
+    "ledger": "../../schemas/claim_ledger.schema.json",
+    "shadow_meta": "../../schemas/claim_shadow_meta.schema.json"
+  },
+  "baseline_revisions": [
+    {
+      "path": "history/programmable-equivalent-001-v2-rejection.json",
+      "raw_sha256": "sha256:1af493750d02fda632b8fde4c2c96515997a80a8e8c04a69766a0cecdd075bdc"
+    },
+    {
+      "path": "history/status-indication-mapping-001-v3-rejection.json",
+      "raw_sha256": "sha256:f9881f5d7a347f1463ec2953174ca0863f4bd7e56688ab6471a85471947ed186"
+    }
+  ],
+  "curation": {
+    "review_contract_version": "claim-golden-heldout-review-v2",
+    "prepared_by": "Codex",
+    "human_review_status": "reviewed",
+    "reviewed_by": "YYH",
+    "reviewed_at": "2026-07-28T07:08:27.126-06:00",
+    "held_out_adjudications": [
+      {
+        "case_id": "configurable-interface-capability-001",
+        "claim_hash": "sha256:0eb57350dc55563e80378ed761c8cc15ecb3bef34e070a676b022868d194fcb2",
+        "claim_id": "CLM-0eb57350dc55563e",
+        "dimension_verdicts": {
+          "claim_boundary": "agree",
+          "coverage": "agree",
+          "eligibility": "agree",
+          "resolution": "agree",
+          "role_object_preservation": "agree",
+          "target_modality": "agree",
+          "target_obligation_subject": "agree"
+        },
+        "fixture_hash": "sha256:5a2dee40558e50a87734f98dd4e7cbf07b24dfd330da8f1098a0fd2fb6ce3bb3",
+        "rationale": "同意：该目标仅表达产品支持配置辅助输出接口的能力，未引入人员角色或使用场景。"
+      }
+    ],
+    "statement": "All cases are synthetic and anonymous. Rejected v2 and v3 held-outs are hash-bound in replayable history. The reviewer-scoped capability-only v4 held-out is approved on all seven dimensions, remains unavailable for tuning, and is not statistical evidence of generalized recall."
+  },
+  "anonymization": {
+    "customer_wording_present": false,
+    "external_assets_present": false,
+    "source_policy": "synthetic_only"
+  },
+  "cases": [
+    {
+      "case_id": "programmable-equivalent-001",
+      "scenario": "programmable_equivalent",
+      "partition": "development",
+      "tuning_eligible": true
+    },
+    {
+      "case_id": "same-block-partial-001",
+      "scenario": "same_block_partial_coverage",
+      "partition": "development",
+      "tuning_eligible": true
+    },
+    {
+      "case_id": "page-furniture-001",
+      "scenario": "page_number_and_watermark",
+      "partition": "development",
+      "tuning_eligible": true
+    },
+    {
+      "case_id": "list-no-intro-001",
+      "scenario": "list_without_intro",
+      "partition": "development",
+      "tuning_eligible": true
+    },
+    {
+      "case_id": "table-normal-001",
+      "scenario": "normal_table_items",
+      "partition": "development",
+      "tuning_eligible": true
+    },
+    {
+      "case_id": "table-fallback-001",
+      "scenario": "table_fallback_groups",
+      "partition": "development",
+      "tuning_eligible": true
+    },
+    {
+      "case_id": "semantic-negative-001",
+      "scenario": "independently_validated_semantic_negative",
+      "partition": "development",
+      "tuning_eligible": true
+    },
+    {
+      "case_id": "configurable-interface-capability-001",
+      "scenario": "configurable_interface_capability",
+      "partition": "held_out",
+      "tuning_eligible": false
+    }
+  ]
+}

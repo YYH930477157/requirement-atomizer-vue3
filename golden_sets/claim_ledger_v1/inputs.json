@@ -1,0 +1,345 @@
+{
+  "schema": "claim-ledger-golden-inputs/v1",
+  "cases": [
+    {
+      "case_id": "programmable-equivalent-001",
+      "source": {
+        "origin": "synthetic",
+        "contains_customer_wording": false
+      },
+      "scope": "full",
+      "blocks": [
+        {
+          "block_id": "PROG-B1",
+          "order": 1,
+          "type": "paragraph",
+          "text": "The indicator channel can be configured by the operator.",
+          "section_path": ["Synthetic functions"],
+          "noise": false
+        }
+      ],
+      "table_items": [],
+      "requirements": [
+        {
+          "ai_req_id": "AIR-PROG-1",
+          "title": "指示通道配置",
+          "description": "该产品应支持操作人员配置指示通道。",
+          "source_quote": "The indicator channel can be configured by the operator.",
+          "source_block_ids": ["PROG-B1"],
+          "sub_items": [],
+          "acceptance_criteria": []
+        }
+      ],
+      "review_states": {},
+      "controlled_term_aliases": {
+        "operator": ["操作人员"],
+        "indicator channel": ["指示通道"]
+      },
+      "review_expectations": {
+        "target_obligation_subject": "产品",
+        "target_modality": "应支持",
+        "role_object_preservation": {
+          "role": {"source": "operator", "target": "操作人员"},
+          "object": {"source": "indicator channel", "target": "指示通道"}
+        }
+      }
+    },
+    {
+      "case_id": "same-block-partial-001",
+      "source": {
+        "origin": "synthetic",
+        "contains_customer_wording": false
+      },
+      "scope": "full",
+      "blocks": [
+        {
+          "block_id": "SIB-B1",
+          "order": 1,
+          "type": "paragraph",
+          "text": "Channel A is programmable. Channel B is selectable.",
+          "section_path": ["Synthetic channels"],
+          "noise": false
+        }
+      ],
+      "table_items": [],
+      "requirements": [
+        {
+          "ai_req_id": "AIR-SIB-1",
+          "title": "Channel A configuration",
+          "description": "The product shall support the following capability: Channel A is programmable.",
+          "source_quote": "Channel A is programmable.",
+          "source_block_ids": ["SIB-B1"],
+          "sub_items": [],
+          "acceptance_criteria": []
+        }
+      ],
+      "review_states": {},
+      "controlled_term_aliases": {}
+    },
+    {
+      "case_id": "page-furniture-001",
+      "source": {
+        "origin": "synthetic",
+        "contains_customer_wording": false
+      },
+      "scope": "full",
+      "blocks": [
+        {
+          "block_id": "PAGE-1",
+          "order": 1,
+          "type": "paragraph",
+          "text": "PAGE 1 OF 3",
+          "section_path": [],
+          "noise": true,
+          "page_number": 1,
+          "pdf_regions": [{"page_number": 1, "bbox": [10, 760, 110, 780], "page_width": 600, "page_height": 800}]
+        },
+        {
+          "block_id": "WATERMARK-1",
+          "order": 2,
+          "type": "paragraph",
+          "text": "DRAFT COPY",
+          "section_path": [],
+          "noise": true,
+          "page_number": 1,
+          "pdf_regions": [{"page_number": 1, "bbox": [160, 360, 440, 440], "page_width": 600, "page_height": 800}]
+        },
+        {
+          "block_id": "PAGE-2",
+          "order": 3,
+          "type": "paragraph",
+          "text": "PAGE 2 OF 3",
+          "section_path": [],
+          "noise": true,
+          "page_number": 2,
+          "pdf_regions": [{"page_number": 2, "bbox": [10, 760, 110, 780], "page_width": 600, "page_height": 800}]
+        },
+        {
+          "block_id": "WATERMARK-2",
+          "order": 4,
+          "type": "paragraph",
+          "text": "DRAFT COPY",
+          "section_path": [],
+          "noise": true,
+          "page_number": 2,
+          "pdf_regions": [{"page_number": 2, "bbox": [160, 360, 440, 440], "page_width": 600, "page_height": 800}]
+        },
+        {
+          "block_id": "PAGE-3",
+          "order": 5,
+          "type": "paragraph",
+          "text": "PAGE 3 OF 3",
+          "section_path": [],
+          "noise": true,
+          "page_number": 3,
+          "pdf_regions": [{"page_number": 3, "bbox": [10, 760, 110, 780], "page_width": 600, "page_height": 800}]
+        },
+        {
+          "block_id": "WATERMARK-3",
+          "order": 6,
+          "type": "paragraph",
+          "text": "DRAFT COPY",
+          "section_path": [],
+          "noise": true,
+          "page_number": 3,
+          "pdf_regions": [{"page_number": 3, "bbox": [160, 360, 440, 440], "page_width": 600, "page_height": 800}]
+        }
+      ],
+      "table_items": [],
+      "requirements": [],
+      "review_states": {},
+      "controlled_term_aliases": {}
+    },
+    {
+      "case_id": "list-no-intro-001",
+      "source": {
+        "origin": "synthetic",
+        "contains_customer_wording": false
+      },
+      "scope": "full",
+      "blocks": [
+        {
+          "block_id": "LIST-B1",
+          "order": 1,
+          "type": "paragraph",
+          "text": "- Local indicator\n- Remote indicator",
+          "section_path": ["Synthetic indicators"],
+          "noise": false,
+          "is_list_item": true
+        }
+      ],
+      "table_items": [],
+      "requirements": [],
+      "review_states": {},
+      "controlled_term_aliases": {}
+    },
+    {
+      "case_id": "table-normal-001",
+      "source": {
+        "origin": "synthetic",
+        "contains_customer_wording": false
+      },
+      "scope": "full",
+      "blocks": [
+        {
+          "block_id": "TB-NORMAL",
+          "order": 1,
+          "type": "table",
+          "text": "Signal | Mode\nRelay A | programmable\nRelay B | selectable",
+          "section_path": ["Synthetic relay table"],
+          "noise": false,
+          "headers": ["Signal", "Mode"],
+          "data_rows": [["Relay A", "programmable"], ["Relay B", "selectable"]]
+        }
+      ],
+      "table_items": [
+        {
+          "item_id": "TB-NORMAL-R2",
+          "table_block_id": "TB-NORMAL",
+          "row_index": 2,
+          "fields": {"Signal": "Relay A", "Mode": "programmable"},
+          "section_path": ["Synthetic relay table"]
+        },
+        {
+          "item_id": "TB-NORMAL-R3",
+          "table_block_id": "TB-NORMAL",
+          "row_index": 3,
+          "fields": {"Signal": "Relay B", "Mode": "selectable"},
+          "section_path": ["Synthetic relay table"]
+        }
+      ],
+      "requirements": [
+        {
+          "ai_req_id": "AIR-TABLE-1",
+          "title": "Relay A configuration",
+          "description": "The product shall support the following capability: Signal=Relay A | Mode=programmable",
+          "source_quote": "Signal=Relay A | Mode=programmable",
+          "source_block_ids": ["TB-NORMAL"],
+          "sub_items": [],
+          "acceptance_criteria": []
+        }
+      ],
+      "review_states": {},
+      "controlled_term_aliases": {}
+    },
+    {
+      "case_id": "table-fallback-001",
+      "source": {
+        "origin": "synthetic",
+        "contains_customer_wording": false
+      },
+      "scope": "full",
+      "blocks": [
+        {
+          "block_id": "TB-FALLBACK",
+          "order": 1,
+          "type": "table",
+          "text": "Synthetic table preview",
+          "section_path": ["Synthetic fallback table"],
+          "noise": false,
+          "headers": ["Row", "State"],
+          "header_row_count": 1,
+          "rows": 22,
+          "data_rows": [
+            ["row-01", "enabled"],
+            ["row-02", "enabled"],
+            ["row-03", "enabled"],
+            ["row-04", "enabled"],
+            ["row-05", "enabled"],
+            ["row-06", "enabled"],
+            ["row-07", "enabled"],
+            ["row-08", "enabled"],
+            ["row-09", "enabled"],
+            ["row-10", "enabled"],
+            ["row-11", "enabled"],
+            ["row-12", "enabled"],
+            ["row-13", "enabled"],
+            ["row-14", "enabled"],
+            ["row-15", "enabled"],
+            ["row-16", "enabled"],
+            ["row-17", "enabled"],
+            ["row-18", "enabled"],
+            ["row-19", "enabled"],
+            ["row-20", "enabled"],
+            ["row-21", "enabled"]
+          ]
+        }
+      ],
+      "table_items": [],
+      "requirements": [],
+      "review_states": {},
+      "controlled_term_aliases": {}
+    },
+    {
+      "case_id": "semantic-negative-001",
+      "source": {
+        "origin": "synthetic",
+        "contains_customer_wording": false
+      },
+      "scope": "full",
+      "blocks": [
+        {
+          "block_id": "NEG-B1",
+          "order": 1,
+          "type": "paragraph",
+          "text": "This note provides an illustrative example only.",
+          "section_path": ["Synthetic notes"],
+          "noise": false
+        }
+      ],
+      "table_items": [],
+      "requirements": [],
+      "review_states": {},
+      "controlled_term_aliases": {},
+      "semantic_negative_fixture": {
+        "proposal_reason": "example",
+        "validator_reason": "example",
+        "all_checks": true
+      }
+    },
+    {
+      "case_id": "configurable-interface-capability-001",
+      "source": {
+        "origin": "synthetic",
+        "contains_customer_wording": false
+      },
+      "scope": "full",
+      "blocks": [
+        {
+          "block_id": "CONFIG-IF-B1",
+          "order": 1,
+          "type": "paragraph",
+          "text": "The auxiliary output interface shall be configurable.",
+          "section_path": ["Synthetic functions"],
+          "noise": false
+        }
+      ],
+      "table_items": [],
+      "requirements": [
+        {
+          "ai_req_id": "AIR-CONFIG-IF-1",
+          "title": "辅助输出接口配置",
+          "description": "该产品应支持配置辅助输出接口。",
+          "source_quote": "The auxiliary output interface shall be configurable.",
+          "source_block_ids": ["CONFIG-IF-B1"],
+          "sub_items": [],
+          "acceptance_criteria": []
+        }
+      ],
+      "review_states": {},
+      "controlled_term_aliases": {
+        "auxiliary output interface": ["辅助输出接口"],
+        "configurable": ["配置"]
+      },
+      "review_expectations": {
+        "target_obligation_subject": "产品",
+        "target_modality": "应支持",
+        "role_object_preservation": {
+          "role": "not_applicable",
+          "object": {"source": "auxiliary output interface", "target": "辅助输出接口"},
+          "capability": {"source": "configurable", "target": "配置"}
+        }
+      }
+    }
+  ]
+}

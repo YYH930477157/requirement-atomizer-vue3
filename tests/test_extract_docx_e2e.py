@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from atomize import build_atomic_candidates, build_chunks, extract_docx, mark_doc_regions
+from source_spans import validate_source_alignment
 from tests.docx_fixtures import write_synthetic_docx
 
 
@@ -26,6 +27,12 @@ class ExtractDocxE2ETests(unittest.TestCase):
         self.assertEqual(blocks_by_text["5.1 Security requirements"]["type"], "heading")
         self.assertEqual(list_block["type"], "paragraph")
         self.assertEqual(list_block["section_path"], ["Scope", "5.1 Security requirements"])
+        self.assertTrue(list_block["is_list_item"])
+        self.assertEqual(list_block["list_level"], 0)
+        self.assertEqual(list_block["raw_text"], "Display all segments")
+        validate_source_alignment(
+            list_block["raw_text"], list_block["text"], list_block["source_alignment"])
+        self.assertTrue(list_block["raw_to_repaired_spans"])
         self.assertTrue(all(block.get("doc_region") == "body" for block in blocks if block["text"] != "ABNT 2022 all rights reserved"))
         self.assertTrue(chunks)
 

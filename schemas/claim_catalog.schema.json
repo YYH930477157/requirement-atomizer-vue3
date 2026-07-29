@@ -1,0 +1,496 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_catalog.schema.json",
+  "title": "Claim Catalog Row v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "catalog_version",
+    "document_generation_id",
+    "catalog_generation_id",
+    "claim_id",
+    "claim_hash",
+    "normalized_text_hash",
+    "source_kind",
+    "locator",
+    "text",
+    "raw_text",
+    "raw_locator",
+    "raw_mapping_status",
+    "source_alignment",
+    "source_alignment_lineage",
+    "raw_to_repaired_spans",
+    "region_evidence",
+    "text_repair_version",
+    "section_path",
+    "source_order",
+    "owner_unit_id",
+    "eligibility",
+    "exclusion"
+  ],
+  "properties": {
+    "schema": {"const": "claim-catalog/v1"},
+    "catalog_version": {"const": "claim-catalog-v4"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "claim_hash": {"$ref": "#/$defs/hash"},
+    "normalized_text_hash": {"$ref": "#/$defs/hash"},
+    "source_kind": {
+      "enum": [
+        "paragraph_sentence",
+        "list_item",
+        "table_row",
+        "table_fallback",
+        "heading",
+        "caption",
+        "noise",
+        "other"
+      ]
+    },
+    "locator": {"$ref": "#/$defs/locator"},
+    "text": {"type": "string"},
+    "raw_text": {"type": "string"},
+    "raw_locator": {
+      "oneOf": [
+        {"$ref": "#/$defs/raw_locator"},
+        {"type": "null"}
+      ]
+    },
+    "raw_mapping_status": {"enum": ["mapped", "unavailable"]},
+    "source_alignment": {
+      "oneOf": [
+        {"$ref": "#/$defs/source_alignment"},
+        {"type": "null"}
+      ]
+    },
+    "source_alignment_lineage": {
+      "oneOf": [
+        {"$ref": "#/$defs/source_alignment_lineage"},
+        {"type": "null"}
+      ]
+    },
+    "raw_to_repaired_spans": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/alignment_span"}
+    },
+    "region_evidence": {"$ref": "#/$defs/region_evidence"},
+    "text_repair_version": {"type": "string", "minLength": 1},
+    "section_path": {"type": "array", "items": {"type": "string"}},
+    "source_order": {"type": "integer", "minimum": 0},
+    "owner_unit_id": {
+      "oneOf": [
+        {"type": "string", "pattern": "^UNIT-[0-9a-f]{16}$"},
+        {"type": "null"}
+      ]
+    },
+    "eligibility": {"enum": ["claim", "excluded"]},
+    "exclusion": {
+      "oneOf": [
+        {"$ref": "#/$defs/exclusion"},
+        {"type": "null"}
+      ]
+    },
+    "list_role": {"enum": ["intro", "item"]},
+    "table_context": {"$ref": "#/$defs/table_context"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"eligibility": {"const": "claim"}}},
+      "then": {
+        "properties": {
+          "owner_unit_id": {"type": "string", "pattern": "^UNIT-[0-9a-f]{16}$"},
+          "exclusion": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"eligibility": {"const": "excluded"}}},
+      "then": {
+        "properties": {
+          "owner_unit_id": {"type": "null"},
+          "exclusion": {"$ref": "#/$defs/exclusion"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"raw_mapping_status": {"const": "mapped"}},
+        "required": ["raw_mapping_status"]
+      },
+      "then": {
+        "properties": {
+          "raw_locator": {"$ref": "#/$defs/raw_locator"},
+          "source_alignment": {"$ref": "#/$defs/source_alignment"},
+          "source_alignment_lineage": {"$ref": "#/$defs/source_alignment_lineage"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"raw_mapping_status": {"const": "unavailable"}},
+        "required": ["raw_mapping_status"]
+      },
+      "then": {
+        "properties": {
+          "raw_locator": {"type": "null"},
+          "source_alignment": {"type": "null"},
+          "source_alignment_lineage": {"type": "null"},
+          "raw_to_repaired_spans": {"type": "array", "maxItems": 0}
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "locator": {
+      "type": "object",
+      "required": [
+        "block_id",
+        "line",
+        "start",
+        "end",
+        "position_basis",
+        "table_item_id",
+        "row_index"
+      ],
+      "properties": {
+        "block_id": {"type": "string", "minLength": 1},
+        "line": {"type": ["integer", "null"], "minimum": 0},
+        "start": {"type": ["integer", "null"], "minimum": 0},
+        "end": {"type": ["integer", "null"], "minimum": 0},
+        "position_basis": {
+          "enum": ["repaired_text", "table_item_fields", "table_data_rows"]
+        },
+        "table_item_id": {"type": ["string", "null"]},
+        "row_index": {"type": ["integer", "null"], "minimum": 0},
+        "row_start": {"type": "integer", "minimum": 0},
+        "row_end": {"type": "integer", "minimum": 0},
+        "fallback_group_id": {
+          "type": "string",
+          "pattern": "^.+-FB-[0-9]{4}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "raw_locator": {
+      "type": "object",
+      "required": ["block_id", "start", "end", "position_basis"],
+      "properties": {
+        "block_id": {"type": "string", "minLength": 1},
+        "start": {"type": ["integer", "null"], "minimum": 0},
+        "end": {"type": ["integer", "null"], "minimum": 0},
+        "position_basis": {"enum": ["raw_text", "canonical_table_cells"]},
+        "row_start": {"type": "integer", "minimum": 0},
+        "row_end": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "alignment_span": {
+      "type": "object",
+      "required": [
+        "operation", "raw_start", "raw_end", "repaired_start", "repaired_end"
+      ],
+      "properties": {
+        "operation": {"enum": ["equal", "replace", "delete", "insert"]},
+        "raw_start": {"type": "integer", "minimum": 0},
+        "raw_end": {"type": "integer", "minimum": 0},
+        "repaired_start": {"type": "integer", "minimum": 0},
+        "repaired_end": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "source_alignment": {
+      "type": "object",
+      "required": [
+        "schema", "version", "transformation_policy_version", "repair_provenance",
+        "raw_length", "repaired_length",
+        "raw_sha256", "repaired_sha256", "opcodes"
+      ],
+      "properties": {
+        "schema": {"const": "source-alignment/v6"},
+        "version": {"const": "source-alignment-v6"},
+        "transformation_policy_version": {"const": "source-transform-policy-v4"},
+        "repair_provenance": {
+          "oneOf": [
+            {"$ref": "#/$defs/repair_provenance"},
+            {"type": "null"}
+          ]
+        },
+        "raw_length": {"type": "integer", "minimum": 0},
+        "repaired_length": {"type": "integer", "minimum": 0},
+        "raw_sha256": {"$ref": "#/$defs/hash"},
+        "repaired_sha256": {"$ref": "#/$defs/hash"},
+        "opcodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["tag", "raw_start", "raw_end", "repaired_start", "repaired_end"],
+            "properties": {
+              "tag": {"enum": ["equal", "replace", "delete", "insert"]},
+              "raw_start": {"type": "integer", "minimum": 0},
+              "raw_end": {"type": "integer", "minimum": 0},
+              "repaired_start": {"type": "integer", "minimum": 0},
+              "repaired_end": {"type": "integer", "minimum": 0},
+              "raw_deletion_reason": {"type": "string", "minLength": 1},
+              "repaired_insertion_source": {"type": "string", "minLength": 1},
+              "transformation": {"$ref": "#/$defs/transformation"}
+            },
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {"properties": {"tag": {"const": "equal"}}, "required": ["tag"]},
+                "then": {
+                  "not": {
+                    "anyOf": [
+                      {"required": ["transformation"]},
+                      {"required": ["raw_deletion_reason"]},
+                      {"required": ["repaired_insertion_source"]}
+                    ]
+                  }
+                }
+              },
+              {
+                "if": {"properties": {"tag": {"const": "delete"}}, "required": ["tag"]},
+                "then": {"required": ["transformation", "raw_deletion_reason"]}
+              },
+              {
+                "if": {"properties": {"tag": {"const": "insert"}}, "required": ["tag"]},
+                "then": {"required": ["transformation", "repaired_insertion_source"]}
+              },
+              {
+                "if": {"properties": {"tag": {"const": "replace"}}, "required": ["tag"]},
+                "then": {
+                  "required": [
+                    "transformation", "raw_deletion_reason", "repaired_insertion_source"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "transformation": {
+      "type": "object",
+      "required": [
+        "policy_version", "rule_id", "rule_version", "reason", "allowed"
+      ],
+      "properties": {
+        "policy_version": {"const": "source-transform-policy-v4"},
+        "rule_id": {
+          "enum": [
+            "source.whitespace_normalization",
+            "source.character_replacement",
+            "source.composite_character_whitespace",
+            "source.pdf_text_repair_replay",
+            "source.unapproved_transformation"
+          ]
+        },
+        "rule_version": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "allowed": {"type": "boolean"}
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "rule_id": {"const": "source.whitespace_normalization"},
+                "rule_version": {"const": "source-whitespace-v2"},
+                "reason": {"const": "normalization.whitespace"},
+                "allowed": {"const": true}
+              }
+            },
+            {
+              "properties": {
+                "rule_id": {"const": "source.character_replacement"},
+                "rule_version": {"const": "source-character-replacement-cc1b23569d21"},
+                "reason": {"const": "normalization.character"},
+                "allowed": {"const": true}
+              }
+            },
+            {
+              "properties": {
+                "rule_id": {"const": "source.composite_character_whitespace"},
+                "rule_version": {
+                  "const": "source-composite-character-whitespace-cc1b23569d21-v2"
+                },
+                "reason": {"const": "normalization.character_and_whitespace"},
+                "allowed": {"const": true}
+              }
+            },
+            {
+              "properties": {
+                "rule_id": {"const": "source.pdf_text_repair_replay"},
+                "rule_version": {
+                  "const": "source-pdf-text-repair-pdf-text-repair-v4-ea9c8bd7a75ac46e"
+                },
+                "reason": {"const": "repair.pdf_text_repair_replay"},
+                "allowed": {"const": true}
+              }
+            },
+            {
+              "properties": {
+                "rule_id": {"const": "source.unapproved_transformation"},
+                "rule_version": {"const": "source-unapproved-transformation-v1"},
+                "reason": {"const": "unapproved.non_layout_character_change"},
+                "allowed": {"const": false}
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "repair_provenance": {
+      "type": "object",
+      "required": [
+        "schema", "producer", "producer_version", "vocabulary_fingerprint"
+      ],
+      "properties": {
+        "schema": {"const": "source-repair-provenance/v1"},
+        "producer": {"const": "pdf_text_repair"},
+        "producer_version": {"const": "pdf-text-repair-v4"},
+        "vocabulary_fingerprint": {"const": "ea9c8bd7a75ac46e"}
+      },
+      "additionalProperties": false
+    },
+    "source_alignment_lineage": {
+      "type": "object",
+      "required": [
+        "schema", "kind", "parent_block_id", "parent_alignment_version",
+        "parent_alignment_fingerprint", "parent_raw_sha256", "parent_repaired_sha256",
+        "parent_raw_start", "parent_raw_end", "parent_repaired_start",
+        "parent_repaired_end", "parent_opcode_refs"
+      ],
+      "properties": {
+        "schema": {"const": "claim-source-alignment-lineage/v1"},
+        "kind": {"enum": ["parent_alignment", "legacy_identity", "canonical_projection"]},
+        "parent_block_id": {"type": "string", "minLength": 1},
+        "parent_alignment_version": {"type": "string", "minLength": 1},
+        "parent_alignment_fingerprint": {"$ref": "#/$defs/hash"},
+        "parent_raw_sha256": {"$ref": "#/$defs/hash"},
+        "parent_repaired_sha256": {"$ref": "#/$defs/hash"},
+        "parent_raw_start": {"type": ["integer", "null"], "minimum": 0},
+        "parent_raw_end": {"type": ["integer", "null"], "minimum": 0},
+        "parent_repaired_start": {"type": ["integer", "null"], "minimum": 0},
+        "parent_repaired_end": {"type": ["integer", "null"], "minimum": 0},
+        "parent_opcode_refs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "opcode_index", "tag", "raw_start", "raw_end",
+              "repaired_start", "repaired_end"
+            ],
+            "properties": {
+              "opcode_index": {"type": "integer", "minimum": 0},
+              "tag": {"enum": ["equal", "replace", "delete", "insert"]},
+              "raw_start": {"type": "integer", "minimum": 0},
+              "raw_end": {"type": "integer", "minimum": 0},
+              "repaired_start": {"type": "integer", "minimum": 0},
+              "repaired_end": {"type": "integer", "minimum": 0},
+              "raw_deletion_reason": {"type": "string", "minLength": 1},
+              "repaired_insertion_source": {"type": "string", "minLength": 1},
+              "transformation": {"$ref": "#/$defs/transformation"}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "region_evidence": {
+      "type": "object",
+      "required": [
+        "source_format", "block_id", "block_order", "block_type", "style",
+        "page_number", "repaired_start", "repaired_end", "raw_start", "raw_end",
+        "pdf_regions"
+      ],
+      "properties": {
+        "source_format": {"enum": ["pdf", "docx", "xlsx"]},
+        "block_id": {"type": "string", "minLength": 1},
+        "block_order": {"type": "integer", "minimum": 0},
+        "block_type": {"type": "string"},
+        "style": {"type": "string"},
+        "page_number": {"type": ["integer", "null"], "minimum": 1},
+        "repaired_start": {"type": ["integer", "null"], "minimum": 0},
+        "repaired_end": {"type": ["integer", "null"], "minimum": 0},
+        "raw_start": {"type": ["integer", "null"], "minimum": 0},
+        "raw_end": {"type": ["integer", "null"], "minimum": 0},
+        "pdf_regions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["page_number", "bbox", "page_width", "page_height"],
+            "properties": {
+              "page_number": {"type": "integer", "minimum": 1},
+              "bbox": {
+                "type": "array", "minItems": 4, "maxItems": 4,
+                "items": {"type": "number"}
+              },
+              "page_width": {"type": "number", "exclusiveMinimum": 0},
+              "page_height": {"type": "number", "exclusiveMinimum": 0}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "exclusion": {
+      "type": "object",
+      "required": ["reason", "rule_id", "rule_version", "evidence"],
+      "properties": {
+        "reason": {
+          "enum": ["empty", "exact_container_duplicate", "repeated_page_furniture", "separator_only"]
+        },
+        "rule_id": {"type": "string", "minLength": 1},
+        "rule_version": {"type": "string", "minLength": 1},
+        "evidence": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "table_context": {
+      "type": "object",
+      "required": ["headers"],
+      "properties": {
+        "headers": {"type": "array", "items": {"type": "string"}},
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "value"],
+            "properties": {
+              "name": {"type": "string"},
+              "value": {"type": "string"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "table_title": {"type": "string"},
+        "fragments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["row_index", "column_index", "fragment_index", "split_method"],
+            "properties": {
+              "row_index": {"type": "integer", "minimum": 0},
+              "column_index": {"type": ["integer", "null"], "minimum": 0},
+              "fragment_index": {"type": "integer", "minimum": 0},
+              "split_method": {"enum": ["row", "cell", "sentence", "window"]}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
