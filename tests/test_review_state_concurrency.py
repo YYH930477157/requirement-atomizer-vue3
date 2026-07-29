@@ -70,6 +70,40 @@ class AtomicReviewStateWriteTests(unittest.TestCase):
             self.assertFalse((out_dir / "review_state_events.jsonl").exists())
 
 
+class ReviewAuthoritySnapshotTests(unittest.TestCase):
+    def test_complete_bad_row_is_an_audit_gap_and_later_history_survives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            valid = {
+                "requirement_id": "SREQ-1",
+                "status": "rejected",
+                "history": [{
+                    "from_status": "candidate",
+                    "to_status": "rejected",
+                    "actor": "expert",
+                    "reason": "reject",
+                    "timestamp": "2026-07-28T00:00:00+00:00",
+                }],
+                "metadata": {"stable_req_id": "SREQ-1"},
+            }
+            (root / "review_states.jsonl").write_text(
+                "not-json\n" + json.dumps(valid) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertLogs("requirement_atomizer", level="WARNING"):
+                snapshot = review_state.read_review_authority_snapshot_readonly(root)
+
+        self.assertEqual(snapshot["states"], [valid])
+        self.assertEqual(snapshot["audit_gaps"][0]["physical_line_number"], 1)
+        self.assertEqual(snapshot["audit_gaps"][0]["state_ordinal"], 1)
+        self.assertEqual(
+            snapshot["ordered_records"][0]["history_event"]["to_status"],
+            "rejected",
+        )
+        self.assertEqual(snapshot["ordered_records"][0]["state_ordinal"], 2)
+
+
 class ReviewActionErrorResponseTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

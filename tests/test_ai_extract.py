@@ -738,16 +738,25 @@ class RouteTests(unittest.TestCase):
             result = ai_extract.run_ai_extract(out, route="stub")
             attempts = claim_artifacts.read_claim_verifier_attempts(out)
             generation = claim_artifacts.load_committed_shadow(out)["generation_meta"]
+            effective = claim_artifacts.load_committed_effective_snapshot_readonly(out)
+            from claim_views import build_claim_view
+            view = build_claim_view(out, "metrics")
         self.assertEqual(result["route"], "stub")
         self.assertEqual(result["requirements"], 0)
         self.assertGreaterEqual(result["sections"], 1)
         self.assertEqual(result["claim_shadow"]["status"], "published")
         self.assertIn("claim_generation.meta.json", result["written"])
         self.assertIn("claim_effective.meta.json", result["written"])
+        self.assertIn("claim_queue_proposals.jsonl", result["written"])
         self.assertEqual(len(attempts), 1)
         self.assertEqual(attempts[0]["attempt_kind"], "cold")
         self.assertEqual(attempts[0]["attempt_status"], "complete")
+        self.assertEqual(attempts[0]["attempt_metrics"]["verifier_call_count"], 0)
+        self.assertEqual(attempts[0]["attempt_metrics"]["verifier_tokens"], 0)
         self.assertEqual(generation["attempt_chain"]["attempt_id"], attempts[0]["attempt_id"])
+        self.assertEqual(effective["effective_meta"]["effective_snapshot_version"], "claim-effective-snapshot-v2")
+        self.assertTrue(view["available"])
+        self.assertTrue(view["effective_fresh"])
 
     def test_shadow_failure_does_not_fail_or_remove_primary_output(self) -> None:
         import claim_artifacts
@@ -787,6 +796,7 @@ class RouteTests(unittest.TestCase):
             )
             ai_extract.run_ai_extract(out, route="stub")
             initial = claim_artifacts.load_committed_shadow(out)["generation_meta"]
+            initial_attempts = claim_artifacts.read_claim_verifier_attempts(out)
             (out / ai_extract.TERM_MAP_FILE).write_text(json.dumps({
                 "schema": ai_extract.TERM_MAP_SCHEMA,
                 "hash": hashlib.sha256(
@@ -804,6 +814,7 @@ class RouteTests(unittest.TestCase):
                 refreshed = ai_extract.refresh_claim_shadow(out, route="stub")
             loaded = claim_artifacts.load_committed_shadow(out)
             attempts = claim_artifacts.read_claim_verifier_attempts(out)
+            effective = claim_artifacts.load_committed_effective_snapshot_readonly(out)
 
         extract_all.assert_not_called()
         chat.assert_not_called()
@@ -825,6 +836,16 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(
             binding["source_locator"]["reuse_attempt_id"],
             initial["attempt_chain"]["attempt_id"],
+        )
+        self.assertEqual(effective["effective_meta"]["effective_snapshot_version"], "claim-effective-snapshot-v2")
+        self.assertTrue(refreshed["claim_shadow"]["effective_fresh"])
+        self.assertEqual(
+            sum(row["attempt_metrics"]["verifier_call_count"] for row in attempts),
+            sum(row["attempt_metrics"]["verifier_call_count"] for row in initial_attempts),
+        )
+        self.assertEqual(
+            sum(row["attempt_metrics"]["verifier_tokens"] for row in attempts),
+            sum(row["attempt_metrics"]["verifier_tokens"] for row in initial_attempts),
         )
 
     def test_failed_cold_shadow_refresh_resumes_same_attempt_chain(self) -> None:

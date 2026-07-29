@@ -28,9 +28,13 @@ CLAIM_EFFECTIVE_LEDGER = "claim_effective_ledger.jsonl"
 CLAIM_SHADOW_METRICS = "claim_shadow_metrics.json"
 CLAIM_GENERATION_META = "claim_generation.meta.json"
 CLAIM_EFFECTIVE_META = "claim_effective.meta.json"
+CLAIM_REVIEW_EVENTS = "claim_review_events.jsonl"
+CLAIM_QUEUE_PROPOSALS = "claim_queue_proposals.jsonl"
+CLAIM_EFFECTIVE_HEALTH = "claim_effective_health.json"
 CLAIM_VERIFIER_ATTEMPTS = "claim_verifier_attempts.jsonl"
 CLAIM_VERIFIER_ATTEMPT_CHECKPOINT = ".claim_verifier_attempt.checkpoint.json"
 CLAIM_PUBLICATION_JOURNAL = ".claim_publication.journal.json"
+CLAIM_EFFECTIVE_PUBLICATION_JOURNAL = ".claim_effective_publication.journal.json"
 
 CLAIM_SNAPSHOT_FILES = (
     CLAIM_CATALOG,
@@ -44,12 +48,15 @@ CLAIM_SNAPSHOT_FILES = (
 )
 
 CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v6"
-CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v1"
+LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v1"
+CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v2"
+CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION = "claim-effective-artifacts-v1"
 CLAIM_VERIFIER_ATTEMPT_SCHEMA = "claim-verifier-attempt/v2"
 CLAIM_VERIFIER_ATTEMPT_BINDING_SCHEMA = "claim-verifier-attempt-chain-binding/v2"
 LEGACY_CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v4"
 PREVIOUS_CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v5"
 CLAIM_PUBLICATION_JOURNAL_SCHEMA = "claim-publication-journal/v1"
+CLAIM_EFFECTIVE_PUBLICATION_JOURNAL_SCHEMA = "claim-effective-publication-journal/v1"
 CLAIM_VERIFIER_ATTEMPT_CHECKPOINT_SCHEMA = "claim-verifier-attempt-checkpoint/v1"
 
 _REPLACE_ATTEMPTS = 8
@@ -62,6 +69,12 @@ _PUBLICATION_LOCKS_GUARD = RLock()
 _ACTIVE_VERIFIER_CHECKPOINTS: set[tuple[Path, str]] = set()
 _ACTIVE_VERIFIER_CHECKPOINTS_GUARD = RLock()
 _EMPTY_SHA256 = "sha256:" + hashlib.sha256(b"").hexdigest()
+_SCHEMA_VALIDATORS: dict[str, Any] = {}
+CLAIM_EFFECTIVE_SNAPSHOT_FILES = (
+    CLAIM_EFFECTIVE_META,
+    CLAIM_EFFECTIVE_LEDGER,
+    CLAIM_QUEUE_PROPOSALS,
+)
 _VERIFIER_ATTEMPT_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     "claim_verifier_attempt_context",
     default=None,
@@ -70,6 +83,10 @@ _VERIFIER_ATTEMPT_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
 
 class ClaimArtifactError(RuntimeError):
     """Raised when a claim artifact generation is absent, malformed, or stale."""
+
+
+class ClaimEffectiveRecoveryPending(ClaimArtifactError):
+    """Raised when a read-only consumer sees an unfinished publication WAL."""
 
 
 def _publication_process_lock(root: Path) -> RLock:
@@ -327,8 +344,126 @@ def _canonical_json_bytes(payload: Any) -> bytes:
     ).encode("utf-8")
 
 
+def canonical_json_value_bytes(payload: Any) -> bytes:
+    """Canonical JSON value bytes used by Phase 1 identities (no JSONL newline)."""
+    try:
+        text = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ClaimArtifactError(f"value is not canonical JSON: {exc}") from exc
+    return text.encode("utf-8")
+
+
+def hash_json(domain: str, payload: Any) -> str:
+    domain = str(domain or "")
+    if not domain:
+        raise ClaimArtifactError("hash domain is required")
+    digest = hashlib.sha256(canonical_json_value_bytes({
+        "domain": domain,
+        "payload": payload,
+    })).hexdigest()
+    return "sha256:" + digest
+
+
+def sha256_bytes(payload: bytes) -> str:
+    """Return the canonical wire representation for a raw-byte SHA-256 digest."""
+    if not isinstance(payload, bytes):
+        raise ClaimArtifactError("sha256 payload must be bytes")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def canonical_target_fingerprint(value: object) -> str:
+    text = str(value or "")
+    if text.startswith("sha256:"):
+        digest = text[7:]
+    else:
+        digest = text
+    if (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ClaimArtifactError("invalid target fingerprint")
+    return "sha256:" + digest
+
+
+def digest_hex(value: object) -> str:
+    normalized = canonical_target_fingerprint(value)
+    return normalized.removeprefix("sha256:")
+
+
 def _jsonl_bytes(rows: Iterable[dict[str, Any]]) -> bytes:
-    return b"".join(_canonical_json_bytes(row) for row in rows)
+    return b"".join(canonical_json_value_bytes(row) + b"\n" for row in rows)
+
+
+def _schema_validator(schema_name: str):
+    validator = _SCHEMA_VALIDATORS.get(schema_name)
+    if validator is not None:
+        return validator
+    try:
+        from jsonschema import Draft202012Validator, RefResolver
+
+        schema_dir = Path(__file__).resolve().parent / "schemas"
+        path = schema_dir / schema_name
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(schema)
+        store: dict[str, Any] = {}
+        for candidate in schema_dir.glob("*.schema.json"):
+            try:
+                candidate_schema = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            schema_id = candidate_schema.get("$id")
+            if isinstance(schema_id, str) and schema_id:
+                store[schema_id] = candidate_schema
+        validator = Draft202012Validator(
+            schema,
+            resolver=RefResolver.from_schema(schema, store=store),
+            format_checker=Draft202012Validator.FORMAT_CHECKER,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ImportError) as exc:
+        raise ClaimArtifactError(f"unable to load claim schema {schema_name}") from exc
+    _SCHEMA_VALIDATORS[schema_name] = validator
+    return validator
+
+
+def _validate_schema(payload: Any, schema_name: str, *, label: str) -> None:
+    errors = sorted(
+        _schema_validator(schema_name).iter_errors(payload),
+        key=lambda error: tuple(str(part) for part in error.absolute_path),
+    )
+    if not errors:
+        return
+    error = errors[0]
+    location = ".".join(str(part) for part in error.absolute_path) or "<root>"
+    raise ClaimArtifactError(f"invalid {label} at {location}: {error.message}")
+
+
+def _require_canonical_json_value(path: Path, payload: Any, *, label: str) -> None:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ClaimArtifactError(f"missing {label}: {path.name}") from exc
+    if raw != canonical_json_value_bytes(payload):
+        raise ClaimArtifactError(f"non-canonical {label}: {path.name}")
+
+
+def _require_canonical_jsonl(
+    path: Path,
+    rows: Iterable[dict[str, Any]],
+    *,
+    label: str,
+) -> None:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ClaimArtifactError(f"missing {label}: {path.name}") from exc
+    if raw != _jsonl_bytes(rows):
+        raise ClaimArtifactError(f"non-canonical {label}: {path.name}")
 
 
 def file_sha256(path: Path | str) -> str:
@@ -392,6 +527,11 @@ def atomic_write_json(path: Path | str, payload: Any) -> None:
     _atomic_write_bytes(path, _canonical_json_bytes(payload))
 
 
+def atomic_write_canonical_json(path: Path | str, payload: Any) -> None:
+    """Write a Phase 1 canonical JSON value without a trailing newline."""
+    _atomic_write_bytes(path, canonical_json_value_bytes(payload))
+
+
 def atomic_write_text(path: Path | str, payload: str) -> None:
     _atomic_write_bytes(path, payload.encode("utf-8"))
 
@@ -443,6 +583,10 @@ def _publication_backup_dir(root: Path, transaction_id: str) -> Path:
     return root / f".claim-publication-backup-{transaction_id}"
 
 
+def _effective_publication_backup_dir(root: Path, transaction_id: str) -> Path:
+    return root / f".claim-effective-publication-backup-{transaction_id}"
+
+
 def _cleanup_publication_backup(
     root: Path,
     journal: dict[str, Any],
@@ -478,6 +622,37 @@ def _cleanup_orphan_publication_backups_unlocked(root: Path) -> None:
             not child.is_file()
             or (
                 child.name not in CLAIM_SNAPSHOT_FILES
+                and not (child.name.startswith(".") and child.name.endswith(".tmp"))
+            )
+            for child in children
+        ):
+            continue
+        try:
+            for child in children:
+                _unlink_with_retry(child)
+            backup_dir.rmdir()
+        except OSError:
+            pass
+
+
+def _cleanup_orphan_effective_backups_unlocked(root: Path) -> None:
+    prefix = ".claim-effective-publication-backup-"
+    for backup_dir in root.glob(f"{prefix}*"):
+        transaction_id = backup_dir.name[len(prefix):]
+        if (
+            not backup_dir.is_dir()
+            or len(transaction_id) != 32
+            or any(character not in "0123456789abcdef" for character in transaction_id)
+        ):
+            continue
+        try:
+            children = list(backup_dir.iterdir())
+        except OSError:
+            continue
+        if any(
+            not child.is_file()
+            or (
+                child.name not in CLAIM_EFFECTIVE_SNAPSHOT_FILES
                 and not (child.name.startswith(".") and child.name.endswith(".tmp"))
             )
             for child in children
@@ -577,6 +752,157 @@ def _validate_publication_journal(
         run_id=str(journal.get("run_id") or ""),
     )
     return snapshot
+
+
+def _validate_effective_publication_journal(
+    root: Path,
+    journal: dict[str, Any],
+) -> dict[str, bytes | None]:
+    _validate_schema(
+        journal,
+        "claim_effective_publication_journal.schema.json",
+        label="effective publication journal",
+    )
+    _require_canonical_json_value(
+        root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
+        journal,
+        label="effective publication journal",
+    )
+    expected_fields = {
+        "schema",
+        "transaction_kind",
+        "transaction_id",
+        "state",
+        "created_at",
+        "base_generation_id",
+        "generation_meta_sha256",
+        "base_ledger_sha256",
+        "snapshot_files",
+        "candidate",
+        "journal_sha256",
+    }
+    if set(journal) != expected_fields:
+        raise ClaimArtifactError("invalid effective publication journal fields")
+    if journal.get("schema") != CLAIM_EFFECTIVE_PUBLICATION_JOURNAL_SCHEMA:
+        raise ClaimArtifactError("unsupported effective publication journal")
+    if journal.get("transaction_kind") != "effective_fold" or journal.get("state") != "prepared":
+        raise ClaimArtifactError("invalid effective publication journal state")
+    transaction_id = str(journal.get("transaction_id") or "")
+    if (
+        len(transaction_id) != 32
+        or any(character not in "0123456789abcdef" for character in transaction_id)
+    ):
+        raise ClaimArtifactError("invalid effective publication transaction id")
+    if journal.get("journal_sha256") != hash_json(
+        "claim-effective-publication-journal/v1",
+        _journal_without_hash(journal),
+    ):
+        raise ClaimArtifactError("effective publication journal hash mismatch")
+    for field in ("base_generation_id", "generation_meta_sha256", "base_ledger_sha256"):
+        if not _is_sha256(journal.get(field)):
+            raise ClaimArtifactError(f"invalid effective publication journal {field}")
+    candidate = journal.get("candidate")
+    candidate_fields = {
+        "effective_ledger_sha256",
+        "effective_ledger_count",
+        "queue_sha256",
+        "queue_count",
+        "effective_meta_sha256",
+        "document_effective_revision",
+    }
+    if not isinstance(candidate, dict) or set(candidate) != candidate_fields:
+        raise ClaimArtifactError("invalid effective publication candidate")
+    for field in (
+        "effective_ledger_sha256",
+        "queue_sha256",
+        "effective_meta_sha256",
+        "document_effective_revision",
+    ):
+        if not _is_sha256(candidate.get(field)):
+            raise ClaimArtifactError(f"invalid effective publication candidate {field}")
+    for field in ("effective_ledger_count", "queue_count"):
+        value = candidate.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ClaimArtifactError(f"invalid effective publication candidate {field}")
+    entries = journal.get("snapshot_files")
+    if not isinstance(entries, list) or [entry.get("name") for entry in entries] != list(
+        CLAIM_EFFECTIVE_SNAPSHOT_FILES
+    ):
+        raise ClaimArtifactError("invalid effective publication backup manifest")
+
+    snapshot: dict[str, bytes | None] = {}
+    backup_dir = _effective_publication_backup_dir(root, transaction_id)
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {
+            "name", "present", "sha256", "backup_name"
+        }:
+            raise ClaimArtifactError("invalid effective publication backup entry")
+        name = str(entry["name"])
+        present = entry.get("present") is True
+        expected_hash = str(entry.get("sha256") or "")
+        if present:
+            if entry.get("backup_name") != name:
+                raise ClaimArtifactError("invalid effective publication backup name")
+            backup = backup_dir / name
+            _require_hash(backup, expected_hash, label=f"effective publication backup {name}")
+            snapshot[name] = backup.read_bytes()
+        else:
+            if entry.get("sha256") is not None or entry.get("backup_name") is not None:
+                raise ClaimArtifactError("invalid absent effective publication backup hash")
+            snapshot[name] = None
+    return snapshot
+
+
+def _restore_effective_snapshot(
+    root: Path,
+    snapshot: dict[str, bytes | None],
+) -> None:
+    for name in (CLAIM_EFFECTIVE_LEDGER, CLAIM_QUEUE_PROPOSALS, CLAIM_EFFECTIVE_META):
+        payload = snapshot[name]
+        path = root / name
+        if payload is None:
+            _unlink_with_retry(path)
+        else:
+            _atomic_write_bytes(path, payload)
+
+
+def _verify_restored_effective_snapshot(
+    root: Path,
+    snapshot: dict[str, bytes | None],
+) -> None:
+    for name in (CLAIM_EFFECTIVE_LEDGER, CLAIM_QUEUE_PROPOSALS, CLAIM_EFFECTIVE_META):
+        expected = snapshot[name]
+        path = root / name
+        if expected is None:
+            if path.exists():
+                raise ClaimArtifactError(f"effective recovery did not remove {name}")
+            continue
+        try:
+            actual = path.read_bytes()
+        except OSError as exc:
+            raise ClaimArtifactError(f"effective recovery did not restore {name}") from exc
+        if actual != expected:
+            raise ClaimArtifactError(f"effective recovery restored different bytes for {name}")
+
+
+def _cleanup_effective_publication_backup(
+    root: Path,
+    journal: dict[str, Any],
+) -> None:
+    transaction_id = str(journal.get("transaction_id") or "")
+    if (
+        len(transaction_id) != 32
+        or any(character not in "0123456789abcdef" for character in transaction_id)
+    ):
+        raise ClaimArtifactError("invalid effective publication transaction id")
+    backup_dir = _effective_publication_backup_dir(root, transaction_id)
+    for entry in journal.get("snapshot_files") or []:
+        if entry.get("present") is True:
+            _unlink_with_retry(backup_dir / str(entry.get("name") or ""))
+    try:
+        backup_dir.rmdir()
+    except FileNotFoundError:
+        pass
 
 
 def _checkpoint_without_hash(checkpoint: dict[str, Any]) -> dict[str, Any]:
@@ -921,6 +1247,117 @@ def _finish_claim_publication_unlocked(root: Path, journal: dict[str, Any]) -> N
         pass
 
 
+def _begin_effective_publication_unlocked(
+    root: Path,
+    *,
+    base_generation_id: str,
+    generation_meta_sha256: str,
+    base_ledger_sha256: str,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    journal_path = root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
+    if journal_path.exists():
+        raise ClaimArtifactError("unfinished effective publication was not recovered")
+    transaction_id = uuid.uuid4().hex
+    backup_dir = _effective_publication_backup_dir(root, transaction_id)
+    backup_dir.mkdir(parents=False, exist_ok=False)
+    entries: list[dict[str, Any]] = []
+    try:
+        for name in CLAIM_EFFECTIVE_SNAPSHOT_FILES:
+            source = root / name
+            if source.is_file():
+                payload = source.read_bytes()
+                _atomic_write_bytes(backup_dir / name, payload)
+                entries.append({
+                    "name": name,
+                    "present": True,
+                    "sha256": _sha256_bytes(payload),
+                    "backup_name": name,
+                })
+            else:
+                entries.append({
+                    "name": name,
+                    "present": False,
+                    "sha256": None,
+                    "backup_name": None,
+                })
+        journal = {
+            "schema": CLAIM_EFFECTIVE_PUBLICATION_JOURNAL_SCHEMA,
+            "transaction_kind": "effective_fold",
+            "transaction_id": transaction_id,
+            "state": "prepared",
+            "created_at": _utc_now(),
+            "base_generation_id": base_generation_id,
+            "generation_meta_sha256": generation_meta_sha256,
+            "base_ledger_sha256": base_ledger_sha256,
+            "snapshot_files": entries,
+            "candidate": dict(candidate),
+        }
+        journal["journal_sha256"] = hash_json(
+            "claim-effective-publication-journal/v1",
+            journal,
+        )
+        _validate_schema(
+            journal,
+            "claim_effective_publication_journal.schema.json",
+            label="effective publication journal",
+        )
+        atomic_write_canonical_json(journal_path, journal)
+        return journal
+    except BaseException:
+        if not journal_path.is_file():
+            cleanup_journal = {
+                "transaction_id": transaction_id,
+                "snapshot_files": entries,
+            }
+            try:
+                _cleanup_effective_publication_backup(root, cleanup_journal)
+            except OSError:
+                pass
+        raise
+
+
+def _finish_effective_publication_unlocked(
+    root: Path,
+    journal: dict[str, Any],
+) -> None:
+    _unlink_with_retry(root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL)
+    try:
+        _cleanup_effective_publication_backup(root, journal)
+    except OSError:
+        # The commit is already durable. A leftover hidden backup is inert.
+        pass
+
+
+def _recover_interrupted_effective_publication_unlocked(root: Path) -> bool:
+    journal_path = root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
+    if not journal_path.is_file():
+        _cleanup_orphan_effective_backups_unlocked(root)
+        return False
+    journal = _read_json(journal_path, label="effective publication journal")
+    snapshot = _validate_effective_publication_journal(root, journal)
+    _require_hash(
+        root / CLAIM_GENERATION_META,
+        journal.get("generation_meta_sha256"),
+        label="effective publication base generation meta",
+    )
+    _require_hash(
+        root / CLAIM_LEDGER,
+        journal.get("base_ledger_sha256"),
+        label="effective publication base ledger",
+    )
+    generation = _read_json(
+        root / CLAIM_GENERATION_META,
+        label="effective publication base generation meta",
+    )
+    if journal.get("base_generation_id") != claim_base_generation_id(generation):
+        raise ClaimArtifactError("effective publication base generation changed")
+    _restore_effective_snapshot(root, snapshot)
+    _verify_restored_effective_snapshot(root, snapshot)
+    _finish_effective_publication_unlocked(root, journal)
+    return True
+
+
 def _recover_interrupted_publication_unlocked(
     root: Path,
 ) -> dict[str, Any] | None:
@@ -977,6 +1414,7 @@ def _recover_claim_state_unlocked(
     allow_live_checkpoint_nonce: str | None = None,
 ) -> dict[str, Any] | None:
     binding = _recover_interrupted_publication_unlocked(root)
+    _recover_interrupted_effective_publication_unlocked(root)
     checkpoint_binding = _recover_abandoned_verifier_checkpoint_unlocked(
         root,
         allow_live_nonce=allow_live_checkpoint_nonce,
@@ -2196,6 +2634,7 @@ def _validate_shadow_graph(
     ledger: list[dict[str, Any]],
     requirements: list[dict[str, Any]] | None,
     review_states: dict[str, dict[str, Any]] | None,
+    validate_review_authority: bool = True,
 ) -> None:
     catalog_generation = str(catalog_meta.get("catalog_generation_id") or "")
     document_generation = str(catalog_meta.get("document_generation_id") or "")
@@ -2210,7 +2649,7 @@ def _validate_shadow_graph(
 
     target_records = (
         b_track_coverage_targets(requirements, review_states or {})
-        if requirements is not None else None
+        if requirements is not None and validate_review_authority else None
     )
 
     catalog_by_id: dict[str, dict[str, Any]] = {}
@@ -2502,6 +2941,17 @@ def _publish_shadow_generation_unlocked(
         recovery=attempt_recovery,
     )
 
+    requirements_producer_lineage: dict[str, Any] | None = None
+    requirements_meta_path = root / "ai_requirements.meta.json"
+    if requirements_meta_path.is_file():
+        requirements_meta_payload = _read_json(
+            requirements_meta_path,
+            label="AI requirements meta",
+        )
+        producer_lineage = requirements_meta_payload.get("producer_lineage")
+        if isinstance(producer_lineage, dict):
+            requirements_producer_lineage = dict(producer_lineage)
+
     generation_meta = {
         "schema": "claim-generation-meta/v1",
         "artifact_protocol_version": CLAIM_ARTIFACT_PROTOCOL_VERSION,
@@ -2517,10 +2967,11 @@ def _publish_shadow_generation_unlocked(
         "target_kind": str(shadow_meta.get("target_kind") or "ai_requirement"),
         "requirements_sha256": str(requirements_sha256 or ""),
         "requirements_meta_sha256": (
-            file_sha256(root / "ai_requirements.meta.json")
-            if (root / "ai_requirements.meta.json").is_file()
+            file_sha256(requirements_meta_path)
+            if requirements_meta_path.is_file()
             else ""
         ),
+        "requirements_producer_lineage": requirements_producer_lineage,
         "blocks_file_sha256": (
             file_sha256(root / "blocks.jsonl") if (root / "blocks.jsonl").is_file() else ""
         ),
@@ -2548,7 +2999,7 @@ def _publish_shadow_generation_unlocked(
     effective_meta = {
         "schema": "claim-effective-meta/v1",
         "artifact_protocol_version": CLAIM_ARTIFACT_PROTOCOL_VERSION,
-        "effective_snapshot_version": CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+        "effective_snapshot_version": LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
         "run_id": str(run_id),
         "committed_at": _utc_now(),
         "catalog_generation_id": catalog_generation,
@@ -2876,14 +3327,424 @@ def bootstrap_legacy_attempt_lineage(out_dir: Path | str) -> dict[str, Any]:
 
 
 def load_committed_shadow(out_dir: Path | str) -> dict[str, Any]:
-    """Load only a fully committed, internally hash-consistent shadow generation."""
+    """Load a committed base generation and its internally consistent effective view."""
     root = Path(out_dir).expanduser().resolve()
     with claim_publication_lock(root):
         _recover_claim_state_unlocked(root)
         return _load_committed_shadow_unlocked(root)
 
 
-def _load_committed_shadow_unlocked(root: Path) -> dict[str, Any]:
+def claim_base_generation_id(generation_meta: dict[str, Any]) -> str:
+    fields = {
+        "document_generation_id": generation_meta.get("document_generation_id"),
+        "catalog_generation_id": generation_meta.get("catalog_generation_id"),
+        "catalog_sha256": generation_meta.get("catalog_sha256"),
+        "coverage_groups_sha256": generation_meta.get("coverage_groups_sha256"),
+        "base_ledger_sha256": generation_meta.get("ledger_sha256"),
+    }
+    if any(not _is_sha256(value) for value in fields.values()):
+        raise ClaimArtifactError("base generation identity is incomplete")
+    return hash_json("claim-base-generation/v1", fields)
+
+
+_EFFECTIVE_BASE_FIELDS = (
+    "ledger_schema_version",
+    "document_generation_id",
+    "catalog_generation_id",
+    "claim_id",
+    "claim_hash",
+    "owner_unit_id",
+    "coverage_group_ids",
+    "semantic_negative",
+)
+
+
+def semantic_negative_id(value: object) -> str | None:
+    if not isinstance(value, dict) or value.get("status") != "validated":
+        return None
+    return hash_json("claim-semantic-negative/v1", value)
+
+
+def _validate_effective_projection(
+    base: dict[str, Any],
+    ledger_rows: list[dict[str, Any]],
+    queue_rows: list[dict[str, Any]],
+    *,
+    last_event_seq: int,
+    queue_version: str,
+) -> None:
+    from claim_ledger import reduce_claim
+
+    base_rows = list(base["ledger"])
+    catalog_rows = list(base["catalog"])
+    groups = list(base["groups"])
+    if len(ledger_rows) != len(base_rows):
+        raise ClaimArtifactError("effective ledger must project every base claim")
+    if [row.get("claim_id") for row in ledger_rows] != [
+        row.get("claim_id") for row in base_rows
+    ]:
+        raise ClaimArtifactError("effective ledger claim order differs from base")
+
+    catalog_by_id = {str(row.get("claim_id") or ""): row for row in catalog_rows}
+    groups_by_claim: dict[str, list[dict[str, Any]]] = {}
+    group_by_id: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        claim_id = str(group.get("claim_id") or "")
+        group_id = str(group.get("coverage_group_id") or "")
+        groups_by_claim.setdefault(claim_id, []).append(group)
+        group_by_id[group_id] = group
+
+    effective_by_id: dict[str, dict[str, Any]] = {}
+    for base_row, row in zip(base_rows, ledger_rows, strict=True):
+        _validate_schema(
+            row,
+            "claim_effective_ledger.schema.json",
+            label="effective ledger row",
+        )
+        claim_id = str(row.get("claim_id") or "")
+        if claim_id in effective_by_id:
+            raise ClaimArtifactError("effective ledger contains a duplicate claim")
+        if row.get("base_ledger_schema") != base_row.get("schema"):
+            raise ClaimArtifactError("effective row base schema differs from base ledger")
+        for field in _EFFECTIVE_BASE_FIELDS:
+            if row.get(field) != base_row.get(field):
+                raise ClaimArtifactError(
+                    f"effective row changed immutable base field: {field}"
+                )
+        expected_base_hash = hash_json("claim-base-row/v1", base_row)
+        if row.get("base_claim_row_hash") != expected_base_hash:
+            raise ClaimArtifactError("effective row base hash differs from base ledger")
+        row_event_seq = row.get("last_relevant_event_seq")
+        if (
+            not isinstance(row_event_seq, int)
+            or isinstance(row_event_seq, bool)
+            or row_event_seq < 0
+            or row_event_seq > last_event_seq
+        ):
+            raise ClaimArtifactError("effective row has an invalid relevant event sequence")
+
+        facts = dict(row.get("effective_facts") or {})
+        base_group_ids = [
+            str(value or "") for value in (base_row.get("coverage_group_ids") or [])
+        ]
+        valid_group_ids = [str(value or "") for value in facts.get("valid_group_ids") or []]
+        invalid_reasons = dict(facts.get("invalid_group_reasons") or {})
+        reused_group_ids = [
+            str(value or "") for value in facts.get("reused_validation_group_ids") or []
+        ]
+        if not set(valid_group_ids).issubset(base_group_ids):
+            raise ClaimArtifactError("effective row validates a foreign coverage group")
+        if not set(invalid_reasons).issubset(base_group_ids):
+            raise ClaimArtifactError("effective row invalidates a foreign coverage group")
+        if set(valid_group_ids).intersection(invalid_reasons):
+            raise ClaimArtifactError("effective group is both valid and invalid")
+        if set(valid_group_ids).union(invalid_reasons) != set(base_group_ids):
+            raise ClaimArtifactError("effective group accounting is incomplete")
+        if not set(reused_group_ids).issubset(valid_group_ids):
+            raise ClaimArtifactError("reused validation is not currently valid")
+        for group_id in valid_group_ids:
+            group = group_by_id.get(group_id)
+            if group is None or group.get("status") != "validated":
+                raise ClaimArtifactError("effective row treats an unvalidated base group as valid")
+
+        base_negative = base_row.get("semantic_negative")
+        expected_negative_id = semantic_negative_id(base_negative)
+        if facts.get("validated_negative_id") != expected_negative_id:
+            raise ClaimArtifactError("effective semantic-negative identity is invalid")
+
+        adjusted_groups: list[dict[str, Any]] = []
+        for group in groups_by_claim.get(claim_id, []):
+            adjusted = dict(group)
+            group_id = str(group.get("coverage_group_id") or "")
+            if group_id not in valid_group_ids:
+                adjusted["status"] = "invalid"
+                adjusted["invalid_reason"] = str(invalid_reasons[group_id])
+            adjusted_groups.append(adjusted)
+        claim = catalog_by_id.get(claim_id)
+        if claim is None:
+            raise ClaimArtifactError("effective row has no catalog claim")
+        expected = reduce_claim(
+            claim,
+            validated_groups=[
+                group for group in adjusted_groups if group.get("status") == "validated"
+            ],
+            validated_negative=base_negative if isinstance(base_negative, dict) else None,
+            all_groups=adjusted_groups,
+        )
+        for field in (
+            "resolution",
+            "classification",
+            "classification_status",
+            "exclusion_kind",
+            "invalid_reasons",
+        ):
+            if row.get(field) != expected.get(field):
+                raise ClaimArtifactError(
+                    f"effective row differs from deterministic reduction: {field}"
+                )
+        effective_by_id[claim_id] = row
+
+    proposal_by_claim: dict[str, dict[str, Any]] = {}
+    for proposal in queue_rows:
+        _validate_schema(
+            proposal,
+            "claim_queue_proposal.schema.json",
+            label="claim queue proposal",
+        )
+        claim_id = str(proposal.get("claim_id") or "")
+        if claim_id in proposal_by_claim:
+            raise ClaimArtifactError("claim queue contains a duplicate claim")
+        row = effective_by_id.get(claim_id)
+        claim = catalog_by_id.get(claim_id)
+        if row is None or claim is None or row.get("resolution") != "uncertain":
+            raise ClaimArtifactError("claim queue proposal does not refer to an uncertain claim")
+        expected_proposal_hash = hash_json(
+            "claim-queue-proposal-id/v1",
+            {
+                "claim_id": claim_id,
+                "claim_effective_revision": row.get("claim_effective_revision"),
+                "action": "needs_extraction",
+                "queue_version": queue_version,
+            },
+        )
+        expected_proposal_id = (
+            f"CQP-{digest_hex(row['claim_hash'])[:8]}-"
+            f"{digest_hex(expected_proposal_hash)[:8]}"
+        )
+        expected_fields = {
+            "proposal_id": expected_proposal_id,
+            "parent_block_id": (
+                claim.get("parent_block_id")
+                or dict(claim.get("locator") or {}).get("block_id")
+            ),
+            "locator": claim.get("locator"),
+            "claim_source_fingerprint": canonical_target_fingerprint(claim.get("claim_hash")),
+            "document_generation_id": row.get("document_generation_id"),
+            "catalog_generation_id": row.get("catalog_generation_id"),
+            "claim_effective_revision": row.get("claim_effective_revision"),
+            "queue_version": queue_version,
+            "created_from_event_seq": row.get("last_relevant_event_seq"),
+        }
+        for field, expected_value in expected_fields.items():
+            if proposal.get(field) != expected_value:
+                raise ClaimArtifactError(f"claim queue proposal has invalid {field}")
+        proposal_by_claim[claim_id] = proposal
+
+    uncertain_claim_ids = {
+        claim_id
+        for claim_id, row in effective_by_id.items()
+        if row.get("resolution") == "uncertain"
+    }
+    if set(proposal_by_claim) != uncertain_claim_ids:
+        raise ClaimArtifactError("claim queue is not a complete uncertain-claim projection")
+
+
+def publish_effective_snapshot(
+    out_dir: Path | str,
+    effective_ledger: Iterable[dict[str, Any]],
+    queue_proposals: Iterable[dict[str, Any]],
+    *,
+    meta: dict[str, Any],
+) -> dict[str, Any]:
+    """Atomically publish the mutable effective trio under its own WAL."""
+    root = Path(out_dir).expanduser().resolve()
+    ledger_rows = [dict(row) for row in effective_ledger]
+    queue_rows = [dict(row) for row in queue_proposals]
+    with claim_publication_lock(root):
+        _recover_claim_state_unlocked(root)
+        base = _load_committed_claim_base_unlocked(root)
+        generation = dict(base["generation_meta"])
+        required_meta = {
+            "event_prefix_sha256",
+            "last_event_seq",
+            "document_effective_revision",
+            "target_set_hash",
+            "target_publication_revision",
+            "requirement_review_state_hash",
+            "effective_ledger_schema",
+            "review_adapter_versions",
+            "reducer_version",
+            "bridge_version",
+            "queue_version",
+            "effective_metrics",
+        }
+        if not required_meta.issubset(meta):
+            missing = ", ".join(sorted(required_meta.difference(meta)))
+            raise ClaimArtifactError(f"effective meta is incomplete: {missing}")
+        for field in (
+            "event_prefix_sha256",
+            "document_effective_revision",
+            "target_set_hash",
+            "target_publication_revision",
+            "requirement_review_state_hash",
+        ):
+            if not _is_sha256(meta.get(field)):
+                raise ClaimArtifactError(f"invalid effective meta hash: {field}")
+        last_event_seq = meta.get("last_event_seq")
+        if (
+            not isinstance(last_event_seq, int)
+            or isinstance(last_event_seq, bool)
+            or last_event_seq < 0
+        ):
+            raise ClaimArtifactError("invalid effective event sequence")
+        for field in ("reducer_version", "bridge_version", "queue_version"):
+            if not isinstance(meta.get(field), str) or not meta.get(field):
+                raise ClaimArtifactError(f"invalid effective component version: {field}")
+        if not isinstance(meta.get("effective_metrics"), dict):
+            raise ClaimArtifactError("invalid effective metrics")
+
+        from claim_ledger import (
+            CLAIM_EFFECTIVE_LEDGER_SCHEMA,
+            current_effective_versions,
+            effective_review_adapter_versions,
+        )
+
+        if meta.get("effective_ledger_schema") != CLAIM_EFFECTIVE_LEDGER_SCHEMA:
+            raise ClaimArtifactError("invalid effective ledger schema identity")
+        if meta.get("review_adapter_versions") != effective_review_adapter_versions():
+            raise ClaimArtifactError("invalid effective review adapter version vector")
+
+        _validate_effective_projection(
+            base,
+            ledger_rows,
+            queue_rows,
+            last_event_seq=last_event_seq,
+            queue_version=str(meta["queue_version"]),
+        )
+        ledger_bytes = _jsonl_bytes(ledger_rows)
+        queue_bytes = _jsonl_bytes(queue_rows)
+
+        effective_meta = {
+            **dict(meta),
+            "schema": "claim-effective-meta/v1",
+            "artifact_protocol_version": CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION,
+            "effective_artifact_version": CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION,
+            "effective_snapshot_version": CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+            "run_id": str(meta.get("run_id") or generation.get("run_id") or ""),
+            "committed_at": _utc_now(),
+            "base_generation_id": claim_base_generation_id(generation),
+            "document_generation_id": str(generation.get("document_generation_id") or ""),
+            "catalog_generation_id": str(generation.get("catalog_generation_id") or ""),
+            "generation_meta_sha256": file_sha256(root / CLAIM_GENERATION_META),
+            "base_ledger_sha256": str(generation.get("ledger_sha256") or ""),
+            "effective_ledger_sha256": _sha256_bytes(ledger_bytes),
+            "queue_sha256": _sha256_bytes(queue_bytes),
+            "queue_count": len(queue_rows),
+            "ledger_count": len(ledger_rows),
+            "claim_events_enabled": True,
+        }
+        effective_meta["versions"] = current_effective_versions()
+
+        _validate_schema(
+            effective_meta,
+            "claim_effective_meta.schema.json",
+            label="effective claim meta",
+        )
+        effective_meta_bytes = canonical_json_value_bytes(effective_meta)
+        generation_meta_sha256 = file_sha256(root / CLAIM_GENERATION_META)
+        base_ledger_sha256 = str(generation.get("ledger_sha256") or "")
+        journal = _begin_effective_publication_unlocked(
+            root,
+            base_generation_id=str(effective_meta["base_generation_id"]),
+            generation_meta_sha256=generation_meta_sha256,
+            base_ledger_sha256=base_ledger_sha256,
+            candidate={
+                "effective_ledger_sha256": str(
+                    effective_meta["effective_ledger_sha256"]
+                ),
+                "effective_ledger_count": len(ledger_rows),
+                "queue_sha256": str(effective_meta["queue_sha256"]),
+                "queue_count": len(queue_rows),
+                "effective_meta_sha256": _sha256_bytes(effective_meta_bytes),
+                "document_effective_revision": str(
+                    effective_meta["document_effective_revision"]
+                ),
+            },
+        )
+        _atomic_write_bytes(root / CLAIM_EFFECTIVE_LEDGER, ledger_bytes)
+        _atomic_write_bytes(root / CLAIM_QUEUE_PROPOSALS, queue_bytes)
+        _atomic_write_bytes(root / CLAIM_EFFECTIVE_META, effective_meta_bytes)
+        loaded = _load_committed_effective_unlocked(root, base, require_v2=True)
+        if loaded["effective_meta"] != effective_meta:
+            raise ClaimArtifactError("effective publication did not reload byte-equivalent meta")
+        _finish_effective_publication_unlocked(root, journal)
+        return effective_meta
+
+
+def load_committed_claim_base(out_dir: Path | str) -> dict[str, Any]:
+    """Load immutable generation-time facts without consulting live review authority."""
+    root = Path(out_dir).expanduser().resolve()
+    with claim_publication_lock(root):
+        _recover_claim_state_unlocked(root)
+        return _load_committed_claim_base_unlocked(root)
+
+
+def load_committed_effective_snapshot(out_dir: Path | str) -> dict[str, Any]:
+    """Load only a Phase 1 effective snapshot committed against a valid base."""
+    root = Path(out_dir).expanduser().resolve()
+    with claim_publication_lock(root):
+        _recover_claim_state_unlocked(root)
+        base = _load_committed_claim_base_unlocked(root)
+        effective = _load_committed_effective_unlocked(root, base, require_v2=True)
+        return {**base, **effective}
+
+
+def load_committed_effective_snapshot_readonly(
+    out_dir: Path | str,
+    *,
+    require_v2: bool = True,
+) -> dict[str, Any]:
+    """Read a committed effective snapshot without performing crash recovery.
+
+    Request paths use this entrypoint. Startup maintenance and the explicit fold
+    command own WAL recovery; a GET must never mutate or roll back artifacts.
+
+    ``require_v2=False`` is only for the view dispatcher. It lets that
+    dispatcher distinguish a committed legacy snapshot (migration required)
+    from an unfinished journal (recovery pending) without a second filesystem
+    probe that could race the journal check below.
+    """
+    root = Path(out_dir).expanduser().resolve()
+
+    def pending_journals() -> list[str]:
+        return [
+            name for name in (
+                CLAIM_PUBLICATION_JOURNAL,
+                CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
+            )
+            if (root / name).is_file()
+        ]
+
+    pending = pending_journals()
+    if pending:
+        raise ClaimEffectiveRecoveryPending(
+            "claim effective recovery pending: " + ", ".join(pending)
+        )
+    anchors_before = (
+        (root / CLAIM_GENERATION_META).read_bytes(),
+        (root / CLAIM_EFFECTIVE_META).read_bytes(),
+    )
+    base = _load_committed_claim_base_unlocked(root)
+    effective = _load_committed_effective_unlocked(
+        root,
+        base,
+        require_v2=require_v2,
+    )
+    pending = pending_journals()
+    if pending:
+        raise ClaimEffectiveRecoveryPending(
+            "claim effective recovery pending: " + ", ".join(pending)
+        )
+    anchors_after = (
+        (root / CLAIM_GENERATION_META).read_bytes(),
+        (root / CLAIM_EFFECTIVE_META).read_bytes(),
+    )
+    if anchors_after != anchors_before:
+        raise ClaimArtifactError("claim snapshot changed during read-only load")
+    return {**base, **effective}
+
+
+def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     generation = _read_json(root / CLAIM_GENERATION_META, label="claim generation meta")
     if generation.get("schema") != "claim-generation-meta/v1":
         raise ClaimArtifactError("unsupported claim generation meta schema")
@@ -2938,43 +3799,28 @@ def _load_committed_shadow_unlocked(root: Path) -> dict[str, Any]:
     if generation.get("delivery_track") == "B" and not requirements_hash:
         raise ClaimArtifactError("B-track claim generation is not bound to requirements")
     bound_requirements: list[dict[str, Any]] | None = None
-    if requirements_hash:
-        _require_hash(
-            root / "ai_requirements.jsonl",
-            requirements_hash,
-            label="ai_requirements.jsonl",
-        )
-        bound_requirements = _read_jsonl(root / "ai_requirements.jsonl", label="AI requirements")
+    requirements_path = root / "ai_requirements.jsonl"
+    if requirements_hash and requirements_path.is_file():
+        try:
+            if file_sha256(requirements_path) == requirements_hash:
+                bound_requirements = _read_jsonl(
+                    requirements_path,
+                    label="generation-time AI requirements",
+                )
+        except OSError:
+            bound_requirements = None
     requirements_meta: dict[str, Any] | None = None
     requirements_meta_hash = str(generation.get("requirements_meta_sha256") or "")
-    if requirements_meta_hash:
-        _require_hash(
-            root / "ai_requirements.meta.json",
-            requirements_meta_hash,
-            label="ai_requirements.meta.json",
-        )
-        requirements_meta = _read_json(
-            root / "ai_requirements.meta.json",
-            label="AI requirements meta",
-        )
-    review_states: dict[str, dict[str, Any]] = {}
-    if requirements_hash:
-        from ai_review_actions import read_ai_review_states
-        from claim_ledger import b_track_authority_state
-
-        review_states = read_ai_review_states(root)
-        authority = b_track_authority_state(
-            bound_requirements or [],
-            review_states,
-        )
-        if authority["target_generation_id"] != str(
-            generation.get("target_generation_id") or ""
-        ):
-            raise ClaimArtifactError("current target generation differs from committed ledger")
-        if authority["target_review_authority_revision"] != str(
-            generation.get("target_review_authority_revision") or ""
-        ):
-            raise ClaimArtifactError("current target review authority differs from committed ledger")
+    requirements_meta_path = root / "ai_requirements.meta.json"
+    if requirements_meta_hash and requirements_meta_path.is_file():
+        try:
+            if file_sha256(requirements_meta_path) == requirements_meta_hash:
+                requirements_meta = _read_json(
+                    requirements_meta_path,
+                    label="generation-time AI requirements meta",
+                )
+        except OSError:
+            requirements_meta = None
 
     _validate_shadow_graph(
         catalog_meta=catalog_build["meta"],
@@ -2984,28 +3830,73 @@ def _load_committed_shadow_unlocked(root: Path) -> dict[str, Any]:
         groups=groups,
         ledger=ledger,
         requirements=bound_requirements,
-        review_states=review_states,
+        review_states=None,
+        validate_review_authority=False,
     )
+
+    return {
+        "catalog": catalog,
+        "units": catalog_build["units"],
+        "groups": groups,
+        "ledger": ledger,
+        "metrics": metrics,
+        "requirements": bound_requirements or [],
+        "requirements_meta": requirements_meta,
+        "catalog_meta": catalog_build["meta"],
+        "generation_meta": generation,
+        "attempt_cost_chain": _attempt_cost_chain(
+            attempt_rows,
+            dict(generation.get("attempt_chain") or {}),
+        ),
+    }
+
+
+def _load_committed_shadow_unlocked(root: Path) -> dict[str, Any]:
+    base = _load_committed_claim_base_unlocked(root)
+    effective = _load_committed_effective_unlocked(root, base, require_v2=False)
+    return {**base, **effective}
+
+
+def _load_committed_effective_unlocked(
+    root: Path,
+    base: dict[str, Any],
+    *,
+    require_v2: bool,
+) -> dict[str, Any]:
+    generation = dict(base["generation_meta"])
+    ledger = list(base["ledger"])
 
     effective = _read_json(root / CLAIM_EFFECTIVE_META, label="effective claim meta")
     if effective.get("schema") != "claim-effective-meta/v1":
         raise ClaimArtifactError("unsupported effective claim meta schema")
-    if effective.get("artifact_protocol_version") != CLAIM_ARTIFACT_PROTOCOL_VERSION:
-        raise ClaimArtifactError("stale effective artifact protocol")
-    if effective.get("effective_snapshot_version") != CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
+    effective_version = str(effective.get("effective_snapshot_version") or "")
+    if effective_version not in {
+        LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+        CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+    }:
         raise ClaimArtifactError("stale effective snapshot version")
+    if require_v2 and effective_version != CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
+        raise ClaimArtifactError("Phase 1 effective snapshot is not materialized")
+    expected_protocol = (
+        CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION
+        if effective_version == CLAIM_EFFECTIVE_SNAPSHOT_VERSION
+        else CLAIM_ARTIFACT_PROTOCOL_VERSION
+    )
+    if effective.get("artifact_protocol_version") != expected_protocol:
+        raise ClaimArtifactError("stale effective artifact protocol")
     if str(effective.get("catalog_generation_id") or "") != str(
         generation.get("catalog_generation_id") or ""
     ):
         raise ClaimArtifactError("effective snapshot refers to a different catalog generation")
-    if str(effective.get("target_generation_id") or "") != str(
-        generation.get("target_generation_id") or ""
+    if effective_version == LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
+        if str(effective.get("target_generation_id") or "") != str(
+            generation.get("target_generation_id") or ""
+        ):
+            raise ClaimArtifactError("effective snapshot refers to a different target generation")
+    elif str(effective.get("base_generation_id") or "") != claim_base_generation_id(
+        generation
     ):
-        raise ClaimArtifactError("effective snapshot refers to a different target generation")
-    if str(effective.get("target_review_authority_revision") or "") != str(
-        generation.get("target_review_authority_revision") or ""
-    ):
-        raise ClaimArtifactError("effective snapshot refers to a different review authority")
+        raise ClaimArtifactError("effective snapshot refers to a different base generation")
     _require_hash(
         root / CLAIM_GENERATION_META,
         effective.get("generation_meta_sha256"),
@@ -3024,28 +3915,79 @@ def _load_committed_shadow_unlocked(root: Path) -> dict[str, Any]:
     )
     if len(effective_ledger) != int(effective.get("ledger_count", -1)):
         raise ClaimArtifactError("effective ledger count does not match committed meta")
-    if effective.get("claim_events_enabled") is False and effective_ledger != ledger:
+    if (
+        effective_version == LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION
+        and effective.get("claim_events_enabled") is False
+        and effective_ledger != ledger
+    ):
         raise ClaimArtifactError("Phase 0 effective ledger differs from its base ledger")
-
+    queue: list[dict[str, Any]] = []
+    if effective_version == CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
+        _validate_schema(
+            effective,
+            "claim_effective_meta.schema.json",
+            label="effective claim meta",
+        )
+        _require_canonical_json_value(
+            root / CLAIM_EFFECTIVE_META,
+            effective,
+            label="effective claim meta",
+        )
+        _require_hash(
+            root / CLAIM_QUEUE_PROPOSALS,
+            effective.get("queue_sha256"),
+            label=CLAIM_QUEUE_PROPOSALS,
+        )
+        queue = _read_jsonl(root / CLAIM_QUEUE_PROPOSALS, label="claim queue proposals")
+        if len(queue) != int(effective.get("queue_count", -1)):
+            raise ClaimArtifactError("claim queue count does not match committed meta")
+        if effective.get("effective_artifact_version") != CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION:
+            raise ClaimArtifactError("stale effective component version")
+        if effective.get("queue_version") is None:
+            raise ClaimArtifactError("effective queue version is missing")
+        if not _is_sha256(effective.get("event_prefix_sha256")):
+            raise ClaimArtifactError("effective event prefix hash is invalid")
+        if not _is_sha256(effective.get("document_effective_revision")):
+            raise ClaimArtifactError("effective document revision is invalid")
+        if not _is_sha256(effective.get("target_set_hash")):
+            raise ClaimArtifactError("effective target set hash is invalid")
+        if not _is_sha256(effective.get("requirement_review_state_hash")):
+            raise ClaimArtifactError("effective review state hash is invalid")
+        if not isinstance(effective.get("effective_metrics"), dict):
+            raise ClaimArtifactError("effective metrics are missing")
+        base_ids = [str(row.get("claim_id") or "") for row in ledger]
+        effective_ids = [str(row.get("claim_id") or "") for row in effective_ledger]
+        if base_ids != effective_ids:
+            raise ClaimArtifactError("effective ledger is not a one-to-one base projection")
+        if any(row.get("schema") != "claim-effective-ledger/v1" for row in effective_ledger):
+            raise ClaimArtifactError("invalid effective ledger row schema")
+        if any(row.get("schema") != "claim-queue-proposal/v1" for row in queue):
+            raise ClaimArtifactError("invalid claim queue proposal schema")
+        _require_canonical_jsonl(
+            root / CLAIM_EFFECTIVE_LEDGER,
+            effective_ledger,
+            label="effective claim ledger",
+        )
+        _require_canonical_jsonl(
+            root / CLAIM_QUEUE_PROPOSALS,
+            queue,
+            label="claim queue proposals",
+        )
+        _validate_effective_projection(
+            base,
+            effective_ledger,
+            queue,
+            last_event_seq=int(effective.get("last_event_seq", -1)),
+            queue_version=str(effective.get("queue_version") or ""),
+        )
     return {
-        "catalog": catalog,
-        "units": catalog_build["units"],
-        "groups": groups,
-        "ledger": ledger,
         "effective_ledger": effective_ledger,
-        "metrics": metrics,
-        "requirements_meta": requirements_meta,
-        "catalog_meta": catalog_build["meta"],
-        "generation_meta": generation,
+        "queue_proposals": queue,
         "effective_meta": effective,
-        "attempt_cost_chain": _attempt_cost_chain(
-            attempt_rows,
-            dict(generation.get("attempt_chain") or {}),
-        ),
     }
 
 
-def committed_shadow_versions_are_current(
+def committed_base_versions_are_current(
     snapshot: dict[str, Any],
     *,
     require_environment_match: bool = True,
@@ -3058,7 +4000,7 @@ def committed_shadow_versions_are_current(
     from claim_catalog import CLAIM_CATALOG_VERSION, CLAIM_UNIT_PACKING_VERSION
     from claim_ledger import (
         CLAIM_COVERAGE_RUNTIME_VERSION,
-        current_shadow_versions,
+        current_base_versions,
         semantic_verifier_runtime,
         semantic_verifier_runtime_is_valid,
     )
@@ -3077,13 +4019,11 @@ def committed_shadow_versions_are_current(
     if generation.get("delivery_track") == "B":
         from ai_extract import current_ai_requirements_producer_lineage
 
-        requirements_meta = snapshot.get("requirements_meta")
-        target_producer_is_current = (
-            isinstance(requirements_meta, dict)
-            and requirements_meta.get("schema") == "ai-requirements-final/v1"
-            and requirements_meta.get("producer_lineage")
-            == current_ai_requirements_producer_lineage()
-        )
+        if "requirements_producer_lineage" in generation:
+            target_producer_is_current = (
+                generation.get("requirements_producer_lineage")
+                == current_ai_requirements_producer_lineage()
+            )
     source_versions_are_current = (
         parser_provenance.get("source_alignment_version") == SOURCE_ALIGNMENT_VERSION
         and parser_provenance.get("source_transformation_policy_version")
@@ -3144,8 +4084,34 @@ def committed_shadow_versions_are_current(
         and catalog_meta.get("packing_version") == CLAIM_UNIT_PACKING_VERSION
         and source_versions_are_current
         and target_producer_is_current
-        and dict(shadow_meta.get("versions") or {}) == current_shadow_versions()
+        and dict(shadow_meta.get("versions") or {}) == current_base_versions()
         and runtime_is_current
+    )
+
+
+def effective_versions_are_current(snapshot: dict[str, Any]) -> bool:
+    from claim_ledger import current_effective_versions
+
+    effective = dict(snapshot.get("effective_meta") or {})
+    return (
+        effective.get("effective_snapshot_version") == CLAIM_EFFECTIVE_SNAPSHOT_VERSION
+        and effective.get("artifact_protocol_version")
+        == CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION
+        and effective.get("effective_artifact_version")
+        == CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION
+        and dict(effective.get("versions") or {}) == current_effective_versions()
+    )
+
+
+def committed_shadow_versions_are_current(
+    snapshot: dict[str, Any],
+    *,
+    require_environment_match: bool = True,
+) -> bool:
+    """Compatibility alias: stage reuse depends only on immutable base currency."""
+    return committed_base_versions_are_current(
+        snapshot,
+        require_environment_match=require_environment_match,
     )
 
 

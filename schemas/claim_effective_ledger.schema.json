@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_effective_ledger.schema.json",
+  "title": "Claim effective ledger row v1",
+  "type": "object",
+  "required": [
+    "schema", "base_ledger_schema", "ledger_schema_version", "document_generation_id",
+    "catalog_generation_id", "claim_id", "claim_hash", "owner_unit_id", "resolution",
+    "classification", "classification_status", "exclusion_kind", "coverage_group_ids",
+    "semantic_negative", "invalid_reasons", "base_claim_row_hash",
+    "claim_effective_revision", "effective_facts", "last_relevant_event_seq"
+  ],
+  "properties": {
+    "schema": {"const": "claim-effective-ledger/v1"},
+    "base_ledger_schema": {"const": "claim-ledger/v3"},
+    "ledger_schema_version": {"const": "claim-ledger-v3"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "claim_hash": {"$ref": "#/$defs/hash"},
+    "owner_unit_id": {
+      "oneOf": [
+        {"type": "string", "pattern": "^UNIT-[0-9a-f]{16}$"},
+        {"type": "null"}
+      ]
+    },
+    "resolution": {"enum": ["covered", "excluded", "uncertain"]},
+    "classification": {"enum": ["normative", "non_normative", "unknown"]},
+    "classification_status": {"enum": ["validated", "needs_review", "invalid", "proposed"]},
+    "exclusion_kind": {"enum": ["semantic", "structural", null]},
+    "coverage_group_ids": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^CGR-[0-9a-f]{16}$"},
+      "uniqueItems": true
+    },
+    "semantic_negative": {
+      "oneOf": [
+        {"$ref": "https://ratomizer.local/schemas/claim_ledger.schema.json#/$defs/semantic_negative"},
+        {"type": "null"}
+      ]
+    },
+    "invalid_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "base_claim_row_hash": {"$ref": "#/$defs/hash"},
+    "claim_effective_revision": {"$ref": "#/$defs/hash"},
+    "effective_facts": {"$ref": "#/$defs/effective_facts"},
+    "last_relevant_event_seq": {"type": "integer", "minimum": 0}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"resolution": {"const": "covered"}}, "required": ["resolution"]},
+      "then": {
+        "properties": {
+          "classification": {"const": "normative"},
+          "classification_status": {"const": "validated"},
+          "exclusion_kind": {"type": "null"},
+          "coverage_group_ids": {"minItems": 1},
+          "effective_facts": {
+            "properties": {
+              "valid_group_ids": {"minItems": 1},
+              "validated_negative_id": {"type": "null"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"resolution": {"const": "excluded"}}, "required": ["resolution"]},
+      "then": {"properties": {"classification": {"const": "non_normative"}, "classification_status": {"const": "validated"}, "exclusion_kind": {"enum": ["semantic", "structural"]}}}
+    },
+    {
+      "if": {"properties": {"resolution": {"const": "uncertain"}}, "required": ["resolution"]},
+      "then": {"properties": {"classification": {"const": "unknown"}, "classification_status": {"enum": ["needs_review", "invalid"]}, "exclusion_kind": {"type": "null"}}}
+    },
+    {
+      "if": {"properties": {"exclusion_kind": {"const": "semantic"}}, "required": ["exclusion_kind"]},
+      "then": {
+        "properties": {
+          "semantic_negative": {
+            "allOf": [
+              {"$ref": "https://ratomizer.local/schemas/claim_ledger.schema.json#/$defs/semantic_negative"},
+              {"properties": {"status": {"const": "validated"}}}
+            ]
+          },
+          "effective_facts": {
+            "properties": {
+              "valid_group_ids": {"maxItems": 0},
+              "validated_negative_id": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"exclusion_kind": {"const": "structural"}}, "required": ["exclusion_kind"]},
+      "then": {
+        "properties": {
+          "owner_unit_id": {"type": "null"},
+          "semantic_negative": {"type": "null"},
+          "effective_facts": {
+            "properties": {
+              "valid_group_ids": {"maxItems": 0},
+              "validated_negative_id": {"type": "null"}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "invalidated_target": {
+      "type": "object",
+      "required": [
+        "target_kind", "target_requirement_id", "target_fingerprint",
+        "observed_target_fingerprint", "reason", "target_review_revision"
+      ],
+      "properties": {
+        "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
+        "target_requirement_id": {"type": "string", "minLength": 1},
+        "target_fingerprint": {"$ref": "#/$defs/hash"},
+        "observed_target_fingerprint": {
+          "oneOf": [
+            {"$ref": "#/$defs/hash"},
+            {"type": "null"}
+          ]
+        },
+        "reason": {"type": "string", "minLength": 1},
+        "target_review_revision": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "effective_facts": {
+      "type": "object",
+      "required": ["valid_group_ids", "invalid_group_reasons", "validated_negative_id", "invalidated_targets", "reused_validation_group_ids"],
+      "properties": {
+        "valid_group_ids": {"type": "array", "items": {"type": "string", "pattern": "^CGR-[0-9a-f]{16}$"}, "uniqueItems": true},
+        "invalid_group_reasons": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+        "validated_negative_id": {
+          "oneOf": [
+            {"$ref": "#/$defs/hash"},
+            {"type": "null"}
+          ]
+        },
+        "invalidated_targets": {"type": "array", "items": {"$ref": "#/$defs/invalidated_target"}},
+        "reused_validation_group_ids": {"type": "array", "items": {"type": "string", "pattern": "^CGR-[0-9a-f]{16}$"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1000,6 +1000,36 @@ class ClarificationWorkbookImportTests(unittest.TestCase):
 class ChainAndManifestTests(unittest.TestCase):
     """F1+F7：后端链编排 + run_manifest 显式状态账本。"""
 
+    def test_ai_extract_manifest_records_committed_claim_components(self) -> None:
+        import claim_review_actions
+        from tests.test_claim_artifacts import _catalog, _publish
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            _publish(out, _catalog())
+            claim_review_actions.fold_effective_ledger(
+                out,
+                actor_trigger="manifest-integration-test",
+            )
+
+            desktop_tasks.update_run_manifest(
+                out,
+                "ai-extract",
+                "ok",
+                route="stub",
+                config={"sample_ratio": None, "limit_sections": None},
+            )
+            entry = desktop_tasks.read_run_manifest(out)["stages"]["ai-extract"]
+
+        components = entry["claim_components"]
+        self.assertTrue(components["base_generation_id"].startswith("sha256:"))
+        self.assertTrue(
+            components["document_effective_revision"].startswith("sha256:")
+        )
+        self.assertEqual(components["last_event_seq"], 0)
+        for key in ("catalog", "coverage", "effective", "bridge", "reducer", "queue"):
+            self.assertTrue(components[key])
+
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
         from parsers.pdf_parser import PDF_TEXT_REPAIR_VERSION, text_repair_vocabulary_fingerprint
         from source_spans import (
@@ -1029,9 +1059,9 @@ class ChainAndManifestTests(unittest.TestCase):
             "functional-synthesis": "functional-synthesis-v7+ai-supplement-v3-identity-preconditions+impl-v3",
             "requirements-analysis": "analyze-llm-v7+analyze-unfounded-v3+ai-supplement-v3-identity-preconditions+impl-v6",
             "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v4",
-            "clarification-report": "clarification/v6-coverage-basis+ai-supplement-v3-identity-preconditions+impl-v5",
+            "clarification-report": "clarification/v7-claim-ledger-info+ai-supplement-v3-identity-preconditions+impl-v6",
             "export-annotation-html": (
-                "doc_annotation_export/v10+annotation-translation-v2-segment-fallback"
+                "doc_annotation_export/v11-claim-distribution+annotation-translation-v2-segment-fallback"
                 "+annotation-translation-guards-v1+doc-facsimile-v1"
                 "+ai-supplement-v3-identity-preconditions"
             ),
@@ -1122,14 +1152,68 @@ class ChainAndManifestTests(unittest.TestCase):
         self.assertNotEqual(current, changed)
         self.assertIn("merged-consistency/vNEXT", changed)
 
-    def test_claim_reducer_version_does_not_change_initial_extraction_producer(self) -> None:
+    def test_claim_versions_do_not_change_initial_extraction_producer(self) -> None:
+        import claim_artifacts
         import claim_ledger
 
         current = desktop_tasks.stage_producer("ai-extract")
-        with patch.object(claim_ledger, "CLAIM_REDUCER_VERSION", "claim-reducer-vNEXT"):
-            changed = desktop_tasks.stage_producer("ai-extract")
+        version_fields = (
+            (claim_ledger, "CLAIM_REDUCER_VERSION"),
+            (claim_ledger, "CLAIM_VALIDATION_REUSE_VERSION"),
+            (claim_ledger, "CLAIM_EFFECTIVE_REDUCER_VERSION"),
+            (claim_ledger, "CLAIM_REVIEW_BRIDGE_VERSION"),
+            (claim_ledger, "CLAIM_REVIEW_EVENT_SCHEMA"),
+            (claim_ledger, "CLAIM_QUEUE_VERSION"),
+            (claim_artifacts, "CLAIM_EFFECTIVE_SNAPSHOT_VERSION"),
+            (claim_artifacts, "CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION"),
+        )
+        for module, name in version_fields:
+            with self.subTest(name=name), patch.object(module, name, f"{name}-vNEXT"):
+                self.assertEqual(
+                    desktop_tasks.stage_producer("ai-extract"),
+                    current,
+                )
 
-        self.assertEqual(current, changed)
+    def test_ai_extract_reuse_treats_claim_artifact_error_as_not_reusable(self) -> None:
+        from claim_artifacts import ClaimArtifactError
+
+        with tempfile.TemporaryDirectory() as td, (
+            patch.object(desktop_tasks, "read_run_manifest", return_value={
+                "stages": {"ai-extract": {"status": "ok"}},
+            })
+        ), patch.object(desktop_tasks, "stage_input_fingerprint", return_value=""), (
+            patch.object(desktop_tasks, "_stage_outputs", return_value=[])
+        ), patch.object(desktop_tasks, "_outputs_exist", return_value=True), (
+            patch(
+                "claim_artifacts.load_committed_claim_base",
+                side_effect=ClaimArtifactError("malformed generation"),
+            )
+        ):
+            self.assertFalse(desktop_tasks._stage_is_reusable(
+                Path(td),
+                "ai-extract",
+                route="stub",
+            ))
+
+    def test_ai_extract_reuse_propagates_unexpected_claim_loader_error(self) -> None:
+        with tempfile.TemporaryDirectory() as td, (
+            patch.object(desktop_tasks, "read_run_manifest", return_value={
+                "stages": {"ai-extract": {"status": "ok"}},
+            })
+        ), patch.object(desktop_tasks, "stage_input_fingerprint", return_value=""), (
+            patch.object(desktop_tasks, "_stage_outputs", return_value=[])
+        ), patch.object(desktop_tasks, "_outputs_exist", return_value=True), (
+            patch(
+                "claim_artifacts.load_committed_claim_base",
+                side_effect=RuntimeError("unexpected loader bug"),
+            )
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unexpected loader bug"):
+                desktop_tasks._stage_is_reusable(
+                    Path(td),
+                    "ai-extract",
+                    route="stub",
+                )
 
     def test_claim_reducer_bump_uses_ledger_only_refresh(self) -> None:
         import ai_extract

@@ -322,6 +322,84 @@ describe("RequirementApiClient", () => {
     expect((error as RequirementApiError).status).toBe(409)
     expect((error as RequirementApiError).details.source_fingerprint).toBe("source-v2")
   })
+
+  it("loads all six read-only claim views with filters and revision envelopes", async () => {
+    const claimEnvelope = {
+      schema: "claim-view/v1",
+      available: true,
+      phase: "production-dual-write-v1",
+      document_effective_revision: "sha256:effective-1",
+      base_generation_id: "sha256:base-1",
+      event_prefix_sha256: "sha256:events-1",
+      effective_fresh: true,
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => claimEnvelope,
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await client.loadClaimCatalog({ resolution: "covered", ownerUnitId: "UNIT-1", limit: 10, offset: 20 })
+    await client.loadClaimLedger({ resolution: "uncertain", limit: 5, offset: 15 })
+    await client.loadClaimCoverageGroups("CLM-1/2")
+    await client.loadClaimMetrics()
+    await client.loadClaimReviewEvents("CLM-1/2")
+    await client.loadClaimQueue()
+
+    const urls = fetchMock.mock.calls.map((call) => call[0])
+    expect(urls).toEqual([
+      "http://127.0.0.1:8770/claim-catalog?limit=10&offset=20&resolution=covered&owner_unit_id=UNIT-1",
+      "http://127.0.0.1:8770/claim-ledger?limit=5&offset=15&resolution=uncertain",
+      "http://127.0.0.1:8770/claim-coverage-groups?claim_id=CLM-1%2F2",
+      "http://127.0.0.1:8770/claim-metrics",
+      "http://127.0.0.1:8770/claim-review-events?claim_id=CLM-1%2F2",
+      "http://127.0.0.1:8770/claim-queue",
+    ])
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init).toEqual({ headers: { "X-Requirement-Atomizer-Token": "local-token" } })
+    }
+  })
+
+  it("rejects a claim view that omits its effective revision pin", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ schema: "claim-metrics-view/v1", available: true }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadClaimMetrics()).rejects.toMatchObject({
+      status: 502,
+      message: "Claim ledger response is missing document_effective_revision",
+    })
+  })
+
+  it("accepts the null revision envelope for a legacy directory without a ledger", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        schema: "claim-metrics-view/v1",
+        available: false,
+        phase: "production-dual-write-v1",
+        document_effective_revision: null,
+        base_generation_id: null,
+        event_prefix_sha256: null,
+        effective_fresh: false,
+        reason: "当前输出目录尚无 Claim Ledger generation",
+      }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadClaimMetrics()).resolves.toMatchObject({
+      available: false,
+      document_effective_revision: null,
+    })
+  })
 })
 
 describe("desktop bridge tasks", () => {

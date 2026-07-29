@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_queue_proposal.schema.json",
+  "title": "Claim queue dry-run proposal v1",
+  "type": "object",
+  "required": [
+    "schema", "proposal_id", "claim_id", "parent_block_id", "locator",
+    "claim_source_fingerprint", "document_generation_id", "catalog_generation_id",
+    "claim_effective_revision", "action", "dry_run", "queue_version",
+    "expected_ledger_state",
+    "created_from_event_seq"
+  ],
+  "properties": {
+    "schema": {"const": "claim-queue-proposal/v1"},
+    "proposal_id": {"type": "string", "pattern": "^CQP-[0-9a-f]{8}-[0-9a-f]{8}$"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "parent_block_id": {"type": "string", "minLength": 1},
+    "locator": {"$ref": "#/$defs/locator"},
+    "claim_source_fingerprint": {"$ref": "#/$defs/hash"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "claim_effective_revision": {"$ref": "#/$defs/hash"},
+    "action": {"const": "needs_extraction"},
+    "dry_run": {"const": true},
+    "queue_version": {"type": "string", "minLength": 1},
+    "expected_ledger_state": {"const": "uncertain"},
+    "created_from_event_seq": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "locator": {
+      "type": "object",
+      "required": ["block_id", "line", "start", "end", "position_basis", "table_item_id", "row_index"],
+      "properties": {
+        "block_id": {"type": "string", "minLength": 1},
+        "line": {"type": ["integer", "null"], "minimum": 0},
+        "start": {"type": ["integer", "null"], "minimum": 0},
+        "end": {"type": ["integer", "null"], "minimum": 0},
+        "position_basis": {"enum": ["repaired_text", "table_item_fields", "table_data_rows"]},
+        "table_item_id": {"type": ["string", "null"]},
+        "row_index": {"type": ["integer", "null"], "minimum": 0},
+        "row_start": {"type": "integer", "minimum": 0},
+        "row_end": {"type": "integer", "minimum": 0},
+        "fallback_group_id": {"type": "string", "pattern": "^.+-FB-[0-9]{4}$"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

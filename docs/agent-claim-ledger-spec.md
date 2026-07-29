@@ -1,7 +1,7 @@
-# 原文命题保全账本（Claim Conservation Ledger）实施规格 v2.1
+# 原文命题保全账本（Claim Conservation Ledger）实施规格 v2.4
 
-状态：**专家门禁修订稿 v2.1（待用户复核；复核通过前不改生产门控）**  
-日期：2026-07-26  
+状态：**用户已复核冻结边界；v2.4 同步 Phase 1 v1.4 的双轨 fold、只读 HTTP/WAL、规模与分发门（生产门控仍不切换）**
+日期：2026-07-28
 前置：Phase 0/1/1.5/2 及专家审核两轮修复（main `b8f8e34`）；
 `docs/agent-rollout-plan.md` 铁律全部适用
 
@@ -216,7 +216,10 @@ coverage group 只有满足以下全部条件才能成为 `validated`；任一 e
    invalid，不得进入 verifier；
 5. 进入 semantic verifier 前必须经过 §2.2.1 的 reject-only 确定性预筛；预筛通过只表示“允许复核”，
    不能直接验证 coverage；
-6. group 中所有 `target_fingerprint`、target generation 和 requirement review state 必须仍是当前有效值。
+6. group 中所有逐 target `target_requirement_id/target_fingerprint` 与 requirement review state 必须仍是
+   当前有效值。`target_generation_id` 保留生成时 provenance；Phase 1 起全局 target-set generation 变化只改
+   document revision，未改变 target ID/fingerprint/evidence locator/validator runtime 的无关 edge 可按
+   Phase 1 v1.4 §4.2 内容寻址复用，不得因此重跑 verifier。
 
 独立 verifier 必须是与 proposal/初抽分离的请求，`validator_request_id` 不得等于 proposer request ID，
 且输入不携带 proposer 的正负结论或解释。它必须对 target evidence 并集逐项检查主体、情态强度、极性、
@@ -323,6 +326,18 @@ positive 事实派生 `classification=normative + validated`；validated semanti
 - route requested/used、模型、prompt/validator version、request ID；
 - source generation、expected claim fingerprint 和 `expected_claim_effective_revision` CAS 前置条件。
 
+Phase 1 起新增 artifact 的 JSON/hash/target-fingerprint 规范化逐字采用
+`docs/agent-claim-ledger-phase1-spec.md` v1.4 §4.0：规范 JSON 无尾随换行，JSONL 行才追加 `\n`；通用
+hash wire 一律为小写 `sha256:<64 hex>`；历史 B 轨裸 target fingerprint 只允许在读取边界输入，进入
+event/effective/API 前必须规范化。禁止同一公式在不同模块混用带/不带换行 JSON。
+
+bridge 投影 event 固定每个受影响 claim 一行；`claim_id` 是唯一归约归属，`linked_claim_ids` 仅为排序后的
+fan-out 审计信息。`event_id = CRE-<十进制 event_seq>-<idempotency digest 前12>`；某 claim 的相关事件
+只按 `event.claim_id`、同 document/catalog generation 和 claim hash 选取，不能因 fan-out 列表重复计入。
+首次从 legacy effective 启动时，system bridge 可用 `bootstrap_base + expected_base_claim_row_hash` 投影并令
+`expected_claim_effective_revision=null`；已有 v2 后必须用 effective revision CAS。该 bootstrap 例外不适用
+Phase 1.5 claim mutation。
+
 事件应用必须校验当前 generation、claim fingerprint 与 claim effective revision；不匹配时拒绝并要求刷新。
 `event_seq` 在跨进程锁内单调分配，事件 hash 链保证有效前缀可复算，不能仅靠文件 mtime 判断新旧。现有
 `decide_trace.jsonl` 只记录 agent 对账本采取的动作摘要，不承载逐 claim 事实，避免破坏其封闭 schema。
@@ -343,6 +358,12 @@ fingerprint、匹配歧义或 `needs_reconfirmation` 的旧 row 时，target rev
 target 恢复后必须重新 reconcile；只有 claim/target fingerprint、evidence locator 和 validator versions
 全部未变时才可显式复用旧验证。`accepted`、`expert_pending` 等非 rejected 状态只表示没有 rejection
 阻断，不会创建 edge、验证 coverage，也不引入“所有 requirement 必须先经专家 accepted”的新门。
+review authority 变化与 target-set 变化使用不同 `trigger_kind/source_store/source_event_revision`；target
+缺失、替换或恢复没有 review row 时，必须由 target artifact 自身生成可复算 source revision，不得借用或
+伪造 review row。B 轨离线 reconcile 扫描全部物理 review rows（包括当前 claim generation 发布前已存在、
+但能唯一关联当前 target identity/fingerprint 的 rows），A 轨扫描全部 history events；两者只对实际
+eligibility transition 投影当前 generation 的事件，同状态重复记录不伪造 transition。只读取最终 snapshot
+不足以声称审计历史完整，事件投影时间也不得倒装成“claim 在 generation 前已存在”。
 
 两种 authority adapter 都必须导出可复算的 `target_review_revision`。所有可能改变 target 有效性的专家
 写入（含 Vue API、批量/HTML import 和自动迁移）必须携带 `expected_target_fingerprint` 与
@@ -437,11 +458,16 @@ run 必须声明 `delivery_track`，target ID/fingerprint/review adapter 必须�
   声明轨道的 target requirements、requirements meta、catalog、base ledger 的 SHA-256，以及
   schema/producer versions 和状态计数；
 - `claim_effective_ledger.jsonl` / `claim_effective.meta.json`：可重建的当前归约快照及其提交指针。
-  文档级 revision 定义为
-  `sha256(base_generation_id | event_seq | event_prefix_hash | target_set_hash |
-  requirement_review_state_hash | reducer_version)`；每行另有
-  `claim_effective_revision = sha256(base_claim_row_hash | ordered_relevant_event_hashes |
-  linked_target_fingerprints | linked_target_review_revisions | reducer_version)`。claim 写入只 CAS 后者，
+  `base_generation_id` 由 document/catalog generation 及 catalog/groups/base-ledger 文件 hash 组成的
+  domain-separated canonical JSON hash 派生，不得用 extraction run ID 或单独的 document generation
+  冒充。文档级 revision 定义为
+  `hash_json("claim-document-effective-revision/v1", {base_generation_id, last_event_seq,
+  event_prefix_sha256, target_set_hash, requirement_review_state_hash, effective_ledger_schema,
+  effective_snapshot_version, effective_artifact_version, reducer_version, bridge_version, queue_version})`；每行另有
+  `claim_effective_revision = hash_json("claim-effective-revision/v1", {base_claim_row_hash,
+  ordered_relevant_event_hashes, sorted linked target identities/fingerprints/review revisions,
+  effective_ledger_schema, reducer_version, bridge_version, review_adapter_versions})`。精确
+  serialization/排序/sentinel 口径见 Phase 1 v1.4 §4.0/§4.2。claim 写入只 CAS 后者，
   无关 requirement/claim 的事件不得使该 claim 的 revision 改变。
 
 ### 5.2 提交协议
@@ -452,10 +478,16 @@ run 必须声明 `delivery_track`，target ID/fingerprint/review adapter 必须�
 4. 最后原子替换 `claim_generation.meta.json`；
 5. 读侧只接受 meta 指向且 hash 全部匹配的一代；meta 缺失或 hash 不符即视为 incomplete/stale。
 
-初代 base 提交成功后，以及每次有效 claim/review revision 变化后，在 ledger materialization lock 内用同样
-的 tmp+fsync+`PermissionError` retry 协议重建 `claim_effective_ledger.jsonl`，重新读取 hash，最后原子替换
-`claim_effective.meta.json`。读侧还须重算其 event prefix、target set 和 review-state revisions；任一已前进
-即把 materialization 视为 stale 并重试，不能返回刚写完但已落后一代的 READY。
+初代 base 提交成功后，以及每次有效 claim/review revision 变化后，在 ledger materialization lock 内通过
+独立 effective WAL 共同重建 `claim_effective_ledger.jsonl`、`claim_queue_proposals.jsonl`、
+`claim_effective.meta.json`。`.claim_effective_publication.journal.json` 必须在任何生产 replace 前持久化旧
+三文件与候选 hash；依次 replace 并从生产路径复验后，**删除 effective journal 是唯一提交点**。只要
+journal 仍存在，重启就整体恢复旧三文件，不得把 meta 或“三文件已 replace”当成提交，不得把 effective
+崩溃登记成 verifier failure。完整顺序与 journal schema 见 Phase 1 v1.4 §5.3。
+
+读侧还须重算其 event prefix、target set 和 review-state revisions；任一已前进即把 materialization 视为
+stale。Phase 1 观察 API 可返回内部一致的旧快照并显式 `effective_fresh=false`，但不得在请求路径 fold；
+Phase 2 readiness 永远不能消费 stale snapshot。
 
 `claim_ledger.jsonl` 不是 append log。“增量落盘”只发生在 partial 文件；专家历史只进入 event log。
 event log 沿用跨进程锁、append+flush+fsync、torn-tail 恢复，并通过 generation/fingerprint 前置条件
@@ -502,9 +534,20 @@ document_generation_id / catalog_generation_id / expected_ledger_state`。
 ### 6.4 API、导出与 Vue3 UI
 
 - API 下发 claim locator、resolution、validation method、target ID/fingerprint 和 review events；
+- Phase 1 六个 GET 使用统一 revision envelope：`schema/available/phase/base_generation_id/
+  document_generation_id/catalog_generation_id/document_effective_revision/event_prefix_sha256/
+  last_event_seq/effective_fresh/freshness_reasons`。集合键固定为
+  `rows|groups|events|proposals`，queue 另带 `compat_omissions`，禁止裸数组或通用 `items`；
+  精确分页、available:false、503 与 collection-key 契约见 Phase 1 v1.4 §6.1；
+- 六个 GET 必须使用物理只读 loader；发现 effective publication journal 时返回
+  `503 effective_recovery_pending`，不得在 GET 中回滚、补完事务、fold、删除 journal 或改写任何 sidecar。
+  recovery 只允许启动 maintenance、显式 CLI/desktop maintenance 或受锁写侧执行；
+- `run_manifest` 加性记录 `claim_components`；clarification 只增加 informational `claim_ledger` 摘要且不改
+  readiness/TIER；Phase 1 批注导出增加整块 covered/excluded/uncertain 分布角标；
 - `quote_block_ids` 继续服务蓝色证据区展示，但不得作为后端 closure 依据；
 - Vue3 批注视图展示“已验证覆盖 / 已验证排除 / 待处理 / 失效证据”，支持 claim 级裁决；
-- DOCX/PDF 批注导出按 claim span/row 定位；不能只给整块标签；
+- DOCX/PDF 的 claim span/row 精确定位随 mutation 闭环在
+  Phase 1.5 实施（用户已批准该范围裁剪）；
 - `gui/` PySide6 保持冻结。
 
 ### 6.5 provenance
@@ -519,14 +562,18 @@ document_generation_id / catalog_generation_id / expected_ledger_state`。
 
 - `CLAIM_CATALOG_VERSION`：切分、locator、catalog schema；
 - `CLAIM_UNIT_PACKING_VERSION`：claim 到唯一 owner unit 的分配与打包；
-- `CLAIM_LEDGER_SCHEMA_VERSION`：base/effective ledger 与 event schema；
+- `CLAIM_LEDGER_SCHEMA_VERSION`：只管理 immutable base ledger schema；
+- `CLAIM_EFFECTIVE_LEDGER_SCHEMA` / `CLAIM_EFFECTIVE_SNAPSHOT_VERSION`：effective row/meta wire；
+- `CLAIM_REVIEW_EVENT_SCHEMA`：claim event wire/hash envelope；
 - `CLAIM_LEDGER_PROMPT_VERSION`：coverage/negative proposal prompt；
 - `CLAIM_EDGE_PREFILTER_VERSION`：受保护事实抽取、canonicalization、术语 alias 与 reject-only 规则；
 - `CLAIM_COVERAGE_VALIDATOR_VERSION`：正向边验证；
 - `CLAIM_NEGATIVE_POLICY_VERSION`：负向原因准入、反信号和 context dependency 规则；
 - `CLAIM_NEGATIVE_VALIDATOR_VERSION`：负向原因验证；
 - `CLAIM_REVIEW_BRIDGE_VERSION`：requirement review state 到 claim invalidation 的幂等投影；
-- `CLAIM_REDUCER_VERSION`：effective revision、冲突优先表和 readiness 派生；
+- `CLAIM_REDUCER_VERSION`：冻结 generation-time base 优先表；
+- `CLAIM_EFFECTIVE_REDUCER_VERSION`：authority overlay、effective revision 和当前状态派生；
+- `CLAIM_EFFECTIVE_ARTIFACT_VERSION`：effective WAL/loader 协议与提交点；
 - `CLAIM_QUEUE_VERSION`：claim 级补抽动作契约；
 - `CLAIM_AUDIT_POLICY_VERSION`：抽样审计策略。
 
@@ -544,20 +591,25 @@ document_generation_id / catalog_generation_id / expected_ledger_state`。
 `stage_producer("ai-extract")` 只表示 requirements extraction producer；catalog、coverage validation 和
 effective reducer 使用独立 component producer/revision，并写入 generation/effective meta。各层版本进入
 对应的 `STAGE_IMPLEMENTATION_REVISIONS` 和 downstream fingerprint，但只失效受影响层。
-`CLAIM_LEDGER_SCHEMA_VERSION`、prefilter、正负 validator/policy、bridge、reducer、queue、audit 的升级均
-不得进入 initial extraction cache key；它们最多触发 ledger-only rebuild/revalidation，新增初抽 LLM 调用
-必须为 0。
+上述版本均不得进入 initial extraction cache key。base schema/prefilter/正负 validator/policy 的升级可触发
+ledger-only rebuild/revalidation；effective schema/bridge/effective reducer/effective artifact/queue 的升级只
+触发 deterministic refold；两类都不得新增初抽 LLM 调用，且 effective-only 升级不得调用 verifier。
 
 `desktop_tasks.STAGE_INPUTS["ai-extract"]` 增加 `table_items.jsonl`；
-`STAGE_REQUIRED_OUTPUTS["ai-extract"]` 增加 catalog、base/effective ledger 及两份 meta。functional
+`STAGE_REQUIRED_OUTPUTS["ai-extract"]` 只增加 catalog、coverage groups、base ledger、generation meta 与
+generation-time metrics/attempt chain。effective ledger/meta、event、queue、health 是可恢复 runtime sidecars，
+不得作为 ai-extract 复用必需文件。functional
 synthesis 与 requirements analysis 继续由 target requirements/generation 驱动，纯 ledger event/schema
 变化不得令其重跑；claim queue、clarification、readiness、API 和 annotation export 等账本消费者增加
 effective meta/review events。补抽若实际改变 requirements，其 target hash 按现有依赖自然使语义下游失效。
 影响处置的环境变量（含 audit ratio、ledger verifier 开关/轮数）进入对应 ledger/audit fingerprint，而
 不是无差别污染 requirements section cache。
 
-cache hit 同时校验 requirement cache 与 ledger generation。只有 requirements 命中时允许 ledger-only
-重建；只有 ledger 命中但 target requirements fingerprint 不一致时，ledger 必须失效。
+cache hit 分别校验 requirement cache 与 immutable base generation。generation meta 中的 requirements hash
+只作生成时血缘，不与 live target 文件比较；live target fingerprint 不一致使关联 effective group 失效并
+重开 claim，但不把 base artifact 判损坏。requirements 命中时允许 ledger-only base 重建；effective
+missing/corrupt/v1/stale/fold failure 只走 recovery 或 deterministic refold，绝不使 ai-extract 失效，也不调用
+coverage/negative verifier。
 
 run manifest 的阶段执行状态与 ledger readiness 分开记录：
 
@@ -624,19 +676,27 @@ manifest 还须冻结一个不参与 prompt/阈值调优的 human-adjudicated he
 ### Phase 1：生产双写，不切门控
 
 - 正式写 catalog、base/effective ledger、generation/effective meta；
-- 接入 claim 级只读 API/UI/导出、effective reducer 和 review-state bridge；
+- 接入 claim 级只读 API/UI/导出、effective reducer 和 review-state bridge；bridge 只投影既有
+  requirement review authority，不提供 claim 专家写入口，也不修改 requirements；
+- 完成 immutable base generation、mutable effective snapshot 与 live review authority 的分层读取，
+  以及 effective-only WAL、事件前缀恢复、后台 reconcile。target 被拒绝或恢复时只重算 effective
+  派生结果，不使 ai-extract/base generation 失效、不重跑 coverage verifier；
+- 对已有且明确声明 A/atomic 或 B/ai 的 committed claim generation，分别读取各自 target/review authority
+  与全部 history，并进入同一 reconcile/event/fold/freshness 路径；A 轨不能固定 no-op。Phase 1 不负责把
+  assemble 接成 A 轨 catalog 生产器，无 claim generation 时 hook honest no-op；
 - claim queue 与定点补抽在本阶段只生成 shadow/dry-run proposal，不修改 requirements 或 claim 终态；
   旧覆盖报表继续作为兼容字段；
 - 新旧 coverage 并列展示，生产 readiness 暂不依赖 ledger。
 
-### Phase 1.5：闭环与故障恢复
+### Phase 1.5：启用 mutation 与写侧并发控制
 
-- target invalidation、专家拒绝、supplement replay 后自动重开；
-- event hash/CAS、requirement-review bridge 补偿和 authoritative-state 实时 fold 验证通过后，才启用
-  claim 级专家写入、claim queue 与定点补抽对生产 requirements 的 mutation——**mutation 唯一通道为
+- 在 Phase 1 的只读投影、event hash、bridge 补偿、authoritative-state fold 与崩溃恢复已经验证通过后，
+  补齐 A/B requirement authority 写入口的 `expected_target_fingerprint` /
+  `expected_target_review_revision` CAS，才启用 claim 级专家写入、claim queue 与定点补抽对生产
+  requirements 的 mutation——**mutation 唯一通道为
   现有 `targeted_reextract`**（前置条件指纹 + 补丁形态），不得长出第二条改写 requirements 的路径；
 - ledger-only cache rebuild；
-- 崩溃、并发、torn partial、Windows replace retry 全部验证；
+- mutation 失败补偿、并发裁决冲突与 downstream generation 刷新全部验证；
 - downstream incomplete_inputs 贯通。
 
 ### Phase 2：切换完整性门控
@@ -711,8 +771,9 @@ coverage、self-check、遗漏告警和 readiness 全部以当前 effective revi
 10. **claim queue**：`requirement_like=False` 的已知可编程输出 claim 可入队；table/list claim 按 locator
     补抽；无 exact claim 后置验证不得 resolved；Phase 1 dry-run 不修改生产 target。
 11. **review bridge/target 失效**：A/B 权威 review store 的拒绝、merge、supplement、fingerprint 改变均
-    自动重开；投影 event 追加失败仍重开；reject 改回非 rejected 触发 reactivation/reconcile，但不自动
-    covered；陈旧 API/HTML CAS 写入被拒绝，旧 HTML 只能 needs_reconfirmation；无关 requirement 裁决不
+    自动重开；投影 event 追加失败仍重开；reject 改回非 rejected 触发 reactivation/reconcile，
+    reactivation 本身不制造 coverage，只有语义验证指纹未变的既有 validated group 才可恢复生效；
+    陈旧 API/HTML CAS 写入被拒绝，旧 HTML 只能 needs_reconfirmation；无关 requirement 裁决不
     改变该 claim 的 effective revision。
 12. **代际/effective 提交**：missing ledger、旧 meta/event prefix/review hash、hash mismatch、崩溃中断、
     torn partial、并发写均被拒绝复用。
@@ -721,9 +782,14 @@ coverage、self-check、遗漏告警和 readiness 全部以当前 effective revi
 14. **路由与轨道**：stub 不伪造 reviewed；sample 只报告 sample scope；route provenance 保真；A/B target
     adapter 不按 ID 形状猜测，B 轨通过不令 A 轨 READY。
 15. **规模**：固定 500-block 合成夹具预热后运行 5 次，catalog 生成 p50 不超过 1.0 秒，catalog+base
-    ledger snapshot 总大小不超过 10 MiB；超线必须显式更新性能 baseline/version，不能静默放宽。
+    ledger snapshot 总大小不超过 10 MiB；另以至少 500 linked targets/2000 review rows 验证历史 reconcile
+    预索引。硬门为 index insert 与实际同 ID fan-out 候选检查的可复算线性计数，禁止
+    `rows × all_links` 扫描；fold p50/p95 连同 Python/OS/CPU 必报，首个验收值冻结为后续 baseline。
+    超线必须显式更新性能 baseline/version，不能静默放宽。
 16. **端到端**：test5/test10/test11 的同源复跑不论初抽方差，已知遗漏 claim 最终只能 covered 或显式 uncertain，
     不得静默消失；冻结集覆盖 siblings、水印/页码、list/table 和 protected-fact 丢失。
+17. **HTTP 与分发**：六个 GET 逐端点真实 HTTP 200/503；pending effective journal 下 GET 零写入；wheel 在
+    checkout 外隔离安装后可导入新模块并定位、校验全部新增 schema。
 
 真实客户 wording 只用于机器本地验收，不进仓。仓内回归使用合成等价句和结构夹具。
 

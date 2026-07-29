@@ -38,7 +38,7 @@ REPORT_MD = "clarification_questions.md"
 REPORT_XLSX = "clarification_questions.xlsx"
 ANSWERS_FILE = "clarification_answers.jsonl"   # 评审会答复回灌（answer 列填写后 import 回来）
 ANSWERS_LOCK = "clarification_answers.lock"
-CLARIFICATION_REPORT_VERSION = "clarification/v6-coverage-basis"
+CLARIFICATION_REPORT_VERSION = "clarification/v7-claim-ledger-info"
 
 _ANSWER_LOCKS: dict[Path, RLock] = {}
 _ANSWER_LOCKS_GUARD = RLock()
@@ -1431,6 +1431,59 @@ def run_report(out_dir: Path) -> dict[str, Any]:
                 warnings.append(warn)
         except Exception:  # 血统校验永不阻断出报告
             pass
+    claim_ledger_summary: dict[str, Any]
+    try:
+        from claim_views import build_claim_clarification_views
+
+        claim_views = build_claim_clarification_views(out_dir, uncertain_limit=50)
+        claim_metrics = claim_views["metrics"]
+        uncertain_claims = claim_views["uncertain_catalog"]
+        effective_metrics = dict(claim_metrics.get("effective_metrics") or {})
+        claim_ledger_summary = {
+            "available": bool(claim_metrics.get("available")),
+            "phase": claim_metrics.get("phase"),
+            "document_effective_revision": claim_metrics.get(
+                "document_effective_revision"
+            ),
+            "document_ready": claim_metrics.get("document_ready"),
+            "effective_fresh": bool(claim_metrics.get("effective_fresh")),
+            "freshness_reasons": list(
+                claim_metrics.get("freshness_reasons") or []
+            ),
+            "metrics": {
+                key: effective_metrics.get(key)
+                for key in (
+                    "verified_coverage_ratio",
+                    "verified_semantic_exclusion_ratio",
+                    "verified_exclusion_ratio",
+                    "structural_exclusion_ratio",
+                )
+            },
+            "open_claim_count": int(
+                effective_metrics.get("uncertain_count") or 0
+            ),
+            "uncertain_claims": [
+                {
+                    "claim_id": row.get("claim_id"),
+                    "locator": row.get("locator"),
+                    "text": str(row.get("text") or "")[:120],
+                }
+                for row in uncertain_claims.get("rows") or []
+            ],
+        }
+        if not claim_ledger_summary["available"]:
+            claim_ledger_summary["reason"] = (
+                claim_metrics.get("reason") or "claim ledger unavailable"
+            )
+    except Exception as exc:
+        claim_ledger_summary = {
+            "available": False,
+            "effective_fresh": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "metrics": {},
+            "open_claim_count": None,
+            "uncertain_claims": [],
+        }
     report = {"questions": hard_count,        # 未解决必答数（就绪门口径；GUI 消息同源）
               "provenance": provenance("clarification_report", CLARIFICATION_REPORT_VERSION),
               "upstream_warnings": warnings,
@@ -1463,6 +1516,7 @@ def run_report(out_dir: Path) -> dict[str, Any]:
                                          if e.get("blocker_level") != BLOCKER_BLOCKING),
               },
               "organized_entries": _organize_entries(entries),
+              "claim_ledger": claim_ledger_summary,
               "readiness": readiness, "entries": entries,
               "written": [REPORT_MD, REPORT_XLSX, REPORT_JSON]}
     (out_dir / REPORT_JSON).write_text(

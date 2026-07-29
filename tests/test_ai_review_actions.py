@@ -10,6 +10,7 @@ from pathlib import Path
 from ai_review_actions import (
     ai_req_id,
     apply_ai_review_action,
+    read_ai_review_authority_snapshot,
     read_ai_review_states,
     source_ai_requirement_id,
 )
@@ -153,6 +154,33 @@ class AiReviewStateConcurrencyTests(unittest.TestCase):
 
             self.assertEqual(states["AI-1"]["status"], "accepted")
             self.assertIn("line 1", captured.output[0])
+
+            snapshot = read_ai_review_authority_snapshot(Path(td))
+            self.assertEqual(snapshot["ordered_records"][0]["append_ordinal"], 2)
+            self.assertEqual(snapshot["audit_gaps"][0]["append_ordinal"], 1)
+
+    def test_snapshot_preserves_every_ordered_transition_for_one_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            apply_ai_review_action(out, "AI-1", "rejected", reason="first")
+            apply_ai_review_action(out, "AI-1", "accepted", reason="restored")
+
+            snapshot = read_ai_review_authority_snapshot(out)
+
+            self.assertEqual(
+                [record["state"]["status"] for record in snapshot["ordered_records"]],
+                ["rejected", "accepted"],
+            )
+            self.assertEqual(
+                [record["append_ordinal"] for record in snapshot["ordered_records"]],
+                [1, 2],
+            )
+            self.assertNotEqual(
+                snapshot["ordered_records"][0]["source_event_revision"],
+                snapshot["ordered_records"][1]["source_event_revision"],
+            )
+            self.assertEqual(snapshot["states"]["AI-1"]["status"], "accepted")
+            self.assertEqual(snapshot["audit_gaps"], [])
 
     def test_unterminated_tail_is_repaired(self) -> None:
         with tempfile.TemporaryDirectory() as td:

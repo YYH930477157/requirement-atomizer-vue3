@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import logging
 import os
 import time
 from contextlib import contextmanager
@@ -9,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator
+
+from process_file_lock import process_file_lock
 
 
 # 仅约束自动化路径（llm_pipeline 的 transition()）。专家入口 apply_expert_decision
@@ -101,6 +105,17 @@ def apply_expert_decision(
 
         event: dict[str, Any] | None = None
         if state.status != status:
+            binding = _current_atomic_review_binding(out_dir, requirement_id)
+            if binding is None:
+                state.metadata["needs_reconfirmation"] = True
+            else:
+                state.metadata.update({
+                    "source_fingerprint": binding["source_fingerprint"],
+                    "review_subject_fingerprint": binding[
+                        "review_subject_fingerprint"
+                    ],
+                    "needs_reconfirmation": False,
+                })
             review_event = ReviewEvent(from_status=state.status, to_status=status, actor=actor, reason=reason)
             state.history.append(review_event)
             state.status = status
@@ -115,12 +130,50 @@ def apply_expert_decision(
             except OSError as exc:
                 # state.history 已原子提交，是权威审计记录；事件 JSONL 只是投影。
                 # 此时返回 503 会诱导同状态重试，而重试不会产生新 transition。
-                import logging
                 logging.getLogger("requirement_atomizer").warning(
                     "裁决状态已保存，但事件日志追加失败：%s", exc)
                 result = dict(result)
                 result["audit_warning"] = "裁决已保存，但独立事件日志写入失败；完整历史仍保存在状态文件中"
-        return result
+    if (out_dir / "claim_generation.meta.json").is_file():
+        try:
+            from claim_review_actions import fold_effective_ledger
+
+            fold_effective_ledger(
+                out_dir,
+                actor_trigger="requirement-review-action",
+            )
+        except Exception as exc:
+            # The requirement-level authority is already atomically committed.
+            # Effective materialization is derived and may catch up later.
+            logging.getLogger("requirement_atomizer").warning(
+                "expert decision saved; claim effective fold lagged: %s",
+                exc,
+            )
+    return result
+
+
+def _current_atomic_review_binding(
+    out_dir: Path,
+    requirement_id: str,
+) -> dict[str, str] | None:
+    path = out_dir / "atomic_requirements.jsonl"
+    if not path.is_file():
+        return None
+    matches = [
+        row for row in _read_jsonl(path)
+        if requirement_id in requirement_identity_keys(row)
+    ]
+    if len(matches) != 1:
+        return None
+    from claim_ledger import (
+        atomic_target_fingerprint,
+        atomic_target_source_fingerprint,
+    )
+
+    return {
+        "source_fingerprint": atomic_target_source_fingerprint(matches[0]),
+        "review_subject_fingerprint": atomic_target_fingerprint(matches[0]),
+    }
 
 
 def merge_review_states(
@@ -213,6 +266,164 @@ def requirement_identity_keys(row: dict[str, Any]) -> list[str]:
     return keys
 
 
+def _empty_review_authority_snapshot(path: Path) -> dict[str, Any]:
+    empty_hash = "sha256:" + hashlib.sha256(b"").hexdigest()
+    return {
+        "source_store": path.name,
+        "states": [],
+        "source_records": {},
+        "ordered_records": [],
+        "audit_gaps": [],
+        "torn_tail_recovered": False,
+        "authority_file_sha256": empty_hash,
+    }
+
+
+def _review_authority_snapshot_from_bytes(path: Path, raw: bytes) -> dict[str, Any]:
+    from claim_artifacts import hash_json
+
+    # The A-track state file is atomically replaced, but historical/manual
+    # files can still contain a complete corrupt record.  Match the B-track
+    # authority contract: preserve every later valid record and make the gap
+    # visible to the fold health projection.  An unterminated final record is
+    # different: it can be an in-flight write, so callers must retry rather
+    # than folding an unstable authority snapshot.
+    body = raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw
+    state_records: list[tuple[int, int, dict[str, Any]]] = []
+    audit_gaps: list[dict[str, Any]] = []
+    state_ordinal = 0
+    lines = body.splitlines(keepends=True)
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        state_ordinal += 1
+        try:
+            row = json.loads(stripped.decode("utf-8"))
+            if not isinstance(row, dict):
+                raise ValueError("record is not an object")
+            if not requirement_identity_keys(row):
+                raise ValueError("record has no requirement identity")
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            is_unterminated_tail = (
+                index == len(lines) - 1
+                and not raw_line.endswith((b"\n", b"\r"))
+            )
+            if is_unterminated_tail:
+                raise ValueError("review authority has a torn tail") from exc
+            audit_gaps.append({
+                "physical_line_number": index + 1,
+                "state_ordinal": state_ordinal,
+                "reason": type(exc).__name__,
+                "line_sha256": "sha256:" + hashlib.sha256(raw_line).hexdigest(),
+            })
+            logging.getLogger("requirement_atomizer").warning(
+                "preserving audit gap in review_states.jsonl at physical line %d "
+                "(state %d)",
+                index + 1,
+                state_ordinal,
+            )
+            continue
+        state_records.append((state_ordinal, index + 1, row))
+
+    ordered_records: list[dict[str, Any]] = []
+    source_record_candidates: dict[str, list[dict[str, Any]]] = {}
+    for state_ordinal, physical_line_number, state in state_records:
+        identities = requirement_identity_keys(state)
+        requirement_id = str(state.get("requirement_id") or identities[0])
+        history = state.get("history")
+        if not isinstance(history, list):
+            audit_gaps.append({
+                "physical_line_number": physical_line_number,
+                "state_ordinal": state_ordinal,
+                "requirement_id": requirement_id,
+                "reason": "history_not_array",
+            })
+            continue
+        if not history and str(state.get("status") or "candidate") != "candidate":
+            audit_gaps.append({
+                "physical_line_number": physical_line_number,
+                "state_ordinal": state_ordinal,
+                "requirement_id": requirement_id,
+                "reason": "state_without_history",
+            })
+        for history_index, raw_event in enumerate(history):
+            if not isinstance(raw_event, dict) or not str(
+                raw_event.get("to_status") or ""
+            ):
+                audit_gaps.append({
+                    "physical_line_number": physical_line_number,
+                    "state_ordinal": state_ordinal,
+                    "requirement_id": requirement_id,
+                    "history_index": history_index,
+                    "reason": "invalid_history_event",
+                })
+                continue
+            history_event = dict(raw_event)
+            source_event_revision = hash_json(
+                "claim-source-event-revision/v1",
+                {
+                    "source_store": path.name,
+                    "requirement_id": requirement_id,
+                    "history_index": history_index,
+                    "history_event": history_event,
+                },
+            )
+            record = {
+                "physical_line_number": physical_line_number,
+                "state_ordinal": state_ordinal,
+                "requirement_id": requirement_id,
+                "identity_keys": identities,
+                "history_index": history_index,
+                "history_event": history_event,
+                "source_event_revision": source_event_revision,
+                "state": state,
+            }
+            ordered_records.append(record)
+            for identity in identities:
+                source_record_candidates.setdefault(identity, []).append(record)
+    source_records = {
+        identity: records[-1]
+        for identity, records in source_record_candidates.items()
+        if records
+    }
+    return {
+        "source_store": path.name,
+        "states": [state for _ordinal, _line, state in state_records],
+        "source_records": source_records,
+        "ordered_records": ordered_records,
+        "audit_gaps": audit_gaps,
+        "torn_tail_recovered": False,
+        "authority_file_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def read_review_authority_snapshot(out_dir: Path) -> dict[str, Any]:
+    """Read A-track state and every embedded history event under its authority lock."""
+    root = out_dir.expanduser().resolve()
+    path = root / "review_states.jsonl"
+    with review_state_lock(root):
+        if not path.is_file():
+            return _empty_review_authority_snapshot(path)
+        return _review_authority_snapshot_from_bytes(path, path.read_bytes())
+
+
+def read_review_authority_snapshot_readonly(out_dir: Path) -> dict[str, Any]:
+    """Read A-track authority without creating or changing a lock sidecar."""
+    root = out_dir.expanduser().resolve()
+    path = root / "review_states.jsonl"
+    before = path.read_bytes() if path.is_file() else None
+    snapshot = (
+        _empty_review_authority_snapshot(path)
+        if before is None
+        else _review_authority_snapshot_from_bytes(path, before)
+    )
+    after = path.read_bytes() if path.is_file() else None
+    if after != before:
+        raise ValueError("review authority changed during read-only read")
+    return snapshot
+
+
 def _find_state_index(states: list[dict[str, Any]], requirement_id: str) -> int | None:
     for index, state in enumerate(states):
         if str(state.get("requirement_id") or "") == requirement_id:
@@ -257,47 +468,18 @@ def review_state_lock(out_dir: Path, *, timeout_s: float = 10.0, stale_after_s: 
     process_lock = _process_lock_for(out_dir)
     with process_lock:
         lock_path = out_dir / "review_states.lock"
-        deadline = time.monotonic() + timeout_s
-        fd: int | None = None
-        while fd is None:
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                if _remove_stale_lock(lock_path, stale_after_s):
-                    continue
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"Timed out waiting for review state lock: {lock_path}")
-                time.sleep(0.01)
-        try:
-            os.write(fd, str(os.getpid()).encode("ascii"))
+        del stale_after_s
+        with process_file_lock(
+            lock_path,
+            timeout_s=timeout_s,
+            label="review state lock",
+        ):
             yield
-        finally:
-            os.close(fd)
-            try:
-                lock_path.unlink()
-            except FileNotFoundError:
-                pass
 
 
 def _process_lock_for(out_dir: Path) -> RLock:
     with _PROCESS_LOCKS_GUARD:
         return _PROCESS_LOCKS.setdefault(out_dir, RLock())
-
-
-def _remove_stale_lock(lock_path: Path, stale_after_s: float) -> bool:
-    if stale_after_s < 0:
-        return False
-    try:
-        age_s = time.time() - lock_path.stat().st_mtime
-    except FileNotFoundError:
-        return True
-    if age_s < stale_after_s:
-        return False
-    try:
-        lock_path.unlink()
-    except FileNotFoundError:
-        return True
-    return True
 
 
 def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:

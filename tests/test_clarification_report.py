@@ -5,8 +5,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import clarification_report as cr
+import claim_review_actions
+from tests.test_claim_artifacts import _catalog, _publish, _requirement
 
 
 def seed(tmp: Path, *, reqs=None, analysis=None, consistency=None, quality=None) -> None:
@@ -56,6 +59,71 @@ class CollectQuestionsTests(unittest.TestCase):
 
 
 class ReadinessTests(unittest.TestCase):
+    def test_committed_claim_summary_is_informational_and_preserves_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            catalog = _catalog()
+            seed(
+                out,
+                reqs=[_requirement(catalog)],
+                consistency={"coverage": {
+                    "scope": "core",
+                    "requirement_like": 1,
+                    "covered": 1,
+                    "uncovered_count": 0,
+                    "uncovered_samples": [],
+                    "excluded": {"count": 0, "block_ids": [], "samples": []},
+                }},
+                quality={
+                    "failed_sections": 0,
+                    "coverage_pct": 100.0,
+                    "core_coverage_pct": 100.0,
+                },
+            )
+            before = cr.run_report(out)
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(
+                out,
+                actor_trigger="clarification-integration-test",
+            )
+
+            after = cr.run_report(out)
+
+        self.assertEqual(after["readiness"], before["readiness"])
+        self.assertEqual(after["questions"], before["questions"])
+        self.assertEqual(after["soft_questions"], before["soft_questions"])
+        claim_summary = after["claim_ledger"]
+        self.assertTrue(claim_summary["available"])
+        self.assertTrue(claim_summary["effective_fresh"])
+        self.assertEqual(claim_summary["uncertain_claims"], [])
+        self.assertEqual(
+            claim_summary["metrics"]["verified_coverage_ratio"]["numerator"],
+            1,
+        )
+
+    def test_claim_summary_derives_metrics_and_uncertain_rows_from_one_context(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            catalog = _catalog()
+            seed(
+                out,
+                reqs=[_requirement(catalog)],
+                quality={"failed_sections": 0, "coverage_pct": 100.0},
+            )
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(
+                out,
+                actor_trigger="clarification-single-context-seed",
+            )
+            import claim_views
+
+            original_context = claim_views._context
+            with patch("claim_views._context", wraps=original_context) as context:
+                report = cr.run_report(out)
+
+        self.assertEqual(context.call_count, 1)
+        self.assertTrue(report["claim_ledger"]["available"])
+
     def test_ready_when_clean(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
@@ -138,6 +206,8 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(entry["tier"], cr.TIER_HARD)
         self.assertEqual(entry["blocker_level"], cr.BLOCKER_BLOCKING)
         self.assertEqual(report["readiness"]["verdict"], "NEEDS WORK")
+        self.assertIn("claim_ledger", report)
+        self.assertFalse(report["claim_ledger"]["available"])
 
 
 class TierTests(unittest.TestCase):
@@ -350,7 +420,7 @@ class RunReportTests(unittest.TestCase):
 
             self.assertEqual(report["questions"], 1)
             self.assertEqual(report["provenance"]["producer_version"],
-                             "clarification/v6-coverage-basis")
+                             "clarification/v7-claim-ledger-info")
             self.assertEqual(report["readiness"]["verdict"], "NEEDS WORK")
             self.assertEqual(report["readiness"]["unresolved_blocking"], 1)
             md = (tmp / cr.REPORT_MD).read_text(encoding="utf-8")

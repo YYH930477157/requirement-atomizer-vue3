@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -41,9 +42,15 @@ CLAIM_COVERAGE_VALIDATOR_VERSION = "claim-coverage-validator-v6"
 CLAIM_NEGATIVE_POLICY_VERSION = "claim-negative-policy-v2"
 CLAIM_NEGATIVE_VALIDATOR_VERSION = "claim-negative-validator-v4"  # v4: 负向上下文补父容器映射（清单/表格容器结构入 validation 输入指纹）
 CLAIM_REVIEW_ADAPTER_VERSION = "ai-review-adapter-v1"
-CLAIM_REVIEW_BRIDGE_VERSION = "claim-review-bridge-shadow-v1"
+CLAIM_EFFECTIVE_B_REVIEW_ADAPTER_VERSION = "ai-review-effective-adapter-v1"
+CLAIM_EFFECTIVE_A_REVIEW_ADAPTER_VERSION = "atomic-review-effective-adapter-v1"
+CLAIM_REVIEW_BRIDGE_VERSION = "claim-review-bridge-v2"
 CLAIM_REDUCER_VERSION = "claim-reducer-v2"
-CLAIM_QUEUE_VERSION = "claim-queue-disabled-v1"
+CLAIM_EFFECTIVE_REDUCER_VERSION = "claim-effective-reducer-v1"
+CLAIM_EFFECTIVE_LEDGER_SCHEMA = "claim-effective-ledger/v1"
+CLAIM_REVIEW_EVENT_SCHEMA = "claim-review-event/v1"
+CLAIM_VALIDATION_REUSE_VERSION = "claim-validation-reuse-v2"
+CLAIM_QUEUE_VERSION = "claim-queue-shadow-v1"
 CLAIM_AUDIT_POLICY_VERSION = "claim-audit-shadow-v4"
 CLAIM_COVERAGE_RUNTIME_VERSION = "claim-coverage-runtime-v10"
 CLAIM_VERIFIER_BATCH_POLICY_VERSION = "claim-verifier-batch-v3-full-http-body"
@@ -309,7 +316,7 @@ def target_fingerprint(requirement: dict[str, Any]) -> str:
 
 
 def _field_value(requirement: dict[str, Any], field: str, item_index: int | None) -> str | None:
-    if field in {"title", "description"}:
+    if field in {"title", "description", "requirement", "condition"}:
         return str(requirement.get(field) or "")
     if field == "sub_items":
         rows = requirement.get("sub_items") or []
@@ -589,6 +596,380 @@ def b_track_coverage_targets(
     """Return target records bound to the current B-track review authority."""
     records, _target_generation, _authority_revision = _targets(requirements, review_states)
     return records
+
+
+def effective_review_adapter_versions() -> list[dict[str, str]]:
+    """Canonical adapter-version vector used by effective row revisions."""
+    return [
+        {
+            "target_kind": "ai_requirement",
+            "adapter_version": CLAIM_EFFECTIVE_B_REVIEW_ADAPTER_VERSION,
+        },
+        {
+            "target_kind": "atomic_requirement",
+            "adapter_version": CLAIM_EFFECTIVE_A_REVIEW_ADAPTER_VERSION,
+        },
+    ]
+
+
+def atomic_requirement_id(requirement: dict[str, Any]) -> str:
+    """Return the declared A-track identity without inferring a delivery track."""
+    for key in ("stable_req_id", "requirement_id", "req_id"):
+        value = str(requirement.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def atomic_target_source_fingerprint(requirement: dict[str, Any]) -> str:
+    """Fingerprint the source provenance carried by an atomic requirement."""
+    from claim_artifacts import hash_json
+
+    return hash_json(
+        "claim-atomic-target-source/v1",
+        {
+            "source_id": str(requirement.get("source_id") or ""),
+            "source_type": str(requirement.get("source_type") or ""),
+            "source_refs": [
+                str(value) for value in (requirement.get("source_refs") or [])
+            ],
+            "section_path": [
+                str(value) for value in (requirement.get("section_path") or [])
+            ],
+            "source_context": requirement.get("source_context"),
+        },
+    )
+
+
+def atomic_target_fingerprint(requirement: dict[str, Any]) -> str:
+    """Fingerprint the formal A-track fields reviewed as one requirement."""
+    from claim_artifacts import hash_json
+
+    return hash_json(
+        "claim-atomic-target-subject/v1",
+        {
+            "domain": requirement.get("domain"),
+            "object": requirement.get("object"),
+            "requirement_type": requirement.get("requirement_type"),
+            "requirement": requirement.get("requirement"),
+            "condition": requirement.get("condition"),
+            "parameters": requirement.get("parameters"),
+            "verification_method": requirement.get("verification_method"),
+        },
+    )
+
+
+def atomic_target_evidence(requirement: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return locators into real atomic-requirement fields, not a B-track alias."""
+    evidence: list[dict[str, Any]] = []
+    for field in ("requirement", "condition"):
+        value = requirement.get(field)
+        if not isinstance(value, str) or not value:
+            continue
+        evidence.append({
+            "field": field,
+            "item_index": None,
+            "start": 0,
+            "end": len(value),
+            "position_basis": "target_field_unicode_codepoints",
+            "field_value_hash": _sha256(value.encode("utf-8")),
+            "text": value,
+        })
+    return evidence
+
+
+def _a_review_state_identity_keys(state: dict[str, Any]) -> tuple[str, ...]:
+    keys: list[str] = []
+    metadata = state.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    for container, names in (
+        (state, ("requirement_id", "stable_req_id", "req_id")),
+        (metadata, ("stable_req_id", "req_id")),
+    ):
+        for name in names:
+            value = str(container.get(name) or "").strip()
+            if value and value not in keys:
+                keys.append(value)
+    return tuple(keys)
+
+
+def a_track_effective_authority(
+    requirements: list[dict[str, Any]],
+    review_states: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Project A-track targets plus embedded review-state history into live facts."""
+    from claim_artifacts import canonical_target_fingerprint, hash_json
+
+    source_store = "review_states.jsonl"
+    target_kind = "atomic_requirement"
+    adapter_version = CLAIM_EFFECTIVE_A_REVIEW_ADAPTER_VERSION
+    state_rows = [dict(row) for row in review_states if isinstance(row, dict)]
+    states_by_identity: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for state in state_rows:
+        for identity in _a_review_state_identity_keys(state):
+            states_by_identity[identity].append(state)
+
+    id_counts: dict[str, int] = defaultdict(int)
+    for requirement in requirements:
+        id_counts[atomic_requirement_id(requirement)] += 1
+
+    records: list[dict[str, Any]] = []
+    for requirement in requirements:
+        target_id = atomic_requirement_id(requirement)
+        target_hash = canonical_target_fingerprint(
+            atomic_target_fingerprint(requirement)
+        )
+        current_source_hash = canonical_target_fingerprint(
+            atomic_target_source_fingerprint(requirement)
+        )
+        matching_states = states_by_identity.get(target_id, [])
+        status = "unreviewed"
+        eligibility = "active"
+        reason = "no_review_record"
+        source_hash: str | None = None
+        subject_hash: str | None = None
+        needs_reconfirmation = False
+        if len(matching_states) == 1:
+            state = matching_states[0]
+            metadata = state.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            status = str(state.get("status") or "unknown")
+            raw_source_hash = str(
+                state.get("source_fingerprint")
+                or metadata.get("source_fingerprint")
+                or ""
+            )
+            raw_subject_hash = str(
+                state.get("review_subject_fingerprint")
+                or metadata.get("review_subject_fingerprint")
+                or ""
+            )
+            source_hash = (
+                canonical_target_fingerprint(raw_source_hash)
+                if raw_source_hash
+                else None
+            )
+            subject_hash = (
+                canonical_target_fingerprint(raw_subject_hash)
+                if raw_subject_hash
+                else None
+            )
+            needs_reconfirmation = bool(
+                state.get("needs_reconfirmation")
+                or metadata.get("needs_reconfirmation")
+            )
+            if needs_reconfirmation:
+                eligibility, reason = "unknown", "review_needs_reconfirmation"
+            elif source_hash is None or subject_hash is None:
+                eligibility, reason = "unknown", "legacy_review_without_fingerprint"
+                needs_reconfirmation = True
+            elif source_hash != current_source_hash or subject_hash != target_hash:
+                eligibility, reason = "unknown", "review_fingerprint_mismatch"
+                needs_reconfirmation = True
+            elif status == "rejected":
+                eligibility, reason = "rejected", "expert_rejected"
+            else:
+                eligibility, reason = "active", "review_active"
+        elif len(matching_states) > 1:
+            status = "ambiguous"
+            eligibility, reason = "unknown", "duplicate_review_state_identity"
+            needs_reconfirmation = True
+
+        if not target_id or id_counts[target_id] > 1:
+            eligibility = "unknown"
+            reason = (
+                "missing_target_requirement_id"
+                if not target_id
+                else "duplicate_target_requirement_id"
+            )
+            needs_reconfirmation = True
+
+        effective_state = {
+            "status": status,
+            "eligibility": eligibility,
+            "reason": reason,
+            "source_fingerprint": source_hash,
+            "review_subject_fingerprint": subject_hash,
+            "needs_reconfirmation": needs_reconfirmation,
+        }
+        review_revision = hash_json(
+            "claim-target-review-revision/v1",
+            {
+                "source_store": source_store,
+                "target_kind": target_kind,
+                "target_requirement_id": target_id,
+                "target_fingerprint": target_hash,
+                "effective_state": effective_state,
+                "adapter_version": adapter_version,
+            },
+        )
+        records.append({
+            "target_kind": target_kind,
+            "target_requirement_id": target_id,
+            "target_fingerprint": target_hash,
+            "source_fingerprint": current_source_hash,
+            "requirement": requirement,
+            "evidence": atomic_target_evidence(requirement),
+            "review": {
+                **effective_state,
+                "target_review_revision": review_revision,
+                "review_adapter_version": adapter_version,
+            },
+        })
+
+    records.sort(key=lambda row: (
+        str(row["target_kind"]),
+        str(row["target_requirement_id"]),
+        str(row["target_fingerprint"]),
+    ))
+    target_projection = [{
+        "target_kind": row["target_kind"],
+        "target_requirement_id": row["target_requirement_id"],
+        "target_fingerprint": row["target_fingerprint"],
+    } for row in records]
+    review_projection = [{
+        **identity,
+        "eligibility": row["review"]["eligibility"],
+        "target_review_revision": row["review"]["target_review_revision"],
+    } for row, identity in zip(records, target_projection, strict=True)]
+    return {
+        "source_store": source_store,
+        "target_kind": target_kind,
+        "adapter_version": adapter_version,
+        "records": records,
+        "target_set_hash": hash_json("claim-target-set/v1", target_projection),
+        "requirement_review_state_hash": hash_json(
+            "claim-review-authority/v1",
+            review_projection,
+        ),
+    }
+
+
+def b_track_effective_authority(
+    requirements: list[dict[str, Any]],
+    review_states: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Project current B-track targets and review authority into Phase 1 identities.
+
+    This projection is deliberately separate from the frozen generation-time adapter.
+    It never changes base groups and excludes timestamps and free-form review rationale
+    from semantic revisions.
+    """
+    from claim_artifacts import canonical_target_fingerprint, hash_json
+
+    source_store = "ai_review_states.jsonl"
+    target_kind = "ai_requirement"
+    adapter_version = CLAIM_EFFECTIVE_B_REVIEW_ADAPTER_VERSION
+    records: list[dict[str, Any]] = []
+    id_counts: dict[str, int] = defaultdict(int)
+    for requirement in requirements:
+        id_counts[source_ai_requirement_id(requirement)] += 1
+
+    for requirement in requirements:
+        target_id = source_ai_requirement_id(requirement)
+        target_hash = canonical_target_fingerprint(target_fingerprint(requirement))
+        current_source_hash = canonical_target_fingerprint(
+            target_source_fingerprint(requirement)
+        )
+        state = review_states.get(target_id)
+        status = "unreviewed"
+        eligibility = "active"
+        reason = "no_review_record"
+        source_hash: str | None = None
+        subject_hash: str | None = None
+        needs_reconfirmation = False
+        if state is not None:
+            status = str(state.get("status") or "unknown")
+            raw_source_hash = str(state.get("source_fingerprint") or "")
+            raw_subject_hash = str(state.get("review_subject_fingerprint") or "")
+            source_hash = (
+                canonical_target_fingerprint(raw_source_hash)
+                if raw_source_hash
+                else None
+            )
+            subject_hash = (
+                canonical_target_fingerprint(raw_subject_hash)
+                if raw_subject_hash
+                else None
+            )
+            needs_reconfirmation = bool(state.get("needs_reconfirmation"))
+            if needs_reconfirmation:
+                eligibility, reason = "unknown", "review_needs_reconfirmation"
+            elif source_hash is None or subject_hash is None:
+                eligibility, reason = "unknown", "legacy_review_without_fingerprint"
+                needs_reconfirmation = True
+            elif source_hash != current_source_hash or subject_hash != target_hash:
+                eligibility, reason = "unknown", "review_fingerprint_mismatch"
+                needs_reconfirmation = True
+            elif status == "rejected":
+                eligibility, reason = "rejected", "expert_rejected"
+            else:
+                eligibility, reason = "active", "review_active"
+
+        if id_counts[target_id] > 1:
+            eligibility = "unknown"
+            reason = "duplicate_target_requirement_id"
+            needs_reconfirmation = True
+
+        effective_state = {
+            "status": status,
+            "eligibility": eligibility,
+            "reason": reason,
+            "source_fingerprint": source_hash,
+            "review_subject_fingerprint": subject_hash,
+            "needs_reconfirmation": needs_reconfirmation,
+        }
+        review_revision = hash_json(
+            "claim-target-review-revision/v1",
+            {
+                "source_store": source_store,
+                "target_kind": target_kind,
+                "target_requirement_id": target_id,
+                "target_fingerprint": target_hash,
+                "effective_state": effective_state,
+                "adapter_version": adapter_version,
+            },
+        )
+        records.append({
+            "target_kind": target_kind,
+            "target_requirement_id": target_id,
+            "target_fingerprint": target_hash,
+            "source_fingerprint": current_source_hash,
+            "requirement": requirement,
+            "evidence": target_evidence(requirement),
+            "review": {
+                **effective_state,
+                "target_review_revision": review_revision,
+                "review_adapter_version": adapter_version,
+            },
+        })
+
+    records.sort(key=lambda row: (
+        str(row["target_kind"]),
+        str(row["target_requirement_id"]),
+        str(row["target_fingerprint"]),
+    ))
+    target_projection = [{
+        "target_kind": row["target_kind"],
+        "target_requirement_id": row["target_requirement_id"],
+        "target_fingerprint": row["target_fingerprint"],
+    } for row in records]
+    review_projection = [{
+        **identity,
+        "eligibility": row["review"]["eligibility"],
+        "target_review_revision": row["review"]["target_review_revision"],
+    } for row, identity in zip(records, target_projection, strict=True)]
+    return {
+        "source_store": source_store,
+        "target_kind": target_kind,
+        "adapter_version": adapter_version,
+        "records": records,
+        "target_set_hash": hash_json("claim-target-set/v1", target_projection),
+        "requirement_review_state_hash": hash_json(
+            "claim-review-authority/v1",
+            review_projection,
+        ),
+    }
 
 
 def _claim_content(claim: dict[str, Any]) -> tuple[str, int, int]:
@@ -2109,6 +2490,8 @@ def _reuse_semantic_validation(
     groups: list[dict[str, Any]],
     reusable_groups: list[dict[str, Any]],
 ) -> int:
+    from claim_artifacts import ClaimArtifactError
+
     prior = {
         str(group.get("coverage_group_id") or ""): group
         for group in reusable_groups
@@ -2130,8 +2513,12 @@ def _reuse_semantic_validation(
         )
         if not reusable_terminal:
             continue
-        if (str(previous.get("validation_input_hash") or "")
-                != str(group.get("validation_input_hash") or "")):
+        try:
+            previous_fingerprint = semantic_validation_fingerprint(previous)
+            current_fingerprint = semantic_validation_fingerprint(group)
+        except (ClaimArtifactError, TypeError, ValueError):
+            continue
+        if previous_fingerprint != current_fingerprint:
             continue
         request_id = str(previous.get("validator_request_id") or "")
         validation_source = previous.get("validation_source")
@@ -2153,6 +2540,111 @@ def _reuse_semantic_validation(
         })
         reused += 1
     return reused
+
+
+def semantic_validation_fingerprint(group: dict[str, Any]) -> str:
+    """Identity of semantic evidence, deliberately excluding review eligibility."""
+    from claim_artifacts import (
+        canonical_json_value_bytes,
+        canonical_target_fingerprint,
+        hash_json,
+        sha256_bytes,
+    )
+
+    source = group.get("source_evidence")
+    if not isinstance(source, dict):
+        raise ValueError("semantic validation has no source evidence")
+    source_text = source.get("text")
+    if not isinstance(source_text, str) or not source_text:
+        raise ValueError("semantic validation source evidence is empty")
+    source_evidence = {
+        "text_hash": sha256_bytes(source_text.encode("utf-8")),
+        "claim_start": int(source["claim_start"]),
+        "claim_end": int(source["claim_end"]),
+        "match_method": str(source["match_method"]),
+    }
+
+    def canonical_fact(raw_fact: object) -> dict[str, Any]:
+        if not isinstance(raw_fact, dict):
+            raise ValueError("semantic prefilter fact is not an object")
+        aliases = raw_fact.get("aliases")
+        if not isinstance(aliases, list):
+            raise ValueError("semantic prefilter fact aliases are not a list")
+        return {
+            "kind": str(raw_fact.get("kind") or ""),
+            "value": str(raw_fact.get("value") or ""),
+            "aliases": sorted(str(value) for value in aliases),
+        }
+
+    raw_prefilter = group.get("prefilter")
+    if not isinstance(raw_prefilter, dict):
+        raise ValueError("semantic validation has no prefilter")
+    missing_facts = [
+        canonical_fact(raw_fact)
+        for raw_fact in (raw_prefilter.get("missing_protected_facts") or [])
+    ]
+    missing_facts.sort(key=lambda fact: (
+        fact["kind"],
+        fact["value"],
+        tuple(fact["aliases"]),
+    ))
+    prefilter = {
+        "version": str(raw_prefilter.get("version") or ""),
+        "status": str(raw_prefilter.get("status") or ""),
+        "missing_protected_facts": missing_facts,
+    }
+
+    edges: list[dict[str, Any]] = []
+    for raw_edge in group.get("edges") or []:
+        edge = dict(raw_edge)
+        evidence = []
+        for raw_item in edge.get("produced_evidence") or []:
+            item = dict(raw_item)
+            evidence.append({
+                "field": item.get("field"),
+                "item_index": item.get("item_index"),
+                "start": item.get("start"),
+                "end": item.get("end"),
+                "position_basis": item.get("position_basis"),
+                "field_value_hash": item.get("field_value_hash"),
+            })
+        evidence.sort(key=lambda item: (
+            str(item.get("field") or ""),
+            -1 if item.get("item_index") is None else int(item["item_index"]),
+            int(item.get("start") or 0),
+            int(item.get("end") or 0),
+            str(item.get("position_basis") or ""),
+            str(item.get("field_value_hash") or ""),
+        ))
+        edges.append({
+            "target_kind": str(edge.get("target_kind") or ""),
+            "target_requirement_id": str(edge.get("target_requirement_id") or ""),
+            "target_fingerprint": canonical_target_fingerprint(
+                edge.get("target_fingerprint")
+            ),
+            "relation": str(edge.get("relation") or ""),
+            "produced_evidence": evidence,
+        })
+    edges.sort(key=lambda edge: (
+        edge["target_kind"],
+        edge["target_requirement_id"],
+        edge["target_fingerprint"],
+        edge["relation"],
+        canonical_json_value_bytes(edge["produced_evidence"]),
+    ))
+    payload = {
+        "claim_hash": str(group.get("claim_hash") or ""),
+        "source_evidence": source_evidence,
+        "edges": edges,
+        "prefilter": prefilter,
+        "validation_method": str(group.get("validation_method") or ""),
+        "validator_version": str(group.get("validator_version") or ""),
+        "verifier_runtime_fingerprint": str(
+            group.get("verifier_runtime_fingerprint") or ""
+        ),
+        "reuse_version": CLAIM_VALIDATION_REUSE_VERSION,
+    }
+    return hash_json("claim-semantic-validation/v1", payload)
 
 
 def reduce_claim(
@@ -3311,28 +3803,13 @@ def build_shadow_ledger(
             "resolution_status": resolution_status,
             "termination_reason": termination_reason,
             "document_ready": False,
-            "versions": {
-                "ledger": CLAIM_LEDGER_SCHEMA_VERSION,
-                "prompt": CLAIM_LEDGER_PROMPT_VERSION,
-                "candidate_policy": CLAIM_CANDIDATE_POLICY_VERSION,
-                "prefilter": CLAIM_EDGE_PREFILTER_VERSION,
-                "coverage_validator": CLAIM_COVERAGE_VALIDATOR_VERSION,
-                "batch_policy": CLAIM_VERIFIER_BATCH_POLICY_VERSION,
-                "cost_policy": CLAIM_COST_POLICY_VERSION,
-                "negative_policy": CLAIM_NEGATIVE_POLICY_VERSION,
-                "negative_validator": CLAIM_NEGATIVE_VALIDATOR_VERSION,
-                "review_adapter": CLAIM_REVIEW_ADAPTER_VERSION,
-                "review_bridge": CLAIM_REVIEW_BRIDGE_VERSION,
-                "reducer": CLAIM_REDUCER_VERSION,
-                "queue": CLAIM_QUEUE_VERSION,
-                "audit": CLAIM_AUDIT_POLICY_VERSION,
-            },
+            "versions": current_base_versions(),
         },
     }
 
 
-def current_shadow_versions() -> dict[str, str]:
-    """Versions that may invalidate the shadow ledger without invalidating extraction."""
+def current_base_versions() -> dict[str, str]:
+    """Versions that invalidate immutable generation facts, never extraction output."""
     return {
         "ledger": CLAIM_LEDGER_SCHEMA_VERSION,
         "prompt": CLAIM_LEDGER_PROMPT_VERSION,
@@ -3344,11 +3821,32 @@ def current_shadow_versions() -> dict[str, str]:
         "negative_policy": CLAIM_NEGATIVE_POLICY_VERSION,
         "negative_validator": CLAIM_NEGATIVE_VALIDATOR_VERSION,
         "review_adapter": CLAIM_REVIEW_ADAPTER_VERSION,
-        "review_bridge": CLAIM_REVIEW_BRIDGE_VERSION,
         "reducer": CLAIM_REDUCER_VERSION,
-        "queue": CLAIM_QUEUE_VERSION,
+        "validation_reuse": CLAIM_VALIDATION_REUSE_VERSION,
         "audit": CLAIM_AUDIT_POLICY_VERSION,
     }
+
+
+def current_effective_versions() -> dict[str, str]:
+    from claim_artifacts import (
+        CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION,
+        CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+    )
+
+    return {
+        "effective_snapshot": CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+        "effective_artifacts": CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION,
+        "effective_ledger_schema": CLAIM_EFFECTIVE_LEDGER_SCHEMA,
+        "effective_reducer": CLAIM_EFFECTIVE_REDUCER_VERSION,
+        "review_bridge": CLAIM_REVIEW_BRIDGE_VERSION,
+        "review_event_schema": CLAIM_REVIEW_EVENT_SCHEMA,
+        "queue": CLAIM_QUEUE_VERSION,
+    }
+
+
+def current_shadow_versions() -> dict[str, str]:
+    """Legacy alias retained for callers that mean immutable base versions."""
+    return current_base_versions()
 
 
 def publish_b_track_shadow(
@@ -3436,4 +3934,23 @@ def publish_b_track_shadow(
         run_id=run_id,
         requirements_sha256=requirements_hash,
     )
-    return {"generation_meta": generation, "shadow": shadow}
+    effective_fold: dict[str, Any] | None = None
+    try:
+        from claim_review_actions import fold_effective_ledger
+
+        effective_fold = fold_effective_ledger(
+            root,
+            actor_trigger="ai-extract-publish",
+        )
+    except Exception as exc:
+        # Base generation is authoritative and already committed. Runtime ledger
+        # lag must never turn a successful extraction into a failed extraction.
+        logging.getLogger("requirement_atomizer").warning(
+            "claim effective fold lagged after base publication: %s",
+            exc,
+        )
+    return {
+        "generation_meta": generation,
+        "shadow": shadow,
+        "effective_fold": effective_fold,
+    }

@@ -473,7 +473,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
                    req_numbers: dict[str, int] | None = None,
                    sub_anchor_map: dict[str, list] | None = None,
                    echo_map: dict[str, list[dict[str, Any]]] | None = None,
-                   marker_state: dict[str, Any] | None = None) -> str:
+                   marker_state: dict[str, Any] | None = None,
+                   claim_distribution: dict[str, dict[str, int]] | None = None) -> str:
     """渲染文档块：正文正常，非正文区折叠，noise 灰显，纯符号行跳过。"""
     parts: list[str] = []
     collapse_open = False
@@ -527,7 +528,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
                                        req_numbers or {}, (sub_anchor_map or {}).get(bid) or [],
                                        block=b, marker_state=state,
                                        outline_level=outline_map.get(bid),
-                                       echo_reqs=(echo_map or {}).get(bid) or [])
+                                       echo_reqs=(echo_map or {}).get(bid) or [],
+                                       claim_counts=(claim_distribution or {}).get(bid))
 
         # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
         if region in _COLLAPSIBLE_REGIONS:
@@ -859,7 +861,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                       sub_anchors: list | None = None, block: dict | None = None,
                       marker_state: dict[str, Any] | None = None,
                       outline_level: int | None = None,
-                      echo_reqs: list[dict[str, Any]] | None = None) -> str:
+                      echo_reqs: list[dict[str, Any]] | None = None,
+                      claim_counts: dict[str, int] | None = None) -> str:
     cls = ["doc-block"]
     if is_heading:
         cls.append("heading")
@@ -919,6 +922,18 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                      f'{html.escape(label)}</button>')
     repair_html = ""
     failed_html = ""
+    claim_distribution_html = ""
+    if claim_counts and sum(int(value) for value in claim_counts.values()) > 0:
+        covered_count = int(claim_counts.get("covered") or 0)
+        excluded_count = int(claim_counts.get("excluded") or 0)
+        uncertain_count = int(claim_counts.get("uncertain") or 0)
+        claim_distribution_html = (
+            '<span class="claim-distribution" title="块内 Claim 分布：'
+            f'已覆盖 {covered_count}，已排除 {excluded_count}，待确认 {uncertain_count}">'
+            f'<i class="claim-covered">{covered_count}</i>'
+            f'<i class="claim-excluded">{excluded_count}</i>'
+            f'<i class="claim-uncertain">{uncertain_count}</i></span>'
+        )
     if block and block.get("text_repaired"):
         repair_html = (
             '<button class="repair-tag" type="button" '
@@ -936,7 +951,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         table_html, placed_ids = _render_table_inner(block, anchored, numbers, state)
         fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
         sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
-        trailing_items = f'{fallback}{sub_chips}{repair_html}{failed_html}{omission_html}{echo_html}'
+        trailing_items = (f'{fallback}{sub_chips}{repair_html}{failed_html}'
+                          f'{omission_html}{echo_html}{claim_distribution_html}')
         trailing = f'<span class="chips inline-chips">{trailing_items}</span>' if trailing_items else ""
         content = f'{table_html}{trailing}'
     else:
@@ -962,7 +978,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                 f' data-translation="{html.escape(_active_translations.get(key, ""))}"'
                 f' data-translation-note="{html.escape(_active_translation_notes.get(key, ""))}"')
         content = (f'<p class="text" data-block-id="{html.escape(bid)}"{translation_attrs}>'
-                   f'{text_html}{fallback}{sub_chips}{repair_html}{failed_html}{omission_html}{echo_html}</p>')
+                   f'{text_html}{fallback}{sub_chips}{repair_html}{failed_html}'
+                   f'{omission_html}{echo_html}{claim_distribution_html}</p>')
     return (
         f'<div class="{" ".join(cls)}" data-block-id="{html.escape(bid)}"'
         f'{f" data-outline={outline_level}" if outline_level else ""} style="--depth:{depth}">'
@@ -988,6 +1005,27 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
     blocks = doc.get("blocks") or []
     requirements = build_ai_requirements(out_dir)
     covered = _covered_blocks(requirements, blocks)
+    claim_distribution: dict[str, dict[str, int]] = {}
+    try:
+        from claim_artifacts import load_committed_effective_snapshot_readonly
+
+        claim_snapshot = load_committed_effective_snapshot_readonly(out_dir)
+        effective_by_claim = {
+            str(row.get("claim_id") or ""): row
+            for row in claim_snapshot.get("effective_ledger") or []
+        }
+        for claim in claim_snapshot.get("catalog") or []:
+            block_id = str(dict(claim.get("locator") or {}).get("block_id") or "")
+            effective = effective_by_claim.get(str(claim.get("claim_id") or ""), {})
+            resolution = str(effective.get("resolution") or "uncertain")
+            if block_id and resolution in {"covered", "excluded", "uncertain"}:
+                counts = claim_distribution.setdefault(
+                    block_id,
+                    {"covered": 0, "excluded": 0, "uncertain": 0},
+                )
+                counts[resolution] += 1
+    except Exception:
+        claim_distribution = {}
 
     anchor_map: dict[str, list[dict[str, Any]]] = {}
     for req in requirements:
@@ -1064,6 +1102,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
         _render_blocks(
             blocks, anchor_map, covered, req_numbers, sub_anchor_map,
             echo_map=echo_map, marker_state=allocation_state,
+            claim_distribution=claim_distribution,
         )
         allocated = {
             str(key): int(value)
@@ -1082,6 +1121,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
             blocks, anchor_map, covered, req_numbers, sub_anchor_map,
             echo_map=echo_map,
             marker_state={"next": 1, "req_numbers": dict(req_numbers)},
+            claim_distribution=claim_distribution,
         )
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
     omissions_json = json.dumps(omission_items, ensure_ascii=False).replace("</", "<\\/")
@@ -2408,6 +2448,13 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .dd-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }}
 .dd-module {{ font-size: 12px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; }}
 .badge {{ font-size: 11px; padding: 2px 9px; border-radius: 999px; background: var(--line); }}
+.claim-distribution {{ display: inline-flex; align-items: center; margin-left: 6px; overflow: hidden;
+  border: 1px solid #cfd5dc; border-radius: 5px; vertical-align: middle; background: #fff; }}
+.claim-distribution i {{ min-width: 21px; padding: 2px 5px; font-size: 10px; font-style: normal;
+  font-weight: 700; line-height: 1.2; text-align: center; }}
+.claim-distribution .claim-covered {{ color: #17663c; background: #e8f5ed; }}
+.claim-distribution .claim-excluded {{ color: #5f6368; background: #eceef1; }}
+.claim-distribution .claim-uncertain {{ color: #8b5108; background: #fff0d4; }}
 .badge.st-accepted {{ background: var(--st-accepted); color: var(--st-accepted-tx); }}
 .badge.st-rejected {{ background: var(--st-rejected); color: var(--st-rejected-tx); }}
 .badge.st-needs_discussion {{ background: var(--st-discussion); color: var(--st-discussion-tx); }}
