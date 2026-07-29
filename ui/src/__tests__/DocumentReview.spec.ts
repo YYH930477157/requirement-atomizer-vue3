@@ -872,6 +872,104 @@ describe("DocumentReview", () => {
     expect(wrapper.find('[data-testid="pdf-zone-B4"]').classes()).toContain("sel")
   })
 
+  it("pdf mode table-row zones: click a data row for row card with spot extract", async () => {
+    // v12 表格行级热区：整表块不发区,数据行按 row_index 发区——点行出行级卡
+    // （原文/翻译/章节/解析此行）,covered 行可跳关联需求,req 行直达需求卡。
+    const spotExtract = vi.fn().mockResolvedValue({
+      schema: "spot-extract/v1", block_id: "B1", row_index: 3, strategy: "deterministic_param_row",
+      drafts: 1, draft_ids: ["SPOT-B1-R3"], already_covered: false, written: [],
+    })
+    const client = makeClient({
+      spotExtract,
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 1,
+        blocks: [
+          { block_id: "B1", order: 1, type: "table", text: "No. | Parameter | Requirement\n1. | Rated voltage | The meter shall operate at 230 V.",
+            section_path: ["4 Requirements"], table_title: "Table 4.1 — Parameters",
+            header_rows: [["No.", "Parameter", "Requirement"]],
+            data_rows: [
+              ["1.", "Rated voltage", "The meter shall operate at 230 V."],
+              ["2.", "Display", "The meter shall provide a display for measured values."],
+              ["3.", "Alarm", "The meter shall report an alarm on overflow."],
+            ],
+            requirement_like: false, noise: false },
+        ],
+      }),
+      loadAiRequirements: vi.fn().mockResolvedValue([
+        { ai_req_id: "AIR-1", title: "额定电压", description: "应工作在 230 V", module: "计量",
+          module_effective: "计量", type: "functional", priority: "P1", status: "draft",
+          source_section: "4", source_quote: "1. | Rated voltage | The meter shall operate at 230 V.",
+          source_block_ids: ["B1"], anchor_block_id: "B1",
+          acceptance_criteria: [], labels: ["计量"], review_state: null },
+      ]),
+      loadPdfAnnotation: vi.fn().mockResolvedValue({
+        available: true,
+        pages: [{ page_number: 1, file: "page-0001.png", width: 595, height: 842 }],
+        requirement_markers: [], omission_markers: [],
+        block_zones: [
+          { block_id: "B1", row_index: 1, page: 1, rect: { left: 8, top: 12, width: 60, height: 4 },
+            kind: "req", req_id: "AIR-1", req_ids: ["AIR-1"] },
+          { block_id: "B1", row_index: 2, page: 1, rect: { left: 8, top: 16, width: 60, height: 4 },
+            kind: "covered", req_ids: ["AIR-1"] },
+          { block_id: "B1", row_index: 3, page: 1, rect: { left: 8, top: 20, width: 60, height: 4 },
+            kind: "context" },
+        ],
+        row_context: {
+          "B1#R1": { text: "1. | Rated voltage | The meter shall operate at 230 V.",
+                     translation: "仪表应工作在 230 V。", page: 1, kind: "req", row_index: 1 },
+          "B1#R2": { text: "2. | Display | The meter shall provide a display for measured values.",
+                     translation: "", page: 1, kind: "covered", row_index: 2,
+                     covered_req_ids: ["AIR-1"] },
+          "B1#R3": { text: "3. | Alarm | The meter shall report an alarm on overflow.",
+                     translation: "", page: 1, kind: "context", row_index: 3 },
+        },
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    // 行热区渲染：table-row 修饰类 + 行级 testid；整表块本身无区
+    const rowZone = wrapper.find('[data-testid="pdf-zone-B1-r3"]')
+    expect(rowZone.exists()).toBe(true)
+    expect(rowZone.classes()).toContain("table-row")
+    expect(wrapper.find('[data-testid="pdf-zone-B1"]').exists()).toBe(false)
+
+    // context 行 → 行级卡：原文/章节/暂无翻译/解析此行
+    await rowZone.trigger("click")
+    const card = wrapper.find('[data-testid="table-row-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain("该行没有单独生成研发需求")
+    expect(wrapper.find('[data-testid="row-quote"]').text())
+      .toContain("3. | Alarm | The meter shall report an alarm on overflow.")
+    expect(wrapper.find('[data-testid="row-meta"]').text()).toContain("4 Requirements")
+    expect(wrapper.find('[data-testid="row-translation-empty"]').text()).toContain("暂无翻译")
+    expect(rowZone.classes()).toContain("sel")
+
+    // 「解析此行」→ 现有 spotExtract 通道（blockId + rowIndex）
+    await wrapper.find('[data-testid="row-spot-extract"]').trigger("click")
+    await flushPromises()
+    expect(spotExtract).toHaveBeenCalledWith(expect.objectContaining({ blockId: "B1", rowIndex: 3 }))
+    expect(wrapper.find('[data-testid="doc-message"]').text()).toContain("已生成 1 条 draft 需求")
+
+    // req 行（单需求）→ 直达需求卡
+    await wrapper.find('[data-testid="pdf-zone-B1-r1"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
+    expect(wrapper.find('[data-testid="table-row-card"]').exists()).toBe(false)
+
+    // covered 行 → 关联需求卡,可跳转批注
+    await wrapper.find('[data-testid="pdf-zone-B1-r2"]').trigger("click")
+    const coveredCard = wrapper.find('[data-testid="table-row-card"]')
+    expect(coveredCard.text()).toContain("该行已纳入需求解析")
+    expect(coveredCard.find('[data-testid="row-echo-jump"]').text()).toContain("额定电压")
+    await coveredCard.find('[data-testid="row-echo-jump"]').trigger("click")
+    expect(wrapper.find('[data-testid="dd-module"]').text()).toContain("计量")
+
+    // 再点同一行 → 取消选中（与块级同语义）
+    await wrapper.find('[data-testid="pdf-zone-B1-r3"]').trigger("click")
+    await wrapper.find('[data-testid="pdf-zone-B1-r3"]').trigger("click")
+    expect(wrapper.find('[data-testid="table-row-card"]').exists()).toBe(false)
+  })
+
   it("pdf mode shows honest hint when pages are not generated", async () => {
     const client = makeClient()
     const wrapper = mount(DocumentReview, { props: { client, active: true } })

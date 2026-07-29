@@ -233,6 +233,9 @@ const REQ_GROUP_REASON = "该段原文解析出了多条独立需求。为避免
 // 与导出 HTML 同文案（双渲染器契约）
 const ECHO_REASON = "该段与已抽取需求的来源段落内容重复（同文多次出现）。解析已汇总至对应需求条目，本段不重复挂批注；点击「重复·见」角标或下方链接可跳转查看该条目。"
 const selectedBlockId = ref("")
+// 表格行选中态（v12 行级热区，"<block_id>#R<行号>"，与后端行卡片键同源）——
+// 声明必须在 immediate watch 之前（watch 首次同步执行会清空它）
+const selectedRowKey = ref("")
 const selectedBlock = computed(() => blocks.value.find((b) => b.block_id === selectedBlockId.value) || null)
 const selectedBlockKind = computed(() => {
   if (!selectedBlock.value) return "context"
@@ -259,6 +262,7 @@ const selectedRelatedReqs = computed(() => {
 function selectBlockCard(b: DocumentBlock) {
   stashRequirementDraft()
   stashOmissionDraft()
+  selectedRowKey.value = ""
   if (selectedBlockId.value === b.block_id) {  // 再点一下 → 取消选中
     selectedBlockId.value = ""
     omissionNote.value = ""
@@ -441,6 +445,7 @@ watch([() => props.active, () => props.client, () => props.sessionKey], ([on, cl
     setInternalChecks(null)
     selectedId.value = ""
     selectedBlockId.value = ""
+    selectedRowKey.value = ""
     omissionNote.value = ""
     clearRequirementEditor()
     requirementDrafts.clear()
@@ -504,10 +509,11 @@ const pdfMarkersByPage = computed(() => {
   return byPage
 })
 // 全段落热区（0714「点一段出翻译和解析」）：kind 语义由后端 _pdf_block_zones 唯一定义,
-// 这里只做渲染与路由——req→需求卡 / omission·context→块级卡（卡种由 selectedBlockKind 判定）
+// 这里只做渲染与路由——req→需求卡 / omission·context→块级卡（卡种由 selectedBlockKind 判定）;
+// v12 表格行热区带 row_index → 行级卡（table-row 修饰类与块热区分辨选中态）
 type PdfBlockZone = { block_id: string; page: number; rect: PdfZoneRect
                       kind: "req" | "covered" | "echo" | "omission" | "context";
-                      req_id?: string; req_ids?: string[] }
+                      row_index?: number; req_id?: string; req_ids?: string[] }
 const pdfZonesByPage = computed(() => {
   const byPage = new Map<number, PdfBlockZone[]>()
   for (const raw of pdfData.value?.block_zones || []) {
@@ -520,9 +526,55 @@ const pdfZonesByPage = computed(() => {
   }
   return byPage
 })
+// 表格行选中态辅助（键声明见 selectedBlockId 旁——immediate watch 时序要求）
+function rowZoneKey(z: PdfBlockZone): string {
+  return z.row_index != null ? `${z.block_id}#R${z.row_index}` : z.block_id
+}
+function selectRowCard(z: PdfBlockZone) {
+  stashRequirementDraft()
+  stashOmissionDraft()
+  const key = rowZoneKey(z)
+  if (selectedRowKey.value === key) {  // 再点一下 → 取消选中
+    selectedRowKey.value = ""
+    return
+  }
+  selectedRowKey.value = key
+  selectedId.value = ""
+  selectedBlockId.value = ""
+  clearRequirementEditor()
+  omissionNote.value = ""
+}
+// 行级卡片数据：优先后端 row_context（行原文/翻译同源实现）；旧后端缺省时用块 data_rows 兜底渲染
+const selectedRow = computed(() => {
+  const key = selectedRowKey.value
+  if (!key) return null
+  const splitAt = key.lastIndexOf("#R")
+  const blockId = key.slice(0, splitAt)
+  const rowIndex = Number(key.slice(splitAt + 2)) || 0
+  const block = blocks.value.find((b) => b.block_id === blockId)
+  if (!block || rowIndex < 1) return null
+  const zone = (pdfData.value?.block_zones || []).find((z) => rowZoneKey(z) === key)
+  const record = pdfData.value?.row_context?.[key] || null
+  const row = (block.data_rows || [])[rowIndex - 1]
+  const width = Math.max((block.header_rows || [])[0]?.length || 0, (row || []).length)
+  const fallbackText = row ? (row as string[]).slice(0, width).join(" | ") : ""
+  const text = record?.text || fallbackText
+  if (!text.trim()) return null
+  const kind = (record?.kind || zone?.kind || "context") as PdfBlockZone["kind"]
+  const reqIds = (zone?.req_ids || record?.covered_req_ids || record?.req_ids || []) as string[]
+  return {
+    key, block, rowIndex, text, kind,
+    page: record?.page || zone?.page || 0,
+    translation: record?.translation || "",
+    translationNote: record?.translation_note || "",
+    reqIds,
+    section: (block.section_path || []).filter(Boolean).pop() || block.table_title || "",
+  }
+})
 function pdfZoneClick(z: PdfBlockZone) {
   if (z.kind === "req" && z.req_id) {
     if ((z.req_ids || []).length > 1) {
+      if (z.row_index != null) { selectRowCard(z); return }
       const block = blocks.value.find((b) => b.block_id === z.block_id)
       if (block) selectBlockCard(block)
       return
@@ -531,10 +583,15 @@ function pdfZoneClick(z: PdfBlockZone) {
     if (req) select(req)
     return
   }
+  if (z.row_index != null) { selectRowCard(z); return }
   const block = blocks.value.find((b) => b.block_id === z.block_id)
   if (block) selectBlockCard(block)
 }
 function pdfZoneSelected(z: PdfBlockZone): boolean {
+  if (z.row_index != null) {
+    if (selectedRowKey.value) return selectedRowKey.value === rowZoneKey(z)
+    return z.kind === "req" && !!z.req_id && z.req_id === selectedId.value
+  }
   if (z.kind === "req") {
     return (!!z.req_id && z.req_id === selectedId.value) ||
       ((z.req_ids || []).length > 1 && z.block_id === selectedBlockId.value)
@@ -543,14 +600,21 @@ function pdfZoneSelected(z: PdfBlockZone): boolean {
   return z.block_id === selectedBlockId.value
 }
 // 选中需求时把原句跨越的块全部框出（test8 实证：只框锚点块，原句后半段出框）——
-// quote_block_ids 是后端原句确定性匹配全集；框 = 轻量高亮（quote-sel），锚点仍是主框
+// quote_block_ids 是后端原句确定性匹配全集；框 = 轻量高亮（quote-sel），锚点仍是主框。
+// 表格行热区不参与 quote-sel：引句块即整表,逐行刷虚线框是纯噪声（行选中态由 sel 承担）
 const selectedQuoteBlockIds = computed(
   () => new Set((selectedReq.value?.quote_block_ids || []) as string[]),
 )
 function pdfZoneQuoteHighlighted(z: PdfBlockZone): boolean {
+  if (z.row_index != null) return false
   return !!selectedId.value && selectedQuoteBlockIds.value.has(z.block_id)
 }
 function pdfZoneTitle(z: PdfBlockZone): string {
+  if (z.row_index != null) {
+    if (z.kind === "req") return "查看需求批注"
+    if (z.kind === "covered") return "该行已纳入需求解析·点击查看关联需求"
+    return "查看该行翻译与解析"
+  }
   if (z.kind === "req") return (z.req_ids || []).length > 1 ? "查看该段的全部需求解析" : "查看需求批注"
   if (z.kind === "covered") return "查看该段关联的需求解析"
   if (z.kind === "echo") return "重复段·点击查看汇总需求"
@@ -559,6 +623,15 @@ function pdfZoneTitle(z: PdfBlockZone): string {
 function pdfZoneBlock(z: PdfBlockZone): DocumentBlock | undefined {
   return blocks.value.find((block) => block.block_id === z.block_id)
 }
+// 行级卡的关联需求（covered/多需求行）：由行热区 req_ids 路由,与块级 echo-jump 同交互
+const selectedRowRelatedReqs = computed(() => {
+  const row = selectedRow.value
+  if (!row) return []
+  const ids = new Set(row.reqIds)
+  const ordered = requirements.value.filter((r) => ids.has(r.ai_req_id))
+  return [...ordered].sort((a, b) =>
+    (reqNumbers.value.get(a.ai_req_id) ?? 1e9) - (reqNumbers.value.get(b.ai_req_id) ?? 1e9))
+})
 
 function pdfMarkerClick(m: PdfMarker) {
   if (m.kind === "req") {
@@ -825,6 +898,7 @@ function activateReq(req: AiRequirement) {
   stashRequirementDraft()
   stashOmissionDraft()
   selectedBlockId.value = ""
+  selectedRowKey.value = ""
   omissionNote.value = ""
   selectedId.value = req.ai_req_id
   const draft = requirementDrafts.get(req.ai_req_id)
@@ -1269,10 +1343,10 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
             <div class="pdf-overlay">
               <button v-for="(z, zi) in (pdfZonesByPage.get(p.page_number) || [])"
                       :key="'z-' + z.block_id + '-' + zi" type="button"
-                      class="pdf-block-zone" :class="['zone-' + z.kind, { sel: pdfZoneSelected(z), 'quote-sel': pdfZoneQuoteHighlighted(z) }]"
+                      class="pdf-block-zone" :class="['zone-' + z.kind, { sel: pdfZoneSelected(z), 'quote-sel': pdfZoneQuoteHighlighted(z), 'table-row': z.row_index != null }]"
                       :style="{ left: z.rect.left + '%', top: z.rect.top + '%',
                                 width: z.rect.width + '%', height: z.rect.height + '%' }"
-                      :data-testid="`pdf-zone-${z.block_id}`"
+                      :data-testid="z.row_index != null ? `pdf-zone-${z.block_id}-r${z.row_index}` : `pdf-zone-${z.block_id}`"
                       :title="pdfZoneTitle(z)"
                       :aria-label="pdfZoneTitle(z)"
                       :aria-pressed="pdfZoneSelected(z)"
@@ -1424,7 +1498,47 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
       </article>
 
       <aside class="doc-detail" data-testid="doc-detail">
-        <div v-if="!selectedReq && !selectedBlock" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
+        <div v-if="!selectedReq && !selectedBlock && !selectedRow" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
+        <div v-else-if="selectedRow" class="doc-detail-card" data-testid="table-row-card">
+          <div class="dd-head">
+            <span class="dd-module">{{ selectedRow.kind === "covered" ? "表格行 · 分析范围" : (selectedRow.kind === "req" ? "表格行 · 解析结果" : "表格行 · 背景") }}</span>
+            <span class="dd-status">第 {{ selectedRow.rowIndex }} 行</span>
+          </div>
+          <h3 class="dd-title">{{ selectedRow.kind === "covered" ? "该行已纳入需求解析" : (selectedRow.kind === "req" ? `该行解析出 ${selectedRowRelatedReqs.length} 条需求` : "该行没有单独生成研发需求") }}</h3>
+          <div v-if="selectedRow.section || selectedRow.page" class="dd-meta" data-testid="row-meta">
+            {{ selectedRow.section }}<template v-if="selectedRow.page"> · PDF 第 {{ selectedRow.page }} 页</template>
+          </div>
+          <div class="dd-section"><div class="dd-body">{{ selectedRow.kind === "covered"
+            ? "该表格行已纳入一条或多条抽取需求的来源范围（引句或描述覆盖了行内容），它不是独立锚点，因此不重复挂批注。可从下方查看关联需求。"
+            : (selectedRow.kind === "req"
+              ? "该表格行的原文解析出了多条独立需求。为避免只展示第一条，下面列出该行的全部解析结果。"
+              : "该表格行未被任何已抽取需求的引句或来源范围覆盖，因此没有单独生成研发需求。如认为该行实际包含需求，可点下方「解析此行」做定点解析（结果进澄清待确认）。") }}</div></div>
+          <div v-if="selectedRowRelatedReqs.length" class="dd-section">
+            <button v-for="req in selectedRowRelatedReqs" :key="req.ai_req_id"
+                    class="echo-jump" data-testid="row-echo-jump" type="button"
+                    @click.stop="jumpToRelatedReq(req)">
+              查看批注 {{ reqNumber(req) }}《{{ req.title }}》
+            </button>
+          </div>
+          <div class="dd-section">
+            <div class="dd-label">原文（表格行）</div>
+            <div class="dd-quote" data-testid="row-quote">{{ selectedRow.text }}</div>
+          </div>
+          <div class="dd-section">
+            <div class="dd-label">中文翻译</div>
+            <div v-if="selectedRow.translation" class="dd-body" data-testid="row-translation">{{ selectedRow.translation }}</div>
+            <div v-else-if="selectedRow.translationNote" class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（{{ selectedRow.translationNote }}）</div>
+            <div v-else class="dd-body dd-empty" data-testid="row-translation-empty">暂无翻译</div>
+          </div>
+          <div v-if="props.client?.spotExtract" class="dd-section">
+            <button class="button" type="button" data-testid="row-spot-extract"
+                    :disabled="spotExtracting === `${selectedRow.block.block_id}:${selectedRow.rowIndex}`"
+                    title="解析此行：生成 draft 需求进澄清待确认"
+                    @click.stop="spotExtractBlock(selectedRow.block, selectedRow.rowIndex)">
+              <Wand2 :size="14" aria-hidden="true" />{{ spotExtracting === `${selectedRow.block.block_id}:${selectedRow.rowIndex}` ? "解析中" : "解析此行" }}
+            </button>
+          </div>
+        </div>
         <div v-else-if="selectedBlock" class="doc-detail-card"
              :data-testid="selectedBlockKind === 'failed' ? 'failed-card' : (selectedBlockKind === 'omission' ? 'omission-card' : (selectedBlockKind === 'echo' ? 'echo-card' : (selectedBlockKind === 'covered' ? 'covered-card' : (selectedBlockKind === 'req_group' ? 'req-group-card' : 'context-card'))))">
           <div class="dd-head">
@@ -1663,6 +1777,9 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
   background: rgba(15,118,110,.05); border-color: rgba(15,118,110,.5); }
 .pdf-block-zone.zone-covered:hover, .pdf-block-zone.zone-covered.sel {
   background: rgba(10,132,255,.045); border-color: rgba(10,132,255,.5); }
+/* 表格行级热区（v12）：与段落块热区的蓝区分开,行用青色细框 */
+.pdf-block-zone.table-row:hover { background: rgba(15,118,110,.05); border-color: rgba(15,118,110,.45); }
+.pdf-block-zone.table-row.sel { background: rgba(15,118,110,.08); border-color: rgba(15,118,110,.78); }
 .pdf-audit-tag { position: absolute; left: 2px; top: -13px; padding: 1px 3px; border-radius: 3px;
   background: rgba(255,255,255,.94); font-size: 8px; font-weight: 650; line-height: 1.15;
   pointer-events: none; opacity: .72; }

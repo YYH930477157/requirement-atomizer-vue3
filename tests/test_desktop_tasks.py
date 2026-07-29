@@ -1061,7 +1061,7 @@ class ChainAndManifestTests(unittest.TestCase):
             "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v4",
             "clarification-report": "clarification/v7-claim-ledger-info+ai-supplement-v3-identity-preconditions+impl-v6",
             "export-annotation-html": (
-                "doc_annotation_export/v11-claim-distribution+annotation-translation-v2-segment-fallback"
+                "doc_annotation_export/v12-claim-distribution+annotation-translation-v2-segment-fallback"
                 "+annotation-translation-guards-v1+doc-facsimile-v1"
                 "+ai-supplement-v3-identity-preconditions"
             ),

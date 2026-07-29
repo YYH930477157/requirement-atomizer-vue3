@@ -45,9 +45,16 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-29）——影印表格行级热区（已合 main `7eb7bbb`，doc_annotation_export/v12；验收记录见下方 2026-07-28 条目）
+
+- **需求**：v11 块级几何回填后，docx/xlsx 影印页上整表是单块、`_pdf_block_zones` 明确不给表格发热区——表格不可点。本任务对齐原生 PDF 表格的行粒度体验：数据行行级热区 + 右栏行卡（原文/翻译/章节/「解析此行」）。
+- **实现**：①`_resolve_pdf_geometry` 加 `row_geometry` 出参——无页号表格块逐行 `_row_render_line` 渲染后走与块级同款全局匹配（精确 → 双向包含 → 前缀 80 字符预筛 + 覆盖率模糊，边际 ≥0.05 宁缺不猜）；分组标题行（非空单元格全同值）/稀疏行（<2）跳过（与 spot_extract 同口径）；几何缓存 payload 加 `row_geometry` 字段（**version 3 不变**——纯增量字段，旧缓存缺字段时重算一次并回写，向后兼容）。②行级专用归一 `- `→`-`（转换 PDF 文本层换行拆连字符词 "self- diagnostics" vs docx "self-diagnostics"，STO 落空主因）——只在 `_match_row_regions` 内折叠，**不动 `_geometry_match_text`**（块级 v11 行为与缓存不受影响）。③`_pdf_block_zones` 对有几何的数据行发 `row_index` 热区（kind：引句逐字含行 → req / 关键单元格 ≥16 字符被引用块的需求覆盖 → covered / 否则 context）；整表块本身仍不发区。④`_pdf_context_records` 加行级键 `<block_id>#R<row>`（原文=渲染行，翻译按行文本哈希查 `_active_translations`，查不到如实空串）；应用内 payload 加 `row_context`（同源实现）。⑤静态影印热区带 `data-zone-key`（选中按行键，不再点亮整表）+ `table-row` 青色修饰类；`DocumentReview.vue` 行热区渲染 + 行卡（「解析此行」接现有 spotExtract）。
+- **STO 实测（result4，删几何缓存重算）**：术语表 BLK-000061 54 行 → 52 行区跨 6-11 页（context 48/covered 1/req 3）；参数表 BLK-000098 143 行（27 分组标题行跳过）→ 100 行 119 区跨 13-62 页（covered 99/req 20，req 命中含 guards-v16 行展开条目 `PROW-DET-BLK-000098-R0017`）；16 行诚实落空（宁缺不猜：跨页断行/文本层差异）；缓存二跑 0.0s 直供。
+- **验证**：新增 14 专项测试（`tests/test_facsimile_table_rows.py`：行几何跳过口径/前缀预筛模糊/边际不猜/连字符折叠/缓存回写与旧缓存回填/行区 kind 路由/同页 union/行记录键与翻译）；模板字面断言 2 处随行键改名（bid→zoneKey）；版本戳 doc_annotation_export/v11→v12（契约快照已同步）；全量 1738 tests OK（26 项环境 skip）+ ui vitest 138 OK + vue-tsc。
+
 ## 重大更新（2026-07-28）——Claim Conservation Ledger Phase 1（已合 main `617e1ce`；生产双写不切门控；主检出全量 2106 tests OK、golden 6/6）
 
-- **分支与边界**：实现在独立 worktree 分支 `codex/claim-ledger-phase1`，未提交、未推送、未合 main。Phase 1 仍是生产双写不切门控：旧 readiness/chain/golden 语义不变，claim queue 只生成 `needs_extraction` dry-run proposal，不修改 requirement/claim 权威数据，fold/reconcile/GET 全程零 LLM、零 verifier。
+- **分支与边界**：实现在独立 worktree 分支 `codex/claim-ledger-phase1`（提交 `c207d33` 合入）。Phase 1 仍是生产双写不切门控：旧 readiness/chain/golden 语义不变，claim queue 只生成 `needs_extraction` dry-run proposal，不修改 requirement/claim 权威数据，fold/reconcile/GET 全程零 LLM、零 verifier。
 - **不可变 base + 可变 effective**：generation catalog/base ledger 与 effective ledger/queue/meta 分层；effective 三文件使用 publication journal、跨进程锁、原子替换与恢复协议。`claim_review_events.jsonl` 为 seq/hash-chain/幂等投影；A/B 两轨均读取完整 review history，支持 reject/reactivate、target missing/restored、validated group 内容寻址复用与 generation 隔离。
 - **并发与审计门修复**：target JSONL 只读一次，同一份 bytes 同时用于 parse/hash；只读 authority 在 review snapshot 后复验 target presence/bytes，fold 再做 CAS 确认，阻断 hash/parse ABA。A/B authority 的完整坏行均保留为 `audit_gaps`；live GET 即时返回 `review_authority_changed`、`authority_audit_gap=true`、`document_ready=false`，但不写 health 或任何 sidecar。旧 generation/旧 claim hash 的 event 只保留在 append-only 原始日志，不泄漏进当前 view。
 - **版本契约追认**：target-set `source_event_revision` 正式冻结为 `/v2`，同时绑定 `target_publication_revision` 与 `previous_transition_event_hash`，防止 `missing -> restored -> missing` 的第二次 missing 被幂等键吞掉；`CLAIM_VALIDATION_REUSE_VERSION` 首个发布值为 `claim-validation-reuse-v2`，绑定规范化 target fingerprint 与完整 semantic validation fingerprint，v1 仅为未发布的设计占位。
@@ -57,6 +64,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **500-block 冻结性能基线**：CPython 3.14.6 / Windows 10 / AMD64 / 8 CPUs；500 blocks、500 eligible claims、500 linked targets、2000 review history rows、2000 committed events。catalog p50/p95 = 0.0227s/0.0232s，base artifacts = 2.76 MiB；reconcile+fold p50/p95 = 3.603s/3.699s。可复算工作量为 history records 2000、link index inserts 500、candidate checks 2000、event index inserts 2000，无 `rows × all_links` 扫描。
 - **最终验证**：后端全量 `2104 tests OK (skipped=7)`；前端 `145 tests` 全绿；`vue-tsc --noEmit + vite build` 通过；wheel checkout 外隔离安装/schema smoke 通过；`git diff --check` 无错误。最终独立审查复验 A/B ABA、audit-gap 六 view 零写入、旧代事件过滤与 CLI 契约后无 gating finding。
 - **退出门已通过**：合并后主检出以既定三 seed KB + domain-pack 基线跑 **golden 6/6**，全量 **2106 tests OK（skipped=18 环境性）**。Phase 1 标记完成；生产门控仍不切换（Phase 2 经总纲 §9 全部条件后方可）。
+
+## 重大更新（2026-07-28）——影印支路几何回填修复（已合 main，doc_annotation_export/v11+v12；主检出 golden 6/6、全量 1738 tests——首轮 1 个瞬时失败复跑两轮全绿，判定 Windows 抖动留痕）
+
+- **实证缺陷链（STO result4）**：①几何锚定的"同页候选"假设对 docx/xlsx 全灭（块无 page_number，82 页文档仅 8 块有区）；②docx 扁平文本合并单元格展开重复（"3.1.1 | 3.1.1 | Req | Req"）与转换 PDF 文本层单次出现对不上，包含匹配全灭；③api 侧 normalize_text 吞掉行分隔使按行折叠失效；④全串包含对 184k 参数表过脆；⑤重构时丢了一行 `geometry[block_id] = regions` 赋值（插桩追了四层才现形）。
+- **修复**：无页号块走全局文本驱动匹配——全局精确 → 全局包含（>8000 字符大表放宽为前缀 80 字符锚定）→ 边际模糊（最优-次优 ≥0.05 才落区，宁缺不猜）；`_geometry_match_text` 增加合并单元格折叠 + 相邻重复词折叠；几何缓存升 v3；版本戳 doc_annotation_export/v10→v11。
+- **STO 实测**：有区块数 8→124/164、覆盖页 2→62；术语表归位第 6-11 页（此前错配 79 页）；单/三相参数表 47/50 区跨 15-64 页（点击表格行可正确定位右栏）。
+- **验证**：新增 6 专项测试（折叠/全局精确/前缀锚/边际不猜/清晰最优）；全量 1724 tests OK。
 
 ## 重大更新（2026-07-26）——Claim Conservation Ledger Phase 0A/0B（已合 main `a08a60a`；shadow 双写不切生产门控；主检出全量 1986 tests OK、golden 6/6）
 
