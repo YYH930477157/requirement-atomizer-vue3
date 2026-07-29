@@ -135,6 +135,121 @@ class EvidenceLocatorTests(unittest.TestCase):
                       {(row["field"], row["item_index"]) for row in evidence})
 
 
+class EffectiveAuthorityIdentityTests(unittest.TestCase):
+    def test_b_track_review_revision_excludes_timestamp_and_free_form_rationale(self) -> None:
+        requirement = _requirement(
+            "AIR-1",
+            description="该产品应支持配置指示通道。",
+            source_quote="The indicator channel can be configured by the operator.",
+        )
+        source = claim_ledger.target_source_fingerprint(requirement)
+        subject = claim_ledger.target_fingerprint(requirement)
+        first = claim_ledger.b_track_effective_authority([requirement], {
+            "AIR-1": {
+                "ai_req_id": "AIR-1",
+                "status": "accepted",
+                "source_fingerprint": source,
+                "review_subject_fingerprint": subject,
+                "reason": "first rationale",
+                "recorded_at": "2026-07-28T00:00:00+00:00",
+            },
+        })
+        second = claim_ledger.b_track_effective_authority([requirement], {
+            "AIR-1": {
+                "ai_req_id": "AIR-1",
+                "status": "accepted",
+                "source_fingerprint": source,
+                "review_subject_fingerprint": subject,
+                "reason": "rewritten rationale",
+                "recorded_at": "2026-07-29T00:00:00+00:00",
+            },
+        })
+        self.assertEqual(
+            first["records"][0]["review"]["target_review_revision"],
+            second["records"][0]["review"]["target_review_revision"],
+        )
+        self.assertEqual(
+            first["requirement_review_state_hash"],
+            second["requirement_review_state_hash"],
+        )
+
+    def test_b_track_legacy_review_is_unknown_and_duplicate_target_is_ambiguous(self) -> None:
+        requirement = _requirement(
+            "AIR-1", description="需求", source_quote="Requirement",
+        )
+        legacy = claim_ledger.b_track_effective_authority([requirement], {
+            "AIR-1": {"ai_req_id": "AIR-1", "status": "accepted"},
+        })
+        self.assertEqual(legacy["records"][0]["review"]["eligibility"], "unknown")
+        self.assertTrue(legacy["records"][0]["review"]["needs_reconfirmation"])
+
+        duplicate = claim_ledger.b_track_effective_authority(
+            [requirement, copy.deepcopy(requirement)],
+            {},
+        )
+        self.assertTrue(all(
+            row["review"]["reason"] == "duplicate_target_requirement_id"
+            and row["review"]["eligibility"] == "unknown"
+            for row in duplicate["records"]
+        ))
+
+    def test_semantic_validation_identity_excludes_review_but_includes_both_locators(self) -> None:
+        source = "Auxiliary outputs are user-programmable."
+        catalog = claim_catalog.build_claim_catalog([_block("B1", source)], [])
+        requirement = _requirement(
+            "AIR-1", description="辅助输出可由用户编程。", source_quote=source,
+        )
+        group = claim_ledger.build_shadow_ledger(catalog, [requirement])["groups"][0]
+        baseline = claim_ledger.semantic_validation_fingerprint(group)
+
+        review_only = copy.deepcopy(group)
+        review_only["edges"][0]["target_review_revision"] = "sha256:" + "f" * 64
+        self.assertEqual(
+            claim_ledger.semantic_validation_fingerprint(review_only),
+            baseline,
+        )
+
+        source_locator_changed = copy.deepcopy(group)
+        source_locator_changed["source_evidence"]["claim_start"] += 1
+        self.assertNotEqual(
+            claim_ledger.semantic_validation_fingerprint(source_locator_changed),
+            baseline,
+        )
+
+        target_locator_changed = copy.deepcopy(group)
+        target_locator_changed["edges"][0]["produced_evidence"][0]["start"] += 1
+        self.assertNotEqual(
+            claim_ledger.semantic_validation_fingerprint(target_locator_changed),
+            baseline,
+        )
+
+    def test_semantic_validation_reuse_skips_dirty_legacy_target_fingerprint(self) -> None:
+        source = "Auxiliary outputs are user-programmable."
+        catalog = claim_catalog.build_claim_catalog([_block("B1", source)], [])
+        requirement = _requirement(
+            "AIR-1",
+            description="Auxiliary outputs are user-programmable.",
+            source_quote=source,
+        )
+        current = claim_ledger.build_shadow_ledger(catalog, [requirement])["groups"][0]
+        previous = copy.deepcopy(current)
+        previous.update({
+            "status": "validated",
+            "validator_request_id": "REQ-legacy-validation",
+            "validation_source": {
+                "request_id": "REQ-legacy-validation",
+                "generation_run_id": "legacy-run",
+            },
+        })
+        previous["edges"][0]["target_fingerprint"] = "legacy-not-a-canonical-hash"
+
+        reused = claim_ledger._reuse_semantic_validation([current], [previous])
+
+        self.assertEqual(reused, 0)
+        self.assertEqual(current["status"], "proposed")
+        self.assertFalse(current["validation_reused"])
+
+
 class SemanticVerifierAdapterTests(unittest.TestCase):
     def test_obligation_framing_prompt_distinguishes_governing_wrapper_from_neighbor(self) -> None:
         prompt = " ".join(claim_ledger._SEMANTIC_VERIFIER_SYSTEM.split())

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import cli
@@ -8,6 +9,13 @@ import desktop_tasks
 
 
 class ClaimCliEntrypointTests(unittest.TestCase):
+    def test_claim_ledger_fold_accepts_spec_flag_and_compat_alias(self) -> None:
+        for parser in (cli.parse_args, desktop_tasks.parse_args):
+            for flag in ("--out-dir", "--out"):
+                with self.subTest(parser=parser.__module__, flag=flag):
+                    args = parser(["claim-ledger-fold", flag, "ledger-out"])
+                    self.assertEqual(args.out, Path("ledger-out"))
+
     def test_ratomizer_forwards_phase0_commands(self) -> None:
         cases = (
             (

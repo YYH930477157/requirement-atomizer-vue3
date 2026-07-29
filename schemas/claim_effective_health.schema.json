@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_effective_health.schema.json",
+  "title": "Claim effective operational health v1",
+  "type": "object",
+  "required": [
+    "schema", "bridge_fold_lag", "torn_tail_recovered",
+    "event_quarantine_count", "authority_audit_gap", "authority_cas_gap",
+    "effective_snapshot_migrations", "last_success_at", "last_failure_at",
+    "last_error"
+  ],
+  "properties": {
+    "schema": {"const": "claim-effective-health/v1"},
+    "bridge_fold_lag": {"type": "integer", "minimum": 0},
+    "torn_tail_recovered": {"type": "integer", "minimum": 0},
+    "event_quarantine_count": {"type": "integer", "minimum": 0},
+    "authority_audit_gap": {"type": "boolean"},
+    "authority_cas_gap": {"type": "boolean"},
+    "effective_snapshot_migrations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "base_generation_id", "source_effective_snapshot_version",
+          "target_effective_snapshot_version", "effective_run_id",
+          "migrated_at", "actor_trigger"
+        ],
+        "properties": {
+          "base_generation_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "source_effective_snapshot_version": {
+            "const": "claim-effective-snapshot-v1"
+          },
+          "target_effective_snapshot_version": {
+            "const": "claim-effective-snapshot-v2"
+          },
+          "effective_run_id": {"type": "string", "minLength": 1},
+          "migrated_at": {"type": "string", "format": "date-time"},
+          "actor_trigger": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "last_success_at": {"type": ["string", "null"], "format": "date-time"},
+    "last_failure_at": {"type": ["string", "null"], "format": "date-time"},
+    "last_error": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

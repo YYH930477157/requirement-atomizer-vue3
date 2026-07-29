@@ -231,6 +231,10 @@ export type AiExtractionStatusPayload = {
   error?: string
   input_fingerprint?: string
   rows: AiRequirement[]
+  quality?: {
+    coverage_pct?: number | null
+    core_coverage_pct?: number | null
+  }
 }
 
 export type OmissionActionStatus =
@@ -300,6 +304,189 @@ export type SpotExtractPayload = {
   draft_ids: string[]
   already_covered: boolean
   written: string[]
+}
+
+export type ClaimResolution = "covered" | "excluded" | "uncertain"
+
+export type ClaimLocator = {
+  block_id: string
+  line?: number | null
+  start?: number | null
+  end?: number | null
+  position_basis?: string
+  table_item_id?: string | null
+  row_index?: number | null
+  row_start?: number
+  row_end?: number
+  fallback_group_id?: string
+}
+
+export type ClaimViewEnvelope = {
+  schema: string
+  available: boolean
+  phase: "production-dual-write-v1"
+  document_effective_revision: string | null
+  base_generation_id: string | null
+  event_prefix_sha256: string | null
+  effective_fresh: boolean
+  reason?: string
+}
+
+export type ClaimCatalogViewRow = Record<string, unknown> & {
+  claim_id: string
+  claim_hash?: string
+  text: string
+  owner_unit_id: string | null
+  locator: ClaimLocator
+  eligibility?: "claim" | "excluded"
+  resolution: ClaimResolution
+  classification?: "normative" | "non_normative" | "unknown"
+  classification_status?: "validated" | "needs_review" | "invalid" | "proposed"
+  exclusion_kind?: "semantic" | "structural" | null
+  claim_effective_revision?: string
+}
+
+export type ClaimEffectiveLedgerRow = Record<string, unknown> & {
+  claim_id: string
+  owner_unit_id: string | null
+  resolution: ClaimResolution
+  classification: "normative" | "non_normative" | "unknown"
+  classification_status: "validated" | "needs_review" | "invalid" | "proposed"
+  exclusion_kind: "semantic" | "structural" | null
+  coverage_group_ids?: string[]
+  invalid_reasons?: string[]
+  claim_effective_revision: string
+}
+
+export type ClaimProducedEvidence = {
+  field?: string
+  item_index?: number | null
+  start?: number
+  end?: number
+  text?: string
+}
+
+export type ClaimCoverageEdge = Record<string, unknown> & {
+  edge_id?: string
+  target_kind?: "ai_requirement" | "atomic_requirement"
+  target_requirement_id?: string
+  target_review_status?: string
+  target_review_eligibility?: "active" | "rejected" | "unknown"
+  relation?: "generated_from" | "merged_into"
+  produced_evidence?: ClaimProducedEvidence[]
+}
+
+export type ClaimCoverageGroupView = Record<string, unknown> & {
+  coverage_group_id: string
+  claim_id: string
+  validation_method: "deterministic_verbatim" | "independent_semantic" | "expert"
+  status: "proposed" | "validated" | "invalid"
+  invalid_reason?: string
+  effective_status?: string
+  effective_reason?: string
+  validation_reused?: boolean
+  reused?: boolean
+  edges: ClaimCoverageEdge[]
+}
+
+export type ClaimReviewEventView = Record<string, unknown> & {
+  event_seq: number
+  event_id: string
+  claim_id: string
+  event_kind: "target_invalidated" | "target_reactivated"
+  recorded_at: string
+  reason?: string
+  target_requirement_id?: string
+  eligibility_before?: "active" | "rejected" | "unknown"
+  eligibility_after?: "active" | "rejected" | "unknown"
+}
+
+export type ClaimRatioMetric = {
+  numerator: number
+  denominator: number
+  value: number | null
+}
+
+export type ClaimMetrics = Record<string, unknown> & {
+  inventory_accounted_ratio?: ClaimRatioMetric
+  verified_coverage_ratio?: ClaimRatioMetric
+  verified_semantic_exclusion_ratio?: ClaimRatioMetric
+  verified_exclusion_ratio?: ClaimRatioMetric
+  eligible_resolution_ratio?: ClaimRatioMetric
+  structural_exclusion_ratio?: ClaimRatioMetric
+  uncertain_count?: number
+}
+
+export type ClaimQueueProposal = Record<string, unknown> & {
+  proposal_id: string
+  claim_id: string
+  parent_block_id: string
+  locator: ClaimLocator
+  action: "needs_extraction"
+  dry_run: true
+  claim_effective_revision: string
+}
+
+export type ClaimCompatOmission = Record<string, unknown> & {
+  omission_id?: string
+  block_id?: string
+  status?: string
+  reason?: string
+  compat_whole_block: true
+  dry_run: true
+}
+
+export type ClaimCatalogViewPayload = ClaimViewEnvelope & {
+  rows: ClaimCatalogViewRow[]
+  total: number
+  limit: number
+  offset: number
+  owner_unit_ids?: string[]
+}
+
+export type ClaimLedgerViewPayload = ClaimViewEnvelope & {
+  rows: ClaimEffectiveLedgerRow[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export type ClaimCoverageGroupsViewPayload = ClaimViewEnvelope & {
+  groups: ClaimCoverageGroupView[]
+  total: number
+}
+
+export type ClaimMetricsViewPayload = ClaimViewEnvelope & {
+  generation_metrics: ClaimMetrics
+  effective_metrics: ClaimMetrics
+  generation_metrics_version?: string
+  effective_metrics_version?: string
+  document_ready: boolean | null
+  health?: Record<string, unknown>
+}
+
+export type ClaimReviewEventsViewPayload = ClaimViewEnvelope & {
+  events: ClaimReviewEventView[]
+  total: number
+}
+
+export type ClaimQueueViewPayload = ClaimViewEnvelope & {
+  proposals: ClaimQueueProposal[]
+  compat_omissions: ClaimCompatOmission[]
+  total?: number
+}
+
+export type ClaimCatalogQuery = {
+  resolution?: ClaimResolution | ""
+  ownerUnitId?: string
+  limit?: number
+  offset?: number
+}
+
+export type ClaimLedgerQuery = {
+  resolution?: ClaimResolution | ""
+  limit?: number
+  offset?: number
 }
 
 type FetchLike = typeof fetch
@@ -481,6 +668,43 @@ export class RequirementApiClient {
     return this.request<ReviewInsightsPayload>("/review-insights")
   }
 
+  async loadClaimCatalog(query: ClaimCatalogQuery = {}): Promise<ClaimCatalogViewPayload> {
+    return this.requestClaimView<ClaimCatalogViewPayload>(`/claim-catalog${claimQueryString({
+      limit: query.limit ?? 25,
+      offset: query.offset ?? 0,
+      resolution: query.resolution || undefined,
+      owner_unit_id: query.ownerUnitId || undefined,
+    })}`)
+  }
+
+  async loadClaimLedger(query: ClaimLedgerQuery = {}): Promise<ClaimLedgerViewPayload> {
+    return this.requestClaimView<ClaimLedgerViewPayload>(`/claim-ledger${claimQueryString({
+      limit: query.limit ?? 25,
+      offset: query.offset ?? 0,
+      resolution: query.resolution || undefined,
+    })}`)
+  }
+
+  async loadClaimCoverageGroups(claimId: string): Promise<ClaimCoverageGroupsViewPayload> {
+    return this.requestClaimView<ClaimCoverageGroupsViewPayload>(
+      `/claim-coverage-groups${claimQueryString({ claim_id: claimId })}`,
+    )
+  }
+
+  async loadClaimMetrics(): Promise<ClaimMetricsViewPayload> {
+    return this.requestClaimView<ClaimMetricsViewPayload>("/claim-metrics")
+  }
+
+  async loadClaimReviewEvents(claimId: string): Promise<ClaimReviewEventsViewPayload> {
+    return this.requestClaimView<ClaimReviewEventsViewPayload>(
+      `/claim-review-events${claimQueryString({ claim_id: claimId })}`,
+    )
+  }
+
+  async loadClaimQueue(): Promise<ClaimQueueViewPayload> {
+    return this.requestClaimView<ClaimQueueViewPayload>("/claim-queue")
+  }
+
   async applyAiReviewAction(input: AiReviewActionInput): Promise<AiReviewStatePayload> {
     return this.request<AiReviewStatePayload>("/ai-review-actions", {
       method: "POST",
@@ -528,6 +752,30 @@ export class RequirementApiClient {
     }
     return response.json() as Promise<T>
   }
+
+  private async requestClaimView<T extends ClaimViewEnvelope>(path: string): Promise<T> {
+    const payload = await this.request<T>(path)
+    if (!payload || typeof payload !== "object"
+        || !Object.prototype.hasOwnProperty.call(payload, "document_effective_revision")
+        || typeof payload.available !== "boolean"
+        || (payload.available && typeof payload.document_effective_revision !== "string")
+        || (!payload.available && payload.document_effective_revision !== null)) {
+      throw new RequirementApiError(502, {
+        error: "Claim ledger response is missing document_effective_revision",
+        retryable: true,
+      })
+    }
+    return payload
+  }
+}
+
+function claimQueryString(values: Record<string, string | number | undefined>): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) params.set(key, String(value))
+  }
+  const encoded = params.toString()
+  return encoded ? `?${encoded}` : ""
 }
 
 function headersToObject(headers: HeadersInit | undefined): Record<string, string> {

@@ -7,12 +7,61 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import urlopen
 
 import api_server
 import ai_review_actions
+import claim_artifacts
+import claim_catalog
+import claim_ledger
+import claim_review_actions
+from tests.test_claim_artifacts import _catalog, _publish, _requirement
+from tests.test_claim_review_actions import _publish_a_track
+
+
+@contextmanager
+def _claim_api(out_dir: Path):
+    class TestHandler(api_server.RequirementAPIHandler):
+        pass
+
+    TestHandler.output_dir = out_dir.resolve()
+    TestHandler.allowed_origins = set(api_server.DEFAULT_ALLOWED_ORIGINS)
+    TestHandler.local_token = ""
+    server = api_server.ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _http_json(base_url: str, path: str) -> tuple[int, dict]:
+    try:
+        with urlopen(base_url + path, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+        finally:
+            exc.close()
+
+
+def _file_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
 
 
 class TokenIsValidTests(unittest.TestCase):
@@ -51,6 +100,286 @@ class TokenIsValidTests(unittest.TestCase):
         token = "aaaaaaaaaaaaaaaa"
         headers = {api_server.TOKEN_HEADER: "aaaaaaaaaaaaaaab"}  # 同长度末字节不同
         self.assertFalse(api_server.token_is_valid(token, headers, {}))
+
+
+class ClaimLedgerHttpTests(unittest.TestCase):
+    ENDPOINTS = (
+        "/claim-catalog",
+        "/claim-ledger",
+        "/claim-coverage-groups",
+        "/claim-metrics",
+        "/claim-review-events",
+        "/claim-queue",
+    )
+
+    def _seed(self, root: Path) -> None:
+        _publish(root, _catalog())
+        claim_review_actions.fold_effective_ledger(
+            root,
+            actor_trigger="real-http-test",
+        )
+
+    @staticmethod
+    def _changed_catalog() -> dict:
+        text = "The product shall provide a separately configurable auxiliary output."
+        return claim_catalog.build_claim_catalog([{
+            "block_id": "B1",
+            "order": 1,
+            "type": "paragraph",
+            "text": text,
+            "raw_text": text,
+            "text_repair_checked": True,
+            "text_repair_version": "identity-v1",
+            "raw_to_repaired_spans": [{
+                "raw_start": 0,
+                "raw_end": len(text),
+                "repaired_start": 0,
+                "repaired_end": len(text),
+                "operation": "equal",
+            }],
+            "section_path": ["4 Functions"],
+            "noise": False,
+        }], [])
+
+    def test_six_claim_gets_return_real_http_200_with_one_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            with _claim_api(root) as base_url:
+                responses = [_http_json(base_url, path) for path in self.ENDPOINTS]
+
+        self.assertTrue(all(status == 200 for status, _payload in responses))
+        payloads = [payload for _status, payload in responses]
+        self.assertTrue(all(payload["available"] for payload in payloads))
+        self.assertEqual(
+            len({payload["document_effective_revision"] for payload in payloads}),
+            1,
+        )
+        for payload in payloads:
+            if payload["schema"] != "claim-metrics-view/v1":
+                self.assertEqual(payload["limit"], 100)
+                self.assertEqual(payload["offset"], 0)
+        queue = payloads[-1]
+        self.assertEqual(queue["compat_omission_total"], 0)
+        self.assertTrue(queue["compat_omission_revision"].startswith("sha256:"))
+
+    def test_normal_claim_gets_leave_every_artifact_byte_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            before = _file_bytes(root)
+
+            with _claim_api(root) as base_url:
+                responses = [_http_json(base_url, path) for path in self.ENDPOINTS]
+
+            after = _file_bytes(root)
+
+        self.assertTrue(all(status == 200 for status, _payload in responses))
+        self.assertEqual(after, before)
+
+    def test_six_claim_gets_return_unavailable_http_200_for_legacy_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with _claim_api(root) as base_url:
+                responses = [_http_json(base_url, path) for path in self.ENDPOINTS]
+
+        self.assertTrue(all(status == 200 for status, _payload in responses))
+        for _status, payload in responses:
+            self.assertFalse(payload["available"])
+            self.assertIsNone(payload["base_generation_id"])
+            self.assertIsNone(payload["document_effective_revision"])
+            self.assertIsNone(payload["event_prefix_sha256"])
+
+    def test_pending_effective_journal_returns_503_without_any_get_side_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            journal = root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
+            journal.write_bytes(b'{"unfinished":true}')
+            before = _file_bytes(root)
+
+            with _claim_api(root) as base_url:
+                responses = [_http_json(base_url, path) for path in self.ENDPOINTS]
+
+            after = _file_bytes(root)
+
+        self.assertTrue(all(status == 503 for status, _payload in responses))
+        self.assertTrue(all(
+            payload["error"] == "effective_recovery_pending"
+            and payload["retryable"] is True
+            for _status, payload in responses
+        ))
+        self.assertEqual(after, before)
+
+    def test_pending_journal_wins_over_legacy_migration_for_all_claim_gets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # publish_shadow_generation intentionally creates the legacy v1
+            # effective snapshot; do not fold it before adding the WAL.
+            _publish(root, _catalog())
+            journal = root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
+            journal.write_bytes(b'{"unfinished":true}')
+            before = _file_bytes(root)
+
+            with _claim_api(root) as base_url:
+                responses = [_http_json(base_url, path) for path in self.ENDPOINTS]
+
+            after = _file_bytes(root)
+
+        self.assertTrue(all(status == 503 for status, _payload in responses))
+        self.assertTrue(all(
+            payload["error"] == "effective_recovery_pending"
+            and payload["retryable"] is True
+            for _status, payload in responses
+        ))
+        self.assertEqual(after, before)
+
+    def test_legacy_effective_requires_migration_for_all_claim_gets_without_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Phase 0 publication commits the internally consistent legacy v1
+            # snapshot. GETs must request out-of-band migration, never fold it.
+            _publish(root, _catalog())
+            before = _file_bytes(root)
+
+            with _claim_api(root) as base_url:
+                responses = [_http_json(base_url, path) for path in self.ENDPOINTS]
+
+            after = _file_bytes(root)
+
+        self.assertTrue(all(status == 503 for status, _payload in responses))
+        self.assertTrue(all(
+            payload["error"] == "effective_migration_required"
+            and payload["retryable"] is True
+            for _status, payload in responses
+        ))
+        self.assertEqual(after, before)
+
+    def test_torn_review_authority_returns_retryable_503_without_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            authority = root / "ai_review_states.jsonl"
+            authority.write_bytes(b'{"ai_req_id":"AIR-1"')
+            before = _file_bytes(root)
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/claim-metrics")
+
+            after = _file_bytes(root)
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "claim_artifact_unavailable")
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(after, before)
+
+    def test_live_authority_audit_gap_is_stale_and_http_get_is_read_only(self) -> None:
+        for track in ("A", "B"):
+            with self.subTest(track=track), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                if track == "A":
+                    _publish_a_track(root, _catalog())
+                    claim_review_actions.fold_effective_ledger(
+                        root,
+                        actor_trigger="http-a-track-audit-gap-seed",
+                    )
+                    authority = root / "review_states.jsonl"
+                else:
+                    self._seed(root)
+                    authority = root / "ai_review_states.jsonl"
+                existing = authority.read_bytes() if authority.is_file() else b""
+                authority.write_bytes(existing + b"not-json\n")
+                before = _file_bytes(root)
+
+                with _claim_api(root) as base_url:
+                    status, payload = _http_json(base_url, "/claim-metrics")
+
+                after = _file_bytes(root)
+
+                self.assertEqual(status, 200)
+                self.assertFalse(payload["effective_fresh"])
+                self.assertIn(
+                    "review_authority_changed",
+                    payload["freshness_reasons"],
+                )
+                self.assertTrue(payload["health"]["authority_audit_gap"])
+                self.assertFalse(payload["document_ready"])
+                self.assertEqual(after, before)
+
+    def test_claim_pagination_errors_are_http_400(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            with _claim_api(root) as base_url:
+                responses = [
+                    _http_json(base_url, f"/claim-ledger?{query}")
+                    for query in (
+                        "limit=0",
+                        "limit=501",
+                        "limit=abc",
+                        "offset=-1",
+                        "offset=abc",
+                    )
+                ]
+
+        self.assertTrue(all(status == 400 for status, _payload in responses))
+        self.assertTrue(all(
+            payload["retryable"] is False for _status, payload in responses
+        ))
+
+    def test_http_review_events_hide_previous_generation_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            first_catalog = _catalog()
+            requirement = _requirement(first_catalog)
+            ai_review_actions.apply_ai_review_action(
+                root,
+                "AIR-1",
+                "rejected",
+                actor="http-rollover",
+                reason="reject first generation",
+                source_fingerprint_value=claim_ledger.target_source_fingerprint(
+                    requirement
+                ),
+                review_subject_fingerprint_value=claim_ledger.target_fingerprint(
+                    requirement
+                ),
+            )
+            first = claim_artifacts.load_committed_effective_snapshot(root)
+            old_claim_id = first["ledger"][0]["claim_id"]
+            self.assertEqual(
+                len(claim_review_actions.read_claim_review_events(root).rows),
+                1,
+            )
+            claim_artifacts.atomic_write_jsonl(root / "ai_review_states.jsonl", [])
+            _publish(root, self._changed_catalog(), run_id="http-rollover-2")
+            claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="http-rollover-second-generation",
+            )
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/claim-review-events")
+                filtered_status, filtered = _http_json(
+                    base_url,
+                    f"/claim-review-events?claim_id={old_claim_id}",
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(filtered_status, 200)
+        self.assertNotEqual(
+            first["generation_meta"]["document_generation_id"],
+            payload["document_generation_id"],
+        )
+        self.assertTrue(all(
+            event["document_generation_id"] == payload["document_generation_id"]
+            and event["catalog_generation_id"] == payload["catalog_generation_id"]
+            for event in payload["events"]
+        ))
+        self.assertEqual(payload["total"], 0)
+        self.assertEqual(filtered["total"], 0)
+        self.assertEqual(filtered["events"], [])
 
 
 class AiReviewActionsTests(unittest.TestCase):
@@ -186,6 +515,34 @@ class AiRequirementsEndpointTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 api_server.build_document_blocks(out)
+
+    def test_ai_extraction_status_exposes_legacy_quality_metrics(self) -> None:
+        # 防回归：账本页新旧并列卡的旧口径来自本端点的 quality 字段——此前该字段
+        # 缺失时前端 mock 照样全绿（mock 与生产背离），必须以后端断言钉死。
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "coverage_pct": 82.5,
+                "core_coverage_pct": 75.0,
+            }), encoding="utf-8")
+
+            status = api_server.build_ai_extraction_status(out)
+
+            self.assertEqual(
+                status["quality"],
+                {"coverage_pct": 82.5, "core_coverage_pct": 75.0},
+            )
+
+    def test_ai_extraction_status_rejects_invalid_quality_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "ai_extract_quality.json").write_text(json.dumps({
+                "coverage_pct": True,
+                "core_coverage_pct": 75.0,
+            }), encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                api_server.build_ai_extraction_status(out)
 
     def test_document_endpoint_wraps_structural_json_error_as_retryable_503(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

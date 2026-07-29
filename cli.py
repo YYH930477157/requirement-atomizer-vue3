@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from atomize import AtomizerInputError, AtomizerPipelineError, run_atomizer_pipeline
+from claim_artifacts import ClaimArtifactError
 from engineering_composer import compose_engineering_requirements, write_engineering_requirements
 from export_requirements import export_requirements
 from llm_client import LLMConnectionError
@@ -120,6 +121,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     claim_import.add_argument("--output", type=Path, required=True)
     claim_import.add_argument("--golden-manifest", type=Path, required=True)
 
+    claim_fold = subparsers.add_parser(
+        "claim-ledger-fold",
+        help="Recover and deterministically materialize the Phase 1 effective ledger.",
+    )
+    claim_fold.add_argument("--out-dir", "--out", dest="out", type=Path, required=True)
+    add_verbosity_arguments(claim_fold)
+
     args = parser.parse_args(argv)
     if args.version:
         return args
@@ -190,13 +198,15 @@ def main(argv: list[str] | None = None) -> int:
             envelope = command_compose(args, started, timing_ms)
         elif args.command == "analyze":
             envelope = command_analyze(args, started, timing_ms)
+        elif args.command == "claim-ledger-fold":
+            envelope = command_claim_ledger_fold(args, started, timing_ms)
         else:
             raise AtomizerInputError(f"Unknown command: {args.command}")
     except AtomizerInputError as exc:
         return write_error(args.command or "", "input_error", str(exc), 2)
     except LLMConnectionError as exc:
         return write_error(args.command or "", "llm_error", str(exc), 4)
-    except (AtomizerPipelineError, OSError, ValueError) as exc:
+    except (AtomizerPipelineError, ClaimArtifactError, OSError, ValueError) as exc:
         return write_error(args.command or "", "pipeline_error", str(exc), 3)
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
@@ -307,6 +317,28 @@ def command_analyze(args: argparse.Namespace, started: float, timing_ms: dict[st
     timing_ms["total"] = timing_ms["analyze"]
     envelope = success_envelope("analyze", args.out, timing_ms=timing_ms)
     envelope["analysis"] = analysis
+    return envelope
+
+
+def command_claim_ledger_fold(
+    args: argparse.Namespace,
+    started: float,
+    timing_ms: dict[str, int],
+) -> dict[str, Any]:
+    from claim_review_actions import fold_effective_ledger
+
+    result = fold_effective_ledger(
+        args.out,
+        actor_trigger="cli-claim-ledger-fold",
+    )
+    timing_ms["claim_ledger_fold"] = elapsed_ms(started)
+    timing_ms["total"] = timing_ms["claim_ledger_fold"]
+    envelope = success_envelope(
+        "claim-ledger-fold",
+        args.out,
+        timing_ms=timing_ms,
+    )
+    envelope["claim_ledger"] = result
     return envelope
 
 

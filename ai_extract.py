@@ -699,6 +699,39 @@ def refresh_claim_shadow(
             )
     shadow = dict(published.get("shadow") or {})
     shadow_meta = dict(shadow.get("meta") or {})
+    effective_fold_error = ""
+    try:
+        from claim_review_actions import fold_effective_ledger
+
+        fold_effective_ledger(
+            root,
+            actor_trigger="claim-shadow-refresh-publish",
+        )
+    except Exception as exc:
+        effective_fold_error = f"{type(exc).__name__}: {exc}"[:300]
+        LOGGER.warning(
+            "claim shadow base published but effective fold lagged: %s",
+            effective_fold_error,
+        )
+    try:
+        if effective_fold_error:
+            raise RuntimeError(effective_fold_error)
+        from claim_views import build_claim_view
+
+        effective_view = build_claim_view(root, "metrics")
+        effective_metrics = dict(effective_view.get("effective_metrics") or {})
+        effective_summary = {
+            "document_ready": effective_view.get("document_ready"),
+            "effective_fresh": bool(effective_view.get("effective_fresh")),
+            "open_claim_count": effective_metrics.get("uncertain_count"),
+        }
+    except Exception as exc:
+        effective_summary = {
+            "document_ready": None,
+            "effective_fresh": False,
+            "open_claim_count": None,
+            "effective_error": str(exc)[:300],
+        }
     return {
         "kind": "claim_shadow_refresh",
         "route": "stub" if config is None else "openai_compatible",
@@ -710,8 +743,17 @@ def refresh_claim_shadow(
             "accounting_status": shadow_meta.get("accounting_status"),
             "resolution_status": shadow_meta.get("resolution_status"),
             "metrics": shadow.get("metrics") or {},
+            **effective_summary,
         },
-        "written": [*CLAIM_SNAPSHOT_FILES, CLAIM_VERIFIER_ATTEMPTS],
+        "written": [
+            name for name in (
+                *CLAIM_SNAPSHOT_FILES,
+                "claim_queue_proposals.jsonl",
+                "claim_effective_health.json",
+                CLAIM_VERIFIER_ATTEMPTS,
+            )
+            if (root / name).is_file()
+        ],
     }
 
 
@@ -3683,9 +3725,12 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
                 CLAIM_CATALOG_META,
                 CLAIM_COVERAGE_GROUPS,
                 CLAIM_EFFECTIVE_LEDGER,
+                CLAIM_EFFECTIVE_HEALTH,
                 CLAIM_EFFECTIVE_META,
                 CLAIM_GENERATION_META,
                 CLAIM_LEDGER,
+                CLAIM_QUEUE_PROPOSALS,
+                CLAIM_REVIEW_EVENTS,
                 CLAIM_SHADOW_METRICS,
                 CLAIM_VERIFIER_ATTEMPTS,
                 claim_verifier_attempt_scope,
@@ -3743,18 +3788,60 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
                 "resolution_status": shadow_meta.get("resolution_status"),
                 "metrics": shadow.get("metrics") or {},
             }
+            effective_fold_error = ""
+            try:
+                from claim_review_actions import fold_effective_ledger
+
+                fold_effective_ledger(
+                    out_dir,
+                    actor_trigger="ai-extract-publish",
+                )
+            except Exception as exc:
+                effective_fold_error = f"{type(exc).__name__}: {exc}"[:300]
+                LOGGER.warning(
+                    "claim shadow base published but effective fold lagged: %s",
+                    effective_fold_error,
+                )
+            try:
+                if effective_fold_error:
+                    raise RuntimeError(effective_fold_error)
+                from claim_views import build_claim_view
+
+                effective_view = build_claim_view(out_dir, "metrics")
+                effective_metrics = dict(
+                    effective_view.get("effective_metrics") or {}
+                )
+                claim_shadow_summary.update({
+                    "document_ready": effective_view.get("document_ready"),
+                    "effective_fresh": bool(
+                        effective_view.get("effective_fresh")
+                    ),
+                    "open_claim_count": effective_metrics.get(
+                        "uncertain_count"
+                    ),
+                })
+            except Exception as exc:
+                claim_shadow_summary.update({
+                    "document_ready": None,
+                    "effective_fresh": False,
+                    "open_claim_count": None,
+                    "effective_error": str(exc)[:300],
+                })
             for name in (
                 CLAIM_CATALOG,
                 CLAIM_CATALOG_META,
                 CLAIM_COVERAGE_GROUPS,
                 CLAIM_LEDGER,
                 CLAIM_EFFECTIVE_LEDGER,
+                CLAIM_QUEUE_PROPOSALS,
                 CLAIM_SHADOW_METRICS,
                 CLAIM_GENERATION_META,
                 CLAIM_EFFECTIVE_META,
+                CLAIM_EFFECTIVE_HEALTH,
+                CLAIM_REVIEW_EVENTS,
                 CLAIM_VERIFIER_ATTEMPTS,
             ):
-                if name not in written:
+                if (out_dir / name).is_file() and name not in written:
                     written.append(name)
         except Exception as exc:  # Shadow failure never turns a good extraction into a failed section.
             claim_shadow_error = f"shadow_publish_failed:{type(exc).__name__}:{exc}"

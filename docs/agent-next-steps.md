@@ -1,12 +1,14 @@
-# Agent 化待办方案（2026-07-23 快照）
+# Agent 化待办方案（2026-07-28 快照）
 
 当前进度：Phase 0 ✅ → Phase 1 ✅（v2 修复）→ Phase 1.5 ✅（裁定：规则保持默认）→
 Phase 2 ✅（工具化审查 + WP2 待澄清/兜底渲染）→ 专家审核十项修复 ✅（main `e32770a`）
 → 专家审核第二轮十三项修复 ✅（main `e3ad2a7`，1627 tests / golden 6/6）
 → **Claim Conservation Ledger Phase 0A/0B ✅（main `a08a60a`，shadow 双写不切生产门控；
-冻结规格 `docs/agent-claim-ledger-spec.md` v2.1；成本线用户批准调用 ≤25% / token ≤65%）**。
-下一步主线：Claim Ledger **Phase 1 生产双写**（claim 级只读 API/UI/导出 + effective
-reducer + review-state bridge，规格未冻结，等用户指示开工）。
+总纲 `docs/agent-claim-ledger-spec.md` v2.4）**
+→ **Claim Ledger Phase 1 ✅（已合 main `617e1ce`，生产双写不切门控；主检出全量 2106
+tests OK、golden 6/6 退出门通过；总纲 v2.4 + Phase 1 规格 v1.4）**。
+下一步主线：Claim Ledger **Phase 1.5**（闭环故障恢复验证 + A/B 写入口 review-revision CAS +
+启用 claim mutation，唯一通道 targeted_reextract；规格未冻结，等用户指示开工）。
 Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量价值待 Phase 2 真实
 项目验证后再议）。
 
@@ -20,7 +22,20 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 - 验收：新 key 跑一次 `python llm_pipeline.py --out <副本> --llm-route
   openai_compatible --llm-review-limit 1` 成功即可。
 
-### 2. 评测集 20 条扩充案例人工核对（用户/领域专家，约 1–2 小时）
+### 2. Claim Ledger Phase 1.5 规格冻结（半天讨论 + 半天成文，Phase 1.5 前置）
+
+- Phase 1 已合 main `617e1ce`（golden 6/6、全量 2106 OK），生产门控未切换。
+- Phase 1.5 范围（总纲 v2.4 §9）：闭环故障恢复验证（真实 `os._exit` 崩溃矩阵扩展到
+  effective WAL、锁序反序注入、interrupted fold 的 health 登记）、A/B 写入口
+  `expected_target_fingerprint`/`expected_target_review_revision` CAS、启用 claim 级专家
+  写入与定点补抽 mutation（唯一通道 `targeted_reextract`）、mutation 失败补偿与并发冲突、
+  ledger-only cache rebuild、downstream incomplete_inputs 贯通。
+- Phase 1 审查延后项一并纳入：publish 后双重 fold 去重、hook 门控加轨道校验、
+  acceptance/review_packet 换显式三层 API、`decide_trace.jsonl` 入零-mutation 守卫监视、
+  clarification entries TIER 前后对比断言、启动 fold 的 fresh 短路。
+- 规格必须先冻结经确认再动工（总纲硬性前置）。
+
+### 3. 评测集 20 条扩充案例人工核对（用户/领域专家，约 1–2 小时）
 
 - 背景：agent-eval-v2 扩充 20 条（classify-009..012、grouping-005..008、
   must-ask-005..010、hallucination-005..010）曾被实施者代登记为已核对，
@@ -37,7 +52,7 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 - 验收：`python agent_eval.py --eval-dir golden_sets/agent_eval_v1` 的
   `unreviewed_count` 与登记一致；`python -m unittest tests.test_agent_eval` 绿。
 
-### 3. WP2 的 test3 真实复验（Phase 2 规格 §8.5 遗留，约半天）
+### 4. WP2 的 test3 真实复验（Phase 2 规格 §8.5 遗留，约半天）
 
 - 背景：WP2（无依据字段强制"待澄清"+ 兜底渲染）目前只有 mock/夹具验证，
   规格验收 #5 要求真实产物复跑，需要有效 LLM key（先做待办 1）。
@@ -56,12 +71,12 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 - 产出：复验结果（条数、样本截图或 JSON 摘录）记录进 `CLAUDE.md` WP2 条目；
   如有假标/漏标，按"只对无依据下手"口径回归讨论。
 
-### 4. ~~grouping 基线 0.5 改进（确定性聚类规则）~~ **已完成（2026-07-23，main `67216b5`）**
+### 5. ~~grouping 基线 0.5 改进（确定性聚类规则）~~ **已完成（2026-07-23，main `67216b5`）**
 - 三规则落地：周期档位分家（审核人裁定）、对象词组合并（误拆修复）、变体护栏
   （编号/制式不同不并）；agent_eval grouping **4/8 → 8/8**，生产影响实测为零
   （test2/test3 新旧逐组一致）；`FUNCTIONAL_SYNTHESIS_VERSION` 升 v7。
 
-### 5. worktree 清理（10 分钟）——✅ 已完成（2026-07-25，Kimi Work 执行）
+### 6. worktree 清理（10 分钟）——✅ 已完成（2026-07-25，Kimi Work 执行）
 
 - 执行时文档所列 7 个 worktree/分支已被此前清理删除；实际剩余为
   `requirement-atomizer-vue3-remediation` worktree + 10 个 `codex/*` 分支。
@@ -70,7 +85,7 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
   `git branch -d` 删除全部 10 个分支。
 - 终态：单一 worktree（main `97c3ce7`），本地仅剩 main 分支。
 
-### 6. ~~重新打包桌面应用~~ **已完成（2026-07-23）**
+### 7. ~~重新打包桌面应用~~ **已完成（2026-07-23）**
 - 新包 `ui/dist/标准需求抽取与审查平台 0.1.0.exe`（192MB，与旧包同量级），含全部
   修复：专家审核两轮、锚点一致化（guards-v11/review-tools-v3）、WP2 v3、
   grouping v7；包内代码版本已抽查核实。旧包备份在 `ui/.pkg-backup/`。
@@ -78,7 +93,7 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
   `dist/`——否则历史 win-unpacked/旧 exe 被递归打进新包（本次先产出 581MB 废包，
   清 dist 后回 192MB）。
 
-### 7. must_ask 语义档自动判定评估（不急，Phase 2 稳定后）
+### 8. must_ask 语义档自动判定评估（不急，Phase 2 稳定后）
 
 - 背景：must_ask 类 10 条中 6 条语义型陷阱标记 `judge_note: "manual"`，
   不计自动通过率分母——信息充分性判断当前只能靠人。
@@ -86,7 +101,7 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
   （判定过程也必须过幻觉护栏，判定器本身先拿 4 条已稳定案例校准）。
 - 不做：在 LLM 判定没校准前，不得把 manual 档计入自动基线。
 
-### 8. 默认方案显式标注政策（审核人 2026-07-23 裁定，待立项）
+### 9. 默认方案显式标注政策（审核人 2026-07-23 裁定，待立项）
 
 - 背景：人工核对 must-ask-002/003/004 与 hallucination-001 时审核人裁定——原文
   确实未提及的参数**可以按默认方案做，但必须显式标注"这是默认方案，不是客户
@@ -108,7 +123,7 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
   作缺陷修复证据。
 - **锚点一致化已修（main `24a7b21`，guards-v11）**：批注蓝区=原句跨越块集、
   section_fallback 按小节收窄；**test5 需用新 key 重跑抽取**才能吃到收窄
-  （可与待办 3 的 WP2 复验合并成一次重跑）；块内相邻句仍可能进框（块粒度），
+  （可与待办 4 的 WP2 复验合并成一次重跑）；块内相邻句仍可能进框（块粒度），
   句级裁剪留作后续立项。
 - **审查缓存 v4→v5 一次性失效**：第二轮修复升 `llm-review-cache-v5`（schema 修复
   续接 transcript 行为变化）后旧缓存全 miss（安全方向），首次全量审查会慢一轮，

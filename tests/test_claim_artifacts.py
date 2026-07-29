@@ -127,6 +127,128 @@ def _publish(root: Path, catalog: dict, shadow: dict | None = None, *, run_id: s
     )
 
 
+def _effective_candidate(
+    root: Path,
+    *,
+    invalidate_groups: bool = False,
+) -> tuple[list[dict], list[dict], dict]:
+    base = claim_artifacts.load_committed_claim_base(root)
+    base_row = base["ledger"][0]
+    group_ids = [str(value) for value in base_row.get("coverage_group_ids") or []]
+    invalid_reasons = (
+        {group_id: "expert_rejected" for group_id in group_ids}
+        if invalidate_groups
+        else {}
+    )
+    valid_group_ids = [] if invalidate_groups else group_ids
+    claim = base["catalog"][0]
+    adjusted_groups = []
+    for group in base["groups"]:
+        adjusted = dict(group)
+        group_id = str(group.get("coverage_group_id") or "")
+        if group_id in invalid_reasons:
+            adjusted["status"] = "invalid"
+            adjusted["invalid_reason"] = invalid_reasons[group_id]
+        adjusted_groups.append(adjusted)
+    reduced = claim_ledger.reduce_claim(
+        claim,
+        validated_groups=[
+            group for group in adjusted_groups if group.get("status") == "validated"
+        ],
+        validated_negative=base_row.get("semantic_negative"),
+        all_groups=adjusted_groups,
+    )
+    effective_row = {
+        **base_row,
+        **{
+            key: reduced[key]
+            for key in (
+                "resolution",
+                "classification",
+                "classification_status",
+                "exclusion_kind",
+                "invalid_reasons",
+            )
+        },
+        "schema": "claim-effective-ledger/v1",
+        "base_ledger_schema": base_row["schema"],
+        "base_claim_row_hash": claim_artifacts.hash_json(
+            "claim-base-row/v1",
+            base_row,
+        ),
+        "claim_effective_revision": claim_artifacts.hash_json(
+            "test-effective-row/v1",
+            {"claim_id": base_row["claim_id"], "invalid": invalidate_groups},
+        ),
+        "effective_facts": {
+            "valid_group_ids": valid_group_ids,
+            "invalid_group_reasons": invalid_reasons,
+            "validated_negative_id": claim_artifacts.semantic_negative_id(
+                base_row.get("semantic_negative")
+            ),
+            "invalidated_targets": [],
+            "reused_validation_group_ids": [],
+        },
+        "last_relevant_event_seq": 0,
+    }
+    target_set_hash = str(base["generation_meta"]["target_generation_id"])
+    review_hash = str(base["generation_meta"]["target_review_authority_revision"])
+    meta = {
+        "run_id": "effective-test",
+        "event_prefix_sha256": "sha256:" + hashlib.sha256(b"").hexdigest(),
+        "last_event_seq": 0,
+        "document_effective_revision": claim_artifacts.hash_json(
+            "test-document-effective/v1",
+            {"invalid": invalidate_groups},
+        ),
+        "target_set_hash": target_set_hash,
+        "target_publication_revision": claim_artifacts.hash_json(
+            "test-target-publication/v1",
+            {"target_set_hash": target_set_hash},
+        ),
+        "requirement_review_state_hash": review_hash,
+        "effective_ledger_schema": claim_ledger.CLAIM_EFFECTIVE_LEDGER_SCHEMA,
+        "review_adapter_versions": claim_ledger.effective_review_adapter_versions(),
+        "reducer_version": claim_ledger.CLAIM_EFFECTIVE_REDUCER_VERSION,
+        "bridge_version": claim_ledger.CLAIM_REVIEW_BRIDGE_VERSION,
+        "queue_version": claim_ledger.CLAIM_QUEUE_VERSION,
+        "effective_metrics": {"fixture": True},
+    }
+    queue: list[dict] = []
+    if invalidate_groups:
+        proposal_hash = claim_artifacts.hash_json(
+            "claim-queue-proposal-id/v1",
+            {
+                "claim_id": effective_row["claim_id"],
+                "claim_effective_revision": effective_row["claim_effective_revision"],
+                "action": "needs_extraction",
+                "queue_version": claim_ledger.CLAIM_QUEUE_VERSION,
+            },
+        )
+        queue.append({
+            "schema": "claim-queue-proposal/v1",
+            "proposal_id": (
+                f"CQP-{claim_artifacts.digest_hex(effective_row['claim_hash'])[:8]}-"
+                f"{claim_artifacts.digest_hex(proposal_hash)[:8]}"
+            ),
+            "claim_id": effective_row["claim_id"],
+            "parent_block_id": claim["locator"]["block_id"],
+            "locator": claim["locator"],
+            "claim_source_fingerprint": claim_artifacts.canonical_target_fingerprint(
+                claim["claim_hash"]
+            ),
+            "document_generation_id": effective_row["document_generation_id"],
+            "catalog_generation_id": effective_row["catalog_generation_id"],
+            "claim_effective_revision": effective_row["claim_effective_revision"],
+            "action": "needs_extraction",
+            "dry_run": True,
+            "queue_version": claim_ledger.CLAIM_QUEUE_VERSION,
+            "expected_ledger_state": "uncertain",
+            "created_from_event_seq": 0,
+        })
+    return [effective_row], queue, meta
+
+
 def _publish_semantic_negative(
     root: Path,
     catalog: dict,
@@ -338,6 +460,150 @@ class ClaimArtifactTests(unittest.TestCase):
             self.assertEqual(loaded["ledger"][0]["resolution"], "covered")
             self.assertEqual(loaded["effective_ledger"], loaded["ledger"])
             self.assertTrue(claim_artifacts.committed_shadow_versions_are_current(loaded))
+
+    def test_effective_v2_publication_is_canonical_and_strictly_loadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            ledger, queue, meta = _effective_candidate(root)
+
+            published = claim_artifacts.publish_effective_snapshot(
+                root,
+                ledger,
+                queue,
+                meta=meta,
+            )
+            loaded = claim_artifacts.load_committed_effective_snapshot(root)
+
+            self.assertEqual(loaded["effective_meta"], published)
+            self.assertEqual(loaded["effective_ledger"], ledger)
+            self.assertEqual(loaded["queue_proposals"], [])
+            self.assertFalse(
+                (root / claim_artifacts.CLAIM_EFFECTIVE_META).read_bytes().endswith(b"\n")
+            )
+            self.assertFalse(
+                (root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL).exists()
+            )
+
+    def test_readonly_effective_loader_never_recovers_a_pending_journal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            ledger, queue, meta = _effective_candidate(root)
+            claim_artifacts.publish_effective_snapshot(root, ledger, queue, meta=meta)
+            journal = root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
+            journal.write_bytes(b'{"unfinished":true}')
+
+            with self.assertRaises(claim_artifacts.ClaimEffectiveRecoveryPending):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+            self.assertEqual(journal.read_bytes(), b'{"unfinished":true}')
+
+    def test_effective_publication_rejects_covered_without_valid_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            ledger, queue, meta = _effective_candidate(root)
+            ledger[0]["effective_facts"]["invalid_group_reasons"] = {
+                group_id: "expert_rejected"
+                for group_id in ledger[0]["coverage_group_ids"]
+            }
+            ledger[0]["effective_facts"]["valid_group_ids"] = []
+
+            with self.assertRaises(claim_artifacts.ClaimArtifactError):
+                claim_artifacts.publish_effective_snapshot(root, ledger, queue, meta=meta)
+
+    def test_effective_publication_requires_queue_for_every_uncertain_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            ledger, _queue, meta = _effective_candidate(root, invalidate_groups=True)
+
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "complete uncertain-claim projection",
+            ):
+                claim_artifacts.publish_effective_snapshot(root, ledger, [], meta=meta)
+
+    def test_effective_wal_rolls_back_each_partial_replace(self) -> None:
+        for failed_name in (
+            claim_artifacts.CLAIM_EFFECTIVE_LEDGER,
+            claim_artifacts.CLAIM_QUEUE_PROPOSALS,
+            claim_artifacts.CLAIM_EFFECTIVE_META,
+        ):
+            with self.subTest(failed_name=failed_name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _publish(root, _catalog())
+                ledger, queue, meta = _effective_candidate(root, invalidate_groups=True)
+                old = {
+                    name: (root / name).read_bytes() if (root / name).is_file() else None
+                    for name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+                }
+                real_write = claim_artifacts._atomic_write_bytes
+
+                def crash_on_production(path, payload):
+                    target = Path(path)
+                    if target.parent == root and target.name == failed_name:
+                        raise RuntimeError("simulated effective replace crash")
+                    return real_write(target, payload)
+
+                with patch.object(
+                    claim_artifacts,
+                    "_atomic_write_bytes",
+                    side_effect=crash_on_production,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "simulated"):
+                        claim_artifacts.publish_effective_snapshot(
+                            root,
+                            ledger,
+                            queue,
+                            meta=meta,
+                        )
+
+                self.assertTrue(
+                    (root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL).is_file()
+                )
+                claim_artifacts.load_committed_shadow(root)
+                self.assertFalse(
+                    (root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL).exists()
+                )
+                for name, payload in old.items():
+                    path = root / name
+                    if payload is None:
+                        self.assertFalse(path.exists(), name)
+                    else:
+                        self.assertEqual(path.read_bytes(), payload, name)
+
+    def test_effective_wal_rolls_back_when_commit_point_is_not_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            ledger, queue, meta = _effective_candidate(root, invalidate_groups=True)
+            old = {
+                name: (root / name).read_bytes() if (root / name).is_file() else None
+                for name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+            }
+
+            with patch.object(
+                claim_artifacts,
+                "_finish_effective_publication_unlocked",
+                side_effect=RuntimeError("simulated pre-commit crash"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "pre-commit"):
+                    claim_artifacts.publish_effective_snapshot(
+                        root,
+                        ledger,
+                        queue,
+                        meta=meta,
+                    )
+
+            claim_artifacts.load_committed_shadow(root)
+            for name, payload in old.items():
+                path = root / name
+                if payload is None:
+                    self.assertFalse(path.exists(), name)
+                else:
+                    self.assertEqual(path.read_bytes(), payload, name)
 
     def test_publish_appends_hash_chained_verifier_attempt_and_binds_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2255,7 +2521,7 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
                 claim_artifacts.committed_shadow_versions_are_current(loaded)
             )
 
-    def test_changed_target_metadata_invalidates_committed_generation(self) -> None:
+    def test_changed_live_target_metadata_does_not_invalidate_committed_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             catalog = _catalog()
@@ -2266,8 +2532,10 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
             metadata["producer_lineage"]["extract_prompt_version"] = "ai-extract-v21"
             claim_artifacts.atomic_write_json(root / "ai_requirements.meta.json", metadata)
 
-            with self.assertRaises(claim_artifacts.ClaimArtifactError):
-                claim_artifacts.load_committed_shadow(root)
+            loaded = claim_artifacts.load_committed_claim_base(root)
+
+            self.assertIsNone(loaded["requirements_meta"])
+            self.assertTrue(claim_artifacts.committed_base_versions_are_current(loaded))
 
     def test_tampered_snapshot_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2279,12 +2547,13 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
             with self.assertRaises(claim_artifacts.ClaimArtifactError):
                 claim_artifacts.load_committed_shadow(root)
 
-    def test_changed_target_requirements_invalidate_committed_generation(self) -> None:
+    def test_changed_live_target_requirements_do_not_invalidate_committed_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             catalog = _catalog()
             claim_artifacts.atomic_write_jsonl(
                 root / "ai_requirements.jsonl", [_requirement(catalog)])
+            _write_current_requirements_meta(root)
             requirements_hash = claim_artifacts.file_sha256(root / "ai_requirements.jsonl")
             claim_artifacts.publish_shadow_generation(
                 root,
@@ -2294,15 +2563,18 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
                 requirements_sha256=requirements_hash,
             )
             claim_artifacts.atomic_write_jsonl(root / "ai_requirements.jsonl", [{"id": "R2"}])
-            with self.assertRaises(claim_artifacts.ClaimArtifactError):
-                claim_artifacts.load_committed_shadow(root)
+            loaded = claim_artifacts.load_committed_claim_base(root)
 
-    def test_changed_review_authority_invalidates_committed_generation(self) -> None:
+            self.assertEqual(loaded["requirements"], [])
+            self.assertTrue(claim_artifacts.committed_base_versions_are_current(loaded))
+
+    def test_changed_review_authority_does_not_invalidate_committed_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             catalog = _catalog()
             requirement = _requirement(catalog)
             claim_artifacts.atomic_write_jsonl(root / "ai_requirements.jsonl", [requirement])
+            _write_current_requirements_meta(root)
             requirements_hash = claim_artifacts.file_sha256(root / "ai_requirements.jsonl")
             claim_artifacts.publish_shadow_generation(
                 root,
@@ -2317,8 +2589,13 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
                 "source_fingerprint": claim_ledger.target_source_fingerprint(requirement),
                 "review_subject_fingerprint": claim_ledger.target_fingerprint(requirement),
             }])
-            with self.assertRaises(claim_artifacts.ClaimArtifactError):
-                claim_artifacts.load_committed_shadow(root)
+            loaded = claim_artifacts.load_committed_claim_base(root)
+
+            self.assertEqual(loaded["ledger"], claim_ledger.build_shadow_ledger(
+                catalog,
+                [requirement],
+            )["ledger"])
+            self.assertTrue(claim_artifacts.committed_base_versions_are_current(loaded))
 
     def test_changed_source_artifact_invalidates_committed_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

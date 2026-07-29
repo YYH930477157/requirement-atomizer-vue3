@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import math
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -247,6 +248,74 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 self.send_json(current_internal_checks(self.output_dir))
             except (TimeoutError, OSError, ValueError) as exc:
                 self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        claim_views = {
+            "/claim-catalog": "catalog",
+            "/claim-ledger": "ledger",
+            "/claim-coverage-groups": "coverage_groups",
+            "/claim-metrics": "metrics",
+            "/claim-review-events": "review_events",
+            "/claim-queue": "queue",
+        }
+        if parsed.path in claim_views:
+            from claim_artifacts import (
+                ClaimArtifactError,
+                ClaimEffectiveRecoveryPending,
+            )
+            from claim_views import ClaimViewMigrationRequired, build_claim_view
+
+            resolution = one(params, "resolution")
+            if resolution and resolution not in {"covered", "excluded", "uncertain"}:
+                self.send_json({"error": "invalid claim resolution filter"}, status=400)
+                return
+            try:
+                limit = parse_claim_page_value(
+                    one(params, "limit"), name="limit", default=100
+                )
+                offset = parse_claim_page_value(
+                    one(params, "offset"), name="offset", default=0
+                )
+            except ValueError as exc:
+                self.send_json({"error": str(exc), "retryable": False}, status=400)
+                return
+            try:
+                payload = build_claim_view(
+                    self.output_dir,
+                    claim_views[parsed.path],
+                    resolution=resolution,
+                    owner_unit_id=one(params, "owner_unit_id"),
+                    claim_id=one(params, "claim_id"),
+                    limit=limit,
+                    offset=offset,
+                )
+            except ClaimViewMigrationRequired as exc:
+                self.send_json({
+                    "error": "effective_migration_required",
+                    "detail": str(exc),
+                    "retryable": True,
+                }, status=503)
+                return
+            except ClaimEffectiveRecoveryPending as exc:
+                self.send_json({
+                    "error": "effective_recovery_pending",
+                    "detail": str(exc),
+                    "retryable": True,
+                }, status=503)
+                return
+            except (
+                ClaimArtifactError,
+                TimeoutError,
+                OSError,
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+            ) as exc:
+                self.send_json({
+                    "error": "claim_artifact_unavailable",
+                    "detail": str(exc),
+                    "retryable": True,
+                }, status=503)
+                return
+            self.send_json(payload)
             return
         self.send_error(404, "Unknown endpoint")
 
@@ -667,6 +736,25 @@ def parse_int(value: str, *, default: int) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def parse_claim_page_value(value: str, *, name: str, default: int) -> int:
+    """Parse the strict pagination contract used by all Claim Ledger GETs."""
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid claim {name}") from exc
+    if name == "limit":
+        if not 1 <= parsed <= 500:
+            raise ValueError("claim limit must be between 1 and 500")
+    elif name == "offset":
+        if parsed < 0:
+            raise ValueError("claim offset must be non-negative")
+    else:  # pragma: no cover - internal programming error
+        raise ValueError(f"unknown claim pagination field: {name}")
+    return parsed
 
 
 def is_allowed_origin(origin: str, allowed_origins: set[str]) -> bool:
@@ -1167,6 +1255,31 @@ def _enrich_ai_requirement_rows(
     return enriched
 
 
+def _read_ai_extraction_quality(output_dir: Path) -> dict | None:
+    """Read the two legacy coverage metrics exposed by the status endpoint."""
+    path = Path(output_dir) / "ai_extract_quality.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid ai_extract_quality.json: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("ai_extract_quality.json must contain a JSON object")
+
+    quality: dict[str, float | int | None] = {}
+    for field in ("coverage_pct", "core_coverage_pct"):
+        value = payload.get(field)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise ValueError(f"ai_extract_quality.json {field} must be a finite number or null")
+        quality[field] = value
+    return quality
+
+
 def build_ai_extraction_status(output_dir: Path) -> dict:
     """Return only the run-aware partial generation; never merge an older final file."""
     from ai_extract import (
@@ -1177,13 +1290,14 @@ def build_ai_extraction_status(output_dir: Path) -> dict:
     )
 
     root = Path(output_dir).expanduser().resolve()
+    quality = _read_ai_extraction_quality(root)
     partial_path = root / AI_REQUIREMENTS_PARTIAL
     partial = read_partial_snapshot(partial_path)
     current_input = extraction_input_fingerprint(root)
     if (partial is None
             or not current_input
             or str(partial.get("input_fingerprint") or "") != current_input):
-        return {
+        status = {
             "schema": AI_PARTIAL_SCHEMA,
             "run_id": None,
             "completed": 0,
@@ -1192,7 +1306,10 @@ def build_ai_extraction_status(output_dir: Path) -> dict:
             "failed": False,
             "rows": [],
         }
-    return {
+        if quality is not None:
+            status["quality"] = quality
+        return status
+    status = {
         "schema": AI_PARTIAL_SCHEMA,
         "run_id": str(partial["run_id"]),
         "completed": int(partial.get("completed") or 0),
@@ -1206,6 +1323,9 @@ def build_ai_extraction_status(output_dir: Path) -> dict:
             freshness_reference=partial_path,
         ),
     }
+    if quality is not None:
+        status["quality"] = quality
+    return status
 
 
 def final_ai_requirements_are_stale(output_dir: Path) -> bool:
@@ -1477,6 +1597,21 @@ def main(argv: list[str] | None = None) -> int:
     RequirementAPIHandler.output_dir = args.out.expanduser().resolve()
     RequirementAPIHandler.allowed_origins = build_allowed_origins(args.host, args.port, args.allow_origin)
     RequirementAPIHandler.local_token = args.token
+    if (RequirementAPIHandler.output_dir / "claim_generation.meta.json").is_file():
+        try:
+            from claim_review_actions import fold_effective_ledger
+
+            fold_effective_ledger(
+                RequirementAPIHandler.output_dir,
+                actor_trigger="api-startup-maintenance",
+            )
+        except Exception as exc:
+            import logging
+
+            logging.getLogger("requirement_atomizer").warning(
+                "claim effective startup maintenance lagged: %s",
+                exc,
+            )
     server = ThreadingHTTPServer((args.host, args.port), RequirementAPIHandler)
     print(
         json.dumps(

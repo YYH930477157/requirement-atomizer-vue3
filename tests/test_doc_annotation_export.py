@@ -10,7 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import doc_annotation_export as dae
+import claim_review_actions
 from parsers.pdf_parser import extract_pdf
+from tests.test_claim_artifacts import _catalog, _publish
 
 
 def _seed(out: Path) -> None:
@@ -36,6 +38,42 @@ def _seed(out: Path) -> None:
 
 
 class DocAnnotationExportTests(unittest.TestCase):
+    def test_full_html_uses_committed_claim_distribution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed(out)
+            _publish(out, _catalog())
+            claim_review_actions.fold_effective_ledger(
+                out,
+                actor_trigger="annotation-integration-test",
+            )
+
+            rendered = dae.render_annotation_html(out)
+
+        self.assertIn('class="claim-distribution"', rendered)
+        self.assertIn('class="claim-covered">1</i>', rendered)
+        self.assertIn('class="claim-excluded">0</i>', rendered)
+        self.assertIn('class="claim-uncertain">0</i>', rendered)
+
+    def test_block_claim_distribution_badge_is_count_only(self) -> None:
+        rendered = dae._render_one_block(
+            "B1",
+            "Auxiliary outputs",
+            [],
+            "body",
+            True,
+            False,
+            False,
+            [],
+            claim_counts={"covered": 2, "excluded": 1, "uncertain": 3},
+        )
+
+        self.assertIn('class="claim-distribution"', rendered)
+        self.assertIn('class="claim-covered">2</i>', rendered)
+        self.assertIn('class="claim-excluded">1</i>', rendered)
+        self.assertIn('class="claim-uncertain">3</i>', rendered)
+        self.assertNotIn("claim_id", rendered)
+
     def test_reflow_echo_tag_lists_all_linked_requirements(self) -> None:
         rendered = dae._render_one_block(
             "B-ECHO", "Repeated source paragraph.", [], "body",

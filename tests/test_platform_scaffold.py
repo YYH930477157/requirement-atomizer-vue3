@@ -749,7 +749,7 @@ class PlatformScaffoldTests(unittest.TestCase):
         self.assertEqual({state["requirement_id"] for state in states}, {"SREQ-0", "SREQ-1"})
         self.assertEqual({event["requirement_id"] for event in events}, {"SREQ-0", "SREQ-1"})
 
-    def test_review_state_lock_recovers_stale_lock_file(self) -> None:
+    def test_review_state_lock_uses_persistent_os_owned_lock_file(self) -> None:
         import review_state as review_state_module
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -762,7 +762,9 @@ class PlatformScaffoldTests(unittest.TestCase):
             with review_state_module.review_state_lock(out_dir, timeout_s=0.2, stale_after_s=0.0):
                 self.assertTrue(lock_path.exists())
 
-            self.assertFalse(lock_path.exists())
+            self.assertTrue(lock_path.exists())
+            owner = json.loads(lock_path.read_text(encoding="ascii"))
+            self.assertEqual(owner["pid"], os.getpid())
 
     def test_review_pipeline_preserves_existing_expert_decision_on_rerun(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

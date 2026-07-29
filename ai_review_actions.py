@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -21,8 +22,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator
 
-from io_utils import read_jsonl_recover_torn_tail
 from requirements_analysis_schema import normalize_ownership
+from process_file_lock import process_file_lock
 
 AI_REVIEW_STATES = "ai_review_states.jsonl"
 VALID_AI_STATUS = {"accepted", "rejected", "needs_discussion", "expert_pending", "draft"}
@@ -175,45 +176,191 @@ def source_ai_requirement_id(req: dict[str, Any]) -> str:
 
 def read_ai_review_states(out_dir: Path) -> dict[str, dict[str, Any]]:
     """取每个 ai_req_id 的最新裁决，并与追加写使用同一进程锁。"""
+    return dict(read_ai_review_authority_snapshot(out_dir)["states"])
+
+
+def _empty_ai_review_authority_snapshot() -> dict[str, Any]:
+    empty_hash = "sha256:" + hashlib.sha256(b"").hexdigest()
+    return {
+        "source_store": AI_REVIEW_STATES,
+        "states": {},
+        "source_records": {},
+        "ordered_records": [],
+        "audit_gaps": [],
+        "torn_tail_recovered": False,
+        "authority_file_sha256": empty_hash,
+    }
+
+
+def _authority_snapshot_from_scan(scan: dict[str, Any]) -> dict[str, Any]:
+    states: dict[str, dict[str, Any]] = {}
+    source_records: dict[str, dict[str, Any]] = {}
+    ordered_records: list[dict[str, Any]] = []
+    for record in scan["ordered_records"]:
+        row = dict(record["state"])
+        ordinal = int(record["append_ordinal"])
+        rid = str(row.get("ai_req_id") or "")
+        states[rid] = row
+        source_record = {
+            "append_ordinal": ordinal,
+            "source_event_revision": record["source_event_revision"],
+            "state": row,
+        }
+        source_records[rid] = source_record
+        ordered_records.append(source_record)
+    return {
+        "source_store": AI_REVIEW_STATES,
+        "states": states,
+        "source_records": source_records,
+        "ordered_records": ordered_records,
+        "audit_gaps": list(scan["audit_gaps"]),
+        "torn_tail_recovered": bool(scan["torn_tail_recovered"]),
+        "authority_file_sha256": scan["authority_file_sha256"],
+    }
+
+
+def read_ai_review_authority_snapshot(out_dir: Path) -> dict[str, Any]:
+    """Return current authority plus every ordered source row and visible audit gap."""
     root = Path(out_dir).expanduser().resolve()
     path = root / AI_REVIEW_STATES
-    states: dict[str, dict[str, Any]] = {}
     with _ai_review_state_lock(root):
         if not path.exists():
-            return states
+            return _empty_ai_review_authority_snapshot()
+        return _authority_snapshot_from_scan(_scan_ai_review_rows_unlocked(path))
+
+
+def read_ai_review_authority_snapshot_readonly(out_dir: Path) -> dict[str, Any]:
+    """Read a stable authority snapshot without locks or torn-tail recovery."""
+    root = Path(out_dir).expanduser().resolve()
+    path = root / AI_REVIEW_STATES
+    before = path.read_bytes() if path.is_file() else None
+    snapshot = (
+        _empty_ai_review_authority_snapshot()
+        if before is None
+        else _authority_snapshot_from_scan(
+            _scan_ai_review_rows_unlocked(
+                path,
+                raw=before,
+                repair_torn_tail=False,
+            )
+        )
+    )
+    after = path.read_bytes() if path.is_file() else None
+    if after != before:
+        raise ValueError("AI review authority changed during read-only read")
+    return snapshot
+
+
+def _replace_ai_review_bytes(path: Path, payload: bytes) -> None:
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.{os.getpid()}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                temporary = None
+                return
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _scan_ai_review_rows_unlocked(
+    path: Path,
+    *,
+    raw: bytes | None = None,
+    repair_torn_tail: bool = True,
+) -> dict[str, Any]:
+    """Scan physical records without renumbering valid rows across complete gaps."""
+    from claim_artifacts import hash_json
+
+    if raw is None:
+        raw = path.read_bytes()
+    bom = b"\xef\xbb\xbf" if raw.startswith(b"\xef\xbb\xbf") else b""
+    body = raw[len(bom):]
+    lines = body.splitlines(keepends=True)
+    records: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    append_ordinal = 0
+    torn_tail_recovered = False
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        append_ordinal += 1
         try:
-            rows = read_jsonl_recover_torn_tail(path)
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-            # 历史文件可能已有完整换行的坏记录。保留后续有效裁决，但必须告警；
-            # 新写入由下方跨进程锁串行化，不再制造交错行。
-            rows = []
-            with path.open(encoding="utf-8") as handle:
-                for line_number, line in enumerate(handle, start=1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        LOGGER.warning(
-                            "skipping corrupt %s record at line %d",
-                            AI_REVIEW_STATES,
-                            line_number,
-                        )
-                        continue
-                    if not isinstance(row, dict):
-                        LOGGER.warning(
-                            "skipping non-object %s record at line %d",
-                            AI_REVIEW_STATES,
-                            line_number,
-                        )
-                        continue
-                    rows.append(row)
-        for row in rows:
-            rid = str(row.get("ai_req_id") or "")
-            if rid:
-                states[rid] = row
-    return states
+            row = json.loads(stripped.decode("utf-8"))
+            if not isinstance(row, dict):
+                raise ValueError("record is not an object")
+            if not str(row.get("ai_req_id") or ""):
+                raise ValueError("record has no ai_req_id")
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            is_unterminated_tail = (
+                index == len(lines) - 1
+                and not raw_line.endswith((b"\n", b"\r"))
+            )
+            if is_unterminated_tail:
+                if not repair_torn_tail:
+                    raise ValueError("AI review authority has a torn tail") from exc
+                recovered = bom + b"".join(lines[:index])
+                _replace_ai_review_bytes(path, recovered)
+                raw = recovered
+                torn_tail_recovered = True
+                LOGGER.warning("repaired interrupted final AI review record: %s", path)
+                break
+            gaps.append({
+                "physical_line_number": index + 1,
+                "append_ordinal": append_ordinal,
+                "reason": type(exc).__name__,
+                "line_sha256": "sha256:" + hashlib.sha256(raw_line).hexdigest(),
+            })
+            LOGGER.warning(
+                "preserving audit gap in %s at physical line %d (record %d)",
+                AI_REVIEW_STATES,
+                index + 1,
+                append_ordinal,
+            )
+            continue
+        source_revision = hash_json(
+            "claim-source-event-revision/v1",
+            {
+                "source_store": AI_REVIEW_STATES,
+                "append_ordinal": append_ordinal,
+                "source_row": row,
+            },
+        )
+        records.append({
+            "append_ordinal": append_ordinal,
+            "source_event_revision": source_revision,
+            "state": row,
+        })
+    return {
+        "ordered_records": records,
+        "audit_gaps": gaps,
+        "torn_tail_recovered": torn_tail_recovered,
+        "authority_file_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _read_ai_review_rows_unlocked(path: Path) -> list[dict[str, Any]]:
+    return [
+        dict(record["state"])
+        for record in _scan_ai_review_rows_unlocked(path)["ordered_records"]
+    ]
 
 
 @contextmanager
@@ -227,47 +374,20 @@ def _ai_review_state_lock(
     root.mkdir(parents=True, exist_ok=True)
     with _ai_process_lock_for(root):
         lock_path = root / "ai_review_states.lock"
-        deadline = time.monotonic() + timeout_s
-        fd: int | None = None
-        while fd is None:
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                if _remove_stale_ai_lock(lock_path, stale_after_s):
-                    continue
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"timed out waiting for AI review state lock: {lock_path}")
-                time.sleep(0.01)
-        try:
-            os.write(fd, str(os.getpid()).encode("ascii"))
+        # Kept as a compatibility argument for callers; OS ownership, not mtime,
+        # determines whether a lock is live.
+        del stale_after_s
+        with process_file_lock(
+            lock_path,
+            timeout_s=timeout_s,
+            label="AI review state lock",
+        ):
             yield
-        finally:
-            os.close(fd)
-            try:
-                lock_path.unlink()
-            except FileNotFoundError:
-                pass
 
 
 def _ai_process_lock_for(out_dir: Path) -> RLock:
     with _AI_REVIEW_LOCKS_GUARD:
         return _AI_REVIEW_LOCKS.setdefault(out_dir, RLock())
-
-
-def _remove_stale_ai_lock(lock_path: Path, stale_after_s: float) -> bool:
-    if stale_after_s < 0:
-        return False
-    try:
-        age_s = time.time() - lock_path.stat().st_mtime
-    except FileNotFoundError:
-        return True
-    if age_s < stale_after_s:
-        return False
-    try:
-        lock_path.unlink()
-    except FileNotFoundError:
-        return True
-    return True
 
 
 def apply_ai_review_action(
@@ -315,4 +435,16 @@ def apply_ai_review_action(
             f.write(json.dumps(state, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
+    if (out_dir / "claim_generation.meta.json").is_file():
+        try:
+            from claim_review_actions import fold_effective_ledger
+
+            fold_effective_ledger(
+                out_dir,
+                actor_trigger="ai-review-action",
+            )
+        except Exception as exc:
+            # The review row is already fsync'd authority. A derived fold failure
+            # is observable through health and must not reject the expert action.
+            LOGGER.warning("AI review saved; claim effective fold lagged: %s", exc)
     return state
