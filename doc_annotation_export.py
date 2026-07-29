@@ -266,15 +266,40 @@ def _valid_pdf_regions(value: Any) -> list[dict[str, Any]]:
     return regions
 
 
+def _dedupe_merged_cells(text: str) -> str:
+    """折叠表格渲染行里合并单元格展开成的连续重复单元格（STO 实证：docx 扁平行
+    "3.1.1 | 3.1.1 | Requirement… | Requirement…" 与转换 PDF 文本层单次出现对不上,
+    几何包含匹配全灭;原生 PDF 块无此重复,折叠是不动点）。"""
+    lines: list[str] = []
+    for line in str(text or "").split("\n"):
+        cells = [cell.strip() for cell in line.split("|")]
+        deduped = [cell for index, cell in enumerate(cells) if index == 0 or cell != cells[index - 1]]
+        lines.append(" | ".join(deduped))
+    return "\n".join(lines)
+
+
 def _geometry_match_text(value: Any) -> str:
-    text = normalize_text(str(value or ""))
+    text = normalize_text(_dedupe_merged_cells(str(value or "")))
     text = re.sub(r"\bcolumn_\d+\b", " ", text, flags=re.IGNORECASE).replace("|", " ")
-    return " ".join(text.split())
+    text = " ".join(text.split())
+    # 折叠相邻重复词（STO 实证：api 侧 normalize_text 把行分隔吞掉后,行界两侧的同值单元格
+    # 无法在 _dedupe_merged_cells 按行折叠——"…IPUE 3.1.1 | 3.1.1 |…"变成连写重复;
+    # 词级折叠后 docx 扁平方言与转换 PDF 文本层的包含关系才成立）
+    return re.sub(r"(\S+)( \1)+", r"\1", text)
 
 
 def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
-                          cache_path: Path | None = None) -> dict[str, list[dict[str, Any]]]:
-    """读取块坐标；旧输出无坐标时确定性重跑 PDF 文本解析，只回填几何数据。"""
+                          cache_path: Path | None = None, *,
+                          row_geometry: dict[str, dict[int, list[dict[str, Any]]]] | None = None
+                          ) -> dict[str, list[dict[str, Any]]]:
+    """读取块坐标；旧输出无坐标时确定性重跑 PDF 文本解析，只回填几何数据。
+
+    row_geometry（可选出参）：传入 dict 时为表格块（type="table" 且有 data_rows）
+    额外回填行级几何 {block_id: {row_index(1-based): [regions]}}——docx/xlsx 影印
+    支路的整表单块在影印页上需要行级热区（对齐原生 PDF 表格的行粒度体验）。
+    行几何只随解析回填路径产生（块自带坐标的原生 PDF 已是细粒度，不重解析）。
+    缓存 payload 增加 "row_geometry" 字段（version 3 不变：旧缓存缺此字段时
+    重算一次并回写，纯增量字段，缺席向后兼容）。"""
     block_signature = hashlib.sha256(json.dumps([
         [block.get("block_id"), block.get("page_number"), block.get("text")]
         for block in blocks
@@ -285,9 +310,21 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             cached = {}
-        if (cached.get("version") == 2 and cached.get("source_sha256") == source_hash
+        cached_rows = cached.get("row_geometry")
+        if (cached.get("version") == 3 and cached.get("source_sha256") == source_hash
                 and cached.get("block_signature") == block_signature
-                and isinstance(cached.get("geometry"), dict)):
+                and isinstance(cached.get("geometry"), dict)
+                and (row_geometry is None or isinstance(cached_rows, dict))):
+            if row_geometry is not None and isinstance(cached_rows, dict):
+                row_geometry.update({
+                    str(block_id): {
+                        int(row_index): regions
+                        for row_index, value in (rows or {}).items()
+                        if (regions := _valid_pdf_regions(value))
+                    }
+                    for block_id, rows in cached_rows.items()
+                    if isinstance(rows, dict)
+                })
             return {
                 str(block_id): regions
                 for block_id, value in cached["geometry"].items()
@@ -310,9 +347,11 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
 
     parsed_by_id = {str(block.get("block_id") or ""): block for block in parsed_blocks}
     parsed_by_text: dict[tuple[int | None, str], list[dict[str, Any]]] = {}
+    parsed_by_text_global: dict[str, list[dict[str, Any]]] = {}
     for block in parsed_blocks:
         key = (_page_number(block.get("page_number")), _geometry_match_text(block.get("text")))
         parsed_by_text.setdefault(key, []).append(block)
+        parsed_by_text_global.setdefault(key[1], []).append(block)
 
     for block in missing:
         block_id = str(block.get("block_id") or "")
@@ -347,19 +386,177 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
                     None, normalized, _geometry_match_text(best.get("text"))).ratio()
                 if ratio >= 0.72:
                     regions = _valid_pdf_regions(best.get("pdf_regions"))
+        # 影印支路几何回填（2026-07-28 STO 实证）：docx/xlsx 的块没有 page_number——
+        # 原生 PDF 路径的"同页候选"全部落空,82 页文档只有 8 块有区。无页号块改走
+        # 全局文本驱动匹配：全局精确 → 全局包含;模糊兜底在循环外统一做（见下）。
+        if not regions and normalized and _page_number(block.get("page_number")) is None:
+            global_exact = parsed_by_text_global.get(normalized) or []
+            if len(global_exact) == 1:
+                regions = _valid_pdf_regions(global_exact[0].get("pdf_regions"))
+        if not regions and normalized and _page_number(block.get("page_number")) is None:
+            # 大文本块（参数表级,>8000 字符）放宽为前缀锚定：解析块前 80 字符出现在块文本
+            # 即视为被该块覆盖——全串包含对碎片/空格差异过脆（STO 实证 184k 参数表全串
+            # 包含永远失败）;80 字符锚假命中概率极低。小块仍要求全串包含。
+            large_block = len(normalized) > 8000
+            contained_global = [
+                item for item in parsed_blocks
+                if len(_geometry_match_text(item.get("text"))) >= 16
+                and (
+                    _geometry_match_text(item.get("text")) in normalized
+                    or (large_block and _geometry_match_text(item.get("text"))[:80] in normalized)
+                )
+            ]
+            if contained_global:
+                for item in contained_global:
+                    regions.extend(_valid_pdf_regions(item.get("pdf_regions")))
         if regions:
             geometry[block_id] = regions
+    # 全局模糊兜底（无页号块专用）：全量比对取最优,但要求显著边际（最优-次优 ≥0.05）
+    # 才落区——单调游标窗口曾被实证：一次早期错配把游标拖过后续全部错位（术语表错配
+    # 到 79 页,真实位置第 6 页,最优比 0.95）。无显著边际则宁缺不猜（宁漏勿错）,
+    # 比较只看前 2000 字符控制 SequenceMatcher 成本。
+    fuzzy_pending = [
+        block for block in missing
+        if str(block.get("block_id") or "") not in geometry
+        and _page_number(block.get("page_number")) is None
+    ]
+    for block in fuzzy_pending:
+        normalized = _geometry_match_text(block.get("text"))[:2000]
+        if not normalized:
+            continue
+        block_id = str(block.get("block_id") or "")
+        scored: list[tuple[float, int]] = []
+        for index, item in enumerate(parsed_blocks):
+            candidate_text = _geometry_match_text(item.get("text"))[:2000]
+            if not candidate_text:
+                continue
+            ratio = difflib.SequenceMatcher(None, normalized, candidate_text).ratio()
+            if ratio >= 0.72:
+                scored.append((ratio, index))
+        if not scored:
+            continue
+        scored.sort(reverse=True)
+        best_ratio, best_index = scored[0]
+        second_ratio = scored[1][0] if len(scored) > 1 else 0.0
+        if best_ratio - second_ratio >= 0.05:
+            regions = _valid_pdf_regions(parsed_blocks[best_index].get("pdf_regions"))
+            if regions:
+                geometry[block_id] = regions
+        if regions:
+            geometry[block_id] = regions
+    if row_geometry is not None:
+        row_geometry.update(_table_row_geometry(blocks, parsed_blocks, parsed_by_text_global))
     if cache_path:
         payload = {
-            "version": 2,
+            "version": 3,
             "source_sha256": source_hash,
             "block_signature": block_signature,
             "geometry": geometry,
         }
+        if row_geometry is not None:
+            payload["row_geometry"] = {
+                block_id: {str(row_index): regions for row_index, regions in rows.items()}
+                for block_id, rows in row_geometry.items()
+            }
         tmp = cache_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, cache_path)
     return geometry
+
+
+def _table_row_geometry(
+    blocks: list[dict[str, Any]],
+    parsed_blocks: list[dict[str, Any]],
+    parsed_by_text_global: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[int, list[dict[str, Any]]]]:
+    """表格块数据行的行级几何（docx/xlsx 影印支路：整表单块、无页号）。
+
+    每行用 _row_render_line 渲染后走与块级相同的全局匹配（精确/包含/前缀锚预筛模糊）。
+    跳过分组标题行（非空单元格全同值）与稀疏行（非空单元格 < _PARAM_ROW_MIN_CELLS）——
+    与 spot_extract 行展开同口径；有页号的表格块（原生 PDF）已是细粒度，不重复计算。"""
+    from ai_extract import _PARAM_ROW_MIN_CELLS, _row_render_line
+
+    row_geometry: dict[str, dict[int, list[dict[str, Any]]]] = {}
+    for block in blocks:
+        if str(block.get("type") or "") != "table":
+            continue
+        if _page_number(block.get("page_number")) is not None:
+            continue
+        data_rows = block.get("data_rows") or []
+        if not data_rows:
+            continue
+        block_id = str(block.get("block_id") or "")
+        headers = [str(h or "") for h in (block.get("headers") or [])]
+        block_rows: dict[int, list[dict[str, Any]]] = {}
+        for row_index, row in enumerate(data_rows, start=1):
+            non_empty = [str(cell or "").strip() for cell in row if str(cell or "").strip()]
+            if len(non_empty) < _PARAM_ROW_MIN_CELLS:
+                continue   # 稀疏行不是独立需求行
+            if len(set(non_empty)) == 1:
+                continue   # 分组标题行（合并单元格展开成全同值）
+            normalized = _geometry_match_text(_row_render_line(headers, row))
+            if len(normalized) < 8:
+                continue
+            regions = _match_row_regions(normalized, parsed_blocks, parsed_by_text_global)
+            if regions:
+                block_rows[row_index] = regions
+        if block_rows:
+            row_geometry[block_id] = block_rows
+    return row_geometry
+
+
+def _match_row_regions(
+    normalized: str,
+    parsed_blocks: list[dict[str, Any]],
+    parsed_by_text_global: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """单条渲染行（已 _geometry_match_text 归一）→ 影印页坐标。
+
+    与块级全局匹配同策略：全局精确（唯一命中）→ 双向包含（行在解析块内,
+    或 ≥16 字符的解析碎片在行内）→ 前缀 80 字符预筛 + 覆盖率模糊（最优-次优
+    ≥0.05 边际才落区,宁缺不猜）。逐行全量 SequenceMatcher 太贵（143 行表实证
+    考量）,模糊比只在前缀预筛命中的候选上做;覆盖率=行字符被候选按序覆盖的
+    比例,对"行 ⊂ 大解析块"的尺寸差稳健（plain ratio 会被块长稀释到永远不达标）。
+
+    行级专用追加归一（不进 _geometry_match_text,块级 v11 行为与缓存不受影响）：
+    "- " → "-"——转换 PDF 文本层在换行处把连字符词拆成 "self- diagnostics",
+    而 docx 单元格是 "self-diagnostics"（STO 实证:参数表 18 行落空多为此类）。
+    折叠只扩大行匹配候选,歧义仍由覆盖率+边际护栏把关。"""
+    normalized = normalized.replace("- ", "-")
+    exact = parsed_by_text_global.get(normalized) or []
+    if len(exact) == 1:
+        return _valid_pdf_regions(exact[0].get("pdf_regions"))
+    contained: list[dict[str, Any]] = []
+    for item in parsed_blocks:
+        candidate_text = _geometry_match_text(item.get("text")).replace("- ", "-")
+        if len(candidate_text) < 16:
+            continue
+        if normalized in candidate_text or candidate_text in normalized:
+            contained.append(item)
+    if contained:
+        regions: list[dict[str, Any]] = []
+        for item in contained:
+            regions.extend(_valid_pdf_regions(item.get("pdf_regions")))
+        if regions:
+            return regions
+    needle = normalized[:80]
+    scored: list[tuple[float, int]] = []
+    for index, item in enumerate(parsed_blocks):
+        candidate_text = _geometry_match_text(item.get("text")).replace("- ", "-")
+        if not candidate_text or needle not in candidate_text:
+            continue
+        matcher = difflib.SequenceMatcher(None, normalized, candidate_text)
+        coverage = sum(match.size for match in matcher.get_matching_blocks()) / len(normalized)
+        if coverage >= 0.72:
+            scored.append((coverage, index))
+    if not scored:
+        return []
+    scored.sort(reverse=True)
+    best_coverage, best_index = scored[0]
+    second_coverage = scored[1][0] if len(scored) > 1 else 0.0
+    if best_coverage - second_coverage < 0.05:
+        return []
+    return _valid_pdf_regions(parsed_blocks[best_index].get("pdf_regions"))
 
 
 def _ensure_pdf_page_images(source_pdf: Path, out_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
@@ -975,7 +1172,9 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
 def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED,
                            pdf_href: str | None = None,
                            pdf_pages: list[dict[str, Any]] | None = None,
-                           pdf_geometry: dict[str, list[dict[str, Any]]] | None = None) -> str:
+                           pdf_geometry: dict[str, list[dict[str, Any]]] | None = None,
+                           pdf_row_geometry: dict[str, dict[int, list[dict[str, Any]]]] | None = None
+                           ) -> str:
     global _active_unanalyzed_terms, _active_translations, _active_translation_notes
     out_dir = Path(out_dir).expanduser().resolve()
     layout_mode = _normalize_layout_mode(layout_mode)
@@ -1045,7 +1244,8 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
         _collect_pdf_translation_texts(pdf_semantics)
     if overlay_enabled:
         block_zones = _pdf_block_zones(
-            blocks, requirements, pdf_geometry or {}, covered, semantics=pdf_semantics)
+            blocks, requirements, pdf_geometry or {}, covered, semantics=pdf_semantics,
+            row_geometry=pdf_row_geometry)
         pdf_context_map = _pdf_context_records(
             blocks, block_zones, include_requirements=True, semantics=pdf_semantics)
         blocks_html = _render_pdf_page_stack(
@@ -1710,10 +1910,90 @@ def _collect_pdf_translation_texts(semantics: list[dict[str, Any]]) -> None:
         _collected_marker_texts.setdefault(_translation_key(text), (owner, text))
 
 
+def _page_region_unions(regions: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """同页多区域合并为一个 union 区域（清单段并块后成员区域不再逐行刷屏——
+    test7 实证：合并清单块带 10 个行区域，旧逻辑每行各挂一个"关联·见24"）。"""
+    regions_by_page: dict[int, list[dict[str, Any]]] = {}
+    for region in regions:
+        page = _page_number(region.get("page_number"))
+        if page:
+            regions_by_page.setdefault(page, []).append(region)
+    return {
+        page: {
+            "bbox": (
+                min(region["bbox"][0] for region in page_regions),
+                min(region["bbox"][1] for region in page_regions),
+                max(region["bbox"][2] for region in page_regions),
+                max(region["bbox"][3] for region in page_regions),
+            ),
+            "page_width": page_regions[0]["page_width"],
+            "page_height": page_regions[0]["page_height"],
+        }
+        for page, page_regions in regions_by_page.items()
+    }
+
+
+def _table_row_zone_kinds(block: dict[str, Any],
+                          requirements: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """表格数据行的热区 kind 路由（行级，与块级语义平级但独立判定）：
+
+    - req: 渲染行逐字出现在引用本块的某需求引句里（compact 口径,guards-v16 行展开
+      的 source_quote 即渲染行本身）→ req_id/req_ids;
+    - covered: 最长实质单元格（≥16 字符,同 spot_extract 覆盖口径）被引用本块的
+      需求文本（引句/描述/标题）覆盖 → req_ids;
+    - 其余 → context（不发 req 字段,走背景卡）。
+    """
+    from ai_extract import _PARAM_ROW_MIN_CELLS, _row_render_line
+    from merged_consistency import compact_source_text
+
+    block_id = str(block.get("block_id") or "")
+    block_req_ids: list[str] = []
+    req_quotes: dict[str, str] = {}
+    req_haystacks: dict[str, str] = {}
+    for req in requirements:
+        req_id = str(req.get("ai_req_id") or "")
+        if not req_id:
+            continue
+        referenced = {str(value) for value in (req.get("source_block_ids") or [])}
+        referenced.add(str(req.get("anchor_block_id") or ""))
+        referenced.update(str(value) for value in (req.get("echo_block_ids") or []))
+        if block_id not in referenced:
+            continue
+        block_req_ids.append(req_id)
+        req_quotes[req_id] = compact_source_text(str(req.get("source_quote") or ""))
+        req_haystacks[req_id] = compact_source_text(
+            f"{req.get('source_quote') or ''} {req.get('description') or ''} {req.get('title') or ''}")
+    if not block_req_ids:
+        return {}
+    headers = [str(h or "") for h in (block.get("headers") or [])]
+    kinds: dict[int, dict[str, Any]] = {}
+    for row_index, row in enumerate(block.get("data_rows") or [], start=1):
+        non_empty = [str(cell or "").strip() for cell in row if str(cell or "").strip()]
+        if len(non_empty) < _PARAM_ROW_MIN_CELLS or len(set(non_empty)) == 1:
+            continue   # 与行几何同口径：稀疏行/分组标题行不发区
+        compact_row = compact_source_text(_row_render_line(headers, row))
+        if not compact_row:
+            continue
+        quoted = [req_id for req_id in block_req_ids
+                  if req_quotes[req_id] and compact_row in req_quotes[req_id]]
+        if quoted:
+            kinds[row_index] = {"kind": "req", "req_id": quoted[0], "req_ids": quoted}
+            continue
+        substantive = sorted((compact_source_text(cell) for cell in non_empty), key=len, reverse=True)
+        key_cell = next((cell for cell in substantive if len(cell) >= 16), "")
+        if key_cell:
+            hit = [req_id for req_id in block_req_ids if key_cell in req_haystacks[req_id]]
+            if hit:
+                kinds[row_index] = {"kind": "covered", "req_ids": hit}
+    return kinds
+
+
 def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, Any]],
                      geometry: dict[str, list[dict[str, Any]]],
                      covered: set[str], *,
-                     semantics: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+                     semantics: list[dict[str, Any]] | None = None,
+                     row_geometry: dict[str, dict[int, list[dict[str, Any]]]] | None = None
+                     ) -> list[dict[str, Any]]:
     """影印模式全段落热区（0714「点一段出翻译和解析」）——双渲染器共用的唯一语义源。
 
     kind 路由与重排模式的块点击语义一一对应：
@@ -1722,32 +2002,18 @@ def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, 
     - covered: 该块被一个或多个需求纳入来源范围，但不是锚点或重复段 → 关联需求卡;
     - omission: 覆盖口径疑似遗漏（is_coverage_candidate 且未覆盖）→ 遗漏卡;
     - context: 普通正文段 → 背景说明卡（原因/翻译/引用）;
-    - 标题/表格/噪声不给热区（重排同样不可点;锚在表格/标题上的需求经 req 热区仍可达）。
-    """
+    - 标题/表格/噪声块本身不给热区（重排同样不可点;锚在表格/标题上的需求经 req 热区仍可达）。
+
+    表格行级热区（v12）：row_geometry 有几何的数据行各发一个带 row_index 的热区
+    （kind 语义见 _table_row_zone_kinds；整表块本身仍不发区）——docx/xlsx 影印页
+    对齐原生 PDF 表格的行级体验。"""
     zones: list[dict[str, Any]] = []
     semantic_items = (semantics if semantics is not None
                       else _pdf_block_semantics(blocks, requirements, covered))
     for item in semantic_items:
         block_id = str(item.get("block_id") or "")
         kind = str(item.get("kind") or "context")
-        regions_by_page: dict[int, list[dict[str, Any]]] = {}
-        for region in geometry.get(block_id) or []:
-            page = _page_number(region.get("page_number"))
-            if page:
-                regions_by_page.setdefault(page, []).append(region)
-        # 同块同页多区域合并为一个热区（清单段并块后成员区域不再逐行刷屏——
-        # test7 实证：合并清单块带 10 个行区域，旧逻辑每行各挂一个"关联·见24"）
-        for page, regions in regions_by_page.items():
-            union = {
-                "bbox": (
-                    min(region["bbox"][0] for region in regions),
-                    min(region["bbox"][1] for region in regions),
-                    max(region["bbox"][2] for region in regions),
-                    max(region["bbox"][3] for region in regions),
-                ),
-                "page_width": regions[0]["page_width"],
-                "page_height": regions[0]["page_height"],
-            }
+        for page, union in _page_region_unions(geometry.get(block_id) or []).items():
             zone: dict[str, Any] = {"block_id": block_id, "page": page,
                                     "rect": _pdf_zone_rect(union), "kind": kind,
                                     "text_repaired": bool(item.get("text_repaired")),
@@ -1757,6 +2023,27 @@ def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, 
             if kind in {"req", "echo", "covered"}:
                 zone["req_ids"] = list(item.get("req_ids") or [])
             zones.append(zone)
+    if row_geometry:
+        blocks_by_id = {str(block.get("block_id") or ""): block for block in blocks}
+        for block_id, rows in row_geometry.items():
+            block = blocks_by_id.get(str(block_id))
+            if not block:
+                continue
+            row_kinds = _table_row_zone_kinds(block, requirements)
+            for row_index, regions in rows.items():
+                row_index = int(row_index)
+                info = row_kinds.get(row_index) or {}
+                kind = str(info.get("kind") or "context")
+                for page, union in _page_region_unions(regions).items():
+                    zone = {"block_id": str(block_id), "row_index": row_index, "page": page,
+                            "rect": _pdf_zone_rect(union), "kind": kind,
+                            "text_repaired": bool(block.get("text_repaired")),
+                            "extraction_failed": bool(block.get("extraction_failed"))}
+                    if info.get("req_id"):
+                        zone["req_id"] = str(info["req_id"])
+                    if kind in {"req", "covered"}:
+                        zone["req_ids"] = list(info.get("req_ids") or [])
+                    zones.append(zone)
     return zones
 
 
@@ -1766,22 +2053,36 @@ def _pdf_context_records(blocks: list[dict[str, Any]],
                          semantics: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
     """静态影印页的段落卡片及需求翻译回退数据（block_id → 原文/翻译/页码）。
 
-    翻译键双查（键同源纪律）：先原始文本键（旧缓存兼容）,未命中再清洗键。"""
+    翻译键双查（键同源纪律）：先原始文本键（旧缓存兼容）,未命中再清洗键。
+    表格行级热区（v12）另以 "<block_id>#R<row_index>" 为键给行卡片数据：
+    原文=渲染行文本,翻译按行文本哈希查 _active_translations（查不到如实空串）。"""
+    from ai_extract import _row_render_line
+
     detail_kinds = {"context", "echo", "covered"}
     if include_requirements:
         detail_kinds.add("req")
-    detail_zones = {str(z["block_id"]): z for z in zones if z.get("kind") in detail_kinds}
+    detail_zones = {str(z["block_id"]): z for z in zones
+                    if z.get("row_index") is None and z.get("kind") in detail_kinds}
     if include_requirements:
         for item in semantics or []:
             if item.get("kind") == "req" and item.get("block_id"):
                 detail_zones.setdefault(str(item["block_id"]), item)
-    page_by_block = {z["block_id"]: z["page"] for z in reversed(zones)}
-    records: dict[str, dict[str, Any]] = {}
-    for block in blocks:
-        block_id = str(block.get("block_id") or "")
-        if block_id not in detail_zones:
+    # 行级热区（带 row_index）：块级记录不含整表,行记录按 (block_id, row_index) 归集
+    row_detail: dict[str, dict[int, dict[str, Any]]] = {}
+    row_page: dict[tuple[str, int], int] = {}
+    for z in zones:
+        if z.get("row_index") is None or z.get("kind") not in detail_kinds:
             continue
-        text = str(block.get("text") or "").strip()
+        row_block = str(z.get("block_id") or "")
+        row_index = int(z["row_index"])
+        row_detail.setdefault(row_block, {})[row_index] = z
+        page = _page_number(z.get("page")) or 0
+        key = (row_block, row_index)
+        if page and (key not in row_page or page < row_page[key]):
+            row_page[key] = page
+    page_by_block = {z["block_id"]: z["page"] for z in reversed(zones)}
+
+    def translate(text: str) -> tuple[str, str]:
         translation = ""
         note = ""
         for key in (_translation_key(text), _translation_key(_clean_block_text(text))):
@@ -1790,20 +2091,52 @@ def _pdf_context_records(blocks: list[dict[str, Any]],
                 break
             if not note and key in _active_translation_notes:
                 note = _active_translation_notes[key]
-        zone = detail_zones[block_id]
-        record = {"text": text, "translation": translation,
-                  "translation_note": note,
-                  "page": page_by_block.get(block_id, _page_number(block.get("page_number")) or 0),
-                  "kind": str(zone.get("kind") or "context")}
-        record["text_repaired"] = bool(block.get("text_repaired"))
-        record["extraction_failed"] = bool(block.get("extraction_failed"))
-        if zone.get("kind") == "echo":
-            record["echo_req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
-        elif zone.get("kind") == "covered":
-            record["covered_req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
-        elif zone.get("kind") == "req":
-            record["req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
-        records[block_id] = record
+        return translation, note
+
+    records: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        block_id = str(block.get("block_id") or "")
+        if block_id in detail_zones:
+            text = str(block.get("text") or "").strip()
+            translation, note = translate(text)
+            zone = detail_zones[block_id]
+            record = {"text": text, "translation": translation,
+                      "translation_note": note,
+                      "page": page_by_block.get(block_id, _page_number(block.get("page_number")) or 0),
+                      "kind": str(zone.get("kind") or "context")}
+            record["text_repaired"] = bool(block.get("text_repaired"))
+            record["extraction_failed"] = bool(block.get("extraction_failed"))
+            if zone.get("kind") == "echo":
+                record["echo_req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
+            elif zone.get("kind") == "covered":
+                record["covered_req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
+            elif zone.get("kind") == "req":
+                record["req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
+            records[block_id] = record
+        row_zones = row_detail.get(block_id) or {}
+        if not row_zones or str(block.get("type") or "") != "table":
+            continue
+        headers = [str(h or "") for h in (block.get("headers") or [])]
+        data_rows = block.get("data_rows") or []
+        for row_index, zone in sorted(row_zones.items()):
+            if not 1 <= row_index <= len(data_rows):
+                continue
+            text = _row_render_line(headers, data_rows[row_index - 1]).strip()
+            if not text:
+                continue
+            translation, note = translate(text)
+            record = {"text": text, "translation": translation,
+                      "translation_note": note,
+                      "page": row_page.get((block_id, row_index), 0),
+                      "kind": str(zone.get("kind") or "context"),
+                      "row_index": row_index,
+                      "text_repaired": bool(block.get("text_repaired")),
+                      "extraction_failed": bool(block.get("extraction_failed"))}
+            if zone.get("kind") == "covered":
+                record["covered_req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
+            elif zone.get("kind") == "req":
+                record["req_ids"] = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
+            records[f"{block_id}#R{row_index}"] = record
     return records
 
 
@@ -1864,16 +2197,25 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
             })
 
     # 全段落热区（0714）：透明可点矩形铺满每个块——点一段出翻译和解析。渲染在标记
-    # 之前（DOM 序即层序,标记浮在热区上,两者都可点）
+    # 之前（DOM 序即层序,标记浮在热区上,两者都可点）。表格行级热区（v12）带
+    # row_index:data-zone-key="<block_id>#R<行号>",样式加 table-row 修饰类与块热区分辨。
     zones_by_page: dict[int, list[str]] = {}
     for zone in block_zones or []:
         rect = zone.get("rect") or {}
         style = (f"left:{rect.get('left', 0):.3f}%;top:{rect.get('top', 0):.3f}%;"
                  f"width:{rect.get('width', 0):.3f}%;height:{rect.get('height', 0):.3f}%")
         kind = str(zone.get("kind") or "context")
-        title = {"req": "查看需求批注", "echo": "重复段·点击查看汇总需求",
-                 "covered": "该段已纳入需求解析·点击查看关联需求",
-                 "omission": "疑似需求未覆盖·点击查看"}.get(kind, "查看该段翻译与解析")
+        row_index = zone.get("row_index")
+        is_row = row_index is not None
+        block_id = str(zone["block_id"])
+        zone_key = f"{block_id}#R{int(row_index)}" if is_row else block_id
+        if is_row:
+            title = {"req": "查看需求批注",
+                     "covered": "该行已纳入需求解析·点击查看关联需求"}.get(kind, "查看该行翻译与解析")
+        else:
+            title = {"req": "查看需求批注", "echo": "重复段·点击查看汇总需求",
+                     "covered": "该段已纳入需求解析·点击查看关联需求",
+                     "omission": "疑似需求未覆盖·点击查看"}.get(kind, "查看该段翻译与解析")
         req_attr = (f' data-req="{html.escape(str(zone.get("req_id") or ""), quote=True)}"'
                     if zone.get("req_id") else "")
         reqs_attr = ""
@@ -1884,7 +2226,7 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
         if zone.get("text_repaired"):
             audit_content += (
                 '<span class="pdf-audit-tag tag-repair" '
-                f'data-repair-block="{html.escape(str(zone["block_id"]), quote=True)}">修复</span>'
+                f'data-repair-block="{html.escape(block_id, quote=True)}">修复</span>'
             )
         if zone.get("extraction_failed"):
             audit_content += '<span class="pdf-audit-tag tag-failed">失败</span>'
@@ -1903,8 +2245,9 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
             req_ids = [str(rid) for rid in (zone.get("req_ids") or []) if rid]
             covered_attr = f' data-covered-reqs="{html.escape(" ".join(req_ids), quote=True)}"'
         zones_by_page.setdefault(int(zone["page"]), []).append(
-            f'<button class="pdf-block-zone zone-{kind}" type="button" '
-            f'data-zone-kind="{kind}" data-block-id="{html.escape(str(zone["block_id"]), quote=True)}"'
+            f'<button class="pdf-block-zone zone-{kind}{" table-row" if is_row else ""}" type="button" '
+            f'data-zone-kind="{kind}" data-block-id="{html.escape(block_id, quote=True)}"'
+            f' data-zone-key="{html.escape(zone_key, quote=True)}"'
             f'{req_attr}{reqs_attr}{echo_attr}{covered_attr} data-page="{int(zone["page"])}" style="{style}" '
             f'title="{html.escape(title, quote=True)}" aria-label="{html.escape(title, quote=True)}" '
             f'aria-pressed="false">{echo_content}{audit_content}</button>')
@@ -2018,8 +2361,10 @@ def build_pdf_annotation_payload(
         requirements = build_ai_requirements(out_dir)
     else:
         requirements = [dict(row) for row in requirements if isinstance(row, dict)]
+    row_geometry: dict[str, dict[int, list[dict[str, Any]]]] = {}
     geometry = _resolve_pdf_geometry(source_pdf, blocks,
-                                     cache_path=out_dir / ANNOTATION_PDF_GEOMETRY)
+                                     cache_path=out_dir / ANNOTATION_PDF_GEOMETRY,
+                                     row_geometry=row_geometry)
     requirement_markers: list[dict[str, Any]] = []
     for req in requirements:
         req_id = str(req.get("ai_req_id") or "")
@@ -2045,12 +2390,24 @@ def build_pdf_annotation_payload(
             if page:
                 omission_markers.append({"block_id": block_id, "page": page,
                                          "rect": _pdf_zone_rect(region)})
+    block_zones = _pdf_block_zones(blocks, requirements, geometry, covered,
+                                   row_geometry=row_geometry)
+    # 行级卡片数据（v12 表格行热区）：行原文/翻译/页码——翻译读批注译文 sidecar,
+    # 与静态影印共用 _pdf_context_records 同源实现；查不到翻译如实空串,不编。
+    global _active_translations, _active_translation_notes
+    _active_translations, _active_translation_notes = load_annotation_translations(out_dir)
+    row_context = {
+        key: record
+        for key, record in _pdf_context_records(blocks, block_zones).items()
+        if "#R" in key
+    }
     return {"available": True, "pages": pages, "pages_dir": ANNOTATION_PAGES_DIR,
             "requirement_markers": requirement_markers, "omission_markers": omission_markers,
             # 影印来源血统：office 转换影印如实标引擎，原生 PDF 为 None——不冒充原生
             "facsimile": facsimile_status,
             # 全段落热区（0714）：点一段出翻译和解析——语义与静态影印同源（_pdf_block_zones）
-            "block_zones": _pdf_block_zones(blocks, requirements, geometry, covered)}
+            "block_zones": block_zones,
+            "row_context": row_context}
 
 
 def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
@@ -2070,6 +2427,7 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
     pdf_pages: list[dict[str, Any]] = []
     page_files: list[str] = []
     pdf_geometry: dict[str, list[dict[str, Any]]] = {}
+    pdf_row_geometry: dict[str, dict[int, list[dict[str, Any]]]] = {}
     pdf_render_error = ""
     if actual_mode == LAYOUT_PDF_ORIGINAL and source_pdf is not None:
         copied_pdf = out_dir / ANNOTATION_SOURCE_PDF
@@ -2078,7 +2436,8 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
         try:
             blocks = build_document_blocks(out_dir).get("blocks") or []
             pdf_geometry = _resolve_pdf_geometry(
-                source_pdf, blocks, cache_path=out_dir / ANNOTATION_PDF_GEOMETRY)
+                source_pdf, blocks, cache_path=out_dir / ANNOTATION_PDF_GEOMETRY,
+                row_geometry=pdf_row_geometry)
             pdf_pages, page_files = _ensure_pdf_page_images(source_pdf, out_dir)
         except Exception as exc:
             pdf_render_error = str(exc)
@@ -2090,6 +2449,7 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
         pdf_href=ANNOTATION_SOURCE_PDF if copied_pdf else None,
         pdf_pages=pdf_pages,
         pdf_geometry=pdf_geometry,
+        pdf_row_geometry=pdf_row_geometry,
     )
     summary: dict[str, Any] = {"route": "stub", "total_markers": len(_collected_marker_texts)}
     # 零调用迁移/失效与路由无关：读侧按当前 guards_version 过滤，stub（无 LLM 配置）
@@ -2103,7 +2463,8 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
             out_dir, layout_mode=actual_mode,
             pdf_href=ANNOTATION_SOURCE_PDF if copied_pdf else None,
             pdf_pages=pdf_pages,
-            pdf_geometry=pdf_geometry)   # 重渲染嵌入新译文或拒绝原因（毫秒级）
+            pdf_geometry=pdf_geometry,
+            pdf_row_geometry=pdf_row_geometry)   # 重渲染嵌入新译文或拒绝原因（毫秒级）
     summary.update({
         "layout_mode_requested": requested_mode,
         "layout_mode": actual_mode,
@@ -2197,6 +2558,9 @@ body {{ margin: 0; font-family: var(--sans);
 .pdf-block-zone.zone-omission.selected {{ background: rgba(204, 137, 37, .07); border-color: rgba(180, 83, 9, .7); }}
 .pdf-block-zone.zone-echo:hover, .pdf-block-zone.zone-echo.selected {{
   background: rgba(15,118,110,.05); border-color: rgba(15,118,110,.5); }}
+/* 表格行级热区（v12）：与段落块热区的蓝区分开,行用青色细框 */
+.pdf-block-zone.table-row:hover {{ background: rgba(15,118,110,.05); border-color: rgba(15,118,110,.45); }}
+.pdf-block-zone.table-row.selected {{ background: rgba(15,118,110,.08); border-color: rgba(15,118,110,.78); }}
 .pdf-echo-tag {{ position: absolute; right: 2px; top: -13px; display: inline-block; padding: 0 2px 1px;
   border-bottom: 1px dashed #667085; color: #4b5563; background: rgba(255,255,255,.92);
   z-index: 2; font: 600 9px/1.15 var(--sans); white-space: nowrap; pointer-events: auto;
@@ -2843,6 +3207,7 @@ const OMISSION_REASON = "该段含规范性措辞（shall/must/应…），被�
 const CONTEXT_REASON = "该段未检出规范性措辞（shall/must/应…），被判定为背景/说明性内容，因此没有生成研发需求；其信息会作为上下文供相邻需求的分析使用。如认为该段实际包含需求，请反馈补抽。";
 const ECHO_REASON = "该段与已抽取需求的来源段落内容重复（同文多次出现）。解析已汇总至对应需求条目，本段不重复挂批注；点击「重复·见」角标或下方链接可跳转查看该条目。";
 const COVERED_REASON = "该段已纳入一个或多个抽取需求的来源范围，用于补充该需求的约束、条件或上下文；它不是主锚点，因此不重复挂页边编号。";
+const TABLE_ROW_CONTEXT_REASON = "该表格行未被任何已抽取需求的引句或来源范围覆盖，因此没有单独生成研发需求；其信息会作为表格上下文供相邻分析使用。如认为该行实际包含需求，请在应用内批注视图使用「解析此行」定点解析。";
 const REQUIREMENT_GROUP_REASON = "该段原文解析出了多条独立需求。为避免只展示第一条，下面列出该段的全部解析结果。";
 const FAILED_EXTRACTION_REASON = "该章节的 AI 抽取调用失败，当前段落没有得到完整分析。失败通常来自端点、密钥、限流或超时；请在重跑成功前不要把这里的空白视为“无需求”。";
 let selectedContextBlock = null;
@@ -3039,10 +3404,11 @@ function selectOmissionRecord(row) {{
   renderOmissionDetails(row.text || "", row.translation || "", row.translation_note || "", row.source_page || 0, row.block_id || "");
 }}
 
-// 全段落热区选中高亮（0714）：req 热区随 select() 走 data-req,块级热区按 block_id 走这里
-function paintZoneSelection(blockId) {{
+// 全段落热区选中高亮（0714）：req 热区随 select() 走 data-req,块级热区按 zone-key 走这里——
+// zone-key = block_id;表格行热区（v12）= "<block_id>#R<行号>",选中一行不再点亮整表
+function paintZoneSelection(zoneKey) {{
   document.querySelectorAll(".pdf-block-zone").forEach(z => {{
-    const active = Boolean(blockId) && z.getAttribute("data-block-id") === blockId;
+    const active = Boolean(zoneKey) && (z.getAttribute("data-zone-key") || z.getAttribute("data-block-id")) === zoneKey;
     z.classList.toggle("selected", active);
     z.setAttribute("aria-pressed", String(active));
   }});
@@ -3059,12 +3425,13 @@ function selectPdfContextRecord(blockId, info, clickedPage) {{
   document.querySelectorAll(".pdf-marker").forEach(marker => marker.classList.remove("sel"));
   document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
   paintZoneSelection(blockId);
+  const isRow = blockId.indexOf("#R") >= 0;
   document.getElementById("detail").innerHTML =
     '<div class="annotation-card detail-card">'+
-    '<div class="dd-head"><span class="dd-module">背景/上下文</span><span class="badge">说明</span></div>'+
-    '<div class="dd-title">为什么没有生成研发需求</div>'+
+    '<div class="dd-head"><span class="dd-module">'+(isRow ? "表格行" : "背景/上下文")+'</span><span class="badge">说明</span></div>'+
+    '<div class="dd-title">'+(isRow ? "该行没有单独生成研发需求" : "为什么没有生成研发需求")+'</div>'+
     (sourcePage ? '<div class="dd-meta">原文位置 · PDF 第 '+esc(sourcePage)+' 页</div>' : '')+
-    '<div class="dd-body">'+esc(CONTEXT_REASON)+'</div>'+
+    '<div class="dd-body">'+esc(isRow ? TABLE_ROW_CONTEXT_REASON : CONTEXT_REASON)+'</div>'+
     '<div class="dd-label">原文翻译</div>'+
     (info.translation ? '<div class="dd-body">'+esc(info.translation)+'</div>'
      : info.translation_note ? '<div class="dd-body dd-empty">翻译未通过防幻觉校验，保留原文（'+esc(info.translation_note)+'）</div>'
@@ -3306,16 +3673,18 @@ document.getElementById("paper").addEventListener("click", e => {{
   const pdfMarker = e.target.closest('.pdf-marker[data-req]');
   if (pdfMarker) {{ select(pdfMarker.getAttribute("data-req")); return; }}
   // 全段落热区（0714）：影印页任意段落可点——req→需求卡 / omission→遗漏卡 / context→背景卡
+  // 表格行热区（v12）：data-zone-key 带 "#R<行号>",卡片数据优先按行键查 PDF_CONTEXT
   const zone = e.target.closest(".pdf-block-zone");
   if (zone) {{
     const kind = zone.getAttribute("data-zone-kind");
     const bid = zone.getAttribute("data-block-id") || "";
+    const zoneKey = zone.getAttribute("data-zone-key") || bid;
     const page = Number(zone.getAttribute("data-page") || 0);
-    const info = PDF_CONTEXT[bid];
+    const info = PDF_CONTEXT[zoneKey] || PDF_CONTEXT[bid];
     if (kind === "req") {{
       const reqIds = (zone.getAttribute("data-reqs") || zone.getAttribute("data-req") || "")
         .split(/\s+/).filter(Boolean);
-      if (reqIds.length > 1 && info) {{ selectPdfRequirementGroup(bid, info, reqIds, page); return; }}
+      if (reqIds.length > 1 && info) {{ selectPdfRequirementGroup(zoneKey, info, reqIds, page); return; }}
       select(zone.getAttribute("data-req"));
       return;
     }}
@@ -3323,9 +3692,9 @@ document.getElementById("paper").addEventListener("click", e => {{
       const row = PDF_OMISSIONS.find(r => r.block_id === bid);
       if (row) {{ selectOmissionRecord({{...row, source_page: page || row.source_page || 0}}); return; }}
     }}
-    if (kind === "echo" && info) {{ selectPdfEchoRecord(bid, info, page); return; }}
-    if (kind === "covered" && info) {{ selectPdfCoveredRecord(bid, info, page); return; }}
-    if (info) {{ selectPdfContextRecord(bid, info, page); return; }}
+    if (kind === "echo" && info) {{ selectPdfEchoRecord(zoneKey, info, page); return; }}
+    if (kind === "covered" && info) {{ selectPdfCoveredRecord(zoneKey, info, page); return; }}
+    if (info) {{ selectPdfContextRecord(zoneKey, info, page); return; }}
     return;
   }}
   const sourceMarker = e.target.closest(".source-classification"); if (sourceMarker) {{ selectSourceClassification(sourceMarker); return; }}

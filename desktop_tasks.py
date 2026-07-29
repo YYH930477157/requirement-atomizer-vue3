@@ -523,7 +523,9 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v6-coverage-basis",
     "compose": "engineering_composer/v1",
-    "export-annotation-html": "doc_annotation_export/v10",
+    # v12：表格行级热区（docx/xlsx 影印页整表单块 → 行级几何+行热区+行卡片数据,
+    # 对齐原生 PDF 表格行粒度体验;v11=影印支路块级几何回填）
+    "export-annotation-html": "doc_annotation_export/v12",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
