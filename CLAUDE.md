@@ -45,7 +45,7 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
-## 重大更新（2026-07-28）——Claim Conservation Ledger Phase 1（worktree 实现与代码门已完成；待用户决定合并及 main golden 6/6）
+## 重大更新（2026-07-28）——Claim Conservation Ledger Phase 1（已合 main `617e1ce`；生产双写不切门控；主检出全量 2106 tests OK、golden 6/6）
 
 - **分支与边界**：实现在独立 worktree 分支 `codex/claim-ledger-phase1`，未提交、未推送、未合 main。Phase 1 仍是生产双写不切门控：旧 readiness/chain/golden 语义不变，claim queue 只生成 `needs_extraction` dry-run proposal，不修改 requirement/claim 权威数据，fold/reconcile/GET 全程零 LLM、零 verifier。
 - **不可变 base + 可变 effective**：generation catalog/base ledger 与 effective ledger/queue/meta 分层；effective 三文件使用 publication journal、跨进程锁、原子替换与恢复协议。`claim_review_events.jsonl` 为 seq/hash-chain/幂等投影；A/B 两轨均读取完整 review history，支持 reject/reactivate、target missing/restored、validated group 内容寻址复用与 generation 隔离。
@@ -56,7 +56,7 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **真实 B 轨零 verifier 复演（机器本地副本，不进仓）**：878 claims；初始 v1 纯确定性 fold 到 v2 约 1.16s。选取一个真实 covered claim，执行 `covered → uncertain → covered`，产生 `target_invalidated`/`target_reactivated`，恢复时复用 1 个 validated group；verifier attempt/call/token 增量均为 0，attempt 日志 SHA-256 前后完全一致，且所有 LLM/verifier 入口均设失败哨兵。
 - **500-block 冻结性能基线**：CPython 3.14.6 / Windows 10 / AMD64 / 8 CPUs；500 blocks、500 eligible claims、500 linked targets、2000 review history rows、2000 committed events。catalog p50/p95 = 0.0227s/0.0232s，base artifacts = 2.76 MiB；reconcile+fold p50/p95 = 3.603s/3.699s。可复算工作量为 history records 2000、link index inserts 500、candidate checks 2000、event index inserts 2000，无 `rows × all_links` 扫描。
 - **最终验证**：后端全量 `2104 tests OK (skipped=7)`；前端 `145 tests` 全绿；`vue-tsc --noEmit + vite build` 通过；wheel checkout 外隔离安装/schema smoke 通过；`git diff --check` 无错误。最终独立审查复验 A/B ABA、audit-gap 六 view 零写入、旧代事件过滤与 CLI 契约后无 gating finding。
-- **唯一未过退出门**：worktree 不含 main 的 gitignored `out/` 冻结基线，不能把环境 skip 冒充 golden。用户批准合并后，必须在 main 以既定三 seed KB + domain-pack 基线跑 golden 6/6；该结果通过前不宣称 Phase 1 完成，也不切生产门控。
+- **退出门已通过**：合并后主检出以既定三 seed KB + domain-pack 基线跑 **golden 6/6**，全量 **2106 tests OK（skipped=18 环境性）**。Phase 1 标记完成；生产门控仍不切换（Phase 2 经总纲 §9 全部条件后方可）。
 
 ## 重大更新（2026-07-26）——Claim Conservation Ledger Phase 0A/0B（已合 main `a08a60a`；shadow 双写不切生产门控；主检出全量 1986 tests OK、golden 6/6）
 

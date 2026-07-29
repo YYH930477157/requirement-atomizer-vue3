@@ -5,11 +5,10 @@ Phase 2 ✅（工具化审查 + WP2 待澄清/兜底渲染）→ 专家审核十
 → 专家审核第二轮十三项修复 ✅（main `e3ad2a7`，1627 tests / golden 6/6）
 → **Claim Conservation Ledger Phase 0A/0B ✅（main `a08a60a`，shadow 双写不切生产门控；
 总纲 `docs/agent-claim-ledger-spec.md` v2.4）**
-→ **Claim Ledger Phase 1 worktree 实现与全部代码门 ✅**（分支 `codex/claim-ledger-phase1`；
-后端 2104、前端 145、build、真实零 verifier、500-block、HTTP 零写入、wheel smoke 与最终审查均通过；
-合并前 B1-B6 专家门已补齐）。
-下一步主线：由用户决定是否合并 Phase 1；合并后在 main 完成唯一剩余退出门 golden 6/6。
-通过前不宣称 Phase 1 完成、不切生产门控，也不提前进入 Phase 1.5 mutation。
+→ **Claim Ledger Phase 1 ✅（已合 main `617e1ce`，生产双写不切门控；主检出全量 2106
+tests OK、golden 6/6 退出门通过；总纲 v2.4 + Phase 1 规格 v1.4）**。
+下一步主线：Claim Ledger **Phase 1.5**（闭环故障恢复验证 + A/B 写入口 review-revision CAS +
+启用 claim mutation，唯一通道 targeted_reextract；规格未冻结，等用户指示开工）。
 Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量价值待 Phase 2 真实
 项目验证后再议）。
 
@@ -23,15 +22,18 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 - 验收：新 key 跑一次 `python llm_pipeline.py --out <副本> --llm-route
   openai_compatible --llm-review-limit 1` 成功即可。
 
-### 2. Claim Ledger Phase 1 合并与 main golden（用户决定 + Codex 执行）
+### 2. Claim Ledger Phase 1.5 规格冻结（半天讨论 + 半天成文，Phase 1.5 前置）
 
-- 当前事实：`codex/claim-ledger-phase1` 尚未提交、推送或合并；worktree 可执行门已全部通过，最终
-  独立审查无 gating finding。真实客户副本、性能临时产物和 API key 均不进入提交。
-- 用户决定合并后：先按提交信息准则形成 commit，再合入 main；不 push，除非用户另行批准。
-- main 验收：使用已冻结 `out/abnt_nbr_16968_atomizer_v5/` 和既定三 seed KB + domain-pack 口径跑
-  golden 6/6；禁止改 golden baseline 来消除漂移。必要时在 main 再跑全量后端以确认合并没有引入差异。
-- 退出口径：golden 6/6 通过并写回 `CLAUDE.md` 后，才可标记 Claim Ledger Phase 1 完成；随后才能
-  单独评审 Phase 1.5 mutation/CAS 范围，生产 readiness 仍不自动切换。
+- Phase 1 已合 main `617e1ce`（golden 6/6、全量 2106 OK），生产门控未切换。
+- Phase 1.5 范围（总纲 v2.4 §9）：闭环故障恢复验证（真实 `os._exit` 崩溃矩阵扩展到
+  effective WAL、锁序反序注入、interrupted fold 的 health 登记）、A/B 写入口
+  `expected_target_fingerprint`/`expected_target_review_revision` CAS、启用 claim 级专家
+  写入与定点补抽 mutation（唯一通道 `targeted_reextract`）、mutation 失败补偿与并发冲突、
+  ledger-only cache rebuild、downstream incomplete_inputs 贯通。
+- Phase 1 审查延后项一并纳入：publish 后双重 fold 去重、hook 门控加轨道校验、
+  acceptance/review_packet 换显式三层 API、`decide_trace.jsonl` 入零-mutation 守卫监视、
+  clarification entries TIER 前后对比断言、启动 fold 的 fresh 短路。
+- 规格必须先冻结经确认再动工（总纲硬性前置）。
 
 ### 3. 评测集 20 条扩充案例人工核对（用户/领域专家，约 1–2 小时）
 
