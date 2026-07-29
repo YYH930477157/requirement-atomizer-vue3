@@ -52,7 +52,7 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **STO 实测（result4，删几何缓存重算）**：术语表 BLK-000061 54 行 → 52 行区跨 6-11 页（context 48/covered 1/req 3）；参数表 BLK-000098 143 行（27 分组标题行跳过）→ 100 行 119 区跨 13-62 页（covered 99/req 20，req 命中含 guards-v16 行展开条目 `PROW-DET-BLK-000098-R0017`）；16 行诚实落空（宁缺不猜：跨页断行/文本层差异）；缓存二跑 0.0s 直供。
 - **验证**：新增 14 专项测试（`tests/test_facsimile_table_rows.py`：行几何跳过口径/前缀预筛模糊/边际不猜/连字符折叠/缓存回写与旧缓存回填/行区 kind 路由/同页 union/行记录键与翻译）；模板字面断言 2 处随行键改名（bid→zoneKey）；版本戳 doc_annotation_export/v11→v12（契约快照已同步）；全量 1738 tests OK（26 项环境 skip）+ ui vitest 138 OK + vue-tsc。
 
-## 重大更新（2026-07-28）——影印支路几何回填修复（分支 codex/facsimile-geometry，doc_annotation_export/v11，待合 main）
+## 重大更新（2026-07-28）——影印支路几何回填修复（已合 main，doc_annotation_export/v11+v12；主检出 golden 6/6、全量 1738 tests——首轮 1 个瞬时失败复跑两轮全绿，判定 Windows 抖动留痕）
 
 - **实证缺陷链（STO result4）**：①几何锚定的"同页候选"假设对 docx/xlsx 全灭（块无 page_number，82 页文档仅 8 块有区）；②docx 扁平文本合并单元格展开重复（"3.1.1 | 3.1.1 | Req | Req"）与转换 PDF 文本层单次出现对不上，包含匹配全灭；③api 侧 normalize_text 吞掉行分隔使按行折叠失效；④全串包含对 184k 参数表过脆；⑤重构时丢了一行 `geometry[block_id] = regions` 赋值（插桩追了四层才现形）。
 - **修复**：无页号块走全局文本驱动匹配——全局精确 → 全局包含（>8000 字符大表放宽为前缀 80 字符锚定）→ 边际模糊（最优-次优 ≥0.05 才落区，宁缺不猜）；`_geometry_match_text` 增加合并单元格折叠 + 相邻重复词折叠；几何缓存升 v3；版本戳 doc_annotation_export/v10→v11。
