@@ -311,7 +311,7 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
         except (OSError, json.JSONDecodeError):
             cached = {}
         cached_rows = cached.get("row_geometry")
-        if (cached.get("version") == 3 and cached.get("source_sha256") == source_hash
+        if (cached.get("version") == 4 and cached.get("source_sha256") == source_hash
                 and cached.get("block_signature") == block_signature
                 and isinstance(cached.get("geometry"), dict)
                 and (row_geometry is None or isinstance(cached_rows, dict))):
@@ -448,7 +448,7 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
         row_geometry.update(_table_row_geometry(blocks, parsed_blocks, parsed_by_text_global))
     if cache_path:
         payload = {
-            "version": 3,
+            "version": 4,
             "source_sha256": source_hash,
             "block_signature": block_signature,
             "geometry": geometry,
@@ -505,6 +505,24 @@ def _table_row_geometry(
     return row_geometry
 
 
+def _slice_region_for_span(region: dict[str, Any], start_frac: float, end_frac: float) -> dict[str, Any]:
+    """把解析块区域按行文本在块文本中的占比切成行级 y 子段（x 不动）。
+
+    行 ⊂ 大解析块时整框直接给每个行会造成热区叠层（STO 实证：术语表 1-4 行同获
+    [83,380→767] 半页大框,点击永远命中栈顶行）。文本→y 坐标是近似映射（表格行高
+    不均匀）,但行在块内按序排列,切片天然互斥——比整框强且确定性可复算。"""
+    bbox = region.get("bbox")
+    if not bbox or len(bbox) != 4:
+        return region
+    start = max(0.0, min(1.0, start_frac))
+    end = max(start, min(1.0, end_frac))
+    y0, y1 = float(bbox[1]), float(bbox[3])
+    height = y1 - y0
+    sliced = dict(region)
+    sliced["bbox"] = [bbox[0], y0 + start * height, bbox[2], y0 + end * height]
+    return sliced
+
+
 def _match_row_regions(
     normalized: str,
     parsed_blocks: list[dict[str, Any]],
@@ -536,7 +554,16 @@ def _match_row_regions(
     if contained:
         regions: list[dict[str, Any]] = []
         for item in contained:
-            regions.extend(_valid_pdf_regions(item.get("pdf_regions")))
+            candidate_text = _geometry_match_text(item.get("text")).replace("- ", "-")
+            span_start = candidate_text.find(normalized)
+            if span_start >= 0 and len(candidate_text) > len(normalized):
+                # 行 ⊂ 大解析块：按文本占比切 y 子段,热区互斥（整框赋给每行会叠层）
+                start_frac = span_start / len(candidate_text)
+                end_frac = (span_start + len(normalized)) / len(candidate_text)
+                for region in _valid_pdf_regions(item.get("pdf_regions")):
+                    regions.append(_slice_region_for_span(region, start_frac, end_frac))
+            else:
+                regions.extend(_valid_pdf_regions(item.get("pdf_regions")))
         if regions:
             return regions
     needle = normalized[:80]

@@ -149,7 +149,7 @@ class TableRowGeometryTests(unittest.TestCase):
             _geometry, rows = self._resolve([_table_block()], parsed, cache_path=cache)
             self.assertIn("BT", rows)
             payload = json.loads(cache.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 3)                       # 版本不变,纯增量字段
+            self.assertEqual(payload["version"], 4)   # v4：行 ⊂ 大解析块的占比切片（v3 旧缓存行区叠层,不得复用）
             self.assertEqual(sorted(payload["row_geometry"]["BT"]), ["3", "4"])  # JSON 键为字符串
 
             # 第二跑：解析器不得再被调用（缓存直供）,行号键恢复为 int

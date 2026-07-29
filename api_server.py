@@ -713,7 +713,10 @@ _BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
                  "text_repairs", "text_repair_words_before", "text_repair_words_after",
                  "text_repair_candidates_before", "text_repair_candidates_after",
                  # 表格块渲染真表格所需（旧 blocks.jsonl 无这些字段 → None，前端回退扁平文字）
-                 "table_title", "table_source", "header_rows", "data_rows")
+                 "table_title", "table_source", "header_rows", "data_rows",
+                 # 行级渲染的表头（v12 行热区/行卡/v13 行区切片都要 _row_render_line(headers)——
+                 # 缺它时行文本为空,行几何与行卡静默全灭,STO 实证）
+                 "headers")
 
 # 块级中文翻译缓存（内容哈希键,仅由真 LLM 写入;详见 doc_annotation_export 的生成侧）。
 # 键函数与加载器放这里作为唯一实现——批注导出与本 API 两个渲染面共用,防分叉。

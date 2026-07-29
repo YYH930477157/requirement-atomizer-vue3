@@ -116,3 +116,52 @@ class FacsimileGeometryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RowSpanSliceTests(unittest.TestCase):
+    """v13：行 ⊂ 大解析块时按文本占比切 y 子段——行热区互斥（v12 整框叠层,点击命中栈顶行）。"""
+
+    def test_slice_region_proportional_y(self) -> None:
+        from doc_annotation_export import _slice_region_for_span
+
+        region = {"page_number": 6, "bbox": [83.4, 380.5, 510.8, 767.5],
+                  "page_width": 595.32, "page_height": 841.92}
+        sliced = _slice_region_for_span(region, 0.25, 0.5)
+        self.assertEqual(sliced["bbox"][0], region["bbox"][0])
+        self.assertAlmostEqual(sliced["bbox"][1], 380.5 + 0.25 * (767.5 - 380.5), places=3)
+        self.assertAlmostEqual(sliced["bbox"][3], 380.5 + 0.5 * (767.5 - 380.5), places=3)
+
+    def test_slice_clamps_out_of_range(self) -> None:
+        from doc_annotation_export import _slice_region_for_span
+
+        region = {"page_number": 6, "bbox": [0.0, 100.0, 500.0, 200.0],
+                  "page_width": 595.32, "page_height": 841.92}
+        sliced = _slice_region_for_span(region, -0.5, 1.5)
+        self.assertEqual(sliced["bbox"][1], 100.0)
+        self.assertEqual(sliced["bbox"][3], 200.0)
+
+    def test_rows_in_same_parsed_block_get_disjoint_zones(self) -> None:
+        rows_text = ["1. alpha row content here", "2. beta row content here", "3. gamma row content here"]
+        big_parsed = _parsed_block("P9", 6, " ".join(rows_text))
+        blocks = [
+            {"block_id": "BT2", "page_number": None, "type": "table",
+             "headers": ["No.", "Item"],
+             "data_rows": [["1.", "alpha row content here"],
+                           ["2.", "beta row content here"],
+                           ["3.", "gamma row content here"]]},
+        ]
+        from doc_annotation_export import _table_row_geometry
+
+        parsed_by_text_global = {}
+        for item in [big_parsed]:
+            parsed_by_text_global.setdefault(_geometry_match_text(item.get("text")), []).append(item)
+        row_geo = _table_row_geometry(blocks, [big_parsed], parsed_by_text_global)
+
+        zones = [row_geo["BT2"][i][0]["bbox"] for i in (1, 2, 3)]
+        self.assertLess(zones[0][3], zones[1][1] + 1e-6)   # row1 底 < row2 顶
+        self.assertLess(zones[1][3], zones[2][1] + 1e-6)   # row2 底 < row3 顶
+
+    def test_block_fields_include_headers(self) -> None:
+        from api_server import _BLOCK_FIELDS
+
+        self.assertIn("headers", _BLOCK_FIELDS)   # 行渲染必需,缺失时行几何/行卡静默全灭
