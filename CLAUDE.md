@@ -45,6 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-29）——影印表格行级热区（分支 codex/facsimile-geometry，doc_annotation_export/v12，待合 main）
+
+- **需求**：v11 块级几何回填后，docx/xlsx 影印页上整表是单块、`_pdf_block_zones` 明确不给表格发热区——表格不可点。本任务对齐原生 PDF 表格的行粒度体验：数据行行级热区 + 右栏行卡（原文/翻译/章节/「解析此行」）。
+- **实现**：①`_resolve_pdf_geometry` 加 `row_geometry` 出参——无页号表格块逐行 `_row_render_line` 渲染后走与块级同款全局匹配（精确 → 双向包含 → 前缀 80 字符预筛 + 覆盖率模糊，边际 ≥0.05 宁缺不猜）；分组标题行（非空单元格全同值）/稀疏行（<2）跳过（与 spot_extract 同口径）；几何缓存 payload 加 `row_geometry` 字段（**version 3 不变**——纯增量字段，旧缓存缺字段时重算一次并回写，向后兼容）。②行级专用归一 `- `→`-`（转换 PDF 文本层换行拆连字符词 "self- diagnostics" vs docx "self-diagnostics"，STO 落空主因）——只在 `_match_row_regions` 内折叠，**不动 `_geometry_match_text`**（块级 v11 行为与缓存不受影响）。③`_pdf_block_zones` 对有几何的数据行发 `row_index` 热区（kind：引句逐字含行 → req / 关键单元格 ≥16 字符被引用块的需求覆盖 → covered / 否则 context）；整表块本身仍不发区。④`_pdf_context_records` 加行级键 `<block_id>#R<row>`（原文=渲染行，翻译按行文本哈希查 `_active_translations`，查不到如实空串）；应用内 payload 加 `row_context`（同源实现）。⑤静态影印热区带 `data-zone-key`（选中按行键，不再点亮整表）+ `table-row` 青色修饰类；`DocumentReview.vue` 行热区渲染 + 行卡（「解析此行」接现有 spotExtract）。
+- **STO 实测（result4，删几何缓存重算）**：术语表 BLK-000061 54 行 → 52 行区跨 6-11 页（context 48/covered 1/req 3）；参数表 BLK-000098 143 行（27 分组标题行跳过）→ 100 行 119 区跨 13-62 页（covered 99/req 20，req 命中含 guards-v16 行展开条目 `PROW-DET-BLK-000098-R0017`）；16 行诚实落空（宁缺不猜：跨页断行/文本层差异）；缓存二跑 0.0s 直供。
+- **验证**：新增 14 专项测试（`tests/test_facsimile_table_rows.py`：行几何跳过口径/前缀预筛模糊/边际不猜/连字符折叠/缓存回写与旧缓存回填/行区 kind 路由/同页 union/行记录键与翻译）；模板字面断言 2 处随行键改名（bid→zoneKey）；版本戳 doc_annotation_export/v11→v12（契约快照已同步）；全量 1738 tests OK（26 项环境 skip）+ ui vitest 138 OK + vue-tsc。
+
 ## 重大更新（2026-07-28）——影印支路几何回填修复（分支 codex/facsimile-geometry，doc_annotation_export/v11，待合 main）
 
 - **实证缺陷链（STO result4）**：①几何锚定的"同页候选"假设对 docx/xlsx 全灭（块无 page_number，82 页文档仅 8 块有区）；②docx 扁平文本合并单元格展开重复（"3.1.1 | 3.1.1 | Req | Req"）与转换 PDF 文本层单次出现对不上，包含匹配全灭；③api 侧 normalize_text 吞掉行分隔使按行折叠失效；④全串包含对 184k 参数表过脆；⑤重构时丢了一行 `geometry[block_id] = regions` 赋值（插桩追了四层才现形）。

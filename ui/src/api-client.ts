@@ -102,16 +102,29 @@ export type ClarificationCheckBatchPayload = {
 
 // 原版影印批注数据（/document/pdf,与分享 HTML 同源）
 export type PdfZoneRect = { left: number; top: number; width: number; height: number }
+// 表格行级卡片数据（v12,键 "<block_id>#R<行号>"）：行原文/翻译/页码,翻译查不到如实空串
+export type PdfRowContext = {
+  text?: string
+  translation?: string
+  translation_note?: string
+  page?: number
+  kind?: string
+  row_index?: number
+  req_ids?: string[]
+  covered_req_ids?: string[]
+}
 export type PdfAnnotationPayload = {
   available: boolean
   reason?: string
   pages?: Array<{ page_number: number; file: string; width: number; height: number }>
   requirement_markers?: Array<{ req_id: string; page: number; rect: PdfZoneRect }>
   omission_markers?: Array<{ block_id: string; page: number; rect: PdfZoneRect }>
-  // 全段落热区(0714):点一段出翻译和解析——kind 路由与重排模式块点击语义同源(后端唯一实现)
+  // 全段落热区(0714):点一段出翻译和解析——kind 路由与重排模式块点击语义同源(后端唯一实现);
+  // v12 起表格数据行带 row_index（整表块本身仍不发区）
   block_zones?: Array<{ block_id: string; page: number; rect: PdfZoneRect;
                         kind: "req" | "covered" | "echo" | "omission" | "context";
-                        req_id?: string; req_ids?: string[] }>
+                        row_index?: number; req_id?: string; req_ids?: string[] }>
+  row_context?: Record<string, PdfRowContext>
 }
 
 export type AiRequirement = Record<string, unknown> & {
