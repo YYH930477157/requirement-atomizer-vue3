@@ -45,6 +45,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-29）——表格行级化 Phase 1+2（已合 main `42ac159`，guards-v17/ai-extract-v5/clarification-v8）
+
+- **三封堵按冻结规格落实**（docs/param-row-extract-phase2-spec.md）：①chunk 表头重复（143 行表 3 chunk 全部带表头）；②参数表需求=确定性逐字行为准,LLM 叙述并入 `llm_narrative`+`merge_trace` 审计（STO 实测 409 需求零双份）；③行级 suspicion 按表块聚合（必答 135→188=1.39x ≤ 2x,每表一条汇总挂 row_details）。行级明细挂在表块 source_block 的 rows 子表（比规格更克制,放大面更小）。
+- **STO 全链实测**：PROW-DET 引句逐字 47/47=100%；316 条需求带 source_row_index；block_id 序列 164 块逐字一致（红线）。
+- **审核插曲（重要）**：验收钓出 main 上 source_spans 卡死 bug（非同事问题）——claim-ledger 对齐对 184k 字符表做字符级 SequenceMatcher（平方级挂死 25 分钟+）。热修为行级 diff（`cac9273`）已先行合 main；曾试 bump 对齐版本误伤 51 个 hash 绑定夹具,回退并留注（<20k 文本 opcode 逐字节不变,无需重冻结）。
+- **验证**：同事 worktree 全量 2250 tests OK；合并后主检出 2250 tests OK、golden 6/6 零漂移（blocks 未变,B 轨行级化不触 A 轨比对）。
+
 ## 重大更新（2026-07-29）——影印行区占比切片互斥（已合 main，doc_annotation_export/v13；主检出 golden 6/6、全量 2064 tests OK）
 
 - **用户实测驱动**：点术语表第 1 行却选中第 4 行——行 ⊂ 大解析块时每行同获整块大框,热区叠层栈顶通吃;另查 `_BLOCK_FIELDS` 无 headers,行渲染拿不到表头（验收/运行路径表现不一致的根源）。
