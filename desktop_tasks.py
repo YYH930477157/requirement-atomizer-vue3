@@ -536,10 +536,10 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v7-claim-ledger-info",
     "compose": "engineering_composer/v1",
-    # v12-claim-distribution：v12=表格行级热区（行几何+行热区+行卡,远端 facsimile-geometry;
-    # v11=影印支路块级几何回填）叠加 Claim Ledger Phase 1 的块级 claim 分布角标——
-    # 两条线同 bump 同一基戳,合并取联合戳使两侧缓存产物一并失效。
-    "export-annotation-html": "doc_annotation_export/v12-claim-distribution",
+    # v13-claim-distribution：v13=行区占比切片互斥（行 ⊂ 大解析块按文本占比切 y 子段）
+    # + claim-distribution（Claim Ledger Phase 1 块级 claim 分布角标）——两线联合戳,
+    # 两侧缓存产物一并失效;v12=表格行级热区、v11=影印支路块级几何回填
+    "export-annotation-html": "doc_annotation_export/v13-claim-distribution",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }

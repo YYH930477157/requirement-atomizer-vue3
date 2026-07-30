@@ -45,6 +45,12 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-29）——影印行区占比切片互斥（已合 main，doc_annotation_export/v13；主检出 golden 6/6、全量 2064 tests OK）
+
+- **用户实测驱动**：点术语表第 1 行却选中第 4 行——行 ⊂ 大解析块时每行同获整块大框,热区叠层栈顶通吃;另查 `_BLOCK_FIELDS` 无 headers,行渲染拿不到表头（验收/运行路径表现不一致的根源）。
+- **修复**：行 ⊂ 解析块按行文本占比切 y 子段（切片天然互斥）；`_BLOCK_FIELDS` 补 headers；几何缓存 v3→v4（旧叠层行区不得复用）、版本戳 v12→v13。
+- **STO 实测**：术语表 52 行区,第 1-4 行 y 切片互斥（384→492→552→588→703）。
+
 ## 重大更新（2026-07-29）——影印表格行级热区（已合 main `7eb7bbb`，doc_annotation_export/v12；验收记录见下方 2026-07-28 条目）
 
 - **需求**：v11 块级几何回填后，docx/xlsx 影印页上整表是单块、`_pdf_block_zones` 明确不给表格发热区——表格不可点。本任务对齐原生 PDF 表格的行粒度体验：数据行行级热区 + 右栏行卡（原文/翻译/章节/「解析此行」）。
