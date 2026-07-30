@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_queue_proposal_v2.schema.json",
+  "title": "Claim queue proposal v2",
+  "type": "object",
+  "required": [
+    "schema", "proposal_id", "claim_id", "claim_hash", "parent_block_id",
+    "locator", "claim_source_fingerprint", "document_generation_id",
+    "catalog_generation_id", "claim_effective_revision", "action", "dry_run",
+    "queue_version", "expected_ledger_state", "created_from_event_seq",
+    "lifecycle", "latest_attempt", "focus", "focus_error", "execution_preconditions"
+  ],
+  "properties": {
+    "schema": {"const": "claim-queue-proposal/v2"},
+    "proposal_id": {"type": "string", "pattern": "^CQP-[0-9a-f]{8}-[0-9a-f]{8}$"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "claim_hash": {"$ref": "#/$defs/hash"},
+    "parent_block_id": {"type": "string", "minLength": 1},
+    "locator": {"$ref": "#/$defs/locator"},
+    "claim_source_fingerprint": {"$ref": "#/$defs/hash"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "claim_effective_revision": {"$ref": "#/$defs/hash"},
+    "action": {"const": "needs_extraction"},
+    "dry_run": {"const": false},
+    "queue_version": {"const": "claim-queue-v2"},
+    "expected_ledger_state": {"const": "uncertain"},
+    "created_from_event_seq": {"type": "integer", "minimum": 0},
+    "lifecycle": {"enum": ["open", "executing", "executed", "rebuild_pending"]},
+    "latest_attempt": {
+      "oneOf": [{"$ref": "#/$defs/latest_attempt"}, {"type": "null"}]
+    },
+    "focus": {"$ref": "#/$defs/focus"},
+    "focus_error": {"type": ["string", "null"]},
+    "execution_preconditions": {"$ref": "#/$defs/preconditions"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "locator": {
+      "type": "object",
+      "required": ["block_id", "line", "start", "end", "position_basis", "table_item_id", "row_index"],
+      "properties": {
+        "block_id": {"type": "string", "minLength": 1},
+        "line": {"type": ["integer", "null"], "minimum": 0},
+        "start": {"type": ["integer", "null"], "minimum": 0},
+        "end": {"type": ["integer", "null"], "minimum": 0},
+        "position_basis": {"enum": ["repaired_text", "table_item_fields", "table_data_rows"]},
+        "table_item_id": {"type": ["string", "null"]},
+        "row_index": {"type": ["integer", "null"], "minimum": 0},
+        "row_start": {"type": "integer", "minimum": 0},
+        "row_end": {"type": "integer", "minimum": 0},
+        "fallback_group_id": {"type": "string", "pattern": "^.+-FB-[0-9]{4}$"}
+      },
+      "additionalProperties": false
+    },
+    "focus_common": {
+      "type": "object",
+      "required": ["kind", "adapter_version", "claim_id", "claim_hash", "block_id", "parent_block_fingerprint"],
+      "properties": {
+        "kind": {"enum": ["text_span", "list_item", "table_item", "table_data_rows"]},
+        "adapter_version": {"const": "claim-focus-adapter-v1"},
+        "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+        "claim_hash": {"$ref": "#/$defs/hash"},
+        "block_id": {"type": "string", "minLength": 1},
+        "parent_block_fingerprint": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "text_focus": {
+      "allOf": [
+        {"$ref": "#/$defs/focus_common"},
+        {
+          "type": "object",
+          "required": ["start", "end", "text_hash", "text"],
+          "properties": {
+            "kind": {"enum": ["text_span", "list_item"]},
+            "start": {"type": "integer", "minimum": 0},
+            "end": {"type": "integer", "minimum": 1},
+            "text_hash": {"$ref": "#/$defs/hash"},
+            "text": {"type": "string", "minLength": 1}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "field_identity": {
+      "type": "object",
+      "required": ["name", "value"],
+      "properties": {
+        "name": {"type": "string"},
+        "value": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "table_item_focus": {
+      "allOf": [
+        {"$ref": "#/$defs/focus_common"},
+        {
+          "type": "object",
+          "required": ["table_item_id", "row_index", "field_identity", "field_identity_hash"],
+          "properties": {
+            "kind": {"const": "table_item"},
+            "table_item_id": {"type": "string", "minLength": 1},
+            "row_index": {"type": "integer", "minimum": 0},
+            "field_identity": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/field_identity"}},
+            "field_identity_hash": {"$ref": "#/$defs/hash"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "table_rows_focus": {
+      "allOf": [
+        {"$ref": "#/$defs/focus_common"},
+        {
+          "type": "object",
+          "required": ["row_start", "row_end", "fallback_group_id", "row_hashes"],
+          "properties": {
+            "kind": {"const": "table_data_rows"},
+            "row_start": {"type": "integer", "minimum": 0},
+            "row_end": {"type": "integer", "minimum": 0},
+            "fallback_group_id": {"type": "string", "pattern": "^.+-FB-[0-9]{4}$"},
+            "row_hashes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/hash"}}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "unavailable_focus": {
+      "type": "object",
+      "required": ["kind", "adapter_version", "reason"],
+      "properties": {
+        "kind": {"const": "unavailable"},
+        "adapter_version": {"const": "claim-focus-adapter-v1"},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "focus": {
+      "oneOf": [
+        {"$ref": "#/$defs/text_focus"},
+        {"$ref": "#/$defs/table_item_focus"},
+        {"$ref": "#/$defs/table_rows_focus"},
+        {"$ref": "#/$defs/unavailable_focus"}
+      ]
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string"},
+        "retryable": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "latest_attempt": {
+      "type": "object",
+      "required": ["attempt_id", "lifecycle", "last_event_seq", "outcome"],
+      "properties": {
+        "attempt_id": {"type": "string", "pattern": "^CRA-[0-9a-f]{16}$"},
+        "request_idempotency_key": {"type": "string", "minLength": 1},
+        "lifecycle": {"enum": ["executing", "rebuild_pending", "succeeded", "failed", "interrupted", "aborted_stale"]},
+        "last_event_seq": {"type": "integer", "minimum": 1},
+        "outcome": {"oneOf": [{"$ref": "#/$defs/outcome"}, {"type": "null"}]}
+      },
+      "additionalProperties": false
+    },
+    "preconditions": {
+      "type": "object",
+      "required": [
+        "claim_id", "claim_hash", "claim_source_fingerprint",
+        "expected_claim_effective_revision", "expected_ledger_state",
+        "document_generation_id", "catalog_generation_id",
+        "parent_block_fingerprint", "target_publication_revision", "target_set_hash",
+        "requirement_review_state_hash", "focus_adapter_version"
+      ],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+        "claim_hash": {"$ref": "#/$defs/hash"},
+        "claim_source_fingerprint": {"$ref": "#/$defs/hash"},
+        "expected_claim_effective_revision": {"$ref": "#/$defs/hash"},
+        "expected_ledger_state": {"const": "uncertain"},
+        "document_generation_id": {"$ref": "#/$defs/hash"},
+        "catalog_generation_id": {"$ref": "#/$defs/hash"},
+        "parent_block_fingerprint": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "target_publication_revision": {"$ref": "#/$defs/hash"},
+        "target_set_hash": {"$ref": "#/$defs/hash"},
+        "requirement_review_state_hash": {"$ref": "#/$defs/hash"},
+        "focus_adapter_version": {"const": "claim-focus-adapter-v1"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +16,8 @@ import claim_ledger
 import claim_review_actions
 import ai_review_actions
 import claim_catalog
+import llm_pipeline
+import omission_actions
 import review_state
 from tests.test_claim_artifacts import (
     _catalog,
@@ -203,6 +209,23 @@ class ClaimReviewEventLogTests(unittest.TestCase):
 
 
 class EffectiveFoldTests(unittest.TestCase):
+    def test_historical_append_cas_does_not_block_same_claim_on_new_base(self) -> None:
+        base_row = {
+            "claim_id": "CLM-0123456789abcdef",
+            "claim_hash": _hash("claim"),
+            "document_generation_id": _hash("document"),
+            "catalog_generation_id": _hash("catalog"),
+        }
+        event = {
+            **base_row,
+            "event_kind": "expert_adjudication",
+            "expected_base_claim_row_hash": _hash("previous-base-row"),
+        }
+
+        relevant = claim_review_actions._relevant_events([event], base_row)
+
+        self.assertEqual(relevant, [event])
+
     def test_document_effective_revision_is_sensitive_to_all_five_live_inputs(self) -> None:
         baseline_inputs = {
             "base_generation_id": _hash("base-generation"),
@@ -257,6 +280,50 @@ class EffectiveFoldTests(unittest.TestCase):
             self.assertEqual(health["bridge_fold_lag"], 1)
             self.assertIn("injected B-track hook failure", health["last_error"])
 
+    def test_b_track_hook_releases_authority_lock_before_fold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            lock_active = False
+            real_lock = ai_review_actions._ai_review_state_lock
+
+            @contextmanager
+            def observed_lock(*args, **kwargs):
+                nonlocal lock_active
+                with real_lock(*args, **kwargs):
+                    lock_active = True
+                    try:
+                        yield
+                    finally:
+                        lock_active = False
+
+            def observed_fold(*args, **kwargs):
+                self.assertFalse(lock_active)
+                self.assertEqual(kwargs["authority_hook_track"], "B")
+                return {"ok": True}
+
+            with (
+                patch.object(
+                    ai_review_actions,
+                    "_ai_review_state_lock",
+                    observed_lock,
+                ),
+                patch.object(
+                    claim_review_actions,
+                    "fold_effective_ledger",
+                    side_effect=observed_fold,
+                ),
+            ):
+                result = ai_review_actions.apply_ai_review_action(
+                    root,
+                    "AIR-1",
+                    "rejected",
+                    actor="test",
+                    reason="lock-order probe",
+                )
+
+        self.assertEqual(result["status"], "rejected")
+
     def test_a_track_hook_failure_persists_authority_and_records_fold_lag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -280,6 +347,277 @@ class EffectiveFoldTests(unittest.TestCase):
             health = claim_review_actions.read_effective_health(root)
             self.assertEqual(health["bridge_fold_lag"], 1)
             self.assertIn("injected A-track hook failure", health["last_error"])
+
+    def test_a_track_hook_releases_authority_lock_before_fold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            requirement = _publish_a_track(root, _catalog())
+            lock_active = False
+            real_lock = review_state.review_state_lock
+
+            @contextmanager
+            def observed_lock(*args, **kwargs):
+                nonlocal lock_active
+                with real_lock(*args, **kwargs):
+                    lock_active = True
+                    try:
+                        yield
+                    finally:
+                        lock_active = False
+
+            def observed_fold(*args, **kwargs):
+                self.assertFalse(lock_active)
+                self.assertEqual(kwargs["authority_hook_track"], "A")
+                return {"ok": True}
+
+            with (
+                patch.object(review_state, "review_state_lock", observed_lock),
+                patch.object(
+                    claim_review_actions,
+                    "fold_effective_ledger",
+                    side_effect=observed_fold,
+                ),
+            ):
+                result = review_state.apply_expert_decision(
+                    root,
+                    requirement["stable_req_id"],
+                    "rejected",
+                    actor="expert",
+                    reason="lock-order probe",
+                )
+
+        self.assertEqual(result["status"], "rejected")
+
+    def test_a_and_b_authority_writes_racing_fold_finish_without_deadlock(self) -> None:
+        for track in ("A", "B"):
+            with self.subTest(track=track), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                if track == "A":
+                    requirement = _publish_a_track(root, _catalog())
+                    authority_module = review_state
+                    authority_lock_name = "review_state_lock"
+                else:
+                    _publish(root, _catalog())
+                    requirement = None
+                    authority_module = ai_review_actions
+                    authority_lock_name = "_ai_review_state_lock"
+
+                fold_waiting_for_authority = threading.Event()
+                writer_holds_authority = threading.Event()
+                errors: list[BaseException] = []
+                real_authority_lock = getattr(
+                    authority_module,
+                    authority_lock_name,
+                )
+                real_load_authority = claim_review_actions._load_declared_authority
+                gated_fold_thread_id: int | None = None
+                gate_used = False
+
+                @contextmanager
+                def observed_authority_lock(*args, **kwargs):
+                    with real_authority_lock(*args, **kwargs):
+                        if threading.current_thread().name == f"{track}-writer":
+                            writer_holds_authority.set()
+                        yield
+
+                def gated_load_authority(*args, **kwargs):
+                    nonlocal gate_used
+                    if (
+                        threading.get_ident() == gated_fold_thread_id
+                        and not gate_used
+                    ):
+                        gate_used = True
+                        self.assertIn(root, claim_artifacts._PUBLICATION_LOCK_STATES)
+                        fold_waiting_for_authority.set()
+                        if not writer_holds_authority.wait(timeout=5):
+                            raise AssertionError(
+                                "authority writer did not reach the injected lock point"
+                            )
+                    return real_load_authority(*args, **kwargs)
+
+                def run_fold() -> None:
+                    nonlocal gated_fold_thread_id
+                    gated_fold_thread_id = threading.get_ident()
+                    try:
+                        claim_review_actions.fold_effective_ledger(
+                            root,
+                            actor_trigger=f"{track.lower()}-concurrent-fold",
+                        )
+                    except BaseException as exc:  # surfaced in the test thread
+                        errors.append(exc)
+
+                def run_writer() -> None:
+                    try:
+                        if track == "A":
+                            assert requirement is not None
+                            review_state.apply_expert_decision(
+                                root,
+                                requirement["stable_req_id"],
+                                "rejected",
+                                actor="expert",
+                                reason="controlled lock-order race",
+                            )
+                        else:
+                            ai_review_actions.apply_ai_review_action(
+                                root,
+                                "AIR-1",
+                                "rejected",
+                                actor="expert",
+                                reason="controlled lock-order race",
+                            )
+                    except BaseException as exc:  # surfaced in the test thread
+                        errors.append(exc)
+
+                with (
+                    patch.object(
+                        authority_module,
+                        authority_lock_name,
+                        observed_authority_lock,
+                    ),
+                    patch.object(
+                        claim_review_actions,
+                        "_load_declared_authority",
+                        side_effect=gated_load_authority,
+                    ),
+                ):
+                    fold_thread = threading.Thread(
+                        target=run_fold,
+                        name=f"{track}-fold",
+                        daemon=True,
+                    )
+                    fold_thread.start()
+                    self.assertTrue(
+                        fold_waiting_for_authority.wait(timeout=5),
+                        "fold did not reach the injected authority boundary",
+                    )
+                    writer_thread = threading.Thread(
+                        target=run_writer,
+                        name=f"{track}-writer",
+                        daemon=True,
+                    )
+                    writer_thread.start()
+                    fold_thread.join(timeout=10)
+                    writer_thread.join(timeout=10)
+
+                self.assertFalse(fold_thread.is_alive(), "fold deadlocked")
+                self.assertFalse(writer_thread.is_alive(), "authority write deadlocked")
+                self.assertEqual(errors, [])
+                self.assertTrue(writer_holds_authority.is_set())
+
+    def test_automatic_merge_acquires_extraction_before_review_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            requirement = _publish_a_track(root, _catalog())
+            _requirements, preconditions = llm_pipeline._load_automatic_review_snapshot(
+                root,
+                limit=0,
+            )
+            generated_state = {
+                "requirement_id": requirement["stable_req_id"],
+                "status": "accepted",
+                "history": [{
+                    "from_status": "candidate",
+                    "to_status": "accepted",
+                    "actor": "llm_pipeline",
+                    "reason": "controlled lock-order probe",
+                    "timestamp": "2026-07-29T00:00:00+00:00",
+                }],
+                "metadata": {
+                    "stable_req_id": requirement["stable_req_id"],
+                    "req_id": requirement["req_id"],
+                },
+            }
+            extraction_active = False
+            review_entries = 0
+            real_extraction_lock = omission_actions.extraction_operation_lock
+            real_review_lock = llm_pipeline.review_state_lock
+
+            @contextmanager
+            def observed_extraction_lock(*args, **kwargs):
+                nonlocal extraction_active
+                with real_extraction_lock(*args, **kwargs):
+                    extraction_active = True
+                    try:
+                        yield
+                    finally:
+                        extraction_active = False
+
+            @contextmanager
+            def observed_review_lock(*args, **kwargs):
+                nonlocal review_entries
+                self.assertTrue(
+                    extraction_active,
+                    "automatic merge acquired review authority before extraction lease",
+                )
+                review_entries += 1
+                with real_review_lock(*args, **kwargs):
+                    yield
+
+            with (
+                patch.object(
+                    omission_actions,
+                    "extraction_operation_lock",
+                    observed_extraction_lock,
+                ),
+                patch.object(
+                    llm_pipeline,
+                    "review_state_lock",
+                    observed_review_lock,
+                ),
+            ):
+                result = llm_pipeline._commit_automatic_review_states(
+                    root,
+                    [generated_state],
+                    expected_preconditions=preconditions,
+                )
+
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(review_entries, 1)
+
+    def test_authority_hooks_do_not_cross_declared_tracks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            a_root = Path(tmp) / "a"
+            requirement = _publish_a_track(a_root, _catalog())
+            a_before = {
+                name: (a_root / name).read_bytes()
+                for name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+                if (a_root / name).is_file()
+            }
+            ai_review_actions.apply_ai_review_action(
+                a_root,
+                "AIR-unrelated",
+                "rejected",
+                actor="test",
+                reason="must not drive A-track producer",
+            )
+            a_after = {
+                name: (a_root / name).read_bytes()
+                for name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+                if (a_root / name).is_file()
+            }
+
+            b_root = Path(tmp) / "b"
+            _publish(b_root, _catalog())
+            b_before = {
+                name: (b_root / name).read_bytes()
+                for name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+                if (b_root / name).is_file()
+            }
+            review_state.apply_expert_decision(
+                b_root,
+                requirement["stable_req_id"],
+                "rejected",
+                actor="expert",
+                reason="must not drive B-track producer",
+            )
+            b_after = {
+                name: (b_root / name).read_bytes()
+                for name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+                if (b_root / name).is_file()
+            }
+
+        self.assertEqual(a_after, a_before)
+        self.assertEqual(b_after, b_before)
 
     def test_effective_version_bump_keeps_base_current_and_only_refolds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -538,12 +876,17 @@ class EffectiveFoldTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _publish(root, _catalog())
+            (root / "decide_trace.jsonl").write_bytes(
+                b'{"frozen_contract":"must-remain-byte-identical"}\n'
+            )
             watched = (
                 "ai_requirements.jsonl",
                 "ai_review_states.jsonl",
                 "atomic_requirements.jsonl",
                 "review_states.jsonl",
                 "omission_states.jsonl",
+                "decide_trace.jsonl",
+                claim_artifacts.CLAIM_SHADOW_METRICS,
                 claim_artifacts.CLAIM_VERIFIER_ATTEMPTS,
             )
             before = {
@@ -579,6 +922,206 @@ class EffectiveFoldTests(unittest.TestCase):
 
         self.assertEqual(result["event_append_count"], 0)
         self.assertEqual(after, before)
+
+    def test_fold_and_recovery_acquire_publication_before_authority(self) -> None:
+        for track in ("A", "B"):
+            with self.subTest(track=track), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                if track == "A":
+                    _publish_a_track(root, _catalog())
+                    authority_module = review_state
+                    authority_lock_name = "review_state_lock"
+                else:
+                    _publish(root, _catalog())
+                    authority_module = ai_review_actions
+                    authority_lock_name = "_ai_review_state_lock"
+
+                authority_entries = 0
+                recovery_entries = 0
+                real_authority_lock = getattr(
+                    authority_module,
+                    authority_lock_name,
+                )
+                real_recovery = (
+                    claim_artifacts._recover_interrupted_effective_publication_unlocked
+                )
+
+                @contextmanager
+                def observed_authority_lock(*args, **kwargs):
+                    nonlocal authority_entries
+                    self.assertIn(root, claim_artifacts._PUBLICATION_LOCK_STATES)
+                    authority_entries += 1
+                    with real_authority_lock(*args, **kwargs):
+                        yield
+
+                def observed_recovery(target_root):
+                    nonlocal recovery_entries
+                    self.assertIn(root, claim_artifacts._PUBLICATION_LOCK_STATES)
+                    recovery_entries += 1
+                    return real_recovery(target_root)
+
+                with (
+                    patch.object(
+                        authority_module,
+                        authority_lock_name,
+                        observed_authority_lock,
+                    ),
+                    patch.object(
+                        claim_artifacts,
+                        "_recover_interrupted_effective_publication_unlocked",
+                        side_effect=observed_recovery,
+                    ),
+                ):
+                    result = claim_review_actions.fold_effective_ledger(
+                        root,
+                        actor_trigger=f"{track.lower()}-lock-order-probe",
+                    )
+
+                self.assertTrue(result["ok"])
+                self.assertGreater(authority_entries, 0)
+                self.assertGreater(recovery_entries, 0)
+
+    def test_second_identical_fold_reuses_effective_snapshot_byte_for_byte(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            first = claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="double-fold-first",
+            )
+            first_snapshot = claim_artifacts.load_committed_effective_snapshot_readonly(
+                root
+            )
+            first_event_bytes = (
+                root / claim_artifacts.CLAIM_REVIEW_EVENTS
+            ).read_bytes() if (
+                root / claim_artifacts.CLAIM_REVIEW_EVENTS
+            ).is_file() else None
+            first_effective_bytes = {
+                name: (root / name).read_bytes()
+                for name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+            }
+
+            second = claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="double-fold-second",
+            )
+            second_snapshot = claim_artifacts.load_committed_effective_snapshot_readonly(
+                root
+            )
+            second_event_bytes = (
+                root / claim_artifacts.CLAIM_REVIEW_EVENTS
+            ).read_bytes() if (
+                root / claim_artifacts.CLAIM_REVIEW_EVENTS
+            ).is_file() else None
+            second_effective_bytes = {
+                name: (root / name).read_bytes()
+                for name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+            }
+
+        self.assertEqual(first["event_append_count"], 0)
+        self.assertEqual(second["event_append_count"], 0)
+        self.assertTrue(second["publication_skipped"])
+        self.assertEqual(second_event_bytes, first_event_bytes)
+        self.assertEqual(
+            [row["claim_effective_revision"] for row in second_snapshot["effective_ledger"]],
+            [row["claim_effective_revision"] for row in first_snapshot["effective_ledger"]],
+        )
+        self.assertEqual(second_effective_bytes, first_effective_bytes)
+
+    def test_interrupted_effective_fold_records_lag_then_clears_on_recovery(self) -> None:
+        script = r'''
+import os
+from pathlib import Path
+import sys
+
+import claim_artifacts
+import claim_review_actions
+
+root = Path(sys.argv[1]).resolve()
+original_replace = claim_artifacts._replace_with_retry
+
+def crash_after_effective_ledger(source, target):
+    original_replace(source, target)
+    target = Path(target)
+    if (
+        target.parent.resolve() == root
+        and target.name == claim_artifacts.CLAIM_EFFECTIVE_LEDGER
+    ):
+        os._exit(97)
+
+claim_artifacts._replace_with_retry = crash_after_effective_ledger
+claim_review_actions.fold_effective_ledger(
+    root,
+    actor_trigger="interrupted-health-child",
+)
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="interrupted-health-seed",
+            )
+            with patch(
+                "claim_review_actions.fold_effective_ledger",
+                return_value={"ok": True},
+            ):
+                ai_review_actions.apply_ai_review_action(
+                    root,
+                    "AIR-1",
+                    "rejected",
+                    actor="test",
+                    reason="authority committed before interrupted fold",
+                )
+            verifier_before = (
+                root / claim_artifacts.CLAIM_VERIFIER_ATTEMPTS
+            ).read_bytes()
+
+            killed = subprocess.run(
+                [sys.executable, "-c", script, str(root)],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(killed.returncode, 97, killed.stderr)
+            self.assertTrue(
+                (root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL).is_file()
+            )
+
+            health_writes = []
+            real_health_write = claim_review_actions._write_effective_health
+
+            def capture_health(target_root, health):
+                health_writes.append(copy.deepcopy(health))
+                return real_health_write(target_root, health)
+
+            with patch.object(
+                claim_review_actions,
+                "_write_effective_health",
+                side_effect=capture_health,
+            ):
+                recovered = claim_review_actions.fold_effective_ledger(
+                    root,
+                    actor_trigger="interrupted-health-recovery",
+                )
+
+            final_health = claim_review_actions.read_effective_health(root)
+            verifier_after = (
+                root / claim_artifacts.CLAIM_VERIFIER_ATTEMPTS
+            ).read_bytes()
+
+        self.assertTrue(recovered["ok"])
+        self.assertGreaterEqual(len(health_writes), 2)
+        self.assertEqual(health_writes[0]["bridge_fold_lag"], 1)
+        self.assertEqual(health_writes[-1]["bridge_fold_lag"], 0)
+        self.assertIsNotNone(health_writes[0]["last_failure_at"])
+        self.assertEqual(final_health["bridge_fold_lag"], 0)
+        self.assertIsNotNone(final_health["last_failure_at"])
+        self.assertIsNone(final_health["last_error"])
+        self.assertEqual(verifier_after, verifier_before)
 
     def test_reconcile_scale_uses_identity_indexes_not_rows_times_all_links(self) -> None:
         target_count = 500

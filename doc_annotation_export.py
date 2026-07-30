@@ -43,6 +43,12 @@ PDF_PAGE_RENDER_DPI = 144
 LAYOUT_OPTIMIZED = "optimized"
 LAYOUT_PDF_ORIGINAL = "pdf_original"
 ANNOTATION_LAYOUT_MODES = {LAYOUT_OPTIMIZED, LAYOUT_PDF_ORIGINAL}
+CLAIM_ANNOTATION_VERSION = "claim-annotation-v13"
+
+
+class ClaimAnnotationUnavailable(ValueError):
+    """The committed claim snapshot exists but cannot be read truthfully."""
+
 # 翻译缓存键/加载器的唯一实现在 api_server（两个渲染面共用防分叉）；生成侧在本模块。
 _TRANSLATION_BATCH = 8
 ANNOTATION_TRANSLATION_STRATEGY_VERSION = "annotation-translation-v2-segment-fallback"
@@ -233,6 +239,287 @@ def _page_number(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return page if page > 0 else None
+
+
+def _claim_table_data_rows(
+    block: dict[str, Any],
+    focus: dict[str, Any],
+) -> list[int]:
+    """Resolve a validated table focus to 1-based ``data_rows`` indexes."""
+    rows = list(block.get("data_rows") or [])
+    header_count = int(block.get("header_row_count") or 0)
+    kind = str(focus.get("kind") or "")
+    if kind == "table_data_rows":
+        start = int(focus["row_start"]) - header_count
+        end = int(focus["row_end"]) - header_count
+        if start < 0 or end <= start or end > len(rows):
+            return []
+        return list(range(start + 1, end + 1))
+    if kind != "table_item":
+        return []
+
+    headers = [str(value or "") for value in (block.get("headers") or [])]
+    expected = {
+        str(field.get("name") or ""): str(field.get("value") or "")
+        for field in (focus.get("field_identity") or [])
+        if isinstance(field, dict)
+    }
+    if not expected:
+        return []
+    candidates: list[int] = []
+    for data_index, raw_row in enumerate(rows, start=1):
+        values = list(raw_row) if isinstance(raw_row, (list, tuple)) else [raw_row]
+        fields = {
+            header: str(values[index] if index < len(values) else "")
+            for index, header in enumerate(headers)
+        }
+        if all(fields.get(name) == value for name, value in expected.items()):
+            candidates.append(data_index)
+    hinted = int(focus.get("row_index") or 0) - header_count
+    if hinted in candidates:
+        return [hinted]
+    return candidates if len(candidates) == 1 else []
+
+
+def _claim_render_span(
+    text: str,
+    claim_text: str,
+    source_start: int,
+    source_end: int,
+) -> tuple[int, int] | None:
+    """Map a validated source span onto the rendered block text.
+
+    ``build_document_blocks`` may normalize whitespace after the catalog focus
+    was created. Preserve the source offsets when they still match; otherwise
+    accept only one exact occurrence so repeated prose cannot be highlighted
+    ambiguously.
+    """
+    if (
+        source_start >= 0
+        and source_end > source_start
+        and source_end <= len(text)
+        and text[source_start:source_end] == claim_text
+    ):
+        return source_start, source_end
+    rendered_claim_text = normalize_text(claim_text)
+    if not rendered_claim_text:
+        return None
+    start = text.find(rendered_claim_text)
+    if start < 0 or text.find(rendered_claim_text, start + 1) >= 0:
+        return None
+    return start, start + len(rendered_claim_text)
+
+
+def _claim_annotation_state(
+    out_dir: Path,
+    blocks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the geometry-independent v13 claim annotation projection.
+
+    Every committed catalog row is attempted through ``claim_focus``. Failed
+    adapters remain in the shared status set with ``mapped=false`` but never
+    create a source zone.
+    """
+    state: dict[str, Any] = {
+        "version": CLAIM_ANNOTATION_VERSION,
+        "records": [],
+        "spans_by_block": {},
+        "rows_by_block": {},
+        "distribution": {},
+    }
+    try:
+        source_blocks = read_jsonl(out_dir / "blocks.jsonl") or blocks
+    except (OSError, ValueError, json.JSONDecodeError):
+        source_blocks = blocks
+    try:
+        from claim_artifacts import (
+            CLAIM_CATALOG,
+            CLAIM_EFFECTIVE_LEDGER,
+            CLAIM_EFFECTIVE_META,
+            CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
+            CLAIM_GENERATION_META,
+            CLAIM_PUBLICATION_JOURNAL,
+            ClaimArtifactError,
+            load_committed_effective_snapshot_readonly,
+        )
+        from claim_focus import ClaimFocusError, build_claim_focus_adapter
+
+        snapshot = load_committed_effective_snapshot_readonly(out_dir)
+    except (
+        ClaimArtifactError,
+        OSError,
+        UnicodeDecodeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        artifact_names = (
+            CLAIM_CATALOG,
+            CLAIM_EFFECTIVE_LEDGER,
+            CLAIM_EFFECTIVE_META,
+            CLAIM_GENERATION_META,
+            CLAIM_PUBLICATION_JOURNAL,
+            CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
+        )
+        if not any((out_dir / name).exists() for name in artifact_names):
+            return state
+        raise ClaimAnnotationUnavailable(
+            f"claim annotation snapshot unavailable: {exc}"
+        ) from exc
+
+    try:
+        table_items = read_jsonl(out_dir / "table_items.jsonl")
+    except (OSError, ValueError, json.JSONDecodeError):
+        table_items = []
+    effective_by_claim = {
+        str(row.get("claim_id") or ""): row
+        for row in (snapshot.get("effective_ledger") or [])
+        if isinstance(row, dict)
+    }
+    source_blocks_by_id = {
+        str(block.get("block_id") or ""): block
+        for block in source_blocks
+        if isinstance(block, dict)
+    }
+    rendered_blocks_by_id = {
+        str(block.get("block_id") or ""): block
+        for block in blocks
+        if isinstance(block, dict)
+    }
+    for claim in snapshot.get("catalog") or []:
+        if not isinstance(claim, dict):
+            continue
+        claim_id = str(claim.get("claim_id") or "")
+        effective = effective_by_claim.get(claim_id, {})
+        resolution = str(effective.get("resolution") or "uncertain")
+        if resolution not in {"covered", "excluded", "uncertain"}:
+            resolution = "uncertain"
+        block_id = str(dict(claim.get("locator") or {}).get("block_id") or "")
+        record: dict[str, Any] = {
+            "claim_id": claim_id,
+            "claim_hash": str(claim.get("claim_hash") or ""),
+            "block_id": block_id,
+            "source_kind": str(claim.get("source_kind") or ""),
+            "text": str(claim.get("text") or ""),
+            "eligibility": str(claim.get("eligibility") or ""),
+            "resolution": resolution,
+            "classification": str(effective.get("classification") or ""),
+            "claim_effective_revision": str(effective.get("claim_effective_revision") or ""),
+            "mapped": False,
+        }
+        if block_id:
+            counts = state["distribution"].setdefault(
+                block_id, {"covered": 0, "excluded": 0, "uncertain": 0}
+            )
+            counts[resolution] += 1
+        try:
+            focus = build_claim_focus_adapter(claim, source_blocks, table_items)
+            record["focus"] = focus
+            if focus["kind"] in {"text_span", "list_item"}:
+                record["mapped"] = True
+                rendered_block = rendered_blocks_by_id.get(
+                    block_id, source_blocks_by_id.get(block_id, {})
+                )
+                render_span = _claim_render_span(
+                    str(rendered_block.get("text") or ""),
+                    str(claim.get("text") or ""),
+                    int(focus["start"]),
+                    int(focus["end"]),
+                )
+                if render_span is not None:
+                    record.update({"start": render_span[0], "end": render_span[1]})
+                    record["rendered_text"] = str(
+                        rendered_block.get("text") or ""
+                    )[render_span[0]:render_span[1]]
+                    state["spans_by_block"].setdefault(block_id, []).append(record)
+                else:
+                    record["render_mapping_error"] = (
+                        "claim text has no unique exact match in rendered block"
+                    )
+            else:
+                data_rows = _claim_table_data_rows(
+                    source_blocks_by_id.get(block_id, {}), focus
+                )
+                if not data_rows:
+                    raise ClaimFocusError("claim table focus has no unique current data row")
+                record["data_row_indexes"] = data_rows
+                record["mapped"] = True
+                by_row = state["rows_by_block"].setdefault(block_id, {})
+                for row_index in data_rows:
+                    by_row.setdefault(row_index, []).append(record)
+        except ClaimFocusError as exc:
+            record["mapping_error"] = str(exc)
+        state["records"].append(record)
+
+    for spans in state["spans_by_block"].values():
+        spans.sort(key=lambda row: (int(row["start"]), int(row["end"]), str(row["claim_id"])))
+    return state
+
+
+def _claim_pdf_zones(
+    records: list[dict[str, Any]],
+    geometry: dict[str, list[dict[str, Any]]],
+    row_geometry: dict[str, dict[int, list[dict[str, Any]]]] | None,
+) -> list[dict[str, Any]]:
+    """Attach mapped claim identities to available PDF block/row geometry."""
+    zones: list[dict[str, Any]] = []
+    for record in records:
+        if not record.get("mapped"):
+            continue
+        block_id = str(record.get("block_id") or "")
+        focus = dict(record.get("focus") or {})
+        if focus.get("kind") in {"text_span", "list_item"}:
+            region_sets = [(None, geometry.get(block_id) or [])]
+        else:
+            region_sets = [
+                (row_index, dict(row_geometry or {}).get(block_id, {}).get(row_index) or [])
+                for row_index in (record.get("data_row_indexes") or [])
+            ]
+        for row_index, regions in region_sets:
+            for page, union in _page_region_unions(regions).items():
+                zone = {
+                    "claim_id": str(record.get("claim_id") or ""),
+                    "claim_hash": str(record.get("claim_hash") or ""),
+                    "block_id": block_id,
+                    "page": page,
+                    "rect": _pdf_zone_rect(union),
+                    "resolution": str(record.get("resolution") or "uncertain"),
+                    "focus_kind": str(focus.get("kind") or ""),
+                }
+                if row_index is not None:
+                    zone["row_index"] = int(row_index)
+                else:
+                    zone["start"] = int(focus.get("start") or 0)
+                    zone["end"] = int(focus.get("end") or 0)
+                zones.append(zone)
+    grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for zone in zones:
+        rect = dict(zone.get("rect") or {})
+        key = (
+            int(zone.get("page") or 0),
+            str(zone.get("block_id") or ""),
+            zone.get("row_index"),
+            float(rect.get("left") or 0),
+            float(rect.get("top") or 0),
+            float(rect.get("width") or 0),
+            float(rect.get("height") or 0),
+        )
+        grouped.setdefault(key, []).append(zone)
+    for group in grouped.values():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda row: str(row.get("claim_id") or ""))
+        source_rect = dict(group[0].get("rect") or {})
+        source_width = max(0.0, float(source_rect.get("width") or 0))
+        lane_width = min(2.0, source_width / len(group)) if source_width else 0.0
+        for lane, zone in enumerate(group):
+            zone["marker_lane"] = lane
+            zone["marker_lanes"] = len(group)
+            zone["rect"] = {
+                **source_rect,
+                "left": float(source_rect.get("left") or 0) + lane * lane_width,
+                "width": lane_width,
+            }
+    return zones
 
 
 def _file_sha256(path: Path) -> str:
@@ -671,7 +958,9 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
                    sub_anchor_map: dict[str, list] | None = None,
                    echo_map: dict[str, list[dict[str, Any]]] | None = None,
                    marker_state: dict[str, Any] | None = None,
-                   claim_distribution: dict[str, dict[str, int]] | None = None) -> str:
+                   claim_distribution: dict[str, dict[str, int]] | None = None,
+                   claim_spans: dict[str, list[dict[str, Any]]] | None = None,
+                   claim_rows: dict[str, dict[int, list[dict[str, Any]]]] | None = None) -> str:
     """渲染文档块：正文正常，非正文区折叠，noise 灰显，纯符号行跳过。"""
     parts: list[str] = []
     collapse_open = False
@@ -726,7 +1015,9 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
                                        block=b, marker_state=state,
                                        outline_level=outline_map.get(bid),
                                        echo_reqs=(echo_map or {}).get(bid) or [],
-                                       claim_counts=(claim_distribution or {}).get(bid))
+                                       claim_counts=(claim_distribution or {}).get(bid),
+                                       claim_spans=(claim_spans or {}).get(bid) or [],
+                                       claim_rows=(claim_rows or {}).get(bid) or {})
 
         # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
         if region in _COLLAPSIBLE_REGIONS:
@@ -832,7 +1123,9 @@ def _marker_number_for_req(req: dict[str, Any], marker_state: dict[str, Any] | N
 def _render_text_with_quote_markers(text: str, anchored: list[dict[str, Any]],
                                     req_numbers: dict[str, int],
                                     placed_ids: set[str] | None = None,
-                                    marker_state: dict[str, Any] | None = None) -> tuple[str, set[str]]:
+                                    marker_state: dict[str, Any] | None = None,
+                                    claim_spans: list[dict[str, Any]] | None = None
+                                    ) -> tuple[str, set[str]]:
     placed = placed_ids if placed_ids is not None else set()
     matches: dict[tuple[int, int], list[tuple[int, dict[str, Any]]]] = {}
     for fallback_index, req in enumerate(anchored, start=1):
@@ -842,17 +1135,50 @@ def _render_text_with_quote_markers(text: str, anchored: list[dict[str, Any]],
         span = _find_quote_span(text, str(req.get("source_quote") or ""))
         if span:
             matches.setdefault(span, []).append((fallback_index, req))
-    if not matches:
+    valid_claims: list[dict[str, Any]] = []
+    claim_cursor = 0
+    for claim in sorted(
+        (row for row in (claim_spans or []) if isinstance(row, dict)),
+        key=lambda row: (int(row.get("start") or 0), int(row.get("end") or 0)),
+    ):
+        start = claim.get("start")
+        end = claim.get("end")
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < claim_cursor
+            or end <= start
+            or end > len(text)
+            or text[start:end] != str(
+                claim.get("rendered_text") or claim.get("text") or ""
+            )
+        ):
+            continue
+        valid_claims.append(claim)
+        claim_cursor = end
+    if not matches and not valid_claims:
         return html.escape(text), set()
 
+    chip_events: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    quote_cursor = 0
+    for (start, end), reqs in sorted(matches.items(), key=lambda item: (item[0][0], item[0][1])):
+        if start < quote_cursor:
+            continue
+        chip_events.setdefault(end, []).extend(reqs)
+        quote_cursor = end
+    claim_starts = {int(row["start"]): row for row in valid_claims}
+    claim_ends = {int(row["end"]): row for row in valid_claims}
+    points = sorted({0, len(text), *chip_events, *claim_starts, *claim_ends})
     rendered: list[str] = []
     cursor = 0
     newly_placed: set[str] = set()
-    for (start, end), reqs in sorted(matches.items(), key=lambda item: (item[0][0], item[0][1])):
-        if start < cursor:
-            continue
-        rendered.append(html.escape(text[cursor:end]))
-        for fallback_index, req in reqs:
+    for point in points:
+        rendered.append(html.escape(text[cursor:point]))
+        if point in claim_ends:
+            rendered.append("</span>")
+        for fallback_index, req in chip_events.get(point, []):
             rid = str(req.get("ai_req_id") or "")
             if rid in placed:
                 continue
@@ -860,8 +1186,16 @@ def _render_text_with_quote_markers(text: str, anchored: list[dict[str, Any]],
             rendered.append(_annotation_chip(req, number, fallback_index=fallback_index))
             placed.add(rid)
             newly_placed.add(rid)
-        cursor = end
-    rendered.append(html.escape(text[cursor:]))
+        claim = claim_starts.get(point)
+        if claim is not None:
+            claim_id = html.escape(str(claim.get("claim_id") or ""), quote=True)
+            resolution = str(claim.get("resolution") or "uncertain")
+            rendered.append(
+                f'<span class="claim-span-zone claim-{html.escape(resolution, quote=True)}" '
+                f'data-claim-id="{claim_id}" data-claim-resolution="{html.escape(resolution, quote=True)}" '
+                f'role="button" tabindex="0">'
+            )
+        cursor = point
     return "".join(rendered), newly_placed
 
 
@@ -925,7 +1259,9 @@ def _source_classification_marker(owner: str, marker_state: dict[str, Any], text
 
 def _render_table_inner(block: dict, anchored: list[dict[str, Any]] | None = None,
                         req_numbers: dict[str, int] | None = None,
-                        marker_state: dict[str, Any] | None = None) -> tuple[str, set[str]]:
+                        marker_state: dict[str, Any] | None = None,
+                        claim_rows: dict[int, list[dict[str, Any]]] | None = None
+                        ) -> tuple[str, set[str]]:
     """表格块渲染成真 <table>（题注 + 表头 + 斑马纹数据行 + 横向滚动容器）。"""
     header_rows = block.get("header_rows") or []
     data_rows = block.get("data_rows") or []
@@ -947,7 +1283,7 @@ def _render_table_inner(block: dict, anchored: list[dict[str, Any]] | None = Non
         for row in header_rows
     )
     body_rows: list[str] = []
-    for row in data_rows:
+    for data_row_index, row in enumerate(data_rows, start=1):
         cells: list[str] = []
         for c in list(row) + [""] * (ncols - len(row)):
             cell_text = str(c)
@@ -959,7 +1295,31 @@ def _render_table_inner(block: dict, anchored: list[dict[str, Any]] | None = Non
                 if owner:
                     rendered_cell += _source_classification_marker(owner, state, cell_text)
             cells.append(f"<td>{rendered_cell}</td>")
-        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+        row_claims = list((claim_rows or {}).get(data_row_index) or [])
+        if cells and row_claims:
+            chips = "".join(
+                '<button class="claim-row-chip claim-{resolution}" type="button" '
+                'data-claim-id="{claim_id}" data-claim-resolution="{resolution}" '
+                'title="Claim {claim_id} · {resolution}" aria-label="Claim {claim_id} · {resolution}">'
+                '<i></i></button>'.format(
+                    claim_id=html.escape(str(claim.get("claim_id") or ""), quote=True),
+                    resolution=html.escape(
+                        str(claim.get("resolution") or "uncertain"), quote=True
+                    ),
+                )
+                for claim in row_claims
+            )
+            cells[-1] = cells[-1][:-5] + f'<span class="claim-row-controls">{chips}</span></td>'
+        resolutions = sorted({str(row.get("resolution") or "uncertain") for row in row_claims})
+        row_attrs = ""
+        row_class = ""
+        if row_claims:
+            row_class = ' class="claim-table-row"'
+            row_attrs = (
+                f' data-claim-ids="{html.escape(" ".join(str(row.get("claim_id") or "") for row in row_claims), quote=True)}"'
+                f' data-claim-status-set="{html.escape(" ".join(resolutions), quote=True)}"'
+            )
+        body_rows.append(f"<tr{row_class}{row_attrs}>" + "".join(cells) + "</tr>")
     body = "".join(body_rows)
     thead = f"<thead>{head}</thead>" if head else ""
     return (f'<figure class="doc-table">{caption}<div class="table-scroll">'
@@ -1059,7 +1419,9 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                       marker_state: dict[str, Any] | None = None,
                       outline_level: int | None = None,
                       echo_reqs: list[dict[str, Any]] | None = None,
-                      claim_counts: dict[str, int] | None = None) -> str:
+                      claim_counts: dict[str, int] | None = None,
+                      claim_spans: list[dict[str, Any]] | None = None,
+                      claim_rows: dict[int, list[dict[str, Any]]] | None = None) -> str:
     cls = ["doc-block"]
     if is_heading:
         cls.append("heading")
@@ -1145,7 +1507,9 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
             'title="该章节 AI 抽取失败，点击定位">抽取失败</button>'
         )
     if is_table and block is not None:
-        table_html, placed_ids = _render_table_inner(block, anchored, numbers, state)
+        table_html, placed_ids = _render_table_inner(
+            block, anchored, numbers, state, claim_rows=claim_rows
+        )
         fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
         sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
         trailing_items = (f'{fallback}{sub_chips}{repair_html}{failed_html}'
@@ -1153,7 +1517,9 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         trailing = f'<span class="chips inline-chips">{trailing_items}</span>' if trailing_items else ""
         content = f'{table_html}{trailing}'
     else:
-        text_html, placed_ids = _render_text_with_quote_markers(text, anchored, numbers, marker_state=state)
+        text_html, placed_ids = _render_text_with_quote_markers(
+            text, anchored, numbers, marker_state=state, claim_spans=claim_spans
+        )
         fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
         collectable = (not is_heading and not is_noise and text.strip()
                        and region not in ("front_matter", "table_of_contents"))
@@ -1204,27 +1570,11 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
     blocks = doc.get("blocks") or []
     requirements = build_ai_requirements(out_dir)
     covered = _covered_blocks(requirements, blocks)
-    claim_distribution: dict[str, dict[str, int]] = {}
-    try:
-        from claim_artifacts import load_committed_effective_snapshot_readonly
-
-        claim_snapshot = load_committed_effective_snapshot_readonly(out_dir)
-        effective_by_claim = {
-            str(row.get("claim_id") or ""): row
-            for row in claim_snapshot.get("effective_ledger") or []
-        }
-        for claim in claim_snapshot.get("catalog") or []:
-            block_id = str(dict(claim.get("locator") or {}).get("block_id") or "")
-            effective = effective_by_claim.get(str(claim.get("claim_id") or ""), {})
-            resolution = str(effective.get("resolution") or "uncertain")
-            if block_id and resolution in {"covered", "excluded", "uncertain"}:
-                counts = claim_distribution.setdefault(
-                    block_id,
-                    {"covered": 0, "excluded": 0, "uncertain": 0},
-                )
-                counts[resolution] += 1
-    except Exception:
-        claim_distribution = {}
+    claim_state = _claim_annotation_state(out_dir, blocks)
+    claim_records = list(claim_state["records"])
+    claim_distribution = dict(claim_state["distribution"])
+    claim_spans = dict(claim_state["spans_by_block"])
+    claim_rows = dict(claim_state["rows_by_block"])
 
     anchor_map: dict[str, list[dict[str, Any]]] = {}
     for req in requirements:
@@ -1276,6 +1626,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
     overlay_enabled = bool(layout_mode == LAYOUT_PDF_ORIGINAL and pdf_pages)
     pdf_context_map: dict[str, dict[str, Any]] = {}
     pdf_semantics: list[dict[str, Any]] = []
+    claim_pdf_zones: list[dict[str, Any]] = []
     if layout_mode == LAYOUT_PDF_ORIGINAL:
         # 翻译属于解析语义，不依赖页图或坐标是否成功生成；geometry 只决定左页热区。
         pdf_semantics = _pdf_block_semantics(blocks, requirements, covered)
@@ -1284,11 +1635,14 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
         block_zones = _pdf_block_zones(
             blocks, requirements, pdf_geometry or {}, covered, semantics=pdf_semantics,
             row_geometry=pdf_row_geometry)
+        claim_pdf_zones = _claim_pdf_zones(
+            claim_records, pdf_geometry or {}, pdf_row_geometry
+        )
         pdf_context_map = _pdf_context_records(
             blocks, block_zones, include_requirements=True, semantics=pdf_semantics)
         blocks_html = _render_pdf_page_stack(
             pdf_pages or [], requirements, omission_items, req_numbers, pdf_geometry or {},
-            block_zones=block_zones)
+            block_zones=block_zones, claim_zones=claim_pdf_zones)
     elif layout_mode == LAYOUT_PDF_ORIGINAL:
         source = html.escape(str(pdf_href or ANNOTATION_SOURCE_PDF), quote=True)
         blocks_html = (
@@ -1303,6 +1657,8 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
             blocks, anchor_map, covered, req_numbers, sub_anchor_map,
             echo_map=echo_map, marker_state=allocation_state,
             claim_distribution=claim_distribution,
+            claim_spans=claim_spans,
+            claim_rows=claim_rows,
         )
         allocated = {
             str(key): int(value)
@@ -1322,10 +1678,13 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
             echo_map=echo_map,
             marker_state={"next": 1, "req_numbers": dict(req_numbers)},
             claim_distribution=claim_distribution,
+            claim_spans=claim_spans,
+            claim_rows=claim_rows,
         )
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
     omissions_json = json.dumps(omission_items, ensure_ascii=False).replace("</", "<\\/")
     pdf_context_json = json.dumps(pdf_context_map, ensure_ascii=False).replace("</", "<\\/")
+    claims_json = json.dumps(claim_records, ensure_ascii=False).replace("</", "<\\/")
     repair_records = {
         str(block.get("block_id") or ""): {
             "raw_text": str(block.get("raw_text") or ""),
@@ -1366,6 +1725,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
         requirements_json=reqs_json,
         omissions_json=omissions_json,
         pdf_context_json=pdf_context_json,
+        claims_json=claims_json,
         repairs_json=repairs_json,
         module_vocab_json=vocab_json,
     )
@@ -2183,7 +2543,8 @@ def _pdf_context_records(blocks: list[dict[str, Any]],
 def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[str, Any]],
                            omissions: list[dict[str, Any]], req_numbers: dict[str, int],
                            geometry: dict[str, list[dict[str, Any]]],
-                           block_zones: list[dict[str, Any]] | None = None) -> str:
+                           block_zones: list[dict[str, Any]] | None = None,
+                           claim_zones: list[dict[str, Any]] | None = None) -> str:
     markers: dict[int, list[dict[str, Any]]] = {}
 
     for req in requirements:
@@ -2292,6 +2653,32 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
             f'title="{html.escape(title, quote=True)}" aria-label="{html.escape(title, quote=True)}" '
             f'aria-pressed="false">{echo_content}{audit_content}</button>')
 
+    # Claim zones sit above the generic paragraph/row zones and expose only
+    # committed effective facts. Span offsets and row indexes remain attached
+    # for deterministic audit even though the PDF parser supplies rectangle,
+    # rather than glyph-level, geometry.
+    for zone in claim_zones or []:
+        rect = zone.get("rect") or {}
+        style = (f"left:{rect.get('left', 0):.3f}%;top:{rect.get('top', 0):.3f}%;"
+                 f"width:{rect.get('width', 0):.3f}%;height:{rect.get('height', 0):.3f}%")
+        resolution = str(zone.get("resolution") or "uncertain")
+        claim_id = str(zone.get("claim_id") or "")
+        if zone.get("row_index") is not None:
+            locator_attrs = f' data-row-index="{int(zone["row_index"])}"'
+        else:
+            locator_attrs = (
+                f' data-claim-start="{int(zone.get("start") or 0)}"'
+                f' data-claim-end="{int(zone.get("end") or 0)}"'
+            )
+        zones_by_page.setdefault(int(zone["page"]), []).append(
+            f'<button class="claim-zone claim-zone-pdf claim-{html.escape(resolution, quote=True)}" '
+            f'type="button" data-claim-id="{html.escape(claim_id, quote=True)}" '
+            f'data-claim-resolution="{html.escape(resolution, quote=True)}" '
+            f'data-block-id="{html.escape(str(zone.get("block_id") or ""), quote=True)}"'
+            f'{locator_attrs} style="{style}" title="Claim {html.escape(claim_id, quote=True)} · '
+            f'{html.escape(resolution, quote=True)}"></button>'
+        )
+
     page_html: list[str] = []
     for page in pages:
         page_number = int(page["page_number"])
@@ -2340,6 +2727,18 @@ def build_pdf_annotation_payload(
     之后常驻复用）,返回 available=False + reason 供前端提示。标记只带数据
     （req_id/block_id + 页码 + 百分比矩形）,编号/文案由前端用它自己的编号器渲染。"""
     out_dir = Path(out_dir).expanduser().resolve()
+    blocks = read_jsonl(out_dir / "blocks.jsonl")
+    rendered_blocks = [
+        {**block, "text": normalize_text(block.get("text"))}
+        for block in blocks
+        if isinstance(block, dict)
+    ]
+    claim_state = _claim_annotation_state(out_dir, rendered_blocks)
+    claim_payload = {
+        "claim_annotation_version": CLAIM_ANNOTATION_VERSION,
+        "claim_records": list(claim_state["records"]),
+        "claim_zones": [],
+    }
     source_pdf = _source_pdf_path(out_dir)
     facsimile_status: str | None = None
     office_input = False
@@ -2354,11 +2753,12 @@ def build_pdf_annotation_payload(
             if facsimile_status and facsimile_status.startswith("unavailable"):
                 return {"available": False,
                         "reason": f"影印转换不可用（{facsimile_status}）——批注视图维持文本模式，无伪造页图",
-                        "facsimile": facsimile_status}
+                        "facsimile": facsimile_status, **claim_payload}
             return {"available": False,
                     "reason": "docx/xlsx 影印页尚未生成——请重新导出批注 HTML（导出阶段懒转换生成后将常驻复用）",
-                    "facsimile": facsimile_status}
-        return {"available": False, "reason": "非 PDF 输入或缺少源文档，无原版影印模式"}
+                    "facsimile": facsimile_status, **claim_payload}
+        return {"available": False, "reason": "非 PDF 输入或缺少源文档，无原版影印模式",
+                **claim_payload}
     pages_dir = out_dir / ANNOTATION_PAGES_DIR
     try:
         manifest = json.loads((pages_dir / ANNOTATION_PAGES_MANIFEST).read_text(encoding="utf-8"))
@@ -2369,7 +2769,8 @@ def build_pdf_annotation_payload(
     try:
         source_hash = _file_sha256(source_pdf)
     except OSError:
-        return {"available": False, "reason": "无法读取当前源 PDF，原版影印模式不可用"}
+        return {"available": False, "reason": "无法读取当前源 PDF，原版影印模式不可用",
+                **claim_payload}
     expected_identity = {
         "version": 1,
         "source_sha256": source_hash,
@@ -2380,6 +2781,7 @@ def build_pdf_annotation_payload(
         return {
             "available": False,
             "reason": "影印页缓存与当前 PDF 或渲染版本不一致——请重新导出批注 HTML 以生成最新影印页",
+            **claim_payload,
         }
     pages: list[dict[str, Any]] = []
     for page in manifest_pages or []:
@@ -2394,9 +2796,9 @@ def build_pdf_annotation_payload(
                           "height": float(page.get("height") or 0.0)})
     if not pages:
         return {"available": False,
-                "reason": "影印页尚未生成——请重新导出批注 HTML（生成后将常驻复用）"}
+                "reason": "影印页尚未生成——请重新导出批注 HTML（生成后将常驻复用）",
+                **claim_payload}
 
-    blocks = read_jsonl(out_dir / "blocks.jsonl")
     if requirements is None:
         requirements = build_ai_requirements(out_dir)
     else:
@@ -2432,6 +2834,9 @@ def build_pdf_annotation_payload(
                                          "rect": _pdf_zone_rect(region)})
     block_zones = _pdf_block_zones(blocks, requirements, geometry, covered,
                                    row_geometry=row_geometry)
+    claim_zones = _claim_pdf_zones(
+        list(claim_state["records"]), geometry, row_geometry
+    )
     # 行级卡片数据（v12 表格行热区）：行原文/翻译/页码——翻译读批注译文 sidecar,
     # 与静态影印共用 _pdf_context_records 同源实现；查不到翻译如实空串,不编。
     global _active_translations, _active_translation_notes
@@ -2447,7 +2852,10 @@ def build_pdf_annotation_payload(
             "facsimile": facsimile_status,
             # 全段落热区（0714）：点一段出翻译和解析——语义与静态影印同源（_pdf_block_zones）
             "block_zones": block_zones,
-            "row_context": row_context}
+            "row_context": row_context,
+            # v13 Claim Ledger：应用内影印和离线 HTML 消费同一状态集合/几何适配器。
+            **claim_payload,
+            "claim_zones": claim_zones}
 
 
 def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
@@ -2601,6 +3009,13 @@ body {{ margin: 0; font-family: var(--sans);
 /* 表格行级热区（v12）：与段落块热区的蓝区分开,行用青色细框 */
 .pdf-block-zone.table-row:hover {{ background: rgba(15,118,110,.05); border-color: rgba(15,118,110,.45); }}
 .pdf-block-zone.table-row.selected {{ background: rgba(15,118,110,.08); border-color: rgba(15,118,110,.78); }}
+.claim-zone-pdf {{ position: absolute; z-index: 4; margin: 0; padding: 0; cursor: pointer;
+  pointer-events: auto; border-radius: 2px; background: transparent; border: 1px solid transparent; }}
+.claim-zone-pdf:hover, .claim-zone-pdf.selected {{ border-color: currentColor; }}
+.claim-zone-pdf.claim-covered {{ color: #2f6842; background: rgba(47,104,66,.025); }}
+.claim-zone-pdf.claim-excluded {{ color: #6b7280; background: rgba(107,114,128,.02); }}
+.claim-zone-pdf.claim-uncertain {{ color: #9a6700; background: rgba(154,103,0,.035); }}
+.claim-zone-pdf:focus-visible {{ outline: 2px solid currentColor; outline-offset: 1px; }}
 .pdf-echo-tag {{ position: absolute; right: 2px; top: -13px; display: inline-block; padding: 0 2px 1px;
   border-bottom: 1px dashed #667085; color: #4b5563; background: rgba(255,255,255,.92);
   z-index: 2; font: 600 9px/1.15 var(--sans); white-space: nowrap; pointer-events: auto;
@@ -2819,6 +3234,20 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .claim-distribution .claim-covered {{ color: #17663c; background: #e8f5ed; }}
 .claim-distribution .claim-excluded {{ color: #5f6368; background: #eceef1; }}
 .claim-distribution .claim-uncertain {{ color: #8b5108; background: #fff0d4; }}
+.claim-span-zone {{ border-radius: 2px; cursor: pointer; box-decoration-break: clone;
+  -webkit-box-decoration-break: clone; }}
+.claim-span-zone.claim-covered {{ box-shadow: inset 0 -2px 0 rgba(47,104,66,.55); }}
+.claim-span-zone.claim-excluded {{ box-shadow: inset 0 -2px 0 rgba(107,114,128,.45); }}
+.claim-span-zone.claim-uncertain {{ background: rgba(246,239,216,.62); box-shadow: inset 0 -2px 0 rgba(154,103,0,.58); }}
+.claim-span-zone.selected {{ outline: 2px solid currentColor; outline-offset: 1px; }}
+.claim-row-controls {{ display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: middle; }}
+.claim-row-chip {{ width: 14px; height: 14px; padding: 0; border: 0; background: transparent;
+  cursor: pointer; vertical-align: middle; }}
+.claim-row-chip i {{ display: block; width: 7px; height: 7px; margin: auto; border-radius: 50%; background: currentColor; }}
+.claim-row-chip.claim-covered {{ color: #2f6842; }}
+.claim-row-chip.claim-excluded {{ color: #6b7280; }}
+.claim-row-chip.claim-uncertain {{ color: #9a6700; }}
+.claim-row-chip.selected {{ outline: 2px solid currentColor; outline-offset: 1px; }}
 .badge.st-accepted {{ background: var(--st-accepted); color: var(--st-accepted-tx); }}
 .badge.st-rejected {{ background: var(--st-rejected); color: var(--st-rejected-tx); }}
 .badge.st-needs_discussion {{ background: var(--st-discussion); color: var(--st-discussion-tx); }}
@@ -2910,6 +3339,7 @@ const STORAGE_KEY = "ratomizer-decisions:" + DOC_ID;
 const REQUIREMENTS = {requirements_json};
 const PDF_OMISSIONS = {omissions_json};
 const PDF_CONTEXT = {pdf_context_json};
+const CLAIMS = {claims_json};
 const REPAIR_AUDIT = {repairs_json};
 const MODULE_VOCAB = {module_vocab_json};
 const GENERATED_AT = "{generated_at}";
@@ -2918,6 +3348,7 @@ const PDF_OVERLAY_ENABLED = {pdf_overlay_enabled};
 const PDF_PAGE_COUNT = {pdf_page_count};
 const PDF_HREF = {pdf_href_json};
 const byId = {{}}; REQUIREMENTS.forEach(r => byId[r.ai_req_id] = r);
+const claimById = {{}}; CLAIMS.forEach(r => claimById[r.claim_id] = r);
 const STATUS_LABELS = {{ draft:"待审", accepted:"已接受", rejected:"已拒绝", needs_discussion:"待讨论", expert_pending:"专家待定" }};
 
 function loadStore() {{ try {{ return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{{}}"); }} catch(e) {{ return {{}}; }} }}
@@ -3240,6 +3671,7 @@ function deselect() {{
   document.querySelectorAll(".omission-tag").forEach(t => t.classList.remove("sel"));
   document.querySelectorAll(".pdf-marker").forEach(marker => marker.classList.remove("sel"));
   document.querySelectorAll(".pdf-source-zone").forEach(zone => zone.classList.remove("selected"));
+  document.querySelectorAll("[data-claim-id]").forEach(zone => zone.classList.remove("selected"));
   paintZoneSelection("");
   document.querySelectorAll(".req-index-item").forEach(item => item.classList.remove("active"));
   document.querySelectorAll('.chip[data-inline-marker="1"].quote-selected').forEach(m => m.classList.remove("quote-selected"));
@@ -3258,6 +3690,32 @@ const TABLE_ROW_CONTEXT_REASON = "该表格行未被任何已抽取需求的引�
 const REQUIREMENT_GROUP_REASON = "该段原文解析出了多条独立需求。为避免只展示第一条，下面列出该段的全部解析结果。";
 const FAILED_EXTRACTION_REASON = "该章节的 AI 抽取调用失败，当前段落没有得到完整分析。失败通常来自端点、密钥、限流或超时；请在重跑成功前不要把这里的空白视为“无需求”。";
 let selectedContextBlock = null;
+
+function selectClaim(claimId) {{
+  const claim = claimById[claimId];
+  if (!claim) return;
+  selected = null;
+  selectedContextBlock = "claim:" + claimId;
+  document.querySelectorAll(".chip,.source-classification,.omission-tag,.pdf-marker").forEach(el => el.classList.remove("sel"));
+  document.querySelectorAll("[data-claim-id]").forEach(el =>
+    el.classList.toggle("selected", el.getAttribute("data-claim-id") === claimId));
+  const labels = {{covered:"已覆盖", excluded:"已排除", uncertain:"待确认"}};
+  const kindLabels = {{text_span:"文本片段", list_item:"清单项", table_item:"表格行", table_data_rows:"表格行组"}};
+  const focus = claim.focus || {{}};
+  const location = focus.kind === "table_item" || focus.kind === "table_data_rows"
+    ? (claim.data_row_indexes || []).map(value => "数据行 " + value).join("、")
+    : (claim.mapped ? "字符 " + claim.start + "–" + claim.end : "定位失败");
+  document.getElementById("detail").innerHTML =
+    '<div class="annotation-card detail-card"><div class="dd-head"><span class="dd-module">Claim Ledger</span>'+
+    '<span class="badge">'+esc(labels[claim.resolution] || claim.resolution)+'</span></div>'+
+    '<div class="dd-title">'+esc(claim.text || claim.claim_id)+'</div>'+
+    '<div class="dd-meta">'+esc(claim.claim_id)+' · '+esc(kindLabels[focus.kind] || focus.kind || claim.source_kind)+' · '+esc(location)+'</div>'+
+    '<div class="dd-label">账本状态</div><div class="dd-body">'+esc(labels[claim.resolution] || claim.resolution)+
+    (claim.classification ? ' · '+esc(claim.classification) : '')+'</div>'+
+    (claim.mapping_error ? '<div class="dd-suspicion">定位失败：'+esc(claim.mapping_error)+'</div>' : '')+
+    (claim.text ? '<div class="dd-label">Claim 原文</div><div class="dd-quote">'+esc(claim.text)+'</div>' : '')+
+    '</div>';
+}}
 
 function repairAuditHtml(blockId) {{
   const audit = REPAIR_AUDIT[blockId];
@@ -3702,7 +4160,13 @@ function select(id) {{
 function decide(id, status) {{
   const store = loadStore();
   const ownershipOverride = ownershipOverrideForSave(id);
+  const target = byId[id] || {{}};
   store[id] = {{ ai_req_id: id, status: status,
+    source_fingerprint: target.source_fingerprint || "",
+    review_subject_fingerprint: target.review_subject_fingerprint || "",
+    expected_target_fingerprint: target.target_fingerprint || "",
+    expected_target_publication_revision: target.target_publication_revision || "",
+    expected_target_authority_write_revision: target.target_authority_write_revision || "",
     module_override: document.getElementById("mod-sel").value !== (byId[id].module_effective||byId[id].module||"") ? document.getElementById("mod-sel").value : "",
     ownership_override: ownershipOverride,
     reason: document.getElementById("cmt").value, ts: GENERATED_AT }};
@@ -3719,6 +4183,8 @@ document.getElementById("paper").addEventListener("click", e => {{
   const chip = e.target.closest(".chip"); if (chip) {{ select(chip.getAttribute("data-req")); return; }}
   const pdfMarker = e.target.closest('.pdf-marker[data-req]');
   if (pdfMarker) {{ select(pdfMarker.getAttribute("data-req")); return; }}
+  const claimZone = e.target.closest("[data-claim-id]");
+  if (claimZone) {{ selectClaim(claimZone.getAttribute("data-claim-id") || ""); return; }}
   // 全段落热区（0714）：影印页任意段落可点——req→需求卡 / omission→遗漏卡 / context→背景卡
   // 表格行热区（v12）：data-zone-key 带 "#R<行号>",卡片数据优先按行键查 PDF_CONTEXT
   const zone = e.target.closest(".pdf-block-zone");
@@ -3759,6 +4225,13 @@ document.getElementById("paper").addEventListener("click", e => {{
     const p = plain.querySelector(".text");
     if (p && p.textContent.trim()) selectContextBlock(plain);
   }}
+}});
+document.getElementById("paper").addEventListener("keydown", e => {{
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const claimZone = e.target.closest("[data-claim-id]");
+  if (!claimZone) return;
+  e.preventDefault();
+  selectClaim(claimZone.getAttribute("data-claim-id") || "");
 }});
 
 document.getElementById("export-btn").onclick = () => {{

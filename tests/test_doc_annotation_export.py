@@ -10,9 +10,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import doc_annotation_export as dae
+import ai_extract
+import claim_artifacts
+import claim_catalog
+import claim_ledger
 import claim_review_actions
 from parsers.pdf_parser import extract_pdf
 from tests.test_claim_artifacts import _catalog, _publish
+from tests.test_claim_catalog import _block
 
 
 def _seed(out: Path) -> None:
@@ -38,6 +43,278 @@ def _seed(out: Path) -> None:
 
 
 class DocAnnotationExportTests(unittest.TestCase):
+    @staticmethod
+    def _claims_from_html(rendered: str) -> list[dict]:
+        match = re.search(r"const CLAIMS = (\[.*?\]);\n", rendered)
+        if not match:
+            raise AssertionError("claim annotation payload is missing")
+        return json.loads(match.group(1))
+
+    def test_claim_status_set_is_identical_in_optimized_and_pdf_layouts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            catalog = _catalog()
+            text = catalog["catalog"][0]["text"]
+            (out / "blocks.jsonl").write_text(json.dumps({
+                "block_id": "B1", "order": 1, "type": "paragraph", "text": text,
+                "section_path": ["4 Functions"], "noise": False,
+                "requirement_like": True, "page_number": 1,
+            }) + "\n", encoding="utf-8")
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(out, actor_trigger="annotation-v13-test")
+            region = {"page_number": 1, "bbox": [50, 100, 550, 130],
+                      "page_width": 600, "page_height": 800}
+            optimized = dae.render_annotation_html(out, layout_mode="optimized")
+            original = dae.render_annotation_html(
+                out,
+                layout_mode="pdf_original",
+                pdf_href=dae.ANNOTATION_SOURCE_PDF,
+                pdf_pages=[{"page_number": 1, "href": "page.png", "width": 600, "height": 800}],
+                pdf_geometry={"B1": [region]},
+            )
+
+        optimized_claims = self._claims_from_html(optimized)
+        original_claims = self._claims_from_html(original)
+        status_set = lambda rows: {(row["claim_id"], row["resolution"]) for row in rows}
+        self.assertEqual(status_set(optimized_claims), status_set(original_claims))
+        self.assertIn('<span class="claim-span-zone claim-covered"', optimized)
+        self.assertIn('class="claim-zone claim-zone-pdf claim-covered"', original)
+        self.assertIn('data-claim-start="0"', original)
+
+    def test_stale_claim_focus_is_audited_without_source_zone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            catalog = _catalog()
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(out, actor_trigger="annotation-v13-stale")
+            (out / "blocks.jsonl").write_text(json.dumps({
+                "block_id": "B1", "order": 1, "type": "paragraph",
+                "text": "The source changed after catalog publication.",
+                "section_path": ["4 Functions"], "noise": False,
+            }) + "\n", encoding="utf-8")
+
+            rendered = dae.render_annotation_html(out, layout_mode="optimized")
+            original = dae.render_annotation_html(
+                out, layout_mode="pdf_original",
+                pdf_href=dae.ANNOTATION_SOURCE_PDF,
+                pdf_pages=[{"page_number": 1, "href": "page.png",
+                            "width": 600, "height": 800}],
+                pdf_geometry={"B1": [{"page_number": 1,
+                                       "bbox": [50, 100, 550, 130],
+                                       "page_width": 600, "page_height": 800}]},
+            )
+
+        claims = self._claims_from_html(rendered)
+        self.assertFalse(claims[0]["mapped"])
+        self.assertIn("no longer matches", claims[0]["mapping_error"])
+        self.assertNotIn('<span class="claim-span-zone ', rendered)
+        self.assertNotIn('class="claim-zone claim-zone-pdf ', original)
+
+    def test_claim_span_remaps_to_one_exact_match_in_rendered_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            catalog = _catalog()
+            claim_text = catalog["catalog"][0]["text"]
+            claim_artifacts.atomic_write_jsonl(out / "blocks.jsonl", [{
+                "block_id": "B1", "order": 1, "type": "paragraph",
+                "text": claim_text, "section_path": ["4 Functions"],
+                "noise": False, "requirement_like": True,
+            }])
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(
+                out, actor_trigger="annotation-v13-remap"
+            )
+
+            state = dae._claim_annotation_state(out, [{
+                "block_id": "B1", "text": f"Normalized prefix: {claim_text}",
+            }])
+
+        record = state["records"][0]
+        self.assertTrue(record["mapped"])
+        self.assertEqual(record["start"], len("Normalized prefix: "))
+        self.assertEqual(record["end"], len("Normalized prefix: ") + len(claim_text))
+        self.assertEqual(state["spans_by_block"]["B1"], [record])
+        zones = dae._claim_pdf_zones(
+            state["records"],
+            {"B1": [{"page_number": 1, "bbox": [0, 0, 10, 10],
+                     "page_width": 100, "page_height": 100}]},
+            {},
+        )
+        self.assertEqual((zones[0]["start"], zones[0]["end"]), (0, len(claim_text)))
+
+    def test_ambiguous_rendered_claim_text_emits_no_text_span(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            catalog = _catalog()
+            claim_text = catalog["catalog"][0]["text"]
+            claim_artifacts.atomic_write_jsonl(out / "blocks.jsonl", [{
+                "block_id": "B1", "order": 1, "type": "paragraph",
+                "text": claim_text, "section_path": ["4 Functions"],
+                "noise": False, "requirement_like": True,
+            }])
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(
+                out, actor_trigger="annotation-v13-ambiguous"
+            )
+
+            state = dae._claim_annotation_state(out, [{
+                "block_id": "B1", "text": f"x {claim_text} / {claim_text}",
+            }])
+
+        record = state["records"][0]
+        self.assertTrue(record["mapped"])
+        self.assertNotIn("start", record)
+        self.assertNotIn("B1", state["spans_by_block"])
+        self.assertIn("no unique exact match", record["render_mapping_error"])
+
+    def test_claim_span_uses_document_view_normalization(self) -> None:
+        raw = 'The  product shall support “status”\nindication…'
+        for block_type in ("paragraph", "list_item"):
+            with self.subTest(block_type=block_type), tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                block = _block("B1", raw, block_type=block_type)
+                catalog = claim_catalog.build_claim_catalog([block], [])
+                claim_artifacts.atomic_write_jsonl(out / "blocks.jsonl", [block])
+                _publish(out, catalog)
+                claim_review_actions.fold_effective_ledger(
+                    out, actor_trigger=f"annotation-v13-normalized-{block_type}"
+                )
+
+                rendered = dae.render_annotation_html(out, layout_mode="optimized")
+
+                record = self._claims_from_html(rendered)[0]
+                expected = dae.normalize_text(record["text"])
+                self.assertEqual(record["rendered_text"], expected)
+                self.assertEqual((record["start"], record["end"]), (0, len(expected)))
+                self.assertIn('<span class="claim-span-zone ', rendered)
+
+    def test_existing_invalid_claim_snapshot_is_not_reported_as_empty(self) -> None:
+        scenarios = ("legacy", "recovery_pending", "corrupt")
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                catalog = _catalog()
+                claim_artifacts.atomic_write_jsonl(out / "blocks.jsonl", [{
+                    "block_id": "B1", "order": 1, "type": "paragraph",
+                    "text": catalog["catalog"][0]["text"],
+                    "section_path": ["4 Functions"], "noise": False,
+                }])
+                _publish(out, catalog)
+                if scenario != "legacy":
+                    claim_review_actions.fold_effective_ledger(
+                        out, actor_trigger=f"annotation-v13-{scenario}"
+                    )
+                if scenario == "recovery_pending":
+                    (out / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL).write_text(
+                        '{"unfinished":true}', encoding="utf-8"
+                    )
+                elif scenario == "corrupt":
+                    with (out / claim_artifacts.CLAIM_CATALOG).open("ab") as handle:
+                        handle.write(b"\n")
+
+                with self.assertRaisesRegex(
+                    dae.ClaimAnnotationUnavailable,
+                    "claim annotation snapshot unavailable",
+                ):
+                    dae._claim_annotation_state(out, [])
+
+    def test_overlapping_pdf_claim_zones_get_distinct_marker_lanes(self) -> None:
+        region = {"page_number": 1, "bbox": [50, 100, 550, 130],
+                  "page_width": 600, "page_height": 800}
+        records = [
+            {"claim_id": claim_id, "claim_hash": f"sha256:{claim_id}",
+             "block_id": "B1", "resolution": "uncertain", "mapped": True,
+             "focus": {"kind": "text_span", "start": index * 5,
+                       "end": index * 5 + 4}}
+            for index, claim_id in enumerate(("CLM-A", "CLM-B"))
+        ]
+
+        zones = dae._claim_pdf_zones(records, {"B1": [region]}, {})
+
+        self.assertEqual(len(zones), 2)
+        self.assertNotEqual(zones[0]["rect"], zones[1]["rect"])
+        self.assertEqual({zone["marker_lanes"] for zone in zones}, {2})
+        first, second = sorted(zones, key=lambda zone: zone["marker_lane"])
+        self.assertLessEqual(
+            first["rect"]["left"] + first["rect"]["width"],
+            second["rect"]["left"],
+        )
+
+    def test_table_claim_uses_data_row_card_and_pdf_row_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            table = _block(
+                "TB1", "Name | Value\nA | 10 V", block_type="table",
+                headers=["Name", "Value"], header_row_count=1,
+                header_rows=[["Name", "Value"]], data_rows=[["A", "10 V"]],
+            )
+            item = {"item_id": "T1-R2", "table_block_id": "TB1", "row_index": 2,
+                    "fields": {"Name": "A", "Value": "10 V"},
+                    "section_path": ["4 Functions"]}
+            catalog = claim_catalog.build_claim_catalog([table], [item])
+            claim_id = catalog["catalog"][0]["claim_id"]
+            claim_artifacts.atomic_write_jsonl(out / "blocks.jsonl", [table])
+            claim_artifacts.atomic_write_jsonl(out / "table_items.jsonl", [item])
+            claim_artifacts.atomic_write_jsonl(out / "ai_requirements.jsonl", [])
+            ai_extract.write_ai_requirements_metadata(out, input_fingerprint="annotation-v13")
+            shadow = claim_ledger.build_shadow_ledger(catalog, [])
+            claim_artifacts.publish_shadow_generation(
+                out, catalog, shadow, run_id="annotation-v13-table",
+                requirements_sha256=claim_artifacts.file_sha256(out / "ai_requirements.jsonl"),
+            )
+            claim_review_actions.fold_effective_ledger(out, actor_trigger="annotation-v13-table")
+            optimized = dae.render_annotation_html(out, layout_mode="optimized")
+            region = {"page_number": 2, "bbox": [60, 200, 540, 230],
+                      "page_width": 600, "page_height": 800}
+            original = dae.render_annotation_html(
+                out, layout_mode="pdf_original", pdf_href=dae.ANNOTATION_SOURCE_PDF,
+                pdf_pages=[{"page_number": 2, "href": "page.png", "width": 600, "height": 800}],
+                pdf_geometry={}, pdf_row_geometry={"TB1": {1: [region]}},
+            )
+
+        self.assertIn(f'data-claim-id="{claim_id}"', optimized)
+        self.assertIn('class="claim-table-row"', optimized)
+        self.assertIn(f'data-claim-id="{claim_id}"', original)
+        self.assertIn('data-row-index="1"', original)
+
+    def test_table_fallback_claim_maps_rows_in_both_layouts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            table = _block(
+                "TB1", "truncated display", block_type="table",
+                headers=["Name", "Value"], header_row_count=1,
+                header_rows=[["Name", "Value"]],
+                data_rows=[["A", "10 V"], ["B", "20 V"]],
+            )
+            catalog = claim_catalog.build_claim_catalog([table], [])
+            claim_id = catalog["catalog"][0]["claim_id"]
+            claim_artifacts.atomic_write_jsonl(out / "blocks.jsonl", [table])
+            claim_artifacts.atomic_write_jsonl(out / "table_items.jsonl", [])
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(
+                out, actor_trigger="annotation-v13-table-fallback"
+            )
+            optimized = dae.render_annotation_html(out, layout_mode="optimized")
+            regions = {
+                1: [{"page_number": 2, "bbox": [60, 200, 540, 230],
+                     "page_width": 600, "page_height": 800}],
+                2: [{"page_number": 2, "bbox": [60, 230, 540, 260],
+                     "page_width": 600, "page_height": 800}],
+            }
+            original = dae.render_annotation_html(
+                out, layout_mode="pdf_original", pdf_href=dae.ANNOTATION_SOURCE_PDF,
+                pdf_pages=[{"page_number": 2, "href": "page.png",
+                            "width": 600, "height": 800}],
+                pdf_geometry={}, pdf_row_geometry={"TB1": regions},
+            )
+
+        record = self._claims_from_html(optimized)[0]
+        self.assertEqual(record["data_row_indexes"], [1, 2])
+        self.assertGreaterEqual(optimized.count(f'data-claim-id="{claim_id}"'), 2)
+        self.assertIn(f'data-claim-id="{claim_id}"', original)
+        self.assertIn('data-row-index="1"', original)
+        self.assertIn('data-row-index="2"', original)
+
     def test_full_html_uses_committed_claim_distribution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -1867,6 +2144,7 @@ class MarkerTranslationTests(unittest.TestCase):
         import desktop_tasks
 
         producer = desktop_tasks.stage_producer("export-annotation-html")
+        self.assertIn("doc_annotation_export/v13-claim-focus", producer)
         self.assertIn(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION, producer)
         self.assertIn(dae.ANNOTATION_TRANSLATION_GUARDS_VERSION, producer)
 
@@ -2023,6 +2301,28 @@ class PdfAnnotationPayloadTests(unittest.TestCase):
             self.assertFalse(payload["available"])
             self.assertIn("重新导出批注 HTML", payload["reason"])
             self.assertNotIn("原版影印模式", payload["reason"])
+
+    def test_unavailable_pdf_payload_still_carries_text_claim_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out, with_pages=False)
+            blocks = [json.loads(line) for line in
+                      (out / "blocks.jsonl").read_text(encoding="utf-8").splitlines()]
+            catalog = claim_catalog.build_claim_catalog(blocks, [])
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(
+                out, actor_trigger="annotation-v13-no-pages"
+            )
+
+            payload = dae.build_pdf_annotation_payload(out)
+
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["claim_annotation_version"], dae.CLAIM_ANNOTATION_VERSION)
+        self.assertEqual(
+            {row["claim_id"] for row in payload["claim_records"]},
+            {row["claim_id"] for row in catalog["catalog"]},
+        )
+        self.assertEqual(payload["claim_zones"], [])
 
     def test_payload_rejects_stale_or_incompatible_page_manifest(self) -> None:
         mutations = ({"version": 0}, {"source_sha256": "stale"}, {"dpi": 72})

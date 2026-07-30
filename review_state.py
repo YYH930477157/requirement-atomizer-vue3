@@ -35,6 +35,34 @@ _PROCESS_LOCKS: dict[Path, RLock] = {}
 _PROCESS_LOCKS_GUARD = RLock()
 _REPLACE_ATTEMPTS = 5
 _REPLACE_RETRY_DELAY_S = 0.02
+CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION = "claim-authority-write-v1"
+ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION = "atomic-target-authority-write-revision-v1"
+TARGET_PUBLICATION_REVISION_VERSION = "target-publication-revision-v1"
+
+
+class ReviewAuthorityConflict(ValueError):
+    """The displayed A-track authority row is stale and must be refreshed."""
+
+    def __init__(self, message: str, *, current_revision: str) -> None:
+        super().__init__(message)
+        self.current_revision = str(current_revision)
+
+
+def target_publication_revision(path: Path) -> str:
+    """Bind an authority write to the exact target publication bytes."""
+    from claim_artifacts import hash_json, sha256_bytes
+
+    target = Path(path)
+    present = target.is_file()
+    raw = target.read_bytes() if present else b""
+    return hash_json(
+        TARGET_PUBLICATION_REVISION_VERSION,
+        {
+            "source_store": target.name,
+            "source_present": present,
+            "source_file_sha256": sha256_bytes(raw),
+        },
+    )
 
 
 @dataclass
@@ -77,6 +105,8 @@ def apply_expert_decision(
     *,
     actor: str,
     reason: str = "",
+    expected_target_fingerprint: str | None = None,
+    expected_target_authority_write_revision: str | None = None,
 ) -> dict[str, Any]:
     """专家覆盖式裁决：决策状态间可自由改判（含 accepted→rejected、rejected→
     expert_pending 重审），这是有意语义——专家是权威裁决方，VALID_TRANSITIONS
@@ -92,6 +122,31 @@ def apply_expert_decision(
 
     with review_state_lock(out_dir):
         states = _read_jsonl(states_path)
+        current_write_revision = atomic_target_authority_write_revision(
+            requirement_id,
+            states,
+        )
+        if (
+            expected_target_authority_write_revision is not None
+            and str(expected_target_authority_write_revision)
+            != current_write_revision
+        ):
+            raise ReviewAuthorityConflict(
+                "review authority changed; refresh before adjudicating",
+                current_revision=current_write_revision,
+            )
+        if expected_target_fingerprint is not None:
+            binding = _current_atomic_review_binding(out_dir, requirement_id)
+            current_target_fingerprint = (
+                str(binding.get("review_subject_fingerprint") or "")
+                if binding is not None
+                else ""
+            )
+            if current_target_fingerprint != str(expected_target_fingerprint):
+                raise ReviewAuthorityConflict(
+                    "atomic requirement changed; refresh before adjudicating",
+                    current_revision=current_write_revision,
+                )
         state_index = _find_state_index(states, requirement_id)
         if state_index is None:
             state = RequirementReviewState(requirement_id)
@@ -123,7 +178,13 @@ def apply_expert_decision(
         states[state_index] = state.to_dict()
 
         _atomic_write_jsonl(states_path, states)
-        result = states[state_index]
+        result = dict(states[state_index])
+        result["target_authority_write_revision"] = atomic_target_authority_write_revision(
+            requirement_id,
+            states,
+        )
+        if expected_target_fingerprint is not None:
+            result["target_fingerprint"] = str(expected_target_fingerprint)
         if event is not None:
             try:
                 _append_review_state_event(events_path, result, event)
@@ -141,6 +202,7 @@ def apply_expert_decision(
             fold_effective_ledger(
                 out_dir,
                 actor_trigger="requirement-review-action",
+                authority_hook_track="A",
             )
         except Exception as exc:
             # The requirement-level authority is already atomically committed.
@@ -422,6 +484,55 @@ def read_review_authority_snapshot_readonly(out_dir: Path) -> dict[str, Any]:
     if after != before:
         raise ValueError("review authority changed during read-only read")
     return snapshot
+
+
+def atomic_target_authority_write_revision(
+    requirement_id: str,
+    snapshot_or_states: dict[str, Any] | list[dict[str, Any]],
+) -> str:
+    """Return the physical per-target A-track write revision.
+
+    ``target_review_revision`` is a semantic projection and intentionally ignores
+    timestamps/reasons.  This CAS token instead binds every matching state row,
+    its physical ordinal, the complete current row hash, and the full history
+    prefix hash.  Consequently an ABA sequence (accepted -> rejected -> accepted)
+    cannot reuse the original token.
+    """
+    from claim_artifacts import hash_json
+
+    if isinstance(snapshot_or_states, dict):
+        states = snapshot_or_states.get("states") or []
+    else:
+        states = snapshot_or_states
+    wanted = str(requirement_id or "").strip()
+    bindings: list[dict[str, Any]] = []
+    for ordinal, raw_state in enumerate(states, start=1):
+        if not isinstance(raw_state, dict):
+            continue
+        if wanted not in requirement_identity_keys(raw_state):
+            continue
+        history = raw_state.get("history")
+        history = history if isinstance(history, list) else []
+        bindings.append({
+            "state_ordinal": ordinal,
+            "state_row_hash": hash_json(
+                f"{ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION}:row",
+                raw_state,
+            ),
+            "history_prefix_hash": hash_json(
+                f"{ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION}:history",
+                history,
+            ),
+        })
+    return hash_json(
+        ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION,
+        {
+            "source_store": "review_states.jsonl",
+            "target_kind": "atomic_requirement",
+            "target_requirement_id": wanted,
+            "bindings": bindings,
+        },
+    )
 
 
 def _find_state_index(states: list[dict[str, Any]], requirement_id: str) -> int | None:

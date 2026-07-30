@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import api_server
 import ai_review_actions
@@ -23,16 +23,17 @@ import claim_ledger
 import claim_review_actions
 from tests.test_claim_artifacts import _catalog, _publish, _requirement
 from tests.test_claim_review_actions import _publish_a_track
+from tests.test_claim_review_event_v2 import _source_exclusion_evidence
 
 
 @contextmanager
-def _claim_api(out_dir: Path):
+def _claim_api(out_dir: Path, *, local_token: str = ""):
     class TestHandler(api_server.RequirementAPIHandler):
         pass
 
     TestHandler.output_dir = out_dir.resolve()
     TestHandler.allowed_origins = set(api_server.DEFAULT_ALLOWED_ORIGINS)
-    TestHandler.local_token = ""
+    TestHandler.local_token = local_token
     server = api_server.ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -48,6 +49,32 @@ def _claim_api(out_dir: Path):
 def _http_json(base_url: str, path: str) -> tuple[int, dict]:
     try:
         with urlopen(base_url + path, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+        finally:
+            exc.close()
+
+
+def _http_post_json(
+    base_url: str,
+    path: str,
+    payload: dict,
+    *,
+    token: str = "",
+) -> tuple[int, dict]:
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers[api_server.TOKEN_HEADER] = token
+    request = Request(
+        base_url + path,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=5) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         try:
@@ -118,6 +145,33 @@ class ClaimLedgerHttpTests(unittest.TestCase):
             root,
             actor_trigger="real-http-test",
         )
+
+    def test_document_pdf_returns_503_for_unreadable_existing_claim_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog = _catalog()
+            (root / "blocks.jsonl").write_text(json.dumps({
+                "block_id": "B1", "order": 1, "type": "paragraph",
+                "text": catalog["catalog"][0]["text"],
+                "section_path": ["4 Functions"], "noise": False,
+            }) + "\n", encoding="utf-8")
+            _publish(root, catalog)
+            claim_review_actions.fold_effective_ledger(
+                root, actor_trigger="annotation-http-error-test"
+            )
+            journal = root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
+            journal.write_text('{"unfinished":true}', encoding="utf-8")
+            before = _file_bytes(root)
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/document/pdf")
+
+            after = _file_bytes(root)
+
+        self.assertEqual(status, 503)
+        self.assertTrue(payload["retryable"])
+        self.assertIn("claim annotation snapshot unavailable", payload["error"])
+        self.assertEqual(after, before)
 
     @staticmethod
     def _changed_catalog() -> dict:
@@ -382,6 +436,235 @@ class ClaimLedgerHttpTests(unittest.TestCase):
         self.assertEqual(filtered["events"], [])
 
 
+class ClaimMutationHttpTests(unittest.TestCase):
+    TOKEN = "claim-http-test-token"
+    @staticmethod
+    def _seed(root: Path) -> tuple[dict, dict, dict, list[dict]]:
+        _publish(root, _catalog())
+        claim_review_actions.fold_effective_ledger(
+            root,
+            actor_trigger="claim-mutation-http-test",
+        )
+        base = claim_artifacts.load_committed_claim_base(root)
+        snapshot = claim_artifacts.load_committed_effective_snapshot(root)
+        claim = base["catalog"][0]
+        base_row = base["ledger"][0]
+        groups = [
+            group
+            for group in base["groups"]
+            if group["claim_id"] == claim["claim_id"]
+        ]
+        return snapshot, claim, base_row, groups
+
+    def test_claim_adjudication_real_http_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot, claim, base_row, groups = self._seed(root)
+            revision = snapshot["effective_ledger"][0]["claim_effective_revision"]
+            positive = claim_review_actions.claim_base_resolution_fact_hashes(
+                claim,
+                base_row,
+                groups,
+            )["positive"][0]
+            with _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(base_url, "/claim-adjudications", {
+                    "claim_id": claim["claim_id"],
+                    "claim_hash": claim["claim_hash"],
+                    "adjudication": "reopen",
+                    "reason": "coverage requires expert correction",
+                    "evidence": _source_exclusion_evidence(claim),
+                    "actor": "expert:yyh",
+                    "expected_claim_effective_revision": revision,
+                    "supersedes_fact_hashes": [positive],
+                    "request_idempotency_key": "http-success-1",
+                }, token=self.TOKEN)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["event"]["event_kind"], "expert_adjudication")
+
+    def test_claim_adjudication_real_http_stale_revision_is_409(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _snapshot, claim, _base_row, _groups = self._seed(root)
+            with _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(base_url, "/claim-adjudications", {
+                    "claim_id": claim["claim_id"],
+                    "claim_hash": claim["claim_hash"],
+                    "adjudication": "reopen",
+                    "reason": "stale concurrent review",
+                    "evidence": _source_exclusion_evidence(claim),
+                    "actor": "expert:yyh",
+                    "expected_claim_effective_revision": claim_artifacts.hash_json(
+                        "claim-http-stale/v1", "stale"
+                    ),
+                    "request_idempotency_key": "http-stale-1",
+                }, token=self.TOKEN)
+
+        self.assertEqual(status, 409)
+        self.assertTrue(payload["needs_reconfirmation"])
+        self.assertTrue(payload["claim_effective_revision"])
+
+    def test_claim_adjudication_real_http_malformed_evidence_is_400(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot, claim, _base_row, _groups = self._seed(root)
+            revision = snapshot["effective_ledger"][0]["claim_effective_revision"]
+            with _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(base_url, "/claim-adjudications", {
+                    "claim_id": claim["claim_id"],
+                    "claim_hash": claim["claim_hash"],
+                    "adjudication": "reopen",
+                    "reason": "malformed evidence test",
+                    "evidence": {},
+                    "actor": "expert:yyh",
+                    "expected_claim_effective_revision": revision,
+                    "request_idempotency_key": "http-malformed-1",
+                }, token=self.TOKEN)
+
+        self.assertEqual(status, 400)
+        self.assertIn("evidence", payload["error"])
+
+    def test_claim_queue_execute_real_http_forwards_explicit_budget(self) -> None:
+        expected = {
+            "schema": "claim-queue-execution/v1",
+            "lifecycle": "executed",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_queue_execution.execute_claim_queue_proposal",
+                return_value=expected,
+            ) as execute, _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(base_url, "/claim-queue/execute", {
+                    "proposal_id": "CQP-12345678-9abcdef0",
+                    "expected_claim_effective_revision": (
+                        "sha256:" + "1" * 64
+                    ),
+                    "expected_ledger_state": "uncertain",
+                    "actor": "expert:yyh",
+                    "allow_llm": True,
+                    "route": "openai_compatible",
+                    "maximum_calls": 4,
+                    "total_token_budget": 20000,
+                    "request_idempotency_key": "http-queue-1",
+                }, token=self.TOKEN)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        self.assertEqual(execute.call_args.kwargs["maximum_calls"], 4)
+        self.assertEqual(execute.call_args.kwargs["total_token_budget"], 20000)
+
+    @staticmethod
+    def _structural_override_payload() -> dict:
+        return {
+            "claim_id": "CLM-1111111111111111",
+            "claim_hash": "sha256:" + "1" * 64,
+            "expected_catalog_generation_id": "sha256:" + "2" * 64,
+            "expected_claim_effective_revision": "sha256:" + "3" * 64,
+            "prior_structural_reason": "repeated_page_furniture",
+            "actor": "expert:yyh",
+            "reason": "verified source content",
+            "request_idempotency_key": "http-structural-1",
+            "allow_llm": False,
+            "route": "stub",
+            "verifier_max_calls": 0,
+            "verifier_max_total_tokens": 0,
+        }
+
+    def test_claim_structural_override_real_http_forwards_budget_contract(self) -> None:
+        expected = {
+            "ok": True,
+            "status": "rebuilt",
+            "effective_fresh": True,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_structural_overrides.confirm_structural_override",
+                return_value=expected,
+            ) as confirm, _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    self._structural_override_payload(),
+                    token=self.TOKEN,
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        self.assertEqual(confirm.call_args.kwargs["allow_llm"], False)
+        self.assertEqual(confirm.call_args.kwargs["verifier_max_calls"], 0)
+        self.assertEqual(confirm.call_args.kwargs["verifier_max_total_tokens"], 0)
+
+    def test_claim_structural_override_real_http_stale_is_409(self) -> None:
+        from claim_structural_overrides import ClaimStructuralOverrideStale
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_structural_overrides.confirm_structural_override",
+                side_effect=ClaimStructuralOverrideStale(
+                    "claim effective revision changed"
+                ),
+            ), _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    self._structural_override_payload(),
+                    token=self.TOKEN,
+                )
+
+        self.assertEqual(status, 409)
+        self.assertTrue(payload["needs_reconfirmation"])
+        self.assertFalse(payload["retryable"])
+
+    def test_claim_structural_override_real_http_invalid_is_400(self) -> None:
+        from claim_structural_overrides import ClaimStructuralOverrideError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_structural_overrides.confirm_structural_override",
+                side_effect=ClaimStructuralOverrideError(
+                    "structural reason is not runtime-overridable"
+                ),
+            ), _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    self._structural_override_payload(),
+                    token=self.TOKEN,
+                )
+
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["retryable"])
+        self.assertIn("not runtime-overridable", payload["error"])
+
+    def test_claim_structural_override_real_http_rebuild_pending_is_503(self) -> None:
+        pending = {
+            "ok": False,
+            "status": "rebuild_pending",
+            "effective_fresh": False,
+            "error": "base rebuild failed",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_structural_overrides.confirm_structural_override",
+                return_value=pending,
+            ), _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    self._structural_override_payload(),
+                    token=self.TOKEN,
+                )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload, pending)
+
+
 class AiReviewActionsTests(unittest.TestCase):
     def _req(self) -> dict:
         return {"source_section": "3.1.7", "source_quote": "meter shall measure",
@@ -432,6 +715,9 @@ class AiReviewActionsTests(unittest.TestCase):
                 "ai_req_id": "AIR-1", "status": "accepted",
                 "source_fingerprint": "source-current",
                 "review_subject_fingerprint": "subject-current",
+                "expected_target_fingerprint": "target-current",
+                "expected_target_publication_revision": "publication-current",
+                "expected_target_authority_write_revision": "revision-current",
                 "clear_module_override": True,
             }
             responses: list[tuple[int, dict]] = []
@@ -439,6 +725,9 @@ class AiReviewActionsTests(unittest.TestCase):
             current = {
                 "ai_req_id": "AIR-1", "source_fingerprint": "source-current",
                 "review_subject_fingerprint": "subject-current",
+                "target_fingerprint": "target-current",
+                "target_publication_revision": "publication-current",
+                "target_authority_write_revision": "revision-current",
                 "review_state": {"module_override": "计量精度"},
             }
             state = {"ai_req_id": "AIR-1", "status": "accepted", "module_override": None}
@@ -925,6 +1214,45 @@ class FunctionalMembershipProjectionTests(unittest.TestCase):
         self.assertEqual(row["functional_title"], "重要事件管理")
         self.assertEqual(row["functional_objective"], "实现重要事件管理。")
         self.assertEqual(row["functional_behaviors"], ["采集重要事件。"])
+
+
+class ClaimStartupMaintenanceTests(unittest.TestCase):
+    def test_fresh_effective_snapshot_short_circuits_without_any_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="startup-fresh-seed",
+            )
+            before = _file_bytes(root)
+
+            with (
+                patch(
+                    "claim_review_actions.fold_effective_ledger",
+                    side_effect=AssertionError("fresh startup invoked fold"),
+                ),
+                patch(
+                    "ai_extract.refresh_claim_shadow",
+                    side_effect=AssertionError("fresh startup invoked base refresh"),
+                ),
+                patch(
+                    "claim_ledger.build_shadow_ledger",
+                    side_effect=AssertionError("fresh startup invoked verifier"),
+                ),
+                patch(
+                    "llm_client.chat_json",
+                    side_effect=AssertionError("fresh startup invoked LLM"),
+                ),
+            ):
+                result = api_server.run_claim_startup_maintenance(root)
+
+            after = _file_bytes(root)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["publication_skipped"])
+        self.assertEqual(result["reason"], "already_fresh")
+        self.assertEqual(after, before)
 
 if __name__ == "__main__":
     unittest.main()

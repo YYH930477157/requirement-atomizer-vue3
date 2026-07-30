@@ -110,6 +110,9 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
         "conservation": {"missing_source_ids": missing[:20], "duplicate_assignments": dup_assigned[:20]},
         "items": items,
     }
+    from input_completeness import attach_input_completeness
+
+    attach_input_completeness(payload, out_dir)
     target = out_dir / FUNCTIONAL_REQUIREMENTS
     # 原子写（0711 评审跟进）：manifest 已原子化,主产物同样不能留半截 JSON——消费端
     # (requirements_analysis) 读坏文件会静默回退逐原子输入,合成结果悄悄丢失。
@@ -125,7 +128,7 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
         "input_duplicate_ids": len(eligible_ids) - len(set(eligible_ids)),
         "ok": not (missing or dup_assigned or len(eligible_ids) != len(set(eligible_ids))),
     }
-    return {
+    result = {
         "kind": "functional_synthesis",
         "out_dir": str(out_dir),
         "source_requirements": len(requirements),
@@ -136,3 +139,6 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
         "conservation": conservation_summary,
         "written": [target.name],
     }
+    result["incomplete_inputs"] = payload["incomplete_inputs"]
+    result["input_completeness"] = payload["input_completeness"]
+    return result

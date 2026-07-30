@@ -1422,15 +1422,26 @@ class ShadowCoverageTests(unittest.TestCase):
         self.assertEqual(result["groups"][0]["status"], "invalid")
         self.assertEqual(result["groups"][0]["invalid_reason"], "target_review_unknown")
 
-    def test_stub_route_does_not_create_semantic_proposals(self) -> None:
+    def test_stub_route_preserves_semantic_proposal_without_verifier(self) -> None:
         source = "Auxiliary outputs are user-programmable."
         catalog = claim_catalog.build_claim_catalog([_block("B1", source)], [])
         requirement = _requirement(
             "AIR-1", description="辅助输出可由用户编程。", source_quote=source,
         )
         result = claim_ledger.build_shadow_ledger(catalog, [requirement], route_mode="stub")
-        self.assertEqual(result["groups"], [])
+        self.assertEqual(len(result["groups"]), 1)
+        group = result["groups"][0]
+        self.assertEqual(group["validation_method"], "independent_semantic")
+        self.assertEqual(group["status"], "proposed")
+        self.assertTrue(all(
+            evidence.get("field") != "source_quote"
+            for edge in group["edges"]
+            for evidence in edge["produced_evidence"]
+        ))
         self.assertEqual(result["ledger"][0]["resolution"], "uncertain")
+        self.assertEqual(result["metrics"]["semantic_verifier_candidate_count"], 1)
+        self.assertEqual(result["metrics"]["verifier_call_count"], 0)
+        self.assertEqual(result["metrics"]["verifier_tokens"], 0)
 
 
 class SemanticNegativeTests(unittest.TestCase):

@@ -21,6 +21,9 @@ from claim_artifacts import (
 )
 from claim_review_actions import (
     assess_effective_freshness,
+    claim_base_resolution_fact_hashes,
+    claim_coverage_group_hash,
+    claim_source_evidence_hash,
     read_claim_review_events,
     read_effective_health,
 )
@@ -179,12 +182,24 @@ def _effective_by_claim(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def _catalog_rows(context: dict[str, Any]) -> list[dict[str, Any]]:
     snapshot = context["snapshot"]
     effective_by_claim = _effective_by_claim(snapshot)
+    base_by_claim = {
+        str(row.get("claim_id") or ""): row for row in snapshot["ledger"]
+    }
+    groups_by_claim: dict[str, list[dict[str, Any]]] = {}
+    for group in snapshot["groups"]:
+        groups_by_claim.setdefault(str(group.get("claim_id") or ""), []).append(group)
     rows: list[dict[str, Any]] = []
     for claim in snapshot["catalog"]:
         claim_id = str(claim.get("claim_id") or "")
         effective = effective_by_claim[claim_id]
         rows.append({
             **claim,
+            "source_text_hash": claim_source_evidence_hash(claim),
+            "base_resolution_fact_hashes": claim_base_resolution_fact_hashes(
+                claim,
+                base_by_claim[claim_id],
+                groups_by_claim.get(claim_id, []),
+            ),
             **{
                 key: effective.get(key)
                 for key in (
@@ -276,6 +291,7 @@ def build_claim_coverage_group_view(
     rows: list[dict[str, Any]] = []
     for raw_group in context["snapshot"]["groups"]:
         group = dict(raw_group)
+        group["coverage_group_hash"] = claim_coverage_group_hash(group)
         group_claim_id = str(group.get("claim_id") or "")
         if claim_id and group_claim_id != claim_id:
             continue
@@ -412,6 +428,23 @@ def build_claim_queue_view(
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
+    from claim_reextract_attempts import (
+        derive_attempt_states,
+        read_attempt_log,
+        recover_interrupted_attempts,
+    )
+
+    recover_interrupted_attempts(root)
+    attempt_snapshot = read_attempt_log(root)
+    attempt_states = derive_attempt_states(attempt_snapshot.rows)
+    latest_by_proposal: dict[str, dict[str, Any]] = {}
+    for state in attempt_states.values():
+        proposal_id = str(state.get("proposal_id") or "")
+        previous = latest_by_proposal.get(proposal_id)
+        if previous is None or int(
+            dict(state.get("last_event") or {}).get("event_seq") or 0
+        ) > int(dict(previous.get("last_event") or {}).get("event_seq") or 0):
+            latest_by_proposal[proposal_id] = state
     rows = sorted(
         (dict(row) for row in context["snapshot"]["queue_proposals"]),
         key=lambda row: (
@@ -419,6 +452,30 @@ def build_claim_queue_view(
             str(row.get("proposal_id") or ""),
         ),
     )
+    for row in rows:
+        state = latest_by_proposal.get(str(row.get("proposal_id") or ""))
+        if state is None:
+            continue
+        lifecycle = str(state.get("lifecycle") or "")
+        row["lifecycle"] = (
+            "executed"
+            if lifecycle == "succeeded"
+            else lifecycle
+            if lifecycle in {"executing", "rebuild_pending"}
+            else "open"
+        )
+        terminal = dict(state.get("terminal_event") or {})
+        row["latest_attempt"] = {
+            "attempt_id": str(state.get("attempt_id") or ""),
+            "request_idempotency_key": str(
+                state.get("request_idempotency_key") or ""
+            ),
+            "lifecycle": lifecycle,
+            "last_event_seq": int(
+                dict(state.get("last_event") or {}).get("event_seq") or 0
+            ),
+            "outcome": dict(terminal.get("outcome") or {}) or None,
+        }
     page, total, page_limit, page_offset = _page(
         rows,
         limit=limit,
@@ -434,6 +491,8 @@ def build_claim_queue_view(
             compat_omissions,
         ),
         "compat_omission_total": len(compat_omissions),
+        "attempt_log_revision": attempt_snapshot.prefix_sha256,
+        "attempt_event_count": attempt_snapshot.last_event_seq,
         "total": total,
         "limit": page_limit,
         "offset": page_offset,

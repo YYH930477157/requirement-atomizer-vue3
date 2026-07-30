@@ -1208,6 +1208,145 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(publish.call_args.kwargs["extraction_status"], "partial")
         self.assertTrue(result["ledger_only"])
 
+    def test_claim_mutation_refresh_starts_new_cold_verifier_chain(self) -> None:
+        import claim_artifacts
+        import claim_catalog
+        import claim_reextract_attempts
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],"text":"Source"}\n',
+                encoding="utf-8",
+            )
+            ai_extract.atomic_write_jsonl(out / ai_extract.AI_REQUIREMENTS, [{
+                "ai_req_id": "AIR-new",
+                "title": "New requirement",
+                "source_quote": "Source",
+                "source_block_ids": ["B1"],
+            }])
+            ai_extract.write_ai_requirements_metadata(
+                out,
+                input_fingerprint=ai_extract.extraction_input_fingerprint(out),
+                run_id="requirements-run",
+            )
+            current_hash = claim_artifacts.file_sha256(
+                out / ai_extract.AI_REQUIREMENTS
+            )
+            previous_hash = claim_artifacts.hash_json(
+                "test-previous-requirements/v1", "old"
+            )
+            previous_revision = claim_artifacts.hash_json(
+                "claim-target-publication-revision/v1",
+                {
+                    "source_store": ai_extract.AI_REQUIREMENTS,
+                    "source_present": True,
+                    "source_file_sha256": previous_hash,
+                },
+            )
+            current_revision = claim_artifacts.hash_json(
+                "claim-target-publication-revision/v1",
+                {
+                    "source_store": ai_extract.AI_REQUIREMENTS,
+                    "source_present": True,
+                    "source_file_sha256": current_hash,
+                },
+            )
+            mutation = {
+                "started": {
+                    "preconditions": {
+                        "target_publication_revision": previous_revision,
+                    },
+                },
+                "publication": {
+                    "requirements_sha256": current_hash,
+                    "target_publication_revision": current_revision,
+                },
+            }
+            previous = {
+                "generation_meta": {
+                    "requirements_sha256": previous_hash,
+                    "run_id": "old-shadow-run",
+                    "attempt_chain": {
+                        "attempt_id": "sha256:" + "1" * 64,
+                    },
+                },
+            }
+            catalog_build = {
+                "catalog": [],
+                "units": [],
+                "meta": {
+                    "document_generation_id": "sha256:" + "2" * 64,
+                    "catalog_generation_id": "sha256:" + "3" * 64,
+                },
+            }
+            published = {
+                "shadow": {
+                    "meta": {
+                        "accounting_status": "complete",
+                        "resolution_status": "open",
+                    },
+                    "metrics": {},
+                },
+            }
+            scope_calls: list[dict] = []
+
+            def scope(*_args, **kwargs):
+                scope_calls.append(kwargs)
+                return nullcontext()
+
+            with (
+                patch.object(ai_extract, "config_for_route", return_value=None),
+                patch.object(
+                    claim_artifacts,
+                    "load_committed_shadow",
+                    return_value=previous,
+                ),
+                patch.object(
+                    claim_artifacts,
+                    "load_committed_attempt_lineage",
+                    side_effect=AssertionError(
+                        "target mutation must not reuse the old requirements chain"
+                    ),
+                ),
+                patch.object(
+                    claim_artifacts,
+                    "claim_verifier_attempt_scope",
+                    side_effect=scope,
+                ),
+                patch.object(
+                    claim_reextract_attempts,
+                    "require_published_attempt",
+                    return_value=mutation,
+                ),
+                patch.object(
+                    claim_catalog,
+                    "build_catalog_from_directory",
+                    return_value=catalog_build,
+                ),
+                patch("ai_review_actions.read_ai_review_states", return_value={}),
+                patch(
+                    "claim_ledger.b_track_authority_state",
+                    return_value={"target_generation_id": "sha256:" + "4" * 64},
+                ),
+                patch(
+                    "claim_ledger.publish_b_track_shadow",
+                    return_value=published,
+                ) as publish,
+            ):
+                result = ai_extract.refresh_claim_shadow(
+                    out,
+                    route=None,
+                    allow_llm=False,
+                    claim_mutation_attempt_id="CRA-0123456789abcdef",
+                )
+
+        self.assertEqual(scope_calls[0]["attempt_kind"], "cold")
+        self.assertNotIn("reuse_attempt_id", scope_calls[0])
+        self.assertEqual(publish.call_args.kwargs["reusable_groups"], [])
+        self.assertEqual(publish.call_args.kwargs["reusable_negatives"], [])
+        self.assertTrue(result["ledger_only"])
+
     def test_baseline_lineage_tracks_concurrency_and_attempt_policy(self) -> None:
         import llm_client
         from llm_client import LLMClientConfig

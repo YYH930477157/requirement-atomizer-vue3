@@ -6,6 +6,8 @@
   "required": [
     "schema", "bridge_fold_lag", "torn_tail_recovered",
     "event_quarantine_count", "authority_audit_gap", "authority_cas_gap",
+    "authority_write_protocol_version", "legacy_authority_write_gap_count",
+    "legacy_authority_write_gaps",
     "effective_snapshot_migrations", "last_success_at", "last_failure_at",
     "last_error"
   ],
@@ -16,6 +18,28 @@
     "event_quarantine_count": {"type": "integer", "minimum": 0},
     "authority_audit_gap": {"type": "boolean"},
     "authority_cas_gap": {"type": "boolean"},
+    "authority_write_protocol_version": {
+      "const": "claim-authority-write-v1"
+    },
+    "legacy_authority_write_gap_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "legacy_authority_write_gaps": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["occurrence", "route", "reason", "observed_at"],
+        "properties": {
+          "occurrence": {"type": "integer", "minimum": 1},
+          "route": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1},
+          "observed_at": {"type": "string", "format": "date-time"}
+        },
+        "additionalProperties": false
+      }
+    },
     "effective_snapshot_migrations": {
       "type": "array",
       "items": {

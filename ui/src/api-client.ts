@@ -7,6 +7,9 @@ export type ReviewStatePayload = {
   status: ReviewStatus
   history?: Array<Record<string, unknown>>
   metadata?: Record<string, unknown>
+  target_fingerprint?: string
+  target_publication_revision?: string
+  target_authority_write_revision?: string
 }
 
 export type ReviewActionInput = {
@@ -14,6 +17,9 @@ export type ReviewActionInput = {
   status: ReviewStatus
   actor: string
   reason: string
+  expectedTargetFingerprint?: string
+  expectedTargetPublicationRevision?: string
+  expectedTargetAuthorityWriteRevision?: string
 }
 
 export type TranslationInput = {
@@ -113,6 +119,38 @@ export type PdfRowContext = {
   req_ids?: string[]
   covered_req_ids?: string[]
 }
+export type ClaimAnnotationRecord = {
+  claim_id: string
+  claim_hash: string
+  block_id: string
+  source_kind: string
+  text: string
+  eligibility: string
+  resolution: "covered" | "excluded" | "uncertain"
+  classification?: string
+  claim_effective_revision?: string
+  mapped: boolean
+  mapping_error?: string
+  rendered_text?: string
+  start?: number
+  end?: number
+  data_row_indexes?: number[]
+  focus?: Record<string, unknown>
+}
+export type ClaimAnnotationZone = {
+  claim_id: string
+  claim_hash: string
+  block_id: string
+  page: number
+  rect: PdfZoneRect
+  resolution: "covered" | "excluded" | "uncertain"
+  focus_kind: string
+  row_index?: number
+  start?: number
+  end?: number
+  marker_lane?: number
+  marker_lanes?: number
+}
 export type PdfAnnotationPayload = {
   available: boolean
   reason?: string
@@ -125,6 +163,9 @@ export type PdfAnnotationPayload = {
                         kind: "req" | "covered" | "echo" | "omission" | "context";
                         row_index?: number; req_id?: string; req_ids?: string[] }>
   row_context?: Record<string, PdfRowContext>
+  claim_annotation_version?: string
+  claim_records?: ClaimAnnotationRecord[]
+  claim_zones?: ClaimAnnotationZone[]
 }
 
 export type AiRequirement = Record<string, unknown> & {
@@ -133,6 +174,10 @@ export type AiRequirement = Record<string, unknown> & {
   review_subject_fingerprint?: string
   extraction_fingerprint?: string
   needs_reconfirmation?: boolean
+  target_fingerprint?: string
+  target_publication_revision?: string
+  target_review_revision?: string
+  target_authority_write_revision?: string
   anchor_block_id?: string
   title?: string
   description?: string
@@ -203,6 +248,9 @@ export type AiReviewActionInput = {
   status: ReviewStatus
   sourceFingerprint?: string
   reviewSubjectFingerprint?: string
+  expectedTargetFingerprint?: string
+  expectedTargetPublicationRevision?: string
+  expectedTargetAuthorityWriteRevision?: string
   moduleOverride?: string
   clearModuleOverride?: boolean
   ownershipOverride?: string
@@ -215,6 +263,9 @@ export type AiReviewStatePayload = {
   status: string
   source_fingerprint?: string
   review_subject_fingerprint?: string
+  target_fingerprint?: string
+  target_publication_revision?: string
+  target_authority_write_revision?: string
   module_override?: string | null
   ownership_override?: string | null
   reason?: string
@@ -327,6 +378,7 @@ export type ClaimViewEnvelope = {
   phase: "production-dual-write-v1"
   document_effective_revision: string | null
   base_generation_id: string | null
+  catalog_generation_id?: string | null
   event_prefix_sha256: string | null
   effective_fresh: boolean
   reason?: string
@@ -344,6 +396,12 @@ export type ClaimCatalogViewRow = Record<string, unknown> & {
   classification_status?: "validated" | "needs_review" | "invalid" | "proposed"
   exclusion_kind?: "semantic" | "structural" | null
   claim_effective_revision?: string
+  source_text_hash?: string
+  base_resolution_fact_hashes?: {
+    positive?: string[]
+    negative?: string[]
+    structural?: string[]
+  }
 }
 
 export type ClaimEffectiveLedgerRow = Record<string, unknown> & {
@@ -378,6 +436,7 @@ export type ClaimCoverageEdge = Record<string, unknown> & {
 
 export type ClaimCoverageGroupView = Record<string, unknown> & {
   coverage_group_id: string
+  coverage_group_hash?: string
   claim_id: string
   validation_method: "deterministic_verbatim" | "independent_semantic" | "expert"
   status: "proposed" | "validated" | "invalid"
@@ -393,7 +452,8 @@ export type ClaimReviewEventView = Record<string, unknown> & {
   event_seq: number
   event_id: string
   claim_id: string
-  event_kind: "target_invalidated" | "target_reactivated"
+  event_kind: "target_invalidated" | "target_reactivated" |
+    "expert_adjudication" | "audit_conflict" | "structural_falsification"
   recorded_at: string
   reason?: string
   target_requirement_id?: string
@@ -420,11 +480,23 @@ export type ClaimMetrics = Record<string, unknown> & {
 export type ClaimQueueProposal = Record<string, unknown> & {
   proposal_id: string
   claim_id: string
+  claim_hash?: string
   parent_block_id: string
   locator: ClaimLocator
   action: "needs_extraction"
-  dry_run: true
+  dry_run: false
   claim_effective_revision: string
+  lifecycle: "open" | "executing" | "executed" | "rebuild_pending"
+  focus?: Record<string, unknown>
+  focus_error?: string | null
+  latest_attempt?: {
+    attempt_id: string
+    request_idempotency_key?: string
+    lifecycle: "executing" | "rebuild_pending" | "succeeded" |
+      "failed" | "interrupted" | "aborted_stale"
+    last_event_seq: number
+    outcome?: { code: string; message: string; retryable: boolean } | null
+  } | null
 }
 
 export type ClaimCompatOmission = Record<string, unknown> & {
@@ -489,6 +561,71 @@ export type ClaimLedgerQuery = {
   offset?: number
 }
 
+export type ClaimQueueExecutionInput = {
+  proposalId: string
+  expectedClaimEffectiveRevision: string
+  actor?: string
+  allowLlm: boolean
+  route: string
+  maximumCalls: number
+  totalTokenBudget: number
+  requestIdempotencyKey: string
+}
+
+export type ClaimQueueExecutionPayload = Record<string, unknown> & {
+  schema: "claim-queue-execution/v1"
+  proposal_id: string
+  attempt_id: string
+  lifecycle: "executed" | "rebuild_pending" | "failed" | "aborted_stale"
+  resolution?: ClaimResolution
+  retryable?: boolean
+}
+
+export type ClaimAdjudicationEvidence =
+  | {
+      kind: "coverage_group"
+      coverage_group_id: string
+      coverage_group_hash: string
+    }
+  | {
+      kind: "source_exclusion"
+      source_locator: ClaimLocator
+      source_text_hash: string
+      exclusion_reason: "scope_statement" | "definition" | "informative" | "example" | "instrument_only"
+    }
+
+export type ClaimAdjudicationInput = {
+  claimId: string
+  claimHash: string
+  adjudication: "covered" | "excluded_non_normative" | "reopen"
+  reason: string
+  evidence: ClaimAdjudicationEvidence
+  actor?: string
+  expectedClaimEffectiveRevision: string
+  supersedesFactHashes?: string[]
+  requestIdempotencyKey?: string
+}
+
+export type ClaimAdjudicationPayload = Record<string, unknown> & {
+  ok: boolean
+  event?: ClaimReviewEventView
+}
+
+export type ClaimStructuralOverrideInput = {
+  claimId: string
+  claimHash: string
+  expectedCatalogGenerationId: string
+  expectedClaimEffectiveRevision: string
+  priorStructuralReason: "repeated_page_furniture"
+  reason: string
+  actor?: string
+  requestIdempotencyKey: string
+  allowLlm: boolean
+  route: string
+  verifierMaxCalls: number
+  verifierMaxTotalTokens: number
+}
+
 type FetchLike = typeof fetch
 
 type RequirementApiClientOptions = {
@@ -550,6 +687,21 @@ export class RequirementApiClient {
         status: input.status,
         actor: input.actor,
         reason: input.reason,
+        ...(input.expectedTargetFingerprint !== undefined
+          ? { expected_target_fingerprint: input.expectedTargetFingerprint }
+          : {}),
+        ...(input.expectedTargetPublicationRevision !== undefined
+          ? {
+              expected_target_publication_revision:
+                input.expectedTargetPublicationRevision,
+            }
+          : {}),
+        ...(input.expectedTargetAuthorityWriteRevision !== undefined
+          ? {
+              expected_target_authority_write_revision:
+                input.expectedTargetAuthorityWriteRevision,
+            }
+          : {}),
       }),
     })
   }
@@ -705,6 +857,69 @@ export class RequirementApiClient {
     return this.requestClaimView<ClaimQueueViewPayload>("/claim-queue")
   }
 
+  async executeClaimQueue(
+    input: ClaimQueueExecutionInput,
+  ): Promise<ClaimQueueExecutionPayload> {
+    return this.request<ClaimQueueExecutionPayload>("/claim-queue/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        proposal_id: input.proposalId,
+        expected_claim_effective_revision: input.expectedClaimEffectiveRevision,
+        expected_ledger_state: "uncertain",
+        actor: input.actor || "reviewer",
+        allow_llm: input.allowLlm,
+        route: input.route,
+        maximum_calls: input.maximumCalls,
+        total_token_budget: input.totalTokenBudget,
+        request_idempotency_key: input.requestIdempotencyKey,
+      }),
+    })
+  }
+
+  async applyClaimAdjudication(
+    input: ClaimAdjudicationInput,
+  ): Promise<ClaimAdjudicationPayload> {
+    return this.request<ClaimAdjudicationPayload>("/claim-adjudications", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        claim_id: input.claimId,
+        claim_hash: input.claimHash,
+        adjudication: input.adjudication,
+        reason: input.reason,
+        evidence: input.evidence,
+        actor: input.actor || "reviewer",
+        expected_claim_effective_revision: input.expectedClaimEffectiveRevision,
+        supersedes_fact_hashes: input.supersedesFactHashes || [],
+        request_idempotency_key: input.requestIdempotencyKey || "",
+      }),
+    })
+  }
+
+  async confirmClaimStructuralOverride(
+    input: ClaimStructuralOverrideInput,
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/claim-structural-overrides", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        claim_id: input.claimId,
+        claim_hash: input.claimHash,
+        expected_catalog_generation_id: input.expectedCatalogGenerationId,
+        expected_claim_effective_revision: input.expectedClaimEffectiveRevision,
+        prior_structural_reason: input.priorStructuralReason,
+        reason: input.reason,
+        actor: input.actor || "reviewer",
+        request_idempotency_key: input.requestIdempotencyKey,
+        allow_llm: input.allowLlm,
+        route: input.route,
+        verifier_max_calls: input.verifierMaxCalls,
+        verifier_max_total_tokens: input.verifierMaxTotalTokens,
+      }),
+    })
+  }
+
   async applyAiReviewAction(input: AiReviewActionInput): Promise<AiReviewStatePayload> {
     return this.request<AiReviewStatePayload>("/ai-review-actions", {
       method: "POST",
@@ -714,6 +929,21 @@ export class RequirementApiClient {
         status: input.status,
         source_fingerprint: input.sourceFingerprint || "",
         review_subject_fingerprint: input.reviewSubjectFingerprint || "",
+        ...(input.expectedTargetFingerprint !== undefined
+          ? { expected_target_fingerprint: input.expectedTargetFingerprint }
+          : {}),
+        ...(input.expectedTargetPublicationRevision !== undefined
+          ? {
+              expected_target_publication_revision:
+                input.expectedTargetPublicationRevision,
+            }
+          : {}),
+        ...(input.expectedTargetAuthorityWriteRevision !== undefined
+          ? {
+              expected_target_authority_write_revision:
+                input.expectedTargetAuthorityWriteRevision,
+            }
+          : {}),
         ...(input.moduleOverride !== undefined ? { module_override: input.moduleOverride } : {}),
         clear_module_override: input.clearModuleOverride === true,
         ownership_override: input.ownershipOverride || "",

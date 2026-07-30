@@ -34,17 +34,174 @@ function makeClient(over: Record<string, unknown> = {}) {
         dev_guidance: ["实现体积累计计量与本地存储"], labels: ["计量"],
         suspicion_reasons: ["数字漂移"], ownership: "software", ownership_effective: "software",
         consistency_flags: ["跨章重复×2"],
+        source_fingerprint: "source-v1", review_subject_fingerprint: "subject-v1",
+        target_fingerprint: "sha256:target-v1",
+        target_publication_revision: "sha256:publication-v1",
+        target_authority_write_revision: "sha256:authority-v1",
         review_state: null,
       },
     ]),
-    applyAiReviewAction: vi.fn().mockResolvedValue({ ai_req_id: "AIR-1", status: "accepted", module_override: null }),
+    applyAiReviewAction: vi.fn().mockResolvedValue({
+      ai_req_id: "AIR-1", status: "accepted", module_override: null,
+      target_publication_revision: "sha256:publication-v1",
+      target_authority_write_revision: "sha256:authority-v2",
+    }),
     loadPdfAnnotation: vi.fn().mockResolvedValue({ available: false, reason: "影印页尚未生成" }),
     loadPdfPageBlob: vi.fn(async (file: string) => `blob:fake-${file}`),
     ...over,
   }
 }
 
+function makeClaimAnnotationClient() {
+  const text = "The indicator channel can be configured."
+  return makeClient({
+    loadDocument: vi.fn().mockResolvedValue({
+      count: 2,
+      blocks: [
+        {
+          block_id: "C1", order: 1, type: "paragraph", text,
+          section_path: ["4 Interfaces"], requirement_like: false, noise: false,
+        },
+        {
+          block_id: "T1", order: 2, type: "table", text: "Output | Capability",
+          header_rows: [["Output", "Capability"]],
+          data_rows: [["Indicator channel", "Configurable"]],
+          section_path: ["4 Interfaces"], requirement_like: false, noise: false,
+        },
+      ],
+    }),
+    loadAiRequirements: vi.fn().mockResolvedValue([]),
+    loadPdfAnnotation: vi.fn().mockResolvedValue({
+      available: true,
+      pages: [{ page_number: 1, file: "page-0001.png", width: 595, height: 842 }],
+      requirement_markers: [],
+      omission_markers: [],
+      block_zones: [],
+      claim_annotation_version: "claim-annotation-v13",
+      claim_records: [
+        {
+          claim_id: "CLM-TEXT", claim_hash: "sha256:text", block_id: "C1",
+          source_kind: "text_span", text: "The  indicator channel can be configured.",
+          rendered_text: text, eligibility: "eligible", resolution: "covered",
+          mapped: true, start: 0, end: text.length, focus: { kind: "text_span" },
+        },
+        {
+          claim_id: "CLM-TABLE", claim_hash: "sha256:table", block_id: "T1",
+          source_kind: "table_item", text: "Indicator channel | Configurable",
+          eligibility: "eligible", resolution: "excluded", mapped: true,
+          data_row_indexes: [1], focus: { kind: "table_item" },
+        },
+        {
+          claim_id: "CLM-UNMAPPED", claim_hash: "sha256:unmapped", block_id: "C1",
+          source_kind: "text_span", text: "stale source text", eligibility: "eligible",
+          resolution: "uncertain", mapped: false, mapping_error: "focus_text_not_found",
+          focus: { kind: "text_span" },
+        },
+      ],
+      claim_zones: [
+        {
+          claim_id: "CLM-TEXT", claim_hash: "sha256:text", block_id: "C1", page: 1,
+          rect: { left: 10, top: 20, width: 50, height: 4 }, resolution: "covered",
+          focus_kind: "text_span", start: 0, end: text.length,
+        },
+        {
+          claim_id: "CLM-TABLE", claim_hash: "sha256:table", block_id: "T1", page: 1,
+          rect: { left: 10, top: 35, width: 50, height: 5 }, resolution: "excluded",
+          focus_kind: "table_item", row_index: 1,
+        },
+      ],
+    }),
+  })
+}
+
 describe("DocumentReview", () => {
+  it("represents identical claim ids and resolutions in parsed-text and PDF modes", async () => {
+    const wrapper = mount(DocumentReview, {
+      props: { client: makeClaimAnnotationClient(), active: true },
+    })
+    await flushPromises()
+
+    const pdfClaims = wrapper.findAll(".claim-zone-pdf").map((node) => ({
+      id: (node.attributes("data-testid") || "").replace("pdf-claim-", ""),
+      resolution: node.classes().find((name) => ["claim-covered", "claim-excluded", "claim-uncertain"].includes(name)),
+    })).sort((a, b) => a.id.localeCompare(b.id))
+
+    await wrapper.find('[data-testid="mode-text"]').trigger("click")
+    const parsedClaims = wrapper.findAll(".claim-span-zone, .claim-row-chip").map((node) => ({
+      id: (node.attributes("data-testid") || "").replace(/^claim-(?:span|row)-/, ""),
+      resolution: node.classes().find((name) => ["claim-covered", "claim-excluded", "claim-uncertain"].includes(name)),
+    })).sort((a, b) => a.id.localeCompare(b.id))
+
+    expect(parsedClaims).toEqual(pdfClaims)
+    expect(parsedClaims).toEqual([
+      { id: "CLM-TABLE", resolution: "claim-excluded" },
+      { id: "CLM-TEXT", resolution: "claim-covered" },
+    ])
+  })
+
+  it("opens the shared claim card from a parsed-text claim span", async () => {
+    const wrapper = mount(DocumentReview, {
+      props: { client: makeClaimAnnotationClient(), active: true },
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="mode-text"]').trigger("click")
+
+    await wrapper.find('[data-testid="claim-span-CLM-TEXT"]').trigger("click")
+
+    const card = wrapper.find('[data-testid="claim-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain("CLM-TEXT")
+    expect(card.text()).toContain("已覆盖")
+  })
+
+  it("opens the shared claim card from a parsed table-row claim", async () => {
+    const wrapper = mount(DocumentReview, {
+      props: { client: makeClaimAnnotationClient(), active: true },
+    })
+    await flushPromises()
+    await wrapper.find('[data-testid="mode-text"]').trigger("click")
+
+    await wrapper.find('[data-testid="claim-row-CLM-TABLE"]').trigger("click")
+
+    const card = wrapper.find('[data-testid="claim-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain("CLM-TABLE")
+    expect(card.text()).toContain("已排除")
+  })
+
+  it("keeps an unmapped claim auditable without rendering a clickable span or zone", async () => {
+    const wrapper = mount(DocumentReview, {
+      props: { client: makeClaimAnnotationClient(), active: true },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="pdf-claim-CLM-UNMAPPED"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="mode-text"]').trigger("click")
+    expect(wrapper.find('[data-testid="claim-span-CLM-UNMAPPED"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="claim-row-CLM-UNMAPPED"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="claim-card"]').exists()).toBe(false)
+  })
+
+  it("keeps text and table claims interactive when PDF pages are unavailable", async () => {
+    const client = makeClaimAnnotationClient()
+    const payload = await client.loadPdfAnnotation()
+    client.loadPdfAnnotation = vi.fn().mockResolvedValue({
+      ...payload,
+      available: false,
+      reason: "影印页尚未生成",
+      pages: [],
+      claim_zones: [],
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="mode-text"]').classes()).toContain("active")
+    expect(wrapper.find('[data-testid="claim-span-CLM-TEXT"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="claim-row-CLM-TABLE"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="claim-span-CLM-TEXT"]').trigger("click")
+    expect(wrapper.find('[data-testid="claim-card"]').text()).toContain("CLM-TEXT")
+  })
+
   it("shows auditable text repairs and failed extraction locations", async () => {
     const client = makeClient({
       loadDocument: vi.fn().mockResolvedValue({
@@ -367,7 +524,13 @@ describe("DocumentReview", () => {
     await wrapper.find('[data-testid="dd-accept"]').trigger("click")
     await flushPromises()
     expect(client.applyAiReviewAction).toHaveBeenCalledWith(
-      expect.objectContaining({ aiReqId: "AIR-1", status: "accepted" }),
+      expect.objectContaining({
+        aiReqId: "AIR-1",
+        status: "accepted",
+        expectedTargetFingerprint: "sha256:target-v1",
+        expectedTargetPublicationRevision: "sha256:publication-v1",
+        expectedTargetAuthorityWriteRevision: "sha256:authority-v1",
+      }),
     )
   })
 

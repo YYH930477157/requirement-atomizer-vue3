@@ -183,6 +183,9 @@ def run_writer(out_dir: Path, template_path: Path) -> dict[str, Any]:
                        unmapped, extra)
     report.update({"items": len(items), "analysis_route": payload.get("route"),
                    "written": [report.get("workbook") or WRITTEN_WORKBOOK, WRITER_REPORT]})
+    from input_completeness import attach_input_completeness
+
+    attach_input_completeness(report, out_dir)
     (out_dir / WRITER_REPORT).write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report

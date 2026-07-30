@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_reextract_attempt.schema.json",
+  "title": "Claim re-extraction attempt event v1",
+  "oneOf": [
+    {"$ref": "#/$defs/started"},
+    {"$ref": "#/$defs/budget_checkpoint"},
+    {"$ref": "#/$defs/supplement_persisted"},
+    {"$ref": "#/$defs/requirements_published"},
+    {"$ref": "#/$defs/base_rebuild_published"},
+    {"$ref": "#/$defs/effective_folded"},
+    {"$ref": "#/$defs/terminal"}
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "common": {
+      "type": "object",
+      "required": [
+        "schema", "event_seq", "event_id", "prev_event_hash", "event_hash",
+        "attempt_id", "proposal_id", "claim_id", "claim_hash", "event_kind",
+        "actor", "recorded_at", "idempotency_key"
+      ],
+      "properties": {
+        "schema": {"const": "claim-reextract-attempt/v1"},
+        "event_seq": {"type": "integer", "minimum": 1},
+        "event_id": {"type": "string", "pattern": "^CRAE-[1-9][0-9]*-[0-9a-f]{12}$"},
+        "prev_event_hash": {"$ref": "#/$defs/hash"},
+        "event_hash": {"$ref": "#/$defs/hash"},
+        "attempt_id": {"type": "string", "pattern": "^CRA-[0-9a-f]{16}$"},
+        "proposal_id": {"type": "string", "pattern": "^CQP-[0-9a-f]{8}-[0-9a-f]{8}$"},
+        "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+        "claim_hash": {"$ref": "#/$defs/hash"},
+        "event_kind": {
+          "enum": [
+            "reextract_started", "budget_checkpoint", "supplement_persisted",
+            "requirements_published", "base_rebuild_published", "effective_folded",
+            "reextract_succeeded", "reextract_failed", "reextract_interrupted",
+            "reextract_aborted_stale"
+          ]
+        },
+        "actor": {"type": "string", "minLength": 1},
+        "recorded_at": {"type": "string", "format": "date-time"},
+        "idempotency_key": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "started": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": [
+            "request_idempotency_key", "route", "model", "budgets",
+            "preconditions", "focus"
+          ],
+          "properties": {
+            "event_kind": {"const": "reextract_started"},
+            "request_idempotency_key": {"type": "string", "minLength": 1},
+            "route": {"type": "string", "minLength": 1},
+            "model": {"type": "string"},
+            "budgets": {
+              "type": "object",
+              "required": ["max_calls", "max_total_tokens", "allow_semantic_verifier"],
+              "properties": {
+                "max_calls": {"type": "integer", "minimum": 1},
+                "max_total_tokens": {"type": "integer", "minimum": 1},
+                "allow_semantic_verifier": {"type": "boolean"}
+              },
+              "additionalProperties": false
+            },
+            "preconditions": {"type": "object", "minProperties": 1},
+            "focus": {"type": "object", "minProperties": 1}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "budget_checkpoint": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["checkpoint"],
+          "properties": {
+            "event_kind": {"const": "budget_checkpoint"},
+            "checkpoint": {
+              "type": "object",
+              "required": ["phase", "calls", "total_tokens", "usage_complete", "status"],
+              "properties": {
+                "phase": {"enum": ["pre_call", "post_call", "error"]},
+                "calls": {"type": "integer", "minimum": 0},
+                "total_tokens": {"type": ["integer", "null"], "minimum": 0},
+                "usage_complete": {"type": "boolean"},
+                "status": {"enum": ["reserved", "settled", "failed", "unknown"]}
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "supplement_persisted": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["supplement_id", "supplement_hash"],
+          "properties": {
+            "event_kind": {"const": "supplement_persisted"},
+            "supplement_id": {"type": "string", "pattern": "^SUP-[0-9a-f]{12}$"},
+            "supplement_hash": {"$ref": "#/$defs/hash"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "requirements_published": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["requirements_sha256", "target_publication_revision"],
+          "properties": {
+            "event_kind": {"const": "requirements_published"},
+            "requirements_sha256": {"$ref": "#/$defs/hash"},
+            "target_publication_revision": {"$ref": "#/$defs/hash"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "base_rebuild_published": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["base_generation_id"],
+          "properties": {
+            "event_kind": {"const": "base_rebuild_published"},
+            "base_generation_id": {"$ref": "#/$defs/hash"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "effective_folded": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["document_effective_revision", "claim_effective_revision", "effective_fresh"],
+          "properties": {
+            "event_kind": {"const": "effective_folded"},
+            "document_effective_revision": {"$ref": "#/$defs/hash"},
+            "claim_effective_revision": {"$ref": "#/$defs/hash"},
+            "effective_fresh": {"type": "boolean"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "terminal": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["outcome", "usage"],
+          "properties": {
+            "event_kind": {
+              "enum": [
+                "reextract_succeeded", "reextract_failed",
+                "reextract_interrupted", "reextract_aborted_stale"
+              ]
+            },
+            "outcome": {
+              "type": "object",
+              "required": ["code", "message", "retryable"],
+              "properties": {
+                "code": {"type": "string", "minLength": 1},
+                "message": {"type": "string"},
+                "retryable": {"type": "boolean"}
+              },
+              "additionalProperties": false
+            },
+            "usage": {
+              "type": "object",
+              "required": ["calls", "total_tokens", "usage_complete"],
+              "properties": {
+                "calls": {"type": "integer", "minimum": 0},
+                "total_tokens": {"type": ["integer", "null"], "minimum": 0},
+                "usage_complete": {"type": "boolean"}
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

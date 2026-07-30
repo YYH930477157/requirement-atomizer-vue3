@@ -14,6 +14,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from claim_structural_overrides import (
+    CLAIM_STRUCTURAL_OVERRIDE_VERSION,
+    StructuralOverrideSnapshot,
+    apply_structural_overrides,
+    empty_structural_override_snapshot,
+    read_structural_overrides,
+    structural_override_identity,
+)
 from source_spans import (
     SOURCE_ALIGNMENT_VERSION,
     SOURCE_TEXT_NORMALIZATION_VERSION,
@@ -1269,6 +1277,7 @@ def build_claim_catalog(
     target_chars: int = DEFAULT_CLAIM_UNIT_CHARS,
     unit_mode: str = "clause",
     replay_catalog_version: str | None = None,
+    structural_override_snapshot: StructuralOverrideSnapshot | None = None,
 ) -> dict[str, Any]:
     """Build the immutable Phase 0A catalog and its virtual owner units."""
     if scope not in {"full", "sample"}:
@@ -1296,12 +1305,22 @@ def build_claim_catalog(
         document_generation_id=document["document_generation_id"],
         catalog_version=catalog_version,
     )
+    override_snapshot = (
+        structural_override_snapshot
+        if structural_override_snapshot is not None
+        else empty_structural_override_snapshot()
+    )
+    override_identity = structural_override_identity(override_snapshot)
+    applied_override_count = apply_structural_overrides(rows, override_snapshot)
     packing_config = {"target_chars": int(target_chars), "unit_mode": str(unit_mode)}
     catalog_generation_id = _sha256_bytes(_canonical_bytes({
         "document_generation_id": document["document_generation_id"],
         "catalog_version": catalog_version,
         "packing_version": CLAIM_UNIT_PACKING_VERSION,
         "packing_config": packing_config,
+        "structural_override_version": override_identity["version"],
+        "structural_override_prefix_sha256": override_identity["prefix_sha256"],
+        "structural_override_prefix_count": override_identity["prefix_count"],
     }))
     for row in rows:
         row["catalog_generation_id"] = catalog_generation_id
@@ -1341,6 +1360,10 @@ def build_claim_catalog(
         "packing_version": CLAIM_UNIT_PACKING_VERSION,
         **document,
         "catalog_generation_id": catalog_generation_id,
+        "structural_override_version": CLAIM_STRUCTURAL_OVERRIDE_VERSION,
+        "structural_override_prefix_sha256": override_identity["prefix_sha256"],
+        "structural_override_prefix_count": override_identity["prefix_count"],
+        "structural_override_applied_count": applied_override_count,
         "scope": scope,
         "document_closure_claimed": False,
         "packing_config": packing_config,
@@ -1398,6 +1421,7 @@ def build_catalog_from_directory(
     table_path = root / "table_items.jsonl"
     block_bytes = blocks_path.read_bytes()
     table_bytes = table_path.read_bytes() if table_path.exists() else b""
+    override_snapshot = read_structural_overrides(root)
     return build_claim_catalog(
         read_jsonl(blocks_path),
         read_jsonl(table_path),
@@ -1406,4 +1430,5 @@ def build_catalog_from_directory(
         scope=scope,
         target_chars=target_chars,
         unit_mode=unit_mode,
+        structural_override_snapshot=override_snapshot,
     )

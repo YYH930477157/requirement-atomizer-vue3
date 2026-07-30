@@ -12,16 +12,22 @@ from urllib.parse import parse_qs, urlparse
 
 from review_actions import apply_review_action
 from ai_review_actions import (
+    AIReviewAuthorityConflict,
     apply_ai_review_action,
+    ai_target_authority_write_revision,
     ensure_requirement_identity,
     normalize_module_override,
-    read_ai_review_states,
     review_anchor_fingerprint,
     review_state_for_requirement,
     review_state_needs_reconfirmation,
     review_subject_fingerprint,
     source_ai_requirement_id,
     source_fingerprint,
+)
+from review_state import (
+    ReviewAuthorityConflict,
+    atomic_target_authority_write_revision,
+    target_publication_revision,
 )
 from io_utils import read_jsonl
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
@@ -32,7 +38,6 @@ from requirement_kb.matching import clean_text as normalize_text
 DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
 DEFAULT_ALLOWED_ORIGINS = {"http://127.0.0.1:8770", "http://localhost:8770"}
 TOKEN_HEADER = "X-Requirement-Atomizer-Token"
-
 # 裁决重建防抖（0714 批次二 S4）：此前每次裁决 POST 同步全量重建 merged_spec
 # （openpyxl 逐格 xlsx + 一致性报表 O(块×需求) 双向子串扫描）——评审员连续点
 # 接受/拒绝时每点一下卡一次。改为标脏 + 合并延迟重建：窗口内多次裁决只重建一次。
@@ -195,7 +200,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             rows = read_jsonl(self.output_dir / "atomic_requirements.jsonl")
             if requirement_type:
                 rows = [row for row in rows if row.get("requirement_type") == requirement_type]
-            self.send_json(enrich_requirements(rows[:limit], self.output_dir))
+            self.send_json(enrich_requirements(rows, self.output_dir)[:limit])
             return
         if parsed.path == "/reviews":
             limit = parse_int(one(params, "limit"), default=50)
@@ -341,6 +346,15 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/omission-reextract":
             self.handle_omission_reextract()
             return
+        if parsed.path == "/claim-adjudications":
+            self.handle_claim_adjudication()
+            return
+        if parsed.path == "/claim-queue/execute":
+            self.handle_claim_queue_execute()
+            return
+        if parsed.path == "/claim-structural-overrides":
+            self.handle_claim_structural_override()
+            return
         if parsed.path in ("/spot-extract", "/api/spot-extract"):
             # 点解析（WP-B）：/spot-extract 为现有无前缀约定的正规路径，
             # /api/spot-extract 为冻结规格字面别名——同一处理器，无行为分叉
@@ -360,11 +374,102 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         status = str(payload.get("status") or "").strip()
         actor = str(payload.get("actor") or "").strip() or None
         reason = str(payload.get("reason") or "").strip()
+        expected_target_fingerprint = str(
+            payload.get("expected_target_fingerprint") or ""
+        ).strip()
+        expected_target_publication_revision = str(
+            payload.get("expected_target_publication_revision") or ""
+        ).strip()
+        expected_target_authority_write_revision = str(
+            payload.get("expected_target_authority_write_revision") or ""
+        ).strip()
         if not requirement_id or not status:
             self.send_json({"error": "requirement_id and status are required"}, status=400)
             return
+        if (
+            not expected_target_fingerprint
+            or not expected_target_publication_revision
+            or not expected_target_authority_write_revision
+        ):
+            self.send_json({
+                "error": (
+                    "expected_target_fingerprint, expected_target_publication_revision, and "
+                    "expected_target_authority_write_revision are required"
+                ),
+                "needs_reconfirmation": True,
+            }, status=400)
+            return
+        current_cas: dict[str, str] = {}
         try:
-            state = apply_review_action(self.output_dir, requirement_id, status, actor=actor, reason=reason)
+            from omission_actions import OmissionConflictError, extraction_operation_lock
+
+            with extraction_operation_lock(self.output_dir, operation="review-action"):
+                current_requirements = read_jsonl(
+                    self.output_dir / "atomic_requirements.jsonl"
+                )
+                current_rows = enrich_requirements(
+                    current_requirements,
+                    self.output_dir,
+                )
+                matches = [
+                    row for row in current_rows
+                    if requirement_id in requirement_identity_keys(row)
+                ]
+                if len(matches) != 1:
+                    self.send_json({
+                        "error": "atomic requirement is not uniquely present in the current run",
+                        "needs_reconfirmation": True,
+                    }, status=409)
+                    return
+                current = matches[0]
+                current_cas = {
+                    "target_fingerprint": str(current.get("target_fingerprint") or ""),
+                    "target_publication_revision": str(
+                        current.get("target_publication_revision") or ""
+                    ),
+                    "target_authority_write_revision": str(
+                        current.get("target_authority_write_revision") or ""
+                    ),
+                }
+                if (
+                    expected_target_fingerprint != current_cas["target_fingerprint"]
+                    or expected_target_publication_revision
+                    != current_cas["target_publication_revision"]
+                    or expected_target_authority_write_revision
+                    != current_cas["target_authority_write_revision"]
+                ):
+                    self.send_json({
+                        "error": "atomic requirement or review authority changed; refresh before adjudicating",
+                        "needs_reconfirmation": True,
+                        **current_cas,
+                    }, status=409)
+                    return
+                state = apply_review_action(
+                    self.output_dir,
+                    requirement_id,
+                    status,
+                    actor=actor,
+                    reason=reason,
+                    expected_target_fingerprint=expected_target_fingerprint,
+                    expected_target_authority_write_revision=(
+                        expected_target_authority_write_revision
+                    ),
+                )
+                state["target_fingerprint"] = current_cas["target_fingerprint"]
+                state["target_publication_revision"] = current_cas[
+                    "target_publication_revision"
+                ]
+        except OmissionConflictError as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=409)
+            return
+        except ReviewAuthorityConflict as exc:
+            self.send_json({
+                "error": str(exc),
+                "needs_reconfirmation": True,
+                **current_cas,
+                "target_authority_write_revision": exc.current_revision,
+            }, status=409)
+            return
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=409)
             return
@@ -419,49 +524,126 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if not req_id or not status:
             self.send_json({"error": "ai_req_id and status are required"}, status=400)
             return
-        current = find_current_ai_requirement(self.output_dir, req_id)
-        if current is None:
-            self.send_json({"error": "AI requirement is not present in the current run"}, status=409)
+        expected_target_fingerprint = str(
+            payload.get("expected_target_fingerprint") or ""
+        ).strip()
+        expected_target_publication_revision = str(
+            payload.get("expected_target_publication_revision") or ""
+        ).strip()
+        expected_target_authority_write_revision = str(
+            payload.get("expected_target_authority_write_revision") or ""
+        ).strip()
+        if (
+            not expected_target_fingerprint
+            or not expected_target_publication_revision
+            or not expected_target_authority_write_revision
+        ):
+            self.send_json({
+                "error": (
+                    "expected_target_fingerprint, expected_target_publication_revision, and "
+                    "expected_target_authority_write_revision are required"
+                ),
+                "needs_reconfirmation": True,
+            }, status=400)
             return
-        current_review_state = current.get("review_state")
-        if not isinstance(current_review_state, dict) or current.get("needs_reconfirmation"):
-            current_review_state = {}
-        if clear_module_override:
-            module_override = None
-        elif module_override_supplied:
-            module_override = submitted_module_override
-        else:
-            existing_module = current_review_state.get("module_override")
-            module_override = normalize_module_override(existing_module) if existing_module else None
-        current_source_fingerprint = (
-            str(current.get("source_fingerprint") or "") or source_fingerprint(current)
-        )
-        current_subject_fingerprint = (
-            str(current.get("review_subject_fingerprint") or "")
-            or review_subject_fingerprint(current)
-        )
         submitted_source = str(payload.get("source_fingerprint") or "").strip()
         submitted_subject = str(payload.get("review_subject_fingerprint") or "").strip()
         if not submitted_source or not submitted_subject:
-            self.send_json({"error": "source and review subject fingerprints are required"}, status=409)
-            return
-        if ((submitted_source and submitted_source != current_source_fingerprint)
-                or (submitted_subject and submitted_subject != current_subject_fingerprint)):
             self.send_json({
-                "error": "AI requirement changed; refresh before adjudicating",
+                "error": "source and review subject fingerprints are required",
                 "needs_reconfirmation": True,
-                "source_fingerprint": current_source_fingerprint,
-                "review_subject_fingerprint": current_subject_fingerprint,
+            }, status=400)
+            return
+        current_cas: dict[str, str] = {}
+        try:
+            from omission_actions import OmissionConflictError, extraction_operation_lock
+
+            # Target publication and authority append share this outer lease. All
+            # target-dependent values are recomputed while the lease is held.
+            with extraction_operation_lock(self.output_dir, operation="ai-review-action"):
+                current = find_current_ai_requirement(self.output_dir, req_id)
+                if current is None:
+                    self.send_json({
+                        "error": "AI requirement is not present in the current run"
+                    }, status=409)
+                    return
+                current_cas = {
+                    "target_fingerprint": str(current.get("target_fingerprint") or ""),
+                    "target_publication_revision": str(
+                        current.get("target_publication_revision") or ""
+                    ),
+                    "target_authority_write_revision": str(
+                        current.get("target_authority_write_revision") or ""
+                    ),
+                }
+                current_review_state = current.get("review_state")
+                if not isinstance(current_review_state, dict) or current.get("needs_reconfirmation"):
+                    current_review_state = {}
+                if clear_module_override:
+                    module_override = None
+                elif module_override_supplied:
+                    module_override = submitted_module_override
+                else:
+                    existing_module = current_review_state.get("module_override")
+                    module_override = normalize_module_override(existing_module) if existing_module else None
+                current_source_fingerprint = (
+                    str(current.get("source_fingerprint") or "") or source_fingerprint(current)
+                )
+                current_subject_fingerprint = (
+                    str(current.get("review_subject_fingerprint") or "")
+                    or review_subject_fingerprint(current)
+                )
+                if (
+                    submitted_source != current_source_fingerprint
+                    or submitted_subject != current_subject_fingerprint
+                    or expected_target_fingerprint
+                    != current_cas["target_fingerprint"]
+                    or expected_target_publication_revision
+                    != current_cas["target_publication_revision"]
+                    or expected_target_authority_write_revision
+                    != current_cas["target_authority_write_revision"]
+                ):
+                    self.send_json({
+                        "error": "AI requirement changed; refresh before adjudicating",
+                        "needs_reconfirmation": True,
+                        "source_fingerprint": current_source_fingerprint,
+                        "review_subject_fingerprint": current_subject_fingerprint,
+                        **current_cas,
+                    }, status=409)
+                    return
+                state = apply_ai_review_action(
+                    self.output_dir,
+                    req_id,
+                    status,
+                    module_override=module_override,
+                    ownership_override=ownership_override,
+                    reason=reason,
+                    actor=actor,
+                    source_fingerprint_value=current_source_fingerprint,
+                    review_subject_fingerprint_value=current_subject_fingerprint,
+                    review_anchor_fingerprint_value=review_anchor_fingerprint(current),
+                    expected_target_authority_write_revision=(
+                        expected_target_authority_write_revision
+                    ),
+                )
+                next_authority_write_revision = str(
+                    state.get("target_authority_write_revision") or ""
+                )
+                state.update(current_cas)
+                state["target_authority_write_revision"] = (
+                    next_authority_write_revision
+                )
+        except OmissionConflictError as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=409)
+            return
+        except AIReviewAuthorityConflict as exc:
+            self.send_json({
+                "error": str(exc),
+                "needs_reconfirmation": True,
+                **current_cas,
+                "target_authority_write_revision": exc.current_revision,
             }, status=409)
             return
-        try:
-            state = apply_ai_review_action(self.output_dir, req_id, status,
-                                           module_override=module_override,
-                                           ownership_override=ownership_override,
-                                           reason=reason, actor=actor,
-                                           source_fingerprint_value=current_source_fingerprint,
-                                           review_subject_fingerprint_value=current_subject_fingerprint,
-                                           review_anchor_fingerprint_value=review_anchor_fingerprint(current))
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=409)
             return
@@ -537,6 +719,91 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         self.send_json(state)
 
+    def handle_claim_adjudication(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        required_text = {
+            name: str(payload.get(name) or "").strip()
+            for name in (
+                "claim_id",
+                "claim_hash",
+                "adjudication",
+                "reason",
+                "actor",
+                "expected_claim_effective_revision",
+            )
+        }
+        evidence = payload.get("evidence")
+        supersedes = payload.get("supersedes_fact_hashes", [])
+        if not all(required_text.values()):
+            self.send_json({
+                "error": "claim identity, adjudication, reason, actor, and expected revision are required"
+            }, status=400)
+            return
+        if not isinstance(evidence, dict):
+            self.send_json({"error": "evidence must be an object"}, status=400)
+            return
+        if not isinstance(supersedes, list) or not all(
+            isinstance(value, str) for value in supersedes
+        ):
+            self.send_json({
+                "error": "supersedes_fact_hashes must be an array of strings"
+            }, status=400)
+            return
+        try:
+            from claim_review_actions import (
+                ClaimAdjudicationCasMismatch,
+                ClaimReviewActionError,
+                apply_claim_adjudication,
+            )
+
+            result = apply_claim_adjudication(
+                self.output_dir,
+                claim_id=required_text["claim_id"],
+                claim_hash=required_text["claim_hash"],
+                adjudication=required_text["adjudication"],
+                reason=required_text["reason"],
+                evidence=evidence,
+                actor=required_text["actor"],
+                expected_claim_effective_revision=required_text[
+                    "expected_claim_effective_revision"
+                ],
+                supersedes_fact_hashes=supersedes,
+                request_idempotency_key=str(
+                    payload.get("request_idempotency_key") or ""
+                ).strip() or None,
+            )
+        except ClaimAdjudicationCasMismatch as exc:
+            current_revision = None
+            try:
+                from claim_artifacts import load_committed_effective_snapshot
+
+                snapshot = load_committed_effective_snapshot(self.output_dir)
+                current_revision = next(
+                    (
+                        row.get("claim_effective_revision")
+                        for row in snapshot.get("effective_ledger") or []
+                        if row.get("claim_id") == required_text["claim_id"]
+                    ),
+                    None,
+                )
+            except (OSError, ValueError):
+                pass
+            self.send_json({
+                "error": str(exc),
+                "needs_reconfirmation": True,
+                "claim_effective_revision": current_revision,
+            }, status=409)
+            return
+        except ClaimReviewActionError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        self.send_json(result)
+
     def handle_omission_reextract(self) -> None:
         payload = self.read_json_body()
         if payload is None:
@@ -595,6 +862,123 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         except (TimeoutError, OSError) as exc:
             self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        self.send_json(result)
+
+    def handle_claim_queue_execute(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        try:
+            from claim_queue_execution import (
+                ClaimQueueExecutionConflict,
+                ClaimQueueExecutionRemoteError,
+                ClaimQueueExecutionUnavailable,
+                ClaimQueueExecutionUnprocessable,
+                execute_claim_queue_proposal,
+            )
+
+            result = execute_claim_queue_proposal(
+                self.output_dir,
+                proposal_id=str(payload.get("proposal_id") or "").strip(),
+                expected_claim_effective_revision=str(
+                    payload.get("expected_claim_effective_revision") or ""
+                ).strip(),
+                expected_ledger_state=str(
+                    payload.get("expected_ledger_state") or ""
+                ).strip(),
+                actor=str(payload.get("actor") or "").strip(),
+                allow_llm=payload.get("allow_llm") is True,
+                route=str(payload.get("route") or "").strip(),
+                maximum_calls=payload.get(
+                    "maximum_calls", payload.get("max_calls", 0)
+                ),
+                total_token_budget=payload.get(
+                    "total_token_budget", payload.get("max_total_tokens", 0)
+                ),
+                request_idempotency_key=str(
+                    payload.get("request_idempotency_key") or ""
+                ).strip(),
+            )
+        except ClaimQueueExecutionConflict as exc:
+            self.send_json({
+                "error": str(exc),
+                "needs_reconfirmation": True,
+                "retryable": False,
+            }, status=409)
+            return
+        except ClaimQueueExecutionUnprocessable as exc:
+            self.send_json({"error": str(exc), "retryable": False}, status=422)
+            return
+        except ClaimQueueExecutionRemoteError as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=502)
+            return
+        except ClaimQueueExecutionUnavailable as exc:
+            self.send_json({
+                "error": str(exc),
+                "retryable": True,
+                **exc.result,
+            }, status=503)
+            return
+        except (TypeError, ValueError) as exc:
+            self.send_json({"error": str(exc), "retryable": False}, status=400)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        self.send_json(result)
+
+    def handle_claim_structural_override(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        try:
+            from claim_structural_overrides import (
+                ClaimStructuralOverrideError,
+                ClaimStructuralOverrideStale,
+                confirm_structural_override,
+            )
+
+            result = confirm_structural_override(
+                self.output_dir,
+                claim_id=str(payload.get("claim_id") or "").strip(),
+                claim_hash=str(payload.get("claim_hash") or "").strip(),
+                expected_catalog_generation_id=str(
+                    payload.get("expected_catalog_generation_id") or ""
+                ).strip(),
+                expected_claim_effective_revision=str(
+                    payload.get("expected_claim_effective_revision") or ""
+                ).strip(),
+                prior_structural_reason=str(
+                    payload.get("prior_structural_reason") or ""
+                ).strip(),
+                actor=str(payload.get("actor") or "").strip(),
+                reason=str(payload.get("reason") or "").strip(),
+                request_idempotency_key=str(
+                    payload.get("request_idempotency_key") or ""
+                ).strip(),
+                allow_llm=payload.get("allow_llm"),
+                route=str(payload.get("route") or "").strip(),
+                verifier_max_calls=payload.get("verifier_max_calls", -1),
+                verifier_max_total_tokens=payload.get(
+                    "verifier_max_total_tokens", -1
+                ),
+            )
+        except ClaimStructuralOverrideStale as exc:
+            self.send_json({
+                "error": str(exc),
+                "needs_reconfirmation": True,
+                "retryable": False,
+            }, status=409)
+            return
+        except ClaimStructuralOverrideError as exc:
+            self.send_json({"error": str(exc), "retryable": False}, status=400)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        if not result.get("ok") and result.get("status") == "rebuild_pending":
+            self.send_json(result, status=503)
             return
         self.send_json(result)
 
@@ -779,7 +1163,23 @@ def token_is_valid(expected_token: str, headers: Mapping[str, str], params: dict
 
 def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict]:
     reviews_by_requirement = index_by_requirement_identity(read_jsonl(output_dir / "llm_review_results.jsonl"))
-    states_by_requirement = index_by_requirement_identity(read_jsonl(output_dir / "review_states.jsonl"))
+    from review_state import read_review_authority_snapshot
+    from claim_ledger import a_track_effective_authority
+
+    review_snapshot = read_review_authority_snapshot(output_dir)
+    states = list(review_snapshot.get("states") or [])
+    states_by_requirement = index_by_requirement_identity(states)
+    projection = a_track_effective_authority(requirements, states)
+    projection_by_id = {
+        (
+            str(record.get("target_requirement_id") or ""),
+            str(record.get("target_fingerprint") or ""),
+        ): record
+        for record in projection.get("records") or []
+    }
+    publication_revision = target_publication_revision(
+        output_dir / "atomic_requirements.jsonl"
+    )
     enriched: list[dict] = []
     for requirement in requirements:
         row = dict(requirement)
@@ -791,6 +1191,21 @@ def enrich_requirements(requirements: list[dict], output_dir: Path) -> list[dict
             if key in states_by_requirement:
                 row["review_state"] = states_by_requirement[key]
                 break
+        from claim_ledger import atomic_requirement_id, atomic_target_fingerprint
+
+        target_id = atomic_requirement_id(row)
+        target_fingerprint = atomic_target_fingerprint(row)
+        projected = projection_by_id.get((target_id, target_fingerprint))
+        if projected is not None:
+            row["target_fingerprint"] = target_fingerprint
+            row["target_publication_revision"] = publication_revision
+            row["target_review_revision"] = (
+                projected.get("review", {}).get("target_review_revision")
+            )
+            row["target_authority_write_revision"] = atomic_target_authority_write_revision(
+                target_id,
+                review_snapshot,
+            )
         enriched.append(row)
     return enriched
 
@@ -1189,7 +1604,22 @@ def _enrich_ai_requirement_rows(
         except OSError:
             return False
 
-    states = read_ai_review_states(output_dir)
+    from claim_ledger import b_track_effective_authority
+
+    from ai_review_actions import read_ai_review_authority_snapshot
+
+    review_snapshot = read_ai_review_authority_snapshot(output_dir)
+    states = dict(review_snapshot.get("states") or {})
+    authority_projection = b_track_effective_authority(requirements, states)
+    projection_by_id = {
+        (
+            str(record.get("target_requirement_id") or ""),
+            str(record.get("target_fingerprint") or ""),
+        ): record
+        for record in authority_projection.get("records") or []
+    }
+    publication_path = freshness_reference or (output_dir / "ai_requirements.jsonl")
+    publication_revision = target_publication_revision(publication_path)
     membership = _functional_membership(output_dir) if artifact_is_current("functional_requirements.json") else {}
     analysis_map = _analysis_enrichment(output_dir) if artifact_is_current("engineering_analysis.json") else {}
     block_rows = read_jsonl(output_dir / "blocks.jsonl")
@@ -1245,6 +1675,23 @@ def _enrich_ai_requirement_rows(
         else:
             row["ownership_effective"] = row["ownership"]
         row["status"] = (effective_state or {}).get("status") or "draft"
+        from claim_artifacts import canonical_target_fingerprint
+
+        target_fingerprint = canonical_target_fingerprint(
+            row.get("review_subject_fingerprint")
+            or review_subject_fingerprint(req)
+        )
+        projected = projection_by_id.get((rid, target_fingerprint))
+        if projected is not None:
+            row["target_fingerprint"] = target_fingerprint
+            row["target_publication_revision"] = publication_revision
+            row["target_review_revision"] = (
+                projected.get("review", {}).get("target_review_revision")
+            )
+            row["target_authority_write_revision"] = ai_target_authority_write_revision(
+                rid,
+                review_snapshot,
+            )
         flags = _row_consistency_flags(row, dup_quotes, differ_codes)
         if flags:
             row["consistency_flags"] = flags
@@ -1587,6 +2034,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def run_claim_startup_maintenance(out_dir: Path) -> dict:
+    """Recover or refresh claim state before listening, with a read-only fast path."""
+    root = Path(out_dir).expanduser().resolve()
+    if not (root / "claim_generation.meta.json").is_file():
+        return {
+            "ok": True,
+            "publication_skipped": True,
+            "reason": "claim_generation_unavailable",
+        }
+
+    from claim_artifacts import (
+        ClaimArtifactError,
+        load_committed_effective_snapshot_readonly,
+    )
+    from claim_review_actions import assess_effective_freshness, fold_effective_ledger
+
+    try:
+        snapshot = load_committed_effective_snapshot_readonly(root)
+        freshness = assess_effective_freshness(root, snapshot, readonly=True)
+    except (ClaimArtifactError, OSError, UnicodeError, json.JSONDecodeError):
+        # Migration, WAL recovery, and damaged derived state belong to the
+        # maintenance fold. The request-serving path remains read-only.
+        return fold_effective_ledger(root, actor_trigger="api-startup-maintenance")
+
+    if freshness["effective_fresh"]:
+        return {
+            "ok": True,
+            "publication_skipped": True,
+            "reason": "already_fresh",
+            "effective_meta": dict(snapshot["effective_meta"]),
+            "effective_metrics": dict(
+                snapshot["effective_meta"].get("effective_metrics") or {}
+            ),
+            "queue_count": len(snapshot.get("queue_proposals") or []),
+            "event_append_count": 0,
+        }
+    return fold_effective_ledger(root, actor_trigger="api-startup-maintenance")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     from desktop_tasks import setup_run_logging
@@ -1596,12 +2082,7 @@ def main(argv: list[str] | None = None) -> int:
     RequirementAPIHandler.local_token = args.token
     if (RequirementAPIHandler.output_dir / "claim_generation.meta.json").is_file():
         try:
-            from claim_review_actions import fold_effective_ledger
-
-            fold_effective_ledger(
-                RequirementAPIHandler.output_dir,
-                actor_trigger="api-startup-maintenance",
-            )
+            run_claim_startup_maintenance(RequirementAPIHandler.output_dir)
         except Exception as exc:
             import logging
 

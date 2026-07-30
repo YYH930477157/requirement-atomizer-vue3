@@ -38,6 +38,9 @@ describe("RequirementApiClient", () => {
       status: "accepted",
       actor: "reviewer",
       reason: "accepted in Vue3 UI",
+      expectedTargetFingerprint: "sha256:target-v1",
+      expectedTargetPublicationRevision: "sha256:publication-v1",
+      expectedTargetAuthorityWriteRevision: "sha256:authority-v1",
     })
 
     expect(state.status).toBe("accepted")
@@ -52,6 +55,9 @@ describe("RequirementApiClient", () => {
         status: "accepted",
         actor: "reviewer",
         reason: "accepted in Vue3 UI",
+        expected_target_fingerprint: "sha256:target-v1",
+        expected_target_publication_revision: "sha256:publication-v1",
+        expected_target_authority_write_revision: "sha256:authority-v1",
       }),
     })
   })
@@ -268,6 +274,9 @@ describe("RequirementApiClient", () => {
     await client.applyAiReviewAction({
       aiReqId: "AIR-1", status: "accepted",
       sourceFingerprint: "source-v2", reviewSubjectFingerprint: "subject-v2",
+      expectedTargetFingerprint: "sha256:target-v2",
+      expectedTargetPublicationRevision: "sha256:publication-v2",
+      expectedTargetAuthorityWriteRevision: "sha256:authority-v2",
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -276,6 +285,9 @@ describe("RequirementApiClient", () => {
         body: JSON.stringify({
           ai_req_id: "AIR-1", status: "accepted",
           source_fingerprint: "source-v2", review_subject_fingerprint: "subject-v2",
+          expected_target_fingerprint: "sha256:target-v2",
+          expected_target_publication_revision: "sha256:publication-v2",
+          expected_target_authority_write_revision: "sha256:authority-v2",
           clear_module_override: false, ownership_override: "", reason: "", actor: "",
         }),
       }),
@@ -360,6 +372,154 @@ describe("RequirementApiClient", () => {
     for (const [, init] of fetchMock.mock.calls) {
       expect(init).toEqual({ headers: { "X-Requirement-Atomizer-Token": "local-token" } })
     }
+  })
+
+  it("posts complete Queue v2, expert adjudication, and structural override contracts", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          schema: "claim-queue-execution/v1", proposal_id: "CQP-1", attempt_id: "CRA-1",
+          lifecycle: "executed",
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await client.executeClaimQueue({
+      proposalId: "CQP-1",
+      expectedClaimEffectiveRevision: "sha256:claim-revision-1",
+      actor: "queue-reviewer",
+      allowLlm: true,
+      route: "deepseek",
+      maximumCalls: 6,
+      totalTokenBudget: 72000,
+      requestIdempotencyKey: "queue-request-1",
+    })
+    await client.applyClaimAdjudication({
+      claimId: "CLM-1",
+      claimHash: "sha256:claim-1",
+      adjudication: "covered",
+      reason: "validated against the active requirement",
+      evidence: {
+        kind: "coverage_group",
+        coverage_group_id: "CGR-1",
+        coverage_group_hash: "sha256:group-1",
+      },
+      actor: "expert-reviewer",
+      expectedClaimEffectiveRevision: "sha256:claim-revision-2",
+      supersedesFactHashes: ["sha256:fact-1", "sha256:fact-2"],
+      requestIdempotencyKey: "adjudication-request-1",
+    })
+    await client.confirmClaimStructuralOverride({
+      claimId: "CLM-2",
+      claimHash: "sha256:claim-2",
+      expectedCatalogGenerationId: "sha256:catalog-1",
+      expectedClaimEffectiveRevision: "sha256:claim-revision-3",
+      priorStructuralReason: "repeated_page_furniture",
+      reason: "confirmed as document content",
+      actor: "structural-reviewer",
+      requestIdempotencyKey: "structural-request-1",
+      allowLlm: true,
+      route: "openai_compatible",
+      verifierMaxCalls: 2,
+      verifierMaxTotalTokens: 12000,
+    })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8770/claim-queue/execute", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requirement-Atomizer-Token": "local-token",
+      },
+      body: JSON.stringify({
+        proposal_id: "CQP-1",
+        expected_claim_effective_revision: "sha256:claim-revision-1",
+        expected_ledger_state: "uncertain",
+        actor: "queue-reviewer",
+        allow_llm: true,
+        route: "deepseek",
+        maximum_calls: 6,
+        total_token_budget: 72000,
+        request_idempotency_key: "queue-request-1",
+      }),
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:8770/claim-adjudications", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requirement-Atomizer-Token": "local-token",
+      },
+      body: JSON.stringify({
+        claim_id: "CLM-1",
+        claim_hash: "sha256:claim-1",
+        adjudication: "covered",
+        reason: "validated against the active requirement",
+        evidence: {
+          kind: "coverage_group",
+          coverage_group_id: "CGR-1",
+          coverage_group_hash: "sha256:group-1",
+        },
+        actor: "expert-reviewer",
+        expected_claim_effective_revision: "sha256:claim-revision-2",
+        supersedes_fact_hashes: ["sha256:fact-1", "sha256:fact-2"],
+        request_idempotency_key: "adjudication-request-1",
+      }),
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "http://127.0.0.1:8770/claim-structural-overrides", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requirement-Atomizer-Token": "local-token",
+      },
+      body: JSON.stringify({
+        claim_id: "CLM-2",
+        claim_hash: "sha256:claim-2",
+        expected_catalog_generation_id: "sha256:catalog-1",
+        expected_claim_effective_revision: "sha256:claim-revision-3",
+        prior_structural_reason: "repeated_page_furniture",
+        reason: "confirmed as document content",
+        actor: "structural-reviewer",
+        request_idempotency_key: "structural-request-1",
+        allow_llm: true,
+        route: "openai_compatible",
+        verifier_max_calls: 2,
+        verifier_max_total_tokens: 12000,
+      }),
+    })
+  })
+
+  it("serializes queue LLM authorization from the caller instead of granting it implicitly", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        schema: "claim-queue-execution/v1", proposal_id: "CQP-1", attempt_id: "CRA-1",
+        lifecycle: "rebuild_pending",
+      }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    await client.executeClaimQueue({
+      proposalId: "CQP-1",
+      expectedClaimEffectiveRevision: "sha256:claim-revision-1",
+      allowLlm: false,
+      route: "stub",
+      maximumCalls: 0,
+      totalTokenBudget: 0,
+      requestIdempotencyKey: "queue-recovery-1",
+    })
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      allow_llm: false,
+      route: "stub",
+      maximum_calls: 0,
+      total_token_budget: 0,
+    })
   })
 
   it("rejects a claim view that omits its effective revision pin", async () => {

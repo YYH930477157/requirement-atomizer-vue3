@@ -72,8 +72,12 @@ function queuePayload(revision = "sha256:revision-1") {
       parent_block_id: "BLK-9",
       locator: { block_id: "BLK-9", start: 0, end: 21 },
       action: "needs_extraction" as const,
-      dry_run: true as const,
+      dry_run: false as const,
+      claim_hash: "sha256:queue-claim",
       claim_effective_revision: `${revision}-queue`,
+      lifecycle: "open" as const,
+      focus_error: null,
+      latest_attempt: null,
     }],
     compat_omissions: [{
       omission_id: "OM-BLK-10",
@@ -133,6 +137,13 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     loadClaimQueue: vi.fn().mockResolvedValue(queuePayload()),
     loadClaimCoverageGroups: vi.fn().mockResolvedValue(groupsPayload()),
     loadClaimReviewEvents: vi.fn().mockResolvedValue(eventsPayload()),
+    executeClaimQueue: vi.fn().mockResolvedValue({
+      schema: "claim-queue-execution/v1",
+      proposal_id: "CQP-11111111-22222222",
+      attempt_id: "CRA-1111111111111111",
+      lifecycle: "executed",
+    }),
+    applyClaimAdjudication: vi.fn().mockResolvedValue({ ok: true }),
     loadAiExtractionStatus: vi.fn().mockResolvedValue({
       schema: "ai-requirements-partial/v1",
       run_id: "run-1", completed: 1, total: 1, complete: true, rows: [],
@@ -143,7 +154,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
 }
 
 describe("ClaimLedger", () => {
-  it("renders revision-pinned metrics, comparison, claims, and read-only dry-run queues", async () => {
+  it("renders revision-pinned metrics, comparison, claims, and Queue v2 actions", async () => {
     const client = makeClient()
     const wrapper = mount(ClaimLedger, { props: { client, active: true } })
     await flushPromises()
@@ -160,7 +171,314 @@ describe("ClaimLedger", () => {
     expect(wrapper.get('[data-testid="claim-queue"]').text()).toContain("CLM-2222222222222222")
     expect(wrapper.get('[data-testid="claim-queue"]').text()).toContain("OM-BLK-10")
     expect(wrapper.get('[data-testid="claim-queue"]').text()).toContain("dry-run")
-    expect(wrapper.get('[data-testid="claim-queue"]').findAll("button")).toHaveLength(0)
+    expect(wrapper.get('[data-testid="claim-execute-CLM-2222222222222222"]').text()).toContain("执行")
+  })
+
+  it("forwards Queue v2 budgets and refreshes all overview views after execution", async () => {
+    const executeClaimQueue = vi.fn().mockResolvedValue({
+      schema: "claim-queue-execution/v1",
+      proposal_id: "CQP-11111111-22222222",
+      attempt_id: "CRA-1111111111111111",
+      lifecycle: "executed",
+    })
+    const client = makeClient({ executeClaimQueue })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.findAll('[role="tab"]')[1].trigger("click")
+    const budgetInputs = wrapper.get('[data-testid="claim-queue-budget"]').findAll("input")
+    await budgetInputs[0].setValue("7")
+    await budgetInputs[1].setValue("64000")
+    await wrapper.get('[data-testid="claim-execute-CLM-2222222222222222"]').trigger("click")
+    await flushPromises()
+
+    expect(executeClaimQueue).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="claim-queue-confirm-execute"]').attributes("disabled")).toBeDefined()
+    await wrapper.get('[data-testid="claim-queue-allow-llm"]').setValue(true)
+    await wrapper.get('[data-testid="claim-queue-confirm-execute"]').trigger("click")
+    await flushPromises()
+
+    expect(executeClaimQueue).toHaveBeenCalledWith({
+      proposalId: "CQP-11111111-22222222",
+      expectedClaimEffectiveRevision: "sha256:revision-1-queue",
+      actor: "reviewer",
+      allowLlm: true,
+      route: "openai_compatible",
+      maximumCalls: 7,
+      totalTokenBudget: 64000,
+      requestIdempotencyKey: expect.stringMatching(/^claim-queue-/),
+    })
+    expect(client.loadClaimCatalog).toHaveBeenCalledTimes(2)
+    expect(client.loadClaimMetrics).toHaveBeenCalledTimes(2)
+    expect(client.loadClaimQueue).toHaveBeenCalledTimes(2)
+    expect(client.loadAiExtractionStatus).toHaveBeenCalledTimes(2)
+
+    await wrapper.get('[data-testid="claim-execute-CLM-2222222222222222"]').trigger("click")
+    expect((wrapper.get('[data-testid="claim-queue-allow-llm"]').element as HTMLInputElement).checked).toBe(false)
+  })
+
+  it("does not retain queue LLM authorization after cancellation or a tab switch", async () => {
+    const executeClaimQueue = vi.fn()
+    const client = makeClient({ executeClaimQueue })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.findAll('[role="tab"]')[1].trigger("click")
+    const execute = wrapper.get('[data-testid="claim-execute-CLM-2222222222222222"]')
+    await execute.trigger("click")
+    await wrapper.get('[data-testid="claim-queue-allow-llm"]').setValue(true)
+    await wrapper.get('[data-testid="claim-queue-cancel"]').trigger("click")
+    expect(wrapper.find('[data-testid="claim-queue-confirm"]').exists()).toBe(false)
+    expect(executeClaimQueue).not.toHaveBeenCalled()
+
+    await execute.trigger("click")
+    expect((wrapper.get('[data-testid="claim-queue-allow-llm"]').element as HTMLInputElement).checked).toBe(false)
+    await wrapper.get('[data-testid="claim-queue-allow-llm"]').setValue(true)
+    await wrapper.findAll('[role="tab"]')[0].trigger("click")
+    expect(wrapper.find('[data-testid="claim-queue-confirm"]').exists()).toBe(false)
+
+    await wrapper.findAll('[role="tab"]')[1].trigger("click")
+    await wrapper.get('[data-testid="claim-execute-CLM-2222222222222222"]').trigger("click")
+    expect((wrapper.get('[data-testid="claim-queue-allow-llm"]').element as HTMLInputElement).checked).toBe(false)
+  })
+
+  it("resumes rebuild_pending with the original request idempotency key", async () => {
+    const pending = queuePayload()
+    Object.assign(pending.proposals[0], {
+      lifecycle: "rebuild_pending",
+      latest_attempt: {
+        attempt_id: "CRA-pending",
+        request_idempotency_key: "claim-queue-original-request",
+        lifecycle: "rebuild_pending",
+        last_event_seq: 4,
+        outcome: null,
+      },
+    })
+    const executeClaimQueue = vi.fn().mockResolvedValue({
+      schema: "claim-queue-execution/v1",
+      proposal_id: "CQP-11111111-22222222",
+      attempt_id: "CRA-pending",
+      lifecycle: "executed",
+    })
+    const client = makeClient({
+      loadClaimQueue: vi.fn().mockResolvedValue(pending),
+      executeClaimQueue,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.findAll('[role="tab"]')[1].trigger("click")
+    const button = wrapper.get('[data-testid="claim-execute-CLM-2222222222222222"]')
+    expect(button.text()).toContain("恢复")
+    await button.trigger("click")
+    await wrapper.get('[data-testid="claim-queue-allow-llm"]').setValue(true)
+    await wrapper.get('[data-testid="claim-queue-confirm-execute"]').trigger("click")
+    await flushPromises()
+
+    expect(executeClaimQueue).toHaveBeenCalledWith(expect.objectContaining({
+      proposalId: "CQP-11111111-22222222",
+      requestIdempotencyKey: "claim-queue-original-request",
+    }))
+  })
+
+  it("submits typed coverage evidence for expert adjudication and refreshes the overview", async () => {
+    const catalog = catalogPayload()
+    Object.assign(catalog.rows[0], {
+      source_text_hash: "sha256:source-text",
+      base_resolution_fact_hashes: { positive: ["sha256:base-covered"] },
+    })
+    const groups = groupsPayload()
+    Object.assign(groups.groups[0], { coverage_group_hash: "sha256:coverage-group" })
+    const events = eventsPayload()
+    Object.assign(events.events[0], {
+      event_kind: "expert_adjudication",
+      event_hash: "sha256:previous-expert",
+    })
+    const applyClaimAdjudication = vi.fn().mockResolvedValue({ ok: true })
+    const client = makeClient({
+      loadClaimCatalog: vi.fn().mockResolvedValue(catalog),
+      loadClaimCoverageGroups: vi.fn().mockResolvedValue(groups),
+      loadClaimReviewEvents: vi.fn().mockResolvedValue(events),
+      applyClaimAdjudication,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    await wrapper.get('textarea[aria-label="Claim 裁决理由"]').setValue("人工确认语义覆盖")
+    await wrapper.get('[data-testid="claim-adjudicate-covered"]').trigger("click")
+    await flushPromises()
+
+    expect(applyClaimAdjudication).toHaveBeenCalledWith({
+      claimId: "CLM-1111111111111111",
+      claimHash: "sha256:claim",
+      adjudication: "covered",
+      reason: "人工确认语义覆盖",
+      evidence: {
+        kind: "coverage_group",
+        coverage_group_id: "CGR-1111111111111111",
+        coverage_group_hash: "sha256:coverage-group",
+      },
+      actor: "reviewer",
+      expectedClaimEffectiveRevision: "sha256:revision-1-claim",
+      supersedesFactHashes: ["sha256:base-covered", "sha256:previous-expert"],
+      requestIdempotencyKey: expect.stringMatching(/^claim-adjudication-/),
+    })
+    expect(client.loadClaimCatalog).toHaveBeenCalledTimes(2)
+  })
+
+  it("supersedes both sides of a base coverage conflict", async () => {
+    const catalog = catalogPayload()
+    Object.assign(catalog.rows[0], {
+      resolution: "uncertain",
+      source_text_hash: "sha256:source-text",
+      base_resolution_fact_hashes: {
+        positive: ["sha256:base-positive"],
+        negative: ["sha256:base-negative-a", "sha256:base-negative-b"],
+      },
+    })
+    const groups = groupsPayload()
+    Object.assign(groups.groups[0], { coverage_group_hash: "sha256:coverage-group" })
+    const applyClaimAdjudication = vi.fn().mockResolvedValue({ ok: true })
+    const client = makeClient({
+      loadClaimCatalog: vi.fn().mockResolvedValue(catalog),
+      loadClaimCoverageGroups: vi.fn().mockResolvedValue(groups),
+      applyClaimAdjudication,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    await wrapper.get('[data-testid="claim-adjudication"] textarea').setValue("Supersede both base conflict sides")
+    await wrapper.get('[data-testid="claim-adjudicate-covered"]').trigger("click")
+    await flushPromises()
+
+    expect(applyClaimAdjudication).toHaveBeenCalledWith(expect.objectContaining({
+      adjudication: "covered",
+      supersedesFactHashes: [
+        "sha256:base-positive",
+        "sha256:base-negative-a",
+        "sha256:base-negative-b",
+      ],
+    }))
+  })
+
+  it("offers and submits exactly the backend-controlled non-normative exclusion reasons", async () => {
+    const catalog = catalogPayload()
+    Object.assign(catalog.rows[0], { source_text_hash: "sha256:source-text" })
+    const applyClaimAdjudication = vi.fn().mockResolvedValue({ ok: true })
+    const client = makeClient({
+      loadClaimCatalog: vi.fn().mockResolvedValue(catalog),
+      applyClaimAdjudication,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    const reasons = ["scope_statement", "definition", "informative", "example", "instrument_only"] as const
+    for (const [index, reason] of reasons.entries()) {
+      await wrapper.get('[data-testid="claim-row"]').trigger("click")
+      await flushPromises()
+      const select = wrapper.get('select[aria-label="非规范内容类型"]')
+      if (index === 0) {
+        expect(select.findAll("option").map((option) => option.attributes("value"))).toEqual(reasons)
+        expect(select.findAll('option[value="context_only"]')).toHaveLength(0)
+      }
+      await select.setValue(reason)
+      await wrapper.get('textarea[aria-label="Claim 裁决理由"]').setValue(`排除：${reason}`)
+      await wrapper.get('[data-testid="claim-adjudicate-excluded"]').trigger("click")
+      await flushPromises()
+
+      expect(applyClaimAdjudication).toHaveBeenNthCalledWith(index + 1, expect.objectContaining({
+        adjudication: "excluded_non_normative",
+        evidence: expect.objectContaining({
+          kind: "source_exclusion",
+          exclusion_reason: reason,
+        }),
+      }))
+    }
+  })
+
+  it("defaults structural false-positive override to a zero-LLM rebuild", async () => {
+    const catalog = catalogPayload()
+    Object.assign(catalog, { catalog_generation_id: "sha256:catalog-generation" })
+    Object.assign(catalog.rows[0], {
+      resolution: "excluded",
+      exclusion_kind: "structural",
+      exclusion: { reason: "repeated_page_furniture" },
+    })
+    const confirmClaimStructuralOverride = vi.fn().mockResolvedValue({ ok: true, status: "rebuilt" })
+    const client = makeClient({
+      loadClaimCatalog: vi.fn().mockResolvedValue(catalog),
+      confirmClaimStructuralOverride,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.get('[data-testid="claim-structural-mode"]').text()).toContain("0 LLM")
+    expect((wrapper.get('[data-testid="claim-structural-llm"]').element as HTMLInputElement).checked).toBe(false)
+
+    await wrapper.get('textarea[aria-label="Claim 裁决理由"]').setValue("确认该内容不是重复页眉页脚")
+    await wrapper.get('[data-testid="claim-structural-override"]').trigger("click")
+    await flushPromises()
+
+    expect(confirmClaimStructuralOverride).toHaveBeenCalledWith({
+      claimId: "CLM-1111111111111111",
+      claimHash: "sha256:claim",
+      expectedCatalogGenerationId: "sha256:catalog-generation",
+      expectedClaimEffectiveRevision: "sha256:revision-1-claim",
+      priorStructuralReason: "repeated_page_furniture",
+      reason: "确认该内容不是重复页眉页脚",
+      actor: "reviewer",
+      requestIdempotencyKey: expect.stringMatching(/^claim-structural-/),
+      allowLlm: false,
+      route: "stub",
+      verifierMaxCalls: 0,
+      verifierMaxTotalTokens: 0,
+    })
+  })
+
+  it("uses the paid structural verifier only after explicit authorization", async () => {
+    const catalog = catalogPayload()
+    Object.assign(catalog, { catalog_generation_id: "sha256:catalog-generation" })
+    Object.assign(catalog.rows[0], {
+      resolution: "excluded",
+      exclusion_kind: "structural",
+      exclusion: { reason: "repeated_page_furniture" },
+    })
+    const confirmClaimStructuralOverride = vi.fn().mockResolvedValue({ ok: true, status: "rebuilt" })
+    const client = makeClient({
+      loadClaimCatalog: vi.fn().mockResolvedValue(catalog),
+      confirmClaimStructuralOverride,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    await wrapper.get('[data-testid="claim-structural-llm"]').setValue(true)
+    expect(wrapper.get('[data-testid="claim-structural-mode"]').text()).toContain("LLM 语义复核")
+    await wrapper.get('button[aria-label="关闭详情"]').trigger("click")
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    expect((wrapper.get('[data-testid="claim-structural-llm"]').element as HTMLInputElement).checked).toBe(false)
+    await wrapper.get('[data-testid="claim-structural-llm"]').setValue(true)
+    const budgetInputs = wrapper.get('[data-testid="claim-structural-budget"]').findAll("input")
+    await budgetInputs[0].setValue("3")
+    await budgetInputs[1].setValue("18000")
+    await wrapper.get('textarea[aria-label="Claim 裁决理由"]').setValue("确认后使用语义复核")
+    await wrapper.get('[data-testid="claim-structural-override"]').trigger("click")
+    await flushPromises()
+
+    expect(confirmClaimStructuralOverride).toHaveBeenCalledWith(expect.objectContaining({
+      allowLlm: true,
+      route: "openai_compatible",
+      verifierMaxCalls: 3,
+      verifierMaxTotalTokens: 18000,
+    }))
   })
 
   it("renders an unavailable legacy directory with its null revision envelope", async () => {

@@ -401,6 +401,9 @@ def run_requirements_analysis(
         },
         "issues": issues,
     }
+    from input_completeness import attach_input_completeness
+
+    attach_input_completeness(payload, out_dir)
     if note:
         payload["note"] = note
     # xlsx 最先写（openpyxl 是最可能失败的一步）：失败时 JSON/MD 未动，不留半套新旧混杂的交付物
@@ -425,6 +428,8 @@ def run_requirements_analysis(
         "producer": ANALYZE_PROMPT_VERSION,
         "source": source_path.name,
         "analysis": "deterministic_compliance_projection",
+        "incomplete_inputs": payload["incomplete_inputs"],
+        "input_completeness": payload["input_completeness"],
     })
     (out_dir / "compliance_items.json").write_text(
         json.dumps(compliance_payload, ensure_ascii=False, indent=2) + "\n",
@@ -442,6 +447,8 @@ def run_requirements_analysis(
         "enrichment_enabled": enrichment_enabled,
         "enriched": enriched_count,
         "enrich_degraded": degraded_count,
+        "incomplete_inputs": payload["incomplete_inputs"],
+        "input_completeness": payload["input_completeness"],
         "written": [xlsx_path.name] + [n for n in OUTPUT_FILES if n != "software_requirements.xlsx"],
     }
     if xlsx_path.name != "software_requirements.xlsx":

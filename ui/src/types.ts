@@ -23,6 +23,10 @@ export type WorkflowStepStatus = "done" | "active" | "pending"
 export type Requirement = {
   id: string
   backendId: string
+  targetFingerprint?: string
+  targetPublicationRevision?: string
+  targetReviewRevision?: string
+  targetAuthorityWriteRevision?: string
   type: RequirementType
   module?: string
   moduleCode?: string

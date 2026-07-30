@@ -2959,6 +2959,18 @@ def _publish_shadow_generation_unlocked(
         "committed_at": _utc_now(),
         "document_generation_id": str(catalog_meta.get("document_generation_id") or ""),
         "catalog_generation_id": catalog_generation,
+        "structural_override_version": str(
+            catalog_meta.get("structural_override_version") or ""
+        ),
+        "structural_override_prefix_sha256": str(
+            catalog_meta.get("structural_override_prefix_sha256") or ""
+        ),
+        "structural_override_prefix_count": int(
+            catalog_meta.get("structural_override_prefix_count") or 0
+        ),
+        "structural_override_applied_count": int(
+            catalog_meta.get("structural_override_applied_count") or 0
+        ),
         "target_generation_id": str(shadow_meta.get("target_generation_id") or ""),
         "target_review_authority_revision": str(
             shadow_meta.get("target_review_authority_revision") or ""
@@ -3024,6 +3036,8 @@ def _validate_committed_attempt_binding(
     root: Path,
     generation: dict[str, Any],
     metrics: dict[str, Any],
+    *,
+    validate_live_target: bool = True,
 ) -> list[dict[str, Any]]:
     binding = generation.get("attempt_chain")
     if not isinstance(binding, dict) or set(binding) != _ATTEMPT_BINDING_FIELDS:
@@ -3075,20 +3089,22 @@ def _validate_committed_attempt_binding(
             raise ClaimArtifactError("verifier attempt source lineage is stale")
     identity = event["chain_identity"]
     policy_identity = event["attempt_policy_identity"]
-    requirements_meta = _requirements_attempt_metadata(root)
-    if not _shadow_baseline_matches_requirements_metadata(
-        metrics,
-        requirements_meta,
-    ):
-        raise ClaimArtifactError(
-            "committed no-ledger baseline accounting differs from requirements metadata"
-        )
-    metadata_request_id = str(requirements_meta.get("run_id") or "")
-    if metadata_request_id and source["requirements_request_id"] != metadata_request_id:
-        raise ClaimArtifactError("verifier attempt requirements request is stale")
     shadow_meta = dict(generation.get("shadow_meta") or {})
     runtime = dict(shadow_meta.get("verifier_runtime") or {})
-    baseline = dict(requirements_meta.get("no_ledger_baseline_cost") or {})
+    baseline: dict[str, Any] = {}
+    if validate_live_target:
+        requirements_meta = _requirements_attempt_metadata(root)
+        if not _shadow_baseline_matches_requirements_metadata(
+            metrics,
+            requirements_meta,
+        ):
+            raise ClaimArtifactError(
+                "committed no-ledger baseline accounting differs from requirements metadata"
+            )
+        metadata_request_id = str(requirements_meta.get("run_id") or "")
+        if metadata_request_id and source["requirements_request_id"] != metadata_request_id:
+            raise ClaimArtifactError("verifier attempt requirements request is stale")
+        baseline = dict(requirements_meta.get("no_ledger_baseline_cost") or {})
     if (
         identity["requirements_request_id"]
         != source["requirements_request_id"]
@@ -3098,14 +3114,17 @@ def _validate_committed_attempt_binding(
         != generation.get("target_generation_id")
         or policy_identity["verifier_runtime_fingerprint"]
         != runtime.get("fingerprint")
-        or policy_identity["baseline_lineage_version"]
-        != str(baseline.get("lineage_version") or "")
-        or policy_identity["baseline_lineage_fingerprint"]
-        != str(baseline.get("lineage_fingerprint") or "")
         or policy_identity["baseline_lineage_match"]
         is not (metrics.get("no_ledger_baseline_lineage_match") is True)
         or policy_identity["cost_policy_version"]
         != dict(shadow_meta.get("versions") or {}).get("cost_policy")
+        or validate_live_target
+        and (
+            policy_identity["baseline_lineage_version"]
+            != str(baseline.get("lineage_version") or "")
+            or policy_identity["baseline_lineage_fingerprint"]
+            != str(baseline.get("lineage_fingerprint") or "")
+        )
     ):
         raise ClaimArtifactError("verifier attempt chain identity is stale")
     return rows
@@ -3355,7 +3374,6 @@ _EFFECTIVE_BASE_FIELDS = (
     "claim_hash",
     "owner_unit_id",
     "coverage_group_ids",
-    "semantic_negative",
 )
 
 
@@ -3447,8 +3465,99 @@ def _validate_effective_projection(
             if group is None or group.get("status") != "validated":
                 raise ClaimArtifactError("effective row treats an unvalidated base group as valid")
 
+        claim = catalog_by_id.get(claim_id)
+        if claim is None:
+            raise ClaimArtifactError("effective row has no catalog claim")
+        base_positive_fact_hashes = {
+            hash_json(
+                "claim-resolution-fact/v1",
+                {
+                    "kind": "coverage_group",
+                    "payload": {
+                        "claim_hash": claim.get("claim_hash"),
+                        "coverage_group_id": group.get("coverage_group_id"),
+                        "coverage_group_hash": hash_json(
+                            "claim-coverage-group-fact/v1", group
+                        ),
+                    },
+                },
+            )
+            for group in groups_by_claim.get(claim_id, [])
+            if group.get("status") == "validated"
+        }
+
         base_negative = base_row.get("semantic_negative")
-        expected_negative_id = semantic_negative_id(base_negative)
+        effective_negative = row.get("semantic_negative")
+        base_negative_fact_hashes: set[str] = set()
+        if (
+            isinstance(base_negative, dict)
+            and base_negative.get("status") == "validated"
+        ):
+            base_negative_fact_hashes.add(hash_json(
+                "claim-resolution-fact/v1",
+                {
+                    "kind": "semantic_negative",
+                    "payload": {
+                        "claim_hash": claim.get("claim_hash"),
+                        "semantic_negative_id": semantic_negative_id(base_negative),
+                    },
+                },
+            ))
+        superseded_base_fact_hashes = [
+            str(value or "")
+            for value in facts.get("superseded_base_fact_hashes") or []
+        ]
+        if (
+            superseded_base_fact_hashes
+            != sorted(set(superseded_base_fact_hashes))
+            or any(not _is_sha256(value) for value in superseded_base_fact_hashes)
+        ):
+            raise ClaimArtifactError(
+                "effective superseded base fact hashes are not canonical"
+            )
+        allowed_base_fact_hashes = (
+            base_positive_fact_hashes | base_negative_fact_hashes
+        )
+        superseded_base_facts = set(superseded_base_fact_hashes)
+        if not superseded_base_facts.issubset(allowed_base_fact_hashes):
+            raise ClaimArtifactError(
+                "effective row supersedes a fact outside the current base"
+            )
+        if (
+            "positive_negative_conflict" in (base_row.get("invalid_reasons") or [])
+            and row.get("resolution") in {"covered", "excluded"}
+            and not allowed_base_fact_hashes.issubset(superseded_base_facts)
+        ):
+            raise ClaimArtifactError(
+                "effective row closes a conflicting base without superseding both fact sides"
+            )
+        if effective_negative != base_negative:
+            if effective_negative is None:
+                if not base_negative_fact_hashes.issubset(
+                    superseded_base_facts
+                ):
+                    raise ClaimArtifactError(
+                        "effective row removed a base semantic-negative fact without supersession"
+                    )
+            elif not isinstance(effective_negative, dict):
+                raise ClaimArtifactError(
+                    "effective row removed or replaced a base semantic-negative fact"
+                )
+            else:
+                proposal = dict(effective_negative.get("proposal") or {})
+                validation = dict(effective_negative.get("validation") or {})
+                event_hash = effective_negative.get("validation_input_hash")
+                if (
+                    proposal.get("version") != "claim-expert-adjudication-v1"
+                    or validation.get("version") != "claim-expert-adjudication-v1"
+                    or not _is_sha256(event_hash)
+                    or set(invalid_reasons.values()) != {"expert_semantic_exclusion"}
+                    or valid_group_ids
+                ):
+                    raise ClaimArtifactError(
+                        "effective expert semantic-negative fact is not event-bound"
+                    )
+        expected_negative_id = semantic_negative_id(effective_negative)
         if facts.get("validated_negative_id") != expected_negative_id:
             raise ClaimArtifactError("effective semantic-negative identity is invalid")
 
@@ -3460,15 +3569,14 @@ def _validate_effective_projection(
                 adjusted["status"] = "invalid"
                 adjusted["invalid_reason"] = str(invalid_reasons[group_id])
             adjusted_groups.append(adjusted)
-        claim = catalog_by_id.get(claim_id)
-        if claim is None:
-            raise ClaimArtifactError("effective row has no catalog claim")
         expected = reduce_claim(
             claim,
             validated_groups=[
                 group for group in adjusted_groups if group.get("status") == "validated"
             ],
-            validated_negative=base_negative if isinstance(base_negative, dict) else None,
+            validated_negative=(
+                effective_negative if isinstance(effective_negative, dict) else None
+            ),
             all_groups=adjusted_groups,
         )
         for field in (
@@ -3486,9 +3594,18 @@ def _validate_effective_projection(
 
     proposal_by_claim: dict[str, dict[str, Any]] = {}
     for proposal in queue_rows:
+        proposal_schema = str(proposal.get("schema") or "")
+        if proposal_schema == "claim-queue-proposal/v1":
+            proposal_schema_file = "claim_queue_proposal.schema.json"
+            proposal_id_domain = "claim-queue-proposal-id/v1"
+        elif proposal_schema == "claim-queue-proposal/v2":
+            proposal_schema_file = "claim_queue_proposal_v2.schema.json"
+            proposal_id_domain = "claim-queue-proposal-id/v2"
+        else:
+            raise ClaimArtifactError("unsupported claim queue proposal schema")
         _validate_schema(
             proposal,
-            "claim_queue_proposal.schema.json",
+            proposal_schema_file,
             label="claim queue proposal",
         )
         claim_id = str(proposal.get("claim_id") or "")
@@ -3499,7 +3616,7 @@ def _validate_effective_projection(
         if row is None or claim is None or row.get("resolution") != "uncertain":
             raise ClaimArtifactError("claim queue proposal does not refer to an uncertain claim")
         expected_proposal_hash = hash_json(
-            "claim-queue-proposal-id/v1",
+            proposal_id_domain,
             {
                 "claim_id": claim_id,
                 "claim_effective_revision": row.get("claim_effective_revision"),
@@ -3525,6 +3642,27 @@ def _validate_effective_projection(
             "queue_version": queue_version,
             "created_from_event_seq": row.get("last_relevant_event_seq"),
         }
+        if proposal_schema == "claim-queue-proposal/v2":
+            expected_fields["claim_hash"] = row.get("claim_hash")
+            preconditions = dict(proposal.get("execution_preconditions") or {})
+            expected_preconditions = {
+                "claim_id": claim_id,
+                "claim_hash": row.get("claim_hash"),
+                "claim_source_fingerprint": canonical_target_fingerprint(
+                    claim.get("claim_hash")
+                ),
+                "expected_claim_effective_revision": row.get(
+                    "claim_effective_revision"
+                ),
+                "expected_ledger_state": "uncertain",
+                "document_generation_id": row.get("document_generation_id"),
+                "catalog_generation_id": row.get("catalog_generation_id"),
+            }
+            for field, expected_value in expected_preconditions.items():
+                if preconditions.get(field) != expected_value:
+                    raise ClaimArtifactError(
+                        f"claim queue proposal has invalid execution precondition: {field}"
+                    )
         for field, expected_value in expected_fields.items():
             if proposal.get(field) != expected_value:
                 raise ClaimArtifactError(f"claim queue proposal has invalid {field}")
@@ -3772,6 +3910,23 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
             _require_hash(root / name, expected, label=name)
 
     catalog_build = _load_catalog_probe_unlocked(root)
+    catalog_meta = dict(catalog_build["meta"])
+    structural_fields = (
+        "structural_override_version",
+        "structural_override_prefix_sha256",
+        "structural_override_prefix_count",
+        "structural_override_applied_count",
+    )
+    for field in structural_fields:
+        if (
+            field in generation or field in catalog_meta
+        ) and generation.get(field) != catalog_meta.get(field):
+            raise ClaimArtifactError(
+                f"claim generation structural override metadata differs: {field}"
+            )
+    from claim_structural_overrides import current_structural_override_identity
+
+    live_structural_overrides = current_structural_override_identity(root)
     catalog = catalog_build["catalog"]
     groups = _read_jsonl(root / CLAIM_COVERAGE_GROUPS, label="coverage groups")
     ledger = _read_jsonl(root / CLAIM_LEDGER, label="base claim ledger")
@@ -3783,7 +3938,29 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
         metrics,
     ):
         raise ClaimArtifactError("committed verifier budget differs from its metrics")
-    attempt_rows = _validate_committed_attempt_binding(root, generation, metrics)
+    requirements_hash = str(generation.get("requirements_sha256") or "")
+    requirements_meta_hash = str(generation.get("requirements_meta_sha256") or "")
+    requirements_path = root / "ai_requirements.jsonl"
+    requirements_meta_path = root / "ai_requirements.meta.json"
+    try:
+        live_target_matches = (
+            bool(requirements_hash)
+            and requirements_path.is_file()
+            and file_sha256(requirements_path) == requirements_hash
+            and (
+                not requirements_meta_hash
+                or requirements_meta_path.is_file()
+                and file_sha256(requirements_meta_path) == requirements_meta_hash
+            )
+        )
+    except OSError:
+        live_target_matches = False
+    attempt_rows = _validate_committed_attempt_binding(
+        root,
+        generation,
+        metrics,
+        validate_live_target=live_target_matches,
+    )
     if len(catalog) != int(generation.get("catalog_count", -1)):
         raise ClaimArtifactError("catalog count does not match generation meta")
     if len(groups) != int(generation.get("coverage_group_count", -1)):
@@ -3795,11 +3972,9 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     if not all(catalog_ids) or catalog_ids != ledger_ids:
         raise ClaimArtifactError("base ledger is not a one-to-one catalog projection")
 
-    requirements_hash = str(generation.get("requirements_sha256") or "")
     if generation.get("delivery_track") == "B" and not requirements_hash:
         raise ClaimArtifactError("B-track claim generation is not bound to requirements")
     bound_requirements: list[dict[str, Any]] | None = None
-    requirements_path = root / "ai_requirements.jsonl"
     if requirements_hash and requirements_path.is_file():
         try:
             if file_sha256(requirements_path) == requirements_hash:
@@ -3810,8 +3985,6 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
         except OSError:
             bound_requirements = None
     requirements_meta: dict[str, Any] | None = None
-    requirements_meta_hash = str(generation.get("requirements_meta_sha256") or "")
-    requirements_meta_path = root / "ai_requirements.meta.json"
     if requirements_meta_hash and requirements_meta_path.is_file():
         try:
             if file_sha256(requirements_meta_path) == requirements_meta_hash:
@@ -3842,8 +4015,9 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
         "metrics": metrics,
         "requirements": bound_requirements or [],
         "requirements_meta": requirements_meta,
-        "catalog_meta": catalog_build["meta"],
+        "catalog_meta": catalog_meta,
         "generation_meta": generation,
+        "structural_override_registry": live_structural_overrides,
         "attempt_cost_chain": _attempt_cost_chain(
             attempt_rows,
             dict(generation.get("attempt_chain") or {}),
@@ -3961,7 +4135,9 @@ def _load_committed_effective_unlocked(
             raise ClaimArtifactError("effective ledger is not a one-to-one base projection")
         if any(row.get("schema") != "claim-effective-ledger/v1" for row in effective_ledger):
             raise ClaimArtifactError("invalid effective ledger row schema")
-        if any(row.get("schema") != "claim-queue-proposal/v1" for row in queue):
+        if any(row.get("schema") not in {
+            "claim-queue-proposal/v1", "claim-queue-proposal/v2"
+        } for row in queue):
             raise ClaimArtifactError("invalid claim queue proposal schema")
         _require_canonical_jsonl(
             root / CLAIM_EFFECTIVE_LEDGER,
@@ -3998,6 +4174,7 @@ def committed_base_versions_are_current(
     the original endpoint credentials to be present in the current process.
     """
     from claim_catalog import CLAIM_CATALOG_VERSION, CLAIM_UNIT_PACKING_VERSION
+    from claim_structural_overrides import CLAIM_STRUCTURAL_OVERRIDE_VERSION
     from claim_ledger import (
         CLAIM_COVERAGE_RUNTIME_VERSION,
         current_base_versions,
@@ -4015,6 +4192,23 @@ def committed_base_versions_are_current(
     shadow_meta = dict(generation.get("shadow_meta") or {})
     runtime = dict(shadow_meta.get("verifier_runtime") or {})
     parser_provenance = dict(catalog_meta.get("parser_provenance") or {})
+    live_structural_overrides = dict(
+        snapshot.get("structural_override_registry") or {}
+    )
+    structural_overrides_are_current = (
+        catalog_meta.get("structural_override_version")
+        == CLAIM_STRUCTURAL_OVERRIDE_VERSION
+        and generation.get("structural_override_version")
+        == CLAIM_STRUCTURAL_OVERRIDE_VERSION
+        and catalog_meta.get("structural_override_prefix_sha256")
+        == generation.get("structural_override_prefix_sha256")
+        == live_structural_overrides.get("prefix_sha256")
+        and catalog_meta.get("structural_override_prefix_count")
+        == generation.get("structural_override_prefix_count")
+        == live_structural_overrides.get("prefix_count")
+        and live_structural_overrides.get("version")
+        == CLAIM_STRUCTURAL_OVERRIDE_VERSION
+    )
     target_producer_is_current = True
     if generation.get("delivery_track") == "B":
         from ai_extract import current_ai_requirements_producer_lineage
@@ -4083,6 +4277,7 @@ def committed_base_versions_are_current(
         catalog_meta.get("catalog_version") == CLAIM_CATALOG_VERSION
         and catalog_meta.get("packing_version") == CLAIM_UNIT_PACKING_VERSION
         and source_versions_are_current
+        and structural_overrides_are_current
         and target_producer_is_current
         and dict(shadow_meta.get("versions") or {}) == current_base_versions()
         and runtime_is_current

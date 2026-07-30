@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_structural_override.schema.json",
+  "title": "Claim structural override v1",
+  "type": "object",
+  "required": [
+    "schema", "override_seq", "override_id", "prev_override_hash",
+    "override_hash", "registry_prefix_sha256", "claim_id", "claim_hash",
+    "document_generation_id", "catalog_generation_id",
+    "prior_structural_reason", "original_exclusion", "actor", "reason",
+    "recorded_at", "idempotency_key"
+  ],
+  "properties": {
+    "schema": {"const": "claim-structural-override/v1"},
+    "override_seq": {"type": "integer", "minimum": 1},
+    "override_id": {"type": "string", "pattern": "^CSO-[0-9a-f]{16}$"},
+    "prev_override_hash": {"$ref": "#/$defs/hash"},
+    "override_hash": {"$ref": "#/$defs/hash"},
+    "registry_prefix_sha256": {"$ref": "#/$defs/hash"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "claim_hash": {"$ref": "#/$defs/hash"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "prior_structural_reason": {"const": "repeated_page_furniture"},
+    "original_exclusion": {
+      "type": "object",
+      "required": ["reason", "rule_id", "rule_version", "evidence"],
+      "properties": {
+        "reason": {"const": "repeated_page_furniture"},
+        "rule_id": {"const": "catalog-repeated-page-furniture"},
+        "rule_version": {"type": "string", "minLength": 1},
+        "evidence": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "actor": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "idempotency_key": {"$ref": "#/$defs/hash"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
