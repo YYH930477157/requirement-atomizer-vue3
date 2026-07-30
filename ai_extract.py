@@ -940,13 +940,18 @@ def _supplement_uncovered_compliance(
 # 用户裁定：参数表每行都是一条需求。行是结构化的（编号+名称+要求列），逐行展开不需要
 # LLM——确定性生成,引句逐字来自扁平渲染行,结构化字段不猜。
 
-_PARAM_REQ_CELL_RE = re.compile(r"requirement|technical|characteristic|要求|指标|参数值", re.IGNORECASE)
+_PARAM_REQ_CELL_RE = re.compile(
+    r"requirement|technical|characteristic|value|spec(?:ification)?|min(?:imum)?|max(?:imum)?"
+    r"|limit|rating|nominal|tolerance|range|unit"
+    r"|要求|指标|参数值|参数|规格|额定|限值|最小|最大|公差|单位|范围|值",
+    re.IGNORECASE,
+)
 _PARAM_DEF_CELL_RE = re.compile(r"^(term|definition|术语|定义|abbreviation|缩略语)", re.IGNORECASE)
 _PARAM_SECTION_RE = re.compile(r"terms|definitions|abbreviations|术语|定义|缩略语|bibliography|参考文献", re.IGNORECASE)
 _PARAM_INDEX_CELL_RE = re.compile(r"^\s*\d+(?:\.\d+)*[.)]?\s*$")
 _PARAM_ROW_MIN_CELLS = 2
 _PARAM_TABLE_MIN_ROWS = 3
-PARAM_ROW_EXPANSION_VERSION = "param-row-expand-v1"
+PARAM_ROW_EXPANSION_VERSION = "param-row-expand-v2"  # v2:英文表头扩展(value/spec/min/max/...)+classify_table_kind;v1:参数表行确定性展开首版
 
 
 def _is_parameter_table(block: dict[str, Any]) -> bool:
@@ -967,6 +972,23 @@ def _is_parameter_table(block: dict[str, Any]) -> bool:
         "",
     )
     return not _PARAM_SECTION_RE.search(leaf)
+
+
+def classify_table_kind(block: dict[str, Any]) -> str:
+    """表型分类（行级化底座）。
+
+    返回 'parameter' | 'mapping_matrix' | 'other'：
+    - parameter：每行一个对象、列是属性 → 按行各自独立分析（guards-v16 既有路径）。
+    - mapping_matrix：行列各为维度、每格独立事实 → 按格分析（Phase 3 落地判据）。
+    - other：默认按行（最安全，保留行内关联）。
+
+    保守、宁漏勿错；parameter 优先于 mapping_matrix（参数表远多于映射表，按行更安全）。
+    供 extract_units / doc_annotation_export / assemble_spec 复用。
+    """
+    if _is_parameter_table(block):
+        return "parameter"
+    # mapping_matrix 判据 Phase 3 落地；此前非参数表统一按行（other）
+    return "other"
 
 
 def _row_render_line(headers: list[str], row: list[Any]) -> str:
@@ -1377,7 +1399,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v16"  # v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v17"  # v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
