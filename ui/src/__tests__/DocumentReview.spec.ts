@@ -909,36 +909,39 @@ describe("DocumentReview", () => {
   it("revokes loaded and late PDF page blob URLs and stops fetching after unmount", async () => {
     const revokeObjectURL = vi.fn()
     vi.stubGlobal("URL", { revokeObjectURL })
-    let resolveLate: ((url: string) => void) | undefined
+    // 并发限流（=6）口径：挂载即起 6 个飞行请求;第 1 页落地后该 worker 顺取第 7 页;
+    // unmount 后已载 blob 回收、晚到 blob 回收、不再起新请求（第 8 页永远不应开始）
+    const resolvers = new Map<string, (url: string) => void>()
+    const pages = Array.from({ length: 8 }, (_, i) => ({
+      page_number: i + 1, file: `page-000${i + 1}.png`, width: 595, height: 842,
+    }))
     const client = makeClient({
       loadPdfAnnotation: vi.fn().mockResolvedValue({
         available: true,
-        pages: [
-          { page_number: 1, file: "page-0001.png", width: 595, height: 842 },
-          { page_number: 2, file: "page-0002.png", width: 595, height: 842 },
-          { page_number: 3, file: "page-0003.png", width: 595, height: 842 },
-        ],
+        pages,
         requirement_markers: [],
         omission_markers: [],
       }),
-      loadPdfPageBlob: vi.fn((file: string) => {
-        if (file === "page-0001.png") return Promise.resolve("blob:loaded")
-        if (file === "page-0002.png") return new Promise<string>((resolve) => { resolveLate = resolve })
-        return Promise.resolve("blob:must-not-load")
-      }),
+      loadPdfPageBlob: vi.fn((file: string) => new Promise<string>((resolve) => {
+        resolvers.set(file, resolve)
+      })),
     })
     try {
       const wrapper = mount(DocumentReview, { props: { client, active: true } })
       await flushPromises()
-      expect(client.loadPdfPageBlob).toHaveBeenCalledTimes(2)
+      expect(client.loadPdfPageBlob).toHaveBeenCalledTimes(6)   // 并发 6 页在飞
+
+      resolvers.get("page-0001.png")?.("blob:p1")
+      await flushPromises()
+      expect(client.loadPdfPageBlob).toHaveBeenCalledTimes(7)   // 空出的 worker 顺取第 7 页
 
       wrapper.unmount()
-      expect(revokeObjectURL).toHaveBeenCalledWith("blob:loaded")
-      resolveLate?.("blob:late")
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:p1")
+      resolvers.get("page-0002.png")?.("blob:late")
       await flushPromises()
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:late")
-      expect(client.loadPdfPageBlob).toHaveBeenCalledTimes(2)
-      expect(client.loadPdfPageBlob).not.toHaveBeenCalledWith("page-0003.png")
+      expect(client.loadPdfPageBlob).toHaveBeenCalledTimes(7)   // unmount 后零新请求
+      expect(client.loadPdfPageBlob).not.toHaveBeenCalledWith("page-0008.png")
     } finally {
       vi.unstubAllGlobals()
     }
