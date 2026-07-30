@@ -309,24 +309,39 @@ function revokePdfPageUrl(url: string) {
   }
 }
 
+const PDF_PAGE_CONCURRENCY = 6   // 页图并发上限（顺序拉取 82 页实测数秒,限流并发≈6x 提速;
+                                 // 带鉴权头 fetch→blob 的安全约束不变,token 仍不进 URL）
+
 async function loadPdfPages(payload: PdfAnnotationPayload, client = props.client) {
   if (pdfPageLoadsDisposed || !client) return
+  const activeClient = client   // 固化非空引用（异步闭包内 TS narrowing 不穿透）
   const generation = ++pdfPageLoadGeneration
-  // 顺序拉取页图(带鉴权头 fetch→blob;token 不进 URL——仓库安全锁);单页失败不阻断其余
-  for (const page of payload.pages || []) {
-    if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration || client !== props.client) break
-    if (pdfPageUrls.value[page.file]) continue
-    try {
-      const url = await client.loadPdfPageBlob(page.file)
-      if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration || client !== props.client) {
-        revokePdfPageUrl(url)
-        break
+  // 限流并发拉取页图（原顺序拉取——82 页文档逐页 await,实测数秒才出第一屏）。
+  // 按文档序处理（首屏页先好）;单页失败不阻断其余;世代/销毁守卫与原版一致。
+  const queue = [...(payload.pages || [])]
+  let cursor = 0
+  async function worker() {
+    while (true) {
+      if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration || activeClient !== props.client) return
+      const index = cursor++
+      if (index >= queue.length) return
+      const page = queue[index]
+      if (pdfPageUrls.value[page.file]) continue
+      try {
+        const url = await activeClient.loadPdfPageBlob(page.file)
+        if (pdfPageLoadsDisposed || generation !== pdfPageLoadGeneration || activeClient !== props.client) {
+          revokePdfPageUrl(url)
+          return
+        }
+        pdfPageUrls.value = { ...pdfPageUrls.value, [page.file]: url }
+      } catch {
+        /* 页图缺失/网络抖动:保留占位框,不影响其它页 */
       }
-      pdfPageUrls.value = { ...pdfPageUrls.value, [page.file]: url }
-    } catch {
-      /* 页图缺失/网络抖动:保留占位框,不影响其它页 */
     }
   }
+  await Promise.all(
+    Array.from({ length: Math.min(PDF_PAGE_CONCURRENCY, queue.length) }, () => worker()),
+  )
 }
 
 function applyPdfMetadata(payload: PdfAnnotationPayload, client: DocClient) {
