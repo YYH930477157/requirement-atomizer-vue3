@@ -58,7 +58,7 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **STO 实测（result4，删几何缓存重算）**：术语表 BLK-000061 54 行 → 52 行区跨 6-11 页（context 48/covered 1/req 3）；参数表 BLK-000098 143 行（27 分组标题行跳过）→ 100 行 119 区跨 13-62 页（covered 99/req 20，req 命中含 guards-v16 行展开条目 `PROW-DET-BLK-000098-R0017`）；16 行诚实落空（宁缺不猜：跨页断行/文本层差异）；缓存二跑 0.0s 直供。
 - **验证**：新增 14 专项测试（`tests/test_facsimile_table_rows.py`：行几何跳过口径/前缀预筛模糊/边际不猜/连字符折叠/缓存回写与旧缓存回填/行区 kind 路由/同页 union/行记录键与翻译）；模板字面断言 2 处随行键改名（bid→zoneKey）；版本戳 doc_annotation_export/v11→v12（契约快照已同步）；全量 1738 tests OK（26 项环境 skip）+ ui vitest 138 OK + vue-tsc。
 
-## 重大更新（2026-07-29）——Claim Conservation Ledger Phase 1.5（分支 `codex/claim-ledger-phase1.5`；实现、真实演练与分支门禁完成，待用户决定合并；生产门控不切换）
+## 重大更新（2026-07-29）——Claim Conservation Ledger Phase 1.5（已合 main `6ecb81c`；闭环验证 + authority CAS + claim 裁决/定点补抽 mutation；主检出全量 2230 tests OK、golden 6/6；生产门控不切换）
 
 - **架构闭环**：在 Phase 1 只读双写之上完成 mutation 安全层：review event v2 混合链、语义 revision/物理 write revision 分离、稳定快照 + CAS、typed expert evidence、queue v2 lifecycle、付费 attempt/WAL/budget 恢复、claim-mode targeted extraction、`requirements publication -> refresh base -> fold` 真正关闭路径，以及 catalog-generation-bound structural override。恢复/terminal replay 不要求 LLM 配置或 key，不重复 extraction、supplement 或 requirements publication；supplement 存在本身不等于 coverage，只有新 base 经 verifier/fold 后才可关闭 claim。
 - **候选与验证解耦**：`CLAIM_CANDIDATE_POLICY_VERSION=claim-coverage-candidate-v3-stub-proposals`。stub 仍为 **0 LLM**，但保留已发现的 `independent_semantic/proposed` coverage group，claim 继续 `uncertain`，不会因 verifier 不可用而把候选丢掉；`source_quote` 只作来源定位，绝不伪装成正式 `produced_evidence`。历史 reopen 重放到新 base 的 uncertain/proposed 边界也已收口，避免制造不可重算的 closure 或同时保留互斥 invalid reason。

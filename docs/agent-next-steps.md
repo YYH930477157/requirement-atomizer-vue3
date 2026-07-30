@@ -7,8 +7,11 @@ Phase 2 ✅（工具化审查 + WP2 待澄清/兜底渲染）→ 专家审核十
 总纲 `docs/agent-claim-ledger-spec.md` v2.4）**
 → **Claim Ledger Phase 1 ✅（已合 main `617e1ce`，生产双写不切门控；主检出全量 2106
 tests OK、golden 6/6 退出门通过；总纲 v2.4 + Phase 1 规格 v1.4）**。
-下一步主线：Claim Ledger **Phase 1.5**（闭环故障恢复验证 + A/B 写入口 review-revision CAS +
-启用 claim mutation，唯一通道 targeted_reextract；规格未冻结，等用户指示开工）。
+→ **Claim Ledger Phase 1.5 ✅（已合 main `6ecb81c`；闭环验证 + authority CAS + claim 裁决/
+定点补抽 mutation（唯一通道 targeted_reextract）；主检出全量 2230 tests OK、golden 6/6；
+规格 v1.1；生产门控仍不切换）**。
+下一步主线：Claim Ledger **Phase 2 切完整性门控**（总纲 §9 八项条件全部成立才切换；
+规格未冻结，等用户指示开工）。
 Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量价值待 Phase 2 真实
 项目验证后再议）。
 
@@ -22,17 +25,20 @@ Phase 3（Orchestrator）**搁置**（2026-07-23 用户裁定：编排层增量�
 - 验收：新 key 跑一次 `python llm_pipeline.py --out <副本> --llm-route
   openai_compatible --llm-review-limit 1` 成功即可。
 
-### 2. Claim Ledger Phase 1.5 规格冻结（半天讨论 + 半天成文，Phase 1.5 前置）
+### 2. Claim Ledger Phase 2 规格冻结（切完整性门控，前置条件多，勿提前动工）
 
-- Phase 1 已合 main `617e1ce`（golden 6/6、全量 2106 OK），生产门控未切换。
-- Phase 1.5 范围（总纲 v2.4 §9）：闭环故障恢复验证（真实 `os._exit` 崩溃矩阵扩展到
-  effective WAL、锁序反序注入、interrupted fold 的 health 登记）、A/B 写入口
-  `expected_target_fingerprint`/`expected_target_review_revision` CAS、启用 claim 级专家
-  写入与定点补抽 mutation（唯一通道 `targeted_reextract`）、mutation 失败补偿与并发冲突、
-  ledger-only cache rebuild、downstream incomplete_inputs 贯通。
-- Phase 1 审查延后项一并纳入：publish 后双重 fold 去重、hook 门控加轨道校验、
-  acceptance/review_packet 换显式三层 API、`decide_trace.jsonl` 入零-mutation 守卫监视、
-  clarification entries TIER 前后对比断言、启动 fold 的 fresh 短路。
+- Phase 1.5 已合 main `6ecb81c`（golden 6/6、全量 2230 OK），生产门控仍未切换。
+- Phase 2 切换硬条件（总纲 v2.4 §9，八项同时成立）：同一批版本 3 次连续完整 shadow
+  run（≥10 份文档、≥500 eligible claims、conservation 硬门零错误）；冻结回归集已知遗漏
+  召回 100%；held-out 三类各 ≥150（positive 中 ≥75 跨语言）且 terminal false closure 为 0、
+  Wilson 上界 ≤2.5%；人工裁决 disagreement ≤5%（上界 ≤8%）；stale/rejected/missing/partial
+  /stub/budget/stalled 均不得 READY；成本线达标或用户批准新线；声明的 delivery_track
+  adapter 独立过门（B 轨不替 A 轨背书）；全量 unittest + golden 6/6 + Vue 绿。
+- 切换后：`requirement_like` 只留排序/预算/未切换轨道兼容；coverage、自检、遗漏告警、
+  readiness 以当前 effective revision 的 ledger 为准。
+- Phase 1.5 审查延后小项可顺带收口：acceptance/review_packet 显式三层 API、
+  `audit_conflict` writer（或再延）、agent_state 只读接线、HTML 导出侧 CAS token、
+  import-clarification stale 清单透出、冻结 gui 零 CAS 写入口计量。
 - 规格必须先冻结经确认再动工（总纲硬性前置）。
 
 ### 3. 评测集 20 条扩充案例人工核对（用户/领域专家，约 1–2 小时）
