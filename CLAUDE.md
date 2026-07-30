@@ -1,7 +1,7 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
-> 状态快照截至 2026-07-28，里程碑推进后请同步更新本文件。
+> 状态快照截至 2026-07-29，里程碑推进后请同步更新本文件。
 
 ## 项目是什么
 
@@ -57,6 +57,19 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **实现**：①`_resolve_pdf_geometry` 加 `row_geometry` 出参——无页号表格块逐行 `_row_render_line` 渲染后走与块级同款全局匹配（精确 → 双向包含 → 前缀 80 字符预筛 + 覆盖率模糊，边际 ≥0.05 宁缺不猜）；分组标题行（非空单元格全同值）/稀疏行（<2）跳过（与 spot_extract 同口径）；几何缓存 payload 加 `row_geometry` 字段（**version 3 不变**——纯增量字段，旧缓存缺字段时重算一次并回写，向后兼容）。②行级专用归一 `- `→`-`（转换 PDF 文本层换行拆连字符词 "self- diagnostics" vs docx "self-diagnostics"，STO 落空主因）——只在 `_match_row_regions` 内折叠，**不动 `_geometry_match_text`**（块级 v11 行为与缓存不受影响）。③`_pdf_block_zones` 对有几何的数据行发 `row_index` 热区（kind：引句逐字含行 → req / 关键单元格 ≥16 字符被引用块的需求覆盖 → covered / 否则 context）；整表块本身仍不发区。④`_pdf_context_records` 加行级键 `<block_id>#R<row>`（原文=渲染行，翻译按行文本哈希查 `_active_translations`，查不到如实空串）；应用内 payload 加 `row_context`（同源实现）。⑤静态影印热区带 `data-zone-key`（选中按行键，不再点亮整表）+ `table-row` 青色修饰类；`DocumentReview.vue` 行热区渲染 + 行卡（「解析此行」接现有 spotExtract）。
 - **STO 实测（result4，删几何缓存重算）**：术语表 BLK-000061 54 行 → 52 行区跨 6-11 页（context 48/covered 1/req 3）；参数表 BLK-000098 143 行（27 分组标题行跳过）→ 100 行 119 区跨 13-62 页（covered 99/req 20，req 命中含 guards-v16 行展开条目 `PROW-DET-BLK-000098-R0017`）；16 行诚实落空（宁缺不猜：跨页断行/文本层差异）；缓存二跑 0.0s 直供。
 - **验证**：新增 14 专项测试（`tests/test_facsimile_table_rows.py`：行几何跳过口径/前缀预筛模糊/边际不猜/连字符折叠/缓存回写与旧缓存回填/行区 kind 路由/同页 union/行记录键与翻译）；模板字面断言 2 处随行键改名（bid→zoneKey）；版本戳 doc_annotation_export/v11→v12（契约快照已同步）；全量 1738 tests OK（26 项环境 skip）+ ui vitest 138 OK + vue-tsc。
+
+## 重大更新（2026-07-29）——Claim Conservation Ledger Phase 1.5（分支 `codex/claim-ledger-phase1.5`；实现、真实演练与分支门禁完成，待用户决定合并；生产门控不切换）
+
+- **架构闭环**：在 Phase 1 只读双写之上完成 mutation 安全层：review event v2 混合链、语义 revision/物理 write revision 分离、稳定快照 + CAS、typed expert evidence、queue v2 lifecycle、付费 attempt/WAL/budget 恢复、claim-mode targeted extraction、`requirements publication -> refresh base -> fold` 真正关闭路径，以及 catalog-generation-bound structural override。恢复/terminal replay 不要求 LLM 配置或 key，不重复 extraction、supplement 或 requirements publication；supplement 存在本身不等于 coverage，只有新 base 经 verifier/fold 后才可关闭 claim。
+- **候选与验证解耦**：`CLAIM_CANDIDATE_POLICY_VERSION=claim-coverage-candidate-v3-stub-proposals`。stub 仍为 **0 LLM**，但保留已发现的 `independent_semantic/proposed` coverage group，claim 继续 `uncertain`，不会因 verifier 不可用而把候选丢掉；`source_quote` 只作来源定位，绝不伪装成正式 `produced_evidence`。历史 reopen 重放到新 base 的 uncertain/proposed 边界也已收口，避免制造不可重算的 closure 或同时保留互斥 invalid reason。
+- **真实 B 轨 targeted extraction 演练**：机器本地副本 `C:\Users\YYHwudi\Desktop\Canna-29\phase15-btrack-rehearsal-20260729-v1`（不进仓）执行 focus-only extraction **1 call / 2238 tokens**；恢复重放保持 requirements 与 supplement 字节不变，且不重复发布。随后独立 ledger verifier **1 call / 544 tokens**，目标 claim 以 `independent_semantic` 和正式产品义务 evidence 关闭；该 evidence 不含 `source_quote`。成本门如实为 **fail**：调用增量 **100% > 25%**，token 增量约 **24.57% < 65%**；另有 3 个 open claim，因此 document readiness 仍为 false，未借局部成功切生产门控。
+- **成本审计历史不改写**：旧 scope-bug attempt **3039 tokens**、初始 baseline **2214 tokens**、较早 verifier **476 tokens** 继续保留作完整付费链审计，不冒充上述 focus-only + 独立 verifier 的当前成功结果，也不得删除来美化成本。调用增量门失败使该演练文档继续 `document_ready=false`；Phase 1.5 的合并门要求记录真实成本和诚实终态，不允许绕过文档成本门，但不把该单样本的 non-ready 误写为实现未完成。
+- **付费中断恢复演练**：`C:\Users\YYHwudi\Desktop\Canna-29\phase15-btrack-interrupted-paid-controlled-20260729-v1\interrupted_paid_rehearsal_report.json` 记录在真实响应后、supplement publication 前受控中断，实际 **1 call / 2276 tokens**；事件顺序为 started → reserved → settled → interrupted。requirements/supplements SHA 前后完全一致，恢复只投影 interrupted/open lifecycle，不自动重试、不重复 publication，已知 usage 不丢失。
+- **结构性纠错演练**：`C:\Users\YYHwudi\Desktop\Canna-29\phase15-rehearsal-20260729-v2-structural-fp-controlled\structural_override_rehearsal_report.json` 使用受控 synthetic false-positive，完成 **0 calls / 0 tokens** override；`catalog_generation_id` 改变、`document_generation_id` 不变、freshness 重建成功，旧 revision 的再次写入被 stale-CAS 拒绝。真实 v2 中 35 条 `repeated_page_furniture` 均为翻译水印，全部保持原判，**没有为了演练而虚假 override**。Vue 入口默认“确定性重建 · 0 LLM”，只有用户显式勾选后才传 `allow_llm=true` 及正调用/token 预算；关闭或切换 Claim 会复位授权。
+- **WP7 传播与批注演练**：`C:\Users\YYHwudi\Desktop\Canna-29\phase15-wp7-rehearsal-report-20260729-v1.json` 的 controlled synthetic fixture 以 **0 LLM** 验证 14 个 partial-input 传播点；producer-lineage mismatch 同样贯穿所有消费者，`incomplete_inputs` 仍只作 informational，不改变 readiness。annotation v13 的 text span、table row、table fallback，以及 optimized/original-PDF claim status parity 全部通过。
+- **性能实测**：CPython 3.14 / Windows 当前机器，500-block synthetic 产生 1000 claims，连续 7 轮 `catalog + stub ledger` 的 p50 **0.0711s**、观测最慢轮（保守作 p95 nearest-rank）**0.0831s**，snapshot **3,294,136 bytes**，verifier **0 calls / 0 tokens**；低于既定 1s / 10 MiB 门限。
+- **合并前专家复核修复**：Vue 非规范排除原因与后端五值枚举统一；A 轨 409 后重取 fresh 数据并保留审核草稿；base 正负冲突只有显式 supersede 两侧全部事实才可闭合，UI 同步提交完整冲突事实。WP1 已用真 `os._exit` effective WAL 矩阵、双 fold 字节级幂等、fresh 启动零写/零 LLM、A/B/automatic/fold/recovery 锁序与 hook 故障注入完成机制门禁。自动 authority merge 使用受保护 target + authority 快照 CAS，legacy 无 token 路径只留 health gap、不写权威事实；umbrella 协议版本进入公共常量与 health。`template-write`/`compose` 绑定 `ai_requirements.meta.json` 并 bump stage revision；queue LLM 执行必须由用户勾选、确认调用数与 token 上限；v1.1 规格已中文化并记录唯一批准延后项。
+- **最终验证**：queue/review/ledger/input-completeness 相关组合 **172/172**，WP7 相关组合 **287/287**，annotation 模块 **95/95**，WP1/B5 核心四模块 **193/193**；各组可能重叠，只作专项证据而不相加。设置历史样本 env 后后端全量 `python -m unittest discover -s tests` **2226 tests OK (skipped=1 环境性)**；前端 Vitest **162/162**；`vue-tsc --noEmit + vite build` 通过；当前 worktree 中存在正确冻结 `out/` 基线，golden **6/6** 单独详细运行全部通过；`git diff --check` 无错误（仅 LF/CRLF 工作树提示）。Phase 1.5 分支验收门完成，未提交、未推送、未切换生产 readiness。
 
 ## 重大更新（2026-07-28）——Claim Conservation Ledger Phase 1（已合 main `617e1ce`；生产双写不切门控；主检出全量 2106 tests OK、golden 6/6）
 

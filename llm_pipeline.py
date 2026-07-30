@@ -28,7 +28,16 @@ from llm_client import (
 )
 from llm_review_schema import validate_llm_review_result_payload, validate_llm_review_results
 from resources import package_root
-from review_state import RequirementReviewState, merge_review_states, review_event_key, review_state_lock
+from review_state import (
+    CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION,
+    RequirementReviewState,
+    _atomic_write_jsonl as atomic_write_review_states,
+    atomic_target_authority_write_revision,
+    merge_review_states,
+    review_event_key,
+    review_state_lock,
+    target_publication_revision,
+)
 from review_tools import REVIEW_TOOLS_VERSION, TOOLS as REVIEW_TOOLS, evidence_fingerprint, make_tool_executor
 
 
@@ -435,6 +444,207 @@ def build_review_states(requirements: list[dict[str, Any]], reviews: list[dict[s
             state.transition("flagged", actor="llm_pipeline", reason=f"decision={review['decision']}")
         states.append(state.to_dict())
     return states
+
+
+def _automatic_authority_preconditions(
+    out_dir: Path,
+    requirements: list[dict[str, Any]],
+    states: list[dict[str, Any]],
+) -> dict[str, Any]:
+    from claim_artifacts import hash_json
+    from claim_ledger import atomic_target_fingerprint
+
+    targets: dict[str, dict[str, str]] = {}
+    for requirement in requirements:
+        requirement_id = requirement_identity(requirement)
+        if not requirement_id or requirement_id in targets:
+            raise ValueError(
+                "automatic review authority snapshot has a missing or duplicate target"
+            )
+        targets[requirement_id] = {
+            "target_fingerprint": atomic_target_fingerprint(requirement),
+            "target_authority_write_revision": (
+                atomic_target_authority_write_revision(requirement_id, states)
+            ),
+        }
+    payload = {
+        "schema": "automatic-review-authority-preconditions/v1",
+        "authority_write_protocol_version": (
+            CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION
+        ),
+        "target_publication_revision": target_publication_revision(
+            out_dir / "atomic_requirements.jsonl"
+        ),
+        "targets": targets,
+    }
+    return {
+        **payload,
+        "preconditions_hash": hash_json(
+            "automatic-review-authority-preconditions/v1",
+            payload,
+        ),
+    }
+
+
+def _load_automatic_review_snapshot(
+    out_dir: Path,
+    *,
+    limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read A-track targets and authority CAS tokens under the global lock order."""
+    from omission_actions import extraction_operation_lock
+
+    with extraction_operation_lock(out_dir, operation="llm-review-snapshot"):
+        requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
+        if limit > 0:
+            requirements = requirements[:limit]
+        with review_state_lock(out_dir):
+            states = read_jsonl(out_dir / "review_states.jsonl")
+            preconditions = _automatic_authority_preconditions(
+                out_dir,
+                requirements,
+                states,
+            )
+    return requirements, preconditions
+
+
+def _current_automatic_targets(
+    requirements: list[dict[str, Any]],
+    expected: dict[str, Any],
+) -> list[dict[str, Any]]:
+    expected_ids = list(dict(expected.get("targets") or {}))
+    by_id: dict[str, list[dict[str, Any]]] = {}
+    for requirement in requirements:
+        by_id.setdefault(requirement_identity(requirement), []).append(requirement)
+    selected: list[dict[str, Any]] = []
+    for requirement_id in expected_ids:
+        matches = by_id.get(requirement_id, [])
+        if len(matches) != 1:
+            raise ValueError(
+                "automatic review target is missing or ambiguous at commit"
+            )
+        selected.append(matches[0])
+    return selected
+
+
+def _bind_automatic_review_states(
+    generated_states: list[dict[str, Any]],
+    preconditions: dict[str, Any],
+) -> list[dict[str, Any]]:
+    targets = dict(preconditions.get("targets") or {})
+    bound: list[dict[str, Any]] = []
+    for raw_state in generated_states:
+        state = dict(raw_state)
+        requirement_id = str(state.get("requirement_id") or "")
+        target = dict(targets.get(requirement_id) or {})
+        if not target:
+            raise ValueError(
+                "generated review state is outside the protected target snapshot"
+            )
+        metadata = dict(state.get("metadata") or {})
+        metadata["automatic_authority_write"] = {
+            "protocol_version": CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION,
+            "preconditions_hash": preconditions["preconditions_hash"],
+            "target_fingerprint": target["target_fingerprint"],
+            "target_publication_revision": preconditions[
+                "target_publication_revision"
+            ],
+            "expected_target_authority_write_revision": target[
+                "target_authority_write_revision"
+            ],
+        }
+        state["metadata"] = metadata
+        bound.append(state)
+    return bound
+
+
+def _commit_automatic_review_states(
+    out_dir: Path,
+    generated_states: list[dict[str, Any]],
+    *,
+    expected_preconditions: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """CAS one automatic batch; stale or legacy input never writes authority."""
+    from omission_actions import extraction_operation_lock
+
+    if not isinstance(expected_preconditions, dict):
+        from claim_review_actions import record_legacy_authority_write_gap
+
+        record_legacy_authority_write_gap(
+            out_dir,
+            route="llm_pipeline.merge_review_states",
+            reason="missing_automatic_merge_preconditions",
+        )
+        with review_state_lock(out_dir):
+            states = read_jsonl(out_dir / "review_states.jsonl")
+        return {
+            "status": "needs_reconfirmation",
+            "reason": "missing_automatic_merge_preconditions",
+            "states": states,
+            "event_count": 0,
+        }
+
+    with extraction_operation_lock(out_dir, operation="llm-review-commit"):
+        current_requirements = read_jsonl(
+            out_dir / "atomic_requirements.jsonl"
+        )
+        try:
+            selected_targets = _current_automatic_targets(
+                current_requirements,
+                expected_preconditions,
+            )
+        except ValueError as exc:
+            with review_state_lock(out_dir):
+                existing_states = read_jsonl(out_dir / "review_states.jsonl")
+            return {
+                "status": "needs_reconfirmation",
+                "reason": str(exc),
+                "states": existing_states,
+                "event_count": 0,
+            }
+        with review_state_lock(out_dir):
+            existing_states = read_jsonl(out_dir / "review_states.jsonl")
+            current_preconditions = _automatic_authority_preconditions(
+                out_dir,
+                selected_targets,
+                existing_states,
+            )
+            if current_preconditions != expected_preconditions:
+                reasons: list[str] = []
+                if current_preconditions.get(
+                    "target_publication_revision"
+                ) != expected_preconditions.get("target_publication_revision"):
+                    reasons.append("target_publication_changed")
+                if current_preconditions.get("targets") != expected_preconditions.get(
+                    "targets"
+                ):
+                    reasons.append("target_or_authority_changed")
+                return {
+                    "status": "needs_reconfirmation",
+                    "reason": ",".join(reasons) or "authority_snapshot_changed",
+                    "states": existing_states,
+                    "event_count": 0,
+                    "current_preconditions": current_preconditions,
+                }
+            bound_states = _bind_automatic_review_states(
+                generated_states,
+                expected_preconditions,
+            )
+            merged_states = merge_review_states(existing_states, bound_states)
+            atomic_write_review_states(
+                out_dir / "review_states.jsonl",
+                merged_states,
+            )
+            event_count = append_review_state_events(
+                out_dir / "review_state_events.jsonl",
+                merged_states,
+            )
+    return {
+        "status": "applied",
+        "reason": "",
+        "states": merged_states,
+        "event_count": event_count,
+    }
 
 
 def llm_config_from_route(payload: dict[str, Any]) -> LLMClientConfig:
@@ -952,9 +1162,10 @@ def run_review_pipeline(
     out_dir = out_dir.expanduser().resolve()
     pipeline_path = pipeline_path.expanduser().resolve()
     LOGGER.info("loading review pipeline")
-    requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
-    if limit > 0:
-        requirements = requirements[:limit]
+    requirements, authority_preconditions = _load_automatic_review_snapshot(
+        out_dir,
+        limit=limit,
+    )
     domain_pack_path = domain_pack_path.expanduser().resolve() if domain_pack_path else None
     pipeline = merge_review_policy(load_review_pipeline(pipeline_path), domain_pack_path)
     LOGGER.info("reviewing %s requirements", len(requirements))
@@ -969,13 +1180,35 @@ def run_review_pipeline(
         kb_paths=kb_paths,
     )
     reviews = result.reviews
-    states = result.states
+    generated_states = result.states
     assert_valid_review_results(reviews)
+    authority_merge = _commit_automatic_review_states(
+        out_dir,
+        generated_states,
+        expected_preconditions=authority_preconditions,
+    )
+    merge_status = str(authority_merge["status"])
+    merge_reason = str(authority_merge.get("reason") or "")
+    if merge_status != "applied":
+        reviews = [
+            {
+                **review,
+                "authority_merge": {
+                    "status": "needs_reconfirmation",
+                    "reason": merge_reason,
+                    "protocol_version": (
+                        CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION
+                    ),
+                    "preconditions_hash": authority_preconditions.get(
+                        "preconditions_hash"
+                    ),
+                },
+            }
+            for review in reviews
+        ]
     write_jsonl(out_dir / "llm_review_results.jsonl", reviews)
-    with review_state_lock(out_dir):
-        states = merge_review_states(read_jsonl(out_dir / "review_states.jsonl"), states)
-        atomic_write_jsonl(out_dir / "review_states.jsonl", states)
-        event_count = append_review_state_events(out_dir / "review_state_events.jsonl", states)
+    states = list(authority_merge["states"])
+    event_count = int(authority_merge["event_count"])
     summary = {
         "pipeline_id": pipeline.pipeline_id,
         "out": str(out_dir),
@@ -985,6 +1218,14 @@ def run_review_pipeline(
         "rule_stub": result.rule_stub,
         "llm_failed": result.llm_failed,
         "review_state_events": event_count,
+        "authority_merge_status": merge_status,
+        "authority_merge_reason": merge_reason,
+        "authority_write_protocol_version": (
+            CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION
+        ),
+        "authority_merge_proposal_count": (
+            0 if merge_status == "applied" else len(generated_states)
+        ),
         "expert_pending": sum(1 for state in states if state.get("status") == "expert_pending"),
         "accepted": sum(1 for state in states if state.get("status") == "accepted"),
         "files": {

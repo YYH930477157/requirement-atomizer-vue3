@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_review_event_v2.schema.json",
+  "title": "Claim review event v2",
+  "oneOf": [
+    {"$ref": "#/$defs/target_invalidated"},
+    {"$ref": "#/$defs/target_reactivated"},
+    {"$ref": "#/$defs/expert_adjudication"},
+    {"$ref": "#/$defs/audit_conflict"},
+    {"$ref": "#/$defs/structural_falsification"}
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "common": {
+      "type": "object",
+      "required": [
+        "schema", "event_seq", "event_id", "prev_event_hash", "event_hash",
+        "claim_id", "claim_hash", "document_generation_id", "catalog_generation_id",
+        "event_kind", "actor", "recorded_at", "reason", "idempotency_key"
+      ],
+      "properties": {
+        "schema": {"const": "claim-review-event/v2"},
+        "event_seq": {"type": "integer", "minimum": 1},
+        "event_id": {"type": "string", "pattern": "^CRE-[1-9][0-9]*-[0-9a-f]{12}$"},
+        "prev_event_hash": {"$ref": "#/$defs/hash"},
+        "event_hash": {"$ref": "#/$defs/hash"},
+        "claim_id": {"$ref": "#/$defs/claim_id"},
+        "claim_hash": {"$ref": "#/$defs/hash"},
+        "document_generation_id": {"$ref": "#/$defs/hash"},
+        "catalog_generation_id": {"$ref": "#/$defs/hash"},
+        "event_kind": {
+          "enum": [
+            "target_invalidated", "target_reactivated", "expert_adjudication",
+            "audit_conflict", "structural_falsification"
+          ]
+        },
+        "actor": {"type": "string", "minLength": 1},
+        "recorded_at": {"type": "string", "format": "date-time"},
+        "reason": {"type": "string", "minLength": 1},
+        "idempotency_key": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "base_preconditions": {
+      "type": "object",
+      "required": ["expected_base_claim_row_hash", "expected_claim_effective_revision"],
+      "properties": {
+        "expected_base_claim_row_hash": {"$ref": "#/$defs/hash"},
+        "expected_claim_effective_revision": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "bridge": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": [
+            "eligibility_before", "eligibility_after", "trigger_kind", "source_store",
+            "source_event_revision", "target_review_revision", "target_kind",
+            "target_requirement_id", "target_fingerprint", "observed_target_fingerprint",
+            "linked_claim_ids", "projection_mode", "expected_base_claim_row_hash",
+            "expected_claim_effective_revision", "bridge_version", "route"
+          ],
+          "properties": {
+            "eligibility_before": {"enum": ["active", "rejected", "unknown"]},
+            "eligibility_after": {"enum": ["active", "rejected", "unknown"]},
+            "actor": {"const": "system:claim-review-bridge"},
+            "trigger_kind": {"enum": ["review_authority", "target_set"]},
+            "source_store": {
+              "enum": [
+                "ai_review_states.jsonl", "review_states.jsonl",
+                "ai_requirements.jsonl", "atomic_requirements.jsonl"
+              ]
+            },
+            "source_event_revision": {"$ref": "#/$defs/hash"},
+            "target_review_revision": {"$ref": "#/$defs/hash"},
+            "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
+            "target_requirement_id": {"type": "string", "minLength": 1},
+            "target_fingerprint": {"$ref": "#/$defs/hash"},
+            "observed_target_fingerprint": {
+              "oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]
+            },
+            "linked_claim_ids": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"$ref": "#/$defs/claim_id"}
+            },
+            "projection_mode": {"enum": ["cas_effective", "bootstrap_base"]},
+            "expected_base_claim_row_hash": {"$ref": "#/$defs/hash"},
+            "expected_claim_effective_revision": {
+              "oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]
+            },
+            "bridge_version": {"type": "string", "minLength": 1},
+            "route": {"const": "deterministic"}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"projection_mode": {"const": "cas_effective"}}},
+              "then": {"properties": {"expected_claim_effective_revision": {"$ref": "#/$defs/hash"}}}
+            },
+            {
+              "if": {"properties": {"projection_mode": {"const": "bootstrap_base"}}},
+              "then": {"properties": {"expected_claim_effective_revision": {"type": "null"}}}
+            },
+            {
+              "if": {"properties": {"trigger_kind": {"const": "review_authority"}}},
+              "then": {"properties": {"source_store": {"enum": ["ai_review_states.jsonl", "review_states.jsonl"]}}}
+            },
+            {
+              "if": {"properties": {"trigger_kind": {"const": "target_set"}}},
+              "then": {"properties": {"source_store": {"enum": ["ai_requirements.jsonl", "atomic_requirements.jsonl"]}}}
+            }
+          ]
+        }
+      ]
+    },
+    "target_invalidated": {
+      "allOf": [
+        {"$ref": "#/$defs/bridge"},
+        {
+          "type": "object",
+          "properties": {
+            "event_kind": {"const": "target_invalidated"},
+            "eligibility_after": {"enum": ["rejected", "unknown"]}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "target_reactivated": {
+      "allOf": [
+        {"$ref": "#/$defs/bridge"},
+        {
+          "type": "object",
+          "properties": {
+            "event_kind": {"const": "target_reactivated"},
+            "eligibility_after": {"const": "active"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "locator": {
+      "type": "object",
+      "required": ["block_id", "line", "start", "end", "position_basis", "table_item_id", "row_index"],
+      "properties": {
+        "block_id": {"type": "string", "minLength": 1},
+        "line": {"type": ["integer", "null"], "minimum": 0},
+        "start": {"type": ["integer", "null"], "minimum": 0},
+        "end": {"type": ["integer", "null"], "minimum": 0},
+        "position_basis": {"enum": ["repaired_text", "table_item_fields", "table_data_rows"]},
+        "table_item_id": {"type": ["string", "null"]},
+        "row_index": {"type": ["integer", "null"], "minimum": 0},
+        "row_start": {"type": "integer", "minimum": 0},
+        "row_end": {"type": "integer", "minimum": 0},
+        "fallback_group_id": {"type": "string", "pattern": "^.+-FB-[0-9]{4}$"}
+      },
+      "additionalProperties": false
+    },
+    "produced_evidence": {
+      "type": "object",
+      "required": ["field", "item_index", "start", "end", "position_basis", "field_value_hash", "text"],
+      "properties": {
+        "field": {"enum": ["title", "description", "sub_items", "acceptance_criteria"]},
+        "item_index": {"type": ["integer", "null"], "minimum": 0},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 0},
+        "position_basis": {"const": "target_field_unicode_codepoints"},
+        "field_value_hash": {"$ref": "#/$defs/hash"},
+        "text": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "coverage_group_evidence": {
+      "type": "object",
+      "required": ["kind", "coverage_group_id", "coverage_group_hash"],
+      "properties": {
+        "kind": {"const": "coverage_group"},
+        "coverage_group_id": {"type": "string", "pattern": "^CGR-[0-9a-f]{16}$"},
+        "coverage_group_hash": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "target_evidence": {
+      "type": "object",
+      "required": [
+        "kind", "target_kind", "target_requirement_id", "target_fingerprint",
+        "produced_evidence", "source_locator", "source_text_hash"
+      ],
+      "properties": {
+        "kind": {"const": "target_evidence"},
+        "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
+        "target_requirement_id": {"type": "string", "minLength": 1},
+        "target_fingerprint": {"$ref": "#/$defs/hash"},
+        "produced_evidence": {"$ref": "#/$defs/produced_evidence"},
+        "source_locator": {"$ref": "#/$defs/locator"},
+        "source_text_hash": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "source_exclusion": {
+      "type": "object",
+      "required": ["kind", "source_locator", "source_text_hash", "exclusion_reason"],
+      "properties": {
+        "kind": {"const": "source_exclusion"},
+        "source_locator": {"$ref": "#/$defs/locator"},
+        "source_text_hash": {"$ref": "#/$defs/hash"},
+        "exclusion_reason": {
+          "enum": ["scope_statement", "definition", "informative", "example", "instrument_only"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "oneOf": [
+        {"$ref": "#/$defs/coverage_group_evidence"},
+        {"$ref": "#/$defs/target_evidence"},
+        {"$ref": "#/$defs/source_exclusion"}
+      ]
+    },
+    "expert_adjudication": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"$ref": "#/$defs/base_preconditions"},
+        {
+          "type": "object",
+          "required": ["adjudication", "evidence", "supersedes_fact_hashes", "route"],
+          "properties": {
+            "event_kind": {"const": "expert_adjudication"},
+            "adjudication": {"enum": ["covered", "excluded_non_normative", "reopen"]},
+            "evidence": {"$ref": "#/$defs/evidence"},
+            "supersedes_fact_hashes": {
+              "type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/hash"}
+            },
+            "route": {"const": "expert"}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"adjudication": {"const": "covered"}}},
+              "then": {"properties": {"evidence": {"oneOf": [
+                {"$ref": "#/$defs/coverage_group_evidence"},
+                {"$ref": "#/$defs/target_evidence"}
+              ]}}}
+            },
+            {
+              "if": {"properties": {"adjudication": {"const": "excluded_non_normative"}}},
+              "then": {"properties": {"evidence": {"$ref": "#/$defs/source_exclusion"}}}
+            },
+            {
+              "if": {"properties": {"adjudication": {"const": "reopen"}}},
+              "then": {"properties": {"supersedes_fact_hashes": {"minItems": 1}}}
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "audit_conflict": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"$ref": "#/$defs/base_preconditions"},
+        {
+          "type": "object",
+          "required": ["conflicting_fact_hashes", "evidence", "route"],
+          "properties": {
+            "event_kind": {"const": "audit_conflict"},
+            "conflicting_fact_hashes": {
+              "type": "array", "minItems": 2, "uniqueItems": true,
+              "items": {"$ref": "#/$defs/hash"}
+            },
+            "evidence": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"$ref": "#/$defs/evidence"}
+            },
+            "route": {"const": "expert"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "structural_falsification": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"$ref": "#/$defs/base_preconditions"},
+        {
+          "type": "object",
+          "required": ["prior_structural_reason", "override_id", "override_hash", "route"],
+          "properties": {
+            "event_kind": {"const": "structural_falsification"},
+            "prior_structural_reason": {"const": "repeated_page_furniture"},
+            "override_id": {"type": "string", "pattern": "^CSO-[0-9a-f]{16}$"},
+            "override_hash": {"$ref": "#/$defs/hash"},
+            "route": {"const": "deterministic"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

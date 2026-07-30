@@ -326,6 +326,9 @@ describe("review workspace shell", () => {
               domain_tags: ["security_policy", "key_management"],
               section_path: ["Security"],
               confidence: 0.91,
+              target_fingerprint: "sha256:target-ui-1",
+              target_publication_revision: "sha256:publication-ui-1",
+              target_authority_write_revision: "sha256:authority-ui-1",
               review_state: { requirement_id: "SREQ-UI-1", status: "expert_pending" },
               review: { risk: "high", review_notes: ["Confirm key scope"] },
             },
@@ -340,6 +343,9 @@ describe("review workspace shell", () => {
         expect(JSON.parse(String(init?.body))).toMatchObject({
           requirement_id: "SREQ-UI-1",
           status: "accepted",
+          expected_target_fingerprint: "sha256:target-ui-1",
+          expected_target_publication_revision: "sha256:publication-ui-1",
+          expected_target_authority_write_revision: "sha256:authority-ui-1",
         })
         return {
           ok: true,
@@ -370,6 +376,73 @@ describe("review workspace shell", () => {
     })
 
     expect(fetchMock).toHaveBeenCalledTimes(3)   // requirements + review-insights + action
+  })
+
+  it("refreshes A-track evidence after a 409 and retains the review draft", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\Codex\\out\\run",
+        }),
+      },
+    })
+    let requirementsLoadCount = 0
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith("/requirements?limit=5000")) {
+        requirementsLoadCount += 1
+        const refreshed = requirementsLoadCount > 1
+        return {
+          ok: true,
+          json: async () => [{
+            stable_req_id: "SREQ-CONFLICT-1",
+            requirement_type: "functional",
+            object_name: refreshed ? "Updated interface" : "Original interface",
+            description: refreshed ? "The refreshed requirement evidence." : "The original requirement evidence.",
+            source_quote: refreshed ? "Refreshed source evidence." : "Original source evidence.",
+            target_fingerprint: refreshed ? "sha256:target-v2" : "sha256:target-v1",
+            target_publication_revision: refreshed ? "sha256:publication-v2" : "sha256:publication-v1",
+            target_authority_write_revision: refreshed ? "sha256:authority-v2" : "sha256:authority-v1",
+            review_state: { requirement_id: "SREQ-CONFLICT-1", status: "expert_pending" },
+          }],
+        } as Response
+      }
+      if (url.endsWith("/review-actions")) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          requirement_id: "SREQ-CONFLICT-1",
+          expected_target_fingerprint: "sha256:target-v1",
+          expected_target_publication_revision: "sha256:publication-v1",
+          expected_target_authority_write_revision: "sha256:authority-v1",
+        })
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: "requirement evidence changed",
+            needs_reconfirmation: true,
+          }),
+        } as Response
+      }
+      if (url.endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    const wrapper = mount(App)
+    await openReview(wrapper)
+    await vi.waitFor(() => expect(wrapper.text()).toContain("The original requirement evidence."))
+    await wrapper.get("textarea.comment-box").setValue("保留这条 A 轨审查意见")
+    await wrapper.get('[data-testid="decision-accepted"]').trigger("click")
+    await vi.waitFor(() => expect(wrapper.text()).toContain("The refreshed requirement evidence."))
+
+    expect(requirementsLoadCount).toBe(2)
+    expect(wrapper.get("textarea.comment-box").element).toHaveProperty("value", "保留这条 A 轨审查意见")
+    expect(wrapper.get('[data-testid="api-message"]').text()).toContain("已刷新，请核对后重新裁决")
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/review-actions"))).toHaveLength(1)
   })
 
   it("translates the selected requirement through the local API", async () => {

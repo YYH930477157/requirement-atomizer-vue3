@@ -476,7 +476,24 @@ class PlatformScaffoldTests(unittest.TestCase):
     def test_api_review_action_requires_token_and_writes_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
+            requirement = {
+                "req_id": "AREQ-1",
+                "stable_req_id": "SREQ-1",
+                "source_id": "SRC-1",
+                "source_type": "paragraph",
+                "source_refs": ["SRC-1"],
+                "section_path": ["4"],
+                "domain": "general",
+                "object": "meter",
+                "requirement_type": "functional",
+                "requirement": "The meter shall expose status.",
+                "condition": "",
+                "parameters": {},
+                "verification_method": "inspection",
+            }
+            write_jsonl(out_dir / "atomic_requirements.jsonl", [requirement])
             write_jsonl(out_dir / "review_states.jsonl", [{"requirement_id": "SREQ-1", "status": "expert_pending"}])
+            current = enrich_requirements([requirement], out_dir)[0]
             server = self.start_api_server(out_dir, token="secret-token")
             try:
                 status, _ = server.post_json("/review-actions", {"requirement_id": "SREQ-1", "status": "accepted"})
@@ -489,6 +506,13 @@ class PlatformScaffoldTests(unittest.TestCase):
                         "status": "accepted",
                         "actor": "vue3-test",
                         "reason": "accepted in Vue3 UI",
+                        "expected_target_fingerprint": current["target_fingerprint"],
+                        "expected_target_publication_revision": current[
+                            "target_publication_revision"
+                        ],
+                        "expected_target_authority_write_revision": current[
+                            "target_authority_write_revision"
+                        ],
                     },
                     headers={"X-Requirement-Atomizer-Token": "secret-token"},
                 )
@@ -906,7 +930,7 @@ class PlatformScaffoldTests(unittest.TestCase):
                     }
                 ],
             )
-            with patch("llm_pipeline.atomic_write_jsonl") as atomic_write:
+            with patch("llm_pipeline.atomic_write_review_states") as atomic_write:
                 atomic_write.side_effect = lambda path, rows: write_jsonl(path, rows)
 
                 run_review_pipeline(out_dir, route="stub", domain_pack_path=None)

@@ -7,8 +7,11 @@ import {
   Clock3,
   Database,
   Link2,
+  Play,
   RefreshCw,
+  ShieldCheck,
   TriangleAlert,
+  Undo2,
   X,
 } from "@lucide/vue"
 import type {
@@ -17,6 +20,7 @@ import type {
   ClaimCatalogViewRow,
   ClaimCoverageGroupView,
   ClaimMetricsViewPayload,
+  ClaimQueueProposal,
   ClaimQueueViewPayload,
   ClaimRatioMetric,
   ClaimResolution,
@@ -28,7 +32,9 @@ import type {
 type ClaimLedgerClient = Pick<RequirementApiClient,
   "loadClaimCatalog" | "loadClaimLedger" | "loadClaimCoverageGroups" |
   "loadClaimMetrics" | "loadClaimReviewEvents" | "loadClaimQueue">
-  & Partial<Pick<RequirementApiClient, "loadAiExtractionStatus">>
+  & Partial<Pick<RequirementApiClient,
+    "loadAiExtractionStatus" | "executeClaimQueue" | "applyClaimAdjudication" |
+    "confirmClaimStructuralOverride">>
 
 const props = withDefaults(defineProps<{
   client: ClaimLedgerClient | null
@@ -56,6 +62,15 @@ const revisionPin = ref("")
 const selectedClaim = ref<ClaimCatalogViewRow | null>(null)
 const detailGroups = ref<ClaimCoverageGroupView[]>([])
 const detailEvents = ref<ClaimReviewEventView[]>([])
+const queueBusyId = ref("")
+const pendingQueueProposal = ref<ClaimQueueProposal | null>(null)
+const queueAllowLlm = ref(false)
+const queueMaxCalls = ref(4)
+const queueTokenBudget = ref(50000)
+const adjudicationBusy = ref(false)
+const adjudicationReason = ref("")
+const exclusionReason = ref<"scope_statement" | "definition" | "informative" | "example" | "instrument_only">("informative")
+const structuralOverrideAllowLlm = ref(false)
 let overviewGeneration = 0
 let detailGeneration = 0
 
@@ -116,7 +131,11 @@ function resolutionLabel(value: ClaimResolution): string {
 }
 
 function eventLabel(value: ClaimReviewEventView["event_kind"]): string {
-  return value === "target_invalidated" ? "目标失效" : "目标恢复"
+  if (value === "target_invalidated") return "目标失效"
+  if (value === "target_reactivated") return "目标恢复"
+  if (value === "expert_adjudication") return "专家裁决"
+  if (value === "audit_conflict") return "裁决冲突"
+  return "结构复核"
 }
 
 function formatLocator(locator: ClaimCatalogViewRow["locator"] | undefined): string {
@@ -138,6 +157,215 @@ function evidenceText(group: ClaimCoverageGroupView): string[] {
 
 function groupIsReused(group: ClaimCoverageGroupView): boolean {
   return group.reused === true || group.validation_reused === true || group.effective_reused === true
+}
+
+function newIdempotencyKey(prefix: string): string {
+  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return `${prefix}-${suffix}`
+}
+
+function queueLifecycleLabel(proposal: ClaimQueueProposal): string {
+  if (proposal.lifecycle === "executing") return "执行中"
+  if (proposal.lifecycle === "executed") return "已执行"
+  if (proposal.lifecycle === "rebuild_pending") return "待重建"
+  if (proposal.latest_attempt?.lifecycle === "failed") return "上次失败"
+  if (proposal.latest_attempt?.lifecycle === "aborted_stale") return "输入已变化"
+  if (proposal.latest_attempt?.lifecycle === "interrupted") return "上次中断"
+  return "待执行"
+}
+
+function canExecuteProposal(proposal: ClaimQueueProposal): boolean {
+  return !proposal.focus_error
+    && ["open", "rebuild_pending"].includes(proposal.lifecycle)
+    && !queueBusyId.value
+}
+
+const queueAuthorizationValid = computed(() => queueAllowLlm.value
+    && Number.isInteger(queueMaxCalls.value)
+    && queueMaxCalls.value > 0
+    && Number.isInteger(queueTokenBudget.value)
+    && queueTokenBudget.value > 0)
+
+function resetQueueAuthorization(): void {
+  pendingQueueProposal.value = null
+  queueAllowLlm.value = false
+}
+
+function requestProposalExecution(proposal: ClaimQueueProposal): void {
+  if (!props.client?.executeClaimQueue || !canExecuteProposal(proposal)) return
+  resetQueueAuthorization()
+  pendingQueueProposal.value = proposal
+}
+
+async function executeProposal(): Promise<void> {
+  const client = props.client
+  const proposal = pendingQueueProposal.value
+  if (!client?.executeClaimQueue || !proposal || !canExecuteProposal(proposal) || !queueAuthorizationValid.value) return
+  queueBusyId.value = proposal.proposal_id
+  message.value = ""
+  try {
+    const requestKey = proposal.lifecycle === "rebuild_pending"
+      ? String(proposal.latest_attempt?.request_idempotency_key || "")
+      : newIdempotencyKey("claim-queue")
+    if (!requestKey) throw new Error("重建恢复缺少原请求标识")
+    const result = await client.executeClaimQueue({
+      proposalId: proposal.proposal_id,
+      expectedClaimEffectiveRevision: proposal.claim_effective_revision,
+      actor: "reviewer",
+      allowLlm: true,
+      route: "openai_compatible",
+      maximumCalls: queueMaxCalls.value,
+      totalTokenBudget: queueTokenBudget.value,
+      requestIdempotencyKey: requestKey,
+    })
+    message.value = result.lifecycle === "executed"
+      ? "Claim 已执行并完成账本重建"
+      : `Claim 状态：${result.lifecycle}`
+    await loadOverview(false)
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : "Claim 执行失败"
+    await loadOverview(false)
+  } finally {
+    queueBusyId.value = ""
+    resetQueueAuthorization()
+  }
+}
+
+function currentExpertFactHashes(): string[] {
+  return detailEvents.value
+    .filter((event) => event.event_kind === "expert_adjudication")
+    .map((event) => String(event.event_hash || ""))
+    .filter(Boolean)
+    .slice(-1)
+}
+
+function supersededFactHashes(row: ClaimCatalogViewRow): string[] {
+  const base = row.base_resolution_fact_hashes || {}
+  const positiveFacts = base.positive || []
+  const negativeFacts = base.negative || []
+  const baseFacts = positiveFacts.length && negativeFacts.length
+    ? [...positiveFacts, ...negativeFacts]
+    : row.resolution === "covered"
+      ? positiveFacts
+      : row.resolution === "excluded"
+        ? negativeFacts
+        : []
+  return [...new Set([...baseFacts, ...currentExpertFactHashes()])]
+}
+
+async function adjudicateClaim(
+  adjudication: "covered" | "excluded_non_normative" | "reopen",
+): Promise<void> {
+  const client = props.client
+  const row = selectedClaim.value
+  const reason = adjudicationReason.value.trim()
+  if (!client?.applyClaimAdjudication || !row || !row.claim_hash || !row.claim_effective_revision || !reason) {
+    message.value = "请填写裁决理由并刷新 Claim 详情"
+    return
+  }
+  let evidence
+  if (adjudication === "covered") {
+    const group = detailGroups.value.find((item) =>
+      (item.effective_status || item.status) === "validated" && item.coverage_group_hash)
+    if (!group?.coverage_group_hash) {
+      message.value = "当前没有可用于裁决的已验证 coverage group"
+      return
+    }
+    evidence = {
+      kind: "coverage_group" as const,
+      coverage_group_id: group.coverage_group_id,
+      coverage_group_hash: group.coverage_group_hash,
+    }
+  } else {
+    if (!row.source_text_hash) {
+      message.value = "当前 Claim 缺少可复核的源证据哈希"
+      return
+    }
+    evidence = {
+      kind: "source_exclusion" as const,
+      source_locator: row.locator,
+      source_text_hash: row.source_text_hash,
+      exclusion_reason: exclusionReason.value,
+    }
+  }
+  adjudicationBusy.value = true
+  message.value = ""
+  try {
+    await client.applyClaimAdjudication({
+      claimId: row.claim_id,
+      claimHash: row.claim_hash,
+      adjudication,
+      reason,
+      evidence,
+      actor: "reviewer",
+      expectedClaimEffectiveRevision: row.claim_effective_revision,
+      supersedesFactHashes: supersededFactHashes(row),
+      requestIdempotencyKey: newIdempotencyKey("claim-adjudication"),
+    })
+    adjudicationReason.value = ""
+    closeDetails()
+    await loadOverview(false)
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : "Claim 裁决失败"
+    await loadOverview(false)
+  } finally {
+    adjudicationBusy.value = false
+  }
+}
+
+const structuralOverrideReason = computed(() => {
+  const exclusion = selectedClaim.value?.exclusion
+  if (!exclusion || typeof exclusion !== "object") return ""
+  return String((exclusion as Record<string, unknown>).reason || "")
+})
+
+const structuralVerifierBudgetValid = computed(() => !structuralOverrideAllowLlm.value || (
+  Number.isInteger(queueMaxCalls.value)
+  && queueMaxCalls.value > 0
+  && Number.isInteger(queueTokenBudget.value)
+  && queueTokenBudget.value > 0
+))
+
+async function confirmStructuralOverride(): Promise<void> {
+  const client = props.client
+  const row = selectedClaim.value
+  const reason = adjudicationReason.value.trim()
+  if (
+    !client?.confirmClaimStructuralOverride
+    || !row?.claim_hash
+    || !row.claim_effective_revision
+    || structuralOverrideReason.value !== "repeated_page_furniture"
+    || !catalog.value?.catalog_generation_id
+    || !reason
+    || !structuralVerifierBudgetValid.value
+  ) return
+  const allowLlm = structuralOverrideAllowLlm.value
+  adjudicationBusy.value = true
+  try {
+    await client.confirmClaimStructuralOverride({
+      claimId: row.claim_id,
+      claimHash: row.claim_hash,
+      expectedCatalogGenerationId: catalog.value.catalog_generation_id,
+      expectedClaimEffectiveRevision: row.claim_effective_revision,
+      priorStructuralReason: "repeated_page_furniture",
+      reason,
+      actor: "reviewer",
+      requestIdempotencyKey: newIdempotencyKey("claim-structural"),
+      allowLlm,
+      route: allowLlm ? "openai_compatible" : "stub",
+      verifierMaxCalls: allowLlm ? queueMaxCalls.value : 0,
+      verifierMaxTotalTokens: allowLlm ? queueTokenBudget.value : 0,
+    })
+    closeDetails()
+    await loadOverview(false)
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : "结构复核失败"
+    await loadOverview(false)
+  } finally {
+    adjudicationBusy.value = false
+  }
 }
 
 async function loadOverview(allowRetry = true): Promise<boolean> {
@@ -218,6 +446,8 @@ async function goPage(direction: -1 | 1) {
 }
 
 async function openDetails(row: ClaimCatalogViewRow) {
+  adjudicationReason.value = ""
+  structuralOverrideAllowLlm.value = false
   selectedClaim.value = row
   detailGroups.value = []
   detailEvents.value = []
@@ -267,12 +497,20 @@ function closeDetails() {
   selectedClaim.value = null
   detailGroups.value = []
   detailEvents.value = []
+  adjudicationReason.value = ""
+  structuralOverrideAllowLlm.value = false
   detailLoading.value = false
+}
+
+function selectLedgerTab(tab: LedgerTab): void {
+  if (tab !== activeTab.value) resetQueueAuthorization()
+  activeTab.value = tab
 }
 
 watch(
   [() => props.active, () => props.client, () => props.sessionKey, () => props.refreshToken],
   ([active]) => {
+    resetQueueAuthorization()
     if (active) void loadOverview()
   },
   { immediate: true },
@@ -355,9 +593,9 @@ onUnmounted(() => {
 
       <div class="ledger-tabs" role="tablist" aria-label="账本视图">
         <button type="button" role="tab" :aria-selected="activeTab === 'claims'"
-                :class="{ active: activeTab === 'claims' }" @click="activeTab = 'claims'">Claims</button>
+                :class="{ active: activeTab === 'claims' }" @click="selectLedgerTab('claims')">Claims</button>
         <button type="button" role="tab" :aria-selected="activeTab === 'queue'"
-                :class="{ active: activeTab === 'queue' }" @click="activeTab = 'queue'">Dry-run 队列</button>
+                :class="{ active: activeTab === 'queue' }" @click="selectLedgerTab('queue')">执行队列</button>
       </div>
 
       <section v-if="activeTab === 'claims'" class="claim-table-section">
@@ -404,10 +642,27 @@ onUnmounted(() => {
       <section v-else class="queue-view" data-testid="claim-queue">
         <div class="queue-section">
           <header><h5>Claim 提案</h5><span>{{ queue?.proposals.length || 0 }}</span></header>
+          <div class="queue-budget" data-testid="claim-queue-budget">
+            <label>调用上限<input v-model.number="queueMaxCalls" type="number" min="1" step="1" /></label>
+            <label>Token 上限<input v-model.number="queueTokenBudget" type="number" min="1" step="1000" /></label>
+          </div>
           <div v-for="proposal in queue?.proposals || []" :key="proposal.proposal_id" class="queue-row">
-            <span class="dry-run-badge">dry-run</span>
-            <div><strong>{{ proposal.claim_id }}</strong><small>{{ formatLocator(proposal.locator) }}</small></div>
-            <code>{{ proposal.action }}</code>
+            <span class="lifecycle-badge" :class="proposal.lifecycle">{{ queueLifecycleLabel(proposal) }}</span>
+            <div>
+              <strong>{{ proposal.claim_id }}</strong>
+              <small>{{ formatLocator(proposal.locator) }}</small>
+              <small v-if="proposal.focus_error" class="queue-error">{{ proposal.focus_error }}</small>
+              <small v-else-if="proposal.latest_attempt?.outcome?.message">{{ proposal.latest_attempt.outcome.message }}</small>
+            </div>
+            <button class="execute-command" type="button"
+                    :disabled="!canExecuteProposal(proposal)"
+                    :title="proposal.lifecycle === 'rebuild_pending' ? '恢复账本重建' : '执行 Claim 定向抽取'"
+                    :data-testid="`claim-execute-${proposal.claim_id}`"
+                    @click="requestProposalExecution(proposal)">
+              <RefreshCw v-if="queueBusyId === proposal.proposal_id" class="spin" :size="15" aria-hidden="true" />
+              <Play v-else :size="15" aria-hidden="true" />
+              {{ proposal.lifecycle === "rebuild_pending" ? "恢复" : "执行" }}
+            </button>
           </div>
           <p v-if="!queue?.proposals.length" class="queue-empty">没有待处理 Claim 提案</p>
         </div>
@@ -423,6 +678,40 @@ onUnmounted(() => {
         </div>
       </section>
     </template>
+
+    <div v-if="pendingQueueProposal" class="queue-confirm-layer" @click.self="resetQueueAuthorization">
+      <section class="queue-confirm" role="dialog" aria-modal="true" aria-label="确认 Claim 队列执行"
+               data-testid="claim-queue-confirm">
+        <header>
+          <div><h5>确认执行 Claim</h5><code>{{ pendingQueueProposal.claim_id }}</code></div>
+          <button class="icon-command" type="button" aria-label="关闭执行确认" title="关闭"
+                  :disabled="Boolean(queueBusyId)" @click="resetQueueAuthorization">
+            <X :size="17" aria-hidden="true" />
+          </button>
+        </header>
+        <p>本次定向补抽会调用 LLM。调用与 Token 均受以下上限约束。</p>
+        <dl>
+          <div><dt>Route</dt><dd><code>openai_compatible</code></dd></div>
+          <div><dt>调用上限</dt><dd>{{ queueMaxCalls }}</dd></div>
+          <div><dt>Token 上限</dt><dd>{{ queueTokenBudget.toLocaleString("zh-CN") }}</dd></div>
+        </dl>
+        <label class="queue-authorization">
+          <input v-model="queueAllowLlm" type="checkbox" data-testid="claim-queue-allow-llm" />
+          <span>我确认授权本次 LLM 调用及上述成本上限</span>
+        </label>
+        <footer>
+          <button type="button" :disabled="Boolean(queueBusyId)" data-testid="claim-queue-cancel"
+                  @click="resetQueueAuthorization">取消</button>
+          <button class="execute-command" type="button"
+                  :disabled="Boolean(queueBusyId) || !queueAuthorizationValid"
+                  data-testid="claim-queue-confirm-execute" @click="executeProposal">
+            <RefreshCw v-if="queueBusyId" class="spin" :size="15" aria-hidden="true" />
+            <Play v-else :size="15" aria-hidden="true" />
+            确认执行
+          </button>
+        </footer>
+      </section>
+    </div>
 
     <div v-if="selectedClaim" class="drawer-layer" @click.self="closeDetails">
       <aside class="claim-drawer" role="dialog" aria-modal="true" aria-label="Claim 详情" data-testid="claim-detail">
@@ -467,6 +756,54 @@ onUnmounted(() => {
               </ol>
               <p v-if="!detailEvents.length" class="detail-empty">没有 review event</p>
             </section>
+
+            <section v-if="client?.applyClaimAdjudication" class="detail-section adjudication-panel"
+                     data-testid="claim-adjudication">
+              <h6><ShieldCheck :size="15" aria-hidden="true" />专家裁决</h6>
+              <textarea v-model="adjudicationReason" rows="3" placeholder="裁决理由" aria-label="Claim 裁决理由"></textarea>
+              <div class="adjudication-row">
+                <select v-model="exclusionReason" aria-label="非规范内容类型">
+                  <option value="scope_statement">范围说明</option>
+                  <option value="definition">术语定义</option>
+                  <option value="informative">资料性内容</option>
+                  <option value="example">示例</option>
+                  <option value="instrument_only">仅仪器说明</option>
+                </select>
+                <button type="button" :disabled="adjudicationBusy || !adjudicationReason.trim()"
+                        data-testid="claim-adjudicate-covered" @click="adjudicateClaim('covered')">
+                  <ShieldCheck :size="15" aria-hidden="true" />确认覆盖
+                </button>
+                <button type="button" :disabled="adjudicationBusy || !adjudicationReason.trim()"
+                        data-testid="claim-adjudicate-excluded" @click="adjudicateClaim('excluded_non_normative')">
+                  <X :size="15" aria-hidden="true" />排除
+                </button>
+                <button v-if="selectedClaim.resolution !== 'uncertain'" type="button"
+                        :disabled="adjudicationBusy || !adjudicationReason.trim()"
+                        data-testid="claim-adjudicate-reopen" @click="adjudicateClaim('reopen')">
+                  <Undo2 :size="15" aria-hidden="true" />重开
+                </button>
+              </div>
+              <div v-if="structuralOverrideReason === 'repeated_page_furniture'"
+                   class="structural-review" data-testid="claim-structural-review">
+                <label class="structural-mode">
+                  <input v-model="structuralOverrideAllowLlm" type="checkbox"
+                         data-testid="claim-structural-llm" />
+                  <span data-testid="claim-structural-mode">
+                    {{ structuralOverrideAllowLlm ? "LLM 语义复核" : "确定性重建 · 0 LLM" }}
+                  </span>
+                </label>
+                <div v-if="structuralOverrideAllowLlm" class="structural-budget"
+                     data-testid="claim-structural-budget">
+                  <label>调用上限<input v-model.number="queueMaxCalls" type="number" min="1" step="1" /></label>
+                  <label>Token 上限<input v-model.number="queueTokenBudget" type="number" min="1" step="1000" /></label>
+                </div>
+                <button class="structural-command" type="button"
+                        :disabled="adjudicationBusy || !adjudicationReason.trim() || !structuralVerifierBudgetValid"
+                        data-testid="claim-structural-override" @click="confirmStructuralOverride">
+                  <Undo2 :size="15" aria-hidden="true" />撤销页眉页脚排除
+                </button>
+              </div>
+            </section>
           </template>
         </div>
       </aside>
@@ -505,6 +842,7 @@ onUnmounted(() => {
 
 .observation-badge,
 .dry-run-badge,
+.lifecycle-badge,
 .resolution-chip {
   display: inline-flex;
   align-items: center;
@@ -518,6 +856,10 @@ onUnmounted(() => {
 
 .observation-badge { color: #76520e; border: 1px solid #e1c375; background: #fff7d9; }
 .dry-run-badge { color: #73480d; border: 1px solid #e1bf83; background: #fff6e5; }
+.lifecycle-badge { color: #4d5560; border: 1px solid #cfd4da; background: #f5f6f7; }
+.lifecycle-badge.executing { color: #145b78; border-color: #8ec6da; background: #edf8fc; }
+.lifecycle-badge.executed { color: #24623f; border-color: #9bc9ad; background: #eef8f1; }
+.lifecycle-badge.rebuild_pending { color: #7a4c08; border-color: #dfbd78; background: #fff7e7; }
 
 .icon-command {
   display: inline-grid;
@@ -610,6 +952,9 @@ onUnmounted(() => {
 .queue-section > header { display: flex; align-items: center; justify-content: space-between; min-height: 42px; padding: 8px 12px; border-bottom: 1px solid #e5e7eb; background: #f2f4f6; }
 .queue-section h5 { margin: 0; font-size: 13px; }
 .queue-section > header > span { color: #747a83; font-size: 12px; }
+.queue-budget { display: flex; align-items: end; gap: 10px; padding: 9px 11px; border-bottom: 1px solid #e5e7eb; }
+.queue-budget label { display: grid; gap: 4px; color: #656b74; font-size: 10px; }
+.queue-budget input { width: 112px; min-height: 30px; border: 1px solid #cfd4da; border-radius: 5px; padding: 4px 7px; background: #fff; }
 .queue-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 58px; padding: 8px 11px; border-top: 1px solid #eef0f2; }
 .queue-row:first-of-type { border-top: 0; }
 .queue-row > div { min-width: 0; }
@@ -617,7 +962,45 @@ onUnmounted(() => {
 .queue-row strong { font-size: 12px; }
 .queue-row small { margin-top: 3px; color: #7a8088; font-size: 11px; }
 .queue-row code { color: #5f6670; font-size: 10px; }
+.queue-error { color: #a23c35 !important; white-space: normal !important; }
+.execute-command,
+.adjudication-row button,
+.structural-command {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  border: 1px solid #aeb5bf;
+  border-radius: 6px;
+  padding: 5px 10px;
+  color: #30363d;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.execute-command:hover:not(:disabled),
+.adjudication-row button:hover:not(:disabled),
+.structural-command:hover:not(:disabled) { border-color: #567966; color: #24533a; background: #f1f8f3; }
+.execute-command:disabled,
+.adjudication-row button:disabled,
+.structural-command:disabled { opacity: .45; cursor: default; }
 .queue-empty { margin: 0; padding: 28px 12px; color: #858b93; text-align: center; }
+
+.queue-confirm-layer { position: fixed; z-index: 35; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(28, 31, 36, .3); }
+.queue-confirm { width: min(460px, 100%); border: 1px solid #d7dbe0; border-radius: 7px; padding: 16px; background: #fff; box-shadow: 0 16px 48px rgba(35, 39, 45, .22); }
+.queue-confirm > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.queue-confirm h5 { margin: 0 0 4px; font-size: 15px; }
+.queue-confirm > p { margin: 14px 0 10px; color: #5f6670; font-size: 12px; line-height: 1.5; }
+.queue-confirm dl { margin: 0; border-block: 1px solid #e5e7eb; padding: 7px 0; }
+.queue-confirm dl > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 10px; padding: 4px 0; font-size: 12px; }
+.queue-confirm dt { color: #737982; }
+.queue-confirm dd { margin: 0; text-align: right; }
+.queue-authorization { display: flex; align-items: flex-start; gap: 8px; margin: 13px 0; color: #5f4a23; font-size: 12px; line-height: 1.4; }
+.queue-authorization input { flex: 0 0 auto; width: 16px; height: 16px; margin: 1px 0 0; accent-color: #3e7158; }
+.queue-confirm > footer { display: flex; justify-content: flex-end; gap: 8px; }
+.queue-confirm > footer > button { min-height: 32px; border: 1px solid #aeb5bf; border-radius: 6px; padding: 5px 11px; background: #fff; cursor: pointer; }
+.queue-confirm > footer > button:disabled { opacity: .45; cursor: default; }
 
 .drawer-layer { position: fixed; z-index: 30; inset: 0; display: flex; justify-content: flex-end; background: rgba(28, 31, 36, .26); }
 .claim-drawer { width: min(620px, 94vw); height: 100%; border-left: 1px solid #d7dbe0; background: #fff; box-shadow: -12px 0 36px rgba(35, 39, 45, .18); overflow: hidden; }
@@ -635,6 +1018,17 @@ onUnmounted(() => {
 .detail-section { margin-top: 20px; }
 .detail-section h6 { display: flex; align-items: center; gap: 6px; }
 .detail-section h6 span { margin-left: auto; color: #858b93; }
+.adjudication-panel { border-top: 1px solid #dfe2e7; padding-top: 16px; }
+.adjudication-panel textarea { width: 100%; resize: vertical; border: 1px solid #cfd4da; border-radius: 6px; padding: 8px; color: #202124; background: #fff; font: inherit; }
+.adjudication-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
+.adjudication-row select { min-height: 32px; border: 1px solid #cfd4da; border-radius: 6px; padding: 4px 7px; background: #fff; }
+.structural-review { display: grid; gap: 9px; margin-top: 9px; border: 1px solid #ead9b8; border-radius: 6px; padding: 9px; background: #fffbf2; }
+.structural-mode { display: flex; align-items: center; gap: 7px; color: #5f4a23; font-size: 11px; }
+.structural-mode input { width: 16px; height: 16px; margin: 0; accent-color: #3e7158; }
+.structural-budget { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.structural-budget label { display: grid; gap: 4px; color: #656b74; font-size: 10px; }
+.structural-budget input { width: 100%; min-width: 0; min-height: 30px; border: 1px solid #cfd4da; border-radius: 5px; padding: 4px 7px; background: #fff; }
+.structural-command { justify-self: start; border-color: #d2aa63; color: #6f470b; background: #fff8e9; }
 .group-row { margin-top: 8px; border: 1px solid #dfe2e7; border-radius: 6px; padding: 10px; }
 .group-row header { display: flex; align-items: center; gap: 8px; }
 .group-row header strong { margin-right: auto; font-size: 11px; }

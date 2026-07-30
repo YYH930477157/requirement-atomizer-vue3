@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -23,6 +23,7 @@ from io_utils import read_jsonl, read_jsonl_recover_torn_tail
 OMISSION_STATES = "omission_states.jsonl"
 AI_SUPPLEMENTS = "ai_supplements.jsonl"
 AI_SUPPLEMENT_VERSION = "ai-supplement-v3-identity-preconditions"
+CLAIM_AI_SUPPLEMENT_VERSION = "ai-supplement-v5-claim-focus-only"
 VALID_OMISSION_STATUS = {
     "non_requirement",
     "needs_extraction",
@@ -470,22 +471,98 @@ def supplement_strategy_fingerprint(model: str) -> str:
     })
 
 
-def _patch_is_current(patch: dict[str, Any], blocks: dict[str, dict[str, Any]]) -> bool:
-    if patch.get("strategy_version") != AI_SUPPLEMENT_VERSION:
-        return False
+def claim_supplement_strategy_fingerprint(
+    model: str,
+    *,
+    focus_adapter_version: str,
+) -> str:
+    from ai_extract import (
+        AI_EXTRACT_PROMPT_VERSION,
+        AI_VERIFY_PROMPT_VERSION,
+        CLAIM_FOCUS_CRITIQUE_VERSION,
+        EXTRACT_GUARDS_VERSION,
+    )
+
+    return _canonical_hash({
+        "version": CLAIM_AI_SUPPLEMENT_VERSION,
+        "extract_prompt": AI_EXTRACT_PROMPT_VERSION,
+        "verify_prompt": AI_VERIFY_PROMPT_VERSION,
+        "guards": EXTRACT_GUARDS_VERSION,
+        "focus_critique": CLAIM_FOCUS_CRITIQUE_VERSION,
+        "model": str(model),
+        "focus_adapter_version": str(focus_adapter_version),
+        "strategy": "critique_section.claim_focus",
+    })
+
+
+def _patch_is_current(
+    patch: dict[str, Any],
+    blocks: dict[str, dict[str, Any]],
+    diagnostics: list[dict[str, Any]] | None = None,
+) -> bool:
+    version = str(patch.get("strategy_version") or "")
     model = str(patch.get("model") or "")
-    if str(patch.get("strategy_fingerprint") or "") != supplement_strategy_fingerprint(model):
+    if version == AI_SUPPLEMENT_VERSION:
+        expected_strategy = supplement_strategy_fingerprint(model)
+    elif version == CLAIM_AI_SUPPLEMENT_VERSION:
+        origin = patch.get("origin")
+        focus = patch.get("focus")
+        if (
+            not isinstance(origin, dict)
+            or origin.get("kind") != "claim_queue"
+            or not all(str(origin.get(key) or "") for key in (
+                "claim_id", "proposal_id", "attempt_id"
+            ))
+            or not isinstance(focus, dict)
+        ):
+            if diagnostics is not None:
+                diagnostics.append({
+                    "supplement_id": str(patch.get("supplement_id") or ""),
+                    "status": "skipped",
+                    "reason": "invalid_claim_origin_or_focus",
+                    "strategy_version": version,
+                })
+            return False
+        expected_strategy = claim_supplement_strategy_fingerprint(
+            model,
+            focus_adapter_version=str(focus.get("adapter_version") or ""),
+        )
+    else:
+        if diagnostics is not None:
+            diagnostics.append({
+                "supplement_id": str(patch.get("supplement_id") or ""),
+                "status": "skipped",
+                "reason": "unsupported_strategy_version",
+                "strategy_version": version,
+            })
+        LOGGER.warning(
+            "skipping unsupported AI supplement strategy %r for %s",
+            version,
+            str(patch.get("supplement_id") or "<unknown>"),
+        )
+        return False
+    if str(patch.get("strategy_fingerprint") or "") != expected_strategy:
         return False
     block_id = str(patch.get("block_id") or "")
     block = blocks.get(block_id)
     if not block:
         return False
     current_source = omission_source_fingerprint(block_id, str(block.get("text") or ""))
-    return current_source == str(patch.get("source_fingerprint") or "")
+    if current_source != str(patch.get("source_fingerprint") or ""):
+        return False
+    if version == CLAIM_AI_SUPPLEMENT_VERSION:
+        from claim_focus import _block_fingerprint
+
+        if str(patch.get("parent_block_fingerprint") or "") != _block_fingerprint(block):
+            return False
+    return True
 
 
 def apply_supplement_patches(
-    out_dir: Path, base_requirements: list[dict[str, Any]],
+    out_dir: Path,
+    base_requirements: list[dict[str, Any]],
+    *,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Replay valid upserts in log order while preserving base ordering."""
     from ai_review_actions import (
@@ -505,7 +582,7 @@ def apply_supplement_patches(
         if block.get("block_id")
     }
     for patch in read_supplement_patches(root):
-        if not _patch_is_current(patch, blocks):
+        if not _patch_is_current(patch, blocks, diagnostics):
             continue
         preconditions = patch.get("preconditions")
         if not isinstance(preconditions, dict):
@@ -641,6 +718,378 @@ def _append_patch_once(out_dir: Path, patch: dict[str, Any]) -> dict[str, Any]:
     return patch
 
 
+def _claim_focus_lines(root: Path, focus: dict[str, Any]) -> list[str]:
+    kind = str(focus.get("kind") or "")
+    if kind in {"text_span", "list_item"}:
+        text = str(focus.get("text") or "").strip()
+        return [text] if text else []
+    if kind == "table_item":
+        fields = [
+            f"{str(field.get('name') or '').strip()}: "
+            f"{str(field.get('value') or '').strip()}"
+            for field in (focus.get("field_identity") or [])
+            if isinstance(field, dict)
+            and (str(field.get("name") or "").strip()
+                 or str(field.get("value") or "").strip())
+        ]
+        return [" | ".join(fields)] if fields else []
+    if kind == "table_data_rows":
+        block = _block_by_id(root, str(focus.get("block_id") or ""))
+        rows = list(block.get("data_rows") or [])
+        header_rows = int(block.get("header_row_count") or 0)
+        start = int(focus.get("row_start") or 0) - header_rows
+        end = int(focus.get("row_end") or 0) - header_rows
+        lines: list[str] = []
+        for row in rows[max(0, start):max(0, end)]:
+            if isinstance(row, dict):
+                values = [f"{key}: {row[key]}" for key in sorted(row)]
+            elif isinstance(row, (list, tuple)):
+                values = [str(value or "") for value in row]
+            else:
+                values = [str(row or "")]
+            line = " | ".join(value.strip() for value in values if value.strip())
+            if line:
+                lines.append(line)
+        return lines
+    return []
+
+
+def _claim_output_scope_guard(
+    upserts: list[dict[str, Any]],
+    *,
+    block_id: str,
+    section_block_ids: set[str],
+    focus_lines: list[str],
+) -> None:
+    """Reject a claim repair that edits evidence outside its focused source."""
+    normalized_focus = [
+        " ".join(value.split()).casefold()
+        for value in focus_lines
+        if len(" ".join(str(value or "").split())) >= 3
+    ]
+    for row in upserts:
+        source_ids = {
+            str(value) for value in (row.get("source_block_ids") or []) if str(value)
+        }
+        if block_id not in source_ids or not source_ids.issubset(section_block_ids):
+            raise OmissionNoResultError(
+                "claim extraction produced a requirement outside the focused source block"
+            )
+        rendered = " ".join(
+            json.dumps(row, ensure_ascii=False, sort_keys=True).split()
+        ).casefold()
+        if normalized_focus and not any(
+            fragment in rendered or rendered in fragment
+            for fragment in normalized_focus
+        ):
+            # Table adapters often carry one field per fragment rather than the
+            # complete joined row. Retaining any non-trivial field value is enough
+            # to bind the output while protected-number guards remain in force.
+            pieces = {
+                " ".join(piece.split()).casefold()
+                for line in normalized_focus
+                for piece in line.split("|")
+                if len(" ".join(piece.split())) >= 3
+            }
+            if not any(piece in rendered for piece in pieces):
+                raise OmissionNoResultError(
+                    "claim extraction output is not bound to the focused evidence"
+                )
+
+
+def _targeted_reextract_claim(
+    out_dir: Path,
+    *,
+    block_id: str,
+    actor: str | None,
+    reason: str,
+    route: str,
+    expected_source_fingerprint: str,
+    execution: dict[str, Any],
+    operation_lock_held: bool,
+) -> dict[str, Any]:
+    import ai_extract
+    from ai_review_actions import (
+        ensure_requirement_identity,
+        review_subject_fingerprint,
+        source_ai_requirement_id,
+        source_fingerprint,
+    )
+    from llm_client import apply_min_tokens, chat_json_with_meta
+
+    root = Path(out_dir).expanduser().resolve()
+    focus = execution.get("focus")
+    if not isinstance(focus, dict):
+        raise ValueError("claim focus is required")
+    if str(focus.get("block_id") or "") != block_id:
+        raise OmissionConflictError("claim focus no longer refers to its parent block")
+    request_budget = execution.get("request_budget")
+    if request_budget is None:
+        raise ValueError("claim extraction requires an explicit request budget")
+    pre_publish_check = execution.get("pre_publish_check")
+    if not callable(pre_publish_check):
+        raise ValueError("claim extraction requires a pre-publication CAS callback")
+    on_supplement = execution.get("on_supplement_persisted")
+    on_requirements = execution.get("on_requirements_published")
+    chat_fn = execution.get("chat_with_meta") or chat_json_with_meta
+
+    lock = (
+        nullcontext()
+        if operation_lock_held
+        else extraction_operation_lock(root, operation="claim-targeted")
+    )
+    with lock:
+        from api_server import final_ai_requirements_are_stale
+
+        if final_ai_requirements_are_stale(root):
+            raise OmissionConflictError(
+                "AI extraction belongs to an older parsed document; rerun full extraction first"
+            )
+        if not ai_extract.ai_requirements_producer_is_current(root):
+            raise OmissionConflictError(
+                "AI extraction belongs to an older producer version; rerun full extraction first"
+            )
+        block = _block_by_id(root, block_id)
+        block_text = str(block.get("text") or "")
+        current_source = omission_source_fingerprint(block_id, block_text)
+        if expected_source_fingerprint and expected_source_fingerprint != current_source:
+            raise OmissionConflictError("claim source changed; refresh before extraction")
+
+        blocks, section, _sections = _find_target_section(root, block_id)
+        current = read_jsonl(root / ai_extract.AI_REQUIREMENTS)
+        try:
+            previous_requirements_meta = json.loads(
+                (root / ai_extract.AI_REQUIREMENTS_META).read_text(encoding="utf-8")
+            )
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            previous_requirements_meta = {}
+        if not isinstance(previous_requirements_meta, dict):
+            previous_requirements_meta = {}
+        section_block_ids = {str(value) for value in (section.get("block_ids") or [])}
+        existing_original = [
+            row for row in current
+            if section_block_ids.intersection(
+                str(value) for value in (row.get("source_block_ids") or [])
+            )
+        ]
+        existing = copy.deepcopy(existing_original)
+        focused = _claim_focus_lines(root, focus)
+        if not focused:
+            raise ValueError("claim focus has no extractable evidence")
+
+        config = ai_extract.config_for_route(route)
+        if config is None:
+            raise ValueError("openai_compatible route is not configured")
+        config = apply_min_tokens(config, "extract")
+        usage_meta: list[dict[str, Any]] = []
+
+        def chat(system: str, user: str) -> dict[str, Any]:
+            payload, meta = chat_fn(
+                config,
+                system,
+                user,
+                request_budget=request_budget,
+            )
+            usage_meta.append(dict(meta or {}))
+            return payload
+
+        doc_context = ai_extract.build_doc_context(root, blocks)
+        context_ints = frozenset(ai_extract.extract_ints(doc_context)) if doc_context else frozenset()
+        extra, _supplements = ai_extract.critique_section(
+            section,
+            existing,
+            chat,
+            doc_context,
+            context_ints,
+            focus_lines=focused,
+            strict_focus=True,
+        )
+
+        strategy_fp = claim_supplement_strategy_fingerprint(
+            config.model,
+            focus_adapter_version=str(focus.get("adapter_version") or ""),
+        )
+        before_by_id = {source_ai_requirement_id(row): row for row in existing_original}
+        upserts: list[dict[str, Any]] = []
+        for row in existing:
+            rid = source_ai_requirement_id(row)
+            before = before_by_id.get(rid)
+            if before is not None and review_subject_fingerprint(before) == review_subject_fingerprint(row):
+                continue
+            ensure_requirement_identity(row, extraction_fingerprint=f"supplement:{strategy_fp[:24]}")
+            upserts.append(row)
+        upserts.extend(
+            ai_extract._prepare_requirement_rows(
+                extra,
+                f"supplement:{strategy_fp[:24]}",
+            )
+        )
+        if not upserts:
+            raise OmissionNoResultError(
+                "claim extraction produced no guarded requirement changes"
+            )
+        _claim_output_scope_guard(
+            upserts,
+            block_id=block_id,
+            section_block_ids=section_block_ids,
+            focus_lines=focused,
+        )
+
+        # The second CAS is deliberately after the paid response and immediately
+        # before either supplement or target publication can change.
+        pre_publish_check()
+
+        current_blocks = {
+            str(item.get("block_id") or ""): item for item in blocks
+        }
+        preconditions: dict[str, dict[str, Any]] = {}
+        for row in upserts:
+            rid = source_ai_requirement_id(row)
+            before = before_by_id.get(rid)
+            evidence_row = before if before is not None else row
+            source_blocks = {
+                source_block_id: omission_source_fingerprint(
+                    source_block_id,
+                    str(current_blocks[source_block_id].get("text") or ""),
+                )
+                for source_block_id in (
+                    str(value) for value in (evidence_row.get("source_block_ids") or [])
+                )
+                if source_block_id in current_blocks
+            }
+            preconditions[rid] = (
+                {"base_absent": True, "source_blocks": source_blocks}
+                if before is None
+                else {
+                    "base_absent": False,
+                    "source_fingerprint": source_fingerprint(before),
+                    "review_subject_fingerprint": review_subject_fingerprint(before),
+                    "source_blocks": source_blocks,
+                }
+            )
+        origin = {
+            "kind": "claim_queue",
+            "claim_id": str(execution.get("claim_id") or ""),
+            "proposal_id": str(execution.get("proposal_id") or ""),
+            "attempt_id": str(execution.get("attempt_id") or ""),
+        }
+        content_key = [
+            (source_ai_requirement_id(row), review_subject_fingerprint(row))
+            for row in upserts
+        ]
+        supplement_id = "SUP-" + hashlib.sha1(
+            json.dumps(
+                [origin, current_source, strategy_fp, content_key, preconditions, focus],
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:12]
+        from claim_focus import _block_fingerprint
+
+        patch = {
+            "schema": "ai-supplement/v2",
+            "supplement_id": supplement_id,
+            "block_id": block_id,
+            "source_fingerprint": current_source,
+            "parent_block_fingerprint": _block_fingerprint(block),
+            "strategy_version": CLAIM_AI_SUPPLEMENT_VERSION,
+            "strategy_fingerprint": strategy_fp,
+            "model": config.model,
+            "focus": copy.deepcopy(focus),
+            "focus_lines": focused,
+            "origin": origin,
+            "upserts": upserts,
+            "preconditions": preconditions,
+            "actor": actor,
+            "reason": str(reason or ""),
+            "recorded_at": _utc_now(),
+        }
+        patch = _append_patch_once(root, patch)
+        if callable(on_supplement):
+            on_supplement(patch)
+
+        effective = apply_supplement_patches(root, current)
+        effective_by_id = {source_ai_requirement_id(row): row for row in effective}
+        unapplied = [
+            source_ai_requirement_id(row)
+            for row in upserts
+            if source_ai_requirement_id(row) not in effective_by_id
+            or review_subject_fingerprint(effective_by_id[source_ai_requirement_id(row)])
+            != review_subject_fingerprint(row)
+        ]
+        if unapplied:
+            raise OmissionConflictError(
+                "claim extraction inputs changed before publish; refresh and retry"
+            )
+        ai_extract.atomic_write_jsonl(root / ai_extract.AI_REQUIREMENTS, effective)
+        ai_extract.write_compliance_requirements(root, effective)
+        partial = ai_extract.read_partial_snapshot(root / ai_extract.AI_REQUIREMENTS_PARTIAL)
+        quality = ai_extract.refresh_ai_extract_quality(root, effective)
+        baseline_cost = dict(quality.get("no_ledger_baseline_cost") or {})
+        if not baseline_cost.get("lineage_version"):
+            baseline_cost = dict(
+                previous_requirements_meta.get("no_ledger_baseline_cost") or {}
+            )
+        ai_extract.write_ai_requirements_metadata(
+            root,
+            input_fingerprint=ai_extract.extraction_input_fingerprint(root),
+            run_id=str(
+                (partial or {}).get("run_id")
+                or previous_requirements_meta.get("run_id")
+                or "claim-targeted"
+            ),
+            failed_sections=int(
+                quality.get("failed_sections")
+                if "failed_sections" in quality
+                else previous_requirements_meta.get("failed_sections") or 0
+            ),
+            failed_section_ids=list(
+                quality.get("failed_section_ids")
+                if "failed_section_ids" in quality
+                else previous_requirements_meta.get("failed_section_ids") or []
+            ),
+            failed_section_block_ids=list(
+                quality.get("failed_section_block_ids")
+                or previous_requirements_meta.get("failed_section_block_ids")
+                or []
+            ),
+            no_ledger_baseline_cost=baseline_cost,
+        )
+        if partial and partial.get("complete"):
+            ai_extract.write_partial_snapshot(
+                root / ai_extract.AI_REQUIREMENTS_PARTIAL,
+                run_id=str(partial["run_id"]),
+                completed=int(partial.get("completed") or 0),
+                total=int(partial.get("total") or 0),
+                complete=True,
+                failed=bool(partial.get("failed")),
+                error=str(partial.get("error") or ""),
+                rows=effective,
+                input_fingerprint=str(partial.get("input_fingerprint") or ""),
+            )
+        elif partial:
+            (root / ai_extract.AI_REQUIREMENTS_PARTIAL).unlink(missing_ok=True)
+        if callable(on_requirements):
+            on_requirements(effective)
+        rebuilt = ai_extract.rebuild_merged_spec(root)
+        written = [
+            ai_extract.AI_REQUIREMENTS,
+            ai_extract.AI_REQUIREMENTS_META,
+            ai_extract.COMPLIANCE_REQUIREMENTS,
+            "ai_extract_quality.json",
+            AI_SUPPLEMENTS,
+        ]
+        written.extend(str(value) for value in (rebuilt.get("written") or []))
+        return {
+            "schema": "claim-reextract-mutation/v1",
+            "supplement": patch,
+            "requirements": len(upserts),
+            "effective_count": len(effective),
+            "usage_meta": usage_meta,
+            "written": list(dict.fromkeys(written)),
+        }
+
+
 def targeted_reextract(
     out_dir: Path,
     *,
@@ -651,8 +1100,21 @@ def targeted_reextract(
     reason: str = "",
     route: str = "openai_compatible",
     expected_source_fingerprint: str = "",
+    claim_execution: dict[str, Any] | None = None,
+    operation_lock_held: bool = False,
 ) -> dict[str, Any]:
     """Run one guarded critique pass for an omitted source block and persist upserts."""
+    if claim_execution is not None:
+        return _targeted_reextract_claim(
+            out_dir,
+            block_id=str(block_id or "").strip(),
+            actor=actor,
+            reason=reason,
+            route=route,
+            expected_source_fingerprint=expected_source_fingerprint,
+            execution=claim_execution,
+            operation_lock_held=operation_lock_held,
+        )
     import ai_extract
     from ai_review_actions import (
         ensure_requirement_identity,

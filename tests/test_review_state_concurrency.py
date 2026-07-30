@@ -108,6 +108,30 @@ class ReviewActionErrorResponseTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         out_dir = Path(self.temp_dir.name).resolve()
+        requirement = {
+            "req_id": "AREQ-1",
+            "stable_req_id": "SREQ-1",
+            "source_id": "SRC-1",
+            "source_type": "paragraph",
+            "source_refs": ["SRC-1"],
+            "section_path": ["4.1"],
+            "domain": "interface",
+            "object": "indicator output",
+            "requirement_type": "functional",
+            "requirement": (
+                "The product shall support configurable indicator outputs."
+            ),
+            "condition": "",
+            "parameters": {},
+            "verification_method": "inspection",
+        }
+        (out_dir / "atomic_requirements.jsonl").write_text(
+            json.dumps(requirement) + "\n",
+            encoding="utf-8",
+        )
+        from api_server import enrich_requirements
+
+        self.current_requirement = enrich_requirements([requirement], out_dir)[0]
 
         class TestHandler(RequirementAPIHandler):
             pass
@@ -126,7 +150,19 @@ class ReviewActionErrorResponseTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def post_review_action(self) -> tuple[int, dict]:
-        body = json.dumps({"requirement_id": "SREQ-1", "status": "accepted"}).encode("utf-8")
+        body = json.dumps({
+            "requirement_id": "SREQ-1",
+            "status": "accepted",
+            "expected_target_fingerprint": self.current_requirement[
+                "target_fingerprint"
+            ],
+            "expected_target_publication_revision": self.current_requirement[
+                "target_publication_revision"
+            ],
+            "expected_target_authority_write_revision": self.current_requirement[
+                "target_authority_write_revision"
+            ],
+        }).encode("utf-8")
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
         try:
             connection.request(

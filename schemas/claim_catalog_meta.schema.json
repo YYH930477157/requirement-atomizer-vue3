@@ -12,6 +12,10 @@
     "table_items_sha256",
     "parser_provenance",
     "catalog_generation_id",
+    "structural_override_version",
+    "structural_override_prefix_sha256",
+    "structural_override_prefix_count",
+    "structural_override_applied_count",
     "scope",
     "document_closure_claimed",
     "packing_config",
@@ -55,6 +59,10 @@
       "additionalProperties": false
     },
     "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "structural_override_version": {"const": "claim-structural-override-v1"},
+    "structural_override_prefix_sha256": {"$ref": "#/$defs/hash"},
+    "structural_override_prefix_count": {"type": "integer", "minimum": 0},
+    "structural_override_applied_count": {"type": "integer", "minimum": 0},
     "scope": {"enum": ["full", "sample"]},
     "document_closure_claimed": {"const": false},
     "packing_config": {

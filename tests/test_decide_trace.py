@@ -44,6 +44,10 @@ def valid_trace(iteration: int = 1) -> dict:
 
 
 class DecideTraceSchemaTests(unittest.TestCase):
+    def test_schema_identity_remains_frozen_at_v1(self) -> None:
+        self.assertEqual(DECIDE_TRACE_VERSION, "decide-trace-v1")
+        self.assertEqual(DECIDE_TRACE_FILE, "decide_trace.jsonl")
+
     def test_valid_trace_passes_schema(self) -> None:
         self.assertEqual(validate_decide_trace(valid_trace())["iteration"], 1)
 

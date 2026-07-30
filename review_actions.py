@@ -17,5 +17,15 @@ def apply_review_action(
     *,
     actor: str | None = None,
     reason: str = "",
+    expected_target_fingerprint: str | None = None,
+    expected_target_authority_write_revision: str | None = None,
 ) -> dict[str, Any]:
-    return apply_expert_decision(out_dir, requirement_id, status, actor=actor or getpass.getuser(), reason=reason)
+    return apply_expert_decision(
+        out_dir,
+        requirement_id,
+        status,
+        actor=actor or getpass.getuser(),
+        reason=reason,
+        expected_target_fingerprint=expected_target_fingerprint,
+        expected_target_authority_write_revision=expected_target_authority_write_revision,
+    )

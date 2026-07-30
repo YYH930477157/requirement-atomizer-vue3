@@ -4,6 +4,8 @@ import { Ban, Check, ChevronLeft, ChevronRight, Image, MessageSquareText, Messag
 import type {
   AiExtractionStatusPayload,
   AiRequirement,
+  ClaimAnnotationRecord,
+  ClaimAnnotationZone,
   ClarificationInternalChecksPayload,
   DocumentBlock,
   OmissionActionState,
@@ -236,6 +238,7 @@ const selectedBlockId = ref("")
 // 表格行选中态（v12 行级热区，"<block_id>#R<行号>"，与后端行卡片键同源）——
 // 声明必须在 immediate watch 之前（watch 首次同步执行会清空它）
 const selectedRowKey = ref("")
+const selectedClaimId = ref("")
 const selectedBlock = computed(() => blocks.value.find((b) => b.block_id === selectedBlockId.value) || null)
 const selectedBlockKind = computed(() => {
   if (!selectedBlock.value) return "context"
@@ -263,6 +266,7 @@ function selectBlockCard(b: DocumentBlock) {
   stashRequirementDraft()
   stashOmissionDraft()
   selectedRowKey.value = ""
+  selectedClaimId.value = ""
   if (selectedBlockId.value === b.block_id) {  // 再点一下 → 取消选中
     selectedBlockId.value = ""
     omissionNote.value = ""
@@ -287,6 +291,8 @@ function onBlockClick(b: DocumentBlock) {
 // 右栏详情与裁决两种模式完全共用——双渲染器等价。页图缺失时提示先跑一次影印导出。
 const viewMode = ref<"text" | "pdf">("pdf")
 const pdfData = ref<PdfAnnotationPayload | null>(null)
+const selectedClaim = computed(() =>
+  (pdfData.value?.claim_records || []).find((row) => row.claim_id === selectedClaimId.value) || null)
 const pdfLoading = ref(false)
 const pdfPageUrls = ref<Record<string, string>>({})
 let pdfPageLoadGeneration = 0
@@ -446,6 +452,7 @@ watch([() => props.active, () => props.client, () => props.sessionKey], ([on, cl
     selectedId.value = ""
     selectedBlockId.value = ""
     selectedRowKey.value = ""
+    selectedClaimId.value = ""
     omissionNote.value = ""
     clearRequirementEditor()
     requirementDrafts.clear()
@@ -526,6 +533,55 @@ const pdfZonesByPage = computed(() => {
   }
   return byPage
 })
+const pdfClaimZonesByPage = computed(() => {
+  const byPage = new Map<number, ClaimAnnotationZone[]>()
+  for (const zone of pdfData.value?.claim_zones || []) {
+    const list = byPage.get(zone.page) || []
+    list.push(zone)
+    byPage.set(zone.page, list)
+  }
+  return byPage
+})
+const mappedClaimsByBlock = computed(() => {
+  const byBlock = new Map<string, ClaimAnnotationRecord[]>()
+  for (const claim of pdfData.value?.claim_records || []) {
+    if (!claim.mapped) continue
+    const rows = byBlock.get(claim.block_id) || []
+    rows.push(claim)
+    byBlock.set(claim.block_id, rows)
+  }
+  for (const rows of byBlock.values()) {
+    rows.sort((a, b) => (a.start ?? 1e9) - (b.start ?? 1e9) || a.claim_id.localeCompare(b.claim_id))
+  }
+  return byBlock
+})
+const CLAIM_RESOLUTION_LABELS: Record<string, string> = {
+  covered: "已覆盖", excluded: "已排除", uncertain: "待确认",
+}
+function claimFocusKind(claim: ClaimAnnotationRecord): string {
+  return String(claim.focus?.kind || claim.source_kind || "")
+}
+function selectClaimCard(claimId: string) {
+  const claim = (pdfData.value?.claim_records || []).find((row) => row.claim_id === claimId)
+  if (!claim) return
+  stashRequirementDraft()
+  stashOmissionDraft()
+  if (selectedClaimId.value === claimId) {
+    selectedClaimId.value = ""
+    return
+  }
+  selectedClaimId.value = claimId
+  selectedId.value = ""
+  selectedBlockId.value = ""
+  selectedRowKey.value = ""
+  clearRequirementEditor()
+  omissionNote.value = ""
+}
+function claimsForDataRow(blockId: string, rowIndex: number): ClaimAnnotationRecord[] {
+  return (mappedClaimsByBlock.value.get(blockId) || []).filter(
+    (claim) => (claim.data_row_indexes || []).includes(rowIndex),
+  )
+}
 // 表格行选中态辅助（键声明见 selectedBlockId 旁——immediate watch 时序要求）
 function rowZoneKey(z: PdfBlockZone): string {
   return z.row_index != null ? `${z.block_id}#R${z.row_index}` : z.block_id
@@ -539,6 +595,7 @@ function selectRowCard(z: PdfBlockZone) {
     return
   }
   selectedRowKey.value = key
+  selectedClaimId.value = ""
   selectedId.value = ""
   selectedBlockId.value = ""
   clearRequirementEditor()
@@ -899,6 +956,7 @@ function activateReq(req: AiRequirement) {
   stashOmissionDraft()
   selectedBlockId.value = ""
   selectedRowKey.value = ""
+  selectedClaimId.value = ""
   omissionNote.value = ""
   selectedId.value = req.ai_req_id
   const draft = requirementDrafts.get(req.ai_req_id)
@@ -1120,17 +1178,38 @@ async function spotExtractBlock(b: DocumentBlock, rowIndex?: number) {
 }
 
 // 选中需求时，在锚段内的块里高亮 source_quote 原句；选中未覆盖/背景段时整段=引用本体 → 全黄。
-function segments(b: DocumentBlock): Array<{ text: string; mark: boolean }> {
+function segments(b: DocumentBlock): Array<{ text: string; mark: boolean; claim?: ClaimAnnotationRecord }> {
   const text = b.text || ""
-  if (b.block_id === selectedBlockId.value) return [{ text, mark: true }]
+  const claims = (mappedClaimsByBlock.value.get(b.block_id) || []).filter((claim) => {
+    const kind = claimFocusKind(claim)
+    return (kind === "text_span" || kind === "list_item")
+      && Number.isInteger(claim.start) && Number.isInteger(claim.end)
+      && (claim.start as number) >= 0 && (claim.end as number) > (claim.start as number)
+      && (claim.end as number) <= text.length
+      && text.slice(claim.start, claim.end) === (claim.rendered_text || claim.text)
+  })
   const quote = selectedReq.value?.source_quote || ""
-  if (!quote || !selectedSpan.value.has(b.block_id) || !text.includes(quote)) return [{ text, mark: false }]
-  const i = text.indexOf(quote)
-  return [
-    { text: text.slice(0, i), mark: false },
-    { text: quote, mark: true },
-    { text: text.slice(i + quote.length), mark: false },
-  ].filter((s) => s.text.length)
+  const quoteStart = quote && selectedSpan.value.has(b.block_id) ? text.indexOf(quote) : -1
+  const quoteEnd = quoteStart >= 0 ? quoteStart + quote.length : -1
+  const boundaries = new Set<number>([0, text.length])
+  for (const claim of claims) {
+    boundaries.add(claim.start as number)
+    boundaries.add(claim.end as number)
+  }
+  if (quoteStart >= 0) {
+    boundaries.add(quoteStart)
+    boundaries.add(quoteEnd)
+  }
+  const points = [...boundaries].sort((a, b) => a - b)
+  return points.slice(0, -1).map((start, index) => {
+    const end = points[index + 1]
+    const claim = claims.find((row) => (row.start as number) <= start && (row.end as number) >= end)
+    return {
+      text: text.slice(start, end),
+      mark: b.block_id === selectedBlockId.value || (quoteStart >= 0 && start >= quoteStart && end <= quoteEnd),
+      claim,
+    }
+  }).filter((segment) => segment.text.length)
 }
 
 async function decide(status: "accepted" | "rejected" | "needs_discussion", advance = false) {
@@ -1154,6 +1233,9 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion", adva
       aiReqId: req.ai_req_id, status,
       sourceFingerprint: req.source_fingerprint,
       reviewSubjectFingerprint: req.review_subject_fingerprint,
+      expectedTargetFingerprint: req.target_fingerprint,
+      expectedTargetPublicationRevision: req.target_publication_revision,
+      expectedTargetAuthorityWriteRevision: req.target_authority_write_revision,
       // 与规则初判比较：重复裁决时保留既有覆盖；选回初判值才发空串清除。
       moduleOverride: moduleName !== originalModuleOf(req) ? moduleName : undefined,
       clearModuleOverride: moduleName === originalModuleOf(req) && Boolean(req.review_state?.module_override),
@@ -1164,6 +1246,10 @@ async function decide(status: "accepted" | "rejected" | "needs_discussion", adva
     if (client !== props.client || generation !== reviewOperationGeneration
         || state.ai_req_id !== req.ai_req_id) return
     req.review_state = state
+    req.target_authority_write_revision = state.target_authority_write_revision
+      || req.target_authority_write_revision
+    req.target_publication_revision = state.target_publication_revision
+      || req.target_publication_revision
     req.needs_reconfirmation = false
     req.status = state.status
     req.module_effective = state.module_override || originalModuleOf(req)
@@ -1197,6 +1283,8 @@ function partialRowsIdentity(rows: AiRequirement[]) {
     row.extraction_fingerprint || "",
     row.source_fingerprint || "",
     row.review_subject_fingerprint || "",
+    row.target_publication_revision || "",
+    row.target_authority_write_revision || "",
   ].join(":")).join("|")
 }
 
@@ -1355,6 +1443,15 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                 <span v-if="pdfZoneBlock(z)?.text_repaired" class="pdf-audit-tag tag-repair">修复</span>
                 <span v-if="pdfZoneBlock(z)?.extraction_failed" class="pdf-audit-tag tag-failed">失败</span>
               </button>
+              <button v-for="(z, zi) in (pdfClaimZonesByPage.get(p.page_number) || [])"
+                      :key="'claim-' + z.claim_id + '-' + zi" type="button"
+                      class="claim-zone-pdf"
+                      :class="['claim-' + z.resolution, { sel: z.claim_id === selectedClaimId }]"
+                      :style="{ left: z.rect.left + '%', top: z.rect.top + '%',
+                                width: z.rect.width + '%', height: z.rect.height + '%' }"
+                      :data-testid="`pdf-claim-${z.claim_id}`"
+                      :title="`Claim ${z.claim_id} · ${CLAIM_RESOLUTION_LABELS[z.resolution] || z.resolution}`"
+                      @click.stop="selectClaimCard(z.claim_id)" />
               <button v-for="m in (pdfMarkersByPage.get(p.page_number) || [])"
                       :key="m.kind + m.id" type="button" class="pdf-marker"
                       :class="[m.kind === 'omission' ? 'marker-omission' : 'marker-req', { sel: pdfMarkerSelected(m) }]"
@@ -1401,7 +1498,8 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                     <tr v-for="(hr, hi) in b.header_rows" :key="hi"><th v-for="(c, ci) in padRow(b, hr)" :key="ci">{{ c }}</th></tr>
                   </thead>
                   <tbody>
-                    <tr v-for="(row, ri) in b.data_rows" :key="ri"><td v-for="(c, ci) in padRow(b, row)" :key="ci"><button
+                    <tr v-for="(row, ri) in b.data_rows" :key="ri"
+                        :class="{ 'claim-table-row': claimsForDataRow(b.block_id, ri + 1).length }"><td v-for="(c, ci) in padRow(b, row)" :key="ci"><button
                       v-if="ci === 0 && props.client?.spotExtract"
                       type="button"
                       class="spot-extract-btn spot-row-btn"
@@ -1410,7 +1508,15 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                       title="解析此行：生成 draft 需求进澄清待确认"
                       :aria-label="`解析此行（第 ${ri + 1} 行）`"
                       @click.stop="spotExtractBlock(b, ri + 1)"
-                    ><Wand2 :size="11" aria-hidden="true" /></button>{{ c }}</td></tr>
+                    ><Wand2 :size="11" aria-hidden="true" /></button>{{ c }}<span
+                      v-if="ci === padRow(b, row).length - 1 && claimsForDataRow(b.block_id, ri + 1).length"
+                      class="claim-row-controls"><button
+                        v-for="claim in claimsForDataRow(b.block_id, ri + 1)" :key="claim.claim_id"
+                        type="button" class="claim-row-chip"
+                        :class="['claim-' + claim.resolution, { sel: claim.claim_id === selectedClaimId }]"
+                        :data-testid="`claim-row-${claim.claim_id}`"
+                        :title="`Claim ${claim.claim_id} · ${CLAIM_RESOLUTION_LABELS[claim.resolution] || claim.resolution}`"
+                        @click.stop="selectClaimCard(claim.claim_id)"><i /></button></span></td></tr>
                   </tbody>
                 </table>
               </div>
@@ -1449,7 +1555,12 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
               >{{ echoLabel(echoReqsForBlock(b.block_id)) }}</button>
             </figure>
             <p v-else class="doc-text" :class="{ 'list-item': isListItem(b) }">
-              <template v-for="(seg, i) in segments(b)" :key="i"><mark v-if="seg.mark">{{ seg.text }}</mark><span v-else>{{ seg.text }}</span></template>
+              <template v-for="(seg, i) in segments(b)" :key="i"><span v-if="seg.claim"
+                :class="['claim-span-zone', 'claim-' + seg.claim.resolution, { sel: seg.claim.claim_id === selectedClaimId }]"
+                role="button" tabindex="0" :data-testid="`claim-span-${seg.claim.claim_id}`"
+                @click.stop="selectClaimCard(seg.claim.claim_id)"
+                @keydown.enter.stop.prevent="selectClaimCard(seg.claim.claim_id)"
+                @keydown.space.stop.prevent="selectClaimCard(seg.claim.claim_id)"><mark v-if="seg.mark">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></span><span v-else><mark v-if="seg.mark">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></span></template>
               <button
                 v-if="b.text_repaired"
                 class="repair-tag"
@@ -1498,7 +1609,21 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
       </article>
 
       <aside class="doc-detail" data-testid="doc-detail">
-        <div v-if="!selectedReq && !selectedBlock && !selectedRow" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
+        <div v-if="!selectedReq && !selectedBlock && !selectedRow && !selectedClaim" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
+        <div v-else-if="selectedClaim" class="doc-detail-card" data-testid="claim-card">
+          <div class="dd-head">
+            <span class="dd-module">Claim Ledger</span>
+            <span class="dd-status" :class="'claim-' + selectedClaim.resolution">{{ CLAIM_RESOLUTION_LABELS[selectedClaim.resolution] || selectedClaim.resolution }}</span>
+          </div>
+          <h3 class="dd-title">{{ selectedClaim.text || selectedClaim.claim_id }}</h3>
+          <div class="dd-meta">{{ selectedClaim.claim_id }} · {{ claimFocusKind(selectedClaim) }}</div>
+          <div class="dd-section">
+            <div class="dd-label">账本状态</div>
+            <div class="dd-body">{{ CLAIM_RESOLUTION_LABELS[selectedClaim.resolution] || selectedClaim.resolution }}<template v-if="selectedClaim.classification"> · {{ selectedClaim.classification }}</template></div>
+          </div>
+          <div v-if="selectedClaim.mapping_error" class="dd-suspicion">定位失败：{{ selectedClaim.mapping_error }}</div>
+          <div class="dd-section"><div class="dd-label">Claim 原文</div><div class="dd-quote">{{ selectedClaim.text }}</div></div>
+        </div>
         <div v-else-if="selectedRow" class="doc-detail-card" data-testid="table-row-card">
           <div class="dd-head">
             <span class="dd-module">{{ selectedRow.kind === "covered" ? "表格行 · 分析范围" : (selectedRow.kind === "req" ? "表格行 · 解析结果" : "表格行 · 背景") }}</span>
@@ -1780,6 +1905,12 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 /* 表格行级热区（v12）：与段落块热区的蓝区分开,行用青色细框 */
 .pdf-block-zone.table-row:hover { background: rgba(15,118,110,.05); border-color: rgba(15,118,110,.45); }
 .pdf-block-zone.table-row.sel { background: rgba(15,118,110,.08); border-color: rgba(15,118,110,.78); }
+.claim-zone-pdf { position: absolute; z-index: 4; margin: 0; padding: 0; border: 1px solid transparent;
+  border-radius: 2px; background: transparent; cursor: pointer; }
+.claim-zone-pdf:hover, .claim-zone-pdf.sel { border-color: currentColor; }
+.claim-covered { color: #2f6842; }
+.claim-excluded { color: #6b7280; }
+.claim-uncertain { color: #9a6700; }
 .pdf-audit-tag { position: absolute; left: 2px; top: -13px; padding: 1px 3px; border-radius: 3px;
   background: rgba(255,255,255,.94); font-size: 8px; font-weight: 650; line-height: 1.15;
   pointer-events: none; opacity: .72; }
@@ -1829,6 +1960,16 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 .doc-gutter { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
 .doc-text { margin: 0; font-size: 13px; line-height: 1.48; color: #3f4a61; white-space: pre-wrap; }
 .doc-text mark { background: #f3d9a0; padding: 0 1px; }
+.claim-span-zone { border-radius: 2px; cursor: pointer; box-decoration-break: clone;
+  -webkit-box-decoration-break: clone; }
+.claim-span-zone.claim-covered { box-shadow: inset 0 -2px 0 rgba(47,104,66,.55); }
+.claim-span-zone.claim-excluded { box-shadow: inset 0 -2px 0 rgba(107,114,128,.45); }
+.claim-span-zone.claim-uncertain { background: rgba(246,239,216,.62); box-shadow: inset 0 -2px 0 rgba(154,103,0,.58); }
+.claim-span-zone.sel { outline: 2px solid currentColor; outline-offset: 1px; }
+.claim-row-controls { display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: middle; }
+.claim-row-chip { width: 14px; height: 14px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.claim-row-chip i { display: block; width: 7px; height: 7px; margin: auto; border-radius: 50%; background: currentColor; }
+.claim-row-chip.sel { outline: 2px solid currentColor; outline-offset: 1px; }
 .anno-chip { font-size: 11px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 1px 7px; background: #ffffff; cursor: pointer; max-width: 124px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .anno-chip.sel { outline: 2px solid #5978f7; }
 .anno-chip.st-accepted { border-color: #1d8a5c; color: #1d8a5c; }

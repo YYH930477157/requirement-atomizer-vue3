@@ -462,19 +462,27 @@ STAGE_INPUTS: dict[str, list[str]] = {
     "requirements-analysis": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "ai_review_states.jsonl",
                               "clarification_answers.jsonl", "blocks.jsonl", "term_map.json",
                               "ai_requirements.meta.json", "ai_supplements.jsonl"],
-    "template-write": ["engineering_analysis.json", "ai_supplements.jsonl"],
+    "template-write": ["engineering_analysis.json", "ai_requirements.meta.json",
+                       "ai_supplements.jsonl"],
     "clarification-report": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "engineering_analysis.json",
                              "consistency_report.json", "blocks.jsonl", "ai_review_states.jsonl",
                              "clarification_answers.jsonl", "clarification_check_states.jsonl",
                              "omission_states.jsonl", "ai_requirements.meta.json", "ai_supplements.jsonl",
                              "claim_effective_ledger.jsonl", "claim_effective.meta.json",
                              "claim_queue_proposals.jsonl", "claim_effective_health.json"],
-    "compose": ["atomic_requirements.jsonl", "table_items.jsonl", "ai_supplements.jsonl"],
-    "export-annotation-html": ["blocks.jsonl", "ai_requirements.jsonl", "engineering_analysis.json",
-                               "ai_review_states.jsonl", "annotation_translations.json",
-                               "ai_requirements.meta.json", "ai_supplements.jsonl",
-                               "claim_catalog.jsonl", "claim_effective_ledger.jsonl",
-                               "claim_effective.meta.json"],
+    "compose": ["atomic_requirements.jsonl", "table_items.jsonl", "ai_requirements.meta.json",
+                "ai_supplements.jsonl"],
+    "export-annotation-html": ["blocks.jsonl", "table_items.jsonl", "ai_requirements.jsonl",
+                               "engineering_analysis.json", "ai_review_states.jsonl",
+                               "annotation_translations.json", "ai_requirements.meta.json",
+                               "ai_supplements.jsonl", "claim_catalog.jsonl",
+                               "claim_catalog.meta.json", "claim_coverage_groups.jsonl",
+                               "claim_ledger.jsonl", "claim_shadow_metrics.json",
+                               "claim_verifier_attempts.jsonl", "claim_generation.meta.json",
+                               "claim_effective_ledger.jsonl", "claim_effective.meta.json",
+                               "claim_queue_proposals.jsonl", "claim_structural_overrides.jsonl",
+                               ".claim_publication.journal.json",
+                               ".claim_effective_publication.journal.json"],
 }
 
 
@@ -525,9 +533,11 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     # v6：hardware_dependency 落交付物渲染（xlsx 说明列/co_design_items.md）——
     # 纯渲染变更不动 analyze 缓存版本，靠 impl 戳让阶段重跑重渲染（审计 P1-b）
     "requirements-analysis": "v6",
-    # v4：template_writer 走 _notes_text 同步获得硬件依赖行（审计 P1-b）
-    "template-write": "v4",
+    # v5：完整性元数据进入阶段输入，旧缓存不得缺 incomplete_inputs。
+    "template-write": "v5",
     "clarification-report": "v6",
+    # v1.5：compose 首次绑定完整性元数据，显式升级阶段实现戳。
+    "compose": "v2",
 }
 
 _STAGE_BASE_PRODUCERS = {
@@ -536,10 +546,10 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v7-claim-ledger-info",
     "compose": "engineering_composer/v1",
-    # v13-claim-distribution：v13=行区占比切片互斥（行 ⊂ 大解析块按文本占比切 y 子段）
-    # + claim-distribution（Claim Ledger Phase 1 块级 claim 分布角标）——两线联合戳,
-    # 两侧缓存产物一并失效;v12=表格行级热区、v11=影印支路块级几何回填
-    "export-annotation-html": "doc_annotation_export/v13-claim-distribution",
+    # v13-claim-distribution-claim-focus：三线联合戳——v13=行区占比切片互斥（远端 rowcell）
+    # + claim-distribution（Phase 1 块级角标）+ claim-focus（Phase 1.5 claim span/row 级定位，
+    # 经 claim_focus 确定性映射）——三侧缓存产物一并失效；v12=表格行级热区、v11=几何回填
+    "export-annotation-html": "doc_annotation_export/v13-claim-distribution-claim-focus",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
@@ -612,11 +622,15 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
         elif stage == "functional-synthesis":
             producer = FUNCTIONAL_SYNTHESIS_VERSION
         elif stage == "export-annotation-html":
+            from claim_focus import CLAIM_FOCUS_ADAPTER_VERSION
             from doc_annotation_export import (ANNOTATION_TRANSLATION_GUARDS_VERSION,
-                                                ANNOTATION_TRANSLATION_STRATEGY_VERSION)
+                                                ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                                                CLAIM_ANNOTATION_VERSION)
             from doc_facsimile import DOC_FACSIMILE_VERSION
             # docx/xlsx 影印支路（WP-A）进戳：转换层版本变化 → 旧影印产物不得复用
-            producer = (f"{producer}+{ANNOTATION_TRANSLATION_STRATEGY_VERSION}"
+            producer = (f"{producer}+{CLAIM_ANNOTATION_VERSION}"
+                        f"+{CLAIM_FOCUS_ADAPTER_VERSION}"
+                        f"+{ANNOTATION_TRANSLATION_STRATEGY_VERSION}"
                         f"+{ANNOTATION_TRANSLATION_GUARDS_VERSION}+{DOC_FACSIMILE_VERSION}")
         if stage in {
             "ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
@@ -1476,12 +1490,35 @@ def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, A
     decisions = data.get("decisions") if isinstance(data, dict) else data
     applied = 0
     skipped = 0
+    needs_reconfirmation = 0
+    conflicts = 0
     ownership_skipped = 0
     for d in (decisions or []):
         rid = str((d or {}).get("ai_req_id") or "").strip()
         status = str((d or {}).get("status") or "").strip()
         if not rid or not status:
             skipped += 1
+            continue
+        submitted_source = str(d.get("source_fingerprint") or "").strip()
+        submitted_subject = str(d.get("review_subject_fingerprint") or "").strip()
+        expected_target_fingerprint = str(
+            d.get("expected_target_fingerprint") or ""
+        ).strip()
+        expected_target_publication_revision = str(
+            d.get("expected_target_publication_revision") or ""
+        ).strip()
+        expected_target_authority_write_revision = str(
+            d.get("expected_target_authority_write_revision") or ""
+        ).strip()
+        if not all((
+            submitted_source,
+            submitted_subject,
+            expected_target_fingerprint,
+            expected_target_publication_revision,
+            expected_target_authority_write_revision,
+        )):
+            skipped += 1
+            needs_reconfirmation += 1
             continue
         # 归属值单独校验：仅归属非法时丢归属、保留整行裁决（status/模块/意见不陪葬）
         ownership = str(d.get("ownership_override") or "").strip() or None
@@ -1492,16 +1529,62 @@ def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, A
                 ownership = None
                 ownership_skipped += 1
         try:
-            ai_review_actions.apply_ai_review_action(
-                out_dir, rid, status,
-                module_override=(d.get("module_override") or None),
-                ownership_override=ownership,
-                reason=(d.get("reason") or ""), actor="html-import")
+            from api_server import find_current_ai_requirement
+            from omission_actions import extraction_operation_lock
+
+            with extraction_operation_lock(out_dir, operation="import-ai-decision"):
+                current = find_current_ai_requirement(out_dir, rid)
+                if current is None:
+                    raise ai_review_actions.AIReviewAuthorityConflict(
+                        "AI requirement is not present in the current run",
+                        current_revision="",
+                    )
+                current_cas = (
+                    str(current.get("source_fingerprint") or ""),
+                    str(current.get("review_subject_fingerprint") or ""),
+                    str(current.get("target_fingerprint") or ""),
+                    str(current.get("target_publication_revision") or ""),
+                    str(current.get("target_authority_write_revision") or ""),
+                )
+                submitted_cas = (
+                    submitted_source,
+                    submitted_subject,
+                    expected_target_fingerprint,
+                    expected_target_publication_revision,
+                    expected_target_authority_write_revision,
+                )
+                if submitted_cas != current_cas:
+                    raise ai_review_actions.AIReviewAuthorityConflict(
+                        "AI requirement or review authority changed",
+                        current_revision=current_cas[-1],
+                    )
+                ai_review_actions.apply_ai_review_action(
+                    out_dir,
+                    rid,
+                    status,
+                    module_override=(d.get("module_override") or None),
+                    ownership_override=ownership,
+                    reason=(d.get("reason") or ""),
+                    actor="html-import",
+                    source_fingerprint_value=current_cas[0],
+                    review_subject_fingerprint_value=current_cas[1],
+                    review_anchor_fingerprint_value=(
+                        ai_review_actions.review_anchor_fingerprint(current)
+                    ),
+                    expected_target_authority_write_revision=current_cas[-1],
+                )
             applied += 1
+        except ai_review_actions.AIReviewAuthorityConflict:
+            skipped += 1
+            conflicts += 1
         except ValueError:
             skipped += 1
     payload: dict[str, Any] = {"kind": "ai_decisions_import", "out_dir": str(out_dir),
                                "applied": applied, "skipped": skipped}
+    if needs_reconfirmation:
+        payload["needs_reconfirmation"] = needs_reconfirmation
+    if conflicts:
+        payload["conflicts"] = conflicts
     if ownership_skipped:
         payload["ownership_skipped"] = ownership_skipped
     # 裁决回流交付物：导入后立即重建 merged_spec（免 LLM）

@@ -44,8 +44,11 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "agent_compare.py", "agent_decider.py", "decide_trace.py",
                 "functional_catalog.py", "functional_synthesis.py", "review_tools.py",
                 "desktop_tasks.py", "semantic_quality.py",
-                "claim_artifacts.py", "claim_acceptance.py", "claim_catalog.py",
-                "claim_held_out.py", "claim_ledger.py", "claim_review_packet.py",
+                "claim_artifacts.py", "claim_acceptance.py", "claim_catalog.py", "claim_focus.py",
+                "claim_queue_execution.py",
+                "claim_held_out.py", "claim_ledger.py", "claim_reextract_attempts.py",
+                "claim_structural_overrides.py",
+                "claim_review_packet.py", "input_completeness.py",
                 "claim_review_import.py", "claim_review_actions.py", "claim_views.py",
                 "process_file_lock.py",
                 "normative_framing.py", "source_spans.py",
@@ -58,7 +61,11 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "schemas/claim_effective_meta.schema.json",
                 "schemas/claim_effective_publication_journal.schema.json",
                 "schemas/claim_queue_proposal.schema.json",
+                "schemas/claim_queue_proposal_v2.schema.json",
                 "schemas/claim_review_event.schema.json",
+                "schemas/claim_review_event_v2.schema.json",
+                "schemas/claim_reextract_attempt.schema.json",
+                "schemas/claim_structural_override.schema.json",
                 "golden_sets/claim_ledger_v1/manifest.json",
                 "golden_sets/claim_ledger_v1/history/programmable-equivalent-001-v2-rejection.json",
                 "llm_agents/review_pipeline.yaml", "domain_packs/dlms_cosem/pack.yaml",
@@ -79,15 +86,19 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "agent_eval.load_case_schema();"
                 "import functional_catalog, functional_synthesis, semantic_quality, review_tools;"
                 "import agent_state, agent_loop, agent_compare, llm_pipeline;"
-                "import claim_artifacts, claim_acceptance, claim_catalog, claim_held_out;"
-                "import claim_ledger, claim_review_packet, normative_framing, source_spans;"
+                "import claim_artifacts, claim_acceptance, claim_catalog, claim_focus, claim_held_out;"
+                "import claim_queue_execution;"
+                "import claim_ledger, claim_reextract_attempts, claim_structural_overrides, claim_review_packet, normative_framing, source_spans;"
                 "import claim_review_import, claim_review_actions, claim_views, process_file_lock;"
                 "import json;from pathlib import Path;from jsonschema import Draft202012Validator;"
                 "schema_root=Path(claim_artifacts.__file__).parent/'schemas';"
                 "phase1_schemas=['claim_effective_health.schema.json',"
                 "'claim_effective_ledger.schema.json','claim_effective_meta.schema.json',"
                 "'claim_effective_publication_journal.schema.json',"
-                "'claim_queue_proposal.schema.json','claim_review_event.schema.json'];"
+                "'claim_queue_proposal.schema.json','claim_queue_proposal_v2.schema.json',"
+                "'claim_review_event.schema.json',"
+                "'claim_review_event_v2.schema.json','claim_reextract_attempt.schema.json',"
+                "'claim_structural_override.schema.json'];"
                 "[Draft202012Validator.check_schema(json.loads((schema_root/name).read_text(encoding='utf-8')))"
                 " for name in phase1_schemas];"
                 "claim_held_out.load_golden_held_out();"

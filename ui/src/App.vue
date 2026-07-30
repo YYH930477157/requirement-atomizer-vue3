@@ -618,7 +618,7 @@ import {
   UserRound,
   X,
 } from "@lucide/vue"
-import { RequirementApiClient } from "./api-client"
+import { isNeedsReconfirmationError, RequirementApiClient } from "./api-client"
 import ClaimLedger from "./ClaimLedger.vue"
 import DocumentReview from "./DocumentReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
@@ -1298,17 +1298,21 @@ async function updateStatus(status: ReviewStatus) {
   const row = requirementRows.value.find((item) => item.id === selectedRequirementId.value)
   if (!row) return
   apiMessage.value = ""
-  if (!apiClient.value) {
+  const client = apiClient.value
+  if (!client) {
     apiMessage.value = "未连接当前输出目录的审查会话，裁决未保存"
     return
   }
   isSubmitting.value = true
   try {
-    const state = await apiClient.value.applyReviewAction({
+    const state = await client.applyReviewAction({
       requirementId: row.backendId,
       status,
       actor: "vue3-ui",
       reason: reviewComment.value.trim() || `set ${status} from Vue3 UI`,
+      expectedTargetFingerprint: row.targetFingerprint,
+      expectedTargetPublicationRevision: row.targetPublicationRevision,
+      expectedTargetAuthorityWriteRevision: row.targetAuthorityWriteRevision,
     })
     const index = requirementRows.value.findIndex((item) => item.id === row.id)
     if (index >= 0) {
@@ -1316,7 +1320,25 @@ async function updateStatus(status: ReviewStatus) {
     }
     reviewComment.value = ""
   } catch (error) {
-    apiMessage.value = error instanceof Error ? error.message : "审查状态写入失败"
+    if (isNeedsReconfirmationError(error) && client === apiClient.value) {
+      try {
+        const latestRows = (await client.loadRequirements()).map(mapBackendRequirement)
+        if (client !== apiClient.value) return
+        requirementRows.value = latestRows
+        if (!latestRows.some((item) => item.id === selectedRequirementId.value)) {
+          selectedRequirementId.value = latestRows[0]?.id ?? ""
+        }
+        apiMessage.value = "需求证据或解析内容已变化，已刷新，请核对后重新裁决"
+      } catch (refreshError) {
+        if (client === apiClient.value) {
+          apiMessage.value = refreshError instanceof Error
+            ? `裁决冲突且刷新失败：${refreshError.message}`
+            : "裁决冲突且刷新失败"
+        }
+      }
+    } else {
+      apiMessage.value = error instanceof Error ? error.message : "审查状态写入失败"
+    }
   } finally {
     isSubmitting.value = false
   }

@@ -1519,6 +1519,9 @@ def run_report(out_dir: Path) -> dict[str, Any]:
               "claim_ledger": claim_ledger_summary,
               "readiness": readiness, "entries": entries,
               "written": [REPORT_MD, REPORT_XLSX, REPORT_JSON]}
+    from input_completeness import attach_input_completeness
+
+    attach_input_completeness(report, out_dir)
     (out_dir / REPORT_JSON).write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report

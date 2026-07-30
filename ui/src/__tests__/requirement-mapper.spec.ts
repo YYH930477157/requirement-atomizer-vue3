@@ -15,10 +15,18 @@ describe("requirement mapper", () => {
       review_state: { requirement_id: "SREQ-1", status: "expert_pending" },
       review: { risk: "high", review_notes: ["needs expert confirmation"] },
       labels: ["security"],
+      target_fingerprint: "sha256:target-v1",
+      target_publication_revision: "sha256:publication-v1",
+      target_review_revision: "sha256:semantic-v1",
+      target_authority_write_revision: "sha256:authority-v1",
     })
 
     expect(row.id).toBe("SREQ-1")
     expect(row.backendId).toBe("SREQ-1")
+    expect(row.targetFingerprint).toBe("sha256:target-v1")
+    expect(row.targetPublicationRevision).toBe("sha256:publication-v1")
+    expect(row.targetReviewRevision).toBe("sha256:semantic-v1")
+    expect(row.targetAuthorityWriteRevision).toBe("sha256:authority-v1")
     expect(row.type).toBe("接口")
     expect(row.category).toBe("COSEM 属性访问")
     expect(row.categoryCode).toBe("cosem_attribute_access")

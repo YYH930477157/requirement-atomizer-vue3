@@ -605,6 +605,146 @@ class ClaimArtifactTests(unittest.TestCase):
                 else:
                     self.assertEqual(path.read_bytes(), payload, name)
 
+    def test_killed_effective_publisher_recovery_matrix_is_single_generation(self) -> None:
+        crash_points = [
+            ("before_replace", claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL, False),
+            ("after_replace", claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL, False),
+            ("before_replace", claim_artifacts.CLAIM_EFFECTIVE_LEDGER, False),
+            ("after_replace", claim_artifacts.CLAIM_EFFECTIVE_LEDGER, False),
+            ("before_replace", claim_artifacts.CLAIM_QUEUE_PROPOSALS, False),
+            ("after_replace", claim_artifacts.CLAIM_QUEUE_PROPOSALS, False),
+            ("before_replace", claim_artifacts.CLAIM_EFFECTIVE_META, False),
+            ("after_replace", claim_artifacts.CLAIM_EFFECTIVE_META, False),
+            ("before_unlink", claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL, False),
+            ("after_unlink", claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL, True),
+        ]
+        script = r'''
+import os
+from pathlib import Path
+import sys
+
+import claim_artifacts
+from tests.test_claim_artifacts import _effective_candidate
+
+root = Path(sys.argv[1]).resolve()
+crash_operation = sys.argv[2]
+crash_name = sys.argv[3]
+ledger, queue, meta = _effective_candidate(root, invalidate_groups=True)
+original_replace = claim_artifacts._replace_with_retry
+original_unlink = claim_artifacts._unlink_with_retry
+
+def crash_at_replace(source, target):
+    target = Path(target)
+    matches = target.parent.resolve() == root and target.name == crash_name
+    if matches and crash_operation == "before_replace":
+        os._exit(93)
+    original_replace(source, target)
+    if matches and crash_operation == "after_replace":
+        os._exit(94)
+
+def crash_at_unlink(target):
+    target = Path(target)
+    matches = target.parent.resolve() == root and target.name == crash_name
+    if matches and crash_operation == "before_unlink":
+        os._exit(95)
+    original_unlink(target)
+    if matches and crash_operation == "after_unlink":
+        os._exit(96)
+
+claim_artifacts._replace_with_retry = crash_at_replace
+claim_artifacts._unlink_with_retry = crash_at_unlink
+claim_artifacts.publish_effective_snapshot(root, ledger, queue, meta=meta)
+'''
+        expected_exit_codes = {
+            "before_replace": 93,
+            "after_replace": 94,
+            "before_unlink": 95,
+            "after_unlink": 96,
+        }
+
+        for operation, name, committed_after_crash in crash_points:
+            with self.subTest(operation=operation, name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    _publish(root, _catalog(), run_id="effective-matrix-base")
+                    prior_snapshot = {
+                        snapshot_name: (
+                            (root / snapshot_name).read_bytes()
+                            if (root / snapshot_name).is_file()
+                            else None
+                        )
+                        for snapshot_name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+                    }
+                    verifier_attempts = (
+                        root / claim_artifacts.CLAIM_VERIFIER_ATTEMPTS
+                    ).read_bytes()
+
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            "-c",
+                            script,
+                            str(root),
+                            operation,
+                            name,
+                        ],
+                        cwd=Path(__file__).resolve().parents[1],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        result.returncode,
+                        expected_exit_codes[operation],
+                        result.stderr,
+                    )
+
+                    recovered = claim_artifacts.load_committed_shadow(root)
+                    self.assertFalse(
+                        (root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL).exists()
+                    )
+                    self.assertFalse(any(
+                        root.glob(".claim-effective-publication-backup-*")
+                    ))
+                    self.assertEqual(
+                        (root / claim_artifacts.CLAIM_VERIFIER_ATTEMPTS).read_bytes(),
+                        verifier_attempts,
+                    )
+                    self.assertFalse(
+                        (root / claim_artifacts.CLAIM_PUBLICATION_JOURNAL).exists()
+                    )
+
+                    if committed_after_crash:
+                        self.assertEqual(
+                            recovered["effective_ledger"][0]["resolution"],
+                            "uncertain",
+                        )
+                        self.assertEqual(len(recovered["queue_proposals"]), 1)
+                        self.assertNotEqual(
+                            {
+                                snapshot_name: (
+                                    (root / snapshot_name).read_bytes()
+                                    if (root / snapshot_name).is_file()
+                                    else None
+                                )
+                                for snapshot_name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+                            },
+                            prior_snapshot,
+                        )
+                    else:
+                        self.assertEqual(
+                            {
+                                snapshot_name: (
+                                    (root / snapshot_name).read_bytes()
+                                    if (root / snapshot_name).is_file()
+                                    else None
+                                )
+                                for snapshot_name in claim_artifacts.CLAIM_EFFECTIVE_SNAPSHOT_FILES
+                            },
+                            prior_snapshot,
+                        )
+
     def test_publish_appends_hash_chained_verifier_attempt_and_binds_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

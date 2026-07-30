@@ -79,7 +79,7 @@ def compose_engineering_requirements(out_dir: Path) -> dict[str, Any]:
     functions = _compose_requirement_functions(atomic_rows, dlms_objects, kb_entry_index, source_index)
     _link_functions_to_objects(functions, dlms_objects)
 
-    return {
+    model = {
         "meta": {
             "source_out_dir": str(out_dir),
             "composition": "engineering_requirement_composer",
@@ -94,6 +94,9 @@ def compose_engineering_requirements(out_dir: Path) -> dict[str, Any]:
             "source_atomic_requirements": len(atomic_rows),
         },
     }
+    from input_completeness import attach_input_completeness
+
+    return attach_input_completeness(model, out_dir)
 
 
 def write_engineering_requirements(out_dir: Path, model: dict[str, Any]) -> list[str]:

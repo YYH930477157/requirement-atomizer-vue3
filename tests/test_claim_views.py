@@ -136,7 +136,7 @@ class ClaimViewTests(unittest.TestCase):
             self.assertEqual(group_view["groups"][0]["effective_status"], "invalid")
             self.assertEqual(group_view["groups"][0]["effective_reason"], "expert_rejected")
             self.assertEqual(event_view["events"][0]["event_kind"], "target_invalidated")
-            self.assertEqual(queue_view["proposals"][0]["dry_run"], True)
+            self.assertEqual(queue_view["proposals"][0]["dry_run"], False)
 
     def test_event_view_hides_previous_generation_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

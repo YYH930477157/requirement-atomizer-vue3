@@ -26,6 +26,7 @@ from requirements_analysis_schema import normalize_ownership
 from process_file_lock import process_file_lock
 
 AI_REVIEW_STATES = "ai_review_states.jsonl"
+AI_TARGET_AUTHORITY_WRITE_REVISION_VERSION = "ai-target-authority-write-revision-v1"
 VALID_AI_STATUS = {"accepted", "rejected", "needs_discussion", "expert_pending", "draft"}
 MODULE_OVERRIDE_MAX_LENGTH = 20
 _AI_REVIEW_LOCKS: dict[Path, RLock] = {}
@@ -33,6 +34,14 @@ _AI_REVIEW_LOCKS_GUARD = RLock()
 _AI_REVIEW_LOCK_TIMEOUT_S = 10.0
 _AI_REVIEW_LOCK_STALE_AFTER_S = 300.0
 LOGGER = logging.getLogger("requirement_atomizer")
+
+
+class AIReviewAuthorityConflict(ValueError):
+    """The displayed B-track authority row is no longer the writable row."""
+
+    def __init__(self, message: str, *, current_revision: str) -> None:
+        super().__init__(message)
+        self.current_revision = str(current_revision)
 
 
 _REVIEW_SUBJECT_FIELDS = (
@@ -251,6 +260,50 @@ def read_ai_review_authority_snapshot_readonly(out_dir: Path) -> dict[str, Any]:
     return snapshot
 
 
+def ai_target_authority_write_revision(
+    ai_req_id_value: str,
+    snapshot: dict[str, Any],
+) -> str:
+    """Return the per-target physical authority revision used by B-track CAS.
+
+    This is deliberately different from the semantic ``target_review_revision``
+    projected by :mod:`claim_ledger`: append ordinal and source event revision
+    make a rejected->restored (ABA) sequence observable even when the effective
+    status returns to the same value.  Unrelated target rows do not advance this
+    target's token.
+    """
+    from claim_artifacts import hash_json
+
+    target_id = str(ai_req_id_value or "").strip()
+    source_record = (snapshot.get("source_records") or {}).get(target_id)
+    if isinstance(source_record, dict):
+        state = source_record.get("state")
+        state_hash = hash_json(
+            f"{AI_TARGET_AUTHORITY_WRITE_REVISION_VERSION}:row",
+            state if isinstance(state, dict) else {},
+        )
+        binding = {
+            "append_ordinal": source_record.get("append_ordinal"),
+            "source_event_revision": str(source_record.get("source_event_revision") or ""),
+            "state_hash": state_hash,
+        }
+    else:
+        binding = {
+            "append_ordinal": None,
+            "source_event_revision": None,
+            "state_hash": None,
+        }
+    return hash_json(
+        AI_TARGET_AUTHORITY_WRITE_REVISION_VERSION,
+        {
+            "source_store": str(snapshot.get("source_store") or AI_REVIEW_STATES),
+            "target_kind": "ai_requirement",
+            "target_requirement_id": target_id,
+            "binding": binding,
+        },
+    )
+
+
 def _replace_ai_review_bytes(path: Path, payload: bytes) -> None:
     temporary: Path | None = None
     try:
@@ -402,6 +455,7 @@ def apply_ai_review_action(
     source_fingerprint_value: str | None = None,
     review_subject_fingerprint_value: str | None = None,
     review_anchor_fingerprint_value: str | None = None,
+    expected_target_authority_write_revision: str | None = None,
 ) -> dict[str, Any]:
     """追加一条 AI 需求裁决，返回写入的 state。"""
     ai_req_id_value = str(ai_req_id_value or "").strip()
@@ -431,10 +485,39 @@ def apply_ai_review_action(
     out_dir = Path(out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     with _ai_review_state_lock(out_dir):
+        states_path = out_dir / AI_REVIEW_STATES
+        if states_path.is_file():
+            authority_snapshot = _authority_snapshot_from_scan(
+                _scan_ai_review_rows_unlocked(states_path)
+            )
+        else:
+            authority_snapshot = _empty_ai_review_authority_snapshot()
+        current_write_revision = ai_target_authority_write_revision(
+            ai_req_id_value,
+            authority_snapshot,
+        )
+        if (
+            expected_target_authority_write_revision is not None
+            and str(expected_target_authority_write_revision)
+            != current_write_revision
+        ):
+            raise AIReviewAuthorityConflict(
+                "AI review authority changed; refresh before adjudicating",
+                current_revision=current_write_revision,
+            )
         with (out_dir / AI_REVIEW_STATES).open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(state, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
+        # Re-scan after the append so the returned token is the exact physical
+        # prefix the next request must bind to.
+        updated_snapshot = _authority_snapshot_from_scan(
+            _scan_ai_review_rows_unlocked(states_path)
+        )
+        state["target_authority_write_revision"] = ai_target_authority_write_revision(
+            ai_req_id_value,
+            updated_snapshot,
+        )
     if (out_dir / "claim_generation.meta.json").is_file():
         try:
             from claim_review_actions import fold_effective_ledger
@@ -442,6 +525,7 @@ def apply_ai_review_action(
             fold_effective_ledger(
                 out_dir,
                 actor_trigger="ai-review-action",
+                authority_hook_track="B",
             )
         except Exception as exc:
             # The review row is already fsync'd authority. A derived fold failure

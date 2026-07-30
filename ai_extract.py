@@ -85,6 +85,7 @@ from extract_guards import (  # noqa: F401
 LOGGER = logging.getLogger("requirement_atomizer")
 
 AI_EXTRACT_PROMPT_VERSION = "ai-extract-v23"  # v23：正式 target 叶子强制自包含产品义务成文
+CLAIM_FOCUS_CRITIQUE_VERSION = "claim-focus-critique-v1"
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -163,13 +164,17 @@ def resolve_claim_shadow_verify_max_total_tokens(explicit: int | None = None) ->
     )
 
 
-def claim_shadow_verifier_budget() -> LLMRequestBudget | None:
+def claim_shadow_verifier_budget(
+    *,
+    max_calls: int | None = None,
+    max_total_tokens: int | None = None,
+) -> LLMRequestBudget | None:
     """Create one generation-wide budget only when both hard limits are authorized."""
-    max_calls = resolve_claim_shadow_verify_max_calls()
-    max_total_tokens = resolve_claim_shadow_verify_max_total_tokens()
-    if max_calls <= 0 or max_total_tokens <= 0:
+    resolved_calls = resolve_claim_shadow_verify_max_calls(max_calls)
+    resolved_tokens = resolve_claim_shadow_verify_max_total_tokens(max_total_tokens)
+    if resolved_calls <= 0 or resolved_tokens <= 0:
         return None
-    return LLMRequestBudget(max_calls=max_calls, max_tokens=max_total_tokens)
+    return LLMRequestBudget(max_calls=resolved_calls, max_tokens=resolved_tokens)
 
 
 def _chat_json_accounted(
@@ -431,11 +436,19 @@ def write_ai_requirements_metadata(
 ) -> dict[str, Any]:
     """Bind the published final JSONL to the parsed document generation it consumed."""
     root = Path(out_dir).expanduser().resolve()
+    from claim_artifacts import file_sha256
+
+    requirements_path = root / AI_REQUIREMENTS
+    requirements_sha256 = (
+        file_sha256(requirements_path) if requirements_path.is_file() else None
+    )
     payload = {
         "schema": "ai-requirements-final/v1",
         "producer_lineage": current_ai_requirements_producer_lineage(),
         "input_fingerprint": str(input_fingerprint or extraction_input_fingerprint(root)),
         "run_id": str(run_id or ""),
+        "selected_snapshot": "final",
+        "requirements_sha256": requirements_sha256,
         "failed_sections": int(failed_sections),
         "failed_section_ids": list(failed_section_ids or []),
         "failed_section_block_ids": list(failed_section_block_ids or []),
@@ -510,6 +523,11 @@ def refresh_claim_shadow(
     *,
     route: str | None,
     scope: str = "full",
+    allow_llm: bool | None = None,
+    verifier_max_calls: int | None = None,
+    verifier_max_total_tokens: int | None = None,
+    verifier_request_budget: LLMRequestBudget | None = None,
+    claim_mutation_attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Rebuild only claim artifacts from committed requirements; never call extraction LLMs."""
     from claim_artifacts import (
@@ -519,6 +537,7 @@ def refresh_claim_shadow(
         bootstrap_legacy_attempt_lineage,
         claim_verifier_attempt_scope,
         file_sha256,
+        hash_json,
         load_committed_attempt_lineage,
         load_committed_shadow,
     )
@@ -557,17 +576,77 @@ def refresh_claim_shadow(
 
     with extraction_operation_lock(root, operation="claim-shadow-refresh"):
         try:
-            committed_attempt_lineage = load_committed_attempt_lineage(root)
-        except ClaimArtifactError as lineage_error:
-            try:
-                committed_attempt_lineage = bootstrap_legacy_attempt_lineage(root)
-            except ClaimArtifactError:
-                raise lineage_error
-        try:
             previous_snapshot = load_committed_shadow(root)
         except Exception:
             previous_snapshot = None
-        route_config = config_for_route(route)
+        mutation_attempt_id = str(claim_mutation_attempt_id or "").strip()
+        mutation_refresh = bool(mutation_attempt_id)
+        committed_attempt_lineage: dict[str, Any] | None = None
+        if mutation_refresh:
+            if previous_snapshot is None:
+                raise ClaimArtifactError(
+                    "claim mutation refresh requires the previous committed shadow"
+                )
+            from claim_reextract_attempts import require_published_attempt
+
+            current_requirements_hash = file_sha256(requirements_path)
+            mutation = require_published_attempt(
+                root,
+                attempt_id=mutation_attempt_id,
+                requirements_sha256=current_requirements_hash,
+            )
+            previous_generation = dict(previous_snapshot.get("generation_meta") or {})
+            previous_requirements_hash = str(
+                previous_generation.get("requirements_sha256") or ""
+            )
+            if not previous_requirements_hash:
+                raise ClaimArtifactError(
+                    "claim mutation refresh has no previous target provenance"
+                )
+            previous_publication_revision = hash_json(
+                "claim-target-publication-revision/v1",
+                {
+                    "source_store": AI_REQUIREMENTS,
+                    "source_present": True,
+                    "source_file_sha256": previous_requirements_hash,
+                },
+            )
+            started_preconditions = dict(
+                dict(mutation.get("started") or {}).get("preconditions") or {}
+            )
+            if (
+                started_preconditions.get("target_publication_revision")
+                != previous_publication_revision
+            ):
+                raise ClaimArtifactError(
+                    "claim mutation attempt is not based on the committed target"
+                )
+            current_publication_revision = hash_json(
+                "claim-target-publication-revision/v1",
+                {
+                    "source_store": AI_REQUIREMENTS,
+                    "source_present": True,
+                    "source_file_sha256": current_requirements_hash,
+                },
+            )
+            if (
+                dict(mutation.get("publication") or {}).get(
+                    "target_publication_revision"
+                )
+                != current_publication_revision
+            ):
+                raise ClaimArtifactError(
+                    "claim mutation publication revision is invalid"
+                )
+        else:
+            try:
+                committed_attempt_lineage = load_committed_attempt_lineage(root)
+            except ClaimArtifactError as lineage_error:
+                try:
+                    committed_attempt_lineage = bootstrap_legacy_attempt_lineage(root)
+                except ClaimArtifactError:
+                    raise lineage_error
+        route_config = config_for_route(route) if allow_llm is not False else None
         baseline_context = baseline_cost.get("lineage_context")
         baseline_unit_mode = (
             str(baseline_context.get("unit_mode") or "")
@@ -599,8 +678,23 @@ def refresh_claim_shadow(
             from llm_client import apply_min_tokens
 
             config = apply_min_tokens(config, "extract")
-        verifier_requested = config is not None and resolve_claim_shadow_verify()
-        verifier_budget = claim_shadow_verifier_budget() if verifier_requested else None
+        verifier_requested = (
+            config is not None and resolve_claim_shadow_verify(explicit=allow_llm)
+        )
+        verifier_budget = None
+        if verifier_requested:
+            if verifier_request_budget is not None:
+                remaining = verifier_request_budget.snapshot()
+                if (
+                    int(remaining.get("remaining_calls") or 0) > 0
+                    and int(remaining.get("remaining_tokens") or 0) > 0
+                ):
+                    verifier_budget = verifier_request_budget
+            else:
+                verifier_budget = claim_shadow_verifier_budget(
+                    max_calls=verifier_max_calls,
+                    max_total_tokens=verifier_max_total_tokens,
+                )
         verifier_enabled = verifier_requested and verifier_budget is not None
         if verifier_requested and verifier_budget is None:
             LOGGER.warning(
@@ -618,13 +712,15 @@ def refresh_claim_shadow(
             max_calls=int(budget_snapshot.get("max_calls") or 0),
             max_total_tokens=int(budget_snapshot.get("max_tokens") or 0),
         )
-        reusable_groups = reusable_claim_groups_for_runtime(
-            previous_snapshot,
-            verifier_runtime,
+        reusable_groups = (
+            []
+            if mutation_refresh
+            else reusable_claim_groups_for_runtime(previous_snapshot, verifier_runtime)
         )
-        reusable_negatives = reusable_claim_negatives_for_runtime(
-            previous_snapshot,
-            verifier_runtime,
+        reusable_negatives = (
+            []
+            if mutation_refresh
+            else reusable_claim_negatives_for_runtime(previous_snapshot, verifier_runtime)
         )
         semantic_verifier = None
         semantic_negative_proposer = None
@@ -654,21 +750,31 @@ def refresh_claim_shadow(
             current_requirements,
             read_ai_review_states(root),
         )
-        previous_attempt = dict(committed_attempt_lineage.get("attempt_chain") or {})
-        reuse_generation_run_id = str(
-            committed_attempt_lineage.get("generation_run_id") or ""
-        )
-        reuse_attempt_id = str(previous_attempt.get("attempt_id") or "")
-        if not reuse_generation_run_id or not reuse_attempt_id:
-            raise ValueError("committed verifier attempt lineage is required for refresh")
         requirements_request_id = str(requirements_meta.get("run_id") or run_id)
+        attempt_scope: dict[str, Any] = {
+            "attempt_kind": "cold" if mutation_refresh else "ledger_only",
+            "attempt_request_id": run_id,
+            "requirements_request_id": requirements_request_id,
+        }
+        if not mutation_refresh:
+            assert committed_attempt_lineage is not None
+            previous_attempt = dict(
+                committed_attempt_lineage.get("attempt_chain") or {}
+            )
+            reuse_generation_run_id = str(
+                committed_attempt_lineage.get("generation_run_id") or ""
+            )
+            reuse_attempt_id = str(previous_attempt.get("attempt_id") or "")
+            if not reuse_generation_run_id or not reuse_attempt_id:
+                raise ValueError(
+                    "committed verifier attempt lineage is required for refresh"
+                )
+            attempt_scope.update({
+                "reuse_generation_run_id": reuse_generation_run_id,
+                "reuse_attempt_id": reuse_attempt_id,
+            })
         with claim_verifier_attempt_scope(
             root,
-            attempt_kind="ledger_only",
-            attempt_request_id=run_id,
-            requirements_request_id=requirements_request_id,
-            reuse_generation_run_id=reuse_generation_run_id,
-            reuse_attempt_id=reuse_attempt_id,
             failure_context={
                 "catalog_build": current_catalog,
                 "target_generation_id": target_state["target_generation_id"],
@@ -677,6 +783,7 @@ def refresh_claim_shadow(
                 "baseline_cost": baseline_cost,
                 "verifier_budget": verifier_budget,
             },
+            **attempt_scope,
         ):
             published = publish_b_track_shadow(
                 root,
@@ -745,6 +852,9 @@ def refresh_claim_shadow(
             "metrics": shadow.get("metrics") or {},
             **effective_summary,
         },
+        "verifier_budget": (
+            verifier_budget.snapshot() if verifier_budget is not None else None
+        ),
         "written": [
             name for name in (
                 *CLAIM_SNAPSHOT_FILES,
@@ -2145,11 +2255,13 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
 def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
                      chat: ChatFn, doc_context: str = "",
                      context_ints: frozenset[str] | set[str] = frozenset(),
-                     focus_lines: list[str] | None = None) -> list[dict[str, Any]]:
+                     focus_lines: list[str] | None = None, *,
+                     strict_focus: bool = False) -> list[dict[str, Any]]:
     """完整性自检：对着原文找已抽取需求**未覆盖**的遗漏项，补上（去重 + 同一套漂移护栏）。
 
     focus_lines：解析层标记 requirement_like 但未被任何已抽需求覆盖的原文语句——
-    定向查漏的重点核查清单（比盲查更准）。
+    定向查漏的重点核查清单（比盲查更准）。strict_focus 默认关闭；开启时
+    focus_lines 是唯一允许的来源证据，且 supplements 被确定性禁用。
     """
     # 给模型看**结构摘要**而非裸标题：真实案例（4.14）——初抽按条款族正确合成一条（子项
     # a-e + 验收），自检只见标题、看不见 a-e 已在 sub_items 里 → 判"遗漏"又拆回 4 条碎片，
@@ -2202,11 +2314,27 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
     if focus_lines:
         hints = "\n".join(f"- {line}" for line in focus_lines[:12])
         parts.append(f"重点核查以下原文语句是否含被遗漏的需求（解析层判定疑似需求但尚无需求覆盖）：\n{hints}")
+    if strict_focus:
+        strict_lines = [str(line or "").strip() for line in (focus_lines or []) if str(line or "").strip()]
+        if not strict_lines:
+            return [], 0
+        hints = "\n".join(f"- {line}" for line in strict_lines[:12])
+        parts = [
+            "【严格定向需求抽取】只能依据下面的 focus evidence 生成 requirements。"
+            "不要使用章节中的相邻行、文档上下文或已有需求作为来源证据。"
+            "输出 JSON 对象 {\"requirements\": [...], \"supplements\": []}。"
+            "每条 requirement 的 source_quote 必须逐字复制某一条 focus evidence 的连续片段；"
+            "无法从 focus evidence 独立形成需求时返回两个空数组。",
+            f"唯一允许的 focus evidence：\n{hints}",
+        ]
     payload = chat(SYSTEM_PROMPT, "\n\n".join(parts))
     raw = payload.get("requirements") if isinstance(payload, dict) else None
-    supplements_applied, converted = _apply_supplements(
-        payload.get("supplements") if isinstance(payload, dict) else None,
-        existing, section)
+    if strict_focus:
+        supplements_applied, converted = 0, []
+    else:
+        supplements_applied, converted = _apply_supplements(
+            payload.get("supplements") if isinstance(payload, dict) else None,
+            existing, section)
     converted_titles = {_norm_ws(c.get("title")) for c in converted}
     raw = (list(raw) if isinstance(raw, list) else []) + converted
     if not raw:
@@ -2216,6 +2344,12 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
     existing_quotes = [q for q in (_norm_ws(r.get("source_quote")) for r in existing) if len(q) >= 20]
     extra: list[dict[str, Any]] = []
     for req in _process_raw_requirements(raw, section, context_ints):
+        if strict_focus:
+            quote = _norm_ws(req.get("source_quote"))
+            if len(quote) < 3 or not any(
+                quote in _norm_ws(line) for line in (focus_lines or [])
+            ):
+                continue
         key = _req_key(req)
         if not key or key in seen:
             continue
@@ -3212,8 +3346,16 @@ def build_merged_doc(out_dir: Path, ai_requirements: list[dict[str, Any]],
     merged = merge_requirements(deterministic, ai_requirements)
     from meter_profile import infer_meter_profile
     profile = infer_meter_profile(out_dir)
-    return build_skill_doc(merged, source=source, extracted_at=extracted_at,
-                           meter_type=profile["meter_type"], target_standards=profile["target_standards"])
+    document = build_skill_doc(
+        merged,
+        source=source,
+        extracted_at=extracted_at,
+        meter_type=profile["meter_type"],
+        target_standards=profile["target_standards"],
+    )
+    from input_completeness import attach_input_completeness
+
+    return attach_input_completeness(document, out_dir)
 
 
 def _write_merged_outputs(out_dir: Path, merged: dict[str, Any]) -> list[str]:
@@ -3249,6 +3391,9 @@ def _write_consistency_report(out_dir: Path, merged: dict[str, Any]) -> Path:
         source_blocks=blocks,
         expert_excluded_block_ids=_current_non_requirement_ids(out_dir),
     )
+    from input_completeness import attach_input_completeness
+
+    attach_input_completeness(report, out_dir)
     path = out_dir / "consistency_report.json"
     _atomic_write_bytes(
         path,
@@ -3301,7 +3446,13 @@ def rebuild_merged_spec(out_dir: Path) -> dict[str, Any]:
         written.append(review_insights.INSIGHTS_JSON)
     except Exception as exc:  # pragma: no cover - 复盘失败不影响交付物
         LOGGER.warning("裁决复盘报告生成失败（忽略）：%s", exc)
-    return {"written": written, "total": merged["analysis"]["total_count"], **stats}
+    return {
+        "written": written,
+        "total": merged["analysis"]["total_count"],
+        "incomplete_inputs": bool(merged.get("incomplete_inputs")),
+        "input_completeness": dict(merged.get("input_completeness") or {}),
+        **stats,
+    }
 
 
 # --- 主入口 ---------------------------------------------------------------

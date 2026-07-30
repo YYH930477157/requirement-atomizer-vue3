@@ -123,6 +123,10 @@ export function mapBackendRequirement(row: BackendRequirement): Requirement {
   return {
     id,
     backendId,
+    targetFingerprint: textValue(row.target_fingerprint),
+    targetPublicationRevision: textValue(row.target_publication_revision),
+    targetReviewRevision: textValue(row.target_review_revision),
+    targetAuthorityWriteRevision: textValue(row.target_authority_write_revision),
     type: typeLabel(categoryCode),
     module: moduleLabel(moduleCode, sectionPath),
     moduleCode,
@@ -151,6 +155,11 @@ export function applyReviewState(requirement: Requirement, state: ReviewStatePay
     ...requirement,
     backendId: state.requirement_id || requirement.backendId,
     status: statusValue(state.status),
+    targetFingerprint: state.target_fingerprint || requirement.targetFingerprint,
+    targetPublicationRevision:
+      state.target_publication_revision || requirement.targetPublicationRevision,
+    targetAuthorityWriteRevision:
+      state.target_authority_write_revision || requirement.targetAuthorityWriteRevision,
   }
 }
 

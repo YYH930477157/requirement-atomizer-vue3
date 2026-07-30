@@ -815,9 +815,23 @@ class DesktopTaskTests(unittest.TestCase):
             self.assertTrue((out / "document_annotation.html").exists())
 
             # 导入裁决回灌
-            rid = build_ai_requirements(out)[0]["ai_req_id"]
+            current = build_ai_requirements(out)[0]
+            rid = current["ai_req_id"]
             (out / "dec.json").write_text(json.dumps(
-                {"decisions": [{"ai_req_id": rid, "status": "accepted", "module_override": "计量精度"}]}),
+                {"decisions": [{
+                    "ai_req_id": rid,
+                    "status": "accepted",
+                    "module_override": "计量精度",
+                    "source_fingerprint": current["source_fingerprint"],
+                    "review_subject_fingerprint": current["review_subject_fingerprint"],
+                    "expected_target_fingerprint": current["target_fingerprint"],
+                    "expected_target_publication_revision": current[
+                        "target_publication_revision"
+                    ],
+                    "expected_target_authority_write_revision": current[
+                        "target_authority_write_revision"
+                    ],
+                }]}),
                 encoding="utf-8")
             stdout = io.StringIO()
             with redirect_stdout(stdout):
@@ -870,16 +884,53 @@ class DesktopTaskTests(unittest.TestCase):
     def test_import_ai_decisions_preserves_ownership_override(self) -> None:
         import desktop_tasks
         import ai_review_actions
+        from api_server import find_current_ai_requirement
 
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
+            req = {
+                "title": "RTC dependency",
+                "description": "The product requires a hardware RTC.",
+                "type": "functional",
+                "priority": "P1",
+                "module": "Clock",
+                "labels": ["Clock"],
+                "source_section": "4",
+                "source_quote": "The product requires a hardware RTC.",
+                "source_block_ids": ["B4"],
+                "acceptance_criteria": [],
+                "notes": "",
+                "status": "draft",
+                "dependencies": [],
+                "parent": None,
+                "children": [],
+            }
+            (out / "ai_requirements.jsonl").write_text(
+                json.dumps(req) + "\n", encoding="utf-8"
+            )
+            rid = ai_review_actions.ai_req_id(req)
+            current = find_current_ai_requirement(out, rid)
+            self.assertIsNotNone(current)
             decisions_file = out / "decisions.json"
             decisions_file.write_text(json.dumps({
                 "decisions": [{
-                    "ai_req_id": "AI-1",
+                    "ai_req_id": rid,
                     "status": "accepted",
                     "module_override": "时钟需求",
                     "ownership_override": "co_design",
+                    "source_fingerprint": current["source_fingerprint"],
+                    "review_subject_fingerprint": current[
+                        "review_subject_fingerprint"
+                    ],
+                    "expected_target_fingerprint": current[
+                        "target_fingerprint"
+                    ],
+                    "expected_target_publication_revision": current[
+                        "target_publication_revision"
+                    ],
+                    "expected_target_authority_write_revision": current[
+                        "target_authority_write_revision"
+                    ],
                     "reason": "硬件 RTC 依赖",
                 }]
             }, ensure_ascii=False), encoding="utf-8")
@@ -888,12 +939,13 @@ class DesktopTaskTests(unittest.TestCase):
             states = ai_review_actions.read_ai_review_states(out)
 
         self.assertEqual(result["applied"], 1)
-        self.assertEqual(states["AI-1"]["ownership_override"], "co_design")
+        self.assertEqual(states[rid]["ownership_override"], "co_design")
 
     def test_import_decisions_rebuilds_merged_spec(self) -> None:
         """P0 裁决回流：导入裁决后交付物自动重建，rejected 不再出现在 merged_spec。"""
         import desktop_tasks
         import ai_review_actions
+        from api_server import find_current_ai_requirement
 
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -906,8 +958,26 @@ class DesktopTaskTests(unittest.TestCase):
                 json.dumps(req, ensure_ascii=False) + "\n", encoding="utf-8")
             (out / "dlms_cosem_spec_requirements.json").write_text('{"requirements": []}', encoding="utf-8")
             rid = ai_review_actions.ai_req_id(req)
+            current = find_current_ai_requirement(out, rid)
+            self.assertIsNotNone(current)
             (out / "dec.json").write_text(
-                json.dumps({"decisions": [{"ai_req_id": rid, "status": "rejected"}]}), encoding="utf-8")
+                json.dumps({"decisions": [{
+                    "ai_req_id": rid,
+                    "status": "rejected",
+                    "source_fingerprint": current["source_fingerprint"],
+                    "review_subject_fingerprint": current[
+                        "review_subject_fingerprint"
+                    ],
+                    "expected_target_fingerprint": current[
+                        "target_fingerprint"
+                    ],
+                    "expected_target_publication_revision": current[
+                        "target_publication_revision"
+                    ],
+                    "expected_target_authority_write_revision": current[
+                        "target_authority_write_revision"
+                    ],
+                }]}), encoding="utf-8")
 
             stdout = io.StringIO()
             with redirect_stdout(stdout):
@@ -1058,10 +1128,12 @@ class ChainAndManifestTests(unittest.TestCase):
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v7+ai-supplement-v3-identity-preconditions+impl-v3",
             "requirements-analysis": "analyze-llm-v7+analyze-unfounded-v3+ai-supplement-v3-identity-preconditions+impl-v6",
-            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v4",
+            "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v5",
             "clarification-report": "clarification/v7-claim-ledger-info+ai-supplement-v3-identity-preconditions+impl-v6",
+            "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "export-annotation-html": (
-                "doc_annotation_export/v13-claim-distribution+annotation-translation-v2-segment-fallback"
+                "doc_annotation_export/v13-claim-distribution-claim-focus+claim-annotation-v13"
+                "+claim-focus-adapter-v1+annotation-translation-v2-segment-fallback"
                 "+annotation-translation-guards-v1+doc-facsimile-v1"
                 "+ai-supplement-v3-identity-preconditions"
             ),
@@ -1132,6 +1204,40 @@ class ChainAndManifestTests(unittest.TestCase):
             "ai_review_states.jsonl",
         }.issubset(inputs))
 
+    def test_template_and_compose_track_ai_requirements_metadata(self) -> None:
+        self.assertIn(
+            "ai_requirements.meta.json",
+            desktop_tasks.STAGE_INPUTS["template-write"],
+        )
+        self.assertIn(
+            "ai_requirements.meta.json",
+            desktop_tasks.STAGE_INPUTS["compose"],
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for stage in ("template-write", "compose"):
+                for name in desktop_tasks.STAGE_INPUTS[stage]:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("{}\n", encoding="utf-8")
+
+            before = {
+                stage: desktop_tasks.stage_input_fingerprint(root, stage)
+                for stage in ("template-write", "compose")
+            }
+            (root / "ai_requirements.meta.json").write_text(
+                '{"incomplete_inputs": true}\n',
+                encoding="utf-8",
+            )
+            after = {
+                stage: desktop_tasks.stage_input_fingerprint(root, stage)
+                for stage in ("template-write", "compose")
+            }
+
+        self.assertNotEqual(before["template-write"], after["template-write"])
+        self.assertNotEqual(before["compose"], after["compose"])
+
     def test_assemble_producer_tracks_enrich_guards_version(self) -> None:
         import spec_enrich
 
@@ -1153,19 +1259,37 @@ class ChainAndManifestTests(unittest.TestCase):
         self.assertIn("merged-consistency/vNEXT", changed)
 
     def test_claim_versions_do_not_change_initial_extraction_producer(self) -> None:
+        import ai_extract
         import claim_artifacts
+        import claim_focus
         import claim_ledger
+        import claim_reextract_attempts
+        import claim_structural_overrides
+        import doc_annotation_export
+        import omission_actions
+        import review_state
 
         current = desktop_tasks.stage_producer("ai-extract")
         version_fields = (
             (claim_ledger, "CLAIM_REDUCER_VERSION"),
+            (claim_ledger, "CLAIM_CANDIDATE_POLICY_VERSION"),
             (claim_ledger, "CLAIM_VALIDATION_REUSE_VERSION"),
             (claim_ledger, "CLAIM_EFFECTIVE_REDUCER_VERSION"),
             (claim_ledger, "CLAIM_REVIEW_BRIDGE_VERSION"),
             (claim_ledger, "CLAIM_REVIEW_EVENT_SCHEMA"),
             (claim_ledger, "CLAIM_QUEUE_VERSION"),
+            (claim_ledger, "CLAIM_QUEUE_PROPOSAL_SCHEMA"),
             (claim_artifacts, "CLAIM_EFFECTIVE_SNAPSHOT_VERSION"),
             (claim_artifacts, "CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION"),
+            (ai_extract, "CLAIM_FOCUS_CRITIQUE_VERSION"),
+            (claim_focus, "CLAIM_FOCUS_ADAPTER_VERSION"),
+            (claim_reextract_attempts, "CLAIM_REEXTRACT_ATTEMPT_SCHEMA"),
+            (claim_reextract_attempts, "CLAIM_REEXTRACT_ATTEMPT_VERSION"),
+            (claim_structural_overrides, "CLAIM_STRUCTURAL_OVERRIDE_SCHEMA"),
+            (claim_structural_overrides, "CLAIM_STRUCTURAL_OVERRIDE_VERSION"),
+            (doc_annotation_export, "CLAIM_ANNOTATION_VERSION"),
+            (omission_actions, "CLAIM_AI_SUPPLEMENT_VERSION"),
+            (review_state, "CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION"),
         )
         for module, name in version_fields:
             with self.subTest(name=name), patch.object(module, name, f"{name}-vNEXT"):
@@ -1559,6 +1683,64 @@ class ChainAndManifestTests(unittest.TestCase):
 
         self.assertNotEqual(current, changed)
         self.assertIn("annotation-translation-guards-vNEXT", changed)
+
+    def test_annotation_producer_tracks_annotation_and_focus_versions(self) -> None:
+        import claim_focus
+        import doc_annotation_export
+
+        current = desktop_tasks.stage_producer("export-annotation-html")
+        cases = (
+            (doc_annotation_export, "CLAIM_ANNOTATION_VERSION", "claim-annotation-vNEXT"),
+            (claim_focus, "CLAIM_FOCUS_ADAPTER_VERSION", "claim-focus-adapter-vNEXT"),
+        )
+        for module, attribute, replacement in cases:
+            with self.subTest(attribute=attribute), patch.object(
+                    module, attribute, replacement):
+                changed = desktop_tasks.stage_producer("export-annotation-html")
+                self.assertNotEqual(current, changed)
+                self.assertIn(replacement, changed)
+
+    def test_annotation_fingerprints_track_table_items_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            table_items = out / "table_items.jsonl"
+            table_items.write_bytes(b'{"item_id":"TI-1"}\n')
+            first = desktop_tasks.stage_input_fingerprint(
+                out, "export-annotation-html"
+            )
+            first_files = desktop_tasks.stage_input_files_fingerprint(
+                out, "export-annotation-html"
+            )
+
+            table_items.write_bytes(b'{"item_id":"TI-2"}\n')
+            second = desktop_tasks.stage_input_fingerprint(
+                out, "export-annotation-html"
+            )
+            second_files = desktop_tasks.stage_input_files_fingerprint(
+                out, "export-annotation-html"
+            )
+
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(first_files, second_files)
+
+    def test_annotation_inputs_cover_readonly_claim_snapshot_dependencies(self) -> None:
+        self.assertTrue({
+            "blocks.jsonl",
+            "table_items.jsonl",
+            "claim_catalog.jsonl",
+            "claim_catalog.meta.json",
+            "claim_coverage_groups.jsonl",
+            "claim_ledger.jsonl",
+            "claim_shadow_metrics.json",
+            "claim_verifier_attempts.jsonl",
+            "claim_generation.meta.json",
+            "claim_effective_ledger.jsonl",
+            "claim_effective.meta.json",
+            "claim_queue_proposals.jsonl",
+            "claim_structural_overrides.jsonl",
+            ".claim_publication.journal.json",
+            ".claim_effective_publication.journal.json",
+        }.issubset(desktop_tasks.STAGE_INPUTS["export-annotation-html"]))
 
     def test_legacy_v7_annotation_export_is_not_reusable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

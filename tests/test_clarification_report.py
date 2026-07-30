@@ -214,6 +214,11 @@ class TierTests(unittest.TestCase):
     """信号分级：硬信号（确定性检出）必答进就绪门；软信号（模型自报）留档不计门限。
     真实教训：v10 数据 303 条假设 + 277 条 open_questions 把清单膨胀到 612 条不可用。"""
 
+    def test_tier_vocabulary_remains_frozen(self) -> None:
+        self.assertEqual(cr.TIER_HARD, "必答")
+        self.assertEqual(cr.TIER_SOFT, "参考")
+        self.assertEqual(cr.TIER_GAP, "遗漏候选")
+
     def test_soft_signals_do_not_trip_readiness_gate(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)

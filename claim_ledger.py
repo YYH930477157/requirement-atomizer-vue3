@@ -36,7 +36,7 @@ CLAIM_LEDGER_SCHEMA = "claim-ledger/v3"
 CLAIM_SEMANTIC_NEGATIVE_SCHEMA = "claim-semantic-negative/v3"
 CLAIM_COVERAGE_GROUP_SCHEMA = "claim-coverage-group/v3"
 CLAIM_LEDGER_PROMPT_VERSION = "claim-ledger-shadow-prompt-v4"
-CLAIM_CANDIDATE_POLICY_VERSION = "claim-coverage-candidate-v2"
+CLAIM_CANDIDATE_POLICY_VERSION = "claim-coverage-candidate-v3-stub-proposals"
 CLAIM_EDGE_PREFILTER_VERSION = "claim-edge-prefilter-v3"
 CLAIM_COVERAGE_VALIDATOR_VERSION = "claim-coverage-validator-v6"
 CLAIM_NEGATIVE_POLICY_VERSION = "claim-negative-policy-v2"
@@ -46,11 +46,13 @@ CLAIM_EFFECTIVE_B_REVIEW_ADAPTER_VERSION = "ai-review-effective-adapter-v1"
 CLAIM_EFFECTIVE_A_REVIEW_ADAPTER_VERSION = "atomic-review-effective-adapter-v1"
 CLAIM_REVIEW_BRIDGE_VERSION = "claim-review-bridge-v2"
 CLAIM_REDUCER_VERSION = "claim-reducer-v2"
-CLAIM_EFFECTIVE_REDUCER_VERSION = "claim-effective-reducer-v1"
+CLAIM_EFFECTIVE_REDUCER_VERSION = "claim-effective-reducer-v2"
 CLAIM_EFFECTIVE_LEDGER_SCHEMA = "claim-effective-ledger/v1"
-CLAIM_REVIEW_EVENT_SCHEMA = "claim-review-event/v1"
+LEGACY_CLAIM_REVIEW_EVENT_SCHEMA = "claim-review-event/v1"
+CLAIM_REVIEW_EVENT_SCHEMA = "claim-review-event/v2"
 CLAIM_VALIDATION_REUSE_VERSION = "claim-validation-reuse-v2"
-CLAIM_QUEUE_VERSION = "claim-queue-shadow-v1"
+CLAIM_QUEUE_VERSION = "claim-queue-v2"
+CLAIM_QUEUE_PROPOSAL_SCHEMA = "claim-queue-proposal/v2"
 CLAIM_AUDIT_POLICY_VERSION = "claim-audit-shadow-v4"
 CLAIM_COVERAGE_RUNTIME_VERSION = "claim-coverage-runtime-v10"
 CLAIM_VERIFIER_BATCH_POLICY_VERSION = "claim-verifier-batch-v3-full-http-body"
@@ -3232,7 +3234,7 @@ def build_shadow_ledger(
                 )
                 for target in formal_exact
             )
-        elif candidates and route_mode != "stub":
+        elif candidates:
             active = [target for target in candidates
                       if target[0]["review"]["eligibility"] == "active"]
             inactive = [target for target in candidates

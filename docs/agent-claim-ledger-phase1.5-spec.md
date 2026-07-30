@@ -1,452 +1,498 @@
-# Claim Conservation Ledger — Phase 1.5 实施规格（闭环验证与启用 mutation）v1.0
+# Claim 守恒账本 Phase 1.5 实施规格（v1.1）
 
-状态：**待审核冻结**。本稿是 `docs/agent-claim-ledger-spec.md`（**v2.4，已冻结**）§9
-Phase 1.5 的施工规格；总纲与本稿冲突时以总纲为准。Phase 1 已合 main（`74c5690`，生产
-双写不切门控），本稿引用其实际落成物（模块/版本/行号均按 main 现状）。
+状态：**合并前修复与复核基线**。本文是
+`docs/agent-claim-ledger-spec.md` v2.4 的 Phase 1.5 实施规格；如本文与账本总纲冲突，
+以总纲为准。Phase 1 已合并于 `74c5690`，本阶段仅在
+`codex/claim-ledger-phase1.5` 分支实施。
 
-- 实施分支：`codex/claim-ledger-phase1.5`（独立 worktree，用户决定合并）。
-- 实施纪律：后端测试一律 `unittest.TestCase`；提交前全量 unittest + golden 6/6 绿；
-  版本常量按 §7 表 bump；未要求不 commit、不 push。
+本修订替代 v1.0，并追认设计复核及合并前专家复核的裁决：需求发生变更后不得暗示已经
+重新验证；语义 revision 不得复用为写 token；任何付费操作都必须留下可恢复的审计记录；
+verifier 正负事实冲突不得由一条未明确 supersede 冲突事实的专家裁决直接闭合。
 
----
+## 1. 范围与非目标
 
-## 1. 定位与范围
+Phase 1.5 按依赖顺序启用四类受控能力：
 
-总纲 v2.4 §9 Phase 1.5 原文边界（逐字引用，不可扩大）：
+1. 完成 Phase 1 的崩溃恢复、锁顺序和 fold 验证。
+2. 为 A/B 两轨的需求权威写路径增加 compare-and-swap（CAS）保护。
+3. 增加 claim 级专家事实、结构性排除证伪，以及必须由用户显式授权的定向补抽队列。
+4. 传播 `incomplete_inputs`，并增加 claim 级批注定位。
 
-> - 在 Phase 1 的只读投影、event hash、bridge 补偿、authoritative-state fold 与崩溃恢复
->   已经验证通过后，补齐 A/B requirement authority 写入口的 `expected_target_fingerprint` /
->   `expected_target_review_revision` CAS，才启用 claim 级专家写入、claim queue 与定点补抽
->   对生产 requirements 的 mutation——**mutation 唯一通道为现有 `targeted_reextract`**
->   （前置条件指纹 + 补丁形态），不得长出第二条改写 requirements 的路径；
-> - ledger-only cache rebuild；
-> - mutation 失败补偿、并发裁决冲突与 downstream generation 刷新全部验证；
-> - downstream incomplete_inputs 贯通。
+readiness 裁决、TIER 逻辑、`is_coverage_candidate`、early-stop 行为、golden 基线、
+`gui/` 和已冻结的 `decide_trace` schema 均保持不变。B 轨仍只有一条需求变更路径：
+`omission_actions.targeted_reextract`。A 轨没有需求变更入口。Agent 可以读取或排队 proposal，
+但不得执行 proposal。
 
-Phase 1.5 一句话：**账本从"只说不算"变成"算了要负责"**——专家可以裁决 claim、可以从
-uncertain 队列发起定点补抽，但每一次写都有前置条件、可重放审计和失败补偿；readiness
-门控**仍不切换**（那是 Phase 2）。
+## 2. 不可变术语
 
-本阶段四件事（顺序即依赖序）：
+### 2.1 语义 revision 与写 revision
 
-1. **闭环验证**：把 Phase 1 已建成机制的故障语义验证补齐（真实强杀矩阵、锁序注入、
-   interrupted fold 留痕）；
-2. **authority CAS**：所有改变 target 有效性的写入口补齐 revision CAS（总纲 §2.5 硬要求）；
-3. **启用两类 mutation**：claim 级专家裁决（只写事件，终态仍由 reducer 派生）与
-   claim queue 定点补抽（唯一通道 `targeted_reextract`）；
-4. **贯通**：downstream `incomplete_inputs`、批注导出 span/row 级 claim 定位（Phase 1
-   经批准延后的项）、Phase 1 审查延后项。
+`target_review_revision` 是 Phase 1 的**语义 revision**。它表示当前权威语义审核状态，
+参与 freshness/effective fold，并刻意排除时间戳、评论、append ordinal 等仅属于物理历史的
+字段。其既有公式和消费者保持不变。
 
-## 2. 现状基线（main `74c5690` 实测事实）
+Phase 1.5 新增独立的 `target_authority_write_revision`，由 umbrella 常量
+`CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION = "claim-authority-write-v1"` 固定。该 revision
+仅用于权威写入，并且必须检测 ABA：
 
-### 2.1 可复用资产
+- B 轨：对 target id、当前 canonical row hash、source-event revision、有效 append ordinal
+  和完整权威历史 prefix hash 求哈希。
+- A 轨：对 target id、当前 state-row hash 和完整 review history prefix hash 求哈希。
 
-- **mutation 通道** `omission_actions.targeted_reextract`（:644-866）：跨进程租约锁
-  （`extraction_operation_lock`，冲突抛 `OmissionConflictError`）；前置条件
-  `expected_source_fingerprint`（不符 409 语义）；补丁形态 = append-only
-  `ai_supplements.jsonl` + `apply_supplement_patches` 重放（`_patch_is_current` 三重指纹
-  才重放）+ `atomic_write_jsonl` 整体重写 + 全量 upsert 生效校验（未生效抛冲突）；
-  失败路径诚实（LLM 异常上抛、零产出 `OmissionNoResultError`）；产出后刷新
-  compliance/quality/metadata/partial/merged_spec。`POST /omission-reextract` 契约完备
-  （409/422/400/502/503）。
-- **fold/事件/WAL**（Phase 1）：`claim_review_actions.fold_effective_ledger`、
-  `claim_review_events.jsonl`（schema v1，event_kind 仅
-  `target_invalidated|target_reactivated`）、独立 effective WAL、`claim_effective_health.json`、
-  三层 loader、`reduce_claim` 优先表。
-- **review 写入口指纹现状**：B 轨 `POST /ai-review-actions` 已有 source/review_subject
-  双指纹 CAS（api_server.py:436-456）；clarification batch 有 evidence_fingerprint CAS；
-  omission-actions 有 expected_source_fingerprint CAS。
-- **UI**：`ClaimLedger.vue` 队列页签（零按钮）、详情抽屉；api-client 六个只读方法。
-- **annotation**：`claim_distribution` 块级三态角标（optimized 布局，:1207-1227 内联计算，
-  数据源 effective snapshot）；v12 行级热区挂点（`_pdf_block_zones` :2066-2081、
-  `_pdf_context_records` :2161-2174）。
+因此，即使 `missing -> restored -> missing` 后当前状态表面相同，或者连续写入语义等价的
+状态行，write revision 也必须不同。GET `/ai-requirements` 和 GET `/requirements` 同时暴露
+两种 revision。既有 ledger base/effective row 继续使用原来的 `target_review_revision`
+语义，不得用新的 write revision 替换。
 
-### 2.2 已核实的缺口（Phase 1.5 必须修，附行号）
+允许 A 轨、B 轨和自动 merge 保留各自的 per-track 协议常量，但它们必须共同归入上述
+umbrella 版本。umbrella 常量必须进入公共常量层和 health，不得只存在于文字规格中。
 
-- **G1 A 轨专家裁决零 CAS**：`POST /review-actions` → `apply_review_action`
-  （review_actions.py:13-21）→ `apply_expert_decision`（review_state.py:73-152）
-  无任何 fingerprint/revision 入参，唯一硬约束是 frozen 不可改出。
-- **G2 HTML 导入零 CAS**：`desktop_tasks.import-ai-decisions`（:1471-1519）不传任何
-  fingerprint；总纲 §2.5：旧格式 HTML 裁决缺 token 只能导入为
-  `needs_reconfirmation/proposal`，不能成为 ledger authority。
-- **G3 无 revision 概念**：所有写入口的 CAS 都是指纹制；没有任何端点/UI 字段携带
-  `expected_target_review_revision`（总纲：source/subject fingerprint 只证明内容代际，
-  不能替代 prior-review CAS）。UI api-client 同样无 revision 字段。
-- **G4 `incomplete_inputs` 全仓零命中**：下游产物（functional_synthesis、
-  requirements_analysis、template_writer、assemble_spec、engineering_composer）对
-  extraction partial 无感知字段；现行只有 manifest stage `"partial"`、clarification
-  readiness 阻断、块级 `extraction_failed`。
-- **G5 claim locator 无 row 级消费**：catalog 表格行 claim 的 locator 有行精度，但
-  queue 提案 `parent_block_id` 仅块级，annotation 角标仅块级；span/row 级定位未做
-  （Phase 1 经批准延后至本阶段）。
-- **G6 agent 未接 claim 提案**：agent_state 只读 omission/质量，不读 `/claim-queue` 同源
-  提案；`allow_llm=False` 纪律在 agent_tools.py:32/:208 与 test_agent_tools.py:91。
-- **G7 targeted_reextract 候选门**：`block_id in current_omission_candidate_ids`
-  （omission_actions.py:381-407）——uncertain claim 的块可能已被其他需求"覆盖"而不在
-  候选集，直接复用会被候选门拒绝（"第一段有疑问、第五段有答案"型漏项正是此形态）。
-- **Phase 1 审查延后项**（已记入待办，本阶段一并收口）：publish 后双重 fold 去重、
-  hook 门控加轨道校验、acceptance/review_packet 换显式三层 API、`decide_trace.jsonl`
-  入零-mutation 守卫监视、clarification entries TIER 前后对比断言、启动 fold 的
-  fresh 短路、effective WAL 真实 `os._exit` 矩阵、锁序反序注入、interrupted fold
-  的 health 登记。
+### 2.2 锁与稳定快照
 
-## 3. Phase 1.5 设计公理
+所有 writer 使用以下全局锁顺序：
 
-总纲 §1 与 Phase 1 公理之上追加六条，违反任何一条即返工：
+```text
+B 轨变更：extraction-operation lock -> B target-publication lock -> review authority lock
+A 轨审核：A target-publication lock -> review authority lock
+ledger fold：target-publication snapshot -> review authority snapshot -> effective publication lock
+```
 
-1. **mutation 唯一通道**：对 `ai_requirements.jsonl` 的一切写只能经由
-   `targeted_reextract`（含本稿 §5.4 的 claim 模式扩展）的锁、前置条件、补丁与原子性；
-   任何新代码路径不得就地改写 requirements。`atomic_requirements.jsonl`（A 轨）本阶段
-   仍无任何 mutation 入口。
-2. **终态只能派生**：claim 的 `covered|excluded|uncertain` 永远由 reducer 从当前事实
-   派生；专家裁决、补抽执行只产生**事实与事件**，任何 API/UI/导入路径不得直接写
-   `resolution`（总纲 §6.2"resolved 不允许外部直接写入"）。
-3. **写必有 CAS**：凡改变 target 有效性或 claim 状态的写入，必须携带对应
-   fingerprint + revision 前置条件并在同一把锁内比对；陈旧写 → 409 + 当前 revision，
-   绝不 last-write-wins。缺 token 的遗留通道只能降级为 `needs_reconfirmation/proposal`。
-4. **失败要诚实可补偿**：mutation 任一步失败 → requirements 状态不变（补丁原子性）或
-   已登记的状态明确标注；补偿路径（重开、重试、重放）必须可重放审计，绝不把失败
-   伪装成完成（含"排队说成已抽取"）。
-5. **门控绝缘（延续 Phase 1）**：readiness_verdict、TIER、merged_consistency 结构、
-   golden、chain 复用语义不改；新信息仍走 informational 字段。
-6. **成本可见**：定点补抽是用户显式触发的 LLM 调用——每次执行记录真实 route/模型/
-   token/补丁血缘进事件；不得批量隐式触发（agent 不得自动执行，§12）。
+持有后序锁时不得再获取前序锁。target publication lock 将 requirements 文件、metadata 和
+publication revision 保护为同一个快照。对于无法持有该锁的 legacy 位置，writer 必须执行
+bytes/hash CAS：先读取 target publication revision 与 fingerprint，获取 authority lock，
+再读取并比较两者，任何变化都必须拒绝。
 
-## 4. 数据契约（变更与新增）
+`expected_target_fingerprint`、`expected_target_publication_revision` 和
+`expected_target_authority_write_revision` 必须来自同一受保护快照，并在变更前立即比较。
+陈旧请求返回 409 及全部当前值。第 6 章定义的 LLM 前检查和 publication 前检查缺一不可。
 
-### 4.1 `claim_review_events.jsonl` 升 schema v2（`claim-review-event/v2`）
+`llm_pipeline.merge_review_states` 不享受豁免：每次自动 authority merge 都必须获取同一组锁，
+并从受保护的输入快照提供或派生当前 write token。任何过渡期兼容路径如果无法提供 token，
+只能跳过权威写入并留下显式 gap 记录，不得静默写入。缺 token 的 legacy 导入同样不得生成
+权威事实。
 
-新增 event_kind（v1 两种保留不变）：
+### 2.3 resolution 事实与 operation 事实
 
-| event_kind | actor | 语义 |
+只有 resolution 事实参与 `reduce_claim`：
+
+- bridge 事实：`target_invalidated`、`target_reactivated`；
+- `expert_adjudication`、`audit_conflict`；
+- 结构有效的 catalog/base 事实。
+
+operation 事实包括 `reextract_started`、budget checkpoint、publication checkpoint、成功、
+失败、中断和重试。它们不进入 resolution reducer，也不改变
+`claim_effective_revision`，只用于派生队列 lifecycle 和恢复被中断的付费操作。
+
+## 3. 事件与文件契约
+
+### 3.1 `claim_review_events.jsonl`：v1/v2 混合 append-only 链
+
+`CLAIM_REVIEW_EVENT_SCHEMA` 升为 `claim-review-event/v2`。该文件是混合版本的
+append-only 日志，不得整体重写为 v2：
+
+- 每个已存储 row 保留自己的 `schema` 值；
+- loader 按 row 分派到 v1 或 v2 validator；
+- 在做 normalization/defaulting 之前，必须依据原始存储 row 及其声明的 hash domain 验证哈希；
+- v2 appender 接受合法的 v1 prefix，并继续同一条物理 hash chain；
+- torn-tail recovery 和 quarantine 保持相同的逐 row 行为。
+
+v2 JSON schema 必须是严格的、按 `event_kind` 判别的 union（`oneOf`）。bridge 字段不得变成
+其他 event kind 的可选字段。v1 bridge event 继续保留其 v1 必填字段和原有含义。
+
+v2 resolution event：
+
+| event kind | 必填事实 | reducer 含义 |
 | --- | --- | --- |
-| `expert_adjudication` | `expert:<actor>` | 专家裁决单条 claim：`adjudication ∈ covered \| excluded_non_normative \| reopen`，必填 `reason`、`evidence_refs`（covered 须引 coverage group 或 target+逐字引句；excluded 须受控原因；reopen 可为空列表）、`supersedes_conflict: bool` |
-| `audit_conflict` | `expert:<actor>` 或 `system:claim-audit` | 审计分歧登记：绑定被争议 fact 的 hash 与双方证据；reducer 按冲突处理 |
-| `reextract_executed` | `system:claim-queue-executor` | 定点补抽审计：`supplement_id`、focus locator、`route/model/tokens`、`result_requirement_ids`、失败时 `error` 与零产出如实记录 |
-| `structural_falsification` | `expert:<actor>` | 结构性排除证伪：绑定 claim、原 exclusion 证据、`falsification_reason`、`override_id`（§5.3） |
+| `expert_adjudication` | claim id/hash、adjudication、reason、结构化 evidence、expected effective revision、被 supersede 的 fact hash | 候选专家事实 |
+| `audit_conflict` | claim id/hash、冲突 fact hash、evidence、reason | `uncertain + conflict` |
+| `structural_falsification` | claim id/hash、允许证伪的原结构原因、override id/hash | 请求 catalog 重建，不直接改变 resolution |
 
-共同约束：事件仍 append-only + hash 链；新增种类的事件必须携带
-`expected_claim_effective_revision`（锁内 CAS，陈旧拒绝）；`actor` 枚举放开但
-projection 仍恒 `system:claim-review-bridge`。schema v2 对 v1 行向后兼容（旧行可重放）。
+`expert_adjudication` 的值只能是 `covered`、`excluded_non_normative` 或 `reopen`。
+evidence 必须结构化，不得是自由文本数组：
 
-### 4.2 authority revision 与 CAS 协议（新常量）
+- `coverage_group`：group id 和当前 group hash；
+- `target_evidence`：target id/fingerprint、produced-evidence locator/hash，以及 source claim
+  locator/hash；
+- `source_exclusion`：当前 source verbatim locator/hash 和允许的排除原因。
 
-- 每个 authority adapter 导出**可复算的 per-target `target_review_revision`**：
-  B 轨 = `sha256("claim-target-review/v1" | ai_req_id | 最新有效行 canonical | 无row时 sha256(empty))`；
-  A 轨 = `sha256("claim-target-review/v1" | requirement_id | status | history长度 | 末条history hash)`。
-  公式进 `claim_ledger`（两 adapter 共用，版本钉
-  `CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION = "claim-authority-write-v1"`，
-  记入 generation/effective meta 与 health）。
-- 写入口新增入参：`expected_target_fingerprint` + `expected_target_review_revision`，
-  锁内比对，陈旧 → **409 + 当前 revision**（响应携带现值供调用方重试）。
-- GET 面透出 revision：`/ai-requirements` 行、`/requirements` 行（经 enrich）各加
-  `target_review_revision` 只读字段，供 UI 回显携带。
+reducer 每次 fold 都重新验证全部 locator、hash、target active 状态及关联 coverage group。
+`covered` 必须具有当前 validated group 或 target evidence；`excluded_non_normative` 必须具有
+当前 source exclusion span。只有 reason 的裸裁决永远不能闭合 claim。
 
-### 4.3 `claim_queue_proposals.jsonl` 升 v2（`claim-queue-proposal/v2`）
+`reopen` 的 `supersedes_fact_hashes` 在 schema 中必须设置 `minItems: 1`。实现采用
+`supersedes_fact_hashes[]` 而不是布尔 `supersedes_conflict`，以便明确指出被替代的具体事实。
 
-- 提案生命周期：`state ∈ open | executing | executed`（fold 重建时按当前事实重算，
-  executed 仅凭 `reextract_executed` 事件成立；**resolved 不是提案状态**——提案消失
-  只因 claim 被 reducer 关闭）。
-- 新增执行前置字段：`execution_preconditions{claim_id, claim_source_fingerprint,
-  claim_effective_revision, parent_block_id, block_source_fingerprint, focus_lines[]}`
-  （focus_lines 由 claim locator 派生、必须是所属章节原文子串，沿用
-  `_validated_focus_lines` 语义）。
-- `dry_run` 字段保留但可执行提案为 `dry_run: false`（Phase 1 的全部为 true，兼容读）。
+### 3.2 补抽 attempt 日志
 
-### 4.4 结构性排除 override 注册表（新文件 `claim_structural_overrides.jsonl`）
+新增 `claim_reextract_attempts.jsonl`，schema 为 `claim-reextract-attempt/v1`。该文件在
+extraction operation lock 下 append-only 且 hash chained，具有独立的 sequence 和
+idempotency namespace，不属于 `claim_review_events.jsonl`。
 
-append-only、hash 链（沿用事件文件纪律）：`override_id`、`claim_id`、`claim_hash`、
-`catalog_generation_id`（证伪时所在代）、原 exclusion 证据、`falsification_reason`、
-`actor`、`recorded_at`、`override_version`。catalog 重建时作为**确定性输入**消费
-（§5.3），写入 catalog meta 的 override 清单与 hash。
+每个 attempt 包含 `attempt_id`、`proposal_id`、`claim_id`、request idempotency key、actor、
+请求的 route/model、显式 budget、preflight fingerprint/revision、focus adapter 结果和时间戳。
+合法 transition event 为：
 
-### 4.5 downstream `incomplete_inputs`
+```text
+reextract_started
+budget_checkpoint
+supplement_persisted
+requirements_published
+base_rebuild_published
+effective_folded
+reextract_succeeded | reextract_failed | reextract_interrupted | reextract_aborted_stale
+```
 
-下游产物 JSON 各加顶层 `incomplete_inputs: bool`（默认 false；当 ai-extract
-`extraction_status=partial` 或 `failed_sections>0` 时置 true）：functional_synthesis 输出、
-`engineering_requirements.json`、`template_writer_report.json`、`clarification_report.json`
-（其 readiness 已阻断，此处补字段）、merged_spec 报告。数据源 =
-`ai_requirements.meta.json` 既有字段，只读不重算。
+每个 attempt 最多有一个 terminal event。远程调用前，以及获得响应或错误后，都必须持久化
+budget checkpoint，并记录实际已知 usage。必须使用 `chat_json_with_meta` 或等价的
+usage-bearing API；普通 `chat_json` 不满足要求。进程在计费后、结果落盘前死亡时，必须恢复为
+带已收费或 usage unknown 的 `interrupted` attempt，不能伪造成零成本失败。
 
-## 5. 机制设计
+启动或读取队列时，recovery 从 attempt log、supplement 和 requirements publication 事实派生
+状态，绝不盲目重试。已持久化 supplement 或 requirements publication 但缺少下一 checkpoint
+时，应补投影相应 checkpoint；状态有歧义时标记 `interrupted`，并要求用新的 attempt id
+显式重试。
 
-### 5.1 authority 写入口 CAS（G1/G2/G3）
+### 3.3 队列 proposal
 
-- **B 轨 `POST /ai-review-actions`**：在既有双指纹之上**强制新增**
-  `expected_target_review_revision`（§4.2 公式，锁内比对）；旧调用方不带 → 400
-  `missing_revision`（不留兼容后门，UI 同步改）。指纹继续校验内容代际，revision 校验
-  prior-review 状态——两者语义不同，缺一不可（总纲 §2.5）。
-- **A 轨 `POST /review-actions` / `apply_expert_decision`**：补
-  `expected_target_fingerprint` + `expected_target_review_revision` 入参（当前为零 CAS，
-  G1）；链路 `apply_review_action` 透传；UI `applyReviewAction` 先经 `/requirements`
-  行携带的 revision 回显。
-- **HTML 导入 `import-ai-decisions`**（G2）：无 token 的 HTML 裁决一律导入为
-  `needs_reconfirmation=True` 的 proposal 行（保留原状态文本作展示），**不成为 ledger
-  authority**（claim 侧 eligibility=unknown，不用于关闭 claim）；导入报告如实统计
-  降级条数。若 HTML 模板未来携带 token（导出侧加 data 属性），可按 §4.2 正常 CAS 导入——
-  本阶段只预留解析，不实现导出侧改造。
-- **自动迁移/生成式合并**（`llm_pipeline.merge_review_states`）：非专家写，现状不动，
-  在 health `authority_cas_gap` 的清除条件中显式豁免并留痕。
-- `authority_cas_gap`：B/A 两端点 + HTML 降级全部落地后，health 中该 flag 置 false
-  并记录 `cas_protocol_version`；`import-clarification-answers` 的静默丢弃改为响亮
-  冲突列表（响应逐条列 stale，仍不阻断合法行）。
+`claim_queue_proposals.jsonl` 升为 `claim-queue-proposal/v2`。proposal 是当前 claim 与
+attempt 的确定性投影：
 
-### 5.2 claim 级专家裁决（reducer 专家层）
+- `open`：eligible `uncertain` claim，且无 live attempt；
+- `executing`：存在持久化的非终态 attempt；
+- `executed`：最新 terminal attempt 为 `reextract_succeeded`，且 base rebuild 与
+  effective fold checkpoint 均成功；
+- `rebuild_pending`：requirements 已发布，但 base rebuild/fold 尚未成功发布；不得显示为已闭合；
+- failed、interrupted 或 stale-aborted attempt 使仍 eligible 的 claim 回到 `open`，并暴露
+  最新 attempt outcome。
 
-- API：`POST /claim-adjudications`（`claim-adjudication/v1`）——body：`claim_id`、
-  `adjudication`、`reason`、`evidence_refs[]`、`supersedes_conflict`、
-  `expected_claim_effective_revision`（CAS，409+当前值）、`actor`。校验：当前
-  generation + claim_hash 匹配；证据规则按 §4.1 表。
-- fold 归约（`CLAIM_EFFECTIVE_REDUCER_VERSION` 升 v2，base reducer 不动）在总纲 §2.4
-  优先表之上加**专家层**，优先级自上而下：
-  1. 当前 `structural_falsification` → 按 §5.3 走重建（不在 fold 内关闭）；
-  2. 当前 `expert_adjudication(covered|excluded_non_normative)`：与同代冲突事实
-     （相反方向的 verifier-validated fact）并存时——`supersedes_conflict=true` 且有
-     reason → 按裁决派生；否则 → `uncertain + conflict`（总纲"并发冲突不闭合"）；
-  3. 当前 `audit_conflict` → `uncertain + conflict`；
-  4. 总纲 §2.4 原表。
-- 专家事实的失效规则与 verifier 事实相同：claim_hash、target fingerprint、evidence
-  locator、reducer/adapter 版本任一变化即失效（事件仍在，仅供审计）；绝不跨
-  generation 静默复用。
-- `expert_adjudication(reopen)` 使对应 covered/excluded 失效回 uncertain；被重开的
-  claim 重新进入 queue 提案派生。
-- UI：详情抽屉加三个裁决按钮（确认覆盖/确认非需求/推翻闭合）+ reason 输入 +
-  冲突时的 supersedes 勾选项（默认不勾）；409 → 整页重取后提示重试。
+`execution_preconditions` 包括 claim id/hash/source fingerprint、
+`expected_claim_effective_revision`、parent block fingerprint、target publication revision、
+适用时的 semantic/authority-write revision，以及按 source kind 区分的 focus object。
+不存在通用的 `focus_lines` 断言。
 
-### 5.3 结构性排除证伪与重建（总纲 §2.5 硬要求）
+focus adapter 必须确定且有版本：
 
-- 证伪入口：`POST /claim-adjudications` 的 `adjudication="structural_falsification"`
-  变体（或独立 `kind` 字段），写 `claim_structural_overrides.jsonl`（§4.4），
-  **不在 fold 内改 claim 状态**。
-- 重建路径：override 变化使 catalog generation 失效 → 走既有 ledger-only 重建
-  （`refresh_claim_shadow` 扩展 overrides 输入参数），catalog 以 overrides 为确定性
-  输入重生成（被证伪的排除不再应用，相关行成为 eligible claim；catalog meta 记录
-  override 清单 hash 与 `override_version`）——"只追加 ledger event 让错误 catalog 行
-  留在文档分区"被显式禁止。
-- **两级证伪区分**：per-claim 证伪（override 注册表，运行时可达）与 rule 证伪
-  （排除规则本身错误 → 代码修复 + `CLAIM_CATALOG_VERSION` bump，不在运行时通道内，
-  本阶段不实现）。
-- 成本诚实：重建后新 eligible claim 走正常 verbatim/prefilter/verifier 流程，verifier
-  调用受既有预算门约束；UI 在证伪确认对话框中明示"将重建账本并可能消耗 verifier
-  预算"，需用户显式确认。`CLAIM_CATALOG_VERSION` 不变（override 是输入不是行为）。
+- `text_span`/list item：经过验证的 source text line 和 offset；
+- `table_item`：table id、row index、field key/value identity；
+- `table_data_rows`：稳定 row window 和 canonical cell hash；
+- `table_fallback`：确定性 row-window identity，禁止把整个大表 block 作为单个 claim。
 
-### 5.4 claim queue 定点补抽执行（G7 + 唯一通道）
+无法派生合法 adapter 时，在任何 LLM 调用之前以 422 拒绝 proposal execution。table row
+不要求是 section prose 的逐字子串；这是按数据类型处理的既定设计，不得退回通用字符串断言。
 
-- **`targeted_reextract` 扩展 claim 模式**（仍是唯一通道，契约 v2）：
-  新增可选入参 `claim_id` + `expected_claim_effective_revision`；claim 模式下——
-  候选门由"块 ∈ omission 候选集"**替换为**"claim 存在、当前 resolution=uncertain、
-  locator 可映射所属章节"（G7：块被其他需求覆盖但 claim 未覆盖正是主目标场景）；
-  `focus_lines` 强制取 claim locator 派生行（仍是章节原文子串）；其余锁、前置指纹
-  （块级 `expected_source_fingerprint` 照旧校验）、补丁形态、原子重写、
-  compliance/quality/meta/partial/merged_spec 刷新**一字不改**。
-  `AI_SUPPLEMENT_VERSION` bump（新策略指纹，旧补丁重放规则不受影响）。
-- API：`POST /claim-queue/execute`（`claim-queue-execute/v1`）——body：`proposal_id`、
-  `expected_claim_effective_revision`、`expected_ledger_state:"uncertain"`、`actor`、
-  `allow_llm: true`（**缺省 false 且缺省拒绝**）；错误口径沿用
-  `/omission-reextract`（409 stale / 422 零产出 / 502 LLM / 503）。
-- 执行后闭环：补丁重放成功 → 目标集合变化 → 同请求内触发一次 fold（沿用触发点
-  纪律），reducer 用新需求重新验证关联 claim——**只有重新验证成 covered/excluded
-  才关闭**；仍 uncertain 则提案回到 open。执行事件（§4.1）记录全部血缘与 token。
-- 失败补偿：LLM 异常/零产出 → requirements 零变化（补丁原子性保证），事件如实记
-  `error`，提案保持 open；冲突（CAS/CAS-equivalent 失败）→ 409，不写任何状态。
-- agent 纪律延续：agent 只读提案、只排队 `needs_extraction`；`allow_llm=True` 的
-  显式外部调用才可执行（既有 agent_tools.py:32/:208 断言保持）；agent_state 增加
-  读 `/claim-queue` 同源提案文件作候选来源（G6，只读接线）。
+### 3.4 结构 override registry
 
-### 5.5 mutation 失败补偿与并发语义（验证主题，非新机制）
+`claim_structural_overrides.jsonl` 是 append-only、hash chained 的唯一权威来源，记录已接受的
+per-claim 结构 override。review event 日志中的 `structural_falsification` 只是引用该 registry
+的审计投影，不是第二个权威源。
 
-- 裁决/执行并发：同一 claim 的并发写 → CAS 拒绝后者（409）；并发裁决冲突（两人
-  相反裁决）→ reducer `uncertain + conflict`，等待再次裁决。
-- supplement replay 后自动重开（总纲 Phase 1.5 首条）：补丁因指纹失效不再重放 →
-  关联 claim 在下一次 fold 自动重开（target 失效语义已覆盖，测试补钉）。
-- downstream generation 刷新：补抽改变 requirements → target_set_hash 变化 →
-  document_effective_revision 前进 → 下游 informational 字段（clarification 的
-  claim_ledger 块、run_manifest claim_components）自然反映新代。
+首版仅允许证伪 `repeated_page_furniture`。`empty` 和 `separator_only` 不可在 runtime
+override。每条 override 记录当前 claim id/hash、catalog generation、original proof、允许的
+reason、actor 和 registry prefix hash。registry prefix hash 与 override version 必须进入
+catalog-generation identity，而不能只作为 metadata。
 
-### 5.6 downstream `incomplete_inputs` 贯通（G4）
+写入 override 后，旧 effective snapshot 立即 stale。重建失败时必须保持
+`stale/rebuild_pending`，不得继续把旧 structural exclusion 表示为 fresh。确认 API 必须携带
+显式 `allow_llm`、route 和 verifier budget，因为新 eligible claim 的 ledger-only refresh
+可能需要经过授权的 semantic verifier。默认结构 override 路径为确定性 `0 LLM`；只有用户
+明确授权时才允许 verifier 调用。
 
-- 各下游阶段在产物 JSON 顶层加 `incomplete_inputs`（§4.5 口径）；
-  `STAGE_IMPLEMENTATION_REVISIONS` 对应阶段 bump（functional-synthesis、
-  requirements-analysis、template-write、compose、clarification-report）。
-- readiness 语义不变（已由 failed_sections 阻断）；该字段仅供 API/UI/导出如实展示
-  "输入不完整"。UI 运行页与账本页读取展示，不加新门。
+### 3.5 Legacy supplement
 
-### 5.7 闭环崩溃/并发验证计划（Phase 1 延后项转正）
+既有 supplement 必须继续可 replay。`AI_SUPPLEMENT_VERSION` 不得被全局当作单一 equality
+gate；loader 按 `strategy_version` 分派，并保留
+`ai-supplement-v3-identity-preconditions` compatibility handler。claim-mode supplement 使用
+新的 mode-specific strategy version，并携带
+`origin={kind:"claim_queue", claim_id, proposal_id, attempt_id}`。未知或不支持的版本必须带
+显式 replay diagnostic 诚实跳过，不得静默应用。
 
-- **真实 `os._exit` 矩阵扩展到 effective WAL**：备份后/WAL durable 后/逐文件 replace
-  中途/journal 删除前四类强杀点（沿用 Phase 0 generation 矩阵的进程级 harness），
-  断言恢复上一代完整 trio、无 verifier failure 登记、interrupted fold 已留痕。
-- **interrupted fold 的 health 登记**（Phase 1 放弃项，本阶段实现）：
-  `claim_effective_health.json` 增 `interrupted_folds[]`（时间、恢复自哪个 journal
-  hash、恢复动作），schema 同步。
-- **锁序反序注入**：测试替身强制先取 review 锁再请求 publication 锁，断言被显式
-  拒绝/超时而非死锁。
-- **publish 后双重 fold 去重**：`publish_b_track_shadow` 内部 fold 结果复用给
-  ai-extract 层（同代幂等短路），断言同代第二次 fold 零 WAL 写入。
-- **启动 fold fresh 短路**：`assess_effective_freshness` fresh 时启动 maintenance
-  跳过物化（保留 journal 恢复职责）；stale 才全量 fold。
-- **hook 门控加轨道校验**：A 轨裁决遇 B 轨 generation 直接 no-op（读 generation
-  meta 声明的 track，不空跑 fold）。
-- **acceptance/review_packet 换显式三层 API**（去兼容别名）；
-  **`decide_trace.jsonl` 入零-mutation 守卫监视清单**；**clarification entries
-  TIER 前后对比断言**（补进既有 informational 测试）。
+## 4. Authority CAS 写路径
 
-### 5.8 批注导出 span/row 级 claim 定位（G5，Phase 1 批准延后项）
+所有 B 轨 `/ai-review-actions` 和 A 轨 `/review-actions` 写入都要求：
 
-- **文本块**：复用 v11/v12 全局匹配机制（精确→包含→边际模糊，宁缺不猜）按 claim
-  文本在影印/原生 PDF 上定位 claim 级热区，kind = covered/excluded/uncertain 三色；
-  块级角标保留为汇总。
-- **表格块**：catalog 行级 locator 对齐 v12 行级热区（row zone 上叠 claim 状态点），
-  行卡片追加该行 claim 列表（id + resolution + 详情锚）。
-- **两个布局**（optimized + pdf_original）一致覆盖（现状角标只有 optimized）。
-- 版本：`doc_annotation_export` 基戳 v12-claim-distribution → **v13**（缓存失效）；
-  契约快照测试同步。
+```text
+expected_target_fingerprint
+expected_target_publication_revision
+expected_target_authority_write_revision
+```
 
-## 6. 接入面设计
+缺字段返回 400；任一不匹配返回 409，并返回全部当前值。UI 必须在提交前读取 fresh 值，
+并在 409 后重新拉取 authoritative row，同时保留用户尚未提交成功的草稿。旧的语义
+`target_review_revision` 继续展示，但不能充当 write CAS。
 
-### 6.1 API 汇总
+无当前 token 的 HTML decision import 采用更严格的降级策略：跳过权威写入并计数，不生成
+`needs_reconfirmation` proposal。`import-clarification-answers` 必须逐 record 报告 conflict，
+不得静默丢弃 stale record。该 skip+count 口径比 v1.0 的 proposal 方案更保守，现正式追认。
 
-新增 POST（全部 token 校验、统一错误口径、全部带 CAS）：
+health 中既有 `authority_cas_gap` 仅表示 fold/runtime 观察；写协议 rollout 使用独立字段：
 
-| 端点 | schema | 语义 |
+```text
+authority_write_protocol_version
+legacy_authority_write_gap_count
+```
+
+`authority_write_protocol_version` 必须等于 umbrella
+`CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION`。任何 legacy、自动 merge 或暂时兼容路径只要未执行
+完整 CAS，就必须增加 `legacy_authority_write_gap_count` 并留下 route/reason 留痕；不得以
+per-track 常量替代 umbrella health 契约，也不得存在无 CAS 且无留痕的豁免。
+
+## 5. Claim 裁决与并发
+
+`POST /claim-adjudications` 要求当前 catalog generation、claim id/hash、adjudication、reason、
+typed evidence、actor 和 `expected_claim_effective_revision`。它在 claim-event lock 下精确
+append 一条 v2 resolution event，并在释放 authority lock 后调度或执行确定性 fold。
+
+并发有三种刻意区分的语义：
+
+1. 两个请求基于同一 effective revision 竞争：第一个提交，第二个返回 409，不创建
+   conflict fact。
+2. 后续请求读取新 revision 后刻意推翻先前裁决：必须使用 `reopen`，或携带 reason 并在
+   `supersedes_fact_hashes[]` 中显式替代具体先前事实。
+3. 独立存在的当前冲突事实，包括 imported/audited facts，由 `audit_conflict` 表示，并归约为
+   `uncertain + conflict`，直到后续事实显式 supersede 或 reopen。
+
+当 base 已包含 `positive_negative_conflict` 时，`covered`、
+`excluded_non_normative` 和 `reopen` 都必须在 `supersedes_fact_hashes[]` 中包含**全部当前
+正向 base fact hash 与全部当前负向 base fact hash**。不传、只传一侧或漏掉任一当前冲突
+事实时，写入阶段返回 400，且不 append event；历史日志中不满足该条件的事件在 replay 时
+必须判为非 current，claim 保持 `uncertain`。只有显式 supersede 冲突两侧全部事实、且 typed
+evidence 仍 current 时，专家裁决才可闭合。
+
+对于已处于普通 `covered` 或 `excluded` 终态的 base，未显式 supersede 当前相反终态事实的
+反向裁决同样在写入阶段返回 400，不得先写入再由 fold 制造 conflict。携带正确具体 fact hash
+的显式推翻仍按本章第 2 类并发语义处理。
+
+不存在布尔 `supersedes_conflict`，因为它不能标识被替代的事实。专家事实会在 claim hash、
+evidence locator/hash、target activity/fingerprint、adapter version、reducer version 或
+catalog generation 变化后过期，但仍作为审计历史可读。
+
+## 6. 队列执行与真实闭合路径
+
+`POST /claim-queue/execute` 要求 proposal id、expected claim effective revision、expected
+ledger state `uncertain`、actor、`allow_llm: true`、route、maximum calls、total token budget
+以及 client idempotency key。默认拒绝执行。endpoint 在 LLM 工作前返回 400/409/422，远程
+失败返回 502，artifact 不可用或 recovery pending 返回 503。
+
+UI 点击执行时不得由 api-client 硬编码 `allow_llm: true`。必须先显示确认对话框，明确展示
+claim、route/model、maximum calls 和 total token budget，并提供默认未勾选的
+`allow_llm` checkbox。只有用户主动勾选并确认后才发送 `allow_llm: true`；取消、未勾选、
+关闭对话框或切换 claim 均不得发起执行请求。409 后重取最新状态并保留可复用的表单输入，
+但必须重新取得本次付费授权。Vitest 必须覆盖未授权零请求、授权 payload、取消和 409 路径。
+
+claim mode 只在需求变更和既有 extraction-operation lease 范围内扩展
+`targeted_reextract`。它**不得调用 `apply_omission_action`**，不得修改
+`omission_states.jsonl`，也不得写 block 级 `issue_confirmed` 或 `resolved`。测试必须断言
+claim-mode 执行前后该文件逐字节相同。
+
+必须遵循以下持久化顺序：
+
+1. 按第 2.2 节顺序获取锁，验证全部 queue、claim、authority、source、target-publication
+   和 budget precondition。
+2. append `reextract_started`；持久化调用前 budget checkpoint。
+3. 通过 usage-bearing API 调用 LLM；持久化调用后 usage 或 error。
+4. 重新获取并验证全部 mutation-sensitive precondition。不匹配时写入
+   `reextract_aborted_stale` 和真实 usage，返回 409，不发布需求变更。
+5. 持久化 supplement，并原子发布 requirements；记录两类 checkpoint 和产生的 target
+   publication revision。
+6. 释放 extraction/authority lock。以 **ledger-only base rebuild** 调用
+   `refresh_claim_shadow`；只有实际需要且用户已经显式授权时，才转发 `allow_llm`、route 和
+   verifier budget。该步骤构建新的 coverage group，并可运行已授权 verifier；单独调用
+   `fold_effective_ledger` 不能完成此工作。
+7. 发布新 base generation，再执行 fold；记录 base 与 effective generation/revision
+   checkpoint。仅在此后写入 `reextract_succeeded`。
+
+如果 requirements 发布后 refresh/fold 失败，attempt 按可恢复性进入 `rebuild_pending` 或
+`reextract_failed`，claim 保持未闭合。recovery 只恢复确定性的 pending publication 工作，
+不得自动发起 LLM，也不得因为 supplement 存在就声称 `covered`。只有新 base 已构建后，
+fold 才是零 LLM 操作。
+
+## 7. 下游与批注契约
+
+使用一个确定性 helper 读取并校验 source `ai_requirements.meta.json` lineage 和当前
+requirements publication。当 `failed_sections`、`failed_section_ids` 或
+`failed_section_block_ids` 非空，或者所选 snapshot 为 partial 时，设置
+`incomplete_inputs=true`。不得虚构 `extraction_status` 字段。该字段传播到：
+
+- functional synthesis output；
+- `engineering_requirements.json`、`engineering_analysis.json` 和
+  `compliance_items.json`；
+- template writer report、merged-spec report、clarification report 和 engineering
+  composer output。
+
+每个 consumer 在传播该标志前，都必须校验 input fingerprint/producer lineage。该标志只作
+信息提示，不改变 readiness 行为。
+
+`template-write` 和 `compose` 的 `STAGE_INPUTS` 必须显式包含
+`ai_requirements.meta.json`；对应 `STAGE_IMPLEMENTATION_REVISIONS` 必须 bump，使缺少
+`incomplete_inputs` 的旧缓存失效。仅修改 helper 而不 bump stage revision 不满足本规格。
+测试必须证明 metadata 变化会使这两个 stage 的旧缓存失效，并在新产物中传播该字段。
+
+annotation export 通过第 3.3 节的 focus adapter 映射每个 claim。text/list claim 仅在
+确定性 source 精确匹配时生成 span zone；table claim 使用 row geometry 和 row card；匹配
+失败时不生成 zone。不得使用宽松或推测定位作为 fallback。optimized 与 original-PDF layout
+必须包含相同的 claim status 集合。`doc_annotation_export` 从
+`v12-claim-distribution` bump 到 v13。该“只用精确档”的实现比早期规格更严格，现正式追认。
+
+## 8. 版本与缓存纪律
+
+| 常量/artifact | Phase 1.5 值 | 域 |
 | --- | --- | --- |
-| `POST /claim-adjudications` | `claim-adjudication/v1` | 专家裁决/证伪（§5.2/§5.3）；200/400/409/503 |
-| `POST /claim-queue/execute` | `claim-queue-execute/v1` | 定点补抽执行（§5.4）；200/400/409/422/502/503 |
+| `CLAIM_REVIEW_EVENT_SCHEMA` | `claim-review-event/v2` | effective/audit |
+| `CLAIM_EFFECTIVE_REDUCER_VERSION` | `claim-effective-reducer-v2` | effective |
+| `CLAIM_QUEUE_VERSION` | `claim-queue-v2` | effective |
+| `CLAIM_QUEUE_PROPOSAL_SCHEMA` | `claim-queue-proposal/v2` | effective |
+| `CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION` | `claim-authority-write-v1` | write protocol/health |
+| `CLAIM_REEXTRACT_ATTEMPT_SCHEMA` | `claim-reextract-attempt/v1` | operation audit |
+| `CLAIM_STRUCTURAL_OVERRIDE_VERSION` | `claim-structural-override-v1` | catalog generation |
+| `AI_SUPPLEMENT_VERSION` | 保留 v3 loader；新增 claim-mode strategy version | supplement replay |
+| annotation export | v13 | annotation cache |
 
-变更：`/ai-review-actions`、`/review-actions` 强制 revision 入参（§5.1）；
-`/ai-requirements`、`/requirements` 行加 `target_review_revision`；
-`/claim-queue` 提案带 v2 生命周期与执行前置字段；六个只读端点 view 版本按需 v2。
+override registry prefix hash 必须进入 `catalog_generation_id`、base metadata 和 freshness
+检查。effective-only 版本变化不得进入 `stage_producer("ai-extract")` 或 extraction cache key，
+也不得触发 initial extraction。需求变更是例外：requirements 发布后必须有意调用
+`refresh_claim_shadow`，因为 base coverage graph 已改变；这不是 effective-only refold。
 
-### 6.2 UI（`ui/src/ClaimLedger.vue` 为主）
+所有新增的 `CLAIM_*` effective 常量都必须有 stage-producer 不变性断言。第 7 章要求的
+`template-write`/`compose` stage revision bump 属于下游缓存修复，不得误接入 extraction
+producer fingerprint。
 
-- 详情抽屉：裁决按钮组 + reason/evidence 表单 + supersedes 勾选（§5.2）；409 → 重取提示。
-- 队列页签：open 提案加「定点补抽」按钮（确认对话框显示 claim 原文、locator、
-  "将调用 LLM 并消耗 token"明示 + allow_llm 勾选）；executing 态进度、executed 态
-  结果链接（跳转需求列表对应行）；失败如实 toast（不重试伪装）。
-- 账本页与运行页：`incomplete_inputs` 横幅（§5.6）。
-- 批注导出为静态产物，不含交互（§5.8）。
+## 9. 工作包
 
-### 6.3 desktop 与 agent
+1. WP1：effective WAL 崩溃、锁顺序、双 fold 去重与 fresh 启动短路 harness。
+2. WP2：target publication lock、semantic/write revision 拆分、A/B/automatic merge CAS、
+   GET 暴露，以及 umbrella health rollout 字段。
+3. WP3：混合 v1/v2 event chain、严格 schema、typed expert evidence、reducer
+   conflict/supersession 规则，以及 expert API。
+4. WP4：attempt log/WAL、queue lifecycle 投影、budget accounting 和 recovery。该工作包通过前
+   不得提供 UI 执行控制。
+5. WP5：claim-mode targeted extraction、两次 CAS 检查、supplement compatibility、
+   refresh-base-then-fold 闭合路径，以及带显式付费确认的 queue UI。
+6. WP6：structural override registry、catalog identity/freshness、rebuild 路径，以及确认时的
+   budget contract。
+7. WP7：incomplete inputs 和 annotation adapter。
+8. WP8：文档、metrics 和 `CLAUDE.md` 里程碑记录。
 
-- desktop：run_manifest ai-extract 条目的 `claim_components` 加
-  `cas_protocol_version`、`queue_version`（informational）；`claim-ledger-fold` 子命令不变。
-- agent：`agent_state` 增读提案文件为候选来源（G6 只读）；`agent_tools` 纪律断言
-  保持；`decide_trace.jsonl` 只记摘要。
+WP1 和 WP2 是强制 gate。WP3 和 WP4 必须先于任何 mutation endpoint。WP5 依赖 WP2-WP4。
+WP6 可在 WP2 后执行，但必须使用相同的 base publication/freshness 协议。WP7 在 adapter
+contract 固定后可独立执行。
 
-## 7. 版本与缓存纪律
+WP1 的“完成”必须包含以下四项机制级验证，不得以普通异常 mock 或相邻单测替代：
 
-| 常量 | 现值 | Phase 1.5 | 域 |
-| --- | --- | --- | --- |
-| `CLAIM_REVIEW_EVENT_SCHEMA` | claim-review-event/v1 | **v2**（新 event kinds + actor 放开） | effective |
-| `CLAIM_EFFECTIVE_REDUCER_VERSION` | claim-effective-reducer-v1 | **v2**（专家层） | effective |
-| `CLAIM_QUEUE_VERSION` | claim-queue-shadow-v1 | **claim-queue-v2**（可执行生命周期） | effective |
-| `CLAIM_QUEUE_PROPOSAL_SCHEMA` | claim-queue-proposal/v1 | **v2** | effective |
-| 新 `CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION` | — | `claim-authority-write-v1` | effective（钉 meta/health） |
-| 新 `CLAIM_STRUCTURAL_OVERRIDE_VERSION` | — | `claim-structural-override-v1` | base（override 输入消费于重建） |
-| `AI_SUPPLEMENT_VERSION` | ai-supplement-v3-identity-preconditions | **bump**（claim 模式策略指纹） | 既有补丁域 |
-| 批注基戳 | v12-claim-distribution | **v13** | 既有导出域 |
-| `STAGE_IMPLEMENTATION_REVISIONS`（§5.6 各阶段） | 现值 | 各 +1 | 既有阶段域 |
-| API view | v1 系列 | 按需 v2 + 新端点 v1 | — |
-| `CLAIM_CATALOG_VERSION` | claim-catalog-v4 | **不动** | base |
-| `CLAIM_REDUCER_VERSION`（base） | claim-reducer-v2 | **不动** | base |
-| `stage_producer("ai-extract")` | — | **任何 CLAIM_* 不得进入**（延续断言） | — |
+1. 真 `os._exit` effective WAL 矩阵：覆盖 journal durable 前后、每个固定文件 replace、
+   effective meta/commit point 前后；恢复结果只能是完整旧代或完整新代，不能混代。
+2. 双 fold 去重：对同一 base、authority 和 event prefix 连续 fold，不重复 append bridge
+   event、不重复 queue operation、不改变无关 claim revision，第二次结果与第一次语义等价。
+3. 启动 fresh 短路：current effective snapshot 在启动时不重建、不改写文件字节、不增加
+   health/fold 计数，也不调用 refresh/chat/verifier。
+4. 锁顺序注入：在 A 写、B 写、automatic merge、fold 和 recovery 入口注入锁探针，证明无
+   逆序获取、无 TOCTOU 接受，并能在受控并发下结束而非死锁。
 
-缓存语义：effective 域 bump（event schema/reducer/queue/CAS 协议）只触发纯 fold；
-override 注册表变化触发 ledger-only 重建（零初抽 LLM）；`AI_SUPPLEMENT_VERSION` bump
-不影响旧补丁重放；批注 v13 只失效导出缓存。
+另外必须恢复 v1.0 已提出但 v1.1 曾遗漏的治理验证：authority 已提交但 fold 被中断时，health
+如实增加 `bridge_fold_lag` 并在后续恢复清零；A/B hook 必须各自验证所声明的轨道和 producer，
+不得串轨；Phase 1.5 行为不得改变冻结的 `decide_trace` schema/内容；TIER 与 readiness 仍按
+既有口径，并有显式断言。上述删除项此前没有批准理由，本版不再将其静默视为取消。
 
-## 8. 工作包分解（按依赖序）
+### 9.1 延后项：acceptance/review-packet 显式 API
 
-- **WP1 闭环验证 harness**：真实 `os._exit` effective WAL 矩阵 + interrupted fold
-  health 登记 + 锁序注入 + 双重 fold 去重 + 启动 fresh 短路 + hook 轨道校验（§5.7）。
-- **WP2 authority CAS**：§4.2 revision 公式 + B/A 端点强制 + HTML 降级 +
-  GET revision 透出 + health `authority_cas_gap` 收口（§5.1）。
-- **WP3 事件 schema v2 + 专家层 reducer**：§4.1/§5.2（含冲突/supersedes/失效规则）。
-- **WP4 专家裁决 API/UI**：`POST /claim-adjudications` + 抽屉按钮组。
-- **WP5 queue v2 + claim 模式补抽**：§4.3/§5.4（targeted_reextract 扩展 +
-  `/claim-queue/execute` + 执行事件 + UI 按钮）。
-- **WP6 结构性证伪**：§4.4/§5.3（override 注册表 + ledger-only 重建 + UI 确认流）。
-- **WP7 incomplete_inputs 贯通**：§4.5/§5.6 + UI 横幅。
-- **WP8 批注 span/row**：§5.8。
-- **WP9 杂项收口**：acceptance/review_packet 显式三层 API、decide_trace 守卫、
-  TIER 对比断言、agent 只读接线。
-- **WP10 文档**：CLAUDE.md 里程碑、待办进度、本稿升冻结 + 偏差记录。
+Phase 1.5 不新增 acceptance 和 review packet 的显式 HTTP API，继续使用现有 CLI 与机器本地
+artifact 流程。延后理由是：两者是离线验收/人工审核载体，可能包含敏感 source/target wording；
+在 mutation 安全门修复期间仓促扩大 HTTP surface，会引入额外的权限、脱敏和 freshness 契约，
+且不阻塞本阶段的权威写安全。
 
-WP1 先行（验证基础设施），WP2 是 mutation 的前置门（总纲顺序），WP3→4→5→6 主线，
-WP7/8/9 可并行。
+该延后存在明确风险：桌面端暂时无法通过统一 API 获取 freshness-bound acceptance 状态和
+review packet identity，调用方仍需协调文件路径与 CLI schema，可能产生展示漂移。缓解措施是
+Phase 1.5 不让这些离线文件参与 mutation 授权，且 readiness 切换仍以既有 acceptance gate
+为准。
 
-## 9. 测试矩阵（全部 unittest.TestCase；UI 用 vitest）
+后续工作固定在 **Phase 2 readiness 切换前**：设计 local-only、read-only 的显式 endpoint，
+绑定 artifact schema、generation/freshness 和敏感字段最小化策略；补 200/409/503、stale
+identity、脱敏和不写盘测试。该项只能按独立规格启用，不得在没有安全契约时临时暴露文件。
 
-1. **CAS**：B/A 端点缺 revision → 400；陈旧 revision → 409 + 当前值；正确值 → 成功且
-   fold 触发；revision 公式双轨可复算；HTML 导入全部降级 `needs_reconfirmation` 且
-   不关闭任何 claim。
-2. **专家裁决**：covered/excluded/reopen 全生命周期；证据规则缺失 → 400；
-   verifier 反向事实 + 未勾 supersedes → uncertain+conflict；勾 supersedes + reason →
-   按裁决派生；专家事实跨 generation/指纹变化即失效；reopen 后提案重现。
-3. **事件链 v2**：v1 旧行可重放；新 kind 的 hash 链/幂等/CAS（陈旧
-   expected_claim_effective_revision 拒绝）。
-4. **queue 执行**：端到端（mock LLM 的 targeted_reextract claim 模式）——uncertain →
-   执行 → 补丁重放 → fold → covered；块非 omission 候选但 claim uncertain（G7 形态）
-   可执行；LLM 异常 → requirements 零变化 + 事件记 error + 提案保持 open；
-   `allow_llm` 缺省拒绝。
-5. **结构性证伪**：override 写入 → catalog 重建为 eligible → 正常验证流；override
-   清单进 catalog meta；fold 内不直接改状态。
-6. **崩溃矩阵**：§5.7 真实强杀四类点恢复完整 trio；interrupted fold 留痕；
-   无 verifier failure 误登记。
-7. **并发**：同 claim 并发裁决 CAS 拒绝后者；并发相反裁决 → conflict；
-   supplement 指纹失效 → replay 后 claim 自动重开。
-8. **incomplete_inputs**：partial 时各产物置 true；readiness 不变；完整时为 false。
-9. **mutation 纪律守卫**：全代码路径 patch requirements 写函数，断言仅
-   `targeted_reextract`（含 claim 模式）调用；`decide_trace.jsonl` 在监视清单。
-10. **批注**：文本块 claim 热区三态、表格行 claim 状态点、两布局一致、宁缺不猜
-    （无匹配不落区）、缓存 v13 失效。
-11. **Phase 1 回归**：六端点只读契约、零 LLM 哨兵（fold 路径）、版本纪律
-    （CLAIM_* 不进 extraction producer）继续绿。
-12. **回归**：全量 unittest、golden 6/6、前端 vitest + vue-tsc。
+## 10. 必需测试
 
-## 10. 验收与退出条件（全部满足才可合并 main）
+所有后端测试必须使用 `unittest.TestCase`；UI 测试使用 Vitest。
 
-1. 全量 unittest 绿、golden 6/6、前端 vitest + vue-tsc 绿。
-2. **真实 B 轨复演**（机器本地、真实 LLM 路由、新副本目录）：
-   a. 对一条 covered claim 执行 reopen → uncertain 且提案重现；
-   b. 从队列发起定点补抽（真实 LLM）→ claim 经 reducer 关闭，事件血缘与 token
-      完整；记录成本；
-   c. 携带陈旧 revision 调 `/ai-review-actions` → 409 + 当前 revision；
-   d. HTML 导入旧裁决 → 全部 `needs_reconfirmation`，相关 claim 不被关闭；
-   e. 补抽执行中途强杀 → requirements 补丁原子性成立（无半截需求），fold 恢复；
-   f. 证伪一条结构性排除 → 重建后该 claim eligible 且走完验证流；
-   g. partial 文档各下游产物 `incomplete_inputs=true`，UI 横幅可见。
-3. 成本留痕：b 步骤真实 token 写入 CLAUDE.md 里程碑。
-4. 文档同提交。
+1. comment/timestamp-only authority 变化不改变 semantic revision，但 history/ABA 变化必须
+   改变 authority write revision。
+2. A/B/manual/automatic 写入拒绝缺失或 stale 的 publication/write token；锁顺序注入证明
+   无逆序获取和 TOCTOU 接受。`llm_pipeline.merge_review_states` 必须包含同等 CAS 断言。
+3. v1 prefix 加 v2 row 可以 replay 并验证 hash，且不先 normalization；拒绝 malformed v2
+   discriminated variant；torn-tail recovery 正常工作。
+4. 同一 base 上的竞争裁决得到一次 commit 加一次 409，而不是 conflict。后续显式推翻和独立
+   记录的 conflict 分别遵循第 5 章语义。
+5. conflict base 的无 supersede、单侧 supersede 和漏事实裁决均不能闭合；显式 supersede
+   全部正负事实后才可闭合。普通终态的无 supersede 反向裁决在写入时返回 400。
+6. evidence contract 拒绝 bare reason、stale locator、stale coverage group、inactive target
+   和非法 exclusion reason；`reopen.supersedes_fact_hashes` 为空时 schema 拒绝。
+7. attempt crash matrix 覆盖每个 checkpoint、billed-before-result recovery、idempotent retry、
+   第二次 CAS stale，以及 requirements publication 缺对应 attempt checkpoint；实际已知成本
+   永不丢失。
+8. claim-mode re-extraction 前后 `omission_states.jsonl` 逐字节相同；LLM failure/zero output
+   保持 requirements 不变、proposal open。
+9. 端到端变更证明 `requirements_published -> refresh_claim_shadow -> new base generation ->
+   fold`；只 mock fold 不能闭合 claim。重建失败返回 `rebuild_pending`/stale，不得 covered。
+10. 允许的 structural override 改变 catalog generation/freshness；重建失败不能把旧排除显示为
+    fresh；禁止的 reason 返回 400。
+11. legacy v3 supplement 可以 replay，claim-mode supplement 按 strategy version 和 origin
+    replay，不支持的版本产生诚实 diagnostic。
+12. partial 与 lineage-mismatched input 将 `incomplete_inputs` 传播到所有已列 artifact，且不
+    改变 readiness；`template-write`/`compose` 的 metadata input 与 stage revision 可使旧缓存
+    失效。
+13. text/list/table/table-fallback adapter 及两种 PDF layout 定位正确；无法精确匹配时不生成
+    zone。
+14. Phase 1 回归：effective-only version bump 不调用 refresh/chat/verifier；无关 claim event
+    不改变 claim revision；既有六个 read API 契约不变；所有新增 effective `CLAIM_*` 常量不
+    改变 extraction producer。
+15. WP1 四项 mandatory harness 全部通过：真 `os._exit` WAL 矩阵、双 fold 去重、启动 fresh
+    短路、锁序注入。
+16. authority-write umbrella 常量和两个 health rollout 字段有 schema/读写测试；legacy gap 与
+    automatic merge 的无 token 路径必须有计数和留痕。
+17. authority commit 后 hook/fold 故障产生 `bridge_fold_lag`，A/B hook 各自归属正确；恢复后
+    health 收敛。
+18. `decide_trace` 文件/schema 不变，TIER/readiness 口径不变，并断言
+    `claim_shadow_metrics.json` 在 effective-only 操作中逐字节不变。
+19. queue UI：默认未授权时零请求；勾选后 payload 才含 `allow_llm: true` 和用户看到的
+    route/budget；取消、切换 claim 和 409 重取路径保持成本授权诚实。
 
-## 11. 明确不做（Phase 1.5）
+## 11. 验收门
 
-1. 不切换 readiness / TIER_GAP / `is_coverage_candidate` / 自检早停到账本口径
-   （Phase 2）；`requirement_like` 不退役。
-2. A 轨不建生产 catalog；`atomic_requirements.jsonl` 无 mutation 入口。
-3. claim 裁决不做批量/HTML 导入（仅单条 API/UI；导出侧 token 预留不实现）。
-4. agent 不自动执行补抽（只读提案 + 排队；执行仅限人/API 显式 `allow_llm`）。
-5. rule 级结构性排除证伪（代码+版本通道）不在运行时实现。
-6. 不动 `gui/`、不动 golden 基线、不改 decide_trace 封闭 schema、不实现第二条
-   requirements 写路径。
+合并前必须通过完整 `python -m unittest discover -s tests`、前端 `npm test`、
+`npm run build`，以及在 main checkout 中使用文档规定的三个 seed KB/domain pack 完成
+golden 6/6。不得修改 golden baseline。
 
-## 12. 审核冻结项
+WP1 四项 mandatory harness、B3 冲突 supersession、B5 umbrella health、B6 stage cache
+失效和 B7 UI 成本确认均是 gating；缺任一机制级断言时不得以“其他全量测试通过”替代。
 
-审核人确认本稿时同时确认：
+在新的本地副本中进行一次真实 B 轨演练，并记录：
 
-1. 顺序：WP1 闭环验证与 WP2 authority CAS 是 mutation 的前置门，不得跳序（总纲 §9）。
-2. mutation 唯一通道：`targeted_reextract`（含 §5.4 claim 模式扩展——候选门替换为
-   claim 前置校验），无第二条 requirements 写路径。
-3. 终态只能由 reducer 派生；专家裁决只写事件；`supersedes_conflict` 未勾时冲突
-   一律 uncertain（不给人机对判留捷径）。
-4. HTML 导入降级 `needs_reconfirmation` 是有意的行为收紧，旧导入结果不再能关闭
-   claim——**明示确认/否决**。
-5. 结构性证伪走 catalog 重建（override 注册表为确定性输入），不追加 ledger event
-   糊弄；per-claim 与 rule 级证伪分层。
-6. 补抽执行必须显式 `allow_llm: true`，成本逐次记录；agent 不自动执行。
-7. `incomplete_inputs` 仅 informational，readiness 语义不变。
-8. 批注 span/row 定位沿用宁缺不猜（边际匹配，无匹配不落区）。
-9. Phase 1 延后项（§5.7 九项）全部转正为本阶段强制项。
-10. 验收以 §10 真实 B 轨复演为准，复演记录与成本留痕 CLAUDE.md。
+1. expert reopen 和 stale-CAS rejection；
+2. 一次由用户显式授权的 targeted extraction，包含真实 route/model/token checkpoint、
+   refresh-base-then-fold 证据和诚实终态；
+3. 一次 interrupted paid attempt，以及无重复 publication 的 recovery；
+4. 一次带 base generation/freshness 变化的 structural override；
+5. partial-input propagation 和 annotation row/span output。
 
-冻结后动工；实施偏差逐项回本稿修订并重新确认。
+`CLAUDE.md` 必须记录命令、测试数量、真实演练成本、性能测量和批准的偏差。API key、客户文档、
+客户措辞和本地 replay 副本永不提交。
+
+acceptance/review-packet 显式 API 是第 9.1 节唯一获批准的延后项；其延后不豁免现有 CLI/artifact
+acceptance gate，也不得被解释为允许 mutation 绕过审核。
+
+## 12. 批准清单
+
+批准表示接受以下不变量：
+
+1. fold 永不创建 coverage edge；需求变更必须先重建 base，之后才能 fold 或声称闭合。
+2. semantic review revision 与 physical authority-write revision 相互独立，ABA 必须可检测。
+3. 每次 authority write 都使用稳定 cross-store snapshot 和 CAS；automatic merge 无豁免。
+4. umbrella write-protocol version 和 legacy gap 必须进入 health，不能只保留 per-track 常量。
+5. 付费 queue execution 具有持久 attempt/budget 历史并可恢复；UI 授权默认关闭且逐次显式。
+6. claim-mode execution 不得改变 block-level omission authority。
+7. event v1/v2 共存时保留 raw-row hash-chain validation。
+8. base verifier 正负冲突只有在全部两侧事实被显式 supersede 后才可由专家闭合。
+9. structural override 是 catalog-generation/freshness 输入，不是装饰性 metadata。
+10. `incomplete_inputs` 和 locator 行为必须显式、按 source kind 区分、仅作信息提示；下游缓存
+    必须绑定 metadata producer lineage。
+11. `decide_trace`、TIER、readiness、golden 和 Phase 1 read API 契约保持不变。
+12. acceptance/review-packet 显式 API 仅按第 9.1 节延后，并须在 Phase 2 readiness 切换前完成
+    独立安全规格和实现。
