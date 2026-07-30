@@ -12,7 +12,7 @@ from requirement_kb.matching import TEXT_REPLACEMENTS
 
 
 SOURCE_ALIGNMENT_SCHEMA = "source-alignment/v6"
-SOURCE_ALIGNMENT_VERSION = "source-alignment-v6"
+SOURCE_ALIGNMENT_VERSION = "source-alignment-v6"  # 大文本(>20k)行级 diff 提速(STO 卡死修复)不 bump：<20k 的既有产物 opcode 逐字节不变(envelope 语义/校验契约未变),hash 绑定夹具无需重冻结
 SOURCE_TRANSFORMATION_POLICY_VERSION = "source-transform-policy-v4"
 SOURCE_TEXT_NORMALIZATION_VERSION = "source-clean-text-v2"
 SOURCE_REPAIR_PROVENANCE_SCHEMA = "source-repair-provenance/v1"
@@ -212,6 +212,56 @@ def _text_hash(text: str) -> str:
     return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
 
 
+# 字符级 SequenceMatcher 在大文本上是平方级（STO 实证：184k 字符参数表 raw→repaired
+# diff 挂死 25 分钟+）。超过阈值走行级 diff 再展开为字符坐标——行数通常 ~10² 量级,
+# 成本可忽略;行级展开保持"opcodes 精确覆盖双文本各一次"的契约不变。
+_LINE_DIFF_THRESHOLD = 20_000
+
+
+def _line_level_opcodes(raw: str, repaired: str) -> list[tuple[str, int, int, int, int]]:
+    """行级 diff（keepends=True）展开为字符坐标 opcodes——大行数对齐时逐行回退字符级,
+    避免整行 replace 丢失共同前后缀（校验器按覆盖性验收,行级 replace 也合法但过粗）。"""
+    raw_lines = raw.splitlines(keepends=True)
+    repaired_lines = repaired.splitlines(keepends=True)
+    raw_offsets = [0]
+    for line in raw_lines:
+        raw_offsets.append(raw_offsets[-1] + len(line))
+    repaired_offsets = [0]
+    for line in repaired_lines:
+        repaired_offsets.append(repaired_offsets[-1] + len(line))
+
+    opcodes: list[tuple[str, int, int, int, int]] = []
+    for tag, i1, i2, j1, j2 in SequenceMatcher(
+        a=raw_lines, b=repaired_lines, autojunk=False
+    ).get_opcodes():
+        if tag == "equal":
+            opcodes.append((tag, raw_offsets[i1], raw_offsets[i2],
+                            repaired_offsets[j1], repaired_offsets[j2]))
+            continue
+        # 非 equal 区段逐行对位：同长且仅少数行不同 → 逐行字符级 diff 保精度
+        raw_span = raw_lines[i1:i2]
+        repaired_span = repaired_lines[j1:j2]
+        if len(raw_span) == len(repaired_span) and raw_span:
+            cursor_raw = raw_offsets[i1]
+            cursor_rep = repaired_offsets[j1]
+            for raw_line, repaired_line in zip(raw_span, repaired_span):
+                if raw_line == repaired_line:
+                    opcodes.append(("equal", cursor_raw, cursor_raw + len(raw_line),
+                                    cursor_rep, cursor_rep + len(repaired_line)))
+                else:
+                    for tag2, a1, a2, b1, b2 in SequenceMatcher(
+                        a=raw_line, b=repaired_line, autojunk=False
+                    ).get_opcodes():
+                        opcodes.append((tag2, cursor_raw + a1, cursor_raw + a2,
+                                        cursor_rep + b1, cursor_rep + b2))
+                cursor_raw += len(raw_line)
+                cursor_rep += len(repaired_line)
+            continue
+        opcodes.append((tag, raw_offsets[i1], raw_offsets[i2],
+                        repaired_offsets[j1], repaired_offsets[j2]))
+    return opcodes
+
+
 def _deterministic_opcode_rows(raw: str, repaired: str) -> list[dict[str, Any]]:
     if raw == repaired:
         return ([{
@@ -221,6 +271,10 @@ def _deterministic_opcode_rows(raw: str, repaired: str) -> list[dict[str, Any]]:
             "repaired_start": 0,
             "repaired_end": len(repaired),
         }] if raw else [])
+    if len(raw) > _LINE_DIFF_THRESHOLD or len(repaired) > _LINE_DIFF_THRESHOLD:
+        opcode_tuples = _line_level_opcodes(raw, repaired)
+    else:
+        opcode_tuples = SequenceMatcher(a=raw, b=repaired, autojunk=False).get_opcodes()
     return [
         {
             "tag": tag,
@@ -230,7 +284,7 @@ def _deterministic_opcode_rows(raw: str, repaired: str) -> list[dict[str, Any]]:
             "repaired_end": repaired_end,
         }
         for tag, raw_start, raw_end, repaired_start, repaired_end
-        in SequenceMatcher(a=raw, b=repaired, autojunk=False).get_opcodes()
+        in opcode_tuples
     ]
 
 
