@@ -386,14 +386,15 @@ def _load_manifest(eval_dir: Path) -> dict[str, Any]:
     return manifest
 
 
-def run_evaluation(eval_dir: Path) -> dict[str, Any]:
+def run_evaluation(eval_dir: Path, *, update_baseline: bool = False) -> dict[str, Any]:
     root = Path(eval_dir).expanduser().resolve()
     cases = load_cases(root)
     manifest = _load_manifest(root)
     curation = manifest.get("curation") if isinstance(manifest.get("curation"), dict) else {}
     reviewed = {str(value) for value in curation.get("reviewed_case_ids") or []}
     report = evaluate_cases(cases, reviewed_ids=reviewed)
-    _record_manifest_baseline(root, report, manifest)
+    if update_baseline:
+        _record_manifest_baseline(root, report, manifest)
     return report
 
 
@@ -435,6 +436,11 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the agent evaluation dataset (agent-eval-v2).")
     parser.add_argument("--eval-dir", type=Path, required=True)
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="Atomically refresh manifest baseline fields; evaluation is read-only by default.",
+    )
     return parser
 
 
@@ -444,7 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     eval_dir = args.eval_dir.expanduser().resolve()
     try:
-        report = run_evaluation(eval_dir)
+        report = run_evaluation(eval_dir, update_baseline=args.update_baseline)
         envelope = {
             "tool": "requirement-atomizer",
             "schema_version": ENVELOPE_SCHEMA_VERSION,

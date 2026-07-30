@@ -121,10 +121,12 @@ suspicion 记录（脱敏改写）。
 - `EVAL_RUNNER_VERSION`：`agent-eval-v1` → **`agent-eval-v2`**（判定逻辑变更）；
 - `AGENT_POLICY_VERSION` **不动**（评测判定不影响管线决策与任何缓存指纹，
   铁律 2 不触发）；`EXTRACT_GUARDS_VERSION` 等护栏版本不动（只调用，不改行为）；
-- manifest 基线字段：`classification_baseline` 照旧由 runner 原子刷新；新增
-  `grouping_baseline` / `must_ask_baseline` / `hallucination_baseline` 三个 runner
-  刷新字段（结构同 classification_baseline：evaluated/passed/failed/pass_rate/
-  failed_case_ids）；must_ask 分母只含自动判定案例，manual 案例单列计数；
+- manifest 基线字段：`classification_baseline` / `grouping_baseline` /
+  `must_ask_baseline` / `hallucination_baseline` 是仓库冻结比较值。2026-07-30
+  修订：runner 默认只读，实时结果允许优于冻结基线而不改写 golden；仅维护者显式传入
+  `--update-baseline` 时原子刷新四个字段，且不得改写 `curation`。字段结构为
+  evaluated/passed/failed/pass_rate/failed_case_ids；must_ask 分母只含自动判定案例，
+  manual 案例单列计数；
 - 历史基线 0.625（v1，20 条）在合并里程碑中留痕后由新基线接替；合并门
   "评测基线不下降"自本规格合入起对照**新基线**解释。
 
@@ -144,7 +146,8 @@ suspicion 记录（脱敏改写）。
   hallucination forbidden 部分漏网）；
 - 私有 detector 提公开：改名零行为锁测试（现有护栏测试零改动通过）；
 - 案例门槛测试更新为 ≥40 及新的各类下限；全部案例过 schema；
-- runner 不改 `curation` 回归沿用；`unreviewed` 标注不进已核对基线；
+- runner 默认运行后 manifest 字节不变；显式 `--update-baseline` 仍不得改
+  `curation`；`unreviewed` 标注不进已核对基线；
 - 全量 `python -m unittest discover -s tests` 绿；行为面零变更，golden 6/6 不应
   漂移（在主检出验收）。
 
@@ -152,7 +155,8 @@ suspicion 记录（脱敏改写）。
 
 1. `python -m unittest discover -s tests` 全绿（含新增判定器测试）；
 2. `python agent_eval.py --eval-dir golden_sets/agent_eval_v1` 输出四类的
-   evaluated/passed/pass_rate 与 failed_case_ids，manifest 四个基线字段与实测一致，
+   evaluated/passed/pass_rate 与 failed_case_ids，且 manifest 逐字节不变；需要维护
+   新基线时只在可写副本上显式传 `--update-baseline`，刷新后四个基线字段与实测一致，
    `curation` 逐字节不变；
 3. 案例 ≥40 且各类达 2.1 下限；抽 ≥5 条新案例人工核对 `expected` 与来源证据；
 4. 报告中 must_ask 的 manual 档案例如实标出、不进自动分母；

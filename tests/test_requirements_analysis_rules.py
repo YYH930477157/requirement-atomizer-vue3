@@ -1,7 +1,9 @@
 """requirements_analysis_rules 回归（unittest 风格——pytest 未装，模块级函数不会被 discover 收集）。"""
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 
 from requirements_analysis_rules import classify_ownership
 
@@ -99,6 +101,56 @@ class ClassifyOwnershipTests(unittest.TestCase):
         decision = classify_ownership(req)
 
         assert decision["ownership"] == "hardware"
+
+    def test_classifies_precise_english_physical_terms_as_hardware(self) -> None:
+        samples = {
+            "battery": "The product shall include a replaceable battery.",
+            "service life": "The product shall have a service life of ten years.",
+            "lifetime": "The product lifetime shall be at least ten years.",
+            "enclosure": "The enclosure shall resist ordinary handling.",
+            "housing": "The housing shall use a durable material.",
+            "ingress protection": "The product shall provide ingress protection.",
+            "power consumption": "The product power consumption shall remain below the limit.",
+            "power supply": "The product shall include an isolated power supply.",
+            "three-phase": "The product shall use a three-phase connection.",
+            "powered from all three phases": "The product shall be powered from all three phases.",
+            "va": "The burden shall not exceed 2 VA.",
+        }
+
+        for term, text in samples.items():
+            with self.subTest(term=term):
+                decision = classify_ownership({"description": text})
+
+                self.assertEqual(decision["ownership"], "hardware")
+                self.assertIn(term, decision["ownership_reason"])
+
+    def test_reviewed_agent_eval_ownership_cases_do_not_regress(self) -> None:
+        cases_dir = (
+            Path(__file__).resolve().parents[1]
+            / "golden_sets"
+            / "agent_eval_v1"
+            / "cases"
+            / "classify"
+        )
+        case_paths = sorted(cases_dir.glob("case-*.json"))
+        self.assertEqual(len(case_paths), 12)
+
+        ownership_verdicts = {"software", "hardware", "co_design"}
+        checked = 0
+        for case_path in case_paths:
+            case = json.loads(case_path.read_text(encoding="utf-8"))
+            expected = case["expected"]["verdict"]
+            text = case["input"]["text"]
+            requirement = {"source_quote": text, "description": text, "title": ""}
+            decision = classify_ownership(requirement)
+            if expected not in ownership_verdicts:
+                continue
+
+            with self.subTest(case_id=case["case_id"]):
+                self.assertEqual(decision["ownership"], expected)
+            checked += 1
+
+        self.assertEqual(checked, 7)
 
 
 if __name__ == "__main__":

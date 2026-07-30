@@ -235,6 +235,12 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **验证**：worktree 全量 1502+68 tests OK（新增 68 例：chat_with_tools 15 / review_tools 27 / tool_loop_review 11 / analyze_unfounded 15，全 unittest.TestCase）；评测四类基线 0.6667/0.5/1.0/1.0 不变；既有 `test_fabricated_code_rejects_enrichment_and_degrades` 按冻结规格改断言（旧行为"回退 base"即本规格明令禁止的静默放行,新断言=待澄清+open_questions 同步）；golden 6/6 待合入后主检出复验（stub 路径未动,预期零漂移）。
 - **遗留（交审核人）**：冻结点 5 的 deepseek-v4-flash tools 支持探针与验收 #2（真实 test3 产物 ≥10 条 tool-loop 审查逐条核 tool_calls 摘要）需有 key 环境执行。
 
+## 重大更新（2026-07-30）——ownership/compliance 确定性分类收口（已合 main；agent_eval 四类全 1.0、classify 12/12；全量 2255 tests OK、golden 6/6）
+
+- **评测结果**：人工核对的 `agent_eval_v1` classify 从 8/12 提升到 12/12；新增英文物理词严格走字母数字边界，未加入 display/lcd/phase/power/modem/terminal 等宽词；审批型合规只接受 `approved/approval according to` 后紧随带数字的 STN EN/EN/IEC/ISO/OIML 文号。
+- **缓存纪律**：新增 `ANALYZE_RULES_VERSION=analyze-rules-v1`，`COMPLIANCE_SCHEMA` 升至 `compliance-requirements/v2`；requirements-analysis 与 ai-extract producer 分别纳入对应版本，functional-synthesis implementation revision 升至 v4。
+- **冻结基线纪律**：`agent_eval.py` 默认改为只读，实时规则可优于历史 manifest 基线而不自动改写 `golden_sets/`；维护者只有显式传 `--update-baseline` 才能原子刷新基线字段，`curation` 始终保持不变。
+
 ## 重大更新（2026-07-22）——评测集扩充至 40 条 + 三类自动判定（agent-eval-v2，已合 main `11af616`；主检出全量 1502 tests OK、golden 6/6）
 
 - **判定接生产路径（零 LLM）**：grouping 经 `build_function_catalog(chat=None)` 成对判同组/异组（跨 key 负对自动派生）；must_ask 三档（forbidden 缺省值在零 LLM 派生链零泄漏 + 声明 `expected.detector` 必触发且 `suspicion_policy` 路由问客户/blocking + 语义型如实 manual 不进分母）；hallucination 按 `expected.detector` 声明的护栏族判定（漂移并集按编码∪整数原子匹配 / `foreign_standard_refs` / `opposed_qualifiers`）。

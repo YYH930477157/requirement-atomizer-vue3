@@ -52,7 +52,7 @@ class AgentEvalDatasetTests(unittest.TestCase):
         # 跨 key 负对由运行器自动派生）；至少保留一对同组正例对
         self.assertTrue(any(count >= 2 for count in grouping_keys.values()))
 
-    def test_manifest_classification_baseline_matches_current_rules(self) -> None:
+    def test_current_results_meet_or_exceed_frozen_baselines(self) -> None:
         cases = agent_eval.load_cases(EVAL_DIR)
         manifest = json.loads((EVAL_DIR / "manifest.json").read_text(encoding="utf-8"))
         reviewed_ids = set(manifest["curation"]["reviewed_case_ids"])
@@ -60,10 +60,19 @@ class AgentEvalDatasetTests(unittest.TestCase):
 
         self.assertEqual(manifest["case_count"], len(cases))
         self.assertEqual(manifest["category_counts"], agent_eval.category_counts(cases))
-        self.assertEqual(manifest["classification_baseline"], report["classification"])
-        self.assertEqual(manifest["grouping_baseline"], report["grouping"])
-        self.assertEqual(manifest["must_ask_baseline"], report["must_ask"])
-        self.assertEqual(manifest["hallucination_baseline"], report["hallucination"])
+        for report_key, manifest_key in (
+            ("classification", "classification_baseline"),
+            ("grouping", "grouping_baseline"),
+            ("must_ask", "must_ask_baseline"),
+            ("hallucination", "hallucination_baseline"),
+        ):
+            with self.subTest(category=report_key):
+                baseline = manifest[manifest_key]
+                current = report[report_key]
+                self.assertEqual(current["evaluated"], baseline["evaluated"])
+                self.assertGreaterEqual(current["pass_rate"], baseline["pass_rate"])
+        self.assertEqual(report["classification"]["passed"], 12)
+        self.assertEqual(report["classification"]["failed_case_ids"], [])
         self.assertEqual(manifest["curation"]["human_review_status"], "reviewed")
         # 审计纪律（2026-07-23 审核人本人逐条核对）：登记列表必须与 manifest 完全一致——
         # 2026-07-22 实施者代登记被撤回后，本断言继续钉死"登记内容即真实核对结果"，
@@ -115,26 +124,42 @@ class AgentEvalDatasetTests(unittest.TestCase):
         )
         self.assertEqual(report["unreviewed_case_ids"], [])
 
-    def test_cli_writes_one_success_envelope(self) -> None:
+    def test_cli_is_read_only_by_default_and_can_explicitly_update_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             copied_eval_dir = Path(tmp) / "agent_eval_v1"
             shutil.copytree(EVAL_DIR, copied_eval_dir)
+            manifest_path = copied_eval_dir / "manifest.json"
+            before_bytes = manifest_path.read_bytes()
             before_manifest = json.loads(
-                (copied_eval_dir / "manifest.json").read_text(encoding="utf-8")
+                manifest_path.read_text(encoding="utf-8")
             )
             stdout = io.StringIO()
             with redirect_stdout(stdout):
                 code = agent_eval.main(["--eval-dir", str(copied_eval_dir)])
-            after_manifest = json.loads(
-                (copied_eval_dir / "manifest.json").read_text(encoding="utf-8")
-            )
+            after_default_bytes = manifest_path.read_bytes()
+
+            update_stdout = io.StringIO()
+            with redirect_stdout(update_stdout):
+                update_code = agent_eval.main([
+                    "--eval-dir",
+                    str(copied_eval_dir),
+                    "--update-baseline",
+                ])
+            updated_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout.getvalue())
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["command"], "agent-eval")
         self.assertGreaterEqual(payload["summary"]["case_count"], 40)
-        self.assertEqual(after_manifest["curation"], before_manifest["curation"])
+        self.assertEqual(after_default_bytes, before_bytes)
+        self.assertEqual(update_code, 0)
+        update_payload = json.loads(update_stdout.getvalue())
+        self.assertEqual(
+            updated_manifest["classification_baseline"],
+            update_payload["classification"],
+        )
+        self.assertEqual(updated_manifest["curation"], before_manifest["curation"])
 
 
 class AgentEvalCliErrorTests(unittest.TestCase):

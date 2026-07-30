@@ -9,6 +9,8 @@ from requirements_analysis_schema import (
     OWNERSHIP_SOFTWARE,
 )
 
+ANALYZE_RULES_VERSION = "analyze-rules-v1"
+
 SOFTWARE_TERMS = (
     "dlms",
     "cosem",
@@ -62,6 +64,17 @@ HARDWARE_TERMS = (
     "硬件更换",
     "manufacturer",
     "manufactures a device",
+    "battery",
+    "service life",
+    "lifetime",
+    "enclosure",
+    "housing",
+    "ingress protection",
+    "power consumption",
+    "power supply",
+    "three-phase",
+    "powered from all three phases",
+    "va",
 )
 
 CO_DESIGN_TERMS = (

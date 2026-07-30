@@ -6,6 +6,33 @@ import compliance
 
 
 class ComplianceClassificationTests(unittest.TestCase):
+    def test_approved_according_to_named_standard_is_compliance(self) -> None:
+        source = "The meter shall be approved according to STN EN 62053-22 before delivery."
+
+        self.assertTrue(compliance.looks_like_compliance(source))
+
+    def test_approval_without_a_numbered_standard_is_not_compliance(self) -> None:
+        samples = [
+            "The design shall be approved according to internal review procedure.",
+            "The meter shall be approved according to IEC.",
+            "The design needs approval according to ISO guidelines.",
+            "The meter shall be approved according to EN procedure.",
+        ]
+
+        for source in samples:
+            with self.subTest(source=source):
+                self.assertFalse(compliance.contains_compliance_signal(source))
+                self.assertFalse(compliance.looks_like_compliance(source))
+
+    def test_technical_action_is_not_reclassified_by_approval_signal(self) -> None:
+        source = (
+            "The meter shall measure and record energy; "
+            "it is approved according to IEC 62053."
+        )
+
+        self.assertTrue(compliance.contains_compliance_signal(source))
+        self.assertFalse(compliance.looks_like_compliance(source))
+
     def test_certificate_and_legislation_obligations_are_compliance(self) -> None:
         samples = [
             "Valid Certificate according to the standard STN EN 62053-22.",
