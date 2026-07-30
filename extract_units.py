@@ -43,6 +43,12 @@ def body_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block）。"""
+    try:  # 延迟 import,避免与 ai_extract 的顶层 import 形成循环
+        from ai_extract import _PARAM_ROW_MIN_CELLS, _row_render_line, classify_table_kind
+    except ImportError:  # pragma: no cover - ai_extract 始终在场
+        classify_table_kind = None
+        _row_render_line = None
+        _PARAM_ROW_MIN_CELLS = 2
     groups: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
     for block in blocks:
         section_path = [str(s) for s in (block.get("section_path") or [])]
@@ -60,11 +66,40 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             unit["block_ids"].append(block["block_id"])
             # section_path/noise 必须随行（guards-v12/v15）：fallback 收窄按需求所属小节
             # 过滤 span、匹配器按噪声排除——缺字段时两条规则都静默失效
-            unit.setdefault("source_blocks", []).append({
+            sb_entry = {
                 "block_id": block["block_id"], "text": text,
                 "section_path": list(block.get("section_path") or []),
                 "noise": bool(block.get("noise")),
-            })
+            }
+            is_parameter = (
+                classify_table_kind is not None
+                and str(block.get("type") or "") == "table"
+                and classify_table_kind(block) == "parameter"
+            )
+            if is_parameter and _row_render_line is not None:
+                headers = [str(h or "") for h in (block.get("headers") or [])]
+                # 封堵一-A:表头渲染行(超大切分多 chunk 时每个 chunk 首行注入)
+                if headers:
+                    unit.setdefault("_table_header_lines", []).append(" | ".join(headers))
+                # 封堵一-B:行级明细 rows(供 _map_requirement_source 落 source_row_index)。
+                # 不改整块 text(match 行为不变);表头/分组标题/稀疏行不进 rows(同逐行展开口径)
+                table_id = str(block.get("table_id") or block.get("block_id") or "")
+                row_entries: list[dict[str, Any]] = []
+                for row_index, row in enumerate(block.get("data_rows") or [], start=1):
+                    cells = [str(c or "").strip() for c in row]
+                    non_empty = [c for c in cells if c]
+                    if len(non_empty) < _PARAM_ROW_MIN_CELLS or len(set(non_empty)) == 1:
+                        continue
+                    line = _row_render_line(headers, row)
+                    if line.strip():
+                        row_entries.append({
+                            "row_index": row_index,
+                            "item_id": f"{table_id}-R{row_index:06d}",
+                            "text": line,
+                        })
+                if row_entries:
+                    sb_entry["rows"] = row_entries
+            unit.setdefault("source_blocks", []).append(sb_entry)
 
     sections: list[dict[str, Any]] = []
     for unit in groups.values():
@@ -73,7 +108,8 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         sections.append({"section_id": unit["section_id"], "section_path": unit["section_path"],
                          "heading": unit["heading"], "text": body, "block_ids": unit["block_ids"],
-                         "source_blocks": unit.get("source_blocks", [])})
+                         "source_blocks": unit.get("source_blocks", []),
+                         "_table_header_lines": unit.get("_table_header_lines", [])})
     return sections
 
 
@@ -331,8 +367,15 @@ def _pack_sections(sections: list[dict[str, Any]], *, target_chars: int,
             # 超大源章节：拆成 ≤split 的多块，各自独立成段（同段 block_ids 全量保留以便溯源）。
             # drift_source 保留完整原文：漂移护栏须以整章为 baseline，否则 LLM 合理引用同章
             # 其它片段里的 OBIS/事件码会被误判为"原文未见的结构漂移"（假阳性误伤）。
+            # 封堵一：parameter 表被切多 chunk 时,第 2 个起每个 chunk 首行注入表头渲染行
+            # （第 1 chunk 已含原始表头;后续 chunk 无表头会让 LLM 看无列名裸数据)
             flush()
-            for chunk in _split_text(piece, split_chars):
+            header_lines = list(sec.get("_table_header_lines") or [])
+            header_prefix = ("\n".join(header_lines) + "\n") if header_lines else ""
+            chunks = _split_text(piece, split_chars)
+            for idx, chunk in enumerate(chunks):
+                if idx > 0 and header_prefix and chunk.strip():
+                    chunk = header_prefix + chunk
                 merged.append(_finalize_merged({
                     "section_id": sec["section_id"], "heading": sec.get("heading", ""),
                     "texts": [chunk], "block_ids": block_ids, "source_blocks": source_blocks,

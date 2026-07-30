@@ -4,9 +4,12 @@ from __future__ import annotations
 import unittest
 
 from ai_extract import (
+    _PARAM_REQ_CELL_RE,
     _is_parameter_table,
+    _row_name_cell,
     _row_render_line,
     _supplement_parameter_table_rows,
+    classify_table_kind,
 )
 from atomize import render_table_text
 
@@ -146,6 +149,71 @@ class RowExpansionTests(unittest.TestCase):
         block = _param_block()
         line = _row_render_line(block["headers"], block["data_rows"][0])
         self.assertIn(line, block["text"])
+
+
+def _value_spec_block() -> dict:
+    """英文表头参数表（Value/Unit）——扩展前 _PARAM_REQ_CELL_RE 漏判,扩展后命中。"""
+    headers = ["No.", "Parameter", "Value", "Unit"]
+    data_rows = [
+        ["1.", "Rated voltage", "230", "V"],
+        ["2.", "Rated frequency", "50", "Hz"],
+        ["3.", "Maximum current", "60", "A"],
+    ]
+    return {
+        "block_id": "BLK-VALUE",
+        "type": "table",
+        "headers": headers,
+        "data_rows": data_rows,
+        "text": render_table_text(headers, data_rows),
+        "section_path": ["5. General Technical Requirements", "5.1. Parameters"],
+        "requirement_like": True,
+        "noise": False,
+    }
+
+
+class EnglishHeaderExpansionTests(unittest.TestCase):
+    """Phase 1:英文表头扩展(value/spec/min/max/...)+classify_table_kind。"""
+
+    def test_param_req_regex_covers_english_headers(self) -> None:
+        for header in ("Value", "Specification", "Spec", "Minimum", "Min", "Maximum",
+                       "Max", "Limit", "Rating", "Nominal", "Tolerance", "Range", "Unit",
+                       "值", "规格", "额定", "限值", "最小", "最大", "公差", "单位", "范围"):
+            self.assertTrue(_PARAM_REQ_CELL_RE.search(header), f"应命中表头: {header}")
+        # 原有词不回归
+        for header in ("requirement", "Technical", "要求", "参数值"):
+            self.assertTrue(_PARAM_REQ_CELL_RE.search(header))
+
+    def test_is_parameter_table_accepts_value_spec_headers(self) -> None:
+        # 扩展前(只 requirement/technical/...)此表会被漏判为非参数表 → 整表当一个块
+        self.assertTrue(_is_parameter_table(_value_spec_block()))
+
+    def test_classify_table_kind_parameter_and_other(self) -> None:
+        # mapping_matrix 判据 Phase 3 落地;Phase 1 只区分 parameter/other
+        self.assertEqual(classify_table_kind(_param_block()), "parameter")
+        self.assertEqual(classify_table_kind(_value_spec_block()), "parameter")
+        self.assertEqual(classify_table_kind(_terms_block()), "other")
+        paragraph = {"type": "paragraph", "text": "x", "headers": [], "data_rows": []}
+        self.assertEqual(classify_table_kind(paragraph), "other")
+
+    def test_supplement_covers_newly_qualified_value_table_rows(self) -> None:
+        block = _value_spec_block()
+        result = _supplement_parameter_table_rows([], [block])
+        self.assertEqual(len(result), 3)
+        for index, row in enumerate(result, start=1):
+            self.assertEqual(row["ai_req_id"], f"PROW-DET-BLK-VALUE-R{index:04d}")
+            self.assertEqual(row["status"], "draft")
+            self.assertEqual(row["source_mapping"], "deterministic_fallback")
+            # 引句逐字 = 渲染行（行级锚定的前提）
+            self.assertEqual(
+                row["source_quote"],
+                _row_render_line(block["headers"], block["data_rows"][index - 1]),
+            )
+
+    def test_row_name_cell_skips_extended_req_columns(self) -> None:
+        # Value/Unit 列(扩展后属要求类)不当名字;名字取 Parameter 列
+        headers = ["No.", "Parameter", "Value", "Unit"]
+        row = ["1.", "Rated voltage", "230", "V"]
+        self.assertEqual(_row_name_cell(headers, row), "Rated voltage")
 
 
 if __name__ == "__main__":

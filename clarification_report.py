@@ -38,7 +38,7 @@ REPORT_MD = "clarification_questions.md"
 REPORT_XLSX = "clarification_questions.xlsx"
 ANSWERS_FILE = "clarification_answers.jsonl"   # 评审会答复回灌（answer 列填写后 import 回来）
 ANSWERS_LOCK = "clarification_answers.lock"
-CLARIFICATION_REPORT_VERSION = "clarification/v7-claim-ledger-info"
+CLARIFICATION_REPORT_VERSION = "clarification/v8-param-row-aggregate"
 
 _ANSWER_LOCKS: dict[Path, RLock] = {}
 _ANSWER_LOCKS_GUARD = RLock()
@@ -264,6 +264,9 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
         return " / ".join(modules) if modules else MODULE_UNASSIGNED
 
     requirement_occurrences: dict[tuple[str, tuple[str, ...]], int] = {}
+    # 封堵三:PROW-DET 行级 suspicion(deterministic_fallback)按(表块,reason)聚合,
+    # 免行级化后大量行级入口打爆 READY 门;LLM 需求 suspicion 仍逐条(个体语义)
+    prow_groups: dict[tuple[str, str], dict[str, Any]] = {}
     for req in reqs:
         rid = source_ai_requirement_id(req)
         sec = str(req.get("source_section") or "")
@@ -278,6 +281,7 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
             "source_block_ids": list(anchor_key[1]),
             "occurrence": occurrence,
         })[:16]
+        is_deterministic_row = str(req.get("source_mapping") or "") == "deterministic_fallback"
         for raw_reason in (req.get("suspicion_reasons") or []):
             reason = str(raw_reason or "").strip()
             if not reason:
@@ -299,6 +303,21 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 else:
                     signal, category, audience, blocker, tier = policy
                 reason_subject = requirement_subject
+            if is_deterministic_row:
+                # 封堵三:行级确定性 suspicion 按表块聚合,不逐条 append
+                block_ids = req.get("source_block_ids") or []
+                block_id = str(block_ids[0]) if block_ids else ""
+                key = (block_id, reason)
+                grp = prow_groups.get(key)
+                if grp is None:
+                    grp = {"rows": [], "sec": sec, "module": module, "signal": signal,
+                           "category": category, "audience": audience, "blocker": blocker,
+                           "tier": tier, "subject": "param-row:" + _hash_payload(
+                               {"block_id": block_id, "reason": reason})[:16]}
+                    prow_groups[key] = grp
+                grp["rows"].append({"row_index": req.get("source_row_index"),
+                                    "source_quote": quote, "title": title})
+                continue
             entries.append(_entry(
                 category,
                 _suspicion_question(reason, section=sec, title=title),
@@ -323,6 +342,27 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                 },
                 subject_key=reason_subject,
             ))
+
+    # 封堵三:聚合 PROW-DET 行级 suspicion → 每表块每类一条汇总(明细挂 row_details)
+    for (block_id, reason), grp in prow_groups.items():
+        rows = grp["rows"]
+        summary = f"表格 {block_id}（{grp['sec']}）：{reason} {len(rows)} 行待核"
+        aggregate_entry = _entry(
+            grp["category"],
+            summary,
+            section=grp["sec"],
+            quote=rows[0].get("source_quote", "") if rows else "",
+            source_id=block_id,
+            signal=grp["signal"],
+            tier=grp["tier"],
+            audience=grp["audience"],
+            blocker_level=grp["blocker"],
+            module=grp["module"],
+            evidence={"reason": reason, "table_block_id": block_id, "source_section": grp["sec"]},
+            subject_key=grp["subject"],
+        )
+        aggregate_entry["row_details"] = rows   # 明细挂展开视图(xlsx/md 渲染读)
+        entries.append(aggregate_entry)
 
     # ② 分析层 open_questions + assumptions（engineering_analysis.json）
     ana_path = out_dir / "engineering_analysis.json"

@@ -940,13 +940,18 @@ def _supplement_uncovered_compliance(
 # 用户裁定：参数表每行都是一条需求。行是结构化的（编号+名称+要求列），逐行展开不需要
 # LLM——确定性生成,引句逐字来自扁平渲染行,结构化字段不猜。
 
-_PARAM_REQ_CELL_RE = re.compile(r"requirement|technical|characteristic|要求|指标|参数值", re.IGNORECASE)
+_PARAM_REQ_CELL_RE = re.compile(
+    r"requirement|technical|characteristic|value|spec(?:ification)?|min(?:imum)?|max(?:imum)?"
+    r"|limit|rating|nominal|tolerance|range|unit"
+    r"|要求|指标|参数值|参数|规格|额定|限值|最小|最大|公差|单位|范围|值",
+    re.IGNORECASE,
+)
 _PARAM_DEF_CELL_RE = re.compile(r"^(term|definition|术语|定义|abbreviation|缩略语)", re.IGNORECASE)
 _PARAM_SECTION_RE = re.compile(r"terms|definitions|abbreviations|术语|定义|缩略语|bibliography|参考文献", re.IGNORECASE)
 _PARAM_INDEX_CELL_RE = re.compile(r"^\s*\d+(?:\.\d+)*[.)]?\s*$")
 _PARAM_ROW_MIN_CELLS = 2
 _PARAM_TABLE_MIN_ROWS = 3
-PARAM_ROW_EXPANSION_VERSION = "param-row-expand-v1"
+PARAM_ROW_EXPANSION_VERSION = "param-row-expand-v2"  # v2:英文表头扩展(value/spec/min/max/...)+classify_table_kind;v1:参数表行确定性展开首版
 
 
 def _is_parameter_table(block: dict[str, Any]) -> bool:
@@ -967,6 +972,23 @@ def _is_parameter_table(block: dict[str, Any]) -> bool:
         "",
     )
     return not _PARAM_SECTION_RE.search(leaf)
+
+
+def classify_table_kind(block: dict[str, Any]) -> str:
+    """表型分类（行级化底座）。
+
+    返回 'parameter' | 'mapping_matrix' | 'other'：
+    - parameter：每行一个对象、列是属性 → 按行各自独立分析（guards-v16 既有路径）。
+    - mapping_matrix：行列各为维度、每格独立事实 → 按格分析（Phase 3 落地判据）。
+    - other：默认按行（最安全，保留行内关联）。
+
+    保守、宁漏勿错；parameter 优先于 mapping_matrix（参数表远多于映射表，按行更安全）。
+    供 extract_units / doc_annotation_export / assemble_spec 复用。
+    """
+    if _is_parameter_table(block):
+        return "parameter"
+    # mapping_matrix 判据 Phase 3 落地；此前非参数表统一按行（other）
+    return "other"
 
 
 def _row_render_line(headers: list[str], row: list[Any]) -> str:
@@ -1070,6 +1092,78 @@ def _supplement_parameter_table_rows(
         LOGGER.info("参数表行展开：补入 %d 条 LLM 未逐行覆盖的参数行需求", added)
     return supplemented
 
+
+def _merge_llm_into_deterministic_rows(
+    requirements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """封堵二:参数表 LLM 叙述需求并入同行确定性展开行(PROW-DET),避免同行双份。
+
+    Phase 2 行级化后,LLM 逐行抽叙述需求与 _supplement_parameter_table_rows 确定性逐字行
+    可能同行并存(LLM 措辞不含行 key_cell → supplement 未判覆盖 → 补了 PROW-DET)。本步把
+    命中同一渲染行的 LLM 需求叙述并入对应 PROW-DET 的 llm_narrative(无则丢弃),merge_trace
+    记审计;未命中任何 PROW-DET 的 LLM 需求正常成行。宁漏勿错——判不出的双份保留(审核时
+    剔除),不强行并入。新增可选字段 llm_narrative(str)/merge_trace(list[dict]) 向后兼容。"""
+    prow_by_block: dict[str, list[dict[str, Any]]] = {}
+    for req in requirements:
+        if not str(req.get("ai_req_id") or "").startswith("PROW-DET-"):
+            continue
+        for bid in req.get("source_block_ids") or []:
+            prow_by_block.setdefault(str(bid), []).append(req)
+    if not prow_by_block:
+        return requirements
+
+    kept: list[dict[str, Any]] = []
+    merged_count = 0
+    for req in requirements:
+        if str(req.get("ai_req_id") or "").startswith("PROW-DET-"):
+            kept.append(req)
+            continue
+        target_prow = _llm_row_target(req, prow_by_block)
+        if target_prow is None:
+            kept.append(req)
+            continue
+        narrative = str(req.get("description") or req.get("source_quote") or "").strip()
+        if narrative:
+            existing = str(target_prow.get("llm_narrative") or "")
+            target_prow["llm_narrative"] = (existing + "\n" if existing else "") + narrative
+        target_prow.setdefault("merge_trace", []).append({
+            "llm_requirement_id": str(req.get("ai_req_id") or ""),
+            "merged_into": str(target_prow.get("ai_req_id") or ""),
+            "reason": "row_overlap",
+        })
+        merged_count += 1
+    if merged_count:
+        LOGGER.info("参数表去重:并入 %d 条同行 LLM 叙述需求到确定性展开行", merged_count)
+    return kept
+
+
+def _llm_row_target(
+    req: dict[str, Any],
+    prow_by_block: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    """LLM 需求命中某 PROW-DET 行则返回该 PROW-DET,否则 None。
+
+    判等(沿用 guards-v16 key_cell 口径 + 边界补充2 短行回退):
+    - 行渲染 compact(≥12 字符)出现在 LLM 文本(source_quote+description+title) → 命中;
+    - 短行回退:行渲染 compact == LLM 引句 compact(精确相等,覆盖纯数值短行)。"""
+    from merged_consistency import compact_source_text
+
+    haystack = compact_source_text(
+        f"{req.get('source_quote') or ''} {req.get('description') or ''} {req.get('title') or ''}"
+    )
+    quote = compact_source_text(req.get("source_quote"))
+    if not haystack:
+        return None
+    for bid in req.get("source_block_ids") or []:
+        for prow_req in prow_by_block.get(str(bid), []):
+            row_line = compact_source_text(prow_req.get("source_quote"))
+            if not row_line:
+                continue
+            if len(row_line) >= 12 and row_line in haystack:
+                return prow_req
+            if quote and row_line == quote:
+                return prow_req
+    return None
 
 
 def _coverage_quality_fields(
@@ -1377,7 +1471,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v16"  # v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v17"  # v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -2021,6 +2115,7 @@ def _map_requirement_source(req: dict[str, Any], section: dict[str, Any]) -> Non
         req["source_block_ids"] = list(dict.fromkeys(matched))
         req["anchor_block_id"] = req["source_block_ids"][0]
         req["source_mapping"] = mapping
+        _annotate_row_source(req, source_blocks, set(req["source_block_ids"]))
     else:
         span = list(section.get("block_ids") or [])
         narrowed = _narrow_span_to_req_section(req, source_blocks, span)
@@ -2033,6 +2128,36 @@ def _map_requirement_source(req: dict[str, Any], section: dict[str, Any]) -> Non
         req["source_mapping"] = "section_fallback"
         if narrowed and len(narrowed) < len(span):
             _append_note(req, f"来源回退已按所属小节收窄（{len(span)}→{len(narrowed)} 块）")
+
+
+def _annotate_row_source(
+    req: dict[str, Any],
+    source_blocks: list[dict[str, Any]],
+    matched_block_ids: set[str],
+) -> None:
+    """封堵一-B:行级溯源。parameter 表 source_block 携带行级明细(rows)时,把引句落点
+    定位到具体数据行,记 source_row_index/source_item_id(可选字段,向后兼容)。block 级
+    消费者零感知;批注热区等行级消费者可直接用,免文本重匹配。"""
+    from merged_consistency import compact_source_text
+
+    quote = compact_source_text(req.get("source_quote"))
+    if not quote:
+        return
+    for sb in source_blocks:
+        if str(sb.get("block_id") or "") not in matched_block_ids:
+            continue
+        for row in sb.get("rows") or []:
+            cell_text = compact_source_text(row.get("text"))
+            if not cell_text or len(cell_text) < 12:
+                continue
+            if cell_text in quote or quote in cell_text:
+                try:
+                    req["source_row_index"] = int(row.get("row_index"))
+                except (TypeError, ValueError):
+                    continue
+                if row.get("item_id"):
+                    req["source_item_id"] = str(row["item_id"])
+                return
 
 
 _SECTION_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)*$")
@@ -3848,6 +3973,7 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     _downgrade_cross_block_verbatim(requirements, blocks)   # 跨块逐字硬标→软标（写盘前统一过一遍）
     requirements = _supplement_uncovered_compliance(requirements, blocks)   # 合规漏抽兜底,进 jsonl+澄清
     requirements = _supplement_parameter_table_rows(requirements, blocks)   # 参数表逐行确定性展开,LLM 未覆盖行进澄清
+    requirements = _merge_llm_into_deterministic_rows(requirements)   # 封堵二:同行 LLM 叙述并入确定性展开行,免双份
     target = out_dir / AI_REQUIREMENTS
     atomic_write_jsonl(target, requirements)
     written.append(target.name)
