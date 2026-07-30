@@ -425,7 +425,7 @@ class RunReportTests(unittest.TestCase):
 
             self.assertEqual(report["questions"], 1)
             self.assertEqual(report["provenance"]["producer_version"],
-                             "clarification/v7-claim-ledger-info")
+                             "clarification/v8-param-row-aggregate")
             self.assertEqual(report["readiness"]["verdict"], "NEEDS WORK")
             self.assertEqual(report["readiness"]["unresolved_blocking"], 1)
             md = (tmp / cr.REPORT_MD).read_text(encoding="utf-8")

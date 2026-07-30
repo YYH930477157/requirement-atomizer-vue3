@@ -1123,13 +1123,13 @@ class ChainAndManifestTests(unittest.TestCase):
             "ai-extract": (
                 "ai-extract-v23+guards-v17+ai-verify-v4+ai-normative-framing-v2"
                 "+merged-consistency/v3-noise-tolerant-window"
-                "+ai-supplement-v3-identity-preconditions+impl-v4"
+                "+ai-supplement-v3-identity-preconditions+impl-v5"
             ),
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v7+ai-supplement-v3-identity-preconditions+impl-v3",
             "requirements-analysis": "analyze-llm-v7+analyze-unfounded-v3+ai-supplement-v3-identity-preconditions+impl-v6",
             "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v5",
-            "clarification-report": "clarification/v7-claim-ledger-info+ai-supplement-v3-identity-preconditions+impl-v6",
+            "clarification-report": "clarification/v8-param-row-aggregate+ai-supplement-v3-identity-preconditions+impl-v6",
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "export-annotation-html": (
                 "doc_annotation_export/v13-claim-distribution-claim-focus+claim-annotation-v13"
