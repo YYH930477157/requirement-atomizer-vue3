@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -73,6 +74,68 @@ def _event_key(attempt_id: str, kind: str, detail: Any) -> str:
     )
 
 
+CLAIM_QUEUE_ROUTE_CONFIG_REVISION_VERSION = "claim-queue-route-config/v2"
+
+
+def _credential_identity(config: Any) -> dict[str, Any]:
+    """Return a non-secret identity for the credential used by this route."""
+    api_key_env = str(config.api_key_env or "")
+    credential = os.environ.get(api_key_env, "") if api_key_env else ""
+    return {
+        "api_key_env": api_key_env,
+        "credential_present": bool(credential),
+        "credential_fingerprint": (
+            hash_json(
+                "claim-queue-route-credential/v1",
+                {"api_key_env": api_key_env, "credential": credential},
+            )
+            if credential
+            else None
+        ),
+    }
+
+
+def _resolved_route_preflight(
+    route: str,
+    config: Any,
+) -> tuple[Any, dict[str, Any]]:
+    """Bind confirmation and execution to one resolved config object."""
+    resolved = apply_min_tokens(config, "extract")
+    revision = hash_json(
+        CLAIM_QUEUE_ROUTE_CONFIG_REVISION_VERSION,
+        {
+            "route": str(route),
+            "base_url": str(resolved.base_url),
+            "model": str(resolved.model or ""),
+            **_credential_identity(resolved),
+            "temperature": float(resolved.temperature),
+            "max_tokens": int(resolved.max_tokens),
+            "timeout_s": float(resolved.timeout_s),
+            "max_retries": int(resolved.max_retries),
+        },
+    )
+    return resolved, {
+        "route": str(route),
+        "configured": True,
+        "model": str(resolved.model or ""),
+        "route_config_revision": revision,
+    }
+
+
+def claim_queue_route_preflight(route: str = "openai_compatible") -> dict[str, Any]:
+    """Read-only route preflight: the exact config a paid call would use."""
+    config = ai_extract.config_for_route(route)
+    if config is None:
+        return {
+            "route": str(route),
+            "configured": False,
+            "model": None,
+            "route_config_revision": None,
+        }
+    _resolved, preflight = _resolved_route_preflight(route, config)
+    return preflight
+
+
 def _common_event(
     *,
     attempt_id: str,
@@ -136,6 +199,76 @@ def _proposal_from_attempt_history(history: list[dict[str, Any]]) -> dict[str, A
         "focus": focus,
         "execution_preconditions": dict(started.get("preconditions") or {}),
     }
+
+
+def _require_matching_replay_request(
+    started: dict[str, Any],
+    *,
+    expected_claim_effective_revision: str,
+    expected_ledger_state: str,
+    actor: str,
+    allow_llm: bool,
+    route: str,
+    maximum_calls: int,
+    total_token_budget: int,
+    request_idempotency_key: str,
+    expected_route_config_revision: str,
+    deterministic_recovery: bool = False,
+) -> None:
+    """Reject reuse of an idempotency key for a different logical request."""
+    budgets = dict(started.get("budgets") or {})
+    preconditions = dict(started.get("preconditions") or {})
+    mismatches: list[str] = []
+
+    def differs(field: str, requested: Any, committed: Any) -> None:
+        if requested != committed:
+            mismatches.append(field)
+
+    differs(
+        "request_idempotency_key",
+        request_idempotency_key,
+        str(started.get("request_idempotency_key") or ""),
+    )
+    differs("actor", actor, str(started.get("actor") or ""))
+    differs("route", route, str(started.get("route") or ""))
+    differs("expected_ledger_state", expected_ledger_state, "uncertain")
+    differs(
+        "expected_claim_effective_revision",
+        expected_claim_effective_revision,
+        str(preconditions.get("claim_effective_revision") or ""),
+    )
+    if not deterministic_recovery:
+        differs("allow_llm", allow_llm is True, True)
+        try:
+            requested_calls = int(maximum_calls)
+        except (TypeError, ValueError):
+            requested_calls = None
+        try:
+            requested_tokens = int(total_token_budget)
+        except (TypeError, ValueError):
+            requested_tokens = None
+        differs("maximum_calls", requested_calls, budgets.get("max_calls"))
+        differs(
+            "total_token_budget",
+            requested_tokens,
+            budgets.get("max_total_tokens"),
+        )
+        committed_route_revision = str(
+            started.get("route_config_revision") or ""
+        )
+        # v1 attempts did not persist this field. For v2, confirmation must
+        # identify the same paid request; replay never re-resolves live config.
+        if expected_route_config_revision or committed_route_revision:
+            differs(
+                "expected_route_config_revision",
+                expected_route_config_revision,
+                committed_route_revision,
+            )
+    if mismatches:
+        raise ClaimQueueExecutionConflict(
+            "request idempotency key was already used with different parameters: "
+            + ", ".join(sorted(set(mismatches)))
+        )
 
 
 def _validate_current_proposal(
@@ -461,6 +594,7 @@ def _finish_rebuild(
     actor: str,
     route: str,
     budget: LLMRequestBudget | None,
+    resolved_route_config: Any | None,
     mutation: dict[str, Any] | None,
 ) -> dict[str, Any]:
     refresh: dict[str, Any] | None = None
@@ -471,6 +605,9 @@ def _finish_rebuild(
                 root,
                 route=route if budget is not None else None,
                 allow_llm=budget is not None,
+                resolved_route_config=(
+                    resolved_route_config if budget is not None else None
+                ),
                 verifier_request_budget=budget,
                 claim_mutation_attempt_id=attempt_id,
             )
@@ -666,6 +803,7 @@ def execute_claim_queue_proposal(
     total_token_budget: int,
     request_idempotency_key: str,
     chat_with_meta: Callable[..., tuple[dict[str, Any], dict[str, Any]]] | None = None,
+    expected_route_config_revision: str | None = None,
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     proposal_id = str(proposal_id or "").strip()
@@ -675,27 +813,22 @@ def execute_claim_queue_proposal(
     actor = str(actor or "").strip()
     route = str(route or "").strip()
     request_idempotency_key = str(request_idempotency_key or "").strip()
+    expected_route_config_revision = str(
+        expected_route_config_revision or ""
+    ).strip()
     if not all((proposal_id, expected_claim_effective_revision, actor, route,
                 request_idempotency_key)):
         raise ValueError(
             "proposal id, expected revision, actor, route, and idempotency key are required"
         )
-    if allow_llm is not True:
-        raise ValueError("claim queue execution requires allow_llm=true")
     if route != "openai_compatible":
         raise ValueError("claim queue execution requires openai_compatible route")
-    if (
-        isinstance(maximum_calls, bool)
-        or isinstance(total_token_budget, bool)
-        or int(maximum_calls) <= 0
-        or int(total_token_budget) <= 0
-    ):
-        raise ValueError("maximum_calls and total_token_budget must be positive integers")
     current_attempt_id = make_attempt_id(proposal_id, request_idempotency_key)
     budget: LLMRequestBudget | None = None
     proposal: dict[str, Any]
     mutation: dict[str, Any] | None = None
     requirements_published = False
+    resolved_route_config: Any | None = None
 
     with extraction_operation_lock(root, operation="claim-reextract"):
         recover_interrupted_attempts(root, operation_lock_held=True)
@@ -703,14 +836,35 @@ def execute_claim_queue_proposal(
         existing = states.get(current_attempt_id)
         if existing is not None:
             lifecycle = str(existing.get("lifecycle") or "")
+            history = [
+                row
+                for row in read_attempt_log(root).rows
+                if row.get("attempt_id") == current_attempt_id
+            ]
+            if not history:
+                raise ClaimQueueExecutionUnavailable(
+                    "claim attempt has no durable start record"
+                )
+            _require_matching_replay_request(
+                history[0],
+                expected_claim_effective_revision=(
+                    expected_claim_effective_revision
+                ),
+                expected_ledger_state=expected_ledger_state,
+                actor=actor,
+                allow_llm=allow_llm,
+                route=route,
+                maximum_calls=maximum_calls,
+                total_token_budget=total_token_budget,
+                request_idempotency_key=request_idempotency_key,
+                expected_route_config_revision=(
+                    expected_route_config_revision
+                ),
+                deterministic_recovery=lifecycle == "rebuild_pending",
+            )
             if lifecycle in {"succeeded", "failed", "interrupted", "aborted_stale"}:
                 terminal = dict(existing.get("terminal_event") or {})
                 if lifecycle == "succeeded":
-                    history = [
-                        row
-                        for row in read_attempt_log(root).rows
-                        if row.get("attempt_id") == current_attempt_id
-                    ]
                     proposal = _proposal_from_attempt_history(history)
                     _ensure_terminal_attempt_projection(
                         root,
@@ -732,11 +886,6 @@ def execute_claim_queue_proposal(
                 raise ClaimQueueExecutionUnavailable(
                     "claim re-extraction attempt is already executing or interrupted"
                 )
-            history = [
-                row
-                for row in read_attempt_log(root).rows
-                if row.get("attempt_id") == current_attempt_id
-            ]
             proposal = _proposal_from_attempt_history(history)
             publication = next(
                 (
@@ -781,12 +930,37 @@ def execute_claim_queue_proposal(
                 raise ClaimQueueExecutionConflict(
                     "another live attempt already owns this claim proposal"
                 )
+            if allow_llm is not True:
+                raise ValueError("new claim queue execution requires allow_llm=true")
+            if (
+                isinstance(maximum_calls, bool)
+                or isinstance(total_token_budget, bool)
+                or int(maximum_calls) <= 0
+                or int(total_token_budget) <= 0
+            ):
+                raise ValueError(
+                    "maximum_calls and total_token_budget must be positive integers"
+                )
+            if not expected_route_config_revision:
+                raise ClaimQueueExecutionConflict(
+                    "route configuration revision is required for paid execution"
+                )
             config = ai_extract.config_for_route(route)
             if config is None:
                 raise ClaimQueueExecutionUnavailable(
                     "openai_compatible route is not configured"
                 )
-            model = apply_min_tokens(config, "extract").model
+            resolved_route_config, route_preflight = _resolved_route_preflight(
+                route,
+                config,
+            )
+            current_revision = str(
+                route_preflight["route_config_revision"] or ""
+            )
+            if current_revision != expected_route_config_revision:
+                raise ClaimQueueExecutionConflict(
+                    "route configuration changed since the paid confirmation"
+                )
             _snapshot, proposal, _row = _validate_current_proposal(
                 root,
                 proposal_id=proposal_id,
@@ -807,7 +981,8 @@ def execute_claim_queue_proposal(
                 ),
                 "request_idempotency_key": request_idempotency_key,
                 "route": route,
-                "model": str(model or ""),
+                "model": str(route_preflight["model"] or ""),
+                "route_config_revision": current_revision,
                 "budgets": {
                     "max_calls": int(maximum_calls),
                     "max_total_tokens": int(total_token_budget),
@@ -939,6 +1114,7 @@ def execute_claim_queue_proposal(
                         "on_supplement_persisted": supplement_persisted,
                         "on_requirements_published": target_published,
                         "chat_with_meta": chat_with_meta,
+                        "resolved_route_config": resolved_route_config,
                     },
                     operation_lock_held=True,
                 )
@@ -1035,5 +1211,6 @@ def execute_claim_queue_proposal(
         actor=actor,
         route=route,
         budget=budget,
+        resolved_route_config=resolved_route_config,
         mutation=mutation,
     )

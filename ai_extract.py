@@ -31,6 +31,7 @@ import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from threading import Lock
@@ -527,7 +528,12 @@ def refresh_claim_shadow(
     verifier_max_calls: int | None = None,
     verifier_max_total_tokens: int | None = None,
     verifier_request_budget: LLMRequestBudget | None = None,
+    resolved_route_config: LLMClientConfig | None = None,
     claim_mutation_attempt_id: str | None = None,
+    shadow_built_hook: Any | None = None,
+    extra_reusable_groups: list[dict[str, Any]] | None = None,
+    extra_reusable_negatives: list[dict[str, Any]] | None = None,
+    operation_lock_held: bool = False,
 ) -> dict[str, Any]:
     """Rebuild only claim artifacts from committed requirements; never call extraction LLMs."""
     from claim_artifacts import (
@@ -574,7 +580,12 @@ def refresh_claim_shadow(
     run_id = uuid.uuid4().hex
     from omission_actions import extraction_operation_lock
 
-    with extraction_operation_lock(root, operation="claim-shadow-refresh"):
+    operation_lock = (
+        nullcontext()
+        if operation_lock_held
+        else extraction_operation_lock(root, operation="claim-shadow-refresh")
+    )
+    with operation_lock:
         try:
             previous_snapshot = load_committed_shadow(root)
         except Exception:
@@ -646,7 +657,11 @@ def refresh_claim_shadow(
                     committed_attempt_lineage = bootstrap_legacy_attempt_lineage(root)
                 except ClaimArtifactError:
                     raise lineage_error
-        route_config = config_for_route(route) if allow_llm is not False else None
+        route_config = (
+            resolved_route_config
+            if allow_llm is not False and resolved_route_config is not None
+            else config_for_route(route) if allow_llm is not False else None
+        )
         baseline_context = baseline_cost.get("lineage_context")
         baseline_unit_mode = (
             str(baseline_context.get("unit_mode") or "")
@@ -684,12 +699,11 @@ def refresh_claim_shadow(
         verifier_budget = None
         if verifier_requested:
             if verifier_request_budget is not None:
-                remaining = verifier_request_budget.snapshot()
-                if (
-                    int(remaining.get("remaining_calls") or 0) > 0
-                    and int(remaining.get("remaining_tokens") or 0) > 0
-                ):
-                    verifier_budget = verifier_request_budget
+                # Keep an exhausted externally-accounted budget attached so
+                # checkpointed semantic decisions retain their original runtime
+                # fingerprint. Any uncovered decision still fails at reserve()
+                # before an HTTP request can escape the cumulative ceiling.
+                verifier_budget = verifier_request_budget
             else:
                 verifier_budget = claim_shadow_verifier_budget(
                     max_calls=verifier_max_calls,
@@ -717,11 +731,17 @@ def refresh_claim_shadow(
             if mutation_refresh
             else reusable_claim_groups_for_runtime(previous_snapshot, verifier_runtime)
         )
+        if extra_reusable_groups:
+            reusable_groups = [*reusable_groups, *extra_reusable_groups]
         reusable_negatives = (
             []
             if mutation_refresh
             else reusable_claim_negatives_for_runtime(previous_snapshot, verifier_runtime)
         )
+        if extra_reusable_negatives:
+            reusable_negatives = [
+                *reusable_negatives, *extra_reusable_negatives,
+            ]
         semantic_verifier = None
         semantic_negative_proposer = None
         semantic_negative_verifier = None
@@ -803,6 +823,7 @@ def refresh_claim_shadow(
                 baseline_cost=baseline_cost,
                 verifier_runtime=verifier_runtime,
                 verifier_budget=verifier_budget,
+                on_shadow_built=shadow_built_hook,
             )
     shadow = dict(published.get("shadow") or {})
     shadow_meta = dict(shadow.get("meta") or {})

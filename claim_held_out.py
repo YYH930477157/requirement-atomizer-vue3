@@ -35,6 +35,15 @@ HELD_OUT_DIMENSION_VERDICTS = frozenset({
     "not_reviewed",
 })
 
+# Catalog version each frozen golden dataset generation was adjudicated under.
+# Frozen claim identities embed the catalog version, so replay must pin the
+# historical version instead of drifting with CLAIM_CATALOG_VERSION.
+GOLDEN_CATALOG_VERSIONS = {
+    "claim-ledger-golden-v2": "claim-catalog-v2",
+    "claim-ledger-golden-v3": "claim-catalog-v4",
+    "claim-ledger-golden-v4": "claim-catalog-v4",
+}
+
 ROOT = Path(__file__).resolve().parent
 DEFAULT_GOLDEN_DIR = ROOT / "golden_sets" / "claim_ledger_v1"
 GOLDEN_MANIFEST_SCHEMA = ROOT / "schemas" / "claim_ledger_golden_manifest.schema.json"
@@ -330,10 +339,7 @@ def _replay_baseline_revision(
     )
     if fixture_hash != str(adjudication.get("fixture_hash") or ""):
         raise HeldOutEvidenceError("golden history fixture hash does not replay")
-    historical_catalog_versions = {
-        "claim-ledger-golden-v2": "claim-catalog-v2",
-        "claim-ledger-golden-v3": "claim-catalog-v4",
-    }
+    historical_catalog_versions = GOLDEN_CATALOG_VERSIONS
     replay_catalog_version = historical_catalog_versions.get(
         str(record.get("dataset_version") or "")
     )
@@ -515,6 +521,9 @@ def load_golden_held_out(
             input_by_id[case_id],
             expected_by_id[case_id],
             fixture_hash,
+            replay_catalog_version=GOLDEN_CATALOG_VERSIONS.get(
+                str(manifest.get("version") or "")
+            ),
         ))
     return {
         "manifest": manifest,

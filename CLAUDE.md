@@ -34,13 +34,28 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 推送前全量测试必须绿（`python -m unittest discover -s tests` + `cd ui && npm test`），message 不写未经测试验证的声明
 - 已推送的历史不改写；信息写错了用新提交修正，不 amend/force-push
 
+## 重大更新（2026-07-30）——Claim Ledger 强化 8 修 + 4 增强（分支 `codex/claim-hardening-v5`；主检出全量 2336 tests OK、18 项冻结 PySide6 GUI 测试因依赖未安装而跳过、golden 6/6 零漂移、agent_eval 4×1.0、前端 vitest 167 + vue-tsc/Vite build）
+
+统一版本迁移：**catalog v4→v5、effective snapshot v2→v3、effective artifacts v1→v2、effective ledger v1→v2、effective reducer v2→v3、queue v2→v3、candidate policy v3→v4-active-formal-gate、coverage runtime v10→v11**。旧 base 由版本闸（`base_versions_are_current`）检出后返回 `base_migration_required`，必须先经上游 extraction/base publication 重建，startup/POST `/claim-maintenance` 不会绕过该门禁；base 已为 current 时，API startup 或显式 maintenance fold 才迁移 effective v1/v2→v3，并把迁移记进 health（含确定性 `migration_id`）。冻结 golden held-out 按 `GOLDEN_CATALOG_VERSIONS` 回放 catalog-v4 身份哈希，baseline 未动。
+
+- **修复 1（孤立 table_items）**：`_enumerate_leaves` 逐 item 计消费；新增 `orphan_table_item_count`/`multi_consumed_table_item_count`/`non_table_parent_item_count` 全部进 hard-fail（父块缺失/ID 错误/父块非 table/重复块四种探针均 incomplete）。
+- **修复 2（effective 权威重建）**：新共享模块 `claim_effective_contract.py`——document revision、claim revision（`revision_inputs` 绑定 base row、真实 event prefix、linked target、expert overlay、完整 effective state 与版本向量）、effective metrics 单一实现；fold/publish/readonly loader 对同代 authority 均从 committed base + 真实事件前缀 + target/review authority 纯归约并逐字段比对，历史 authority 已推进时仍校验持久化 projection/state 哈希、事件前缀和版本向量，不一致 fail-closed。v1/v2→v3 映射及非 current base 的 `base_migration_required` 门禁均有真实迁移探针。
+- **修复 3（rejected exact 屏蔽）**：formal exact 拆 `active_formal_exact`/`inactive_formal_exact`；只有 active 才跳过 semantic verifier，inactive 保留审计组不得阻止 active 语义候选（探针：rejected 逐字 + active 改写 → verifier 必被调用且可覆盖）。
+- **修复 4（GET 写盘）**：GET `/claim-queue` 移除 attempt recovery（移入 API startup、POST `/claim-maintenance`、queue execute 写侧）；`OmissionConflictError` 单独映射 409/retryable，不落 ValueError 的 400；attempt log 新增 `read_attempt_log_stable` 双读稳定快照（瞬时 torn tail 重试、永久损坏 fail-closed）。
+- **修复 5（fact 契约）**：effective projection 暴露 `active_resolution_facts`（hash/kind/polarity）+ 视图行 `required_supersedes_fact_hashes`（按 action）；POST 锁内经 overlay 重放重算 required set——缺一个、含 inactive/history hash、revision 变化全部 409；UI 不再推断 facts（探针：两条 active covered 后 excluded 必须 supersede 全部、旧 hash 重用拒绝、audit conflict 可闭合）。
+- **修复 6（分页）**：queue total/limit/offset 必填 + compat omissions 独立分页（`compat_limit`/`compat_offset`）+ groups/events UI 自动拉全分页 + queue 独立 offset 分页控件（251 提案 + 150 事件逐页无遗漏无重复排序稳定）。
+- **修复 7（结构覆盖续跑）**：新 `claim_structural_operations.jsonl` 哈希链操作日志（operation_started/override_registered/audit_appended/verifier_checkpoint/base_rebuild_published/effective_folded/终态）；retry 接受 `operation_id` 由服务端恢复原幂等请求；verifier_checkpoint 持久化已验证 groups 供 resume 复用——已完成付费步骤零重复计费（registry/audit/付费调用/base publication/effective fold 五处崩溃注入探针）；catalog 行暴露 `pending_structural_operation`。
+- **修复 8（revision pin 一致性）**：pin 改变即禁裁决、清空旧详情并按新 pin 重载（`detailsStale` 门控 + `detailRefreshCycle` 防双载）；409 刷新保留裁决草稿但重取 row/groups/events/active facts（抽屉打开中切版本探针：新 row 不与旧详情同屏）。
+- **增强**：迁移 health 写 `migrated_from_version`/`migration_id` 入 effective meta，fold 幂等补记（commit 后 health 前 `os._exit` 子进程探针）；queue preflight 返回 route/model/config revision（确认框展示 model，POST 携 `expected_route_config_revision`，配置变化 409）；`claim_views._context` 按 committed meta hash + 日志 stat + journal 存在性精确失效的只读快照缓存（六 GET 契约不变）。付费结构复核按 `attempted_calls` 序号判断确认后是否发生新的未知调用：同一次未知调用的保守结算不会重复触发 409，新增调用再次失去决策 checkpoint 时仍须重新确认。
+- **旧 `gui/`（PySide6）未动**；golden_sets/、客户语料、LLM prompt、API key 处理、生产 readiness 门控均未触碰。
+
 ## 回归纪律
 
 - `golden_sets/abnt_nbr_16968_v5/golden_summary.json` 是冻结基线；动它必须逐项写明原因
 - 真实测试文档：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.docx`（机器相关路径，换机器需调整）
 - 真实测试 PDF：`C:\Users\YYHwudi\Desktop\Canna-29\Appendix 9-ABNT NBR 16968-2022 EN.pdf`（同目录文字层 PDF；旧 `D:\Codex\abnt_converted.pdf` 已失效）
 - **Blue Book Ed.16 两 PDF**（P2 行为 RAG 语料，版权文件不进仓）：同目录 `Blue-Book-Ed-16-part-{1,2}-V1.0.pdf`；索引编译 `python -m blue_book_ingest --pdf <p1> --pdf <p2> --out out/bluebook`（约 2 分钟，产物 gitignored）
-- 测试命令：`python -m unittest discover -s tests`（2026-07-19：**1344 tests** + ui `vitest 120` + vue-tsc；Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时 GUI 测试 skip）。0 skip 需设 env `RATOMIZER_HISTORICAL_SAMPLE="C:/Users/YYHwudi/Desktop/Canna-29/eval_assets/test18_functional_synthesis_sample.json"`（历史守恒样本含客户词面已外置,不进仓;不设则 1 skip 如实降级）
+- 测试命令：`python -m unittest discover -s tests`（2026-07-19：**1344 tests** + ui `vitest 120` + vue-tsc；Python 3.14 / python-docx 1.2.0 / pdfplumber / openpyxl 已装；PySide6 未装时冻结 GUI 测试会 skip）。设置 env `RATOMIZER_HISTORICAL_SAMPLE="C:/Users/YYHwudi/Desktop/Canna-29/eval_assets/test18_functional_synthesis_sample.json"` 可消除历史守恒门的 1 个额外 skip（样本含客户词面，已外置且不进仓）；它不会消除缺少 PySide6 导致的冻结 GUI 环境跳过。
 - golden 基线输出 `out/abnt_nbr_16968_atomizer_v5/` 已于 2026-07-04 重新生成（真实 ABNT docx + **三个 --kb + domain-pack**，缺 KB 会假漂移）；测试用例只做 unittest.TestCase（**pytest 未装**，模块级 `def test_*` 会被静默跳过）
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。

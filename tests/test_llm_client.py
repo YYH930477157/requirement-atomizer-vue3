@@ -75,6 +75,29 @@ class MockOpenAIService:
 
 
 class LLMClientTests(unittest.TestCase):
+    def test_restore_settled_checkpoint_preserves_cumulative_budget(self) -> None:
+        budget = LLMRequestBudget(max_calls=2, max_tokens=100_000)
+        reservation = budget.reserve({"messages": [], "max_tokens": 32})
+        budget.commit(reservation, {"total_tokens": 25})
+
+        restored = LLMRequestBudget.from_settled_snapshot(budget.snapshot())
+        before = restored.snapshot()
+        self.assertEqual(before["attempted_calls"], 1)
+        self.assertEqual(before["tokens"], 25)
+        reservation = restored.reserve({"messages": [], "max_tokens": 32})
+        restored.commit(reservation, {"total_tokens": 30})
+        after = restored.snapshot()
+        self.assertEqual(after["attempted_calls"], 2)
+        self.assertEqual(after["tokens"], 55)
+        with self.assertRaises(LLMBudgetExceeded):
+            restored.reserve({"messages": [], "max_tokens": 32})
+
+    def test_restore_rejects_an_unsettled_reservation(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+        budget.reserve({"messages": [], "max_tokens": 32})
+        with self.assertRaisesRegex(ValueError, "unsettled"):
+            LLMRequestBudget.from_settled_snapshot(budget.snapshot())
+
     def test_request_budget_checkpoint_failure_blocks_network_and_rolls_back_reserve(self) -> None:
         budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
 

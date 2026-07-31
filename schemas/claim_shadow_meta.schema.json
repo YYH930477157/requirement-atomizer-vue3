@@ -64,7 +64,7 @@
         "fingerprint"
       ],
       "properties": {
-        "version": {"const": "claim-coverage-runtime-v10"},
+        "version": {"const": "claim-coverage-runtime-v11"},
         "policy_source": {"enum": ["explicit", "environment"]},
         "route_mode": {"enum": ["llm", "stub"]},
         "enabled": {"type": "boolean"},

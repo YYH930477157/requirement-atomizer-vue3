@@ -23,7 +23,7 @@
     "claim_effective_revision": {"$ref": "#/$defs/hash"},
     "action": {"const": "needs_extraction"},
     "dry_run": {"const": false},
-    "queue_version": {"const": "claim-queue-v2"},
+    "queue_version": {"const": "claim-queue-v3"},
     "expected_ledger_state": {"const": "uncertain"},
     "created_from_event_seq": {"type": "integer", "minimum": 0},
     "lifecycle": {"enum": ["open", "executing", "executed", "rebuild_pending"]},

@@ -36,7 +36,7 @@ CLAIM_LEDGER_SCHEMA = "claim-ledger/v3"
 CLAIM_SEMANTIC_NEGATIVE_SCHEMA = "claim-semantic-negative/v3"
 CLAIM_COVERAGE_GROUP_SCHEMA = "claim-coverage-group/v3"
 CLAIM_LEDGER_PROMPT_VERSION = "claim-ledger-shadow-prompt-v4"
-CLAIM_CANDIDATE_POLICY_VERSION = "claim-coverage-candidate-v3-stub-proposals"
+CLAIM_CANDIDATE_POLICY_VERSION = "claim-coverage-candidate-v4-active-formal-gate"
 CLAIM_EDGE_PREFILTER_VERSION = "claim-edge-prefilter-v3"
 CLAIM_COVERAGE_VALIDATOR_VERSION = "claim-coverage-validator-v6"
 CLAIM_NEGATIVE_POLICY_VERSION = "claim-negative-policy-v2"
@@ -46,15 +46,15 @@ CLAIM_EFFECTIVE_B_REVIEW_ADAPTER_VERSION = "ai-review-effective-adapter-v1"
 CLAIM_EFFECTIVE_A_REVIEW_ADAPTER_VERSION = "atomic-review-effective-adapter-v1"
 CLAIM_REVIEW_BRIDGE_VERSION = "claim-review-bridge-v2"
 CLAIM_REDUCER_VERSION = "claim-reducer-v2"
-CLAIM_EFFECTIVE_REDUCER_VERSION = "claim-effective-reducer-v2"
-CLAIM_EFFECTIVE_LEDGER_SCHEMA = "claim-effective-ledger/v1"
+CLAIM_EFFECTIVE_REDUCER_VERSION = "claim-effective-reducer-v3"
+CLAIM_EFFECTIVE_LEDGER_SCHEMA = "claim-effective-ledger/v2"
 LEGACY_CLAIM_REVIEW_EVENT_SCHEMA = "claim-review-event/v1"
 CLAIM_REVIEW_EVENT_SCHEMA = "claim-review-event/v2"
 CLAIM_VALIDATION_REUSE_VERSION = "claim-validation-reuse-v2"
-CLAIM_QUEUE_VERSION = "claim-queue-v2"
+CLAIM_QUEUE_VERSION = "claim-queue-v3"
 CLAIM_QUEUE_PROPOSAL_SCHEMA = "claim-queue-proposal/v2"
 CLAIM_AUDIT_POLICY_VERSION = "claim-audit-shadow-v4"
-CLAIM_COVERAGE_RUNTIME_VERSION = "claim-coverage-runtime-v10"
+CLAIM_COVERAGE_RUNTIME_VERSION = "claim-coverage-runtime-v11"
 CLAIM_VERIFIER_BATCH_POLICY_VERSION = "claim-verifier-batch-v3-full-http-body"
 CLAIM_COST_POLICY_VERSION = "claim-cost-policy-v3-user-approved"
 CLAIM_VERIFIER_CALL_INCREASE_LIMIT = 0.25
@@ -3214,6 +3214,17 @@ def build_shadow_ledger(
                 and full.get("item_index") == match.get("item_index")
             )
         ]
+        # Only an active formal exact may bypass the semantic verifier.  An
+        # inactive (rejected/unknown) verbatim target keeps its audit group but
+        # must never suppress active semantic candidates for the same claim.
+        active_formal_exact = [
+            target for target in formal_exact
+            if target[0]["review"]["eligibility"] == "active"
+        ]
+        inactive_formal_exact = [
+            target for target in formal_exact
+            if target[0]["review"]["eligibility"] != "active"
+        ]
         semantic_exact = [target for target in exact if target not in formal_exact]
         candidates = [
             *[(target, basis, target["evidence"])
@@ -3221,7 +3232,7 @@ def build_shadow_ledger(
             *candidates,
         ]
         claim_groups: list[dict[str, Any]] = []
-        if formal_exact:
+        if active_formal_exact:
             claim_groups.extend(
                 _group(
                     claim,
@@ -3232,9 +3243,21 @@ def build_shadow_ledger(
                     validation_generation_run_id=validation_generation_run_id,
                     controlled_term_aliases=controlled_term_aliases,
                 )
-                for target in formal_exact
+                for target in active_formal_exact
             )
-        elif candidates:
+        claim_groups.extend(
+            _group(
+                claim,
+                target_generation_id=target_generation,
+                targets=[target],
+                validation_method="deterministic_verbatim",
+                verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
+                validation_generation_run_id=validation_generation_run_id,
+                controlled_term_aliases=controlled_term_aliases,
+            )
+            for target in inactive_formal_exact
+        )
+        if not active_formal_exact and candidates:
             active = [target for target in candidates
                       if target[0]["review"]["eligibility"] == "active"]
             inactive = [target for target in candidates
@@ -3874,6 +3897,7 @@ def publish_b_track_shadow(
     baseline_cost: dict[str, Any] | None = None,
     verifier_runtime: dict[str, Any] | None = None,
     verifier_budget: LLMRequestBudget | None = None,
+    on_shadow_built: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Rebuild and atomically publish the B-track Phase 0 shadow generation."""
     from ai_review_actions import read_ai_review_states
@@ -3927,6 +3951,10 @@ def publish_b_track_shadow(
         ),
         validation_generation_run_id=run_id,
     )
+    if on_shadow_built is not None:
+        # Crash window probe: the paid verifier decisions exist only in memory
+        # until the WAL commits them; the hook makes them durable beforehand.
+        on_shadow_built(shadow)
     requirements_path = root / "ai_requirements.jsonl"
     requirements_hash = file_sha256(requirements_path) if requirements_path.is_file() else ""
     generation = publish_shadow_generation(

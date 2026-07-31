@@ -11,14 +11,16 @@
     "queue_sha256", "queue_count", "ledger_count", "claim_events_enabled",
     "event_prefix_sha256", "last_event_seq", "document_effective_revision",
     "target_set_hash", "target_publication_revision", "requirement_review_state_hash",
+    "authority_projection_hash",
     "effective_ledger_schema", "review_adapter_versions", "reducer_version",
-    "bridge_version", "queue_version", "effective_metrics", "versions"
+    "bridge_version", "queue_version", "effective_metrics", "versions",
+    "migrated_from_version", "migration_id"
   ],
   "properties": {
     "schema": {"const": "claim-effective-meta/v1"},
-    "artifact_protocol_version": {"const": "claim-effective-artifacts-v1"},
-    "effective_artifact_version": {"const": "claim-effective-artifacts-v1"},
-    "effective_snapshot_version": {"const": "claim-effective-snapshot-v2"},
+    "artifact_protocol_version": {"const": "claim-effective-artifacts-v2"},
+    "effective_artifact_version": {"const": "claim-effective-artifacts-v2"},
+    "effective_snapshot_version": {"const": "claim-effective-snapshot-v3"},
     "run_id": {"type": "string"},
     "committed_at": {"type": "string", "format": "date-time"},
     "base_generation_id": {"$ref": "#/$defs/hash"},
@@ -37,7 +39,8 @@
     "target_set_hash": {"$ref": "#/$defs/hash"},
     "target_publication_revision": {"$ref": "#/$defs/hash"},
     "requirement_review_state_hash": {"$ref": "#/$defs/hash"},
-    "effective_ledger_schema": {"const": "claim-effective-ledger/v1"},
+    "authority_projection_hash": {"$ref": "#/$defs/hash"},
+    "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
     "review_adapter_versions": {
       "type": "array",
       "items": {"$ref": "#/$defs/review_adapter_version"},
@@ -47,12 +50,46 @@
     "reducer_version": {"type": "string", "minLength": 1},
     "bridge_version": {"type": "string", "minLength": 1},
     "queue_version": {"type": "string", "minLength": 1},
-    "effective_metrics": {"type": "object"},
+    "effective_metrics": {"$ref": "#/$defs/effective_metrics"},
     "versions": {
       "type": "object",
-      "additionalProperties": {"type": "string", "minLength": 1}
+      "required": [
+        "effective_artifacts", "effective_ledger_schema", "effective_reducer",
+        "effective_snapshot", "queue", "review_bridge", "review_event_schema",
+        "revision_inputs"
+      ],
+      "properties": {
+        "effective_artifacts": {"const": "claim-effective-artifacts-v2"},
+        "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
+        "effective_reducer": {"type": "string", "minLength": 1},
+        "effective_snapshot": {"const": "claim-effective-snapshot-v3"},
+        "queue": {"const": "claim-queue-v3"},
+        "review_bridge": {"const": "claim-review-bridge-v2"},
+        "review_event_schema": {"const": "claim-review-event/v2"},
+        "revision_inputs": {"const": "claim-effective-revision-inputs/v2"}
+      },
+      "additionalProperties": false
+    },
+    "migrated_from_version": {
+      "oneOf": [
+        {"enum": ["claim-effective-snapshot-v1", "claim-effective-snapshot-v2"]},
+        {"type": "null"}
+      ]
+    },
+    "migration_id": {
+      "oneOf": [
+        {"$ref": "#/$defs/hash"},
+        {"type": "null"}
+      ]
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"migrated_from_version": {"type": "null"}}},
+      "then": {"properties": {"migration_id": {"type": "null"}}},
+      "else": {"properties": {"migration_id": {"$ref": "#/$defs/hash"}}}
+    }
+  ],
   "additionalProperties": false,
   "$defs": {
     "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
@@ -62,6 +99,41 @@
       "properties": {
         "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
         "adapter_version": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "ratio": {
+      "type": "object",
+      "required": ["numerator", "denominator", "value"],
+      "properties": {
+        "numerator": {"type": "integer", "minimum": 0},
+        "denominator": {"type": "integer", "minimum": 0},
+        "value": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "effective_metrics": {
+      "type": "object",
+      "required": [
+        "catalog_total_count", "eligible_claim_count", "covered_count",
+        "semantic_excluded_count", "structural_excluded_count", "uncertain_count",
+        "inventory_accounted_ratio", "verified_coverage_ratio",
+        "verified_semantic_exclusion_ratio", "verified_exclusion_ratio",
+        "eligible_resolution_ratio", "structural_exclusion_ratio"
+      ],
+      "properties": {
+        "catalog_total_count": {"type": "integer", "minimum": 0},
+        "eligible_claim_count": {"type": "integer", "minimum": 0},
+        "covered_count": {"type": "integer", "minimum": 0},
+        "semantic_excluded_count": {"type": "integer", "minimum": 0},
+        "structural_excluded_count": {"type": "integer", "minimum": 0},
+        "uncertain_count": {"type": "integer", "minimum": 0},
+        "inventory_accounted_ratio": {"$ref": "#/$defs/ratio"},
+        "verified_coverage_ratio": {"$ref": "#/$defs/ratio"},
+        "verified_semantic_exclusion_ratio": {"$ref": "#/$defs/ratio"},
+        "verified_exclusion_ratio": {"$ref": "#/$defs/ratio"},
+        "eligible_resolution_ratio": {"$ref": "#/$defs/ratio"},
+        "structural_exclusion_ratio": {"$ref": "#/$defs/ratio"}
       },
       "additionalProperties": false
     }

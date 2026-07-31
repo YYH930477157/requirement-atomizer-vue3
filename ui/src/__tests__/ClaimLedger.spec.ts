@@ -86,6 +86,18 @@ function queuePayload(revision = "sha256:revision-1") {
       compat_whole_block: true as const,
       dry_run: true as const,
     }],
+    total: 1,
+    limit: 25,
+    offset: 0,
+    compat_omission_total: 1,
+    compat_omission_limit: 1,
+    compat_omission_offset: 0,
+    route_preflight: {
+      route: "openai_compatible",
+      configured: true,
+      model: "deepseek-chat",
+      route_config_revision: "sha256:route-config-1",
+    },
   }
 }
 
@@ -94,6 +106,8 @@ function groupsPayload(revision = "sha256:revision-1", target = "AIR-1") {
     ...envelope(revision),
     schema: "claim-coverage-group-view/v1",
     total: 1,
+    limit: 500,
+    offset: 0,
     groups: [{
       coverage_group_id: "CGR-1111111111111111",
       claim_id: "CLM-1111111111111111",
@@ -118,6 +132,8 @@ function eventsPayload(revision = "sha256:revision-1") {
     ...envelope(revision),
     schema: "claim-review-event-view/v1",
     total: 1,
+    limit: 500,
+    offset: 0,
     events: [{
       event_seq: 1,
       event_id: "CRE-1-111111111111",
@@ -194,6 +210,7 @@ describe("ClaimLedger", () => {
 
     expect(executeClaimQueue).not.toHaveBeenCalled()
     expect(wrapper.get('[data-testid="claim-queue-confirm-execute"]').attributes("disabled")).toBeDefined()
+    expect(wrapper.get('[data-testid="claim-queue-model"]').text()).toBe("deepseek-chat")
     await wrapper.get('[data-testid="claim-queue-allow-llm"]').setValue(true)
     await wrapper.get('[data-testid="claim-queue-confirm-execute"]').trigger("click")
     await flushPromises()
@@ -207,6 +224,7 @@ describe("ClaimLedger", () => {
       maximumCalls: 7,
       totalTokenBudget: 64000,
       requestIdempotencyKey: expect.stringMatching(/^claim-queue-/),
+      expectedRouteConfigRevision: "sha256:route-config-1",
     })
     expect(client.loadClaimCatalog).toHaveBeenCalledTimes(2)
     expect(client.loadClaimMetrics).toHaveBeenCalledTimes(2)
@@ -271,13 +289,18 @@ describe("ClaimLedger", () => {
     const button = wrapper.get('[data-testid="claim-execute-CLM-2222222222222222"]')
     expect(button.text()).toContain("恢复")
     await button.trigger("click")
-    await wrapper.get('[data-testid="claim-queue-allow-llm"]').setValue(true)
+    expect(wrapper.get('[data-testid="claim-queue-recovery-notice"]').text())
+      .toContain("不会调用 LLM")
+    expect(wrapper.find('[data-testid="claim-queue-allow-llm"]').exists()).toBe(false)
     await wrapper.get('[data-testid="claim-queue-confirm-execute"]').trigger("click")
     await flushPromises()
 
     expect(executeClaimQueue).toHaveBeenCalledWith(expect.objectContaining({
       proposalId: "CQP-11111111-22222222",
       requestIdempotencyKey: "claim-queue-original-request",
+      allowLlm: false,
+      maximumCalls: 0,
+      totalTokenBudget: 0,
     }))
   })
 
@@ -286,6 +309,13 @@ describe("ClaimLedger", () => {
     Object.assign(catalog.rows[0], {
       source_text_hash: "sha256:source-text",
       base_resolution_fact_hashes: { positive: ["sha256:base-covered"] },
+      active_resolution_facts: [
+        { fact_hash: "sha256:base-covered", kind: "coverage_group", polarity: "positive" },
+        { fact_hash: "sha256:previous-expert", kind: "expert_adjudication", polarity: "negative" },
+      ],
+      required_supersedes_fact_hashes: {
+        covered: ["sha256:base-covered", "sha256:previous-expert"],
+      },
     })
     const groups = groupsPayload()
     Object.assign(groups.groups[0], { coverage_group_hash: "sha256:coverage-group" })
@@ -336,6 +366,9 @@ describe("ClaimLedger", () => {
       base_resolution_fact_hashes: {
         positive: ["sha256:base-positive"],
         negative: ["sha256:base-negative-a", "sha256:base-negative-b"],
+      },
+      required_supersedes_fact_hashes: {
+        covered: ["sha256:base-positive", "sha256:base-negative-a", "sha256:base-negative-b"],
       },
     })
     const groups = groupsPayload()
@@ -505,7 +538,8 @@ describe("ClaimLedger", () => {
       loadClaimQueue: vi.fn().mockResolvedValue({
         ...unavailable,
         schema: "claim-queue-view/v1",
-        proposals: [], compat_omissions: [], total: 0,
+        proposals: [], compat_omissions: [], total: 0, limit: 0, offset: 0,
+        compat_omission_total: 0,
       }),
     })
     const wrapper = mount(ClaimLedger, { props: { client, active: true } })
@@ -567,6 +601,144 @@ describe("ClaimLedger", () => {
     expect(loadClaimCoverageGroups).toHaveBeenCalledTimes(2)
   })
 
+  it("resumes a pending structural operation with its server-restored identity", async () => {
+    const catalog = catalogPayload()
+    Object.assign(catalog, { catalog_generation_id: "sha256:catalog-generation" })
+    Object.assign(catalog.rows[0], {
+      resolution: "excluded",
+      exclusion_kind: "structural",
+      exclusion: { reason: "repeated_page_furniture" },
+      pending_structural_operation: {
+        operation_id: "CSOP-aaaa1111bbbb2222",
+        lifecycle: "failed",
+        checkpoints: ["audit_appended", "override_registered"],
+        route_requested: "stub",
+        route_model: null,
+        route_config_revision: null,
+        allow_llm: false,
+        verifier_budget: {
+          max_calls: 0,
+          max_total_tokens: 0,
+          attempted_calls: 0,
+          failed_calls: 0,
+          used_tokens: 0,
+          reserved_tokens: 0,
+          remaining_calls: 0,
+          remaining_tokens: 0,
+          usage_complete: true,
+          unknown_remote_result: false,
+        },
+        needs_reconfirmation: false,
+      },
+    })
+    const confirmClaimStructuralOverride = vi.fn().mockResolvedValue({
+      ok: true,
+      status: "rebuilt",
+      operation_id: "CSOP-aaaa1111bbbb2222",
+    })
+    const client = makeClient({
+      loadClaimCatalog: vi.fn().mockResolvedValue(catalog),
+      confirmClaimStructuralOverride,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.get('[data-testid="claim-structural-override"]').text())
+      .toContain("恢复结构复核重建")
+    expect(wrapper.get('[data-testid="claim-structural-mode"]').text())
+      .toContain("确定性重建 · 0 LLM")
+    expect(wrapper.find('[data-testid="claim-structural-paid-reconfirmation"]').exists())
+      .toBe(false)
+
+    await wrapper.get('textarea[aria-label="Claim 裁决理由"]').setValue("续跑中断的重建")
+    await wrapper.get('[data-testid="claim-structural-override"]').trigger("click")
+    await flushPromises()
+
+    expect(confirmClaimStructuralOverride).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "CSOP-aaaa1111bbbb2222",
+        requestIdempotencyKey: "",
+        allowLlm: false,
+        route: "stub",
+        verifierMaxCalls: 0,
+        verifierMaxTotalTokens: 0,
+      }),
+    )
+  })
+
+  it("shows original paid authorization and requires explicit reconfirmation only when requested", async () => {
+    const catalog = catalogPayload()
+    Object.assign(catalog, { catalog_generation_id: "sha256:catalog-generation" })
+    Object.assign(catalog.rows[0], {
+      resolution: "excluded",
+      exclusion_kind: "structural",
+      exclusion: { reason: "repeated_page_furniture" },
+      pending_structural_operation: {
+        operation_id: "CSOP-paid1111bbbb22",
+        lifecycle: "needs_reconfirmation",
+        checkpoints: ["audit_appended", "override_registered"],
+        route_requested: "openai_compatible",
+        route_model: "deepseek-chat",
+        route_config_revision: "sha256:route-1",
+        allow_llm: true,
+        verifier_budget: {
+          max_calls: 4,
+          max_total_tokens: 50000,
+          attempted_calls: 1,
+          failed_calls: 0,
+          used_tokens: 12000,
+          reserved_tokens: 8000,
+          remaining_calls: 3,
+          remaining_tokens: 30000,
+          usage_complete: false,
+          unknown_remote_result: true,
+        },
+        needs_reconfirmation: true,
+      },
+    })
+    const confirmClaimStructuralOverride = vi.fn().mockRejectedValue(
+      new Error("remote result remains unknown"),
+    )
+    const client = makeClient({
+      loadClaimCatalog: vi.fn().mockResolvedValue(catalog),
+      confirmClaimStructuralOverride,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    const authorization = wrapper.get('[data-testid="claim-structural-pending-authorization"]').text()
+    expect(authorization).toContain("deepseek-chat")
+    expect(authorization).toContain("4 次 / 50,000 tokens")
+    expect(authorization).toContain("1 次 / 12,000 tokens")
+    expect(authorization).toContain("3 次 / 30,000 tokens")
+    expect(authorization).toContain("8,000 tokens 远端结果未知")
+    expect(authorization).not.toContain("0 LLM")
+
+    await wrapper.get('textarea[aria-label="Claim 裁决理由"]').setValue("确认继续原付费操作")
+    const command = wrapper.get('[data-testid="claim-structural-override"]')
+    expect(command.attributes("disabled")).toBeDefined()
+    await wrapper.get('[data-testid="claim-structural-paid-reconfirmation"]').setValue(true)
+    expect(command.attributes("disabled")).toBeUndefined()
+    await command.trigger("click")
+    await flushPromises()
+
+    expect(confirmClaimStructuralOverride).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: "CSOP-paid1111bbbb22",
+      requestIdempotencyKey: "",
+      allowLlm: true,
+      route: "openai_compatible",
+      verifierMaxCalls: 4,
+      verifierMaxTotalTokens: 50000,
+      reconfirmPaidWork: true,
+    }))
+    expect((wrapper.get('[data-testid="claim-structural-paid-reconfirmation"]')
+      .element as HTMLInputElement).checked).toBe(false)
+  })
+
   it("sends resolution and owner filters with a reset offset", async () => {
     const loadClaimCatalog = vi.fn().mockResolvedValue(catalogPayload())
     const client = makeClient({ loadClaimCatalog })
@@ -582,5 +754,152 @@ describe("ClaimLedger", () => {
       limit: 25,
       offset: 0,
     })
+  })
+
+  it("paginates the proposal queue with an independent offset and a real total", async () => {
+    const proposalPage = (offset: number, count: number) => ({
+      ...queuePayload(),
+      proposals: Array.from({ length: count }, (_, index) => ({
+        ...queuePayload().proposals[0],
+        proposal_id: `CQP-${String(offset + index).padStart(8, "0")}-00000000`,
+        claim_id: `CLM-${String(offset + index).padStart(16, "0")}`,
+      })),
+      total: 30,
+      limit: 25,
+      offset,
+    })
+    const loadClaimQueue = vi.fn()
+      .mockImplementation(({ offset = 0 } = {}) => Promise.resolve(
+        proposalPage(offset, offset === 0 ? 25 : 5),
+      ))
+    const client = makeClient({ loadClaimQueue })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.findAll('[role="tab"]')[1].trigger("click")
+    expect(loadClaimQueue).toHaveBeenLastCalledWith({
+      limit: 25,
+      offset: 0,
+      compatLimit: 25,
+      compatOffset: 0,
+    })
+    const pager = wrapper.get('[data-testid="claim-queue-pagination"]')
+    expect(pager.text()).toContain("第 1 / 2 页")
+
+    await pager.get('button[aria-label="队列下一页"]').trigger("click")
+    await flushPromises()
+
+    expect(loadClaimQueue).toHaveBeenLastCalledWith({
+      limit: 25,
+      offset: 25,
+      compatLimit: 25,
+      compatOffset: 0,
+    })
+    expect(wrapper.get('[data-testid="claim-queue-pagination"]').text()).toContain("第 2 / 2 页")
+    expect(wrapper.text()).toContain("CLM-0000000000000029")
+  })
+
+  it("paginates compat omissions independently from claim proposals", async () => {
+    const compatPage = (compatOffset: number, count: number) => ({
+      ...queuePayload(),
+      compat_omissions: Array.from({ length: count }, (_, index) => ({
+        omission_id: `OM-${compatOffset + index}`,
+        block_id: `BLK-${compatOffset + index}`,
+        reason: "legacy omission",
+        compat_whole_block: true as const,
+        dry_run: true as const,
+      })),
+      compat_omission_total: 30,
+      compat_omission_limit: 25,
+      compat_omission_offset: compatOffset,
+    })
+    const loadClaimQueue = vi.fn()
+      .mockImplementation(({ compatOffset = 0 } = {}) => Promise.resolve(
+        compatPage(compatOffset, compatOffset === 0 ? 25 : 5),
+      ))
+    const client = makeClient({ loadClaimQueue })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.findAll('[role="tab"]')[1].trigger("click")
+    const pager = wrapper.get('[data-testid="claim-compat-pagination"]')
+    expect(pager.text()).toContain("第 1 / 2 页")
+    await pager.get('button[aria-label="兼容遗漏下一页"]').trigger("click")
+    await flushPromises()
+
+    expect(loadClaimQueue).toHaveBeenLastCalledWith({
+      limit: 25,
+      offset: 0,
+      compatLimit: 25,
+      compatOffset: 25,
+    })
+    expect(wrapper.get('[data-testid="claim-compat-pagination"]').text())
+      .toContain("第 2 / 2 页")
+    expect(wrapper.text()).toContain("OM-29")
+  })
+
+  it("reloads open drawer details and gates adjudication on a revision switch", async () => {
+    const revision1 = "sha256:revision-1"
+    const revision2 = "sha256:revision-2"
+    const catalog1 = catalogPayload(revision1)
+    const catalog2 = catalogPayload(revision2)
+    Object.assign(catalog2.rows[0], {
+      required_supersedes_fact_hashes: { covered: ["sha256:fresh-fact"] },
+    })
+    const loadClaimCatalog = vi.fn()
+      .mockResolvedValueOnce(catalog1)
+      .mockResolvedValue(catalog2)
+    const loadClaimMetrics = vi.fn()
+      .mockResolvedValueOnce(metricsPayload(revision1))
+      .mockResolvedValue(metricsPayload(revision2))
+    const loadClaimQueue = vi.fn()
+      .mockResolvedValueOnce(queuePayload(revision1))
+      .mockResolvedValue(queuePayload(revision2))
+    const deferred: { release?: (value: unknown) => void } = {}
+    const loadClaimCoverageGroups = vi.fn()
+      .mockResolvedValueOnce(groupsPayload(revision1, "STALE-GROUP"))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        deferred.release = resolve
+      }))
+      .mockResolvedValue(groupsPayload(revision2, "FRESH-GROUP"))
+    const loadClaimReviewEvents = vi.fn()
+      .mockResolvedValueOnce(eventsPayload(revision1))
+      .mockResolvedValue(eventsPayload(revision2))
+    const client = makeClient({
+      loadClaimCatalog,
+      loadClaimMetrics,
+      loadClaimQueue,
+      loadClaimCoverageGroups,
+      loadClaimReviewEvents,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.get('[data-testid="claim-detail"]').text()).toContain("STALE-GROUP")
+
+    await wrapper.get('textarea[aria-label="Claim 裁决理由"]').setValue("版本切换探针")
+    await wrapper.get('[data-testid="claim-refresh"]').trigger("click")
+    await flushPromises()
+
+    // The drawer shows the new row immediately but old details are cleared and
+    // adjudication is gated until same-revision details arrive.
+    const midSwitch = wrapper.get('[data-testid="claim-detail"]').text()
+    expect(midSwitch).toContain("sha256:revision-2-claim")
+    expect(midSwitch).not.toContain("STALE-GROUP")
+    expect(midSwitch).toContain("加载同代详情")
+    expect(wrapper.find('[data-testid="claim-adjudicate-covered"]').exists()).toBe(false)
+
+    deferred.release?.(groupsPayload(revision2, "FRESH-GROUP"))
+    await flushPromises()
+
+    const settled = wrapper.get('[data-testid="claim-detail"]').text()
+    expect(settled).toContain("FRESH-GROUP")
+    expect(settled).not.toContain("STALE-GROUP")
+    expect(wrapper.get('[data-testid="claim-adjudicate-covered"]').attributes("disabled")).toBeUndefined()
+    // The adjudication draft survives the 409-style revision refresh.
+    expect((wrapper.get('textarea[aria-label="Claim 裁决理由"]').element as HTMLTextAreaElement).value)
+      .toBe("版本切换探针")
   })
 })

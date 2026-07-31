@@ -269,6 +269,57 @@ class LLMRequestBudget:
         self._termination_reason = ""
         self._checkpoint: Callable[[dict[str, Any]], None] | None = None
 
+    @classmethod
+    def from_settled_snapshot(
+        cls,
+        snapshot: dict[str, Any],
+    ) -> "LLMRequestBudget":
+        """Restore cumulative accounting after a durable settled checkpoint.
+
+        A reservation means the provider outcome may be unknown. Such a state
+        must be reconciled or explicitly reconfirmed by the caller; silently
+        turning it into a new request would make the hard budget restart.
+        """
+        if not isinstance(snapshot, dict) or snapshot.get("version") != cls.VERSION:
+            raise ValueError("invalid LLM request budget checkpoint")
+
+        def count(name: str, *, positive: bool = False) -> int:
+            value = snapshot.get(name)
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"invalid LLM request budget {name}")
+            if value < (1 if positive else 0):
+                raise ValueError(f"invalid LLM request budget {name}")
+            return value
+
+        max_calls = count("max_calls", positive=True)
+        max_tokens = count("max_tokens", positive=True)
+        attempted_calls = count("attempted_calls")
+        failed_calls = count("failed_calls")
+        tokens = count("tokens")
+        reserved_tokens = count("reserved_tokens")
+        if reserved_tokens:
+            raise ValueError("cannot restore an unsettled LLM budget reservation")
+        if attempted_calls > max_calls or failed_calls > attempted_calls:
+            raise ValueError("invalid cumulative LLM request budget checkpoint")
+        if not isinstance(snapshot.get("usage_complete"), bool):
+            raise ValueError("invalid LLM request budget usage completeness")
+        if not isinstance(snapshot.get("denied"), bool):
+            raise ValueError("invalid LLM request budget denied state")
+        termination_reason = snapshot.get("termination_reason")
+        if not isinstance(termination_reason, str):
+            raise ValueError("invalid LLM request budget termination reason")
+
+        budget = cls(max_calls=max_calls, max_tokens=max_tokens)
+        with budget._lock:
+            budget._next_id = attempted_calls
+            budget._attempted_calls = attempted_calls
+            budget._failed_calls = failed_calls
+            budget._tokens = tokens
+            budget._usage_complete = bool(snapshot["usage_complete"])
+            budget._denied = bool(snapshot["denied"])
+            budget._termination_reason = termination_reason
+        return budget
+
     def _snapshot_unlocked(self) -> dict[str, Any]:
         reserved = sum(self._reservations.values())
         return {

@@ -549,6 +549,70 @@ class ClaimTableTests(unittest.TestCase):
         self.assertTrue(build["meta"]["container_mappings"][0]["parse_incomplete"])
 
 
+class OrphanTableItemTests(unittest.TestCase):
+    def _item(self, item_id: str, table_block_id: str) -> dict:
+        return {
+            "item_id": item_id,
+            "table_block_id": table_block_id,
+            "row_index": 2,
+            "fields": {"Name": "A", "Value": "10 V"},
+            "section_path": ["4 Functions"],
+        }
+
+    def test_missing_parent_block_is_accounting_incomplete(self) -> None:
+        build = claim_catalog.build_claim_catalog(
+            [_block("B1", "The device records data.")],
+            [self._item("T1-R2", "T-MISSING")],
+        )
+        self.assertEqual(build["meta"]["audit"]["orphan_table_item_count"], 1)
+        self.assertEqual(build["meta"]["accounting_status"], "incomplete")
+
+    def test_wrong_parent_id_is_accounting_incomplete(self) -> None:
+        table = _block(
+            "TB1", "Name | Value\nA | 10 V", block_type="table",
+            headers=["Name", "Value"], data_rows=[["A", "10 V"]],
+        )
+        build = claim_catalog.build_claim_catalog(
+            [table],
+            [self._item("T1-R2", "TB-WRONG")],
+        )
+        self.assertEqual(build["meta"]["audit"]["orphan_table_item_count"], 1)
+        self.assertEqual(build["meta"]["accounting_status"], "incomplete")
+
+    def test_non_table_parent_block_is_accounting_incomplete(self) -> None:
+        build = claim_catalog.build_claim_catalog(
+            [_block("P1", "The device records data.")],
+            [self._item("T1-R2", "P1")],
+        )
+        self.assertEqual(build["meta"]["audit"]["non_table_parent_item_count"], 1)
+        self.assertEqual(build["meta"]["accounting_status"], "incomplete")
+
+    def test_duplicate_table_blocks_multi_consume_items(self) -> None:
+        table = _block(
+            "TB1", "Name | Value\nA | 10 V", block_type="table",
+            headers=["Name", "Value"], data_rows=[["A", "10 V"]],
+        )
+        duplicate = copy.deepcopy(table)
+        build = claim_catalog.build_claim_catalog(
+            [table, duplicate],
+            [self._item("T1-R2", "TB1")],
+        )
+        self.assertEqual(build["meta"]["audit"]["multi_consumed_table_item_count"], 1)
+        self.assertEqual(build["meta"]["accounting_status"], "incomplete")
+
+    def test_consumed_items_keep_accounting_complete(self) -> None:
+        table = _block(
+            "TB1", "Name | Value\nA | 10 V", block_type="table",
+            headers=["Name", "Value"], data_rows=[["A", "10 V"]],
+        )
+        build = claim_catalog.build_claim_catalog([table], [self._item("T1-R2", "TB1")])
+        audit = build["meta"]["audit"]
+        self.assertEqual(audit["orphan_table_item_count"], 0)
+        self.assertEqual(audit["multi_consumed_table_item_count"], 0)
+        self.assertEqual(audit["non_table_parent_item_count"], 0)
+        self.assertEqual(build["meta"]["accounting_status"], "complete")
+
+
 class ClaimOwnerTests(unittest.TestCase):
     def test_every_eligible_claim_has_exactly_one_owner_and_prompt_contains_full_text(self) -> None:
         blocks = [

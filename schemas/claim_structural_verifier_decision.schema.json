@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_structural_verifier_decision.schema.json",
+  "title": "Claim structural verifier decision checkpoint v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "operation_id",
+    "binding",
+    "groups",
+    "negative_decisions",
+    "decision_payload_hash"
+  ],
+  "properties": {
+    "schema": {"const": "claim-structural-verifier-decision/v1"},
+    "operation_id": {"type": "string", "pattern": "^CSOP-[0-9a-f]{16}$"},
+    "binding": {"$ref": "claim_structural_operation.schema.json#/$defs/verifier_binding"},
+    "groups": {"type": "array", "minItems": 0, "items": {"type": "object"}},
+    "negative_decisions": {
+      "type": "array",
+      "minItems": 0,
+      "items": {"type": "object"}
+    },
+    "decision_payload_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

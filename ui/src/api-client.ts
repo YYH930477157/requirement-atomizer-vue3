@@ -402,6 +402,34 @@ export type ClaimCatalogViewRow = Record<string, unknown> & {
     negative?: string[]
     structural?: string[]
   }
+  active_resolution_facts?: {
+    fact_hash: string
+    kind: string
+    polarity: "positive" | "negative"
+  }[]
+  required_supersedes_fact_hashes?: Record<string, string[]>
+  pending_structural_operation?: {
+    operation_id: string
+    lifecycle: string
+    checkpoints: string[]
+    route_requested: string
+    route_model: string | null
+    route_config_revision: string | null
+    allow_llm: boolean
+    verifier_budget: {
+      max_calls: number
+      max_total_tokens: number
+      attempted_calls: number
+      failed_calls: number
+      used_tokens: number
+      reserved_tokens: number
+      remaining_calls: number
+      remaining_tokens: number
+      usage_complete: boolean
+      unknown_remote_result: boolean
+    }
+    needs_reconfirmation: boolean
+  } | null
 }
 
 export type ClaimEffectiveLedgerRow = Record<string, unknown> & {
@@ -526,6 +554,8 @@ export type ClaimLedgerViewPayload = ClaimViewEnvelope & {
 export type ClaimCoverageGroupsViewPayload = ClaimViewEnvelope & {
   groups: ClaimCoverageGroupView[]
   total: number
+  limit: number
+  offset: number
 }
 
 export type ClaimMetricsViewPayload = ClaimViewEnvelope & {
@@ -540,12 +570,37 @@ export type ClaimMetricsViewPayload = ClaimViewEnvelope & {
 export type ClaimReviewEventsViewPayload = ClaimViewEnvelope & {
   events: ClaimReviewEventView[]
   total: number
+  limit: number
+  offset: number
+}
+
+export type ClaimQueueRoutePreflight = {
+  route: string
+  configured: boolean
+  model: string | null
+  route_config_revision: string | null
 }
 
 export type ClaimQueueViewPayload = ClaimViewEnvelope & {
   proposals: ClaimQueueProposal[]
   compat_omissions: ClaimCompatOmission[]
-  total?: number
+  total: number
+  limit: number
+  offset: number
+  compat_omission_total: number
+  compat_omission_limit?: number
+  compat_omission_offset?: number
+  route_preflight?: ClaimQueueRoutePreflight | null
+}
+
+export type ClaimPageQuery = {
+  limit?: number
+  offset?: number
+}
+
+export type ClaimQueueQuery = ClaimPageQuery & {
+  compatLimit?: number
+  compatOffset?: number
 }
 
 export type ClaimCatalogQuery = {
@@ -570,6 +625,7 @@ export type ClaimQueueExecutionInput = {
   maximumCalls: number
   totalTokenBudget: number
   requestIdempotencyKey: string
+  expectedRouteConfigRevision?: string
 }
 
 export type ClaimQueueExecutionPayload = Record<string, unknown> & {
@@ -624,6 +680,8 @@ export type ClaimStructuralOverrideInput = {
   route: string
   verifierMaxCalls: number
   verifierMaxTotalTokens: number
+  operationId?: string
+  reconfirmPaidWork?: boolean
 }
 
 type FetchLike = typeof fetch
@@ -837,9 +895,16 @@ export class RequirementApiClient {
     })}`)
   }
 
-  async loadClaimCoverageGroups(claimId: string): Promise<ClaimCoverageGroupsViewPayload> {
+  async loadClaimCoverageGroups(
+    claimId: string,
+    query: ClaimPageQuery = {},
+  ): Promise<ClaimCoverageGroupsViewPayload> {
     return this.requestClaimView<ClaimCoverageGroupsViewPayload>(
-      `/claim-coverage-groups${claimQueryString({ claim_id: claimId })}`,
+      `/claim-coverage-groups${claimQueryString({
+        claim_id: claimId,
+        limit: query.limit ?? 100,
+        offset: query.offset ?? 0,
+      })}`,
     )
   }
 
@@ -847,14 +912,28 @@ export class RequirementApiClient {
     return this.requestClaimView<ClaimMetricsViewPayload>("/claim-metrics")
   }
 
-  async loadClaimReviewEvents(claimId: string): Promise<ClaimReviewEventsViewPayload> {
+  async loadClaimReviewEvents(
+    claimId: string,
+    query: ClaimPageQuery = {},
+  ): Promise<ClaimReviewEventsViewPayload> {
     return this.requestClaimView<ClaimReviewEventsViewPayload>(
-      `/claim-review-events${claimQueryString({ claim_id: claimId })}`,
+      `/claim-review-events${claimQueryString({
+        claim_id: claimId,
+        limit: query.limit ?? 100,
+        offset: query.offset ?? 0,
+      })}`,
     )
   }
 
-  async loadClaimQueue(): Promise<ClaimQueueViewPayload> {
-    return this.requestClaimView<ClaimQueueViewPayload>("/claim-queue")
+  async loadClaimQueue(query: ClaimQueueQuery = {}): Promise<ClaimQueueViewPayload> {
+    return this.requestClaimView<ClaimQueueViewPayload>(
+      `/claim-queue${claimQueryString({
+        limit: query.limit ?? 100,
+        offset: query.offset ?? 0,
+        compat_limit: query.compatLimit ?? 100,
+        compat_offset: query.compatOffset ?? 0,
+      })}`,
+    )
   }
 
   async executeClaimQueue(
@@ -873,6 +952,9 @@ export class RequirementApiClient {
         maximum_calls: input.maximumCalls,
         total_token_budget: input.totalTokenBudget,
         request_idempotency_key: input.requestIdempotencyKey,
+        ...(input.expectedRouteConfigRevision
+          ? { expected_route_config_revision: input.expectedRouteConfigRevision }
+          : {}),
       }),
     })
   }
@@ -916,6 +998,10 @@ export class RequirementApiClient {
         route: input.route,
         verifier_max_calls: input.verifierMaxCalls,
         verifier_max_total_tokens: input.verifierMaxTotalTokens,
+        ...(input.operationId ? { operation_id: input.operationId } : {}),
+        ...(input.reconfirmPaidWork !== undefined
+          ? { reconfirm_paid_work: input.reconfirmPaidWork }
+          : {}),
       }),
     })
   }

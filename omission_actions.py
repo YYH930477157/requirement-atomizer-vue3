@@ -877,10 +877,12 @@ def _targeted_reextract_claim(
         if not focused:
             raise ValueError("claim focus has no extractable evidence")
 
-        config = ai_extract.config_for_route(route)
+        config = execution.get("resolved_route_config")
         if config is None:
-            raise ValueError("openai_compatible route is not configured")
-        config = apply_min_tokens(config, "extract")
+            config = ai_extract.config_for_route(route)
+            if config is None:
+                raise ValueError("openai_compatible route is not configured")
+            config = apply_min_tokens(config, "extract")
         usage_meta: list[dict[str, Any]] = []
 
         def chat(system: str, user: str) -> dict[str, Any]:

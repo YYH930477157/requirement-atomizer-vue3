@@ -49,8 +49,10 @@ CLAIM_SNAPSHOT_FILES = (
 
 CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v6"
 LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v1"
-CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v2"
-CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION = "claim-effective-artifacts-v1"
+PREVIOUS_CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v2"
+CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v3"
+PREVIOUS_CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION = "claim-effective-artifacts-v1"
+CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION = "claim-effective-artifacts-v2"
 CLAIM_VERIFIER_ATTEMPT_SCHEMA = "claim-verifier-attempt/v2"
 CLAIM_VERIFIER_ATTEMPT_BINDING_SCHEMA = "claim-verifier-attempt-chain-binding/v2"
 LEGACY_CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v4"
@@ -87,6 +89,10 @@ class ClaimArtifactError(RuntimeError):
 
 class ClaimEffectiveRecoveryPending(ClaimArtifactError):
     """Raised when a read-only consumer sees an unfinished publication WAL."""
+
+
+class ClaimEffectiveAuthorityChanged(ClaimArtifactError):
+    """Raised when a committed effective snapshot no longer matches live authority."""
 
 
 def _publication_process_lock(root: Path) -> RLock:
@@ -3353,6 +3359,88 @@ def load_committed_shadow(out_dir: Path | str) -> dict[str, Any]:
         return _load_committed_shadow_unlocked(root)
 
 
+def load_committed_shadow_for_effective_refold(
+    out_dir: Path | str,
+) -> dict[str, Any]:
+    """Load a fully validated snapshot while permitting only stale base versions.
+
+    Structural maintenance can intentionally advance the base authority before
+    rebuilding it. Effective revisions and live target/review authority remain
+    strict here; callers that need to replace a drifted effective snapshot must
+    use :func:`load_committed_effective_refold_seed` and rederive every row.
+    """
+    root = Path(out_dir).expanduser().resolve()
+    with claim_publication_lock(root):
+        _recover_claim_state_unlocked(root)
+        base = _load_committed_claim_base_unlocked(root)
+        effective = _load_committed_effective_unlocked(
+            root,
+            base,
+            require_v2=False,
+            allow_stale_base_versions=True,
+        )
+        return {**base, **effective}
+
+
+def load_committed_effective_refold_seed(
+    out_dir: Path | str,
+) -> dict[str, Any]:
+    """Validate a committed snapshot for refold without exposing untrusted rows.
+
+    A current snapshot is returned as ``trusted_current_snapshot`` only when it
+    passes normal revision, authority and version validation. When live
+    authority or an effective component version has advanced, the persisted
+    payload must still be internally hash/revision consistent, but only its
+    migration marker is returned; the fold must derive rows and CAS tokens from
+    the immutable base, live authority and committed events.
+    """
+    root = Path(out_dir).expanduser().resolve()
+    with claim_publication_lock(root):
+        _recover_claim_state_unlocked(root)
+        base = _load_committed_claim_base_unlocked(root)
+        preview = _read_json(root / CLAIM_EFFECTIVE_META, label="effective claim meta")
+        effective_version = str(preview.get("effective_snapshot_version") or "")
+        trusted: dict[str, Any] | None = None
+        if effective_version == CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
+            if effective_versions_are_current({"effective_meta": preview}):
+                try:
+                    loaded = _load_committed_effective_unlocked(
+                        root,
+                        base,
+                        require_v2=True,
+                        allow_stale_base_versions=True,
+                    )
+                except ClaimEffectiveAuthorityChanged:
+                    loaded = _load_committed_effective_unlocked(
+                        root,
+                        base,
+                        require_v2=True,
+                        allow_stale_base_versions=True,
+                        refold_seed_only=True,
+                    )
+                else:
+                    trusted = {**base, **loaded}
+            else:
+                loaded = _load_committed_effective_unlocked(
+                    root,
+                    base,
+                    require_v2=True,
+                    allow_stale_base_versions=True,
+                    refold_seed_only=True,
+                )
+        else:
+            loaded = _load_committed_effective_unlocked(
+                root,
+                base,
+                require_v2=False,
+                allow_stale_base_versions=True,
+            )
+        return {
+            "source_effective_meta": dict(loaded["effective_meta"]),
+            "trusted_current_snapshot": trusted,
+        }
+
+
 def claim_base_generation_id(generation_meta: dict[str, Any]) -> str:
     fields = {
         "document_generation_id": generation_meta.get("document_generation_id"),
@@ -3390,8 +3478,10 @@ def _validate_effective_projection(
     *,
     last_event_seq: int,
     queue_version: str,
+    event_rows: list[dict[str, Any]],
 ) -> None:
     from claim_ledger import reduce_claim
+    from claim_review_actions import _relevant_events
 
     base_rows = list(base["ledger"])
     catalog_rows = list(base["catalog"])
@@ -3440,6 +3530,24 @@ def _validate_effective_projection(
             or row_event_seq > last_event_seq
         ):
             raise ClaimArtifactError("effective row has an invalid relevant event sequence")
+        relevant_events = _relevant_events(event_rows, base_row)
+        expected_event_hashes = [
+            str(event.get("event_hash") or "") for event in relevant_events
+        ]
+        revision_inputs = dict(row.get("revision_inputs") or {})
+        if list(revision_inputs.get("ordered_relevant_event_hashes") or []) != (
+            expected_event_hashes
+        ):
+            raise ClaimArtifactError(
+                "effective row event inputs differ from committed review prefix"
+            )
+        expected_relevant_seq = (
+            int(relevant_events[-1]["event_seq"]) if relevant_events else 0
+        )
+        if row_event_seq != expected_relevant_seq:
+            raise ClaimArtifactError(
+                "effective row relevant event sequence differs from committed review prefix"
+            )
 
         facts = dict(row.get("effective_facts") or {})
         base_group_ids = [
@@ -3595,10 +3703,7 @@ def _validate_effective_projection(
     proposal_by_claim: dict[str, dict[str, Any]] = {}
     for proposal in queue_rows:
         proposal_schema = str(proposal.get("schema") or "")
-        if proposal_schema == "claim-queue-proposal/v1":
-            proposal_schema_file = "claim_queue_proposal.schema.json"
-            proposal_id_domain = "claim-queue-proposal-id/v1"
-        elif proposal_schema == "claim-queue-proposal/v2":
+        if proposal_schema == "claim-queue-proposal/v2":
             proposal_schema_file = "claim_queue_proposal_v2.schema.json"
             proposal_id_domain = "claim-queue-proposal-id/v2"
         else:
@@ -3642,27 +3747,26 @@ def _validate_effective_projection(
             "queue_version": queue_version,
             "created_from_event_seq": row.get("last_relevant_event_seq"),
         }
-        if proposal_schema == "claim-queue-proposal/v2":
-            expected_fields["claim_hash"] = row.get("claim_hash")
-            preconditions = dict(proposal.get("execution_preconditions") or {})
-            expected_preconditions = {
-                "claim_id": claim_id,
-                "claim_hash": row.get("claim_hash"),
-                "claim_source_fingerprint": canonical_target_fingerprint(
-                    claim.get("claim_hash")
-                ),
-                "expected_claim_effective_revision": row.get(
-                    "claim_effective_revision"
-                ),
-                "expected_ledger_state": "uncertain",
-                "document_generation_id": row.get("document_generation_id"),
-                "catalog_generation_id": row.get("catalog_generation_id"),
-            }
-            for field, expected_value in expected_preconditions.items():
-                if preconditions.get(field) != expected_value:
-                    raise ClaimArtifactError(
-                        f"claim queue proposal has invalid execution precondition: {field}"
-                    )
+        expected_fields["claim_hash"] = row.get("claim_hash")
+        preconditions = dict(proposal.get("execution_preconditions") or {})
+        expected_preconditions = {
+            "claim_id": claim_id,
+            "claim_hash": row.get("claim_hash"),
+            "claim_source_fingerprint": canonical_target_fingerprint(
+                claim.get("claim_hash")
+            ),
+            "expected_claim_effective_revision": row.get(
+                "claim_effective_revision"
+            ),
+            "expected_ledger_state": "uncertain",
+            "document_generation_id": row.get("document_generation_id"),
+            "catalog_generation_id": row.get("catalog_generation_id"),
+        }
+        for field, expected_value in expected_preconditions.items():
+            if preconditions.get(field) != expected_value:
+                raise ClaimArtifactError(
+                    f"claim queue proposal has invalid execution precondition: {field}"
+                )
         for field, expected_value in expected_fields.items():
             if proposal.get(field) != expected_value:
                 raise ClaimArtifactError(f"claim queue proposal has invalid {field}")
@@ -3675,6 +3779,197 @@ def _validate_effective_projection(
     }
     if set(proposal_by_claim) != uncertain_claim_ids:
         raise ClaimArtifactError("claim queue is not a complete uncertain-claim projection")
+
+
+def _authoritative_effective_reduction(
+    root: Path,
+    base: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    require_current_authority: bool,
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+    """Read the committed event prefix and rebuild rows when authority is current.
+
+    Current snapshots are readable only while target/review authority is still
+    identical. A refold seed may observe drift solely to replace the snapshot;
+    it never exposes those historical effective rows to the fold.
+    """
+    from claim_review_actions import (
+        _load_declared_authority,
+        _scan_event_log_unlocked,
+        derive_authoritative_effective_rows,
+    )
+
+    event_snapshot = _scan_event_log_unlocked(root, repair=False)
+    committed_count = meta.get("last_event_seq")
+    if (
+        not isinstance(committed_count, int)
+        or isinstance(committed_count, bool)
+        or committed_count < 0
+        or committed_count > event_snapshot.last_event_seq
+    ):
+        raise ClaimArtifactError("effective meta points beyond the review event log")
+    prefix_rows = list(event_snapshot.rows[:committed_count])
+    prefix_bytes = b"".join(
+        canonical_json_value_bytes(row) + b"\n" for row in prefix_rows
+    )
+    if sha256_bytes(prefix_bytes) != meta.get("event_prefix_sha256"):
+        raise ClaimArtifactError(
+            "effective event prefix differs from the committed review event log"
+        )
+
+    generation = dict(base["generation_meta"])
+    authority = _load_declared_authority(root, generation, readonly=True)
+    authority_is_current = all((
+        authority.get("target_set_hash") == meta.get("target_set_hash"),
+        authority.get("target_publication_revision")
+        == meta.get("target_publication_revision"),
+        authority.get("requirement_review_state_hash")
+        == meta.get("requirement_review_state_hash"),
+    ))
+    if require_current_authority and not authority_is_current:
+        raise ClaimEffectiveAuthorityChanged(
+            "effective publication authority changed before commit"
+        )
+    if not authority_is_current:
+        return None, prefix_rows
+    return (
+        derive_authoritative_effective_rows(base, authority, prefix_rows),
+        prefix_rows,
+    )
+
+
+def _validate_effective_migration_identity(meta: dict[str, Any]) -> None:
+    migrated_from = meta.get("migrated_from_version")
+    migration_id = meta.get("migration_id")
+    if migrated_from is None:
+        if migration_id is not None:
+            raise ClaimArtifactError("effective migration id has no source version")
+        return
+    expected = hash_json(
+        "claim-effective-migration/v1",
+        {
+            "base_generation_id": meta.get("base_generation_id"),
+            "source_effective_snapshot_version": migrated_from,
+            "target_effective_snapshot_version": CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+        },
+    )
+    if migration_id != expected:
+        raise ClaimArtifactError("effective migration identity does not recompute")
+
+
+def _validate_persisted_effective_consistency(
+    meta: dict[str, Any],
+    ledger_rows: list[dict[str, Any]],
+) -> None:
+    """Validate a current-wire snapshot using its persisted component versions.
+
+    This is used only to authorize replacement of a version/authority-stale
+    snapshot. It verifies every persisted revision and hash but deliberately
+    does not bless the rows as a projection of current live authority.
+    """
+    from claim_effective_contract import (
+        CLAIM_AUTHORITY_PROJECTION_VERSION,
+        compute_claim_effective_revision,
+        compute_effective_authority_projection_hash,
+        compute_effective_metrics,
+        compute_effective_state_hash,
+    )
+
+    _validate_effective_migration_identity(meta)
+    versions = dict(meta.get("versions") or {})
+    expected_version_bindings = {
+        "effective_snapshot": meta.get("effective_snapshot_version"),
+        "effective_artifacts": meta.get("effective_artifact_version"),
+        "effective_ledger_schema": meta.get("effective_ledger_schema"),
+        "effective_reducer": meta.get("reducer_version"),
+        "queue": meta.get("queue_version"),
+        "review_bridge": meta.get("bridge_version"),
+    }
+    for field, expected in expected_version_bindings.items():
+        if versions.get(field) != expected:
+            raise ClaimArtifactError(
+                f"effective persisted version vector disagrees with {field}"
+            )
+
+    for row in ledger_rows:
+        claim_id = str(row.get("claim_id") or "")
+        inputs = dict(row.get("revision_inputs") or {})
+        if inputs.get("schema") != versions.get("revision_inputs"):
+            raise ClaimArtifactError(
+                f"effective row {claim_id} has stale revision inputs"
+            )
+        if inputs.get("base_claim_row_hash") != row.get("base_claim_row_hash"):
+            raise ClaimArtifactError(
+                f"effective row {claim_id} revision inputs disagree with its base row hash"
+            )
+        expected_row_versions = {
+            "effective_ledger_schema": meta.get("effective_ledger_schema"),
+            "reducer_version": meta.get("reducer_version"),
+            "bridge_version": meta.get("bridge_version"),
+            "review_adapter_versions": meta.get("review_adapter_versions"),
+        }
+        if dict(inputs.get("versions") or {}) != expected_row_versions:
+            raise ClaimArtifactError(
+                f"effective row {claim_id} revision component versions disagree with meta"
+            )
+        expected_authority_hash = hash_json(
+            CLAIM_AUTHORITY_PROJECTION_VERSION,
+            {
+                "ordered_relevant_event_hashes": list(
+                    inputs.get("ordered_relevant_event_hashes") or []
+                ),
+                "linked_targets": list(inputs.get("linked_targets") or []),
+                "expert_overlay": dict(inputs.get("expert_overlay") or {}),
+            },
+        )
+        if inputs.get("authority_projection_hash") != expected_authority_hash:
+            raise ClaimArtifactError(
+                f"effective row {claim_id} authority projection does not recompute"
+            )
+        if inputs.get("effective_state_hash") != compute_effective_state_hash(row):
+            raise ClaimArtifactError(
+                f"effective row {claim_id} state projection does not recompute"
+            )
+        if row.get("claim_effective_revision") != compute_claim_effective_revision(
+            inputs
+        ):
+            raise ClaimArtifactError(
+                f"effective row {claim_id} claim effective revision does not recompute"
+            )
+
+    if meta.get("effective_metrics") != compute_effective_metrics(ledger_rows):
+        raise ClaimArtifactError(
+            "effective metrics do not recompute from the committed ledger"
+        )
+    projection_hash = compute_effective_authority_projection_hash(ledger_rows)
+    if meta.get("authority_projection_hash") != projection_hash:
+        raise ClaimArtifactError(
+            "effective authority projection does not recompute from the ledger"
+        )
+    expected_document_revision = hash_json(
+        "claim-document-effective-revision/v2",
+        {
+            "base_generation_id": meta.get("base_generation_id"),
+            "last_event_seq": meta.get("last_event_seq"),
+            "event_prefix_sha256": meta.get("event_prefix_sha256"),
+            "target_set_hash": meta.get("target_set_hash"),
+            "requirement_review_state_hash": meta.get(
+                "requirement_review_state_hash"
+            ),
+            "authority_projection_hash": projection_hash,
+            "effective_ledger_schema": meta.get("effective_ledger_schema"),
+            "effective_snapshot_version": meta.get("effective_snapshot_version"),
+            "effective_artifact_version": meta.get("effective_artifact_version"),
+            "reducer_version": meta.get("reducer_version"),
+            "bridge_version": meta.get("bridge_version"),
+            "queue_version": meta.get("queue_version"),
+        },
+    )
+    if meta.get("document_effective_revision") != expected_document_revision:
+        raise ClaimArtifactError(
+            "effective document revision does not recompute from committed meta"
+        )
 
 
 def publish_effective_snapshot(
@@ -3691,6 +3986,11 @@ def publish_effective_snapshot(
     with claim_publication_lock(root):
         _recover_claim_state_unlocked(root)
         base = _load_committed_claim_base_unlocked(root)
+        if not committed_base_versions_are_current(
+            base,
+            require_environment_match=False,
+        ):
+            raise ClaimArtifactError("base_migration_required")
         generation = dict(base["generation_meta"])
         required_meta = {
             "event_prefix_sha256",
@@ -3699,6 +3999,7 @@ def publish_effective_snapshot(
             "target_set_hash",
             "target_publication_revision",
             "requirement_review_state_hash",
+            "authority_projection_hash",
             "effective_ledger_schema",
             "review_adapter_versions",
             "reducer_version",
@@ -3715,6 +4016,7 @@ def publish_effective_snapshot(
             "target_set_hash",
             "target_publication_revision",
             "requirement_review_state_hash",
+            "authority_projection_hash",
         ):
             if not _is_sha256(meta.get(field)):
                 raise ClaimArtifactError(f"invalid effective meta hash: {field}")
@@ -3733,6 +4035,9 @@ def publish_effective_snapshot(
 
         from claim_ledger import (
             CLAIM_EFFECTIVE_LEDGER_SCHEMA,
+            CLAIM_EFFECTIVE_REDUCER_VERSION,
+            CLAIM_QUEUE_VERSION,
+            CLAIM_REVIEW_BRIDGE_VERSION,
             current_effective_versions,
             effective_review_adapter_versions,
         )
@@ -3741,13 +4046,30 @@ def publish_effective_snapshot(
             raise ClaimArtifactError("invalid effective ledger schema identity")
         if meta.get("review_adapter_versions") != effective_review_adapter_versions():
             raise ClaimArtifactError("invalid effective review adapter version vector")
+        expected_components = {
+            "reducer_version": CLAIM_EFFECTIVE_REDUCER_VERSION,
+            "bridge_version": CLAIM_REVIEW_BRIDGE_VERSION,
+            "queue_version": CLAIM_QUEUE_VERSION,
+        }
+        for field, expected_value in expected_components.items():
+            if meta.get(field) != expected_value:
+                raise ClaimArtifactError(
+                    f"invalid effective component version: {field}"
+                )
 
+        authoritative_rows, event_rows = _authoritative_effective_reduction(
+            root,
+            base,
+            meta,
+            require_current_authority=True,
+        )
         _validate_effective_projection(
             base,
             ledger_rows,
             queue_rows,
             last_event_seq=last_event_seq,
             queue_version=str(meta["queue_version"]),
+            event_rows=event_rows,
         )
         ledger_bytes = _jsonl_bytes(ledger_rows)
         queue_bytes = _jsonl_bytes(queue_rows)
@@ -3770,8 +4092,25 @@ def publish_effective_snapshot(
             "queue_count": len(queue_rows),
             "ledger_count": len(ledger_rows),
             "claim_events_enabled": True,
+            "migrated_from_version": meta.get("migrated_from_version"),
+            "migration_id": meta.get("migration_id"),
         }
-        effective_meta["versions"] = current_effective_versions()
+        from claim_effective_contract import CLAIM_REVISION_INPUTS_VERSION
+
+        effective_meta["versions"] = {
+            **current_effective_versions(),
+            "revision_inputs": CLAIM_REVISION_INPUTS_VERSION,
+        }
+
+        from claim_effective_contract import validate_effective_meta_consistency
+
+        # Publish and the read-only loader share one recomputation contract:
+        # a forged or drifted revision/metric never reaches the WAL.
+        validate_effective_meta_consistency(
+            effective_meta,
+            ledger_rows,
+            authoritative_ledger=authoritative_rows,
+        )
 
         _validate_schema(
             effective_meta,
@@ -4036,6 +4375,8 @@ def _load_committed_effective_unlocked(
     base: dict[str, Any],
     *,
     require_v2: bool,
+    allow_stale_base_versions: bool = False,
+    refold_seed_only: bool = False,
 ) -> dict[str, Any]:
     generation = dict(base["generation_meta"])
     ledger = list(base["ledger"])
@@ -4046,16 +4387,29 @@ def _load_committed_effective_unlocked(
     effective_version = str(effective.get("effective_snapshot_version") or "")
     if effective_version not in {
         LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+        PREVIOUS_CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
         CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
     }:
         raise ClaimArtifactError("stale effective snapshot version")
     if require_v2 and effective_version != CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
-        raise ClaimArtifactError("Phase 1 effective snapshot is not materialized")
-    expected_protocol = (
-        CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION
-        if effective_version == CLAIM_EFFECTIVE_SNAPSHOT_VERSION
-        else CLAIM_ARTIFACT_PROTOCOL_VERSION
-    )
+        raise ClaimArtifactError("current effective snapshot is not materialized")
+    if (
+        effective_version == CLAIM_EFFECTIVE_SNAPSHOT_VERSION
+        and not allow_stale_base_versions
+        and not committed_base_versions_are_current(
+            base,
+            require_environment_match=False,
+        )
+    ):
+        raise ClaimArtifactError("base_migration_required")
+    if effective_version == CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
+        expected_protocol = CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION
+    elif effective_version == PREVIOUS_CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
+        expected_protocol = PREVIOUS_CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION
+    else:
+        # Phase 0 v1 was emitted as part of the immutable base publication and
+        # therefore used that generation's artifact protocol.
+        expected_protocol = str(generation.get("artifact_protocol_version") or "")
     if effective.get("artifact_protocol_version") != expected_protocol:
         raise ClaimArtifactError("stale effective artifact protocol")
     if str(effective.get("catalog_generation_id") or "") != str(
@@ -4133,11 +4487,13 @@ def _load_committed_effective_unlocked(
         effective_ids = [str(row.get("claim_id") or "") for row in effective_ledger]
         if base_ids != effective_ids:
             raise ClaimArtifactError("effective ledger is not a one-to-one base projection")
-        if any(row.get("schema") != "claim-effective-ledger/v1" for row in effective_ledger):
+        from claim_ledger import CLAIM_EFFECTIVE_LEDGER_SCHEMA as _row_schema
+
+        if any(row.get("schema") != _row_schema for row in effective_ledger):
             raise ClaimArtifactError("invalid effective ledger row schema")
-        if any(row.get("schema") not in {
-            "claim-queue-proposal/v1", "claim-queue-proposal/v2"
-        } for row in queue):
+        if any(
+            row.get("schema") != "claim-queue-proposal/v2" for row in queue
+        ):
             raise ClaimArtifactError("invalid claim queue proposal schema")
         _require_canonical_jsonl(
             root / CLAIM_EFFECTIVE_LEDGER,
@@ -4149,13 +4505,48 @@ def _load_committed_effective_unlocked(
             queue,
             label="claim queue proposals",
         )
+        authoritative_rows, event_rows = _authoritative_effective_reduction(
+            root,
+            base,
+            effective,
+            require_current_authority=False,
+        )
         _validate_effective_projection(
             base,
             effective_ledger,
             queue,
             last_event_seq=int(effective.get("last_event_seq", -1)),
             queue_version=str(effective.get("queue_version") or ""),
+            event_rows=event_rows,
         )
+        from claim_effective_contract import validate_effective_meta_consistency
+
+        # Recompute persisted revisions before consulting authority freshness.
+        # A forged revision must not be laundered into a bridge event merely
+        # because target/review authority advanced at the same time.
+        if refold_seed_only:
+            _validate_persisted_effective_consistency(
+                effective,
+                effective_ledger,
+            )
+        else:
+            _validate_effective_migration_identity(effective)
+            validate_effective_meta_consistency(
+                effective,
+                effective_ledger,
+                authoritative_ledger=None,
+            )
+        if authoritative_rows is None:
+            if not refold_seed_only:
+                raise ClaimEffectiveAuthorityChanged(
+                    "effective publication authority changed before commit"
+                )
+        elif not refold_seed_only:
+            validate_effective_meta_consistency(
+                effective,
+                effective_ledger,
+                authoritative_ledger=authoritative_rows,
+            )
     return {
         "effective_ledger": effective_ledger,
         "queue_proposals": queue,
@@ -4286,6 +4677,7 @@ def committed_base_versions_are_current(
 
 def effective_versions_are_current(snapshot: dict[str, Any]) -> bool:
     from claim_ledger import current_effective_versions
+    from claim_effective_contract import CLAIM_REVISION_INPUTS_VERSION
 
     effective = dict(snapshot.get("effective_meta") or {})
     return (
@@ -4294,7 +4686,10 @@ def effective_versions_are_current(snapshot: dict[str, Any]) -> bool:
         == CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION
         and effective.get("effective_artifact_version")
         == CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION
-        and dict(effective.get("versions") or {}) == current_effective_versions()
+        and dict(effective.get("versions") or {}) == {
+            **current_effective_versions(),
+            "revision_inputs": CLAIM_REVISION_INPUTS_VERSION,
+        }
     )
 
 

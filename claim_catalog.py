@@ -30,7 +30,7 @@ from source_spans import (
     source_alignment_fields,
 )
 
-CLAIM_CATALOG_VERSION = "claim-catalog-v4"
+CLAIM_CATALOG_VERSION = "claim-catalog-v5"
 CLAIM_UNIT_PACKING_VERSION = "claim-unit-packing-v1"
 CLAIM_CATALOG_SCHEMA = "claim-catalog/v1"
 CLAIM_CATALOG_META_SCHEMA = "claim-catalog-meta/v1"
@@ -850,12 +850,19 @@ def _enumerate_leaves(
         "overlapping_leaf_span_count": 0,
         "parse_incomplete_count": 0,
         "parent_child_duplicate_count": 0,
+        "orphan_table_item_count": 0,
+        "multi_consumed_table_item_count": 0,
+        "non_table_parent_item_count": 0,
     }
     items_by_block: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in table_items:
         items_by_block[str(item.get("table_block_id") or "")].append(item)
     for items in items_by_block.values():
         items.sort(key=lambda item: (int(item.get("row_index") or 0), str(item.get("item_id") or "")))
+    table_item_consumers: dict[str, int] = defaultdict(int)
+    block_types: dict[str, set[str]] = defaultdict(set)
+    for block in blocks:
+        block_types[str(block.get("block_id") or "")].add(str(block.get("type") or "other"))
 
     furniture_ids = _proven_page_furniture_ids(blocks)
     for block in sorted(blocks, key=lambda row: (int(row.get("order") or 0), str(row.get("block_id") or ""))):
@@ -878,6 +885,7 @@ def _enumerate_leaves(
                     "parse_incomplete_reason": block.get("parse_incomplete_reason"),
                 })
             if table_rows:
+                table_item_consumers[block_id] += 1
                 headers = [str(value) for value in (block.get("headers") or [])]
                 for item in table_rows:
                     ordered = _ordered_fields(item, headers)
@@ -1127,6 +1135,17 @@ def _enumerate_leaves(
                     ),
                 },
             }
+    for item_block_id, items in items_by_block.items():
+        if not items:
+            continue
+        consumers = table_item_consumers.get(item_block_id, 0)
+        if consumers > 1:
+            audit["multi_consumed_table_item_count"] += len(items) * (consumers - 1)
+        elif consumers == 0:
+            if item_block_id in block_types:
+                audit["non_table_parent_item_count"] += len(items)
+            else:
+                audit["orphan_table_item_count"] += len(items)
     return leaves, container_mappings, audit
 
 
@@ -1286,6 +1305,7 @@ def build_claim_catalog(
     if replay_catalog_version is not None and catalog_version not in {
         "claim-catalog-v2",
         "claim-catalog-v3",
+        "claim-catalog-v4",
         CLAIM_CATALOG_VERSION,
     }:
         raise ValueError("unsupported replay catalog version")
@@ -1352,6 +1372,9 @@ def build_claim_catalog(
         "owner_prompt_missing_count",
         "duplicate_leaf_locator_count",
         "duplicate_leaf_hash_count",
+        "orphan_table_item_count",
+        "multi_consumed_table_item_count",
+        "non_table_parent_item_count",
     )
     accounting_status = "complete" if all(int(audit[key]) == 0 for key in hard_fail_keys) else "incomplete"
     meta = {
