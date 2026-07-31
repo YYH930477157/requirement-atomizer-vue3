@@ -40,6 +40,23 @@ def _block_by_id(out_dir: Path, block_id: str) -> dict[str, Any]:
     raise ValueError(f"unknown block_id: {block_id}")
 
 
+def _cell_by_id(out_dir: Path, cell_id: str) -> dict[str, Any]:
+    cell_path = Path(out_dir) / "table_cell_items.jsonl"
+    if not cell_path.is_file():
+        raise ValueError("base_migration_required：缺少 table_cell_items.jsonl，请重跑 atomize")
+    for cell in read_jsonl(cell_path):
+        if str(cell.get("cell_id") or "") == cell_id:
+            return cell
+    raise ValueError(f"unknown cell_id: {cell_id}")
+
+
+def _cell_text(cell: dict[str, Any]) -> str:
+    """cell 输入强制带"表标题 + 行头 + 列头 + 单元格正文"（禁止裸格送 LLM）。"""
+    from table_structure import cell_context_text
+
+    return cell_context_text(cell)
+
+
 def _row_text(block: dict[str, Any], row_index: int) -> str:
     from ai_extract import _row_render_line
 
@@ -54,7 +71,7 @@ def _deterministic_row_requirement(block: dict[str, Any], row_index: int,
                                    covered_text: str) -> dict[str, Any] | None:
     """guards-v16 单行等价展开：需求型参数表的该行 → 一条 draft 需求。
 
-    不合格的行（稀疏行/分组标题行/非需求型参数表）返回 None 走 LLM 路径；
+    不合格的行（稀疏非规范性行/分组标题行/非需求型参数表）返回 None 走 LLM 路径；
     已被现有需求覆盖的行返回 "covered" 标记（与 _supplement_parameter_table_rows
     同口径：已覆盖不重复补）。"""
     from ai_extract import (
@@ -64,6 +81,7 @@ def _deterministic_row_requirement(block: dict[str, Any], row_index: int,
         _row_render_line,
     )
     from merged_consistency import compact_source_text
+    from table_structure import is_group_header_row, is_normative_text, normalize_merge_ranges
 
     if not _is_parameter_table(block):
         return None
@@ -71,10 +89,25 @@ def _deterministic_row_requirement(block: dict[str, Any], row_index: int,
     row = data_rows[row_index - 1]   # row_index 界内由 _row_text 先行校验
     cells = [str(cell or "").strip() for cell in row]
     non_empty = [cell for cell in cells if cell]
-    if len(non_empty) < _PARAM_ROW_MIN_CELLS:
-        return None
-    if len(set(non_empty)) == 1:
-        return None   # 分组标题行（合并单元格展开成全同值）不是需求行
+    header_row_count = int(
+        block.get("header_row_count")
+        if block.get("header_row_count") is not None
+        else (1 if block.get("headers") else 0)
+    )
+    physical_row = header_row_count + len(
+        block.get("title_row_indexes") or []
+    ) + row_index
+    if is_group_header_row(
+        cells,
+        physical_row,
+        width=int(block.get("columns") or 0),
+        merge_ranges=normalize_merge_ranges(block.get("merge_ranges") or []) or None,
+    ):
+        return None   # 分组标题行（全宽合并 anchor + 同值 + 非规范性）不是需求行
+    if len(non_empty) < _PARAM_ROW_MIN_CELLS and not any(
+        is_normative_text(cell) for cell in non_empty
+    ):
+        return None   # 稀疏且非规范性 → LLM 路径判
     headers = [str(h or "") for h in (block.get("headers") or [])]
     quote = _row_render_line(headers, row)
     if not quote.strip():
@@ -187,12 +220,15 @@ def _assign_spot_ids(rows: list[dict[str, Any]], *, block_id: str, row_index: in
 
 
 def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
+                 cell_id: str | None = None,
                  route: str = "openai_compatible", actor: str | None = None,
                  reason: str = "") -> dict[str, Any]:
-    """对单个块/表格行做点解析，产出 draft 需求追加进 ai_requirements.jsonl。
+    """对单个块/表格行/表格单元格做点解析，产出 draft 需求追加进 ai_requirements.jsonl。
 
-    返回 {"schema", "block_id", "row_index", "strategy", "drafts", "draft_ids",
-    "already_covered", "written"}；LLM 不可用抛 SpotExtractUnavailableError（响亮失败）。
+    cell_id（table-structure-v2）与 row_index（兼容入口）二选一；cell 输入强制携带
+    表标题 + 行头 + 列头上下文，禁止裸格送 LLM。
+    返回 {"schema", "block_id", "row_index", "cell_id", "strategy", "drafts",
+    "draft_ids", "already_covered", "written"}；LLM 不可用抛 SpotExtractUnavailableError。
     """
     import ai_extract
 
@@ -202,6 +238,9 @@ def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
         raise ValueError("block_id is required")
     if row_index is not None:
         row_index = int(row_index)
+    cell_id = str(cell_id or "").strip() or None
+    if cell_id is not None and row_index is not None:
+        raise ValueError("cell_id 与 row_index 二选一")
     with extraction_operation_lock(root, operation="spot-extract"):
         from api_server import final_ai_requirements_are_stale
 
@@ -213,10 +252,20 @@ def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
         is_table = str(block.get("type") or "") == "table"
         if row_index is not None and not is_table:
             raise ValueError("row_index 仅适用于表格块")
-        text = _row_text(block, row_index) if (is_table and row_index is not None) \
-            else str(block.get("text") or "")
+        cell: dict[str, Any] | None = None
+        if cell_id is not None:
+            if not is_table:
+                raise ValueError("cell_id 仅适用于表格块")
+            cell = _cell_by_id(root, cell_id)
+            if str(cell.get("table_block_id") or "") != block_id:
+                raise ValueError(f"cell {cell_id} 不属于块 {block_id}")
+            text = _cell_text(cell)
+            row_index = int(cell.get("data_row_index") or 0) or None
+        else:
+            text = _row_text(block, row_index) if (is_table and row_index is not None) \
+                else str(block.get("text") or "")
         if not text.strip():
-            raise ValueError("目标行/块没有可解析文本")
+            raise ValueError("目标行/格/块没有可解析文本")
 
         requirements_path = root / ai_extract.AI_REQUIREMENTS
         current = read_jsonl(requirements_path) if requirements_path.exists() else []
@@ -228,7 +277,20 @@ def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
         strategy = "llm"
         rows: list[dict[str, Any]] = []
         already_covered = False
-        if is_table and row_index is not None:
+        if cell is not None and str(cell.get("leaf_kind") or "") == "row":
+            # row-owned cell：走确定性行展开（等价 row_index 入口）
+            row_pos = int(cell.get("data_row_index") or 0)
+            if row_pos >= 1:
+                deterministic = _deterministic_row_requirement(
+                    block, row_pos, _covered_text_for_block(current, block_id))
+                if deterministic is not None and deterministic.get("covered"):
+                    already_covered = True
+                    strategy = "deterministic_param_row"
+                elif deterministic is not None:
+                    deterministic["source_cell_id"] = str(cell.get("cell_id") or "")
+                    rows = [deterministic]
+                    strategy = "deterministic_param_row"
+        elif cell is None and is_table and row_index is not None:
             deterministic = _deterministic_row_requirement(
                 block, row_index, _covered_text_for_block(current, block_id))
             if deterministic is not None and deterministic.get("covered"):
@@ -240,6 +302,9 @@ def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
         if not already_covered and not rows:
             rows = _llm_spot_rows(root, block=block, text=text,
                                   existing=block_existing, route=route)
+            if cell is not None:
+                for row in rows:
+                    row["source_cell_id"] = str(cell.get("cell_id") or "")
             if not rows:
                 already_covered = True   # LLM 判定该段已被现有需求覆盖/无可抽需求
 
@@ -271,13 +336,15 @@ def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
                        "ai_extract_quality.json"]
             written.extend(str(value) for value in (rebuilt.get("written") or []))
             LOGGER.info("点解析：%s %s → %d 条 draft 需求进澄清（%s）",
-                        block_id, f"R{row_index}" if row_index is not None else "",
+                        block_id,
+                        cell_id or (f"R{row_index}" if row_index is not None else ""),
                         len(prepared), strategy)
 
         return {
             "schema": "spot-extract/v1",
             "block_id": block_id,
             "row_index": row_index,
+            "cell_id": cell_id,
             "strategy": strategy,
             "drafts": len(draft_ids),
             "draft_ids": draft_ids,

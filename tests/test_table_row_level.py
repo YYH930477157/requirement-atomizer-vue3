@@ -111,8 +111,10 @@ class RowSourceTraceTests(unittest.TestCase):
         rows = sb.get("rows")
         self.assertIsNotNone(rows, "parameter 表 source_block 应带行级明细 rows")
         self.assertEqual(len(rows), 3)
-        self.assertEqual(rows[0]["row_index"], 1)
-        self.assertTrue(rows[0]["item_id"].endswith("-R000001"))
+        # table-structure-v2 行号偏移修复：row_index 与 table_items.jsonl 对齐
+        # （物理行号 = 表头数 + 数据区偏移），不再从 1 重新编号
+        self.assertEqual(rows[0]["row_index"], 2)
+        self.assertTrue(rows[0]["item_id"].endswith("-R000002"))
         # 表头行不在 rows(只数据行;表头不产 source_block)
         self.assertNotIn("No. | Parameter", [r["text"] for r in rows])
 
@@ -126,8 +128,8 @@ class RowSourceTraceTests(unittest.TestCase):
         req = {"source_quote": quote, "source_section": "5.1 Parameters"}
         _map_requirement_source(req, section)
         self.assertEqual(req["source_block_ids"], ["BLK-BIG"])
-        self.assertEqual(req.get("source_row_index"), 2)
-        self.assertEqual(req.get("source_item_id"), "BLK-BIG-R000002")
+        self.assertEqual(req.get("source_row_index"), 3)
+        self.assertEqual(req.get("source_item_id"), "BLK-BIG-R000003")
 
     def test_map_source_no_row_index_for_paragraph(self) -> None:
         from ai_extract import _map_requirement_source

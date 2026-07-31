@@ -368,7 +368,7 @@ class DocAnnotationExportTests(unittest.TestCase):
             out = root / "out"
             out.mkdir()
             source_pdf = Path(__file__).parent / "fixtures" / "sample_text_tables.pdf"
-            blocks, _ = extract_pdf(source_pdf, knowledge_bases=[], document_profile=None)
+            blocks, _, _ = extract_pdf(source_pdf, knowledge_bases=[], document_profile=None)
             for block in blocks:
                 block.pop("pdf_regions", None)  # 模拟升级前已经生成的旧输出
             (out / "blocks.jsonl").write_text(
@@ -2144,7 +2144,7 @@ class MarkerTranslationTests(unittest.TestCase):
         import desktop_tasks
 
         producer = desktop_tasks.stage_producer("export-annotation-html")
-        self.assertIn("doc_annotation_export/v13-claim-distribution-claim-focus", producer)
+        self.assertIn("doc_annotation_export/v14-claim-distribution-claim-focus", producer)
         self.assertIn(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION, producer)
         self.assertIn(dae.ANNOTATION_TRANSLATION_GUARDS_VERSION, producer)
 

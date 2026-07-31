@@ -26,12 +26,30 @@
     "unit_prompt_hashes"
   ],
   "properties": {
-    "schema": {"const": "claim-catalog-meta/v1"},
-    "catalog_version": {"const": "claim-catalog-v5"},
-    "packing_version": {"const": "claim-unit-packing-v1"},
-    "document_generation_id": {"$ref": "#/$defs/hash"},
-    "blocks_sha256": {"$ref": "#/$defs/hash"},
-    "table_items_sha256": {"$ref": "#/$defs/hash"},
+    "schema": {
+      "const": "claim-catalog-meta/v1"
+    },
+    "catalog_version": {
+      "enum": [
+        "claim-catalog-v2",
+        "claim-catalog-v3",
+        "claim-catalog-v4",
+        "claim-catalog-v5",
+        "claim-catalog-v6"
+      ]
+    },
+    "packing_version": {
+      "const": "claim-unit-packing-v1"
+    },
+    "document_generation_id": {
+      "$ref": "#/$defs/hash"
+    },
+    "blocks_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "table_items_sha256": {
+      "$ref": "#/$defs/hash"
+    },
     "parser_provenance": {
       "type": "object",
       "required": [
@@ -45,36 +63,84 @@
       "properties": {
         "text_repair_versions": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "uniqueItems": true
         },
-        "source_alignment_version": {"const": "source-alignment-v6"},
-        "source_transformation_policy_version": {"const": "source-transform-policy-v4"},
+        "source_alignment_version": {
+          "const": "source-alignment-v6"
+        },
+        "source_transformation_policy_version": {
+          "const": "source-transform-policy-v4"
+        },
         "source_transformation_ruleset_version": {
           "const": "source-transform-rules-v4-e0d5167acc73"
         },
-        "blocks_with_raw_mapping": {"type": "integer", "minimum": 0},
-        "table_items_with_raw_mapping": {"type": "integer", "minimum": 0}
+        "blocks_with_raw_mapping": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "table_items_with_raw_mapping": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "table_structure_version": {
+          "const": "table-structure-v2"
+        }
       },
       "additionalProperties": false
     },
-    "catalog_generation_id": {"$ref": "#/$defs/hash"},
-    "structural_override_version": {"const": "claim-structural-override-v1"},
-    "structural_override_prefix_sha256": {"$ref": "#/$defs/hash"},
-    "structural_override_prefix_count": {"type": "integer", "minimum": 0},
-    "structural_override_applied_count": {"type": "integer", "minimum": 0},
-    "scope": {"enum": ["full", "sample"]},
-    "document_closure_claimed": {"const": false},
+    "catalog_generation_id": {
+      "$ref": "#/$defs/hash"
+    },
+    "structural_override_version": {
+      "const": "claim-structural-override-v1"
+    },
+    "structural_override_prefix_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "structural_override_prefix_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "structural_override_applied_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scope": {
+      "enum": [
+        "full",
+        "sample"
+      ]
+    },
+    "document_closure_claimed": {
+      "const": false
+    },
     "packing_config": {
       "type": "object",
-      "required": ["target_chars", "unit_mode"],
+      "required": [
+        "target_chars",
+        "unit_mode"
+      ],
       "properties": {
-        "target_chars": {"type": "integer", "minimum": 1},
-        "unit_mode": {"type": "string", "minLength": 1}
+        "target_chars": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "unit_mode": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
-    "accounting_status": {"enum": ["complete", "incomplete"]},
+    "accounting_status": {
+      "enum": [
+        "complete",
+        "incomplete"
+      ]
+    },
     "counts": {
       "type": "object",
       "required": [
@@ -84,10 +150,26 @@
         "owner_unit_count"
       ],
       "properties": {
-        "catalog_total_count": {"type": "integer", "minimum": 0},
-        "eligible_claim_count": {"type": "integer", "minimum": 0},
-        "structural_excluded_count": {"type": "integer", "minimum": 0},
-        "owner_unit_count": {"type": "integer", "minimum": 0}
+        "catalog_total_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "eligible_claim_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "structural_excluded_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "owner_unit_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "table_cell_claim_count": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     },
@@ -110,20 +192,82 @@
         "non_table_parent_item_count"
       ],
       "properties": {
-        "unmapped_source_span_count": {"type": "integer", "minimum": 0},
-        "unmapped_raw_span_count": {"type": "integer", "minimum": 0},
-        "overlapping_raw_span_count": {"type": "integer", "minimum": 0},
-        "overlapping_leaf_span_count": {"type": "integer", "minimum": 0},
-        "parse_incomplete_count": {"type": "integer", "minimum": 0},
-        "parent_child_duplicate_count": {"type": "integer", "minimum": 0},
-        "orphan_claim_count": {"type": "integer", "minimum": 0},
-        "multi_owner_count": {"type": "integer", "minimum": 0},
-        "owner_prompt_missing_count": {"type": "integer", "minimum": 0},
-        "duplicate_leaf_locator_count": {"type": "integer", "minimum": 0},
-        "duplicate_leaf_hash_count": {"type": "integer", "minimum": 0},
-        "orphan_table_item_count": {"type": "integer", "minimum": 0},
-        "multi_consumed_table_item_count": {"type": "integer", "minimum": 0},
-        "non_table_parent_item_count": {"type": "integer", "minimum": 0}
+        "unmapped_source_span_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unmapped_raw_span_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "overlapping_raw_span_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "overlapping_leaf_span_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "parse_incomplete_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "parent_child_duplicate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "orphan_claim_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "multi_owner_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "owner_prompt_missing_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicate_leaf_locator_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicate_leaf_hash_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "orphan_table_item_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "multi_consumed_table_item_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "non_table_parent_item_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unconsumed_table_cell_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "multi_consumed_table_cell_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dangling_table_item_reference_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dangling_table_cell_reference_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "normative_context_only_count": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     },
@@ -131,62 +275,142 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["container_block_id", "kind", "leaf_ids"],
+        "required": [
+          "container_block_id",
+          "kind",
+          "leaf_ids"
+        ],
         "properties": {
-          "container_block_id": {"type": "string", "minLength": 1},
-          "kind": {"enum": ["list", "table"]},
+          "container_block_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "list",
+              "table"
+            ]
+          },
           "leaf_ids": {
             "type": "array",
-            "items": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+            "items": {
+              "type": "string",
+              "pattern": "^CLM-[0-9a-f]{16}$"
+            },
             "uniqueItems": true
           },
-          "parse_incomplete": {"type": "boolean"},
-          "reason": {"type": "string", "minLength": 1},
+          "parse_incomplete": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
           "parse_incomplete_reason": {
             "oneOf": [
-              {"type": "object"},
-              {"type": "null"}
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "members": {
             "type": "array",
-            "items": {"$ref": "#/$defs/list_member"}
+            "items": {
+              "$ref": "#/$defs/list_member"
+            }
           }
         },
         "additionalProperties": false,
         "allOf": [
           {
-            "if": {"properties": {"kind": {"const": "list"}}, "required": ["kind"]},
-            "then": {"required": ["members"]}
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "list"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "required": [
+                "members"
+              ]
+            }
           }
         ]
       }
     },
     "unit_prompt_hashes": {
       "type": "object",
-      "propertyNames": {"pattern": "^UNIT-[0-9a-f]{16}$"},
-      "additionalProperties": {"$ref": "#/$defs/hash"}
+      "propertyNames": {
+        "pattern": "^UNIT-[0-9a-f]{16}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/hash"
+      }
+    },
+    "table_cell_items_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "table_structure_status": {
+      "enum": [
+        "ok",
+        "needs_review",
+        "base_migration_required"
+      ]
+    },
+    "table_structure_version": {
+      "const": "table-structure-v2"
     }
   },
   "additionalProperties": false,
   "$defs": {
-    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
     "list_member": {
       "type": "object",
-      "required": ["block_id", "role", "locator", "raw_locator"],
+      "required": [
+        "block_id",
+        "role",
+        "locator",
+        "raw_locator"
+      ],
       "properties": {
-        "block_id": {"type": "string", "minLength": 1},
-        "role": {"enum": ["intro", "item"]},
+        "block_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "enum": [
+            "intro",
+            "item"
+          ]
+        },
         "locator": {
           "oneOf": [
-            {"$ref": "#/$defs/list_member_locator"},
-            {"type": "null"}
+            {
+              "$ref": "#/$defs/list_member_locator"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "raw_locator": {
           "oneOf": [
-            {"$ref": "#/$defs/list_member_raw_locator"},
-            {"type": "null"}
+            {
+              "$ref": "#/$defs/list_member_raw_locator"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -194,25 +418,65 @@
     },
     "list_member_locator": {
       "type": "object",
-      "required": ["block_id", "line", "start", "end", "position_basis"],
+      "required": [
+        "block_id",
+        "line",
+        "start",
+        "end",
+        "position_basis"
+      ],
       "properties": {
-        "block_id": {"type": "string", "minLength": 1},
-        "line": {"type": "integer", "minimum": 1},
-        "start": {"type": "integer", "minimum": 0},
-        "end": {"type": "integer", "minimum": 0},
-        "position_basis": {"const": "repaired_text"}
+        "block_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "position_basis": {
+          "const": "repaired_text"
+        }
       },
       "additionalProperties": false
     },
     "list_member_raw_locator": {
       "type": "object",
-      "required": ["block_id", "line", "start", "end", "position_basis"],
+      "required": [
+        "block_id",
+        "line",
+        "start",
+        "end",
+        "position_basis"
+      ],
       "properties": {
-        "block_id": {"type": "string", "minLength": 1},
-        "line": {"type": "integer", "minimum": 1},
-        "start": {"type": "integer", "minimum": 0},
-        "end": {"type": "integer", "minimum": 0},
-        "position_basis": {"const": "raw_text"}
+        "block_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "position_basis": {
+          "const": "raw_text"
+        }
       },
       "additionalProperties": false
     }

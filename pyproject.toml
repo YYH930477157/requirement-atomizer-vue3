@@ -133,6 +133,7 @@ py-modules = [
   "spec_export",
   "spot_extract",
   "table_pattern_engine",
+  "table_structure",
   "text_normalize",
   "version",
 ]

@@ -1110,22 +1110,25 @@ class ChainAndManifestTests(unittest.TestCase):
 
         # Future agent stages have a separate policy suffix. Keep this current-stage snapshot
         # unchanged so adding the Phase 0 anchor cannot invalidate existing cached outputs.
+        from table_structure import TABLE_STRUCTURE_VERSION
+
         expected = {
             "atomize": (
                 f"atomize+{PDF_TEXT_REPAIR_VERSION}"
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
                 f"+{SOURCE_ALIGNMENT_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
-                f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}+impl-v7"
+                f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"
+                f"+{TABLE_STRUCTURE_VERSION}+impl-v8"
             ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
             "ai-extract": (
                 "ai-requirements-producer-lineage-v3"
-                "+ai-extract-v23+guards-v18+ai-verify-v4+ai-normative-framing-v2"
+                "+ai-extract-v23+guards-v19+ai-verify-v4+ai-normative-framing-v2"
                 "+merged-consistency/v3-noise-tolerant-window"
                 "+compliance-requirements/v2"
-                "+ai-supplement-v3-identity-preconditions+impl-v5"
+                "+ai-supplement-v3-identity-preconditions+impl-v6"
             ),
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v7+ai-supplement-v3-identity-preconditions+impl-v4",
@@ -1134,8 +1137,8 @@ class ChainAndManifestTests(unittest.TestCase):
             "clarification-report": "clarification/v8-param-row-aggregate+ai-supplement-v3-identity-preconditions+impl-v6",
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "export-annotation-html": (
-                "doc_annotation_export/v13-claim-distribution-claim-focus+claim-annotation-v13"
-                "+claim-focus-adapter-v1+annotation-translation-v2-segment-fallback"
+                "doc_annotation_export/v14-claim-distribution-claim-focus+claim-annotation-v14"
+                "+claim-focus-adapter-v2+annotation-translation-v2-segment-fallback"
                 "+annotation-translation-guards-v1+doc-facsimile-v1"
                 "+ai-supplement-v3-identity-preconditions"
             ),
@@ -2224,6 +2227,7 @@ class ChainAndManifestTests(unittest.TestCase):
                 "blocks.jsonl",
                 "chunks.jsonl",
                 "table_items.jsonl",
+                "table_cell_items.jsonl",
                 "atomic_requirements.jsonl",
                 "llm_tasks.jsonl",
                 "quality_report.json",

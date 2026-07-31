@@ -832,7 +832,7 @@ def extract_pdf(
     input_path: Path,
     knowledge_bases: KnowledgeRepository | None = None,
     document_profile: DocumentProfile | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     knowledge_bases = knowledge_bases or KnowledgeRepository.from_paths([])
     profile = document_profile or DEFAULT_DOCUMENT_PROFILE
     with pdfplumber.open(input_path) as pdf:
@@ -845,6 +845,7 @@ def extract_pdf(
         sections = SectionState()
         blocks: list[dict[str, Any]] = []
         table_items: list[dict[str, Any]] = []
+        table_cell_items: list[dict[str, Any]] = []
         order = 0
         table_count = 0
         last_caption: str | None = None
@@ -928,7 +929,15 @@ def extract_pdf(
                 order += 1
                 table_id = f"TBL-{table_count:06d}"
                 block_id = f"BLK-{order:06d}"
-                table_block, new_table_items = build_table_artifacts(
+                # 画线表：pdfplumber 提供真实 cell bbox/合并证据；文本重建表无此证据，
+                # 不得伪造精确结构（geometry_kind 如实标注）
+                cell_bboxes: dict[tuple[int, int], Any] | None = None
+                pdf_merge_ranges: list[tuple[int, int, int, int]] | None = None
+                geometry_kind: str | None = None
+                if kind == "ruled":
+                    cell_bboxes, pdf_merge_ranges = _pdfplumber_cell_evidence(payload[0])
+                    geometry_kind = "pdfplumber_cell" if cell_bboxes else None
+                table_block, new_table_items, new_cell_items = build_table_artifacts(
                     matrix,
                     raw_matrix=repair_meta.get("raw_matrix") or matrix,
                     table_id=table_id,
@@ -937,6 +946,11 @@ def extract_pdf(
                     table_title=infer_table_title(last_caption, table_count),
                     section_path=sections.path(),
                     knowledge_bases=knowledge_bases,
+                    merge_ranges=pdf_merge_ranges,
+                    source_format="pdf",
+                    page_number=page_number,
+                    cell_bboxes=cell_bboxes,
+                    geometry_kind=geometry_kind,
                 )
                 table_block["page_number"] = page_number
                 table_block["pdf_regions"] = [
@@ -982,6 +996,7 @@ def extract_pdf(
                     item["pdf_regions"] = list(table_block["pdf_regions"])
                 blocks.append(table_block)
                 table_items.extend(new_table_items)
+                table_cell_items.extend(new_cell_items)
                 last_caption = None
 
         # 混合扫描 PDF 审计（2026-07-08 审计 H3）：_assert_text_layer 只采样前 5 页，
@@ -992,7 +1007,7 @@ def extract_pdf(
 
     blocks = _merge_continuation_blocks(blocks, knowledge_bases)
     blocks = _merge_list_item_blocks(blocks, knowledge_bases)
-    return blocks, table_items
+    return blocks, table_items, table_cell_items
 
 
 _LIST_INTRO_RE = re.compile(r"^[^\n]{1,80}[:：]\s*$")
@@ -1630,6 +1645,37 @@ def _clean_table_matrix(raw_matrix: list[list[Any]] | None) -> list[list[str]]:
         if any(cleaned):
             matrix.append(cleaned)
     return matrix
+
+
+def _pdfplumber_cell_evidence(
+    table: Any,
+) -> tuple[dict[tuple[int, int], list[float]] | None, list[tuple[int, int, int, int]] | None]:
+    """画线表 cell 级证据：anchor 格 bbox（页面坐标）+ 合并区域（1-based 闭区间）。
+
+    pdfplumber table.cells 对合并区域只给一个大 bbox——anchor 位置由 bbox 起点落在
+    全局网格的行列序号推出；任何坐标对不齐都如实返回 None，绝不伪造精确结构。
+    """
+    try:
+        all_cells = [tuple(cell) for cell in (table.cells or []) if cell]
+        if not all_cells:
+            return None, None
+        xs = sorted({round(float(c[0]), 2) for c in all_cells} | {round(float(c[2]), 2) for c in all_cells})
+        ys = sorted({round(float(c[1]), 2) for c in all_cells} | {round(float(c[3]), 2) for c in all_cells})
+        cell_bboxes: dict[tuple[int, int], list[float]] = {}
+        merge_ranges: list[tuple[int, int, int, int]] = []
+        for bbox in all_cells:
+            x0, top, x1, bottom = (round(float(v), 2) for v in bbox)
+            column_start = xs.index(x0)
+            column_end = xs.index(x1)
+            row_start = ys.index(top)
+            row_end = ys.index(bottom)
+            anchor = (row_start + 1, column_start + 1)
+            cell_bboxes[anchor] = [round(float(v), 1) for v in bbox]
+            if (row_end - row_start) > 1 or (column_end - column_start) > 1:
+                merge_ranges.append((row_start + 1, column_start + 1, row_end, column_end))
+        return cell_bboxes or None, (sorted(merge_ranges) or None)
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return None, None
 
 
 _TOC_CELL_RE = re.compile(r"[.·…]{4,}\s*\d{1,3}\s*$")

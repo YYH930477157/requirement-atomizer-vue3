@@ -38,9 +38,12 @@ class ExtractXlsxE2ETests(unittest.TestCase):
             input_path = Path(tmp) / "synthetic_standard.xlsx"
             write_synthetic_xlsx(input_path)
 
-            blocks, table_items = extract_xlsx(input_path, knowledge_bases=[], document_profile=None)
-            mark_doc_regions(blocks, table_items)
-            candidates = build_atomic_candidates(blocks, table_items, include_regions={"body"})
+            blocks, table_items, table_cell_items = extract_xlsx(input_path, knowledge_bases=[], document_profile=None)
+            mark_doc_regions(blocks, table_items, table_cell_items=table_cell_items)
+            candidates = build_atomic_candidates(
+                blocks, table_items, include_regions={"body"},
+                table_cell_items=table_cell_items,
+            )
 
         headings = [block for block in blocks if block["type"] == "heading"]
         self.assertEqual([block["text"] for block in headings], ["Requirements", "Capability Matrix", "Mixed Types"])
@@ -120,7 +123,7 @@ class ExtractXlsxE2ETests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             input_path = Path(tmp) / "multi_sheet.xlsx"
             write_synthetic_xlsx(input_path)
-            blocks, table_items = extract_xlsx(input_path, knowledge_bases=[], document_profile=None)
+            blocks, table_items, table_cell_items = extract_xlsx(input_path, knowledge_bases=[], document_profile=None)
 
         headings = [block["text"] for block in blocks if block["type"] == "heading"]
         # write_synthetic_xlsx creates 3 visible sheets + 1 hidden
@@ -140,7 +143,7 @@ class ExtractXlsxE2ETests(unittest.TestCase):
             workbook.close()
 
             with mock.patch("parsers.xlsx_parser.MAX_SHEET_ROWS", 2):
-                blocks, items = extract_xlsx(
+                blocks, items, cell_items = extract_xlsx(
                     input_path, knowledge_bases=[], document_profile=None)
 
         table = next(block for block in blocks if block["type"] == "table")

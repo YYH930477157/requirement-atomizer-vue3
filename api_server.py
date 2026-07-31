@@ -1099,11 +1099,13 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self.send_json({"ok": False, "error": "row_index must be an integer"}, status=400)
                 return
+        cell_id = str(payload.get("cell_id") or "").strip() or None
         try:
             result = spot_extract(
                 self.output_dir,
                 block_id=block_id,
                 row_index=row_index,
+                cell_id=cell_id,
                 route=str(payload.get("route") or "openai_compatible"),
                 actor=str(payload.get("actor") or "").strip() or None,
                 reason=str(payload.get("reason") or ""),

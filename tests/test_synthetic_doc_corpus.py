@@ -154,11 +154,13 @@ class SyntheticCorpusTests(unittest.TestCase):
         block = self._table_by_title("Table 3")
         self.assertEqual(classify_table_kind(block), "other")
 
-    def test_mapping_matrix_is_other_not_expanded(self) -> None:
-        """场景 4：映射矩阵 Phase 3 后置——判 other,不炸开、不出行级需求。"""
+    def test_mapping_matrix_is_cell_mode_not_expanded(self) -> None:
+        """场景 4：映射矩阵（table-structure-v2）→ mapping_matrix + cell 闭环，
+        不走参数行展开（行只作容器，marker 格各自成 claim）。"""
         block = self._table_by_title("Table 4")
-        self.assertEqual(classify_table_kind(block), "other")
+        self.assertEqual(classify_table_kind(block), "mapping_matrix")
         self.assertEqual(_supplement_parameter_table_rows([], [block]), [])
+        self.assertEqual(str(block.get("leaf_mode") or ""), "cell")
 
     def test_list_items_become_separate_blocks(self) -> None:
         """场景 5：清单 a)/b)/c) 逐项独立成块（EN 型分块）。"""

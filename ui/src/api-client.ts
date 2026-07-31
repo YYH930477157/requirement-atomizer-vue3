@@ -119,6 +119,25 @@ export type PdfRowContext = {
   req_ids?: string[]
   covered_req_ids?: string[]
 }
+// 单元格级卡片数据（v14,键 "<block_id>#<cell_id>"）：表标题/行头/列头/正文 + 如实来源坐标。
+// 没有真实 bbox 的 cell 只给 R×C 身份——前端只用表格 DOM 单元格，不伪造 PDF 几何
+export type PdfCellContext = {
+  cell_id: string
+  block_id: string
+  table_title?: string
+  row_index: number
+  column_index: number
+  data_row_index?: number | null
+  structural_role?: string
+  header_path?: string[]
+  row_header_context?: string[]
+  text?: string
+  page?: number | null
+  bbox?: number[] | null
+  geometry_kind?: string
+  sheet_name?: string | null
+  a1_address?: string | null
+}
 export type ClaimAnnotationRecord = {
   claim_id: string
   claim_hash: string
@@ -135,6 +154,13 @@ export type ClaimAnnotationRecord = {
   start?: number
   end?: number
   data_row_indexes?: number[]
+  // v14 cell 级 claim：R×C + 双表头上下文
+  table_cell_id?: string
+  row_index?: number
+  column_index?: number
+  data_row_index?: number | null
+  header_path?: string[]
+  row_header_context?: string[]
   focus?: Record<string, unknown>
 }
 export type ClaimAnnotationZone = {
@@ -163,6 +189,7 @@ export type PdfAnnotationPayload = {
                         kind: "req" | "covered" | "echo" | "omission" | "context";
                         row_index?: number; req_id?: string; req_ids?: string[] }>
   row_context?: Record<string, PdfRowContext>
+  cell_context?: Record<string, PdfCellContext>
   claim_annotation_version?: string
   claim_records?: ClaimAnnotationRecord[]
   claim_zones?: ClaimAnnotationZone[]
@@ -337,10 +364,11 @@ export type OmissionReextractPayload = {
   written: string[]
 }
 
-// 点解析（WP-B）：批注视图单行/单块定向解析，draft 进澄清待确认
+// 点解析（WP-B）：批注视图单行/单格/单块定向解析，draft 进澄清待确认
 export type SpotExtractInput = {
   blockId: string
   rowIndex?: number
+  cellId?: string
   actor?: string
   reason?: string
   route?: string
@@ -350,6 +378,7 @@ export type SpotExtractPayload = {
   schema: "spot-extract/v1"
   block_id: string
   row_index: number | null
+  cell_id?: string | null
   strategy: "deterministic_param_row" | "llm"
   drafts: number
   draft_ids: string[]
@@ -370,6 +399,11 @@ export type ClaimLocator = {
   row_start?: number
   row_end?: number
   fallback_group_id?: string
+  // v14 cell 级定位（position_basis = table_cell_text）
+  table_cell_id?: string | null
+  column_index?: number | null
+  cell_start?: number | null
+  cell_end?: number | null
 }
 
 export type ClaimViewEnvelope = {
@@ -866,6 +900,7 @@ export class RequirementApiClient {
       body: JSON.stringify({
         block_id: input.blockId,
         row_index: input.rowIndex ?? null,
+        cell_id: input.cellId ?? null,
         actor: input.actor || "",
         reason: input.reason || "",
         route: input.route || "",

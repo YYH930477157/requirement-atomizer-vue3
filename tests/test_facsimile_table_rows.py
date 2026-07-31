@@ -66,7 +66,7 @@ class TableRowGeometryTests(unittest.TestCase):
         fake_pdf = _fake_pdf()
         rows: dict = {}
         try:
-            with mock.patch("parsers.pdf_parser.extract_pdf", return_value=(parsed, [])):
+            with mock.patch("parsers.pdf_parser.extract_pdf", return_value=(parsed, [], [])):
                 geometry = _resolve_pdf_geometry(fake_pdf, blocks, cache_path=cache_path,
                                                  row_geometry=rows)
         finally:
@@ -149,7 +149,7 @@ class TableRowGeometryTests(unittest.TestCase):
             _geometry, rows = self._resolve([_table_block()], parsed, cache_path=cache)
             self.assertIn("BT", rows)
             payload = json.loads(cache.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 4)   # v4：行 ⊂ 大解析块的占比切片（v3 旧缓存行区叠层,不得复用）
+            self.assertEqual(payload["version"], 5)   # v5：table-structure-v2 cell 级（v4 旧缓存不得复用）
             self.assertEqual(sorted(payload["row_geometry"]["BT"]), ["3", "4"])  # JSON 键为字符串
 
             # 第二跑：解析器不得再被调用（缓存直供）,行号键恢复为 int
@@ -179,7 +179,7 @@ class TableRowGeometryTests(unittest.TestCase):
             fake_pdf.write_bytes(b"%PDF-1.4 fake")
             try:
                 with mock.patch(
-                    "parsers.pdf_parser.extract_pdf", return_value=(parsed, [])
+                    "parsers.pdf_parser.extract_pdf", return_value=(parsed, [], [])
                 ) as extractor:
                     # 第一跑不带行几何 → 旧格式缓存（无 row_geometry 字段）
                     _resolve_pdf_geometry(fake_pdf, [_table_block()], cache_path=cache)

@@ -12,6 +12,6 @@ class DocxParser(DocumentParser):
 
     def parse(self, path: Path) -> DocumentIR:
         input_path = path.expanduser().resolve()
-        blocks, table_items = extract_docx(input_path, knowledge_bases=[])
+        blocks, table_items, _table_cell_items = extract_docx(input_path, knowledge_bases=[])
         mark_doc_regions(blocks, table_items)
         return blocks_to_doc_ir(blocks=blocks, table_items=table_items, source_path=input_path)

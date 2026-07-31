@@ -43,7 +43,7 @@ PDF_PAGE_RENDER_DPI = 144
 LAYOUT_OPTIMIZED = "optimized"
 LAYOUT_PDF_ORIGINAL = "pdf_original"
 ANNOTATION_LAYOUT_MODES = {LAYOUT_OPTIMIZED, LAYOUT_PDF_ORIGINAL}
-CLAIM_ANNOTATION_VERSION = "claim-annotation-v13"
+CLAIM_ANNOTATION_VERSION = "claim-annotation-v14"
 
 
 class ClaimAnnotationUnavailable(ValueError):
@@ -275,7 +275,11 @@ def _claim_table_data_rows(
         }
         if all(fields.get(name) == value for name, value in expected.items()):
             candidates.append(data_index)
-    hinted = int(focus.get("row_index") or 0) - header_count
+    hinted = (
+        int(focus.get("row_index") or 0)
+        - header_count
+        - len(block.get("title_row_indexes") or [])
+    )
     if hinted in candidates:
         return [hinted]
     return candidates if len(candidates) == 1 else []
@@ -370,6 +374,10 @@ def _claim_annotation_state(
         table_items = read_jsonl(out_dir / "table_items.jsonl")
     except (OSError, ValueError, json.JSONDecodeError):
         table_items = []
+    try:
+        table_cell_items = read_jsonl(out_dir / "table_cell_items.jsonl")
+    except (OSError, ValueError, json.JSONDecodeError):
+        table_cell_items = []
     effective_by_claim = {
         str(row.get("claim_id") or ""): row
         for row in (snapshot.get("effective_ledger") or [])
@@ -412,7 +420,7 @@ def _claim_annotation_state(
             )
             counts[resolution] += 1
         try:
-            focus = build_claim_focus_adapter(claim, source_blocks, table_items)
+            focus = build_claim_focus_adapter(claim, source_blocks, table_items, table_cell_items)
             record["focus"] = focus
             if focus["kind"] in {"text_span", "list_item"}:
                 record["mapped"] = True
@@ -436,6 +444,35 @@ def _claim_annotation_state(
                         "claim text has no unique exact match in rendered block"
                     )
             else:
+                if focus["kind"] == "table_cell":
+                    # cell 身份进入批注视图：R×C、双表头上下文随记录下发（无真实 bbox
+                    # 时 UI 只用表格 DOM 单元格，不伪造 PDF 几何）
+                    record["table_cell_id"] = str(focus.get("table_cell_id") or "")
+                    record["row_index"] = int(focus.get("row_index") or 0)
+                    record["column_index"] = int(focus.get("column_index") or 0)
+                    record["data_row_index"] = focus.get("data_row_index")
+                    record["header_path"] = list(focus.get("header_path") or [])
+                    record["row_header_context"] = list(focus.get("row_header_context") or [])
+                    record["mapped"] = True
+                    cell_bbox = None
+                    cell_row = next(
+                        (
+                            row
+                            for row in table_cell_items
+                            if str(row.get("cell_id") or "") == record["table_cell_id"]
+                        ),
+                        None,
+                    )
+                    if isinstance(cell_row, dict) and cell_row.get("bbox"):
+                        cell_bbox = cell_row.get("bbox")
+                    if cell_bbox and cell_row.get("page_number") is not None:
+                        state.setdefault("cell_geometry", {}).setdefault(block_id, {})[
+                            record["table_cell_id"]
+                        ] = {
+                            "page": int(cell_row.get("page_number")),
+                            "bbox": cell_bbox,
+                        }
+                    continue
                 data_rows = _claim_table_data_rows(
                     source_blocks_by_id.get(block_id, {}), focus
                 )
@@ -598,7 +635,7 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
         except (OSError, json.JSONDecodeError):
             cached = {}
         cached_rows = cached.get("row_geometry")
-        if (cached.get("version") == 4 and cached.get("source_sha256") == source_hash
+        if (cached.get("version") == 5 and cached.get("source_sha256") == source_hash
                 and cached.get("block_signature") == block_signature
                 and isinstance(cached.get("geometry"), dict)
                 and (row_geometry is None or isinstance(cached_rows, dict))):
@@ -628,7 +665,7 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
 
     try:
         from parsers.pdf_parser import extract_pdf
-        parsed_blocks, _ = extract_pdf(source_pdf, knowledge_bases=[], document_profile=None)
+        parsed_blocks, _, _ = extract_pdf(source_pdf, knowledge_bases=[], document_profile=None)
     except Exception:
         return geometry
 
@@ -735,7 +772,7 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
         row_geometry.update(_table_row_geometry(blocks, parsed_blocks, parsed_by_text_global))
     if cache_path:
         payload = {
-            "version": 4,
+            "version": 5,
             "source_sha256": source_hash,
             "block_signature": block_signature,
             "geometry": geometry,
@@ -2873,6 +2910,39 @@ def build_pdf_annotation_payload(
         for key, record in _pdf_context_records(blocks, block_zones).items()
         if "#R" in key
     }
+    # cell 级卡片（table-structure-v2）：表标题/行头/列头/正文 + 如实来源坐标。
+    # 没有真实 bbox 的 cell 只给 R×C 身份（UI 用表格 DOM 单元格，不伪造 PDF 几何）。
+    cell_context: dict[str, dict[str, Any]] = {}
+    try:
+        _payload_cells = read_jsonl(out_dir / "table_cell_items.jsonl")
+    except (OSError, ValueError, json.JSONDecodeError):
+        _payload_cells = []
+    cell_geometry = dict(claim_state.get("cell_geometry") or {})
+    for cell in _payload_cells:
+        if not isinstance(cell, dict):
+            continue
+        cell_id = str(cell.get("cell_id") or "")
+        block_id = str(cell.get("table_block_id") or "")
+        if not cell_id or not block_id:
+            continue
+        geometry_entry = (cell_geometry.get(block_id) or {}).get(cell_id) or {}
+        cell_context[f"{block_id}#{cell_id}"] = {
+            "cell_id": cell_id,
+            "block_id": block_id,
+            "table_title": str(cell.get("table_title") or ""),
+            "row_index": int(cell.get("row_index") or 0),
+            "column_index": int(cell.get("column_index") or 0),
+            "data_row_index": cell.get("data_row_index"),
+            "structural_role": str(cell.get("structural_role") or ""),
+            "header_path": list(cell.get("header_path") or []),
+            "row_header_context": list(cell.get("row_header_context") or []),
+            "text": str(cell.get("text") or ""),
+            "page": geometry_entry.get("page"),
+            "bbox": geometry_entry.get("bbox"),
+            "geometry_kind": str(cell.get("geometry_kind") or ""),
+            "sheet_name": cell.get("sheet_name"),
+            "a1_address": cell.get("a1_address"),
+        }
     return {"available": True, "pages": pages, "pages_dir": ANNOTATION_PAGES_DIR,
             "requirement_markers": requirement_markers, "omission_markers": omission_markers,
             # 影印来源血统：office 转换影印如实标引擎，原生 PDF 为 None——不冒充原生
@@ -2880,7 +2950,8 @@ def build_pdf_annotation_payload(
             # 全段落热区（0714）：点一段出翻译和解析——语义与静态影印同源（_pdf_block_zones）
             "block_zones": block_zones,
             "row_context": row_context,
-            # v13 Claim Ledger：应用内影印和离线 HTML 消费同一状态集合/几何适配器。
+            "cell_context": cell_context,
+            # v14 Claim Ledger：cell 级 claim 记录（R×C + 双表头上下文）随记录下发。
             **claim_payload,
             "claim_zones": claim_zones}
 

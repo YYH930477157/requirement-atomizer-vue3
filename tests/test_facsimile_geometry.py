@@ -60,7 +60,7 @@ class FacsimileGeometryTests(unittest.TestCase):
             handle.write(b"%PDF-1.4 fake")
         try:
             with mock.patch(
-                "parsers.pdf_parser.extract_pdf", return_value=(parsed, [])
+                "parsers.pdf_parser.extract_pdf", return_value=(parsed, [], [])
             ):
                 return _resolve_pdf_geometry(fake_pdf, blocks, cache_path=None)
         finally:

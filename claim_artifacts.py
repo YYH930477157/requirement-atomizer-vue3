@@ -47,7 +47,7 @@ CLAIM_SNAPSHOT_FILES = (
     CLAIM_EFFECTIVE_META,
 )
 
-CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v6"
+CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v7"
 LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v1"
 PREVIOUS_CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v2"
 CLAIM_EFFECTIVE_SNAPSHOT_VERSION = "claim-effective-snapshot-v3"
@@ -56,7 +56,7 @@ CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION = "claim-effective-artifacts-v2"
 CLAIM_VERIFIER_ATTEMPT_SCHEMA = "claim-verifier-attempt/v2"
 CLAIM_VERIFIER_ATTEMPT_BINDING_SCHEMA = "claim-verifier-attempt-chain-binding/v2"
 LEGACY_CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v4"
-PREVIOUS_CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v5"
+PREVIOUS_CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v6"
 CLAIM_PUBLICATION_JOURNAL_SCHEMA = "claim-publication-journal/v1"
 CLAIM_EFFECTIVE_PUBLICATION_JOURNAL_SCHEMA = "claim-effective-publication-journal/v1"
 CLAIM_VERIFIER_ATTEMPT_CHECKPOINT_SCHEMA = "claim-verifier-attempt-checkpoint/v1"

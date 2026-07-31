@@ -453,9 +453,11 @@ CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-a
 STAGE_INPUTS: dict[str, list[str]] = {
     "atomize": [],
     "llm-review": ["atomic_requirements.jsonl", "llm_tasks.jsonl"],
-    "ai-extract": ["blocks.jsonl", "table_items.jsonl", "llm_review_results.jsonl", "review_states.jsonl",
+    "ai-extract": ["blocks.jsonl", "table_items.jsonl", "table_cell_items.jsonl",
+                   "llm_review_results.jsonl", "review_states.jsonl",
                    "ai_supplements.jsonl"],
-    "assemble": ["table_items.jsonl", "atomic_requirements.jsonl", "llm_review_results.jsonl",
+    "assemble": ["table_items.jsonl", "table_cell_items.jsonl", "atomic_requirements.jsonl",
+                 "llm_review_results.jsonl",
                  "ai_supplements.jsonl"],
     "functional-synthesis": ["ai_requirements.jsonl", "ai_requirements.meta.json", "blocks.jsonl",
                              "ai_review_states.jsonl", "ai_supplements.jsonl"],
@@ -470,9 +472,11 @@ STAGE_INPUTS: dict[str, list[str]] = {
                              "omission_states.jsonl", "ai_requirements.meta.json", "ai_supplements.jsonl",
                              "claim_effective_ledger.jsonl", "claim_effective.meta.json",
                              "claim_queue_proposals.jsonl", "claim_effective_health.json"],
-    "compose": ["atomic_requirements.jsonl", "table_items.jsonl", "ai_requirements.meta.json",
+    "compose": ["atomic_requirements.jsonl", "table_items.jsonl", "table_cell_items.jsonl",
+                "ai_requirements.meta.json",
                 "ai_supplements.jsonl"],
-    "export-annotation-html": ["blocks.jsonl", "table_items.jsonl", "ai_requirements.jsonl",
+    "export-annotation-html": ["blocks.jsonl", "table_items.jsonl", "table_cell_items.jsonl",
+                               "ai_requirements.jsonl",
                                "engineering_analysis.json", "ai_review_states.jsonl",
                                "annotation_translations.json", "ai_requirements.meta.json",
                                "ai_supplements.jsonl", "claim_catalog.jsonl",
@@ -492,6 +496,7 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
         "blocks.jsonl",
         "chunks.jsonl",
         "table_items.jsonl",
+        "table_cell_items.jsonl",
         "atomic_requirements.jsonl",
         "llm_tasks.jsonl",
         "quality_report.json",
@@ -522,14 +527,17 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 
 
 STAGE_IMPLEMENTATION_REVISIONS = {
+    # v8：table-structure-v2（cell 级闭环 + table_cell_items.jsonl + 标题/表头确定性识别
+    # + merge 证据）——blocks/table_items 结构面变化，全部输入须重解析
     # v7：render_table_text 取消 20 行截断（大参数表 21 行起内容进不了管线,STO 实证）
     # v6：表格块扁平文本取消 [:5000] 截断（初始提交遗留）——大参数表 88% 内容此前
     # 进不了抽取管线（STO/俄标实证）；blocks 内容变化,docx 输入须重解析
     # v5：PDF 清单段合并（名词式清单项并整段，微块可锚定）——块结构变化，PDF 输入须重解析
-    "atomize": "v7",
-    # v5：表格行级化(封堵一 chunk 表头注入 + 行级 source_blocks/rows + 封堵二去重 + 封堵三澄清聚合)
+    "atomize": "v8",
+    # v6：cell 级 assemble 输入（cells source_block）+ 权威 row/cell ID 去重键 + 发布断言
     # ——section/unit 文本与 source_blocks 结构变,旧 ai-extract 缓存失效重抽
-    "ai-extract": "v5",
+    # v5：表格行级化(封堵一 chunk 表头注入 + 行级 source_blocks/rows + 封堵二去重 + 封堵三澄清聚合)
+    "ai-extract": "v6",
     "assemble": "v2",
     # v4: consumes is_compliance_requirement; compliance-rules v2 invalidates old caches.
     "functional-synthesis": "v4",
@@ -549,10 +557,11 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v8-param-row-aggregate",
     "compose": "engineering_composer/v1",
-    # v13-claim-distribution-claim-focus：三线联合戳——v13=行区占比切片互斥（远端 rowcell）
+    # v14-claim-distribution-claim-focus：cell 级闭环（cell claim 记录/几何/卡片）
+    # + v13 三线联合戳——v13=行区占比切片互斥（远端 rowcell）
     # + claim-distribution（Phase 1 块级角标）+ claim-focus（Phase 1.5 claim span/row 级定位，
     # 经 claim_focus 确定性映射）——三侧缓存产物一并失效；v12=表格行级热区、v11=几何回填
-    "export-annotation-html": "doc_annotation_export/v13-claim-distribution-claim-focus",
+    "export-annotation-html": "doc_annotation_export/v14-claim-distribution-claim-focus",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }
@@ -595,12 +604,14 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 SOURCE_TRANSFORMATION_POLICY_VERSION,
                 SOURCE_TRANSFORMATION_RULESET_VERSION,
             )
+            from table_structure import TABLE_STRUCTURE_VERSION
             producer = (
                 f"{producer}+{PDF_TEXT_REPAIR_VERSION}"
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
                 f"+{SOURCE_ALIGNMENT_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"
+                f"+{TABLE_STRUCTURE_VERSION}"
             )
         elif stage == "llm-review":
             # 代码版本必须进戳（审计 R2-H2）：prompt/cache/tools 任一 bump 后旧阶段

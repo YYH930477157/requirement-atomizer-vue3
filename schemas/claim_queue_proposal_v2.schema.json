@@ -59,7 +59,7 @@
       "required": ["kind", "adapter_version", "claim_id", "claim_hash", "block_id", "parent_block_fingerprint"],
       "properties": {
         "kind": {"enum": ["text_span", "list_item", "table_item", "table_data_rows"]},
-        "adapter_version": {"const": "claim-focus-adapter-v1"},
+        "adapter_version": {"enum": ["claim-focus-adapter-v1", "claim-focus-adapter-v2"]},
         "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
         "claim_hash": {"$ref": "#/$defs/hash"},
         "block_id": {"type": "string", "minLength": 1},
@@ -131,7 +131,7 @@
       "required": ["kind", "adapter_version", "reason"],
       "properties": {
         "kind": {"const": "unavailable"},
-        "adapter_version": {"const": "claim-focus-adapter-v1"},
+        "adapter_version": {"enum": ["claim-focus-adapter-v1", "claim-focus-adapter-v2"]},
         "reason": {"type": "string", "minLength": 1}
       },
       "additionalProperties": false
@@ -187,7 +187,7 @@
         "target_publication_revision": {"$ref": "#/$defs/hash"},
         "target_set_hash": {"$ref": "#/$defs/hash"},
         "requirement_review_state_hash": {"$ref": "#/$defs/hash"},
-        "focus_adapter_version": {"const": "claim-focus-adapter-v1"}
+        "focus_adapter_version": {"enum": ["claim-focus-adapter-v1", "claim-focus-adapter-v2"]}
       },
       "additionalProperties": false
     }

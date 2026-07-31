@@ -23,7 +23,7 @@ def _sha256(path: Path) -> str:
 
 def _seed_blocks(out: Path) -> list[dict]:
     """用夹具 PDF 的真实解析块——facsimile PDF=同一夹具时几何锚定与原生 PDF 完全同路径。"""
-    blocks, _ = extract_pdf(FIXTURE_PDF, knowledge_bases=[], document_profile=None)
+    blocks, _, _ = extract_pdf(FIXTURE_PDF, knowledge_bases=[], document_profile=None)
     (out / "blocks.jsonl").write_text(
         "".join(json.dumps(block, ensure_ascii=False) + "\n" for block in blocks),
         encoding="utf-8",

@@ -63,6 +63,7 @@ from llm_pipeline import (
     resolve_route_name,
 )
 from spec_excel import METERING_DOMAINS  # 受控模块词表（DLMS 域 + 通用补充）
+import table_structure
 
 OTHER_MODULE = "其它"  # LLM 判定"无贴切模块"的逃生项（与 spec_export.OTHER_DOMAIN 对齐）
 MODULE_VOCAB = list(METERING_DOMAINS) + [OTHER_MODULE]
@@ -410,6 +411,7 @@ def section_cache_versions() -> dict[str, str]:
         "extract_prompt_version": AI_EXTRACT_PROMPT_VERSION,
         "extract_guards_version": EXTRACT_GUARDS_VERSION,
         "compliance_schema": COMPLIANCE_SCHEMA,
+        "table_structure_version": table_structure.TABLE_STRUCTURE_VERSION,
     }
 
 
@@ -992,55 +994,44 @@ def _supplement_uncovered_compliance(
 # 用户裁定：参数表每行都是一条需求。行是结构化的（编号+名称+要求列），逐行展开不需要
 # LLM——确定性生成,引句逐字来自扁平渲染行,结构化字段不猜。
 
-_PARAM_REQ_CELL_RE = re.compile(
-    r"requirement|technical|characteristic|value|spec(?:ification)?|min(?:imum)?|max(?:imum)?"
-    r"|limit|rating|nominal|tolerance|range|unit"
-    r"|要求|指标|参数值|参数|规格|额定|限值|最小|最大|公差|单位|范围|值",
-    re.IGNORECASE,
-)
-_PARAM_DEF_CELL_RE = re.compile(r"^(term|definition|术语|定义|abbreviation|缩略语)", re.IGNORECASE)
-_PARAM_SECTION_RE = re.compile(r"terms|definitions|abbreviations|术语|定义|缩略语|bibliography|参考文献", re.IGNORECASE)
-_PARAM_INDEX_CELL_RE = re.compile(r"^\s*\d+(?:\.\d+)*[.)]?\s*$")
+_PARAM_REQ_CELL_RE = table_structure.PARAM_REQ_CELL_RE
+_PARAM_DEF_CELL_RE = table_structure.PARAM_DEF_CELL_RE
+_PARAM_SECTION_RE = table_structure.PARAM_SECTION_RE
+_PARAM_INDEX_CELL_RE = table_structure.PARAM_INDEX_CELL_RE
 _PARAM_ROW_MIN_CELLS = 2
-_PARAM_TABLE_MIN_ROWS = 3
-PARAM_ROW_EXPANSION_VERSION = "param-row-expand-v2"  # v2:英文表头扩展(value/spec/min/max/...)+classify_table_kind;v1:参数表行确定性展开首版
+PARAM_ROW_EXPANSION_VERSION = "param-row-expand-v3"  # v3:删≥3数据行硬门(行数只作置信证据)+权威row/cell ID去重键+merge anchor分组标题;v2:英文表头扩展+classify_table_kind;v1:参数表行确定性展开首版
 
 
 def _is_parameter_table(block: dict[str, Any]) -> bool:
-    """需求型参数表判定（保守,宁漏勿错）：≥3 数据行;表头含要求类列;不是术语/定义/
-    缩略语表（用户裁定：术语行不是需求）;章节不在术语/参考文献区。"""
-    headers = [str(h or "") for h in (block.get("headers") or [])]
-    data_rows = block.get("data_rows") or []
-    if len(data_rows) < _PARAM_TABLE_MIN_ROWS or not headers:
-        return False
-    if any(_PARAM_DEF_CELL_RE.search(h) for h in headers):
-        return False
-    if not any(_PARAM_REQ_CELL_RE.search(h) for h in headers):
-        return False
-    # 只看叶子节标题（STO 实证：全文嵌在 "2 Normative References" 下,按全路径过滤会
-    # 把所有参数表误杀）；参考文献区过滤靠 bibliography/参考文献 叶子匹配
-    leaf = next(
-        (str(s) for s in reversed([s for s in (block.get("section_path") or []) if str(s).strip()])),
-        "",
+    """需求型参数表判定（保守,宁漏勿错）。
+
+    param-row-expand-v3 起删除 ≥3 数据行硬门：行数只是分类置信证据，行数不足的
+    规范性内容由 cell 层闭环，不得静默丢失。判据委托 table_structure（有表头、
+    非术语/定义表、含要求类列、章节不在术语/参考文献区）。"""
+    table_kind = str(block.get("table_kind") or "")
+    if table_kind:
+        return table_kind == "parameter"
+    return table_structure.is_parameter_table(
+        [str(h or "") for h in (block.get("headers") or [])],
+        [list(row) for row in (block.get("data_rows") or [])],
+        [str(s) for s in (block.get("section_path") or [])],
     )
-    return not _PARAM_SECTION_RE.search(leaf)
 
 
 def classify_table_kind(block: dict[str, Any]) -> str:
-    """表型分类（行级化底座）。
+    """表型分类（行级化底座）——判定集中在 table_structure，此处只做块字段适配。
 
-    返回 'parameter' | 'mapping_matrix' | 'other'：
-    - parameter：每行一个对象、列是属性 → 按行各自独立分析（guards-v16 既有路径）。
-    - mapping_matrix：行列各为维度、每格独立事实 → 按格分析（Phase 3 落地判据）。
-    - other：默认按行（最安全，保留行内关联）。
-
-    保守、宁漏勿错；parameter 优先于 mapping_matrix（参数表远多于映射表，按行更安全）。
-    供 extract_units / doc_annotation_export / assemble_spec 复用。
+    返回 'parameter' | 'mapping_matrix' | 'prose_grid' | 'other'。
+    v2 结构块直接读 atomize 期算好的 table_kind（含合并证据）；旧块现场分类。
     """
-    if _is_parameter_table(block):
-        return "parameter"
-    # mapping_matrix 判据 Phase 3 落地；此前非参数表统一按行（other）
-    return "other"
+    table_kind = str(block.get("table_kind") or "")
+    if table_kind in table_structure.TABLE_KINDS:
+        return table_kind
+    return table_structure.classify_table_kind(
+        [str(h or "") for h in (block.get("headers") or [])],
+        [list(row) for row in (block.get("data_rows") or [])],
+        [str(s) for s in (block.get("section_path") or [])],
+    )
 
 
 def _row_render_line(headers: list[str], row: list[Any]) -> str:
@@ -1099,14 +1090,34 @@ def _supplement_parameter_table_rows(
         data_rows = block.get("data_rows") or []
         covered_text = covered_by_block.get(block_id, "")
         section_path = [str(s) for s in (block.get("section_path") or []) if str(s).strip()]
+        table_id = str(block.get("table_id") or block_id)
+        # 权威行号 = 表头数 + 标题数 + 数据区偏移（与 table_items.jsonl 的 item_id 对齐；
+        # 缺 header_row_count 的旧夹具按"有表头即 1"回退，与 catalog 遗留口径一致）
+        header_row_count = int(
+            block.get("header_row_count")
+            if block.get("header_row_count") is not None
+            else (1 if block.get("headers") else 0)
+        )
+        header_offset = header_row_count + len(block.get("title_row_indexes") or [])
+        merge_ranges = table_structure.normalize_merge_ranges(block.get("merge_ranges") or [])
+        width = int(block.get("columns") or 0)
         for row_index, row in enumerate(data_rows, start=1):
+            physical_row = header_offset + row_index
             cells = [str(cell or "").strip() for cell in row]
             non_empty = [cell for cell in cells if cell]
-            if len(non_empty) < _PARAM_ROW_MIN_CELLS:
+            if not non_empty:
                 continue
-            # 分组标题行：合并单元格展开后所有非空单元格完全相同（STO 实证"3. TECHNICAL
-            # REQUIREMENTS"×6 列）——是章节标题不是需求行,跳过
-            if len(set(non_empty)) == 1:
+            # 分组标题行：全宽合并 anchor + 所有非空单元格同值 + 非规范性（STO 实证
+            # "3. TECHNICAL REQUIREMENTS"×6 列）——是章节标题不是需求行,跳过；
+            # 无合并证据时退回历史同值启发式
+            if table_structure.is_group_header_row(
+                cells, physical_row, width=width, merge_ranges=merge_ranges or None
+            ):
+                continue
+            if len(non_empty) < _PARAM_ROW_MIN_CELLS and not any(
+                table_structure.is_normative_text(cell) for cell in non_empty
+            ):
+                # 单格行只要包含规范性内容就必须保留（不受"至少两个非空格"限制）
                 continue
             quote = _row_render_line(headers, row)
             if not quote.strip():
@@ -1135,6 +1146,9 @@ def _supplement_parameter_table_rows(
                 "source_section": section_path[-1] if section_path else "",
                 "source_quote": quote,
                 "source_block_ids": [block_id],
+                # 权威 row ID（param-row-expand-v3 去重键）
+                "source_item_id": f"{table_id}-R{physical_row:06d}",
+                "source_row_index": physical_row,
                 "source_mapping": "deterministic_fallback",
                 "suspicion_reasons": ["参数表行确定性展开"],
                 "notes": "参数表行由确定性规则逐行展开（用户裁定：参数表每行都是需求），引句逐字来自原文表格渲染行，请人工审核后确认",
@@ -1143,6 +1157,38 @@ def _supplement_parameter_table_rows(
     if added:
         LOGGER.info("参数表行展开：补入 %d 条 LLM 未逐行覆盖的参数行需求", added)
     return supplemented
+
+
+def _assert_source_references(
+    requirements: list[dict[str, Any]],
+    table_items: list[dict[str, Any]],
+    table_cell_items: list[dict[str, Any]],
+) -> None:
+    """发布前断言：每个 source_item_id/source_cell_id 都真实存在（权威 row/cell ID）。
+
+    引用表缺失或引用悬空都是旧产物/伪造迁移信号——大声失败，要求重跑 atomize，
+    绝不带着悬空溯源发布。"""
+    item_ids = {str(item.get("item_id") or "") for item in table_items}
+    cell_ids = {str(cell.get("cell_id") or "") for cell in table_cell_items}
+    dangling_items = sorted({
+        str(req.get("source_item_id"))
+        for req in requirements
+        if str(req.get("source_item_id") or "").startswith("TBL-")
+        and str(req.get("source_item_id")) not in item_ids
+    })
+    dangling_cells = sorted({
+        str(req.get("source_cell_id"))
+        for req in requirements
+        if str(req.get("source_cell_id") or "").startswith("TBL-")
+        and str(req.get("source_cell_id")) not in cell_ids
+    })
+    if dangling_items or dangling_cells:
+        raise ValueError(
+            "source reference assertion failed "
+            f"(dangling source_item_id={dangling_items[:5]} "
+            f"source_cell_id={dangling_cells[:5]}): "
+            "base_migration_required——请重跑 atomize 再执行 ai-extract"
+        )
 
 
 def _merge_llm_into_deterministic_rows(
@@ -1208,6 +1254,14 @@ def _llm_row_target(
         return None
     for bid in req.get("source_block_ids") or []:
         for prow_req in prow_by_block.get(str(bid), []):
+            # param-row-expand-v3：权威 row/cell ID 是第一去重键（结构一致即同行），
+            # 文本匹配只作无 ID 旧路径的回退
+            req_item_id = str(req.get("source_item_id") or "")
+            prow_item_id = str(prow_req.get("source_item_id") or "")
+            if req_item_id and prow_item_id:
+                if req_item_id == prow_item_id:
+                    return prow_req
+                continue
             row_line = compact_source_text(prow_req.get("source_quote"))
             if not row_line:
                 continue
@@ -1523,7 +1577,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v18"  # v18:section cache 与完整 producer lineage 分层纳入 compliance_schema,堵死 v17 漏钉且避免缓存后处理版本触发付费重抽;v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v19"  # v19:table-structure-v2 接入(删参数表≥3行硬门/merge anchor分组标题/权威row/cell ID去重键/cell级assemble输入+TABLE_STRUCTURE_VERSION与leaf plan结构hash进section指纹);v18:section cache 与完整 producer lineage 分层纳入 compliance_schema,堵死 v17 漏钉且避免缓存后处理版本触发付费重抽;v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -1532,9 +1586,27 @@ def section_fingerprint(section: dict[str, Any], model: str, context_key: str = 
     drift_source = str(section.get("drift_source") or section.get("text") or "")
     drift_key = hashlib.sha256(drift_source.encode("utf-8")).hexdigest()[:16]
     version_key = "+".join(section_cache_versions().values())
+    # leaf plan 结构 hash（guards-v19）：source_blocks 的权威 row/cell ID 骨架——
+    # 结构路由（row/cell owner）变化即使文本不变也必须让缓存失效
+    structure_skeleton = [
+        {
+            "block_id": str(sb.get("block_id") or ""),
+            "rows": [str(row.get("item_id") or "") for row in (sb.get("rows") or [])],
+            "cells": [str(cell.get("cell_id") or "") for cell in (sb.get("cells") or [])],
+        }
+        for sb in (section.get("source_blocks") or [])
+        if isinstance(sb, dict) and (sb.get("rows") or sb.get("cells"))
+    ]
+    struct_key = (
+        hashlib.sha256(
+            json.dumps(structure_skeleton, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:12]
+        if structure_skeleton
+        else ""
+    )
     digest = hashlib.sha256(
         f"{section.get('text', '')}\n{model}\n{version_key}"
-        f"\n{context_key}\n{refs_key}\n{drift_key}".encode("utf-8")
+        f"\n{context_key}\n{refs_key}\n{drift_key}\n{struct_key}".encode("utf-8")
     ).hexdigest()
     return digest[:24]
 
@@ -2210,6 +2282,20 @@ def _annotate_row_source(
                     continue
                 if row.get("item_id"):
                     req["source_item_id"] = str(row["item_id"])
+                return
+        # cell 级溯源（table-structure-v2）：引句命中 cell 上下文文本落 source_cell_id
+        for cell in sb.get("cells") or []:
+            cell_text = compact_source_text(cell.get("text"))
+            if not cell_text or len(cell_text) < 12:
+                continue
+            if cell_text in quote or quote in cell_text:
+                if cell.get("cell_id"):
+                    req["source_cell_id"] = str(cell["cell_id"])
+                try:
+                    req["source_row_index"] = int(cell.get("row_index"))
+                    req["source_column_index"] = int(cell.get("column_index"))
+                except (TypeError, ValueError):
+                    pass
                 return
 
 
@@ -3760,11 +3846,23 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
 
     blocks = read_jsonl(out_dir / "blocks.jsonl")
     blocks = body_blocks(blocks)   # 封面/目录区不进抽取（EN 16314：目录条目被抽成 11 条空壳需求）
+    # table-structure-v2：权威 row/cell 身份进章节装配（无文件时保持旧行为）
+    try:
+        table_items = read_jsonl(out_dir / "table_items.jsonl")
+    except (OSError, ValueError):
+        table_items = []
+    try:
+        table_cell_items = read_jsonl(out_dir / "table_cell_items.jsonl")
+    except (OSError, ValueError):
+        table_cell_items = []
     resolved_mode = (unit_mode or os.environ.get(UNIT_MODE_ENV) or "clause").strip().lower()
     if resolved_mode not in ("clause", "chapter"):
         resolved_mode = "clause"
-    all_sections = merge_sections(assemble_sections(blocks), target_chars=merge_chars,
-                                  unit_mode=resolved_mode)
+    all_sections = merge_sections(
+        assemble_sections(blocks, table_items=table_items, table_cell_items=table_cell_items),
+        target_chars=merge_chars,
+        unit_mode=resolved_mode,
+    )
     resolve_section_refs(all_sections)  # 跨章节引用注入（须在采样前，被引条款可能不在样本里）
     attach_term_definitions(all_sections, collect_term_entries(all_sections))  # 术语定向注入
     _annotate_annex_scopes(all_sections)  # 资料性附录区段标注（跨单元状态机,须在采样前）
@@ -4027,6 +4125,7 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     requirements = _supplement_uncovered_compliance(requirements, blocks)   # 合规漏抽兜底,进 jsonl+澄清
     requirements = _supplement_parameter_table_rows(requirements, blocks)   # 参数表逐行确定性展开,LLM 未覆盖行进澄清
     requirements = _merge_llm_into_deterministic_rows(requirements)   # 封堵二:同行 LLM 叙述并入确定性展开行,免双份
+    _assert_source_references(requirements, table_items, table_cell_items)   # 发布前断言:row/cell 引用真实存在
     target = out_dir / AI_REQUIREMENTS
     atomic_write_jsonl(target, requirements)
     written.append(target.name)

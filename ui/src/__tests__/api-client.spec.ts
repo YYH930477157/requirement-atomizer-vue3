@@ -210,7 +210,7 @@ describe("RequirementApiClient", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8770/spot-extract", expect.objectContaining({
       method: "POST",
       body: JSON.stringify({
-        block_id: "BLK-T1", row_index: 2, actor: "reviewer", reason: "", route: "",
+        block_id: "BLK-T1", row_index: 2, cell_id: null, actor: "reviewer", reason: "", route: "",
       }),
     }))
 
@@ -221,7 +221,34 @@ describe("RequirementApiClient", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:8770/spot-extract", expect.objectContaining({
       method: "POST",
       body: JSON.stringify({
-        block_id: "B2", row_index: null, actor: "", reason: "", route: "",
+        block_id: "B2", row_index: null, cell_id: null, actor: "", reason: "", route: "",
+      }),
+    }))
+  })
+
+  it("posts spot extraction for a single table cell with dual-header context", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        schema: "spot-extract/v1", block_id: "BLK-T1", row_index: 1,
+        cell_id: "TBL-000001-R000002-C000002",
+        strategy: "llm", drafts: 1, draft_ids: ["SPOT-BLK-T1"],
+        already_covered: false, written: ["ai_requirements.jsonl"],
+      }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770", token: "local-token", fetchImpl: fetchMock,
+    })
+
+    const payload = await client.spotExtract({
+      blockId: "BLK-T1", cellId: "TBL-000001-R000002-C000002", actor: "reviewer",
+    })
+    expect(payload.cell_id).toBe("TBL-000001-R000002-C000002")
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8770/spot-extract", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        block_id: "BLK-T1", row_index: null, cell_id: "TBL-000001-R000002-C000002",
+        actor: "reviewer", reason: "", route: "",
       }),
     }))
   })

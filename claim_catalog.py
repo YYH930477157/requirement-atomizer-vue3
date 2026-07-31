@@ -29,10 +29,11 @@ from source_spans import (
     SOURCE_TRANSFORMATION_RULESET_VERSION,
     source_alignment_fields,
 )
+from table_structure import TABLE_STRUCTURE_VERSION, is_normative_text, matrix_fact_columns
 
-CLAIM_CATALOG_VERSION = "claim-catalog-v5"
+CLAIM_CATALOG_VERSION = "claim-catalog-v6"
 CLAIM_UNIT_PACKING_VERSION = "claim-unit-packing-v1"
-CLAIM_CATALOG_SCHEMA = "claim-catalog/v1"
+CLAIM_CATALOG_SCHEMA = "claim-catalog/v2"
 CLAIM_CATALOG_META_SCHEMA = "claim-catalog-meta/v1"
 
 TABLE_FALLBACK_MAX_ROWS = 20
@@ -85,10 +86,22 @@ def build_document_generation(
     *,
     blocks_bytes: bytes | None = None,
     table_items_bytes: bytes | None = None,
+    table_cell_items: list[dict[str, Any]] | None = None,
+    table_cell_items_bytes: bytes | None = None,
 ) -> dict[str, Any]:
-    """Return the deterministic generation anchored to both parser artifacts."""
+    """Return the deterministic generation anchored to the parser artifacts.
+
+    世代哈希向后兼容：只有当输入携带 table-structure-v2 证据（结构化表格块或
+    canonical cells）时才把 cell payload / 结构版本钉进 generation——旧产物
+    （无 cell 时代）哈希与 v5 逐字节一致，历史绑定不失效，禁止伪造迁移。"""
+    cell_rows = table_cell_items or []
+    structure_v2 = bool(cell_rows) or any(
+        str(block.get("table_structure_version") or "") == TABLE_STRUCTURE_VERSION
+        for block in blocks
+    )
     block_payload = _artifact_bytes(blocks, blocks_bytes)
     table_payload = _artifact_bytes(table_items, table_items_bytes)
+    cell_payload = _artifact_bytes(cell_rows, table_cell_items_bytes)
     repair_versions = sorted({
         str(row.get("text_repair_version") or "")
         for row in [*blocks, *table_items]
@@ -102,17 +115,21 @@ def build_document_generation(
         "blocks_with_raw_mapping": sum(bool(row.get("raw_to_repaired_spans")) for row in blocks),
         "table_items_with_raw_mapping": sum(bool(row.get("raw_to_repaired_spans")) for row in table_items),
     }
-    generation_id = _sha256_bytes(
-        block_payload,
-        table_payload,
-        _canonical_bytes(parser_provenance),
-    )
-    return {
+    hash_parts = [block_payload, table_payload]
+    if structure_v2:
+        parser_provenance["table_structure_version"] = TABLE_STRUCTURE_VERSION
+        hash_parts.append(cell_payload)
+    hash_parts.append(_canonical_bytes(parser_provenance))
+    generation_id = _sha256_bytes(*hash_parts)
+    result = {
         "document_generation_id": generation_id,
         "blocks_sha256": _sha256_bytes(block_payload),
         "table_items_sha256": _sha256_bytes(table_payload),
         "parser_provenance": parser_provenance,
     }
+    if structure_v2:
+        result["table_cell_items_sha256"] = _sha256_bytes(cell_payload)
+    return result
 
 
 def _line_spans(text: str) -> list[tuple[int, int]]:
@@ -548,9 +565,11 @@ def _table_is_incomplete(block: dict[str, Any]) -> bool:
         if block.get("header_row_count") is not None
         else 1 if block.get("headers") else 0
     )
+    # table-structure-v2 起 block.rows 含标题行；期望数据行数须扣除标题区
+    title_rows = len(block.get("title_row_indexes") or [])
     data_rows = block.get("data_rows")
     if isinstance(data_rows, list):
-        expected_data_rows = max(0, declared_rows - header_rows)
+        expected_data_rows = max(0, declared_rows - header_rows - title_rows)
         if declared_rows and len(data_rows) < expected_data_rows:
             return True
         if data_rows:
@@ -839,8 +858,9 @@ def _enumerate_leaves(
     blocks: list[dict[str, Any]],
     table_items: list[dict[str, Any]],
     *,
+    table_cell_items: list[dict[str, Any]] | None = None,
     catalog_version: str = CLAIM_CATALOG_VERSION,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int], str]:
     leaves: list[dict[str, Any]] = []
     container_mappings: list[dict[str, Any]] = []
     audit = {
@@ -853,12 +873,24 @@ def _enumerate_leaves(
         "orphan_table_item_count": 0,
         "multi_consumed_table_item_count": 0,
         "non_table_parent_item_count": 0,
+        # table-structure-v2 单元格闭环审计（全部 hard-fail）
+        "unconsumed_table_cell_count": 0,
+        "multi_consumed_table_cell_count": 0,
+        "dangling_table_item_reference_count": 0,
+        "dangling_table_cell_reference_count": 0,
+        "normative_context_only_count": 0,
     }
+    structure_status = "ok"
     items_by_block: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in table_items:
         items_by_block[str(item.get("table_block_id") or "")].append(item)
     for items in items_by_block.values():
         items.sort(key=lambda item: (int(item.get("row_index") or 0), str(item.get("item_id") or "")))
+    cells_by_block: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    for cell in table_cell_items or []:
+        cell_id = str(cell.get("cell_id") or "")
+        if cell_id:
+            cells_by_block[str(cell.get("table_block_id") or "")][cell_id] = cell
     table_item_consumers: dict[str, int] = defaultdict(int)
     block_types: dict[str, set[str]] = defaultdict(set)
     for block in blocks:
@@ -870,7 +902,146 @@ def _enumerate_leaves(
         block_type = str(block.get("type") or "other")
         text = str(block.get("text") or "")
 
+        if block_type == "table" and str(block.get("table_structure_version") or "") == TABLE_STRUCTURE_VERSION:
+            # ---- table-structure-v2：leaf plan 唯一 owner 闭环 --------------------
+            if str(block.get("header_detection_status") or "") == "ambiguous":
+                structure_status = "needs_review"
+            leaf_plan = block.get("leaf_plan") if isinstance(block.get("leaf_plan"), dict) else {}
+            row_leaf_indexes = {int(value) for value in (leaf_plan.get("row_leaves") or [])}
+            cell_leaf_ids = [str(value) for value in (leaf_plan.get("cell_leaves") or [])]
+            context_cell_ids = [str(value) for value in (leaf_plan.get("context_cells") or [])]
+            cell_leaf_id_set = set(cell_leaf_ids)
+            context_cell_id_set = set(context_cell_ids)
+            block_cells = cells_by_block.get(block_id, {})
+            table_rows = items_by_block.get(block_id, [])
+            mapping = {"container_block_id": block_id, "kind": "table", "leaf_locator_keys": []}
+            if _table_is_incomplete(block):
+                audit["parse_incomplete_count"] += 1
+                mapping.update({
+                    "parse_incomplete": True,
+                    "reason": str(
+                        (block.get("parse_incomplete_reason") or {}).get("code")
+                        if isinstance(block.get("parse_incomplete_reason"), dict)
+                        else "complete_table_rows_unavailable"
+                    ),
+                    "parse_incomplete_reason": block.get("parse_incomplete_reason"),
+                })
+            if table_rows:
+                table_item_consumers[block_id] += 1
+            headers = [str(value) for value in (block.get("headers") or [])]
+            # 组合表（mixed）：事实列字段不进 row claim 文本——marker 格由 cell claim
+            # 闭环，同一物理内容只有一个 owner
+            fact_header_names: set[str] = set()
+            if row_leaf_indexes and cell_leaf_id_set:
+                fact_header_names = {
+                    headers[column]
+                    for column in matrix_fact_columns(headers, list(block.get("data_rows") or []))
+                    if column < len(headers)
+                }
+            item_rows = {int(item.get("row_index") or 0) for item in table_rows}
+            for row_index in sorted(row_leaf_indexes):
+                if row_index not in item_rows:
+                    audit["dangling_table_item_reference_count"] += 1
+            for item in table_rows:
+                if int(item.get("row_index") or 0) not in row_leaf_indexes:
+                    continue  # cell/mixed 模式中的行仅作容器，不生成重复父 claim
+                ordered = [
+                    (key, value) for key, value in _ordered_fields(item, headers)
+                    if key not in fact_header_names
+                ]
+                row_text = _table_row_text(ordered)
+                locator = {
+                    "block_id": block_id,
+                    "line": None,
+                    "start": None,
+                    "end": None,
+                    "position_basis": "table_item_fields",
+                    "table_item_id": str(item.get("item_id") or ""),
+                    "row_index": int(item.get("row_index") or 0),
+                }
+                item_text = str(item.get("text") or row_text)
+                if fact_header_names:
+                    # trimmed claim 文本需要同口径 raw 投影（剔除事实列后的 raw 行）
+                    raw_fields = item.get("raw_fields") if isinstance(item.get("raw_fields"), dict) else {}
+                    raw_trimmed = " | ".join(
+                        f"{key}={str(raw_fields.get(key) or '')}" for key, _value in ordered
+                    )
+                    alignment = source_alignment_fields(raw_trimmed, row_text)
+                    shim = {
+                        "raw_text": raw_trimmed,
+                        "source_alignment": alignment.get("source_alignment"),
+                        "raw_to_repaired_spans": alignment.get("raw_to_repaired_spans") or [],
+                        "table_block_id": block_id,
+                    }
+                    raw_value, raw_locator = _raw_leaf_projection(shim, row_text, 0, len(row_text))
+                else:
+                    raw_value, raw_locator = _raw_leaf_projection(
+                        item,
+                        item_text,
+                        0,
+                        len(item_text),
+                    )
+                if raw_locator is None:
+                    audit["unmapped_raw_span_count"] += 1
+                region_source = {**block, **{
+                    key: value for key, value in item.items()
+                    if key in {"page_number", "pdf_regions"}
+                }}
+                leaf = _base_leaf(
+                    item,
+                    source_kind="table_row",
+                    text=row_text,
+                    locator=locator,
+                    raw_text=raw_value,
+                    raw_locator=raw_locator,
+                    region_source=region_source,
+                )
+                leaf["table_context"] = {
+                    "headers": headers,
+                    "fields": [{"name": key, "value": value} for key, value in ordered],
+                    "table_title": str(block.get("table_title") or ""),
+                }
+                leaf["source_order"] = int(block.get("order") or 0)
+                leaves.append(leaf)
+                mapping["leaf_locator_keys"].append(_leaf_locator_key(leaf))
+            for cell_id in cell_leaf_ids:
+                cell = block_cells.get(cell_id)
+                if cell is None:
+                    audit["dangling_table_cell_reference_count"] += 1
+                    continue
+                for leaf in _table_cell_leaves(block, cell, headers, catalog_version=catalog_version):
+                    leaves.append(leaf)
+                    mapping["leaf_locator_keys"].append(_leaf_locator_key(leaf))
+            for cell_id in context_cell_ids:
+                cell = block_cells.get(cell_id)
+                if cell is None:
+                    continue
+                if is_normative_text(str(cell.get("text") or "")):
+                    # 规范性内容被路由成纯 context = 静默丢失，hard-fail
+                    audit["normative_context_only_count"] += 1
+            # 每个非空 canonical cell 恰好被消费一次（cell leaf 优先于行 ownership：
+            # mixed 组合表的 marker 格由 cell claim 闭环，不再计入行消费）
+            for cell_id, cell in block_cells.items():
+                consumed = 0
+                if cell_id in cell_leaf_id_set:
+                    consumed += 1
+                if cell_id in context_cell_id_set:
+                    consumed += 1
+                if (
+                    int(cell.get("row_index") or 0) in row_leaf_indexes
+                    and cell_id not in cell_leaf_id_set
+                ):
+                    consumed += 1
+                if consumed == 0:
+                    audit["unconsumed_table_cell_count"] += 1
+                elif consumed > 1:
+                    audit["multi_consumed_table_cell_count"] += 1
+            container_mappings.append(mapping)
+            continue
+
         if block_type == "table":
+            # 旧产物（无 table-structure-v2 证据）：行级遗留路径，禁止伪造迁移
+            structure_status = "base_migration_required"
             table_rows = items_by_block.get(block_id, [])
             mapping = {"container_block_id": block_id, "kind": "table", "leaf_locator_keys": []}
             if _table_is_incomplete(block):
@@ -1146,7 +1317,77 @@ def _enumerate_leaves(
                 audit["non_table_parent_item_count"] += len(items)
             else:
                 audit["orphan_table_item_count"] += len(items)
-    return leaves, container_mappings, audit
+    return leaves, container_mappings, audit, structure_status
+
+
+def _table_cell_leaves(
+    block: dict[str, Any],
+    cell: dict[str, Any],
+    headers: list[str],
+    *,
+    catalog_version: str = CLAIM_CATALOG_VERSION,
+) -> list[dict[str, Any]]:
+    """一个 cell leaf 的按句切分：同格两条独立义务生成两个 claim。
+
+    locator.position_basis=table_cell_text，cell_start/end 是 cell 正文（修复后文本）
+    内的半开区间；raw 投影经 cell 自身的 raw_text 对齐计算。"""
+    block_id = str(block.get("block_id") or "")
+    cell_id = str(cell.get("cell_id") or "")
+    cell_text = str(cell.get("text") or "")
+    raw_cell_text = str(cell.get("raw_text") if cell.get("raw_text") is not None else cell_text)
+    alignment = source_alignment_fields(raw_cell_text, cell_text)
+    shim = {
+        "raw_text": raw_cell_text,
+        "source_alignment": alignment.get("source_alignment"),
+        "raw_to_repaired_spans": alignment.get("raw_to_repaired_spans") or [],
+        "table_block_id": block_id,
+    }
+    spans = _sentence_spans(cell_text) or [(0, len(cell_text))]
+    region_source = {**block}
+    if cell.get("page_number") is not None:
+        region_source["page_number"] = cell.get("page_number")
+    leaves: list[dict[str, Any]] = []
+    for start, end in spans:
+        sentence = cell_text[start:end]
+        if not sentence.strip():
+            continue
+        locator = {
+            "block_id": block_id,
+            "line": None,
+            "start": None,
+            "end": None,
+            "position_basis": "table_cell_text",
+            "table_item_id": None,
+            "row_index": int(cell.get("row_index") or 0),
+            "table_cell_id": cell_id,
+            "column_index": int(cell.get("column_index") or 0),
+            "cell_start": start,
+            "cell_end": end,
+        }
+        raw_value, raw_locator = _raw_leaf_projection(shim, cell_text, start, end)
+        if raw_locator is not None:
+            raw_locator["table_cell_id"] = cell_id
+            raw_locator["row_index"] = int(cell.get("row_index") or 0)
+            raw_locator["column_index"] = int(cell.get("column_index") or 0)
+        leaf = _base_leaf(
+            {**block, **cell},
+            source_kind="table_cell",
+            text=sentence,
+            locator=locator,
+            raw_text=raw_value,
+            raw_locator=raw_locator,
+            region_source=region_source,
+        )
+        leaf["table_context"] = {
+            "headers": headers,
+            "header_path": [str(value) for value in (cell.get("header_path") or [])],
+            "row_header_context": [str(value) for value in (cell.get("row_header_context") or [])],
+            "table_title": str(block.get("table_title") or cell.get("table_title") or ""),
+            "structural_role": str(cell.get("structural_role") or "data"),
+        }
+        leaf["source_order"] = int(block.get("order") or 0)
+        leaves.append(leaf)
+    return leaves
 
 
 def _materialize_claim_identity(
@@ -1292,6 +1533,8 @@ def build_claim_catalog(
     *,
     blocks_bytes: bytes | None = None,
     table_items_bytes: bytes | None = None,
+    table_cell_items: list[dict[str, Any]] | None = None,
+    table_cell_items_bytes: bytes | None = None,
     scope: str = "full",
     target_chars: int = DEFAULT_CLAIM_UNIT_CHARS,
     unit_mode: str = "clause",
@@ -1306,6 +1549,7 @@ def build_claim_catalog(
         "claim-catalog-v2",
         "claim-catalog-v3",
         "claim-catalog-v4",
+        "claim-catalog-v5",
         CLAIM_CATALOG_VERSION,
     }:
         raise ValueError("unsupported replay catalog version")
@@ -1314,10 +1558,13 @@ def build_claim_catalog(
         table_items,
         blocks_bytes=blocks_bytes,
         table_items_bytes=table_items_bytes,
+        table_cell_items=table_cell_items,
+        table_cell_items_bytes=table_cell_items_bytes,
     )
-    leaves, container_mappings, audit = _enumerate_leaves(
+    leaves, container_mappings, audit, structure_status = _enumerate_leaves(
         blocks,
         table_items,
+        table_cell_items=table_cell_items,
         catalog_version=catalog_version,
     )
     rows, duplicate_locators, duplicate_hashes = _materialize_claim_identity(
@@ -1375,6 +1622,11 @@ def build_claim_catalog(
         "orphan_table_item_count",
         "multi_consumed_table_item_count",
         "non_table_parent_item_count",
+        "unconsumed_table_cell_count",
+        "multi_consumed_table_cell_count",
+        "dangling_table_item_reference_count",
+        "dangling_table_cell_reference_count",
+        "normative_context_only_count",
     )
     accounting_status = "complete" if all(int(audit[key]) == 0 for key in hard_fail_keys) else "incomplete"
     meta = {
@@ -1391,10 +1643,14 @@ def build_claim_catalog(
         "document_closure_claimed": False,
         "packing_config": packing_config,
         "accounting_status": accounting_status,
+        # 结构歧义/旧产物迁移是结构状态，不与内容守恒（accounting_status）混为一谈
+        "table_structure_status": structure_status,
+        "table_structure_version": TABLE_STRUCTURE_VERSION,
         "counts": {
             "catalog_total_count": len(rows),
             "eligible_claim_count": sum(row.get("eligibility") == "claim" for row in rows),
             "structural_excluded_count": sum(row.get("eligibility") == "excluded" for row in rows),
+            "table_cell_claim_count": sum(row.get("source_kind") == "table_cell" for row in rows),
             "owner_unit_count": len(units),
         },
         "audit": audit,
@@ -1442,14 +1698,18 @@ def build_catalog_from_directory(
     root = Path(out_dir).expanduser().resolve()
     blocks_path = root / "blocks.jsonl"
     table_path = root / "table_items.jsonl"
+    cell_path = root / "table_cell_items.jsonl"
     block_bytes = blocks_path.read_bytes()
     table_bytes = table_path.read_bytes() if table_path.exists() else b""
+    cell_bytes = cell_path.read_bytes() if cell_path.exists() else b""
     override_snapshot = read_structural_overrides(root)
     return build_claim_catalog(
         read_jsonl(blocks_path),
         read_jsonl(table_path),
         blocks_bytes=block_bytes,
         table_items_bytes=table_bytes,
+        table_cell_items=read_jsonl(cell_path) if cell_path.exists() else [],
+        table_cell_items_bytes=cell_bytes,
         scope=scope,
         target_chars=target_chars,
         unit_mode=unit_mode,

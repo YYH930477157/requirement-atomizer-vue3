@@ -64,10 +64,14 @@ class ParameterTableQualificationTests(unittest.TestCase):
         block["section_path"] = ["3. Terms and Definitions"]
         self.assertFalse(_is_parameter_table(block))
 
-    def test_small_table_rejected(self) -> None:
+    def test_small_table_qualifies_row_count_is_only_evidence(self) -> None:
+        # param-row-expand-v3：≥3 数据行硬门删除——行数只是分类置信证据，
+        # 2 行参数表同样按行闭环（内容守恒优先于分类保守）
         block = _param_block()
         block["data_rows"] = block["data_rows"][:2]
-        self.assertFalse(_is_parameter_table(block))
+        self.assertTrue(_is_parameter_table(block))
+        result = _supplement_parameter_table_rows([], [block])
+        self.assertEqual(len(result), 2)
 
     def test_non_table_block_rejected(self) -> None:
         block = _param_block()

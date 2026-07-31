@@ -35,9 +35,12 @@ class ExtractPdfE2ETests(unittest.TestCase):
     def test_extract_pdf_builds_blocks_tables_without_duplicating_table_text(self) -> None:
         input_path = FIXTURES / "sample_text_tables.pdf"
 
-        blocks, table_items = extract_pdf(input_path, knowledge_bases=[], document_profile=None)
-        mark_doc_regions(blocks, table_items)
-        candidates = build_atomic_candidates(blocks, table_items, include_regions={"body"})
+        blocks, table_items, table_cell_items = extract_pdf(input_path, knowledge_bases=[], document_profile=None)
+        mark_doc_regions(blocks, table_items, table_cell_items=table_cell_items)
+        candidates = build_atomic_candidates(
+            blocks, table_items, include_regions={"body"},
+            table_cell_items=table_cell_items,
+        )
 
         headings = [block["text"] for block in blocks if block["type"] == "heading"]
         self.assertIn("1 Scope", headings)

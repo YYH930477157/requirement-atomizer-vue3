@@ -15,10 +15,13 @@ class ExtractDocxE2ETests(unittest.TestCase):
             input_path = Path(tmp) / "synthetic_standard.docx"
             write_synthetic_docx(input_path)
 
-            blocks, table_items = extract_docx(input_path)
-            mark_doc_regions(blocks, table_items)
+            blocks, table_items, table_cell_items = extract_docx(input_path)
+            mark_doc_regions(blocks, table_items, table_cell_items=table_cell_items)
             chunks = build_chunks(blocks, target_chars=800, include_regions={"body"})
-            candidates = build_atomic_candidates(blocks, table_items, include_regions={"body"})
+            candidates = build_atomic_candidates(
+                blocks, table_items, include_regions={"body"},
+                table_cell_items=table_cell_items,
+            )
 
         blocks_by_text = {block["text"]: block for block in blocks}
         list_block = blocks_by_text["Display all segments"]

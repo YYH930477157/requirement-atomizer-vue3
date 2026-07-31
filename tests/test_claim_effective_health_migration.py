@@ -442,7 +442,7 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 candidate["catalog_meta"]["catalog_version"],
-                "claim-catalog-v5",
+                "claim-catalog-v6",
             )
             with self.assertRaisesRegex(
                 claim_artifacts.ClaimArtifactError,

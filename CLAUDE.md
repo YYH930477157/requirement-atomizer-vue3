@@ -270,6 +270,16 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **缓存纪律**：新增 `ANALYZE_RULES_VERSION=analyze-rules-v1`，`COMPLIANCE_SCHEMA` 升至 `compliance-requirements/v2`；requirements-analysis 与 ai-extract producer 分别纳入对应版本，functional-synthesis implementation revision 升至 v4。
 - **冻结基线纪律**：`agent_eval.py` 默认改为只读，实时规则可优于历史 manifest 基线而不自动改写 `golden_sets/`；维护者只有显式传 `--update-baseline` 才能原子刷新基线字段，`curation` 始终保持不变。
 
+## 重大更新（2026-07-31）——表格结构与单元格级需求闭环 v1（table-structure-v2，分支 codex/table-structure-cell-closure 待审核）
+
+- **新模块 `table_structure.py`**：表格角色识别（title/header/row_header/data/group_header）与粒度规划（row/cell/mixed leaf plan）集中一处，纯确定性；`TABLE_STRUCTURE_VERSION="table-structure-v2"`。
+- **新产物 `table_cell_items.jsonl`**（schema `table-cell-item/v1`）：每个非空物理单元格/合并区域一个 canonical cell（`TBL-000001-R000002-C000003`），合并格仅存 anchor + covered_coordinates；随 atomize 写出并进 ai-extract/assemble/compose/export-annotation-html 输入与 manifest 计数。
+- **删除的硬规则**：xlsx「首行一个非空格即标题」、所有表默认首行为表头（首两行皆需求句→headerless，首行进数据区）、参数表 ≥3 数据行硬门（行数只作置信证据）。
+- **混合模式（mixed）**：DLMS 属性×服务组合表——行 own 属性字段（COSEM join 不变），事实列 marker 格 own cell claim；Note 列保持原文，「1 shall support Note.」「two shall support Value.」「1 shall have Requirement set to …」伪句式族全部消灭（索引号 subject 永不产 valued/matrix 事实）。
+- **Claim Ledger**：source_kind=table_cell（locator position_basis=table_cell_text，cell_start/end 句切分——同格两条独立义务两个 claim）；新增 5 个 hard-fail 审计项（unconsumed/multi_consumed/dangling item/cell/normative_context_only），table_structure_status=needs_review|base_migration_required 与内容守恒分离；claim-catalog-v6 / schema v2 / focus-adapter-v2 / artifacts-v7 / annotation-v14 / 几何缓存 v5 / guards-v19 / param-row-expand-v3 / atomize impl-v8 / ai-extract impl-v6。
+- **探针（ABNT 真实文档，三 seed KB + domain-pack）**：block_id 序列 1013/1013 逐字节一致；table_items 2075/2075 item_id 集合一致；text 零变化；10393 canonical cells；原子候选 -63 全为伪句式垃圾（table_value_matrix 186→124、capability_matrix 15→14，代表性需求零丢失、零新增）；cell 审计五项全零；unmapped_raw_span 909→871（既有 incomplete 状态改善，非回归）。
+- **合并后必做**：main 检出按「三 seed KB + domain-pack」重生成 `out/abnt_nbr_16968_atomizer_v5/`，golden 摘要的 counts/requirement_type/source_type 分布与 coverage 将按上述漂移更新（逐项见上）。
+
 ## 重大更新（2026-07-22）——评测集扩充至 40 条 + 三类自动判定（agent-eval-v2，已合 main `11af616`；主检出全量 1502 tests OK、golden 6/6）
 
 - **判定接生产路径（零 LLM）**：grouping 经 `build_function_catalog(chat=None)` 成对判同组/异组（跨 key 负对自动派生）；must_ask 三档（forbidden 缺省值在零 LLM 派生链零泄漏 + 声明 `expected.detector` 必触发且 `suspicion_policy` 路由问客户/blocking + 语义型如实 manual 不进分母）；hallucination 按 `expected.detector` 声明的护栏族判定（漂移并集按编码∪整数原子匹配 / `foreign_standard_refs` / `opposed_qualifiers`）。

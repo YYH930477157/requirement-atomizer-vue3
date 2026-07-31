@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 from docx import Document
 from docx.document import Document as DocxDocument
+from docx.oxml.ns import qn
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.table import Table
@@ -26,6 +27,17 @@ from requirement_kb import KnowledgeRepository
 from requirement_kb.matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
 from source_spans import source_alignment_fields
 from table_pattern_engine import load_table_patterns, match_table_pattern
+from table_structure import (
+    TABLE_STRUCTURE_VERSION,
+    analyze_table,
+    build_cell_items,
+    cell_context_text,
+    classify_table_kind as classify_table_kind_structure,
+    effective_headers as structure_effective_headers,
+    matrix_fact_columns,
+    normalize_merge_ranges,
+    plan_table_leaves,
+)
 from version import __version__
 
 
@@ -296,6 +308,80 @@ def table_matrix(table: Table) -> list[list[str]]:
     return matrix
 
 
+def docx_table_grid_evidence(
+    table: Table,
+) -> tuple[list[tuple[int, int, int, int]], list[int]]:
+    """DOCX 表 XML 级结构证据：gridSpan/vMerge 合并区域 + tblHeader 显式表头行。
+
+    纯确定性解析 OOXML；python-docx 的 row.cells 已把合并值填充到覆盖格（扁平矩阵
+    口径不变），这里只还原合并关系本身，供 table_structure 判标题/分组/canonical cell。
+    """
+    merge_ranges: list[tuple[int, int, int, int]] = []
+    explicit_header_rows: list[int] = []
+    # 进行中的纵向合并：列游标位置 → [anchor_row, anchor_col, col_span, last_row]
+    active_vmerge: dict[int, list[int]] = {}
+
+    def close_vmerge(column_cursor: int) -> None:
+        active = active_vmerge.pop(column_cursor, None)
+        if active is None:
+            return
+        anchor_row, anchor_col, col_span, last_row = active
+        if last_row > anchor_row or col_span > 1:
+            merge_ranges.append((anchor_row, anchor_col, last_row, anchor_col + col_span - 1))
+
+    for row_index, tr in enumerate(table._tbl.tr_lst, start=1):
+        tr_pr = tr.trPr
+        if tr_pr is not None and tr_pr.find(qn("w:tblHeader")) is not None:
+            explicit_header_rows.append(row_index)
+        column_cursor = 1
+        seen_columns: set[int] = set()
+        for tc in tr.tc_lst:
+            tc_pr = tc.tcPr
+            col_span = 1
+            vmerge_val: str | None = None
+            has_vmerge = False
+            if tc_pr is not None:
+                grid_span = tc_pr.find(qn("w:gridSpan"))
+                if grid_span is not None:
+                    try:
+                        col_span = max(1, int(grid_span.get(qn("w:val")) or 1))
+                    except ValueError:
+                        col_span = 1
+                vmerge = tc_pr.find(qn("w:vMerge"))
+                if vmerge is not None:
+                    has_vmerge = True
+                    vmerge_val = vmerge.get(qn("w:val")) or "continue"
+            for offset in range(col_span):
+                seen_columns.add(column_cursor + offset)
+            if has_vmerge and vmerge_val == "restart":
+                for offset in range(col_span):
+                    close_vmerge(column_cursor + offset)
+                    active_vmerge[column_cursor + offset] = [
+                        row_index, column_cursor, col_span, row_index,
+                    ]
+            elif has_vmerge:
+                active = active_vmerge.get(column_cursor)
+                if active is not None:
+                    active[3] = row_index
+            else:
+                for offset in range(col_span):
+                    close_vmerge(column_cursor + offset)
+                if col_span > 1:
+                    merge_ranges.append(
+                        (row_index, column_cursor, row_index, column_cursor + col_span - 1)
+                    )
+            column_cursor += col_span
+        # 本行未出现的列若挂着 vmerge 链 → 链在此行之前终止
+        for cursor in list(active_vmerge):
+            if cursor not in seen_columns:
+                close_vmerge(cursor)
+    for cursor in list(active_vmerge):
+        close_vmerge(cursor)
+    # 去重（横向 span 与 vmerge 链可能对同一区域各记一次）
+    deduped = sorted(set(merge_ranges))
+    return deduped, explicit_header_rows
+
+
 def build_table_artifacts(
     matrix: list[list[str]],
     *,
@@ -308,26 +394,81 @@ def build_table_artifacts(
     knowledge_bases: KnowledgeRepository,
     parse_incomplete: bool = False,
     parse_incomplete_reason: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    table_model = interpret_table_matrix(matrix)
-    width = table_model["width"]
-    height = table_model["height"]
-    header_count = table_model["header_row_count"]
-    header_rows = table_model["header_rows"]
-    headers = table_model["headers"]
-    data_rows = table_model["data_rows"]
+    merge_ranges: Iterable[Iterable[int]] | None = None,
+    explicit_header_rows: list[int] | None = None,
+    source_format: str = "docx",
+    sheet_name: str | None = None,
+    a1_origin: tuple[int, int] | None = None,
+    page_number: int | None = None,
+    cell_bboxes: dict[tuple[int, int], Any] | None = None,
+    geometry_kind: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """表格三件套：block + table_items（行容器）+ table_cell_items（canonical cells）。
+
+    table-structure-v2：标题/表头/合并/粒度全部由 table_structure 确定性识别；
+    不新增顶层 block，行/格身份用 item_id/cell_id。"""
+    normalized_merges = normalize_merge_ranges(merge_ranges)
+    structure = analyze_table(
+        matrix,
+        merge_ranges=normalized_merges,
+        explicit_header_rows=explicit_header_rows,
+    )
+    width = structure["width"]
+    height = structure["height"]
+    title_row_indexes = structure["title_row_indexes"]
+    header_row_indexes = structure["header_row_indexes"]
+    header_count = structure["header_row_count"]
+    data_row_indexes = structure["data_row_indexes"]
+    header_rows = [pad_row(matrix[row_index - 1], width) for row_index in header_row_indexes]
+    data_rows = [pad_row(matrix[row_index - 1], width) for row_index in data_row_indexes]
+    headers = effective_table_headers(header_rows, width)
+    # 标题行（全宽合并）提升为表标题；无标题行时保留 caption/sheet/回退标题
+    if title_row_indexes:
+        first_title_row = matrix[title_row_indexes[0] - 1]
+        title_text = next((clean_text(value) for value in first_title_row if clean_text(value)), "")
+        if title_text:
+            table_title = title_text
+    table_kind = classify_table_kind_structure(headers, data_rows, section_path)
+    # 矩阵事实列：mapping_matrix 全表取；parameter/other 组合表（DLMS 属性×服务矩阵）
+    # 也取——marker 格按 cell 闭环（mixed），COSEM 行 join 与 A 轨能力事实同时保留
+    fact_columns = matrix_fact_columns(headers, data_rows)
+    plan = plan_table_leaves(
+        structure, matrix, table_kind=table_kind, merge_ranges=normalized_merges,
+        headers=headers, fact_columns=fact_columns,
+    )
     table_text_full = render_table_text(headers, data_rows)
     # 2026-07-27 起扁平文本不再截断（impl-v6 取消 [:5000]、impl-v7 render 默认全行）：
     # text 恒为完整渲染，text_truncated 恒 False；字段保留供账本与旧产物判别。
     table_text = table_text_full
     text_truncated = False
-    raw_rows = [[str(value or "") for value in row] for row in (raw_matrix or matrix)]
-    raw_header_rows = [pad_row(row, width) for row in raw_rows[:header_count]]
-    raw_data_rows = [pad_row(row, width) for row in raw_rows[header_count:]]
+    raw_source = raw_matrix or matrix
+    raw_rows = [[str(value or "") for value in row] for row in raw_source]
+    raw_header_rows = [
+        pad_row(raw_rows[row_index - 1], width)
+        for row_index in header_row_indexes
+        if row_index - 1 < len(raw_rows)
+    ]
+    raw_data_rows = [
+        pad_row(raw_rows[row_index - 1], width)
+        for row_index in data_row_indexes
+        if row_index - 1 < len(raw_rows)
+    ]
     raw_headers = effective_table_headers(raw_header_rows, width)
     raw_table_text = render_table_text(raw_headers, raw_data_rows)
     kb_matches = match_knowledge(knowledge_bases, table_title, table_text, " > ".join(section_path))
     domain_tags = merge_tags(tag_domains(table_title, table_text, " > ".join(section_path)), kb_domain_tags(kb_matches))
+    leaf_plan_payload = {
+        "mode": plan["mode"],
+        "row_leaves": list(plan["row_leaves"]),
+        "cell_leaves": [
+            f"{table_id}-R{row_index:06d}-C{column_index:06d}"
+            for row_index, column_index in plan["cell_leaves"]
+        ],
+        "context_cells": [
+            f"{table_id}-R{row_index:06d}-C{column_index:06d}"
+            for row_index, column_index in plan["context_cells"]
+        ],
+    }
     block = {
         "block_id": block_id,
         "order": order,
@@ -335,6 +476,7 @@ def build_table_artifacts(
         "table_id": table_id,
         "table_title": table_title,
         "section_path": section_path,
+        "source_format": source_format,
         "rows": height,
         "columns": width,
         "header_row_count": header_count,
@@ -354,14 +496,25 @@ def build_table_artifacts(
         "kb_matches": kb_matches,
         "requirement_like": is_requirement_like(table_text),
         "noise": False,
+        # table-structure-v2 结构面
+        "table_structure_version": TABLE_STRUCTURE_VERSION,
+        "table_kind": table_kind,
+        "leaf_mode": plan["mode"],
+        "title_row_indexes": title_row_indexes,
+        "header_row_indexes": header_row_indexes,
+        "header_detection_status": structure["header_detection_status"],
+        "header_detection_evidence": structure["header_detection_evidence"],
+        "merge_ranges": [list(entry) for entry in normalized_merges],
+        "leaf_plan": leaf_plan_payload,
     }
     if parse_incomplete_reason:
         block["parse_incomplete_reason"] = dict(parse_incomplete_reason)
 
+    row_leaf_set = set(plan["row_leaves"])
     table_items: list[dict[str, Any]] = []
     current_cosem_object: dict[str, Any] | None = None
     for row_offset, row in enumerate(data_rows, start=1):
-        row_index = header_count + row_offset
+        row_index = data_row_indexes[row_offset - 1]
         if not any(row):
             continue
         fields = {
@@ -392,7 +545,13 @@ def build_table_artifacts(
         item_id = f"{table_id}-R{row_index:06d}"
         if is_cosem_object_header(compact_fields):
             current_cosem_object = build_cosem_object_context(item_id, row_index, compact_fields)
-        matrix_facts = extract_matrix_facts(headers, row)
+        # extract_matrix_facts 只允许对有真实矩阵事实列的表执行（mapping_matrix 全表，
+        # 组合表仅限事实列）——普通参数表/Note 列一律为空（堵 "1 shall support Note."）
+        matrix_facts = (
+            extract_matrix_facts(headers, row, fact_columns=fact_columns)
+            if fact_columns
+            else []
+        )
         fact_text = " | ".join(f"{fact['subject']} -> {fact['predicate_header']}" for fact in matrix_facts)
         context_text = " | ".join(str(value) for value in (current_cosem_object or {}).values() if value)
         item_text = " | ".join([*compact_fields.values(), fact_text, context_text])
@@ -418,24 +577,47 @@ def build_table_artifacts(
             "kb_matches": item_matches,
             "requirement_like": is_requirement_like(item_text),
             "noise": False,
+            # cell/mixed 模式中行仅作容器（COSEM join 保留），不再生成重复父 claim
+            "leaf_role": "row" if row_index in row_leaf_set else "container",
         }
         if current_cosem_object and (is_cosem_object_header(compact_fields) or is_cosem_attribute_row(compact_fields)):
             table_item["cosem_object_context"] = current_cosem_object
         table_items.append(table_item)
 
-    return block, table_items
+    table_cell_items = build_cell_items(
+        matrix,
+        raw_matrix,
+        structure,
+        plan,
+        table_id=table_id,
+        block_id=block_id,
+        table_title=table_title,
+        section_path=section_path,
+        headers=headers,
+        table_kind=table_kind,
+        source_format=source_format,
+        merge_ranges=normalized_merges,
+        sheet_name=sheet_name,
+        a1_origin=a1_origin,
+        page_number=page_number,
+        cell_bboxes=cell_bboxes,
+        geometry_kind=geometry_kind,
+        fact_columns=fact_columns,
+    )
+
+    return block, table_items, table_cell_items
 
 
 def interpret_table_matrix(matrix: list[list[str]]) -> dict[str, Any]:
     width = max((len(row) for row in matrix), default=0)
-    header_count = infer_header_row_count(matrix)
-    header_rows = [pad_row(row, width) for row in matrix[:header_count]]
-    data_rows = [pad_row(row, width) for row in matrix[header_count:]]
+    structure = analyze_table(matrix)
+    header_rows = [pad_row(matrix[row_index - 1], width) for row_index in structure["header_row_indexes"]]
+    data_rows = [pad_row(matrix[row_index - 1], width) for row_index in structure["data_row_indexes"]]
     headers = effective_table_headers(header_rows, width)
     return {
         "width": width,
         "height": len(matrix),
-        "header_row_count": header_count,
+        "header_row_count": structure["header_row_count"],
         "header_rows": header_rows,
         "headers": headers,
         "data_rows": data_rows,
@@ -444,42 +626,6 @@ def interpret_table_matrix(matrix: list[list[str]]) -> dict[str, Any]:
 
 def pad_row(row: list[str], width: int) -> list[str]:
     return [row[index] if index < len(row) else "" for index in range(width)]
-
-
-def infer_header_row_count(matrix: list[list[str]]) -> int:
-    if not matrix:
-        return 0
-    width = max((len(row) for row in matrix), default=0)
-    if width == 0:
-        return 0
-
-    header_count = 1
-    while header_count < min(3, len(matrix)):
-        first_header = pad_row(matrix[0], width)
-        candidate = pad_row(matrix[header_count], width)
-        if not is_continuation_header_row(first_header, candidate):
-            break
-        header_count += 1
-    return header_count
-
-
-def is_continuation_header_row(first_header: list[str], candidate: list[str]) -> bool:
-    if not first_header or not candidate:
-        return False
-    if row_has_data_markers(candidate):
-        return False
-    top_values = [normalize_header_part(value) for value in first_header if normalize_header_part(value)]
-    has_repeated_top_header = len(top_values) != len(set(top_values))
-    if not has_repeated_top_header:
-        return False
-
-    first_top = normalize_header_part(first_header[0])
-    first_candidate = normalize_header_part(candidate[0])
-    if first_top and first_candidate == first_top:
-        return True
-    if not first_candidate and any(clean_text(value) for value in candidate[1:]):
-        return True
-    return False
 
 
 def row_has_data_markers(row: list[str]) -> bool:
@@ -517,7 +663,40 @@ def is_positive_marker(value: str | None) -> bool:
     return normalized in {"x", "yes", "true", "required", "mandatory", "applicable"}
 
 
-def extract_matrix_facts(headers: list[str], row: list[str]) -> list[dict[str, Any]]:
+def extract_matrix_facts(
+    headers: list[str],
+    row: list[str],
+    *,
+    fact_columns: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """矩阵事实抽取。
+
+    fact_columns 为 None 时是遗留口径（所有非 subject 的 marker 格）；传入时（mapping_matrix
+    专用）只有矩阵事实列的 marker 才算事实，subject 恒为行头（首列）——Note 列保持原文，
+    不再产生 "1 shall support Note." 类伪句式。"""
+    if fact_columns is not None:
+        subject = clean_text(row[0]) if row else ""
+        if not subject or is_positive_marker(subject):
+            return []
+        subject_header = headers[0] if headers else "column_1"
+        facts = []
+        for column_index in sorted(fact_columns):
+            if column_index >= len(row):
+                continue
+            marker = clean_text(row[column_index])
+            if not is_positive_marker(marker):
+                continue
+            facts.append(
+                {
+                    "subject_header": subject_header,
+                    "subject": subject,
+                    "predicate_header": headers[column_index] if column_index < len(headers) else f"column_{column_index + 1}",
+                    "marker": marker,
+                    "value": True,
+                    "relation": "allowed",
+                }
+            )
+        return facts
     subject_header, subject, subject_index = primary_row_subject(headers, row)
     if not subject:
         return []
@@ -722,13 +901,14 @@ def extract_docx(
     input_path: Path,
     knowledge_bases: KnowledgeRepository | None = None,
     document_profile: DocumentProfile | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     knowledge_bases = knowledge_bases or KnowledgeRepository.from_paths([])
     profile = document_profile or DEFAULT_DOCUMENT_PROFILE
     document = Document(input_path)
     sections = SectionState()
     blocks: list[dict[str, Any]] = []
     table_items: list[dict[str, Any]] = []
+    table_cell_items: list[dict[str, Any]] = []
     last_caption: str | None = None
     table_count = 0
     order = 0
@@ -793,10 +973,11 @@ def extract_docx(
             table_id = f"TBL-{table_count:06d}"
             table_title = infer_table_title(last_caption, table_count)
             section_path = sections.path()
+            merge_ranges, explicit_header_rows = docx_table_grid_evidence(item)
 
             order += 1
             block_id = f"BLK-{order:06d}"
-            table_block, new_table_items = build_table_artifacts(
+            table_block, new_table_items, new_cell_items = build_table_artifacts(
                 matrix,
                 raw_matrix=raw_matrix,
                 table_id=table_id,
@@ -805,12 +986,16 @@ def extract_docx(
                 table_title=table_title,
                 section_path=section_path,
                 knowledge_bases=knowledge_bases,
+                merge_ranges=merge_ranges,
+                explicit_header_rows=explicit_header_rows or None,
+                source_format="docx",
             )
             blocks.append(table_block)
             table_items.extend(new_table_items)
+            table_cell_items.extend(new_cell_items)
             last_caption = None
 
-    return blocks, table_items
+    return blocks, table_items, table_cell_items
 
 
 def merge_tags(*tag_lists: Iterable[str]) -> list[str]:
@@ -829,6 +1014,7 @@ def mark_doc_regions(
     table_items: list[dict[str, Any]],
     *,
     document_profile: DocumentProfile | None = None,
+    table_cell_items: list[dict[str, Any]] | None = None,
 ) -> None:
     """Mark blocks as body/front matter so model tasks ignore cover and TOC pages."""
     profile = document_profile or DEFAULT_DOCUMENT_PROFILE
@@ -879,6 +1065,8 @@ def mark_doc_regions(
     block_region_by_id = {block["block_id"]: block.get("doc_region", "body") for block in blocks}
     for item in table_items:
         item["doc_region"] = block_region_by_id.get(item.get("table_block_id"), "body")
+    for cell in table_cell_items or []:
+        cell["doc_region"] = block_region_by_id.get(cell.get("table_block_id"), "body")
 
 
 def normalize_title(text: str) -> str:
@@ -1088,9 +1276,29 @@ def build_atomic_candidates(
     table_items: list[dict[str, Any]],
     *,
     include_regions: set[str] | None = None,
+    table_cell_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
+    blocks_by_id = {str(block.get("block_id") or ""): block for block in blocks}
+    # cell/mixed 模式表的行仅作容器：A 轨候选按 leaf plan 消费，禁止父子双份
+    cell_mode_blocks = {
+        block_id
+        for block_id, block in blocks_by_id.items()
+        if str(block.get("table_kind") or "") in {"mapping_matrix", "prose_grid"}
+    }
+    # 组合表（parameter + 真实矩阵事实列）：行候选保留（COSEM 行级化），矩阵事实
+    # 改由 marker cell 产出——同一物理事实不重复成 atom
+    mixed_fact_blocks = {
+        block_id
+        for block_id, block in blocks_by_id.items()
+        if block_id not in cell_mode_blocks
+        and str(block.get("table_kind") or "")
+        and matrix_fact_columns(
+            [str(h or "") for h in (block.get("headers") or [])],
+            [list(row) for row in (block.get("data_rows") or [])],
+        )
+    }
 
     def add(row: dict[str, Any]) -> None:
         key = (
@@ -1141,7 +1349,16 @@ def build_atomic_candidates(
     for item in table_items:
         if include_regions is not None and item.get("doc_region") not in include_regions:
             continue
-        for fact in item.get("matrix_facts", []):
+        if str(item.get("table_block_id") or "") in cell_mode_blocks:
+            # cell/mixed 模式：行只是容器（COSEM join 仍直接读 table_items.jsonl），
+            # A 轨候选由下方 cell 层按 leaf plan 产出，禁止父子双份
+            continue
+        if str(item.get("table_block_id") or "") in mixed_fact_blocks:
+            # 组合表：矩阵事实由 marker cell 产出（见下方 cell 循环），行不再复述
+            matrix_facts = []
+        else:
+            matrix_facts = item.get("matrix_facts", [])
+        for fact in matrix_facts:
             predicate = clean_table_header(fact.get("predicate_header", ""))
             subject = clean_text(fact.get("subject"))
             if not subject or not predicate:
@@ -1203,6 +1420,92 @@ def build_atomic_candidates(
         row_requirement = table_row_requirement_candidate(item, fields)
         if row_requirement:
             add(row_requirement)
+
+    fact_columns_by_block: dict[str, set[int]] = {}
+    for cell in table_cell_items or []:
+        if cell.get("leaf_kind") != "cell":
+            continue
+        if include_regions is not None and cell.get("doc_region") not in include_regions:
+            continue
+        block_id = str(cell.get("table_block_id") or "")
+        parent = blocks_by_id.get(block_id) or {}
+        table_kind = str(parent.get("table_kind") or "")
+        section_path = list(cell.get("section_path") or parent.get("section_path") or [])
+        domain_tags = list(parent.get("domain_tags") or [])
+        kb_matches = list(parent.get("kb_matches") or [])
+        cell_text = clean_text(cell.get("text") or "")
+        if not cell_text:
+            continue
+        column_index = int(cell.get("column_index") or 0)
+        marker_cell = table_kind == "mapping_matrix" or block_id in mixed_fact_blocks
+        if marker_cell and is_positive_marker(cell_text):
+            if block_id not in fact_columns_by_block:
+                fact_columns_by_block[block_id] = matrix_fact_columns(
+                    [str(h or "") for h in (parent.get("headers") or [])],
+                    [list(row) for row in (parent.get("data_rows") or [])],
+                )
+            if column_index - 1 not in fact_columns_by_block[block_id]:
+                continue  # 非矩阵事实列的 marker 只是原文，不成句式
+            subject = ""
+            if cell.get("row_header_context"):
+                subject = clean_text(cell["row_header_context"][-1])
+            predicate = ""
+            if cell.get("header_path"):
+                predicate = clean_table_header(str(cell["header_path"][-1] or ""))
+            if not subject or not predicate:
+                continue
+            add(
+                atomic_row(
+                    source_id=str(cell["cell_id"]),
+                    source_type="table_cell",
+                    source_refs=[block_id, str(cell["cell_id"])],
+                    section_path=section_path,
+                    domain_tags=domain_tags,
+                    kb_matches=kb_matches,
+                    requirement_type="capability_matrix",
+                    requirement=f"{subject} shall support {predicate}.",
+                    object_name=subject,
+                    parameters={
+                        "table_title": cell.get("table_title"),
+                        "row_index": cell.get("row_index"),
+                        "column_index": column_index,
+                        "subject_header": (cell.get("row_header_context") or [""])[0],
+                        "predicate_header": (cell.get("header_path") or [""])[-1],
+                        "marker": cell_text,
+                    },
+                    verification_method="configuration_check",
+                    confidence=0.82,
+                    ambiguity=False,
+                )
+            )
+            continue
+        if not cell.get("requirement_like"):
+            continue
+        # 单格规范性文本直接使用逐字原文，不改写为矩阵句式
+        add(
+            atomic_row(
+                source_id=str(cell["cell_id"]),
+                source_type="table_cell",
+                source_refs=[block_id, str(cell["cell_id"])],
+                section_path=section_path,
+                domain_tags=domain_tags,
+                kb_matches=kb_matches,
+                requirement_type=classify_requirement_type(cell_text, domain_tags),
+                requirement=cell_text,
+                object_name=infer_object_name(kb_matches, cell_text),
+                parameters={
+                    "table_title": cell.get("table_title"),
+                    "row_index": cell.get("row_index"),
+                    "column_index": column_index,
+                    "header_path": list(cell.get("header_path") or []),
+                    "row_header_context": list(cell.get("row_header_context") or []),
+                },
+                verification_method=verification_method_for(domain_tags, cell_text),
+                confidence=0.7,
+                ambiguity=is_ambiguous_text(cell_text),
+                source_context={"cell_context": cell_context_text(cell)},
+            )
+        )
 
     return candidates
 
@@ -1398,12 +1701,20 @@ def extract_valued_matrix_facts(fields: dict[str, Any]) -> list[dict[str, Any]]:
     subject = clean_text(fields.get(first_key))
     if not subject:
         return []
+    # 索引号 subject（"1"/"2."）不是对象名——"1 shall have Requirement set to …"
+    # 与 "1 shall support Note." 同族伪句式，一律不产
+    from table_structure import NOTE_HEADER_RE, PARAM_INDEX_CELL_RE
+
+    if PARAM_INDEX_CELL_RE.match(subject):
+        return []
 
     facts: list[dict[str, Any]] = []
     for key, value in list(fields.items())[1:]:
         cleaned_value = clean_text(str(value))
         if not cleaned_value or is_positive_marker(cleaned_value):
             continue
+        if NOTE_HEADER_RE.search(str(key)):
+            continue  # Note 列保持原文，永远不是 valued 事实
         facts.append(
             {
                 "subject_header": first_key,
@@ -1958,25 +2269,31 @@ def run_atomizer_pipeline(
 
     LOGGER.info("extracting %s", input_format.lstrip("."))
     if input_format == ".docx":
-        blocks, table_items = extract_docx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+        blocks, table_items, table_cell_items = extract_docx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     elif input_format == ".xlsx":
         from parsers.xlsx_parser import extract_xlsx
 
-        blocks, table_items = extract_xlsx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+        blocks, table_items, table_cell_items = extract_xlsx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     else:
         from parsers.pdf_parser import extract_pdf
 
-        blocks, table_items = extract_pdf(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
-    LOGGER.info("extracted %s blocks, %s table rows", len(blocks), len(table_items))
+        blocks, table_items, table_cell_items = extract_pdf(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+    LOGGER.info("extracted %s blocks, %s table rows, %s table cells", len(blocks), len(table_items), len(table_cell_items))
     pattern_shadow = None
     if domain_pack_dir is not None:
         pattern_shadow = apply_table_pattern_shadow(blocks, table_items, domain_pack_dir)
-    mark_doc_regions(blocks, table_items, document_profile=document_profile)
+    mark_doc_regions(blocks, table_items, document_profile=document_profile, table_cell_items=table_cell_items)
     LOGGER.info("building chunks")
     chunks = build_chunks(blocks, target_chars=chunk_chars, include_regions={"body"})
     body_table_items = [item for item in table_items if item.get("doc_region") == "body"]
+    body_table_cells = [cell for cell in table_cell_items if cell.get("doc_region") == "body"]
     LOGGER.info("building candidates")
-    atomic_candidates = build_atomic_candidates(blocks, body_table_items, include_regions={"body"})
+    atomic_candidates = build_atomic_candidates(
+        blocks,
+        body_table_items,
+        include_regions={"body"},
+        table_cell_items=body_table_cells,
+    )
     try:
         assert_valid_atomic_requirements(atomic_candidates)
     except ValueError as exc:
@@ -1988,6 +2305,7 @@ def run_atomizer_pipeline(
     block_count = write_jsonl(out_dir / "blocks.jsonl", blocks)
     chunk_count = write_jsonl(out_dir / "chunks.jsonl", chunks)
     table_count = write_jsonl(out_dir / "table_items.jsonl", table_items)
+    table_cell_count = write_jsonl(out_dir / "table_cell_items.jsonl", table_cell_items)
     atomic_count = write_jsonl(out_dir / "atomic_requirements.jsonl", atomic_candidates)
     task_count = write_jsonl(out_dir / "llm_tasks.jsonl", llm_tasks)
     write_json(out_dir / "quality_report.json", quality_report)
@@ -2004,6 +2322,7 @@ def run_atomizer_pipeline(
     manifest = {
         "tool": "requirement-atomizer",
         "version": __version__,
+        "table_structure_version": TABLE_STRUCTURE_VERSION,
         "input": str(input_path),
         "input_format": input_format.lstrip("."),
         "output_dir": str(out_dir),
@@ -2022,6 +2341,7 @@ def run_atomizer_pipeline(
             "blocks": block_count,
             "chunks": chunk_count,
             "table_items": table_count,
+            "table_cell_items": table_cell_count,
             "body_table_items": len(body_table_items),
             "atomic_requirements": atomic_count,
             "llm_tasks": task_count,
@@ -2030,6 +2350,7 @@ def run_atomizer_pipeline(
             "blocks": "blocks.jsonl",
             "chunks": "chunks.jsonl",
             "table_items": "table_items.jsonl",
+            "table_cell_items": "table_cell_items.jsonl",
             "atomic_requirements": "atomic_requirements.jsonl",
             "llm_tasks": "llm_tasks.jsonl",
             "quality_report": "quality_report.json",

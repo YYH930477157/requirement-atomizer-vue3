@@ -164,11 +164,31 @@ function eventLabel(value: ClaimReviewEventView["event_kind"]): string {
 function formatLocator(locator: ClaimCatalogViewRow["locator"] | undefined): string {
   if (!locator) return "—"
   const parts = [locator.block_id]
+  // v14 cell 级：R×C + cell ID（双表头上下文经 formatCellContext 随行）
+  if (locator.table_cell_id) {
+    const rc = locator.column_index != null
+      ? `R${locator.row_index ?? "?"}C${locator.column_index}`
+      : `R${locator.row_index ?? "?"}`
+    parts.push(rc)
+    parts.push(locator.table_cell_id)
+    return parts.filter(Boolean).join(" · ")
+  }
   if (locator.row_index != null) parts.push(`row ${locator.row_index}`)
   if (locator.line != null) parts.push(`line ${locator.line}`)
   if (locator.start != null || locator.end != null) {
     parts.push(`${locator.start ?? "?"}:${locator.end ?? "?"}`)
   }
+  return parts.filter(Boolean).join(" · ")
+}
+
+function formatCellContext(row: ClaimCatalogViewRow | null): string {
+  const context = (row?.table_context || {}) as Record<string, unknown>
+  const headerPath = Array.isArray(context.header_path) ? context.header_path.filter(Boolean) : []
+  const rowHeader = Array.isArray(context.row_header_context) ? context.row_header_context.filter(Boolean) : []
+  const parts = [
+    rowHeader.length ? `行头: ${rowHeader.join(" / ")}` : "",
+    headerPath.length ? `列头: ${headerPath.join(" / ")}` : "",
+  ]
   return parts.filter(Boolean).join(" · ")
 }
 
@@ -789,7 +809,7 @@ onUnmounted(() => {
                 <td><span class="resolution-chip" :class="row.resolution">{{ resolutionLabel(row.resolution) }}</span></td>
                 <td class="claim-id">{{ row.claim_id }}</td>
                 <td class="claim-text">{{ row.text }}</td>
-                <td class="locator">{{ formatLocator(row.locator) }}</td>
+                <td class="locator">{{ formatLocator(row.locator) }}<span v-if="formatCellContext(row)" class="locator-context" :title="formatCellContext(row)"> ⓘ</span></td>
                 <td class="owner">{{ row.owner_unit_id || "—" }}</td>
               </tr>
               <tr v-if="!rows.length && !loading"><td colspan="5" class="table-empty">当前过滤条件下没有 Claim</td></tr>

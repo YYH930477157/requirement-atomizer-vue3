@@ -41,14 +41,27 @@ def body_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if str(b.get("doc_region") or "body") not in _EXTRACT_EXCLUDED_REGIONS]
 
 
-def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block）。"""
+def assemble_sections(
+    blocks: list[dict[str, Any]],
+    table_items: list[dict[str, Any]] | None = None,
+    table_cell_items: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block）。
+
+    table-structure-v2 起消费真实 table_items/table_cell_items（权威 row/cell ID），
+    不再自行拼 item ID；旧调用（None）退回兼容合成（行号含表头/标题偏移修复）。"""
     try:  # 延迟 import,避免与 ai_extract 的顶层 import 形成循环
         from ai_extract import _PARAM_ROW_MIN_CELLS, _row_render_line, classify_table_kind
     except ImportError:  # pragma: no cover - ai_extract 始终在场
         classify_table_kind = None
         _row_render_line = None
         _PARAM_ROW_MIN_CELLS = 2
+    items_by_block: dict[str, list[dict[str, Any]]] = {}
+    for item in table_items or []:
+        items_by_block.setdefault(str(item.get("table_block_id") or ""), []).append(item)
+    cells_by_block: dict[str, list[dict[str, Any]]] = {}
+    for cell in table_cell_items or []:
+        cells_by_block.setdefault(str(cell.get("table_block_id") or ""), []).append(cell)
     groups: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
     for block in blocks:
         section_path = [str(s) for s in (block.get("section_path") or [])]
@@ -71,12 +84,14 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "section_path": list(block.get("section_path") or []),
                 "noise": bool(block.get("noise")),
             }
-            is_parameter = (
-                classify_table_kind is not None
-                and str(block.get("type") or "") == "table"
-                and classify_table_kind(block) == "parameter"
+            is_table = str(block.get("type") or "") == "table"
+            table_kind = (
+                classify_table_kind(block)
+                if (classify_table_kind is not None and is_table)
+                else ""
             )
-            if is_parameter and _row_render_line is not None:
+            is_parameter = table_kind == "parameter"
+            if is_table and is_parameter and _row_render_line is not None:
                 headers = [str(h or "") for h in (block.get("headers") or [])]
                 # 封堵一-A:表头渲染行(超大切分多 chunk 时每个 chunk 首行注入)
                 if headers:
@@ -85,20 +100,75 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # 不改整块 text(match 行为不变);表头/分组标题/稀疏行不进 rows(同逐行展开口径)
                 table_id = str(block.get("table_id") or block.get("block_id") or "")
                 row_entries: list[dict[str, Any]] = []
-                for row_index, row in enumerate(block.get("data_rows") or [], start=1):
-                    cells = [str(c or "").strip() for c in row]
-                    non_empty = [c for c in cells if c]
-                    if len(non_empty) < _PARAM_ROW_MIN_CELLS or len(set(non_empty)) == 1:
-                        continue
-                    line = _row_render_line(headers, row)
-                    if line.strip():
-                        row_entries.append({
-                            "row_index": row_index,
-                            "item_id": f"{table_id}-R{row_index:06d}",
-                            "text": line,
-                        })
+                real_items = items_by_block.get(str(block.get("block_id") or ""))
+                if real_items is not None:
+                    # 权威 item_id/row_index（物理行号,含表头/标题偏移）——不再自行拼 ID
+                    data_rows = list(block.get("data_rows") or [])
+                    physical_rows = sorted(
+                        set(range(1, int(block.get("rows") or len(data_rows)) + 1))
+                        - set(block.get("title_row_indexes") or [])
+                        - set(block.get("header_row_indexes") or [])
+                    )
+                    data_position = {row_index: pos for pos, row_index in enumerate(physical_rows, start=1)}
+                    for item in sorted(real_items, key=lambda row: int(row.get("row_index") or 0)):
+                        if str(item.get("leaf_role") or "row") != "row":
+                            continue
+                        position = data_position.get(int(item.get("row_index") or 0))
+                        row = data_rows[position - 1] if position and position - 1 < len(data_rows) else []
+                        cells = [str(c or "").strip() for c in row]
+                        non_empty = [c for c in cells if c]
+                        if len(non_empty) < _PARAM_ROW_MIN_CELLS and not any(
+                            _is_normative_cell(c) for c in non_empty
+                        ):
+                            continue
+                        if _is_group_header_evidence(block, item, non_empty):
+                            continue
+                        line = _row_render_line(headers, row)
+                        if line.strip():
+                            row_entries.append({
+                                "row_index": int(item.get("row_index") or 0),
+                                "item_id": str(item.get("item_id") or ""),
+                                "text": line,
+                            })
+                else:
+                    # 兼容路径（无真实 items）：行号 = 表头数 + 标题数 + 数据区偏移
+                    header_row_count = int(
+                        block.get("header_row_count")
+                        if block.get("header_row_count") is not None
+                        else (1 if block.get("headers") else 0)
+                    )
+                    header_offset = header_row_count + len(block.get("title_row_indexes") or [])
+                    for offset, row in enumerate(block.get("data_rows") or [], start=1):
+                        cells = [str(c or "").strip() for c in row]
+                        non_empty = [c for c in cells if c]
+                        if len(non_empty) < _PARAM_ROW_MIN_CELLS or len(set(non_empty)) == 1:
+                            continue
+                        line = _row_render_line(headers, row)
+                        if line.strip():
+                            row_index = header_offset + offset
+                            row_entries.append({
+                                "row_index": row_index,
+                                "item_id": f"{table_id}-R{row_index:06d}",
+                                "text": line,
+                            })
                 if row_entries:
                     sb_entry["rows"] = row_entries
+            if is_table and table_cell_items is not None:
+                # cell 输入必须带"表标题 + 行头 + 列头 + 单元格正文"（禁止裸格）
+                from table_structure import cell_context_text
+
+                cell_entries = []
+                for cell in cells_by_block.get(str(block.get("block_id") or ""), []):
+                    if str(cell.get("leaf_kind") or "") != "cell":
+                        continue
+                    cell_entries.append({
+                        "cell_id": str(cell.get("cell_id") or ""),
+                        "row_index": int(cell.get("row_index") or 0),
+                        "column_index": int(cell.get("column_index") or 0),
+                        "text": cell_context_text(cell),
+                    })
+                if cell_entries:
+                    sb_entry["cells"] = cell_entries
             unit.setdefault("source_blocks", []).append(sb_entry)
 
     sections: list[dict[str, Any]] = []
@@ -111,6 +181,29 @@ def assemble_sections(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                          "source_blocks": unit.get("source_blocks", []),
                          "_table_header_lines": unit.get("_table_header_lines", [])})
     return sections
+
+
+def _is_normative_cell(text: str) -> bool:
+    from table_structure import is_normative_text
+
+    return is_normative_text(text)
+
+
+def _is_group_header_evidence(
+    block: dict[str, Any], item: dict[str, Any], non_empty: list[str]
+) -> bool:
+    """分组标题行判定（merge anchor 证据优先；无证据时退回同值启发式）。"""
+    if len(set(non_empty)) != 1 or not non_empty:
+        return False
+    from table_structure import is_normative_text, normalize_merge_ranges, full_width_merge_row
+
+    if is_normative_text(non_empty[0]):
+        return False
+    merge_ranges = normalize_merge_ranges(block.get("merge_ranges") or [])
+    if not merge_ranges:
+        return True  # 旧产物无合并证据：历史同值口径
+    width = int(block.get("columns") or 0)
+    return full_width_merge_row(int(item.get("row_index") or 0), width, merge_ranges) is not None
 
 
 def clause_key(section: dict[str, Any]) -> str | None:

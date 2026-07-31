@@ -2445,6 +2445,13 @@ def _build_queue(
     except (FileNotFoundError, OSError, ClaimReviewActionError):
         table_items = []
     try:
+        table_cell_items = _parse_jsonl_objects(
+            (root / "table_cell_items.jsonl").read_bytes(),
+            label="claim queue table cell items",
+        )
+    except (FileNotFoundError, OSError, ClaimReviewActionError):
+        table_cell_items = []
+    try:
         attempt_states = derive_attempt_states(read_attempt_log(root).rows)
     except ClaimArtifactError:
         attempt_states = {}
@@ -2497,7 +2504,7 @@ def _build_queue(
                 "outcome": dict(terminal.get("outcome") or {}) or None,
             }
         try:
-            focus = build_claim_focus_adapter(claim, blocks, table_items)
+            focus = build_claim_focus_adapter(claim, blocks, table_items, table_cell_items)
             focus_error = None
         except ClaimFocusError as exc:
             focus = {

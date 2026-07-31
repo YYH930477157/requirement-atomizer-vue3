@@ -394,6 +394,9 @@ def _validate_current_proposal(
             read_jsonl(root / "table_items.jsonl")
             if (root / "table_items.jsonl").is_file()
             else [],
+            read_jsonl(root / "table_cell_items.jsonl")
+            if (root / "table_cell_items.jsonl").is_file()
+            else [],
         )
     except (ClaimFocusError, OSError, ValueError) as exc:
         raise ClaimQueueExecutionUnprocessable(str(exc)) from exc

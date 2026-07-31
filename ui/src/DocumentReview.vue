@@ -11,6 +11,7 @@ import type {
   OmissionActionState,
   OmissionActionStatus,
   PdfAnnotationPayload,
+  PdfCellContext,
   PdfZoneRect,
   RequirementApiClient,
 } from "./api-client"
@@ -238,6 +239,8 @@ const selectedBlockId = ref("")
 // 表格行选中态（v12 行级热区，"<block_id>#R<行号>"，与后端行卡片键同源）——
 // 声明必须在 immediate watch 之前（watch 首次同步执行会清空它）
 const selectedRowKey = ref("")
+// 单元格选中态（v14 cell 级闭环，"<block_id>#<cell_id>"，与后端 cell_context 键同源）
+const selectedCellKey = ref("")
 const selectedClaimId = ref("")
 const selectedBlock = computed(() => blocks.value.find((b) => b.block_id === selectedBlockId.value) || null)
 const selectedBlockKind = computed(() => {
@@ -266,6 +269,7 @@ function selectBlockCard(b: DocumentBlock) {
   stashRequirementDraft()
   stashOmissionDraft()
   selectedRowKey.value = ""
+  selectedCellKey.value = ""
   selectedClaimId.value = ""
   if (selectedBlockId.value === b.block_id) {  // 再点一下 → 取消选中
     selectedBlockId.value = ""
@@ -467,6 +471,7 @@ watch([() => props.active, () => props.client, () => props.sessionKey], ([on, cl
     selectedId.value = ""
     selectedBlockId.value = ""
     selectedRowKey.value = ""
+    selectedCellKey.value = ""
     selectedClaimId.value = ""
     omissionNote.value = ""
     clearRequirementEditor()
@@ -589,6 +594,7 @@ function selectClaimCard(claimId: string) {
   selectedId.value = ""
   selectedBlockId.value = ""
   selectedRowKey.value = ""
+  selectedCellKey.value = ""
   clearRequirementEditor()
   omissionNote.value = ""
 }
@@ -597,6 +603,44 @@ function claimsForDataRow(blockId: string, rowIndex: number): ClaimAnnotationRec
     (claim) => (claim.data_row_indexes || []).includes(rowIndex),
   )
 }
+// v14 cell 级：block+数据区行列 → cell_context 条目索引（DOM 数据格定位用）
+const cellContextIndex = computed(() => {
+  const index = new Map<string, PdfCellContext>()
+  for (const entry of Object.values(pdfData.value?.cell_context || {})) {
+    if (!entry || entry.data_row_index == null) continue
+    index.set(`${entry.block_id}:D${entry.data_row_index}C${entry.column_index}`, entry)
+  }
+  return index
+})
+function cellContextFor(blockId: string, dataRowIndex: number, columnIndex: number): PdfCellContext | null {
+  return cellContextIndex.value.get(`${blockId}:D${dataRowIndex}C${columnIndex}`) || null
+}
+function claimsForCell(cellId: string): ClaimAnnotationRecord[] {
+  return (pdfData.value?.claim_records || []).filter((claim) => claim.table_cell_id === cellId)
+}
+function selectCellCard(cellId: string) {
+  stashRequirementDraft()
+  stashOmissionDraft()
+  if (selectedCellKey.value === cellId) {
+    selectedCellKey.value = ""
+    return
+  }
+  selectedCellKey.value = cellId
+  selectedRowKey.value = ""
+  selectedClaimId.value = ""
+  selectedId.value = ""
+  selectedBlockId.value = ""
+  clearRequirementEditor()
+  omissionNote.value = ""
+}
+const selectedCell = computed(() => {
+  const cellId = selectedCellKey.value
+  if (!cellId) return null
+  const entry = Object.values(pdfData.value?.cell_context || {}).find((row) => row.cell_id === cellId)
+  if (!entry) return null
+  const block = blocks.value.find((b) => b.block_id === entry.block_id) || null
+  return { entry, block, claims: claimsForCell(cellId) }
+})
 // 表格行选中态辅助（键声明见 selectedBlockId 旁——immediate watch 时序要求）
 function rowZoneKey(z: PdfBlockZone): string {
   return z.row_index != null ? `${z.block_id}#R${z.row_index}` : z.block_id
@@ -610,6 +654,7 @@ function selectRowCard(z: PdfBlockZone) {
     return
   }
   selectedRowKey.value = key
+  selectedCellKey.value = ""
   selectedClaimId.value = ""
   selectedId.value = ""
   selectedBlockId.value = ""
@@ -971,6 +1016,7 @@ function activateReq(req: AiRequirement) {
   stashOmissionDraft()
   selectedBlockId.value = ""
   selectedRowKey.value = ""
+  selectedCellKey.value = ""
   selectedClaimId.value = ""
   omissionNote.value = ""
   selectedId.value = req.ai_req_id
@@ -1169,13 +1215,13 @@ async function reextractSelectedOmission() {
 
 // 点解析（WP-B）：批注视图单行/单块定向解析。产出 draft + 澄清待确认（先人工确认再转正）；
 // 失败如实 toast 错误原因（含无 LLM 配置的 503），不假装可用。
-async function spotExtractBlock(b: DocumentBlock, rowIndex?: number) {
+async function spotExtractBlock(b: DocumentBlock, rowIndex?: number, cellId?: string) {
   const client = props.client
   if (!client?.spotExtract || spotExtracting.value) return
-  const key = `${b.block_id}:${rowIndex ?? ""}`
+  const key = cellId ? `${b.block_id}:${cellId}` : `${b.block_id}:${rowIndex ?? ""}`
   spotExtracting.value = key
   try {
-    const payload = await client.spotExtract({ blockId: b.block_id, rowIndex, actor: "reviewer" })
+    const payload = await client.spotExtract({ blockId: b.block_id, rowIndex, cellId, actor: "reviewer" })
     if (spotExtracting.value !== key) return
     if (payload.drafts > 0) {
       message.value = `已生成 ${payload.drafts} 条 draft 需求，进澄清待确认`
@@ -1514,7 +1560,8 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                   </thead>
                   <tbody>
                     <tr v-for="(row, ri) in b.data_rows" :key="ri"
-                        :class="{ 'claim-table-row': claimsForDataRow(b.block_id, ri + 1).length }"><td v-for="(c, ci) in padRow(b, row)" :key="ci"><button
+                        :class="{ 'claim-table-row': claimsForDataRow(b.block_id, ri + 1).length }"><td v-for="(c, ci) in padRow(b, row)" :key="ci"
+                        :class="{ 'cell-hot': cellContextFor(b.block_id, ri + 1, ci + 1), 'cell-sel': selectedCellKey && cellContextFor(b.block_id, ri + 1, ci + 1)?.cell_id === selectedCellKey }"><button
                       v-if="ci === 0 && props.client?.spotExtract"
                       type="button"
                       class="spot-extract-btn spot-row-btn"
@@ -1523,7 +1570,15 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                       title="解析此行：生成 draft 需求进澄清待确认"
                       :aria-label="`解析此行（第 ${ri + 1} 行）`"
                       @click.stop="spotExtractBlock(b, ri + 1)"
-                    ><Wand2 :size="11" aria-hidden="true" /></button>{{ c }}<span
+                    ><Wand2 :size="11" aria-hidden="true" /></button><template
+                      v-if="cellContextFor(b.block_id, ri + 1, ci + 1)"><button
+                      type="button"
+                      class="cell-btn"
+                      :class="{ 'has-claims': claimsForCell(cellContextFor(b.block_id, ri + 1, ci + 1)!.cell_id).length }"
+                      :data-testid="`cell-${b.block_id}-${ri + 1}-${ci + 1}`"
+                      :title="`单元格 R${cellContextFor(b.block_id, ri + 1, ci + 1)!.row_index}C${ci + 1} · ${cellContextFor(b.block_id, ri + 1, ci + 1)!.cell_id}`"
+                      @click.stop="selectCellCard(cellContextFor(b.block_id, ri + 1, ci + 1)!.cell_id)"
+                    >{{ c }}</button></template><template v-else>{{ c }}</template><span
                       v-if="ci === padRow(b, row).length - 1 && claimsForDataRow(b.block_id, ri + 1).length"
                       class="claim-row-controls"><button
                         v-for="claim in claimsForDataRow(b.block_id, ri + 1)" :key="claim.claim_id"
@@ -1676,6 +1731,45 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                     title="解析此行：生成 draft 需求进澄清待确认"
                     @click.stop="spotExtractBlock(selectedRow.block, selectedRow.rowIndex)">
               <Wand2 :size="14" aria-hidden="true" />{{ spotExtracting === `${selectedRow.block.block_id}:${selectedRow.rowIndex}` ? "解析中" : "解析此行" }}
+            </button>
+          </div>
+        </div>
+        <div v-else-if="selectedCell" class="doc-detail-card" data-testid="table-cell-card">
+          <div class="dd-head">
+            <span class="dd-module">单元格 · {{ selectedCell.entry.structural_role || "data" }}</span>
+            <span class="dd-status">R{{ selectedCell.entry.row_index }}C{{ selectedCell.entry.column_index }}</span>
+          </div>
+          <h3 class="dd-title">{{ selectedCell.entry.table_title || "表格单元格" }}</h3>
+          <div class="dd-meta" data-testid="cell-meta">
+            {{ selectedCell.entry.cell_id }}<template v-if="selectedCell.entry.a1_address"> · {{ selectedCell.entry.sheet_name }}!{{ selectedCell.entry.a1_address }}</template><template v-else-if="selectedCell.entry.page"> · PDF 第 {{ selectedCell.entry.page }} 页</template>
+          </div>
+          <div class="dd-section" v-if="(selectedCell.entry.header_path || []).length">
+            <div class="dd-label">列头</div>
+            <div class="dd-body" data-testid="cell-header-path">{{ (selectedCell.entry.header_path || []).join(" / ") }}</div>
+          </div>
+          <div class="dd-section" v-if="(selectedCell.entry.row_header_context || []).length">
+            <div class="dd-label">行头</div>
+            <div class="dd-body" data-testid="cell-row-header">{{ (selectedCell.entry.row_header_context || []).join(" / ") }}</div>
+          </div>
+          <div class="dd-section">
+            <div class="dd-label">单元格正文</div>
+            <div class="dd-quote" data-testid="cell-text">{{ selectedCell.entry.text }}</div>
+          </div>
+          <div v-if="selectedCell.claims.length" class="dd-section">
+            <div class="dd-label">关联 Claim</div>
+            <button v-for="claim in selectedCell.claims" :key="claim.claim_id"
+                    type="button" class="echo-jump"
+                    :data-testid="`cell-claim-${claim.claim_id}`"
+                    @click.stop="selectClaimCard(claim.claim_id)">
+              Claim {{ claim.claim_id }} · {{ CLAIM_RESOLUTION_LABELS[claim.resolution] || claim.resolution }}
+            </button>
+          </div>
+          <div v-if="props.client?.spotExtract && selectedCell.block" class="dd-section">
+            <button class="button" type="button" data-testid="cell-spot-extract"
+                    :disabled="spotExtracting === `${selectedCell.entry.block_id}:${selectedCell.entry.cell_id}`"
+                    title="解析此格：生成 draft 需求进澄清待确认（携带表标题+行头+列头上下文）"
+                    @click.stop="spotExtractBlock(selectedCell.block, undefined, selectedCell.entry.cell_id)">
+              <Wand2 :size="14" aria-hidden="true" />{{ spotExtracting === `${selectedCell.entry.block_id}:${selectedCell.entry.cell_id}` ? "解析中" : "解析此格" }}
             </button>
           </div>
         </div>
@@ -2014,6 +2108,13 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 .spot-extract-btn:hover { color: #1e41c9; border-color: #1e41c9; background: #eef2ff; }
 .spot-extract-btn:disabled { cursor: wait; color: #b6c3f0; }
 .spot-row-btn { margin: 0 4px 0 0; vertical-align: middle; }
+/* v14 cell 级闭环：有 cell_context 的格可点出 cell 卡片（R×C + 双表头上下文） */
+.cell-btn { display: inline; padding: 0 1px; border: 0; border-bottom: 1px dotted transparent;
+  background: transparent; font: inherit; text-align: left; cursor: pointer; }
+td.cell-hot .cell-btn { border-bottom-color: #b6c3f0; }
+td.cell-hot .cell-btn:hover { background: #eef2ff; border-bottom-color: #1e41c9; }
+td.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
+.cell-btn.has-claims { border-bottom-color: #1d8a5c; }
 .echo-jump { display: block; margin: 3px 0; padding: 0; border: 0; background: transparent;
   color: #1d7a5b; font: inherit; text-align: left; text-decoration: underline dotted; cursor: pointer; }
 .table-omission-tag { margin-top: 4px; vertical-align: baseline; }

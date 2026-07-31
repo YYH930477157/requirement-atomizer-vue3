@@ -5,7 +5,7 @@ from typing import Any, Iterable
 from claim_artifacts import hash_json
 
 
-CLAIM_FOCUS_ADAPTER_VERSION = "claim-focus-adapter-v1"
+CLAIM_FOCUS_ADAPTER_VERSION = "claim-focus-adapter-v2"
 
 
 class ClaimFocusError(ValueError):
@@ -45,6 +45,7 @@ def build_claim_focus_adapter(
     claim: dict[str, Any],
     blocks: Iterable[dict[str, Any]],
     table_items: Iterable[dict[str, Any]],
+    table_cell_items: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     locator = dict(claim.get("locator") or {})
     block_id = str(locator.get("block_id") or "")
@@ -166,6 +167,81 @@ def build_claim_focus_adapter(
             "row_hashes": [
                 hash_json("claim-focus-table-row/v1", row) for row in window
             ],
+        }
+
+    if source_kind == "table_cell":
+        if locator.get("position_basis") != "table_cell_text":
+            raise ClaimFocusError("table cell claim does not use table_cell_text positions")
+        cell_id = str(locator.get("table_cell_id") or "")
+        cell = _rows_by_id(table_cell_items or [], "cell_id").get(cell_id)
+        cell_block_id = str((cell or {}).get("table_block_id") or "")
+        if cell is None or cell_block_id != block_id:
+            raise ClaimFocusError("table cell is unavailable or belongs to another block")
+        row_index = locator.get("row_index")
+        column_index = locator.get("column_index")
+        if not isinstance(row_index, int) or isinstance(row_index, bool):
+            raise ClaimFocusError("table cell row index is invalid")
+        if not isinstance(column_index, int) or isinstance(column_index, bool):
+            raise ClaimFocusError("table cell column index is invalid")
+        if int(cell.get("row_index") or 0) != row_index:
+            raise ClaimFocusError("table cell row index changed")
+        if int(cell.get("column_index") or 0) != column_index:
+            raise ClaimFocusError("table cell column index changed")
+        cell_start = locator.get("cell_start")
+        cell_end = locator.get("cell_end")
+        cell_text = str(cell.get("text") or "")
+        if (
+            not isinstance(cell_start, int)
+            or isinstance(cell_start, bool)
+            or not isinstance(cell_end, int)
+            or isinstance(cell_end, bool)
+            or cell_start < 0
+            or cell_end <= cell_start
+            or cell_end > len(cell_text)
+            or cell_text[cell_start:cell_end] != text
+        ):
+            raise ClaimFocusError("table cell locator no longer matches its source")
+        # 行头/列头/merge anchor 是 cell 身份的一部分：漂移即指纹失效
+        header_path = [str(value) for value in (cell.get("header_path") or [])]
+        row_header_context = [str(value) for value in (cell.get("row_header_context") or [])]
+        claim_context = dict(claim.get("table_context") or {})
+        if "header_path" in claim_context and [
+            str(value) for value in (claim_context.get("header_path") or [])
+        ] != header_path:
+            raise ClaimFocusError("table cell header path changed")
+        if "row_header_context" in claim_context and [
+            str(value) for value in (claim_context.get("row_header_context") or [])
+        ] != row_header_context:
+            raise ClaimFocusError("table cell row header context changed")
+        merge_identity = {
+            "row_span": int(cell.get("row_span") or 1),
+            "column_span": int(cell.get("column_span") or 1),
+            "covered_coordinates": [
+                [int(pair[0]), int(pair[1])]
+                for pair in (cell.get("covered_coordinates") or [])
+            ],
+        }
+        context_identity = {
+            "header_path": header_path,
+            "row_header_context": row_header_context,
+            "merge_anchor": merge_identity,
+            "structural_role": str(cell.get("structural_role") or ""),
+        }
+        return {
+            **common,
+            "kind": "table_cell",
+            "table_cell_id": cell_id,
+            "row_index": row_index,
+            "column_index": column_index,
+            "data_row_index": cell.get("data_row_index"),
+            "cell_start": cell_start,
+            "cell_end": cell_end,
+            "header_path": header_path,
+            "row_header_context": row_header_context,
+            "merge_anchor": merge_identity,
+            "context_identity_hash": hash_json("claim-focus-table-cell/v1", context_identity),
+            "text_hash": hash_json("claim-focus-text/v1", text),
+            "text": text,
         }
 
     raise ClaimFocusError(f"unsupported claim source kind: {source_kind or '<missing>'}")

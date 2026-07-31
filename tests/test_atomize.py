@@ -161,7 +161,7 @@ class AtomizeTableTests(unittest.TestCase):
             ["Public customer", "", "", "", "X", ""],
         ]
 
-        block, items = build_table_artifacts(
+        block, items, cells = build_table_artifacts(
             matrix,
             table_id="TBL-000001",
             block_id="BLK-000010",
@@ -177,7 +177,46 @@ class AtomizeTableTests(unittest.TestCase):
         self.assertEqual(items[0]["item_id"], "TBL-000001-R000003")
         self.assertEqual(items[0]["cosem_object_context"]["object_name"], "SAP Assignment")
         self.assertEqual(items[0]["cosem_object_context"]["class_id"], 17)
+        # table-structure-v2 组合表（parameter + 真实矩阵事实列）→ mixed：
+        # COSEM 行 join 保留，事实列 marker 格按 cell 闭环并产矩阵事实
         self.assertTrue(any(item["matrix_facts"] for item in items))
+        self.assertEqual(block["table_kind"], "parameter")
+        self.assertEqual(block["leaf_mode"], "mixed")
+        self.assertTrue(cells)
+        facts = [fact for item in items for fact in item["matrix_facts"]]
+        self.assertTrue(all(fact["predicate_header"].startswith("xDLMS Service") for fact in facts))
+
+    def test_build_table_artifacts_matrix_facts_only_for_mapping_matrix(self) -> None:
+        matrix = [
+            ["Feature", "Mode A", "Mode B", "Note"],
+            ["Encryption", "X", "", "see below"],
+            ["Signing", "X", "X", "free text"],
+        ]
+
+        block, items, cells = build_table_artifacts(
+            matrix,
+            table_id="TBL-000001",
+            block_id="BLK-000010",
+            order=10,
+            table_title="Matrix",
+            section_path=["Profiles"],
+            knowledge_bases=[],
+        )
+
+        self.assertEqual(block["table_kind"], "mapping_matrix")
+        self.assertEqual(block["leaf_mode"], "cell")
+        facts = [fact for item in items for fact in item["matrix_facts"]]
+        # Note 列不是矩阵事实列：mandatory/required/X 只在事实列时才是 marker
+        self.assertTrue(facts)
+        self.assertTrue(all(fact["predicate_header"] != "Note" for fact in facts))
+        self.assertTrue(all(fact["subject"] in {"Encryption", "Signing"} for fact in facts))
+        cell_by_id = {cell["cell_id"]: cell for cell in cells}
+        marker_cell = cell_by_id["TBL-000001-R000002-C000002"]
+        self.assertEqual(marker_cell["leaf_kind"], "cell")
+        self.assertEqual(marker_cell["header_path"], ["Mode A"])
+        self.assertEqual(marker_cell["row_header_context"], ["Encryption"])
+        note_cell = cell_by_id["TBL-000001-R000002-C000004"]
+        self.assertEqual(note_cell["leaf_kind"], "context")
 
     def test_large_table_preserves_complete_text_and_rows(self) -> None:
         matrix = [["Name", "Requirement"]] + [
@@ -187,7 +226,7 @@ class AtomizeTableTests(unittest.TestCase):
         raw_matrix = [list(row) for row in matrix]
         raw_matrix[1][1] = "The me ter shall expose output 0."
 
-        block, items = build_table_artifacts(
+        block, items, cells = build_table_artifacts(
             matrix,
             raw_matrix=raw_matrix,
             table_id="TBL-000001",
