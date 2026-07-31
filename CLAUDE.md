@@ -68,6 +68,12 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **Node 24 环境坑（2026-07-17 实证）**：`extract-zip`/yauzl 在 Node v24 上**静默空转**（报成功不写文件），electron 的 install.js 因此 exit 0 但 `dist/` 只留 1 个文件——`npm run desktop:dev` 或直跑 electron 报 "Electron failed to install correctly"，且 `npm install` 重装无效（同一破损路径）。修法：PowerShell `Expand-Archive` 把 `%LOCALAPPDATA%\electron\Cache\<hash>\electron-v*-win32-x64.zip` 解进 `ui/node_modules/electron/dist`，再写 `ui/node_modules/electron/path.txt`（内容仅 `electron.exe`）；此后 install.js 幂等跳过，electron 升版本需重做一次。**打包不受影响**（electron-builder 自带 7zip 解压）。根治 = Node 降回 LTS 22 或等 extract-zip 修 Node 24 兼容。
 - **KB 双轨口径（2026-07-07 实证裁定，勿混淆）**：**运行时**（CLI 默认 + GUI 预设）已收敛为单编译库 `compiled_from_obsidian.json`（三个种子库的富化超集：86 条目 id 100% 继承、6 条真实探针零丢失、四库并载会重复命中）；**golden 基线**仍按"三个种子 --kb + domain-pack"冻结生成**不动**——重生成时若改单编译库会假漂移。两者用途不同，并存是刻意的。种子 JSON 保留作轻量演示/定向调试。
 
+## 重大更新（2026-07-30）——四文档解析质量门实测全过 + 合成语料固化
+
+- **实测（tools/run_doc_quality_gate.py）**：STO docx（434 需求、引句逐字 98.6%、零双份、82 页影印/271 行区）、TS pdf（99.4% 覆盖、合规 100%）、SBD pdf（91 表 635 需求、PROW-DET 89/89 逐字、截断升级生效）、EN 16314（88.8% 覆盖、合规 100%）。P0×8（分块/行展开/零双份/合规/影印/引用分流/确定性回归/聚合）+ P1×4（SBD 表型抽 10 无误分、EN 清单 135 项各自成块、影印点击一致性抽 5 无错位、EN 影印 60 页/1141 区）全部通过。
+- **两个"可疑未覆盖"块裁定为标题**：BLK-000101/102 是表标题与附录标题（GOST 附录标注），非漏抽——启发式 requirement_like 误标，评审标记 non_requirement 即闭环。
+- **合成语料**：`tests/test_synthetic_doc_corpus.py`——把真实文档实证过的关键场景固化为 7 个不依赖真实文档的用例（参数表行展开/逐字锚定/术语表边界/商务表防误判/映射矩阵后置/清单成块/覆盖不重复），全量 2257 tests OK。
+
 ## 重大更新（2026-07-29）——表格行级化 Phase 1+2（已合 main `42ac159`，guards-v17/ai-extract-v5/clarification-v8）
 
 - **三封堵按冻结规格落实**（docs/param-row-extract-phase2-spec.md）：①chunk 表头重复（143 行表 3 chunk 全部带表头）；②参数表需求=确定性逐字行为准,LLM 叙述并入 `llm_narrative`+`merge_trace` 审计（STO 实测 409 需求零双份）；③行级 suspicion 按表块聚合（必答 135→188=1.39x ≤ 2x,每表一条汇总挂 row_details）。行级明细挂在表块 source_block 的 rows 子表（比规格更克制,放大面更小）。
