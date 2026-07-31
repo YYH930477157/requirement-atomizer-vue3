@@ -117,8 +117,8 @@ class ClaimReviewEventV2Tests(unittest.TestCase):
             before = claim_review_actions.read_claim_review_events(root).rows
 
             with self.assertRaisesRegex(
-                claim_review_actions.ClaimReviewActionError,
-                "conflicting base facts must all be explicitly superseded",
+                claim_review_actions.ClaimAdjudicationCasMismatch,
+                "missing an active fact",
             ):
                 claim_review_actions.apply_claim_adjudication(
                     root,
@@ -154,8 +154,8 @@ class ClaimReviewEventV2Tests(unittest.TestCase):
             before = claim_review_actions.read_claim_review_events(root).rows
 
             with self.assertRaisesRegex(
-                claim_review_actions.ClaimReviewActionError,
-                "conflicting base facts must all be explicitly superseded",
+                claim_review_actions.ClaimAdjudicationCasMismatch,
+                "missing an active fact",
             ):
                 claim_review_actions.apply_claim_adjudication(
                     root,
@@ -594,6 +594,255 @@ class ClaimReviewEventV2Tests(unittest.TestCase):
                 claim_review_actions.read_claim_review_events(root).rows,
                 [],
             )
+
+
+class ActiveResolutionFactContractTests(unittest.TestCase):
+    def _seed_covered(
+        self,
+        root: Path,
+    ) -> tuple[dict, dict, dict, dict, list[dict]]:
+        catalog = _catalog()
+        _publish(root, catalog)
+        claim_review_actions.fold_effective_ledger(
+            root,
+            actor_trigger="fact-contract-seed",
+        )
+        return _current(root)
+
+    @staticmethod
+    def _revision(snapshot: dict, claim: dict) -> str:
+        return str(snapshot["effective_ledger"][0]["claim_effective_revision"])
+
+    def _adjudicate(
+        self,
+        root: Path,
+        *,
+        adjudication: str,
+        evidence: dict,
+        reason: str,
+        supersedes: list[str] | None = None,
+        key: str,
+    ) -> dict:
+        _base, snapshot, claim, _base_row, _groups = _current(root)
+        return claim_review_actions.apply_claim_adjudication(
+            root,
+            claim_id=claim["claim_id"],
+            claim_hash=claim["claim_hash"],
+            adjudication=adjudication,
+            reason=reason,
+            evidence=evidence,
+            actor="expert:yyh",
+            expected_claim_effective_revision=self._revision(snapshot, claim),
+            supersedes_fact_hashes=supersedes or [],
+            request_idempotency_key=key,
+        )
+
+    @staticmethod
+    def _active_hashes(root: Path) -> set[str]:
+        effective = claim_artifacts.load_committed_shadow(root)[
+            "effective_ledger"
+        ][0]
+        return {
+            str(fact["fact_hash"])
+            for fact in effective["effective_facts"]["active_resolution_facts"]
+        }
+
+    def test_excluded_must_supersede_all_active_covered_facts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _base, _snapshot, _claim, _base_row, groups = self._seed_covered(root)
+            first = self._adjudicate(
+                root,
+                adjudication="covered",
+                evidence=_coverage_evidence(groups[0]),
+                reason="first independent coverage confirmation",
+                key="fact-contract-e1",
+            )
+            second = self._adjudicate(
+                root,
+                adjudication="covered",
+                evidence=_coverage_evidence(groups[0]),
+                reason="second independent coverage confirmation",
+                key="fact-contract-e2",
+            )
+            active = self._active_hashes(root)
+            first_hash = str(first["event"]["event_hash"])
+            second_hash = str(second["event"]["event_hash"])
+            self.assertTrue({first_hash, second_hash}.issubset(active))
+            self.assertEqual(len(active), 3)
+
+            _base, _snapshot, claim, _base_row, _groups = _current(root)
+            with self.assertRaisesRegex(
+                claim_review_actions.ClaimAdjudicationCasMismatch,
+                "missing an active fact",
+            ):
+                self._adjudicate(
+                    root,
+                    adjudication="excluded_non_normative",
+                    evidence=_source_exclusion_evidence(claim),
+                    reason="dropping one active covered fact must fail",
+                    supersedes=sorted(active - {second_hash}),
+                    key="fact-contract-x-partial",
+                )
+
+            closed = self._adjudicate(
+                root,
+                adjudication="excluded_non_normative",
+                evidence=_source_exclusion_evidence(claim),
+                reason="all active covered facts are explicitly closed",
+                supersedes=sorted(active),
+                key="fact-contract-x-full",
+            )
+            self.assertTrue(closed["ok"])
+            effective = claim_artifacts.load_committed_shadow(root)[
+                "effective_ledger"
+            ][0]
+            self.assertEqual(effective["resolution"], "excluded")
+
+            with self.assertRaisesRegex(
+                claim_review_actions.ClaimAdjudicationCasMismatch,
+                "inactive or historical fact",
+            ):
+                self._adjudicate(
+                    root,
+                    adjudication="reopen",
+                    evidence=_source_exclusion_evidence(claim),
+                    reason="reusing a superseded hash must fail",
+                    supersedes=sorted(
+                        self._active_hashes(root) | {first_hash}
+                    ),
+                    key="fact-contract-reopen-stale",
+                )
+
+    def test_projection_and_view_expose_facts_and_required_sets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_covered(root)
+
+            import claim_views
+
+            row = claim_views.build_claim_view(root, "catalog")["rows"][0]
+            effective = claim_artifacts.load_committed_shadow(root)[
+                "effective_ledger"
+            ][0]
+            expected_facts = effective["effective_facts"][
+                "active_resolution_facts"
+            ]
+            self.assertEqual(row["active_resolution_facts"], expected_facts)
+            self.assertTrue(all(
+                set(fact) == {"fact_hash", "kind", "polarity"}
+                for fact in row["active_resolution_facts"]
+            ))
+            required = row["required_supersedes_fact_hashes"]
+            self.assertEqual(
+                set(required),
+                {"covered", "excluded_non_normative", "reopen"},
+            )
+            base_positive = {
+                fact["fact_hash"]
+                for fact in expected_facts
+                if fact["polarity"] == "positive"
+            }
+            self.assertEqual(required["covered"], [])
+            self.assertEqual(
+                set(required["excluded_non_normative"]), base_positive
+            )
+            self.assertEqual(set(required["reopen"]), base_positive)
+
+    def test_audit_conflict_closes_only_by_superseding_the_audit_fact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _base, _snapshot, claim, base_row, groups = self._seed_covered(root)
+            confirmed = self._adjudicate(
+                root,
+                adjudication="covered",
+                evidence=_coverage_evidence(groups[0]),
+                reason="independent coverage confirmation",
+                key="fact-contract-audit-e1",
+            )
+            _base, snapshot, claim, base_row, _groups = _current(root)
+            known = self._active_hashes(root)
+            audit_draft = {
+                "schema": "claim-review-event/v2",
+                "claim_id": claim["claim_id"],
+                "claim_hash": claim["claim_hash"],
+                "document_generation_id": claim["document_generation_id"],
+                "catalog_generation_id": claim["catalog_generation_id"],
+                "event_kind": "audit_conflict",
+                "actor": "auditor:zz",
+                "reason": "two active facts disagree",
+                "idempotency_key": _hash("audit-conflict-1"),
+                "expected_base_claim_row_hash": claim_artifacts.hash_json(
+                    "claim-base-row/v1", base_row
+                ),
+                "expected_claim_effective_revision": self._revision(
+                    snapshot, claim
+                ),
+                "conflicting_fact_hashes": sorted(known),
+                "evidence": [_coverage_evidence(groups[0])],
+                "route": "expert",
+            }
+            base_by_claim = {
+                str(row["claim_id"]): row
+                for row in claim_artifacts.load_committed_claim_base(root)[
+                    "ledger"
+                ]
+            }
+            effective_by_claim = {
+                str(row["claim_id"]): row
+                for row in snapshot["effective_ledger"]
+            }
+            claim_review_actions.append_claim_review_events(
+                root,
+                [audit_draft],
+                base_by_claim=base_by_claim,
+                effective_by_claim=effective_by_claim,
+            )
+            claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="fact-contract-audit",
+            )
+            effective = claim_artifacts.load_committed_shadow(root)[
+                "effective_ledger"
+            ][0]
+            self.assertEqual(effective["resolution"], "uncertain")
+            active_facts = effective["effective_facts"][
+                "active_resolution_facts"
+            ]
+            audit_hash = next(
+                fact["fact_hash"]
+                for fact in active_facts
+                if fact["kind"] == "audit_conflict"
+            )
+            active = self._active_hashes(root)
+
+            with self.assertRaisesRegex(
+                claim_review_actions.ClaimAdjudicationCasMismatch,
+                "missing an active fact",
+            ):
+                self._adjudicate(
+                    root,
+                    adjudication="covered",
+                    evidence=_coverage_evidence(groups[0]),
+                    reason="closing without the audit fact must fail",
+                    supersedes=sorted(active - {audit_hash}),
+                    key="fact-contract-audit-partial",
+                )
+
+            closed = self._adjudicate(
+                root,
+                adjudication="covered",
+                evidence=_coverage_evidence(groups[0]),
+                reason="audit conflict reviewed and closed",
+                supersedes=sorted(active),
+                key="fact-contract-audit-close",
+            )
+            self.assertTrue(closed["ok"])
+            effective = claim_artifacts.load_committed_shadow(root)[
+                "effective_ledger"
+            ][0]
+            self.assertEqual(effective["resolution"], "covered")
+            self.assertNotIn(audit_hash, self._active_hashes(root))
 
 
 if __name__ == "__main__":

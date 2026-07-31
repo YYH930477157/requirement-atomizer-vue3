@@ -184,6 +184,11 @@ class StrictClaimFocusCritiqueTests(unittest.TestCase):
                     "failed_call_count": 0,
                 }
 
+            config_loader = mock.Mock(
+                side_effect=AssertionError(
+                    "a pre-resolved paid config must not be loaded again"
+                )
+            )
             with mock.patch(
                 "api_server.final_ai_requirements_are_stale", return_value=False,
             ), mock.patch.object(
@@ -192,7 +197,7 @@ class StrictClaimFocusCritiqueTests(unittest.TestCase):
                 omission_actions, "_find_target_section",
                 return_value=([block], self._section(), [self._section()]),
             ), mock.patch.object(
-                ai_extract, "config_for_route", return_value=config,
+                ai_extract, "config_for_route", config_loader,
             ), mock.patch(
                 "llm_client.apply_min_tokens", side_effect=lambda value, _purpose: value,
             ), mock.patch.object(
@@ -230,12 +235,14 @@ class StrictClaimFocusCritiqueTests(unittest.TestCase):
                             lambda _rows: callbacks.append("requirements")
                         ),
                         "chat_with_meta": chat_with_meta,
+                        "resolved_route_config": config,
                     },
                 )
 
             self.assertEqual((root / ai_extract.AI_REQUIREMENTS).read_bytes(), before)
             self.assertFalse((root / omission_actions.AI_SUPPLEMENTS).exists())
             self.assertEqual(callbacks, [])
+            config_loader.assert_not_called()
 
 
 class ClaimQueueExecutionTests(unittest.TestCase):
@@ -269,10 +276,12 @@ class ClaimQueueExecutionTests(unittest.TestCase):
             "kind": "claim_shadow_refresh",
             "claim_shadow": {"effective_fresh": True},
         })
+        config_loader = mock.Mock(return_value=self.config)
+        self.last_config_loader = config_loader
         with mock.patch.object(
             execution, "_validate_current_proposal", validator,
         ), mock.patch.object(
-            ai_extract, "config_for_route", return_value=self.config,
+            ai_extract, "config_for_route", config_loader,
         ), mock.patch.object(
             execution, "apply_min_tokens", side_effect=lambda value, _purpose: value,
         ), mock.patch.object(
@@ -289,6 +298,11 @@ class ClaimQueueExecutionTests(unittest.TestCase):
             execution, "_load_b_track_authority",
             return_value={"target_publication_revision": _hash("new-publication")},
         ):
+            route_revision = execution._resolved_route_preflight(
+                "openai_compatible",
+                self.config,
+            )[1]["route_config_revision"]
+            self.last_route_revision = route_revision
             result = execution.execute_claim_queue_proposal(
                 root,
                 proposal_id=proposal["proposal_id"],
@@ -300,6 +314,7 @@ class ClaimQueueExecutionTests(unittest.TestCase):
                 maximum_calls=4,
                 total_token_budget=20000,
                 request_idempotency_key="request-1",
+                expected_route_config_revision=route_revision,
             )
         return result, refresh
 
@@ -337,6 +352,11 @@ class ClaimQueueExecutionTests(unittest.TestCase):
 
         kinds = [row["event_kind"] for row in rows]
         self.assertEqual(kinds[0], "reextract_started")
+        self.assertEqual(
+            rows[0]["route_config_revision"],
+            self.last_route_revision,
+        )
+        self.last_config_loader.assert_called_once_with("openai_compatible")
         self.assertIn("budget_checkpoint", kinds)
         self.assertLess(kinds.index("supplement_persisted"), kinds.index("requirements_published"))
         self.assertLess(kinds.index("requirements_published"), kinds.index("base_rebuild_published"))
@@ -347,6 +367,10 @@ class ClaimQueueExecutionTests(unittest.TestCase):
         self.assertEqual(after, before)
         refresh.assert_called_once()
         self.assertIsNotNone(refresh.call_args.kwargs["verifier_request_budget"])
+        self.assertIs(
+            refresh.call_args.kwargs["resolved_route_config"],
+            self.config,
+        )
 
     def test_remote_failure_is_terminal_and_does_not_publish_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -443,6 +467,7 @@ class ClaimQueueExecutionTests(unittest.TestCase):
                     maximum_calls=4,
                     total_token_budget=20000,
                     request_idempotency_key="request-1",
+                    expected_route_config_revision=self.last_route_revision,
                 )
             rows = claim_reextract_attempts.read_attempt_log(root).rows
 
@@ -453,6 +478,44 @@ class ClaimQueueExecutionTests(unittest.TestCase):
             sum(row["event_kind"] == "reextract_started" for row in rows),
             1,
         )
+
+    def test_same_idempotency_key_rejects_changed_request_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._run(root, self._successful_targeted(root))
+            proposal = _proposal()
+            base = {
+                "proposal_id": proposal["proposal_id"],
+                "expected_claim_effective_revision": proposal[
+                    "claim_effective_revision"
+                ],
+                "expected_ledger_state": "uncertain",
+                "actor": "expert:yyh",
+                "allow_llm": True,
+                "route": "openai_compatible",
+                "maximum_calls": 4,
+                "total_token_budget": 20000,
+                "request_idempotency_key": "request-1",
+                "expected_route_config_revision": self.last_route_revision,
+            }
+            variants = (
+                {"actor": "expert:other"},
+                {"allow_llm": False},
+                {"maximum_calls": 5},
+                {"total_token_budget": 20001},
+                {"expected_claim_effective_revision": _hash("other-revision")},
+                {"expected_ledger_state": "covered"},
+                {"expected_route_config_revision": _hash("other-route")},
+            )
+            for changed in variants:
+                with self.subTest(changed=changed), self.assertRaisesRegex(
+                    execution.ClaimQueueExecutionConflict,
+                    "idempotency key.*different parameters",
+                ):
+                    execution.execute_claim_queue_proposal(
+                        root,
+                        **{**base, **changed},
+                    )
 
     def test_rebuild_pending_retry_is_deterministic_and_does_not_repeat_paid_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -500,10 +563,10 @@ class ClaimQueueExecutionTests(unittest.TestCase):
                     ],
                     expected_ledger_state="uncertain",
                     actor="expert:yyh",
-                    allow_llm=True,
+                    allow_llm=False,
                     route="openai_compatible",
-                    maximum_calls=4,
-                    total_token_budget=20000,
+                    maximum_calls=0,
+                    total_token_budget=0,
                     request_idempotency_key="request-1",
                 )
             rows = claim_reextract_attempts.read_attempt_log(root).rows
@@ -576,6 +639,7 @@ class ClaimQueueExecutionTests(unittest.TestCase):
                     maximum_calls=4,
                     total_token_budget=20000,
                     request_idempotency_key="request-1",
+                    expected_route_config_revision=self.last_route_revision,
                 )
 
         self.assertTrue(result["idempotent_replay"])
@@ -745,6 +809,131 @@ class ClaimQueueExecutionTests(unittest.TestCase):
 
         self.assertEqual(rows, [])
         self.assertEqual(diagnostics[0]["reason"], "unsupported_strategy_version")
+
+
+class ClaimQueueRoutePreflightTests(unittest.TestCase):
+    @staticmethod
+    def _config(model: str = "deepseek-chat") -> LLMClientConfig:
+        return LLMClientConfig(
+            base_url="https://llm.example.invalid/v1",
+            model=model,
+            api_key_env="RATOMIZER_TEST_KEY",
+            temperature=0.0,
+            max_tokens=4096,
+            timeout_s=60.0,
+            max_retries=3,
+        )
+
+    def test_unconfigured_route_reports_not_configured(self) -> None:
+        with mock.patch.object(ai_extract, "config_for_route", return_value=None):
+            preflight = execution.claim_queue_route_preflight("openai_compatible")
+        self.assertFalse(preflight["configured"])
+        self.assertIsNone(preflight["model"])
+        self.assertIsNone(preflight["route_config_revision"])
+
+    def test_revision_tracks_model_endpoint_and_credential_identity(self) -> None:
+        with mock.patch.object(
+            ai_extract, "config_for_route", return_value=self._config(),
+        ):
+            first = execution.claim_queue_route_preflight("openai_compatible")
+        self.assertTrue(first["configured"])
+        self.assertEqual(first["model"], "deepseek-chat")
+        with mock.patch.object(
+            ai_extract,
+            "config_for_route",
+            return_value=self._config(model="other-model"),
+        ):
+            changed = execution.claim_queue_route_preflight("openai_compatible")
+        self.assertNotEqual(
+            first["route_config_revision"], changed["route_config_revision"],
+        )
+
+        with mock.patch.dict("os.environ", {"RATOMIZER_TEST_KEY": "secret-a"}):
+            credential_a = execution._resolved_route_preflight(
+                "openai_compatible", self._config(),
+            )[1]
+        with mock.patch.dict("os.environ", {"RATOMIZER_TEST_KEY": "secret-b"}):
+            credential_b = execution._resolved_route_preflight(
+                "openai_compatible", self._config(),
+            )[1]
+        renamed_env = LLMClientConfig(
+            **{
+                **self._config().__dict__,
+                "api_key_env": "RATOMIZER_OTHER_TEST_KEY",
+            }
+        )
+        with mock.patch.dict(
+            "os.environ",
+            {"RATOMIZER_OTHER_TEST_KEY": "secret-a"},
+        ):
+            renamed = execution._resolved_route_preflight(
+                "openai_compatible", renamed_env,
+            )[1]
+
+        self.assertNotEqual(
+            credential_a["route_config_revision"],
+            credential_b["route_config_revision"],
+        )
+        self.assertNotEqual(
+            credential_a["route_config_revision"],
+            renamed["route_config_revision"],
+        )
+        self.assertNotIn("secret-a", repr(credential_a))
+
+    def test_stale_expected_config_revision_is_a_conflict_before_any_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(
+                ai_extract, "config_for_route", return_value=self._config(),
+            ):
+                with self.assertRaisesRegex(
+                    execution.ClaimQueueExecutionConflict,
+                    "route configuration changed",
+                ):
+                    execution.execute_claim_queue_proposal(
+                        root,
+                        proposal_id="CQP-12345678-9abcdef0",
+                        expected_claim_effective_revision=_hash("revision"),
+                        expected_ledger_state="uncertain",
+                        actor="expert:yyh",
+                        allow_llm=True,
+                        route="openai_compatible",
+                        maximum_calls=1,
+                        total_token_budget=1000,
+                        request_idempotency_key="preflight-conflict",
+                        expected_route_config_revision=(
+                            "sha256:" + "0" * 64
+                        ),
+                    )
+
+    def test_missing_config_revision_is_conflict_before_attempt_or_config_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_loader = mock.Mock(
+                side_effect=AssertionError("missing confirmation must not load config")
+            )
+            with mock.patch.object(ai_extract, "config_for_route", config_loader):
+                with self.assertRaisesRegex(
+                    execution.ClaimQueueExecutionConflict,
+                    "revision is required",
+                ):
+                    execution.execute_claim_queue_proposal(
+                        root,
+                        proposal_id="CQP-12345678-9abcdef0",
+                        expected_claim_effective_revision=_hash("revision"),
+                        expected_ledger_state="uncertain",
+                        actor="expert:yyh",
+                        allow_llm=True,
+                        route="openai_compatible",
+                        maximum_calls=1,
+                        total_token_budget=1000,
+                        request_idempotency_key="missing-preflight",
+                    )
+
+            self.assertFalse(
+                (root / claim_reextract_attempts.CLAIM_REEXTRACT_ATTEMPTS).exists()
+            )
+            config_loader.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -231,6 +231,69 @@ class ClaimLedgerHttpTests(unittest.TestCase):
         self.assertTrue(all(status == 200 for status, _payload in responses))
         self.assertEqual(after, before)
 
+    def _append_orphan_attempt(self, root: Path) -> None:
+        import claim_reextract_attempts as attempts
+
+        attempt_id = attempts.attempt_id("CQP-12345678-9abcdef0", "orphan-request")
+        attempts.append_attempt_events(root, [{
+            "attempt_id": attempt_id,
+            "proposal_id": "CQP-12345678-9abcdef0",
+            "claim_id": "CLM-0123456789abcdef",
+            "claim_hash": claim_artifacts.hash_json("claim-http-attempt/v1", "claim"),
+            "event_kind": "reextract_started",
+            "actor": "expert:yyh",
+            "idempotency_key": claim_artifacts.hash_json(
+                "claim-http-attempt/v1", "started"
+            ),
+            "request_idempotency_key": "orphan-request",
+            "route": "openai_compatible",
+            "model": "deepseek-chat",
+            "route_config_revision": claim_artifacts.hash_json(
+                "claim-http-attempt/v1", "route-config"
+            ),
+            "budgets": {
+                "max_calls": 1,
+                "max_total_tokens": 4000,
+                "allow_semantic_verifier": False,
+            },
+            "preconditions": {
+                "claim_effective_revision": claim_artifacts.hash_json(
+                    "claim-http-attempt/v1", "revision"
+                ),
+            },
+            "focus": {"kind": "text_span", "block_id": "B1", "start": 0, "end": 5},
+        }])
+
+    def test_claim_gets_never_recover_interrupted_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            self._append_orphan_attempt(root)
+            before = _file_bytes(root)
+
+            with _claim_api(root) as base_url:
+                responses = [_http_json(base_url, path) for path in self.ENDPOINTS]
+
+            after = _file_bytes(root)
+
+        self.assertTrue(all(status == 200 for status, _payload in responses))
+        self.assertEqual(after, before)
+
+    def test_queue_get_is_served_while_extraction_lease_is_live(self) -> None:
+        from omission_actions import extraction_operation_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            self._append_orphan_attempt(root)
+            with extraction_operation_lock(root, operation="claim-reextract"):
+                with _claim_api(root) as base_url:
+                    status, payload = _http_json(base_url, "/claim-queue")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["available"])
+        self.assertIn("attempt_log_revision", payload)
+
     def test_six_claim_gets_return_unavailable_http_200_for_legacy_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -375,11 +438,21 @@ class ClaimLedgerHttpTests(unittest.TestCase):
                         "offset=abc",
                     )
                 ]
+                compat_limit = _http_json(
+                    base_url, "/claim-queue?compat_limit=0"
+                )
+                compat_offset = _http_json(
+                    base_url, "/claim-queue?compat_offset=-1"
+                )
 
         self.assertTrue(all(status == 400 for status, _payload in responses))
         self.assertTrue(all(
             payload["retryable"] is False for _status, payload in responses
         ))
+        self.assertEqual(compat_limit[0], 400)
+        self.assertIn("compat_limit", compat_limit[1]["error"])
+        self.assertEqual(compat_offset[0], 400)
+        self.assertIn("compat_offset", compat_offset[1]["error"])
 
     def test_http_review_events_hide_previous_generation_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -548,12 +621,66 @@ class ClaimMutationHttpTests(unittest.TestCase):
                     "maximum_calls": 4,
                     "total_token_budget": 20000,
                     "request_idempotency_key": "http-queue-1",
+                    "expected_route_config_revision": "sha256:" + "2" * 64,
                 }, token=self.TOKEN)
 
         self.assertEqual(status, 200)
         self.assertEqual(payload, expected)
         self.assertEqual(execute.call_args.kwargs["maximum_calls"], 4)
         self.assertEqual(execute.call_args.kwargs["total_token_budget"], 20000)
+        self.assertEqual(
+            execute.call_args.kwargs["expected_route_config_revision"],
+            "sha256:" + "2" * 64,
+        )
+
+    def test_claim_queue_new_paid_attempt_requires_route_revision_http_409(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(base_url, "/claim-queue/execute", {
+                    "proposal_id": "CQP-12345678-9abcdef0",
+                    "expected_claim_effective_revision": "sha256:" + "1" * 64,
+                    "expected_ledger_state": "uncertain",
+                    "actor": "expert:yyh",
+                    "allow_llm": True,
+                    "route": "openai_compatible",
+                    "maximum_calls": 4,
+                    "total_token_budget": 20000,
+                    "request_idempotency_key": "http-queue-missing-route-revision",
+                }, token=self.TOKEN)
+
+            self.assertEqual(status, 409)
+            self.assertTrue(payload["needs_reconfirmation"])
+            self.assertIn("revision is required", payload["error"])
+            self.assertFalse(
+                (root / "claim_reextract_attempts.jsonl").exists()
+            )
+
+    def test_claim_queue_execute_omission_conflict_is_structured_409(self) -> None:
+        from omission_actions import OmissionConflictError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_queue_execution.execute_claim_queue_proposal",
+                side_effect=OmissionConflictError("omission state changed mid-flight"),
+            ), _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(base_url, "/claim-queue/execute", {
+                    "proposal_id": "CQP-12345678-9abcdef0",
+                    "expected_claim_effective_revision": "sha256:" + "1" * 64,
+                    "expected_ledger_state": "uncertain",
+                    "actor": "expert:yyh",
+                    "allow_llm": True,
+                    "route": "openai_compatible",
+                    "maximum_calls": 4,
+                    "total_token_budget": 20000,
+                    "request_idempotency_key": "http-queue-conflict-1",
+                }, token=self.TOKEN)
+
+        self.assertEqual(status, 409)
+        self.assertTrue(payload["needs_reconfirmation"])
+        self.assertTrue(payload["retryable"])
+        self.assertIn("omission state changed", payload["error"])
 
     @staticmethod
     def _structural_override_payload() -> dict:
@@ -596,6 +723,34 @@ class ClaimMutationHttpTests(unittest.TestCase):
         self.assertEqual(confirm.call_args.kwargs["allow_llm"], False)
         self.assertEqual(confirm.call_args.kwargs["verifier_max_calls"], 0)
         self.assertEqual(confirm.call_args.kwargs["verifier_max_total_tokens"], 0)
+
+    def test_claim_structural_override_real_http_forwards_paid_reconfirmation(self) -> None:
+        expected = {"ok": True, "status": "rebuilt", "effective_fresh": True}
+        request = self._structural_override_payload()
+        request.update({
+            "operation_id": "CSOP-1111111111111111",
+            "reconfirm_paid_work": True,
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_structural_overrides.confirm_structural_override",
+                return_value=expected,
+            ) as confirm, _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    request,
+                    token=self.TOKEN,
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        self.assertEqual(
+            confirm.call_args.kwargs["operation_id"],
+            "CSOP-1111111111111111",
+        )
+        self.assertTrue(confirm.call_args.kwargs["reconfirm_paid_work"])
 
     def test_claim_structural_override_real_http_stale_is_409(self) -> None:
         from claim_structural_overrides import ClaimStructuralOverrideStale
@@ -662,6 +817,30 @@ class ClaimMutationHttpTests(unittest.TestCase):
                 )
 
         self.assertEqual(status, 503)
+        self.assertEqual(payload, pending)
+
+    def test_claim_structural_override_real_http_reconfirmation_required_is_409(self) -> None:
+        pending = {
+            "ok": False,
+            "status": "needs_reconfirmation",
+            "needs_reconfirmation": True,
+            "effective_fresh": False,
+            "error": "paid verifier outcome is incomplete",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_structural_overrides.confirm_structural_override",
+                return_value=pending,
+            ), _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    self._structural_override_payload(),
+                    token=self.TOKEN,
+                )
+
+        self.assertEqual(status, 409)
         self.assertEqual(payload, pending)
 
 

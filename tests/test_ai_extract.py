@@ -754,7 +754,10 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(attempts[0]["attempt_metrics"]["verifier_call_count"], 0)
         self.assertEqual(attempts[0]["attempt_metrics"]["verifier_tokens"], 0)
         self.assertEqual(generation["attempt_chain"]["attempt_id"], attempts[0]["attempt_id"])
-        self.assertEqual(effective["effective_meta"]["effective_snapshot_version"], "claim-effective-snapshot-v2")
+        self.assertEqual(
+            effective["effective_meta"]["effective_snapshot_version"],
+            __import__("claim_artifacts").CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+        )
         self.assertTrue(view["available"])
         self.assertTrue(view["effective_fresh"])
 
@@ -837,7 +840,10 @@ class RouteTests(unittest.TestCase):
             binding["source_locator"]["reuse_attempt_id"],
             initial["attempt_chain"]["attempt_id"],
         )
-        self.assertEqual(effective["effective_meta"]["effective_snapshot_version"], "claim-effective-snapshot-v2")
+        self.assertEqual(
+            effective["effective_meta"]["effective_snapshot_version"],
+            __import__("claim_artifacts").CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
+        )
         self.assertTrue(refreshed["claim_shadow"]["effective_fresh"])
         self.assertEqual(
             sum(row["attempt_metrics"]["verifier_call_count"] for row in attempts),
@@ -846,6 +852,49 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(
             sum(row["attempt_metrics"]["verifier_tokens"] for row in attempts),
             sum(row["attempt_metrics"]["verifier_tokens"] for row in initial_attempts),
+        )
+
+    def test_claim_shadow_refresh_uses_pre_resolved_route_config(self) -> None:
+        import claim_artifacts
+        from llm_client import LLMClientConfig
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "blocks.jsonl").write_text(
+                '{"block_id":"B1","section_path":["4"],'
+                '"text":"The meter shall do A."}\n',
+                encoding="utf-8",
+            )
+            ai_extract.run_ai_extract(out, route="stub")
+            resolved = LLMClientConfig(
+                base_url="https://confirmed.example.invalid/v1",
+                model="confirmed-model",
+                api_key_env="RATOMIZER_CONFIRMED_KEY",
+                max_tokens=8192,
+                max_retries=0,
+            )
+            with patch.object(
+                ai_extract,
+                "config_for_route",
+                side_effect=AssertionError(
+                    "a confirmed paid operation must not resolve its route twice"
+                ),
+            ) as config_loader:
+                refreshed = ai_extract.refresh_claim_shadow(
+                    out,
+                    route="openai_compatible",
+                    allow_llm=True,
+                    verifier_max_calls=0,
+                    verifier_max_total_tokens=0,
+                    resolved_route_config=resolved,
+                )
+            loaded = claim_artifacts.load_committed_shadow(out)
+
+        config_loader.assert_not_called()
+        self.assertTrue(refreshed["ledger_only"])
+        self.assertEqual(
+            loaded["generation_meta"]["shadow_meta"]["route_mode"],
+            "llm",
         )
 
     def test_failed_cold_shadow_refresh_resumes_same_attempt_chain(self) -> None:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +26,7 @@ from claim_review_actions import (
     assess_effective_freshness,
     claim_base_resolution_fact_hashes,
     claim_coverage_group_hash,
+    claim_required_supersedes_fact_hashes,
     claim_source_evidence_hash,
     read_claim_review_events,
     read_effective_health,
@@ -81,7 +85,7 @@ def _unavailable(view: str) -> dict[str, Any]:
     if collection_key:
         payload[collection_key] = []
         payload["total"] = 0
-    if view in {"catalog", "ledger", "coverage_groups", "review_events"}:
+    if view in {"catalog", "ledger", "coverage_groups", "review_events", "queue"}:
         payload.update({"limit": 0, "offset": 0})
     if view == "catalog":
         payload["owner_unit_ids"] = []
@@ -96,6 +100,9 @@ def _unavailable(view: str) -> dict[str, Any]:
         payload["compat_omissions"] = []
         payload["compat_omission_revision"] = None
         payload["compat_omission_total"] = 0
+        payload["compat_omission_limit"] = 0
+        payload["compat_omission_offset"] = 0
+        payload["route_preflight"] = None
     return payload
 
 
@@ -103,38 +110,180 @@ def _has_no_generation(root: Path) -> bool:
     return not any((root / name).exists() for name in _BASE_FILES)
 
 
+# Read-only snapshot cache. The six GETs share one committed snapshot per
+# revision. Every input that can change the rendered view or freshness result
+# participates in the key, and a per-root single-flight prevents concurrent
+# GETs from loading different generations into the cache.
+_CONTEXT_CACHE_MAX_ENTRIES = 16
+_CONTEXT_CACHE: OrderedDict[Path, tuple[tuple, dict[str, Any]]] = OrderedDict()
+_CONTEXT_CACHE_GUARD = threading.RLock()
+_CONTEXT_CACHE_INFLIGHT: dict[Path, threading.Event] = {}
+_CONTEXT_STAT_FILES = (
+    CLAIM_CATALOG,
+    CLAIM_CATALOG_META,
+    CLAIM_COVERAGE_GROUPS,
+    CLAIM_LEDGER,
+    CLAIM_SHADOW_METRICS,
+    CLAIM_GENERATION_META,
+    CLAIM_EFFECTIVE_LEDGER,
+    CLAIM_EFFECTIVE_META,
+    CLAIM_QUEUE_PROPOSALS,
+    "claim_review_events.jsonl",
+    "claim_verifier_attempts.jsonl",
+    "claim_reextract_attempts.jsonl",
+    "claim_structural_overrides.jsonl",
+    "claim_structural_operations.jsonl",
+    "omission_states.jsonl",
+    "blocks.jsonl",
+    "table_items.jsonl",
+    "atomic_requirements.jsonl",
+    "ai_requirements.jsonl",
+    "ai_requirements.meta.json",
+    "ai_review_states.jsonl",
+    "review_states.jsonl",
+    "claim_effective_health.json",
+)
+_CONTEXT_CONTENT_DIRECTORIES = (
+    "claim_structural_decisions",
+)
+
+
+def _context_revision_key(root: Path) -> tuple:
+    from claim_artifacts import (
+        CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
+        CLAIM_PUBLICATION_JOURNAL,
+    )
+
+    parts: list[tuple] = []
+    for name in _CONTEXT_STAT_FILES:
+        path = root / name
+        try:
+            stat = path.stat() if path.is_file() else None
+        except OSError:
+            stat = None
+        parts.append(
+            (name, None)
+            if stat is None
+            else (
+                name,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            )
+        )
+    # Structural verifier decisions are compact content-addressed sidecars.
+    # Hash their bytes so deletion or same-size replacement cannot leave a
+    # previously validated view resident in the snapshot cache.
+    for name in _CONTEXT_CONTENT_DIRECTORIES:
+        directory = root / name
+        entries: list[tuple] | None = []
+        try:
+            if directory.is_dir():
+                for path in sorted(
+                    (item for item in directory.rglob("*") if item.is_file()),
+                    key=lambda item: item.relative_to(directory).as_posix(),
+                ):
+                    entries.append((
+                        path.relative_to(directory).as_posix(),
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                    ))
+        except OSError:
+            entries = None
+        parts.append((name, None if entries is None else tuple(entries)))
+    # Meta files are small and anchor the committed generations. Hashing them
+    # closes same-size/timestamp replacement holes without hashing every large
+    # JSONL payload on every GET.
+    for name in (CLAIM_GENERATION_META, CLAIM_EFFECTIVE_META):
+        path = root / name
+        try:
+            digest = (
+                hashlib.sha256(path.read_bytes()).hexdigest()
+                if path.is_file()
+                else None
+            )
+        except OSError:
+            digest = None
+        parts.append((f"{name}:sha256", digest))
+    for name in (CLAIM_PUBLICATION_JOURNAL, CLAIM_EFFECTIVE_PUBLICATION_JOURNAL):
+        parts.append((name, (root / name).is_file()))
+    return tuple(parts)
+
+
 def _check_migration(snapshot: dict[str, Any]) -> None:
+    from claim_artifacts import CLAIM_EFFECTIVE_SNAPSHOT_VERSION
+
     if (
         dict(snapshot["effective_meta"]).get("effective_snapshot_version")
-        == "claim-effective-snapshot-v1"
+        != CLAIM_EFFECTIVE_SNAPSHOT_VERSION
     ):
-        raise ClaimViewMigrationRequired("Phase 1 effective migration is required")
+        raise ClaimViewMigrationRequired(
+            "committed effective snapshot predates the current contract; "
+            "run maintenance to rebuild it"
+        )
 
 
 def _context(root: Path) -> dict[str, Any] | None:
+    root = root.resolve()
     if _has_no_generation(root):
         return None
-    # The loader checks both publication journals before and after its snapshot
-    # read.  A pending journal always takes precedence over a legacy snapshot:
-    # readers must request recovery, not report migration, and must not write.
-    snapshot = load_committed_effective_snapshot_readonly(root, require_v2=False)
-    _check_migration(snapshot)
-    freshness = assess_effective_freshness(root, snapshot, readonly=True)
-    effective = dict(snapshot["effective_meta"])
-    generation = dict(snapshot["generation_meta"])
-    event_log = read_claim_review_events(root, repair=False, readonly=True)
-    committed_count = int(effective["last_event_seq"])
-    health = read_effective_health(root)
-    if freshness.get("authority_audit_gap"):
-        health = {**health, "authority_audit_gap": True}
-    return {
-        "snapshot": snapshot,
-        "effective": effective,
-        "generation": generation,
-        "freshness": freshness,
-        "events": event_log.rows[:committed_count],
-        "health": health,
-    }
+    while True:
+        key = _context_revision_key(root)
+        with _CONTEXT_CACHE_GUARD:
+            cached = _CONTEXT_CACHE.get(root)
+            if cached is not None and cached[0] == key:
+                _CONTEXT_CACHE.move_to_end(root)
+                return cached[1]
+            inflight = _CONTEXT_CACHE_INFLIGHT.get(root)
+            if inflight is None:
+                inflight = threading.Event()
+                _CONTEXT_CACHE_INFLIGHT[root] = inflight
+                break
+        inflight.wait()
+
+    try:
+        # The loader checks both publication journals before and after its
+        # snapshot read. A pending journal always takes precedence over a
+        # legacy snapshot: readers request recovery and never write.
+        snapshot = load_committed_effective_snapshot_readonly(
+            root,
+            require_v2=False,
+        )
+        _check_migration(snapshot)
+        freshness = assess_effective_freshness(root, snapshot, readonly=True)
+        effective = dict(snapshot["effective_meta"])
+        generation = dict(snapshot["generation_meta"])
+        event_log = read_claim_review_events(root, repair=False, readonly=True)
+        committed_count = int(effective["last_event_seq"])
+        health = read_effective_health(root)
+        if freshness.get("authority_audit_gap"):
+            health = {**health, "authority_audit_gap": True}
+        from claim_structural_operations import pending_structural_operations
+
+        context = {
+            "snapshot": snapshot,
+            "effective": effective,
+            "generation": generation,
+            "freshness": freshness,
+            "events": event_log.rows[:committed_count],
+            "health": health,
+            "structural_pending": pending_structural_operations(root),
+        }
+        confirmed_key = _context_revision_key(root)
+        if confirmed_key != key:
+            raise ClaimArtifactError(
+                "claim view inputs changed while loading the committed snapshot"
+            )
+        with _CONTEXT_CACHE_GUARD:
+            _CONTEXT_CACHE[root] = (confirmed_key, context)
+            _CONTEXT_CACHE.move_to_end(root)
+            while len(_CONTEXT_CACHE) > _CONTEXT_CACHE_MAX_ENTRIES:
+                _CONTEXT_CACHE.popitem(last=False)
+        return context
+    finally:
+        with _CONTEXT_CACHE_GUARD:
+            current = _CONTEXT_CACHE_INFLIGHT.pop(root, None)
+            if current is not None:
+                current.set()
 
 
 def _envelope(view: str, context: dict[str, Any]) -> dict[str, Any]:
@@ -188,10 +337,17 @@ def _catalog_rows(context: dict[str, Any]) -> list[dict[str, Any]]:
     groups_by_claim: dict[str, list[dict[str, Any]]] = {}
     for group in snapshot["groups"]:
         groups_by_claim.setdefault(str(group.get("claim_id") or ""), []).append(group)
+    pending_operations = dict(context.get("structural_pending") or {})
     rows: list[dict[str, Any]] = []
     for claim in snapshot["catalog"]:
         claim_id = str(claim.get("claim_id") or "")
         effective = effective_by_claim[claim_id]
+        active_facts = list(
+            dict(effective.get("effective_facts") or {}).get(
+                "active_resolution_facts"
+            )
+            or []
+        )
         rows.append({
             **claim,
             "source_text_hash": claim_source_evidence_hash(claim),
@@ -200,6 +356,16 @@ def _catalog_rows(context: dict[str, Any]) -> list[dict[str, Any]]:
                 base_by_claim[claim_id],
                 groups_by_claim.get(claim_id, []),
             ),
+            "active_resolution_facts": active_facts,
+            "required_supersedes_fact_hashes": {
+                adjudication: claim_required_supersedes_fact_hashes(
+                    adjudication, active_facts
+                )
+                for adjudication in (
+                    "covered", "excluded_non_normative", "reopen",
+                )
+            },
+            "pending_structural_operation": pending_operations.get(claim_id),
             **{
                 key: effective.get(key)
                 for key in (
@@ -427,15 +593,18 @@ def build_claim_queue_view(
     *,
     limit: int = 100,
     offset: int = 0,
+    compat_limit: int | None = None,
+    compat_offset: int = 0,
 ) -> dict[str, Any]:
     from claim_reextract_attempts import (
         derive_attempt_states,
-        read_attempt_log,
-        recover_interrupted_attempts,
+        read_attempt_log_stable,
     )
 
-    recover_interrupted_attempts(root)
-    attempt_snapshot = read_attempt_log(root)
+    # A GET must never write: interrupted-attempt recovery belongs to API
+    # startup, explicit maintenance, and the queue execute write side.  The
+    # stable double-read absorbs a torn tail from a concurrent append.
+    attempt_snapshot = read_attempt_log_stable(root)
     attempt_states = derive_attempt_states(attempt_snapshot.rows)
     latest_by_proposal: dict[str, dict[str, Any]] = {}
     for state in attempt_states.values():
@@ -481,16 +650,31 @@ def build_claim_queue_view(
         limit=limit,
         offset=offset,
     )
+    from claim_queue_execution import claim_queue_route_preflight
+
     compat_omissions = _compat_omissions(root)
+    normalized_compat_offset = max(0, int(compat_offset))
+    if compat_limit is None:
+        compat_page = compat_omissions[normalized_compat_offset:]
+        effective_compat_limit = len(compat_page)
+    else:
+        normalized_compat_limit = max(1, min(500, int(compat_limit)))
+        compat_page = compat_omissions[
+            normalized_compat_offset:normalized_compat_offset + normalized_compat_limit
+        ]
+        effective_compat_limit = normalized_compat_limit
     return {
         **_envelope("queue", context),
         "proposals": page,
-        "compat_omissions": compat_omissions,
+        "route_preflight": claim_queue_route_preflight("openai_compatible"),
+        "compat_omissions": compat_page,
         "compat_omission_revision": hash_json(
             "claim-compat-omission-revision/v1",
             compat_omissions,
         ),
         "compat_omission_total": len(compat_omissions),
+        "compat_omission_limit": effective_compat_limit,
+        "compat_omission_offset": normalized_compat_offset,
         "attempt_log_revision": attempt_snapshot.prefix_sha256,
         "attempt_event_count": attempt_snapshot.last_event_seq,
         "total": total,
@@ -533,6 +717,8 @@ def build_claim_view(
     claim_id: str = "",
     limit: int = 100,
     offset: int = 0,
+    compat_limit: int | None = None,
+    compat_offset: int = 0,
 ) -> dict[str, Any]:
     if view not in _VIEW_SCHEMAS:
         raise ValueError(f"unknown claim view: {view}")
@@ -580,4 +766,6 @@ def build_claim_view(
         context,
         limit=limit,
         offset=offset,
+        compat_limit=compat_limit,
+        compat_offset=compat_offset,
     )

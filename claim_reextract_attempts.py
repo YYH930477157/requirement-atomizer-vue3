@@ -20,8 +20,12 @@ from omission_actions import extraction_operation_lock
 
 
 CLAIM_REEXTRACT_ATTEMPTS = "claim_reextract_attempts.jsonl"
-CLAIM_REEXTRACT_ATTEMPT_SCHEMA = "claim-reextract-attempt/v1"
-CLAIM_REEXTRACT_ATTEMPT_VERSION = "claim-reextract-attempt-log-v1"
+CLAIM_REEXTRACT_ATTEMPT_SCHEMA = "claim-reextract-attempt/v2"
+CLAIM_REEXTRACT_ATTEMPT_VERSION = "claim-reextract-attempt-log-v2"
+_SUPPORTED_ATTEMPT_SCHEMAS = frozenset({
+    "claim-reextract-attempt/v1",
+    CLAIM_REEXTRACT_ATTEMPT_SCHEMA,
+})
 _EMPTY_SHA256 = sha256_bytes(b"")
 _TERMINAL_EVENTS = frozenset({
     "reextract_succeeded",
@@ -72,7 +76,10 @@ def _scan(root: Path) -> AttemptLogSnapshot:
     path = root / CLAIM_REEXTRACT_ATTEMPTS
     if not path.is_file():
         return AttemptLogSnapshot([], b"", _EMPTY_SHA256, 0, _EMPTY_SHA256, frozenset())
-    raw = path.read_bytes()
+    return _scan_bytes(path.read_bytes())
+
+
+def _scan_bytes(raw: bytes) -> AttemptLogSnapshot:
     rows: list[dict[str, Any]] = []
     keys: set[str] = set()
     previous_hash = _EMPTY_SHA256
@@ -101,7 +108,12 @@ def _scan(root: Path) -> AttemptLogSnapshot:
             raise ClaimReextractAttemptError("claim re-extract event id is invalid")
         if row.get("prev_event_hash") != previous_hash:
             raise ClaimReextractAttemptError("claim re-extract event hash chain is broken")
-        expected_hash = hash_json(CLAIM_REEXTRACT_ATTEMPT_SCHEMA, _without_hash(row))
+        row_schema = str(row.get("schema") or "")
+        if row_schema not in _SUPPORTED_ATTEMPT_SCHEMAS:
+            raise ClaimReextractAttemptError(
+                "claim re-extract attempt schema is unsupported"
+            )
+        expected_hash = hash_json(row_schema, _without_hash(row))
         if row.get("event_hash") != expected_hash:
             raise ClaimReextractAttemptError("claim re-extract event hash is invalid")
         if key in keys:
@@ -163,6 +175,40 @@ def read_attempt_log(out_dir: Path | str) -> AttemptLogSnapshot:
     return _scan(Path(out_dir).expanduser().resolve())
 
 
+def read_attempt_log_stable(
+    out_dir: Path | str,
+    *,
+    max_attempts: int = 5,
+    delay_seconds: float = 0.05,
+) -> AttemptLogSnapshot:
+    """Double-read stable snapshot for lock-free readers (GET paths).
+
+    A concurrent append can make a single read observe a torn tail.  Re-read
+    and retry while the bytes keep changing; a byte-identical failure across
+    two reads is permanent corruption and stays fail-closed.
+    """
+    import time
+
+    root = Path(out_dir).expanduser().resolve()
+    path = root / CLAIM_REEXTRACT_ATTEMPTS
+    if not path.is_file():
+        return AttemptLogSnapshot([], b"", _EMPTY_SHA256, 0, _EMPTY_SHA256, frozenset())
+    previous_raw: bytes | None = None
+    for _ in range(max(2, int(max_attempts))):
+        raw = path.read_bytes()
+        if previous_raw is None or raw != previous_raw:
+            previous_raw = raw
+            time.sleep(delay_seconds)
+            continue
+        # Only return (or classify corruption as permanent) after observing
+        # the exact same bytes twice. A valid first read may still race an
+        # append and therefore is not a stable snapshot on its own.
+        return _scan_bytes(raw)
+    raise ClaimReextractAttemptError(
+        "claim re-extraction attempt log did not stabilize during read"
+    )
+
+
 def _append_unlocked(root: Path, drafts: Iterable[dict[str, Any]]) -> dict[str, Any]:
     snapshot = _scan(root)
     rows = list(snapshot.rows)
@@ -188,7 +234,12 @@ def _append_unlocked(root: Path, drafts: Iterable[dict[str, Any]]) -> dict[str, 
                 "event_id": _event_id(seq, key),
                 "prev_event_hash": str(rows[-1]["event_hash"]) if rows else _EMPTY_SHA256,
             }
-            event["event_hash"] = hash_json(CLAIM_REEXTRACT_ATTEMPT_SCHEMA, _without_hash(event))
+            event_schema = str(event.get("schema") or "")
+            if event_schema not in _SUPPORTED_ATTEMPT_SCHEMAS:
+                raise ClaimReextractAttemptError(
+                    "claim re-extract attempt schema is unsupported"
+                )
+            event["event_hash"] = hash_json(event_schema, _without_hash(event))
             _validate_schema(
                 event,
                 "claim_reextract_attempt.schema.json",

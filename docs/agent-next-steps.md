@@ -10,16 +10,14 @@ claim-ledger（远端）Phase 0A/0B→1→1.5 ✅（shadow 观察期，未切门
 - key 曾明文出现在 AI 会话记录中，按泄露处理：控制台吊销 `sk-87ca...c1ae` 重发；
 - 本机以 `RATOMIZER_LLM_API_KEY` 环境变量配置，不落文件/仓库。
 
-### 2. 评测集 20 条扩充案例人工核对（用户/领域专家，1–2 小时）
-- 背景：审计撤回后 manifest 为 `partial`、`unreviewed_count=35`（诚实口径）。
-  案例保留可用，但标准答案未经人工核对。
-- 动作：逐条核对 `golden_sets/agent_eval_v1/cases/**` 的 `input.text` 与 `expected`
-  （verdict/rationale/forbidden/must_ask_questions），不成立的先修案例再登记；
-  登记规则见 README 维护规则 2/5（reviewed_case_ids/reviewed_by/reviewed_at/statement，
-  全 40 条通过后 `human_review_status` 转 `reviewed`，同步更新
-  `tests/test_agent_eval.py` 期望值）。
-- 验收：`python agent_eval.py --eval-dir golden_sets/agent_eval_v1` 的
-  unreviewed 数与登记一致；`python -m unittest tests.test_agent_eval` 绿。
+### 2. ~~评测集 20 条扩充案例人工核对~~（✅ 已完成，本条为旧快照留痕）
+- 已于 **2026-07-23 由审核人本人逐条核对并登记**：manifest `human_review_status: reviewed`、
+  `unreviewed_count=0`（29 条维持原判、3 条改判、1 条授权补判、4 条默认方案标注政策，
+  详见 manifest curation statement）。2026-07-30 快照误沿用旧状态。
+- 2026-07-30 复验：`agent_eval` 跑通 unreviewed=0，`tests.test_agent_eval` 5/5 绿。
+- 遗留观察（非本待办）：classification 基线 0.6667（classify-003/004/006/010 期望
+  hardware 但无确定性关键词命中被默认 software）——规则层已知缺口，可归入待办 4 同类
+  规则改进另行评估。
 
 ### 3. STO atomize 性能优化（新浮出，1–2 天）
 - 卡死修复后 203s 仍偏慢（claim catalog 对 ~391 表格行的处理是热点方向）；

@@ -1,0 +1,367 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_structural_operation.schema.json",
+  "title": "Claim structural operation event v2",
+  "oneOf": [
+    {"$ref": "#/$defs/started"},
+    {"$ref": "#/$defs/override_registered"},
+    {"$ref": "#/$defs/audit_appended"},
+    {"$ref": "#/$defs/budget_checkpoint"},
+    {"$ref": "#/$defs/verifier_checkpoint"},
+    {"$ref": "#/$defs/failure"},
+    {"$ref": "#/$defs/reconfirmation_required"},
+    {"$ref": "#/$defs/reconfirmed"},
+    {"$ref": "#/$defs/base_rebuild"},
+    {"$ref": "#/$defs/effective_fold"},
+    {"$ref": "#/$defs/succeeded"},
+    {"$ref": "#/$defs/aborted_stale"}
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "common": {
+      "type": "object",
+      "required": [
+        "schema", "event_seq", "event_id", "prev_event_hash", "event_hash",
+        "operation_id", "event_kind", "recorded_at", "idempotency_key"
+      ],
+      "properties": {
+        "schema": {"const": "claim-structural-operation/v2"},
+        "event_seq": {"type": "integer", "minimum": 1},
+        "event_id": {"type": "string", "pattern": "^CSOE-[1-9][0-9]*-[0-9a-f]{12}$"},
+        "prev_event_hash": {"$ref": "#/$defs/hash"},
+        "event_hash": {"$ref": "#/$defs/hash"},
+        "operation_id": {"type": "string", "pattern": "^CSOP-[0-9a-f]{16}$"},
+        "event_kind": {
+          "enum": [
+            "operation_started", "override_registered", "audit_appended",
+            "budget_checkpoint", "verifier_checkpoint", "operation_failed",
+            "operation_reconfirmation_required", "operation_reconfirmed",
+            "base_rebuild_published", "effective_folded",
+            "operation_succeeded", "operation_aborted_stale"
+          ]
+        },
+        "recorded_at": {"type": "string", "format": "date-time"},
+        "idempotency_key": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "preconditions": {
+      "type": "object",
+      "required": [
+        "document_effective_revision", "event_prefix_sha256", "last_event_seq",
+        "target_generation_id", "target_review_authority_revision",
+        "route_config_revision", "route_model"
+      ],
+      "properties": {
+        "document_effective_revision": {"$ref": "#/$defs/hash"},
+        "event_prefix_sha256": {"$ref": "#/$defs/hash"},
+        "last_event_seq": {"type": "integer", "minimum": 0},
+        "target_generation_id": {"$ref": "#/$defs/hash"},
+        "target_review_authority_revision": {"$ref": "#/$defs/hash"},
+        "route_config_revision": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "route_model": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "claim_id", "claim_hash", "expected_catalog_generation_id",
+        "expected_claim_effective_revision", "prior_structural_reason", "actor",
+        "reason", "request_idempotency_key", "allow_llm", "route",
+        "verifier_max_calls", "verifier_max_total_tokens", "preconditions"
+      ],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+        "claim_hash": {"$ref": "#/$defs/hash"},
+        "expected_catalog_generation_id": {"$ref": "#/$defs/hash"},
+        "expected_claim_effective_revision": {"$ref": "#/$defs/hash"},
+        "prior_structural_reason": {"const": "repeated_page_furniture"},
+        "actor": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "request_idempotency_key": {"type": "string", "minLength": 1},
+        "allow_llm": {"type": "boolean"},
+        "route": {"type": "string", "minLength": 1},
+        "verifier_max_calls": {"type": "integer", "minimum": 0},
+        "verifier_max_total_tokens": {"type": "integer", "minimum": 0},
+        "preconditions": {"$ref": "#/$defs/preconditions"}
+      },
+      "additionalProperties": false
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string"},
+        "retryable": {"type": "boolean"},
+        "needs_reconfirmation": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "required": [
+        "version", "max_calls", "max_tokens", "attempted_calls", "failed_calls", "tokens",
+        "reserved_tokens", "remaining_calls", "remaining_tokens",
+        "usage_complete", "denied", "termination_reason", "status"
+      ],
+      "properties": {
+        "version": {"const": "llm-request-budget-v1"},
+        "max_calls": {"type": "integer", "minimum": 1},
+        "max_tokens": {"type": "integer", "minimum": 1},
+        "attempted_calls": {"type": "integer", "minimum": 0},
+        "failed_calls": {"type": "integer", "minimum": 0},
+        "tokens": {"type": "integer", "minimum": 0},
+        "reserved_tokens": {"type": "integer", "minimum": 0},
+        "remaining_calls": {"type": "integer", "minimum": 0},
+        "remaining_tokens": {"type": "integer", "minimum": 0},
+        "usage_complete": {"type": "boolean"},
+        "denied": {"type": "boolean"},
+        "termination_reason": {"type": "string"},
+        "status": {"enum": ["reserved", "settled", "failed", "unknown"]}
+      },
+      "additionalProperties": false
+    },
+    "verifier_binding": {
+      "type": "object",
+      "required": [
+        "claim_id", "claim_hash", "expected_catalog_generation_id",
+        "expected_claim_effective_revision", "target_generation_id",
+        "target_review_authority_revision", "override_hash",
+        "route_config_revision", "route_model",
+        "verifier_runtime_fingerprint", "budget_event_hash",
+        "budget_checkpoint_hash"
+      ],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+        "claim_hash": {"$ref": "#/$defs/hash"},
+        "expected_catalog_generation_id": {"$ref": "#/$defs/hash"},
+        "expected_claim_effective_revision": {"$ref": "#/$defs/hash"},
+        "target_generation_id": {"$ref": "#/$defs/hash"},
+        "target_review_authority_revision": {"$ref": "#/$defs/hash"},
+        "override_hash": {"$ref": "#/$defs/hash"},
+        "route_config_revision": {
+          "oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]
+        },
+        "route_model": {"type": ["string", "null"]},
+        "verifier_runtime_fingerprint": {"$ref": "#/$defs/hash"},
+        "budget_event_hash": {"$ref": "#/$defs/hash"},
+        "budget_checkpoint_hash": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "binding": {
+      "type": "object",
+      "required": [
+        "override_hash", "base_generation_id", "document_effective_revision",
+        "claim_effective_revision", "effective_meta_sha256"
+      ],
+      "properties": {
+        "override_hash": {"$ref": "#/$defs/hash"},
+        "base_generation_id": {"$ref": "#/$defs/hash"},
+        "document_effective_revision": {"$ref": "#/$defs/hash"},
+        "claim_effective_revision": {"$ref": "#/$defs/hash"},
+        "effective_meta_sha256": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "started": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": [
+            "request_idempotency_key", "request_fingerprint",
+            "execution_fence", "request"
+          ],
+          "properties": {
+            "event_kind": {"const": "operation_started"},
+            "request_idempotency_key": {"type": "string", "minLength": 1},
+            "request_fingerprint": {"$ref": "#/$defs/hash"},
+            "execution_fence": {"$ref": "#/$defs/hash"},
+            "request": {"$ref": "#/$defs/request"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "override_registered": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": [
+            "override_id", "override_hash", "registry_prefix_sha256",
+            "registry_prefix_count"
+          ],
+          "properties": {
+            "event_kind": {"const": "override_registered"},
+            "override_id": {"type": "string", "pattern": "^CSO-[0-9a-f]{16}$"},
+            "override_hash": {"$ref": "#/$defs/hash"},
+            "registry_prefix_sha256": {"$ref": "#/$defs/hash"},
+            "registry_prefix_count": {"type": "integer", "minimum": 1}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "audit_appended": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["audit_event_hash", "event_prefix_sha256", "last_event_seq"],
+          "properties": {
+            "event_kind": {"const": "audit_appended"},
+            "audit_event_hash": {"$ref": "#/$defs/hash"},
+            "event_prefix_sha256": {"$ref": "#/$defs/hash"},
+            "last_event_seq": {"type": "integer", "minimum": 1}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "budget_checkpoint": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["checkpoint"],
+          "properties": {
+            "event_kind": {"const": "budget_checkpoint"},
+            "checkpoint": {"$ref": "#/$defs/usage"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "verifier_checkpoint": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": [
+            "decision_artifact", "decision_artifact_sha256",
+            "decision_payload_hash", "binding"
+          ],
+          "properties": {
+            "event_kind": {"const": "verifier_checkpoint"},
+            "decision_artifact": {
+              "type": "string",
+              "pattern": "^claim_structural_decisions/[0-9a-f]{64}\\.json$"
+            },
+            "decision_artifact_sha256": {"$ref": "#/$defs/hash"},
+            "decision_payload_hash": {"$ref": "#/$defs/hash"},
+            "binding": {"$ref": "#/$defs/verifier_binding"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "failure": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["outcome", "usage"],
+          "properties": {
+            "event_kind": {"const": "operation_failed"},
+            "outcome": {"$ref": "#/$defs/outcome"},
+            "usage": {"oneOf": [{"$ref": "#/$defs/usage"}, {"type": "null"}]}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "reconfirmation_required": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["budget_event_hash", "usage", "reason"],
+          "properties": {
+            "event_kind": {"const": "operation_reconfirmation_required"},
+            "budget_event_hash": {"$ref": "#/$defs/hash"},
+            "usage": {"$ref": "#/$defs/usage"},
+            "reason": {"type": "string", "minLength": 1}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "reconfirmed": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["budget_event_hash", "actor"],
+          "properties": {
+            "event_kind": {"const": "operation_reconfirmed"},
+            "budget_event_hash": {"$ref": "#/$defs/hash"},
+            "actor": {"type": "string", "minLength": 1}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "base_rebuild": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["base_generation_id"],
+          "properties": {
+            "event_kind": {"const": "base_rebuild_published"},
+            "base_generation_id": {"$ref": "#/$defs/hash"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "effective_fold": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["effective_fresh", "binding"],
+          "properties": {
+            "event_kind": {"const": "effective_folded"},
+            "effective_fresh": {"const": true},
+            "binding": {"$ref": "#/$defs/binding"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "succeeded": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["outcome", "binding"],
+          "properties": {
+            "event_kind": {"const": "operation_succeeded"},
+            "outcome": {"$ref": "#/$defs/outcome"},
+            "binding": {"$ref": "#/$defs/binding"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "aborted_stale": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["outcome", "usage"],
+          "properties": {
+            "event_kind": {"const": "operation_aborted_stale"},
+            "outcome": {"$ref": "#/$defs/outcome"},
+            "usage": {"oneOf": [{"$ref": "#/$defs/usage"}, {"type": "null"}]}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

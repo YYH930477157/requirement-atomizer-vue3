@@ -46,7 +46,7 @@
         "type": "object",
         "required": [
           "base_generation_id", "source_effective_snapshot_version",
-          "target_effective_snapshot_version", "effective_run_id",
+          "target_effective_snapshot_version", "migration_id", "effective_run_id",
           "migrated_at", "actor_trigger"
         ],
         "properties": {
@@ -55,10 +55,14 @@
             "pattern": "^sha256:[0-9a-f]{64}$"
           },
           "source_effective_snapshot_version": {
-            "const": "claim-effective-snapshot-v1"
+            "enum": ["claim-effective-snapshot-v1", "claim-effective-snapshot-v2"]
           },
           "target_effective_snapshot_version": {
-            "const": "claim-effective-snapshot-v2"
+            "enum": ["claim-effective-snapshot-v2", "claim-effective-snapshot-v3"]
+          },
+          "migration_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
           },
           "effective_run_id": {"type": "string", "minLength": 1},
           "migrated_at": {"type": "string", "format": "date-time"},

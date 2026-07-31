@@ -31,6 +31,7 @@ def _started(attempt_id: str) -> dict:
         "request_idempotency_key": "request-1",
         "route": "openai_compatible",
         "model": "deepseek-chat",
+        "route_config_revision": _hash("route-config"),
         "budgets": {
             "max_calls": 1,
             "max_total_tokens": 4000,
@@ -42,6 +43,23 @@ def _started(attempt_id: str) -> dict:
 
 
 class ClaimReextractAttemptTests(unittest.TestCase):
+    def test_v1_started_event_without_route_revision_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_id = attempts.attempt_id(
+                "CQP-12345678-9abcdef0",
+                "request-1",
+            )
+            started = _started(current_id)
+            started["schema"] = "claim-reextract-attempt/v1"
+            started.pop("route_config_revision")
+            attempts.append_attempt_events(root, [started])
+
+            snapshot = attempts.read_attempt_log(root)
+
+        self.assertEqual(snapshot.rows[0]["schema"], "claim-reextract-attempt/v1")
+        self.assertNotIn("route_config_revision", snapshot.rows[0])
+
     def test_hash_chained_lifecycle_and_idempotent_append(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -169,6 +187,107 @@ class ClaimReextractAttemptTests(unittest.TestCase):
                 "torn tail",
             ):
                 attempts.read_attempt_log(root)
+
+
+class AttemptLogStableReadTests(unittest.TestCase):
+    def test_stable_read_retries_transient_torn_tail_from_active_append(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_id = attempts.attempt_id("CQP-12345678-9abcdef0", "request-1")
+            attempts.append_attempt_events(root, [_started(current_id)])
+            path = root / attempts.CLAIM_REEXTRACT_ATTEMPTS
+            full = path.read_bytes()
+            torn = full + b'{"schema":"claim-reextract-attempt/v1"'
+            reads = iter([torn, torn + b"x", full, full])
+            original = Path.read_bytes
+
+            def fake_read(self: Path) -> bytes:
+                if self == path:
+                    return next(reads)
+                return original(self)
+
+            with mock.patch.object(Path, "read_bytes", fake_read):
+                snapshot = attempts.read_attempt_log_stable(root, delay_seconds=0)
+
+        self.assertEqual(snapshot.last_event_seq, 1)
+        self.assertEqual(snapshot.prefix_bytes, full)
+
+    def test_stable_read_does_not_return_a_valid_but_changing_first_read(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_id = attempts.attempt_id(
+                "CQP-12345678-9abcdef0", "request-1"
+            )
+            attempts.append_attempt_events(root, [_started(first_id)])
+            path = root / attempts.CLAIM_REEXTRACT_ATTEMPTS
+            first = path.read_bytes()
+            attempts.append_attempt_events(root, [{
+                **_common(first_id, "reextract_failed", "failed"),
+                "outcome": {
+                    "code": "test_failure",
+                    "message": "fixture",
+                    "retryable": False,
+                },
+                "usage": {
+                    "calls": 0,
+                    "total_tokens": 0,
+                    "usage_complete": True,
+                },
+            }])
+            second = path.read_bytes()
+            reads = iter([first, second, second])
+            original = Path.read_bytes
+
+            def fake_read(self: Path) -> bytes:
+                if self == path:
+                    return next(reads)
+                return original(self)
+
+            with mock.patch.object(Path, "read_bytes", fake_read):
+                snapshot = attempts.read_attempt_log_stable(
+                    root, delay_seconds=0,
+                )
+
+        self.assertEqual(snapshot.last_event_seq, 2)
+        self.assertEqual(snapshot.prefix_bytes, second)
+
+    def test_stable_read_fails_closed_on_permanent_torn_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_id = attempts.attempt_id("CQP-12345678-9abcdef0", "request-1")
+            attempts.append_attempt_events(root, [_started(current_id)])
+            with (root / attempts.CLAIM_REEXTRACT_ATTEMPTS).open("ab") as handle:
+                handle.write(b'{"schema":"claim-reextract-attempt/v1"')
+
+            with self.assertRaisesRegex(
+                attempts.ClaimReextractAttemptError,
+                "torn tail",
+            ):
+                attempts.read_attempt_log_stable(
+                    root, max_attempts=3, delay_seconds=0
+                )
+
+    def test_stable_read_matches_plain_read_when_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_id = attempts.attempt_id("CQP-12345678-9abcdef0", "request-1")
+            attempts.append_attempt_events(root, [_started(current_id)])
+
+            plain = attempts.read_attempt_log(root)
+            stable = attempts.read_attempt_log_stable(root, delay_seconds=0)
+
+        self.assertEqual(plain.prefix_sha256, stable.prefix_sha256)
+        self.assertEqual(plain.last_event_seq, stable.last_event_seq)
+
+    def test_stable_read_of_missing_log_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = attempts.read_attempt_log_stable(Path(tmp), delay_seconds=0)
+        self.assertEqual(snapshot.last_event_seq, 0)
+        self.assertEqual(snapshot.rows, [])
 
     def test_recovery_terminalizes_orphaned_reserved_call_with_unknown_cost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

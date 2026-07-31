@@ -6,7 +6,7 @@ from typing import Any
 
 
 COMPLIANCE_TYPE = "compliance"
-COMPLIANCE_SCHEMA = "compliance-requirements/v1"
+COMPLIANCE_SCHEMA = "compliance-requirements/v2"
 
 _COMPLIANCE_PHRASE_RE = re.compile(
     r"\b(?:"
@@ -30,6 +30,10 @@ _COMPLY_WITH_LAW_RE = re.compile(
     r"meet\s+the\s+legal\s+requirements|"
     r"comply\s+with\b.{0,100}\b(?:metrological\s+legislation|laws?\s+in\s+force)"
     r")\b",
+    re.IGNORECASE,
+)
+_APPROVAL_ACCORDING_TO_INSTRUMENT_RE = re.compile(
+    r"\bapprov(?:ed|al)\s+according\s+to\s+(?:STN\s+EN|EN|IEC|ISO|OIML)\b",
     re.IGNORECASE,
 )
 _INSTRUMENT_RE = re.compile(
@@ -77,9 +81,21 @@ def requirement_source_text(requirement: dict[str, Any]) -> str:
     return "\n".join(value for value in values if value.strip())
 
 
+def _contains_numbered_approval_signal(value: str) -> bool:
+    for approval_match in _APPROVAL_ACCORDING_TO_INSTRUMENT_RE.finditer(value):
+        instrument_match = _INSTRUMENT_RE.search(value, approval_match.start())
+        if instrument_match is not None and instrument_match.start() < approval_match.end():
+            return True
+    return False
+
+
 def contains_compliance_signal(text: Any) -> bool:
     value = str(text or "")
-    return bool(_COMPLIANCE_PHRASE_RE.search(value) or _COMPLY_WITH_LAW_RE.search(value))
+    return bool(
+        _COMPLIANCE_PHRASE_RE.search(value)
+        or _COMPLY_WITH_LAW_RE.search(value)
+        or _contains_numbered_approval_signal(value)
+    )
 
 
 def looks_like_compliance(text: Any) -> bool:

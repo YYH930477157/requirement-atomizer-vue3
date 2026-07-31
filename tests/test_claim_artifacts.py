@@ -19,6 +19,7 @@ import ai_extract
 import claim_artifacts
 import claim_catalog
 import claim_ledger
+import claim_review_actions
 from llm_client import LLMClientConfig, LLMRequestBudget
 
 
@@ -132,121 +133,83 @@ def _effective_candidate(
     *,
     invalidate_groups: bool = False,
 ) -> tuple[list[dict], list[dict], dict]:
-    base = claim_artifacts.load_committed_claim_base(root)
-    base_row = base["ledger"][0]
-    group_ids = [str(value) for value in base_row.get("coverage_group_ids") or []]
-    invalid_reasons = (
-        {group_id: "expert_rejected" for group_id in group_ids}
-        if invalidate_groups
-        else {}
-    )
-    valid_group_ids = [] if invalidate_groups else group_ids
-    claim = base["catalog"][0]
-    adjusted_groups = []
-    for group in base["groups"]:
-        adjusted = dict(group)
-        group_id = str(group.get("coverage_group_id") or "")
-        if group_id in invalid_reasons:
-            adjusted["status"] = "invalid"
-            adjusted["invalid_reason"] = invalid_reasons[group_id]
-        adjusted_groups.append(adjusted)
-    reduced = claim_ledger.reduce_claim(
-        claim,
-        validated_groups=[
-            group for group in adjusted_groups if group.get("status") == "validated"
-        ],
-        validated_negative=base_row.get("semantic_negative"),
-        all_groups=adjusted_groups,
-    )
-    effective_row = {
-        **base_row,
-        **{
-            key: reduced[key]
-            for key in (
-                "resolution",
-                "classification",
-                "classification_status",
-                "exclusion_kind",
-                "invalid_reasons",
-            )
-        },
-        "schema": "claim-effective-ledger/v1",
-        "base_ledger_schema": base_row["schema"],
-        "base_claim_row_hash": claim_artifacts.hash_json(
-            "claim-base-row/v1",
-            base_row,
-        ),
-        "claim_effective_revision": claim_artifacts.hash_json(
-            "test-effective-row/v1",
-            {"claim_id": base_row["claim_id"], "invalid": invalidate_groups},
-        ),
-        "effective_facts": {
-            "valid_group_ids": valid_group_ids,
-            "invalid_group_reasons": invalid_reasons,
-            "validated_negative_id": claim_artifacts.semantic_negative_id(
-                base_row.get("semantic_negative")
+    if invalidate_groups:
+        import ai_review_actions
+
+        claim_review_actions.fold_effective_ledger(
+            root,
+            actor_trigger="effective-candidate-seed",
+        )
+        catalog = claim_artifacts.load_committed_claim_base(root)["catalog"]
+        requirement = _requirement({"catalog": catalog})
+        ai_review_actions.apply_ai_review_action(
+            root,
+            "AIR-1",
+            "rejected",
+            actor="test:effective-candidate",
+            reason="fixture rejection",
+            source_fingerprint_value=claim_ledger.target_source_fingerprint(
+                requirement
             ),
-            "invalidated_targets": [],
-            "reused_validation_group_ids": [],
-        },
-        "last_relevant_event_seq": 0,
-    }
-    target_set_hash = str(base["generation_meta"]["target_generation_id"])
-    review_hash = str(base["generation_meta"]["target_review_authority_revision"])
+            review_subject_fingerprint_value=claim_ledger.target_fingerprint(
+                requirement
+            ),
+        )
+        snapshot = claim_artifacts.load_committed_effective_snapshot(root)
+        return (
+            copy.deepcopy(snapshot["effective_ledger"]),
+            copy.deepcopy(snapshot["queue_proposals"]),
+            copy.deepcopy(snapshot["effective_meta"]),
+        )
+
+    base = claim_artifacts.load_committed_claim_base(root)
+    authority = claim_review_actions._load_declared_authority(
+        root, base["generation_meta"], readonly=True
+    )
+    events = claim_review_actions._scan_event_log_unlocked(root, repair=False)
+    rows = claim_review_actions.derive_authoritative_effective_rows(
+        base, authority, events.rows
+    )
+    queue = claim_review_actions._build_queue(root, base, rows, authority)
+    from claim_effective_contract import (
+        compute_document_effective_revision,
+        compute_effective_authority_projection_hash,
+        compute_effective_metrics,
+    )
+
+    authority_projection_hash = compute_effective_authority_projection_hash(rows)
     meta = {
         "run_id": "effective-test",
-        "event_prefix_sha256": "sha256:" + hashlib.sha256(b"").hexdigest(),
-        "last_event_seq": 0,
-        "document_effective_revision": claim_artifacts.hash_json(
-            "test-document-effective/v1",
-            {"invalid": invalidate_groups},
+        "event_prefix_sha256": events.event_prefix_sha256,
+        "last_event_seq": events.last_event_seq,
+        "document_effective_revision": compute_document_effective_revision(
+            base_generation_id=claim_artifacts.claim_base_generation_id(
+                base["generation_meta"]
+            ),
+            last_event_seq=events.last_event_seq,
+            event_prefix_sha256=events.event_prefix_sha256,
+            target_set_hash=authority["target_set_hash"],
+            requirement_review_state_hash=authority[
+                "requirement_review_state_hash"
+            ],
+            authority_projection_hash=authority_projection_hash,
         ),
-        "target_set_hash": target_set_hash,
-        "target_publication_revision": claim_artifacts.hash_json(
-            "test-target-publication/v1",
-            {"target_set_hash": target_set_hash},
-        ),
-        "requirement_review_state_hash": review_hash,
+        "target_set_hash": authority["target_set_hash"],
+        "target_publication_revision": authority["target_publication_revision"],
+        "requirement_review_state_hash": authority[
+            "requirement_review_state_hash"
+        ],
+        "authority_projection_hash": authority_projection_hash,
         "effective_ledger_schema": claim_ledger.CLAIM_EFFECTIVE_LEDGER_SCHEMA,
         "review_adapter_versions": claim_ledger.effective_review_adapter_versions(),
         "reducer_version": claim_ledger.CLAIM_EFFECTIVE_REDUCER_VERSION,
         "bridge_version": claim_ledger.CLAIM_REVIEW_BRIDGE_VERSION,
         "queue_version": claim_ledger.CLAIM_QUEUE_VERSION,
-        "effective_metrics": {"fixture": True},
+        "effective_metrics": compute_effective_metrics(rows),
+        "migrated_from_version": None,
+        "migration_id": None,
     }
-    queue: list[dict] = []
-    if invalidate_groups:
-        proposal_hash = claim_artifacts.hash_json(
-            "claim-queue-proposal-id/v1",
-            {
-                "claim_id": effective_row["claim_id"],
-                "claim_effective_revision": effective_row["claim_effective_revision"],
-                "action": "needs_extraction",
-                "queue_version": claim_ledger.CLAIM_QUEUE_VERSION,
-            },
-        )
-        queue.append({
-            "schema": "claim-queue-proposal/v1",
-            "proposal_id": (
-                f"CQP-{claim_artifacts.digest_hex(effective_row['claim_hash'])[:8]}-"
-                f"{claim_artifacts.digest_hex(proposal_hash)[:8]}"
-            ),
-            "claim_id": effective_row["claim_id"],
-            "parent_block_id": claim["locator"]["block_id"],
-            "locator": claim["locator"],
-            "claim_source_fingerprint": claim_artifacts.canonical_target_fingerprint(
-                claim["claim_hash"]
-            ),
-            "document_generation_id": effective_row["document_generation_id"],
-            "catalog_generation_id": effective_row["catalog_generation_id"],
-            "claim_effective_revision": effective_row["claim_effective_revision"],
-            "action": "needs_extraction",
-            "dry_run": True,
-            "queue_version": claim_ledger.CLAIM_QUEUE_VERSION,
-            "expected_ledger_state": "uncertain",
-            "created_from_event_seq": 0,
-        })
-    return [effective_row], queue, meta
+    return rows, queue, meta
 
 
 def _publish_semantic_negative(
@@ -629,7 +592,7 @@ from tests.test_claim_artifacts import _effective_candidate
 root = Path(sys.argv[1]).resolve()
 crash_operation = sys.argv[2]
 crash_name = sys.argv[3]
-ledger, queue, meta = _effective_candidate(root, invalidate_groups=True)
+ledger, queue, meta = _effective_candidate(root)
 original_replace = claim_artifacts._replace_with_retry
 original_unlink = claim_artifacts._unlink_with_retry
 
@@ -718,9 +681,9 @@ claim_artifacts.publish_effective_snapshot(root, ledger, queue, meta=meta)
                     if committed_after_crash:
                         self.assertEqual(
                             recovered["effective_ledger"][0]["resolution"],
-                            "uncertain",
+                            "covered",
                         )
-                        self.assertEqual(len(recovered["queue_proposals"]), 1)
+                        self.assertEqual(recovered["queue_proposals"], [])
                         self.assertNotEqual(
                             {
                                 snapshot_name: (
@@ -3510,6 +3473,513 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
             one.join(2)
             two.join(2)
             self.assertTrue(second_entered.is_set())
+
+
+class EffectiveContractTamperTests(unittest.TestCase):
+    """Forged revisions/metrics must be rejected at publish AND on read."""
+
+    def _seed(self, root: Path) -> tuple[list[dict], list[dict], dict]:
+        _publish(root, _catalog())
+        ledger, queue, meta = _effective_candidate(root)
+        claim_artifacts.publish_effective_snapshot(root, ledger, queue, meta=meta)
+        return ledger, queue, meta
+
+    @staticmethod
+    def _forged(label: str) -> str:
+        return claim_artifacts.hash_json("claim-effective-tamper/v1", label)
+
+    def _rewrite_committed(
+        self,
+        root: Path,
+        *,
+        meta_tamper=None,
+        row_tamper=None,
+    ) -> None:
+        meta = json.loads(
+            (root / claim_artifacts.CLAIM_EFFECTIVE_META).read_text(encoding="utf-8")
+        )
+        rows = [
+            json.loads(line)
+            for line in (root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER)
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        if row_tamper is not None:
+            rows = [row_tamper(dict(row)) for row in rows]
+            claim_artifacts.atomic_write_jsonl(
+                root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER, rows,
+            )
+            meta["effective_ledger_sha256"] = claim_artifacts.file_sha256(
+                root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER
+            )
+        if meta_tamper is not None:
+            meta = meta_tamper(meta)
+        claim_artifacts._atomic_write_bytes(
+            root / claim_artifacts.CLAIM_EFFECTIVE_META,
+            claim_artifacts.canonical_json_value_bytes(meta),
+        )
+
+    def _rewrite_coherent_forgery(
+        self,
+        root: Path,
+        rows: list[dict],
+        meta: dict,
+    ) -> None:
+        from claim_effective_contract import (
+            compute_claim_effective_revision,
+            compute_document_effective_revision,
+            compute_effective_authority_projection_hash,
+            compute_effective_metrics,
+            compute_effective_state_hash,
+        )
+
+        for row in rows:
+            row["revision_inputs"]["effective_state_hash"] = (
+                compute_effective_state_hash(row)
+            )
+            row["claim_effective_revision"] = compute_claim_effective_revision(
+                row["revision_inputs"]
+            )
+        projection_hash = compute_effective_authority_projection_hash(rows)
+        meta.update({
+            "authority_projection_hash": projection_hash,
+            "effective_metrics": compute_effective_metrics(rows),
+        })
+        meta["document_effective_revision"] = compute_document_effective_revision(
+            base_generation_id=meta["base_generation_id"],
+            last_event_seq=meta["last_event_seq"],
+            event_prefix_sha256=meta["event_prefix_sha256"],
+            target_set_hash=meta["target_set_hash"],
+            requirement_review_state_hash=meta["requirement_review_state_hash"],
+            authority_projection_hash=projection_hash,
+        )
+        claim_artifacts.atomic_write_jsonl(
+            root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER, rows
+        )
+        meta["effective_ledger_sha256"] = claim_artifacts.file_sha256(
+            root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER
+        )
+        claim_artifacts._atomic_write_bytes(
+            root / claim_artifacts.CLAIM_EFFECTIVE_META,
+            claim_artifacts.canonical_json_value_bytes(meta),
+        )
+
+    def test_publish_rejects_forged_document_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            ledger, queue, meta = _effective_candidate(root)
+            forged = {**meta, "document_effective_revision": self._forged("doc")}
+            names = (
+                claim_artifacts.CLAIM_EFFECTIVE_LEDGER,
+                claim_artifacts.CLAIM_EFFECTIVE_META,
+            )
+            before = {name: (root / name).read_bytes() for name in names}
+            queue_name = claim_artifacts.CLAIM_QUEUE_PROPOSALS
+            queue_existed = (root / queue_name).exists()
+            queue_before = (
+                (root / queue_name).read_bytes() if queue_existed else None
+            )
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "event inputs|does not recompute",
+            ):
+                claim_artifacts.publish_effective_snapshot(
+                    root, ledger, queue, meta=forged,
+                )
+            after = {name: (root / name).read_bytes() for name in names}
+            self.assertEqual(after, before)
+            self.assertEqual((root / queue_name).exists(), queue_existed)
+            if queue_existed:
+                self.assertEqual((root / queue_name).read_bytes(), queue_before)
+
+    def test_publish_rejects_forged_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            ledger, queue, meta = _effective_candidate(root)
+            forged = {**meta, "effective_metrics": {"fixture": True}}
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError, "metrics do not recompute"
+            ):
+                claim_artifacts.publish_effective_snapshot(
+                    root, ledger, queue, meta=forged,
+                )
+
+    def test_publish_rejects_forged_claim_revision_and_revision_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            ledger, queue, meta = _effective_candidate(root)
+            forged_revision = [
+                {**ledger[0], "claim_effective_revision": self._forged("claim")}
+            ]
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError, "does not recompute"
+            ):
+                claim_artifacts.publish_effective_snapshot(
+                    root, forged_revision, queue, meta=meta,
+                )
+            forged_inputs = copy.deepcopy(ledger)
+            forged_inputs[0]["revision_inputs"]["base_claim_row_hash"] = (
+                self._forged("base-row")
+            )
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError, "revision inputs"
+            ):
+                claim_artifacts.publish_effective_snapshot(
+                    root, forged_inputs, queue, meta=meta,
+                )
+
+    def test_loader_rejects_tampered_document_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            self._rewrite_committed(
+                root,
+                meta_tamper=lambda meta: {
+                    **meta,
+                    "document_effective_revision": self._forged("doc"),
+                },
+            )
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError, "does not recompute"
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+    def test_loader_rejects_tampered_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            self._rewrite_committed(
+                root,
+                meta_tamper=lambda meta: {
+                    **meta,
+                    "effective_metrics": {
+                        **meta["effective_metrics"],
+                        "covered_count": 0,
+                    },
+                },
+            )
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError, "metrics do not recompute"
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+    def test_loader_rejects_tampered_claim_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            self._rewrite_committed(
+                root,
+                row_tamper=lambda row: {
+                    **row,
+                    "claim_effective_revision": self._forged("claim"),
+                },
+            )
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError, "does not recompute"
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+    def test_loader_rejects_tampered_revision_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+
+            def tamper(row: dict) -> dict:
+                row["revision_inputs"] = {
+                    **row["revision_inputs"],
+                    "ordered_relevant_event_hashes": [self._forged("event")],
+                }
+                return row
+
+            self._rewrite_committed(root, row_tamper=tamper)
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "event inputs|does not recompute",
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+    def test_loader_rejects_missing_revision_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            self._rewrite_committed(
+                root,
+                row_tamper=lambda row: {
+                    key: value
+                    for key, value in row.items() if key != "revision_inputs"
+                },
+            )
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError, "revision_inputs"
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+    def test_publish_rejects_coherently_forged_authority_projection(self) -> None:
+        from claim_effective_contract import (
+            CLAIM_AUTHORITY_PROJECTION_VERSION,
+            compute_claim_effective_revision,
+            compute_document_effective_revision,
+            compute_effective_authority_projection_hash,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            rows, queue, meta = _effective_candidate(root)
+            forged_review = self._forged("linked-target-review")
+            rows[0]["revision_inputs"]["linked_targets"][0][
+                "target_review_revision"
+            ] = forged_review
+            inputs = rows[0]["revision_inputs"]
+            inputs["authority_projection_hash"] = claim_artifacts.hash_json(
+                CLAIM_AUTHORITY_PROJECTION_VERSION,
+                {
+                    "ordered_relevant_event_hashes": inputs[
+                        "ordered_relevant_event_hashes"
+                    ],
+                    "linked_targets": inputs["linked_targets"],
+                    "expert_overlay": inputs["expert_overlay"],
+                },
+            )
+            rows[0]["claim_effective_revision"] = compute_claim_effective_revision(
+                inputs
+            )
+            projection_hash = compute_effective_authority_projection_hash(rows)
+            meta["authority_projection_hash"] = projection_hash
+            meta["document_effective_revision"] = compute_document_effective_revision(
+                base_generation_id=claim_artifacts.claim_base_generation_id(
+                    claim_artifacts.load_committed_claim_base(root)["generation_meta"]
+                ),
+                last_event_seq=meta["last_event_seq"],
+                event_prefix_sha256=meta["event_prefix_sha256"],
+                target_set_hash=meta["target_set_hash"],
+                requirement_review_state_hash=meta[
+                    "requirement_review_state_hash"
+                ],
+                authority_projection_hash=projection_hash,
+            )
+
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "authoritative reduction",
+            ):
+                claim_artifacts.publish_effective_snapshot(
+                    root, rows, queue, meta=meta
+                )
+
+    def test_loader_rejects_coherent_no_event_invalid_facts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            rows = copy.deepcopy(
+                claim_artifacts.load_committed_effective_snapshot(root)[
+                    "effective_ledger"
+                ]
+            )
+            meta = json.loads(
+                (root / claim_artifacts.CLAIM_EFFECTIVE_META).read_text(
+                    encoding="utf-8"
+                )
+            )
+            group_ids = list(rows[0]["coverage_group_ids"])
+            base = claim_artifacts.load_committed_claim_base(root)
+            adjusted_groups = []
+            for group in base["groups"]:
+                adjusted = copy.deepcopy(group)
+                adjusted["status"] = "invalid"
+                adjusted["invalid_reason"] = "target_missing"
+                adjusted_groups.append(adjusted)
+            reduced = claim_ledger.reduce_claim(
+                base["catalog"][0],
+                validated_groups=[],
+                validated_negative=base["ledger"][0].get("semantic_negative"),
+                all_groups=adjusted_groups,
+            )
+            rows[0].update({
+                field: reduced[field]
+                for field in (
+                    "resolution", "classification", "classification_status",
+                    "exclusion_kind", "invalid_reasons",
+                )
+            })
+            rows[0]["effective_facts"].update({
+                "valid_group_ids": [],
+                "invalid_group_reasons": {
+                    group_id: "target_missing" for group_id in group_ids
+                },
+                "active_resolution_facts": [],
+            })
+            from claim_effective_contract import (
+                compute_claim_effective_revision,
+                compute_effective_state_hash,
+            )
+
+            rows[0]["revision_inputs"]["effective_state_hash"] = (
+                compute_effective_state_hash(rows[0])
+            )
+            rows[0]["claim_effective_revision"] = (
+                compute_claim_effective_revision(rows[0]["revision_inputs"])
+            )
+            authority = claim_review_actions._load_declared_authority(
+                root, base["generation_meta"], readonly=True
+            )
+            forged_queue = claim_review_actions._build_queue(
+                root, base, rows, authority
+            )
+            claim_artifacts.atomic_write_jsonl(
+                root / claim_artifacts.CLAIM_QUEUE_PROPOSALS,
+                forged_queue,
+            )
+            meta["queue_count"] = len(forged_queue)
+            meta["queue_sha256"] = claim_artifacts.file_sha256(
+                root / claim_artifacts.CLAIM_QUEUE_PROPOSALS
+            )
+            self._rewrite_coherent_forgery(root, rows, meta)
+
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "authoritative reduction",
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+    def test_loader_rejects_coherent_no_event_semantic_exclusion(self) -> None:
+        from claim_effective_contract import CLAIM_AUTHORITY_PROJECTION_VERSION
+        from tests.test_claim_review_event_v2 import _source_exclusion_evidence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            base = claim_artifacts.load_committed_claim_base(root)
+            snapshot = claim_artifacts.load_committed_effective_snapshot(root)
+            claim = base["catalog"][0]
+            positive_fact = claim_review_actions.claim_base_resolution_fact_hashes(
+                claim,
+                base["ledger"][0],
+                base["groups"],
+            )["positive"][0]
+            claim_review_actions.apply_claim_adjudication(
+                root,
+                claim_id=claim["claim_id"],
+                claim_hash=claim["claim_hash"],
+                adjudication="excluded_non_normative",
+                reason="fixture exclusion",
+                evidence=_source_exclusion_evidence(claim),
+                actor="test:forgery",
+                expected_claim_effective_revision=(
+                    snapshot["effective_ledger"][0]["claim_effective_revision"]
+                ),
+                supersedes_fact_hashes=[positive_fact],
+            )
+            excluded = claim_artifacts.load_committed_effective_snapshot(root)
+            rows = copy.deepcopy(excluded["effective_ledger"])
+            meta = copy.deepcopy(excluded["effective_meta"])
+            (root / claim_artifacts.CLAIM_REVIEW_EVENTS).write_bytes(b"")
+            inputs = rows[0]["revision_inputs"]
+            inputs["ordered_relevant_event_hashes"] = []
+            rows[0]["last_relevant_event_seq"] = 0
+            inputs["authority_projection_hash"] = claim_artifacts.hash_json(
+                CLAIM_AUTHORITY_PROJECTION_VERSION,
+                {
+                    "ordered_relevant_event_hashes": [],
+                    "linked_targets": inputs["linked_targets"],
+                    "expert_overlay": inputs["expert_overlay"],
+                },
+            )
+            meta["last_event_seq"] = 0
+            meta["event_prefix_sha256"] = "sha256:" + hashlib.sha256(b"").hexdigest()
+            self._rewrite_coherent_forgery(root, rows, meta)
+
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "authoritative reduction",
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+    def test_loader_rejects_coherent_forgery_after_authority_drift(self) -> None:
+        from claim_effective_contract import CLAIM_AUTHORITY_PROJECTION_VERSION
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            snapshot = claim_artifacts.load_committed_effective_snapshot(root)
+            rows = copy.deepcopy(snapshot["effective_ledger"])
+            meta = copy.deepcopy(snapshot["effective_meta"])
+
+            inputs = rows[0]["revision_inputs"]
+            inputs["linked_targets"][0]["target_review_revision"] = self._forged(
+                "coherent-authority-drift"
+            )
+            inputs["authority_projection_hash"] = claim_artifacts.hash_json(
+                CLAIM_AUTHORITY_PROJECTION_VERSION,
+                {
+                    "ordered_relevant_event_hashes": inputs[
+                        "ordered_relevant_event_hashes"
+                    ],
+                    "linked_targets": inputs["linked_targets"],
+                    "expert_overlay": inputs["expert_overlay"],
+                },
+            )
+            self._rewrite_coherent_forgery(root, rows, meta)
+            claim_artifacts.atomic_write_jsonl(root / "ai_requirements.jsonl", [])
+
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "authority changed",
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+    def test_current_snapshot_rejects_legacy_queue_v1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            _rows, queue, _meta = _effective_candidate(
+                root, invalidate_groups=True
+            )
+            proposal = copy.deepcopy(queue[0])
+            proposal["schema"] = "claim-queue-proposal/v1"
+            proposal.pop("claim_hash")
+            proposal.pop("execution_preconditions")
+            proposal_hash = claim_artifacts.hash_json(
+                "claim-queue-proposal-id/v1",
+                {
+                    "claim_id": proposal["claim_id"],
+                    "claim_effective_revision": proposal[
+                        "claim_effective_revision"
+                    ],
+                    "action": "needs_extraction",
+                    "queue_version": proposal["queue_version"],
+                },
+            )
+            proposal["proposal_id"] = (
+                f"CQP-{claim_artifacts.digest_hex(proposal['claim_source_fingerprint'])[:8]}-"
+                f"{claim_artifacts.digest_hex(proposal_hash)[:8]}"
+            )
+            claim_artifacts.atomic_write_jsonl(
+                root / claim_artifacts.CLAIM_QUEUE_PROPOSALS,
+                [proposal],
+            )
+            meta = json.loads(
+                (root / claim_artifacts.CLAIM_EFFECTIVE_META).read_text(
+                    encoding="utf-8"
+                )
+            )
+            meta["queue_sha256"] = claim_artifacts.file_sha256(
+                root / claim_artifacts.CLAIM_QUEUE_PROPOSALS
+            )
+            claim_artifacts._atomic_write_bytes(
+                root / claim_artifacts.CLAIM_EFFECTIVE_META,
+                claim_artifacts.canonical_json_value_bytes(meta),
+            )
+
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "queue proposal schema",
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
 
 
 if __name__ == "__main__":

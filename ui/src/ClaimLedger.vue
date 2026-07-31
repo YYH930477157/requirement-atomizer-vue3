@@ -57,11 +57,14 @@ const available = ref(false)
 const catalog = ref<ClaimCatalogViewPayload | null>(null)
 const metrics = ref<ClaimMetricsViewPayload | null>(null)
 const queue = ref<ClaimQueueViewPayload | null>(null)
+const queueOffset = ref(0)
+const compatOffset = ref(0)
 const extractionStatus = ref<AiExtractionStatusPayload | null>(null)
 const revisionPin = ref("")
 const selectedClaim = ref<ClaimCatalogViewRow | null>(null)
 const detailGroups = ref<ClaimCoverageGroupView[]>([])
 const detailEvents = ref<ClaimReviewEventView[]>([])
+const detailsStale = ref(false)
 const queueBusyId = ref("")
 const pendingQueueProposal = ref<ClaimQueueProposal | null>(null)
 const queueAllowLlm = ref(false)
@@ -71,8 +74,10 @@ const adjudicationBusy = ref(false)
 const adjudicationReason = ref("")
 const exclusionReason = ref<"scope_statement" | "definition" | "informative" | "example" | "instrument_only">("informative")
 const structuralOverrideAllowLlm = ref(false)
+const structuralPaidWorkReconfirmed = ref(false)
 let overviewGeneration = 0
 let detailGeneration = 0
+let detailRefreshCycle = false
 
 const rows = computed(() => catalog.value?.rows || [])
 const total = computed(() => catalog.value?.total || 0)
@@ -80,6 +85,24 @@ const pageNumber = computed(() => Math.floor(offset.value / PAGE_SIZE) + 1)
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
 const canGoBack = computed(() => offset.value > 0 && !loading.value)
 const canGoForward = computed(() => offset.value + rows.value.length < total.value && !loading.value)
+const queueProposals = computed(() => queue.value?.proposals || [])
+const queueTotal = computed(() => queue.value?.total || 0)
+const queuePageNumber = computed(() => Math.floor(queueOffset.value / PAGE_SIZE) + 1)
+const queuePageCount = computed(() => Math.max(1, Math.ceil(queueTotal.value / PAGE_SIZE)))
+const queueCanGoBack = computed(() => queueOffset.value > 0 && !loading.value)
+const queueCanGoForward = computed(() =>
+  queueOffset.value + queueProposals.value.length < queueTotal.value && !loading.value)
+const compatOmissionTotal = computed(() =>
+  queue.value?.compat_omission_total ?? queue.value?.compat_omissions.length ?? 0)
+const compatPageNumber = computed(() => Math.floor(compatOffset.value / PAGE_SIZE) + 1)
+const compatPageCount = computed(() => Math.max(
+  1,
+  Math.ceil(compatOmissionTotal.value / PAGE_SIZE),
+))
+const compatCanGoBack = computed(() => compatOffset.value > 0 && !loading.value)
+const compatCanGoForward = computed(() =>
+  compatOffset.value + (queue.value?.compat_omissions.length || 0)
+    < compatOmissionTotal.value && !loading.value)
 const ownerOptions = computed(() => {
   const values = new Set(catalog.value?.owner_unit_ids || [])
   for (const row of rows.value) {
@@ -149,6 +172,20 @@ function formatLocator(locator: ClaimCatalogViewRow["locator"] | undefined): str
   return parts.filter(Boolean).join(" · ")
 }
 
+function structuralReconfirmationIdentity(row: ClaimCatalogViewRow | null): string {
+  const operation = row?.pending_structural_operation
+  if (!operation?.needs_reconfirmation) return ""
+  const budget = operation.verifier_budget
+  return [
+    operation.operation_id,
+    operation.lifecycle,
+    budget.attempted_calls,
+    budget.failed_calls,
+    budget.used_tokens,
+    budget.reserved_tokens,
+  ].join(":")
+}
+
 function evidenceText(group: ClaimCoverageGroupView): string[] {
   return group.edges.flatMap((edge) => (edge.produced_evidence || [])
     .map((evidence) => String(evidence.text || "").trim())
@@ -182,11 +219,18 @@ function canExecuteProposal(proposal: ClaimQueueProposal): boolean {
     && !queueBusyId.value
 }
 
-const queueAuthorizationValid = computed(() => queueAllowLlm.value
+const queueIsDeterministicRecovery = computed(() =>
+  pendingQueueProposal.value?.lifecycle === "rebuild_pending")
+const queueAuthorizationValid = computed(() => {
+  if (queueIsDeterministicRecovery.value) return true
+  return queueAllowLlm.value
+    && Boolean(queue.value?.route_preflight?.configured)
+    && Boolean(queue.value?.route_preflight?.route_config_revision)
     && Number.isInteger(queueMaxCalls.value)
     && queueMaxCalls.value > 0
     && Number.isInteger(queueTokenBudget.value)
-    && queueTokenBudget.value > 0)
+    && queueTokenBudget.value > 0
+})
 
 function resetQueueAuthorization(): void {
   pendingQueueProposal.value = null
@@ -210,15 +254,21 @@ async function executeProposal(): Promise<void> {
       ? String(proposal.latest_attempt?.request_idempotency_key || "")
       : newIdempotencyKey("claim-queue")
     if (!requestKey) throw new Error("重建恢复缺少原请求标识")
+    const routeConfigRevision = String(
+      queue.value?.route_preflight?.route_config_revision || "",
+    )
     const result = await client.executeClaimQueue({
       proposalId: proposal.proposal_id,
       expectedClaimEffectiveRevision: proposal.claim_effective_revision,
       actor: "reviewer",
-      allowLlm: true,
+      allowLlm: !queueIsDeterministicRecovery.value,
       route: "openai_compatible",
-      maximumCalls: queueMaxCalls.value,
-      totalTokenBudget: queueTokenBudget.value,
+      maximumCalls: queueIsDeterministicRecovery.value ? 0 : queueMaxCalls.value,
+      totalTokenBudget: queueIsDeterministicRecovery.value ? 0 : queueTokenBudget.value,
       requestIdempotencyKey: requestKey,
+      ...(!queueIsDeterministicRecovery.value && routeConfigRevision
+        ? { expectedRouteConfigRevision: routeConfigRevision }
+        : {}),
     })
     message.value = result.lifecycle === "executed"
       ? "Claim 已执行并完成账本重建"
@@ -233,26 +283,9 @@ async function executeProposal(): Promise<void> {
   }
 }
 
-function currentExpertFactHashes(): string[] {
-  return detailEvents.value
-    .filter((event) => event.event_kind === "expert_adjudication")
-    .map((event) => String(event.event_hash || ""))
-    .filter(Boolean)
-    .slice(-1)
-}
-
-function supersededFactHashes(row: ClaimCatalogViewRow): string[] {
-  const base = row.base_resolution_fact_hashes || {}
-  const positiveFacts = base.positive || []
-  const negativeFacts = base.negative || []
-  const baseFacts = positiveFacts.length && negativeFacts.length
-    ? [...positiveFacts, ...negativeFacts]
-    : row.resolution === "covered"
-      ? positiveFacts
-      : row.resolution === "excluded"
-        ? negativeFacts
-        : []
-  return [...new Set([...baseFacts, ...currentExpertFactHashes()])]
+function supersededFactHashes(row: ClaimCatalogViewRow, adjudication: string): string[] {
+  // The server owns the active/history fact contract; the UI must not infer.
+  return row.required_supersedes_fact_hashes?.[adjudication] ?? []
 }
 
 async function adjudicateClaim(
@@ -261,6 +294,10 @@ async function adjudicateClaim(
   const client = props.client
   const row = selectedClaim.value
   const reason = adjudicationReason.value.trim()
+  if (detailsStale.value || detailLoading.value) {
+    message.value = "账本版本正在切换，详情重载完成前禁止裁决"
+    return
+  }
   if (!client?.applyClaimAdjudication || !row || !row.claim_hash || !row.claim_effective_revision || !reason) {
     message.value = "请填写裁决理由并刷新 Claim 详情"
     return
@@ -301,7 +338,7 @@ async function adjudicateClaim(
       evidence,
       actor: "reviewer",
       expectedClaimEffectiveRevision: row.claim_effective_revision,
-      supersedesFactHashes: supersededFactHashes(row),
+      supersedesFactHashes: supersededFactHashes(row, adjudication),
       requestIdempotencyKey: newIdempotencyKey("claim-adjudication"),
     })
     adjudicationReason.value = ""
@@ -321,12 +358,20 @@ const structuralOverrideReason = computed(() => {
   return String((exclusion as Record<string, unknown>).reason || "")
 })
 
-const structuralVerifierBudgetValid = computed(() => !structuralOverrideAllowLlm.value || (
-  Number.isInteger(queueMaxCalls.value)
-  && queueMaxCalls.value > 0
-  && Number.isInteger(queueTokenBudget.value)
-  && queueTokenBudget.value > 0
-))
+const pendingStructuralOperation = computed(() =>
+  selectedClaim.value?.pending_structural_operation || null)
+const structuralVerifierBudgetValid = computed(() => {
+  const pending = pendingStructuralOperation.value
+  if (pending) {
+    return !pending.needs_reconfirmation || structuralPaidWorkReconfirmed.value
+  }
+  return !structuralOverrideAllowLlm.value || (
+    Number.isInteger(queueMaxCalls.value)
+    && queueMaxCalls.value > 0
+    && Number.isInteger(queueTokenBudget.value)
+    && queueTokenBudget.value > 0
+  )
+})
 
 async function confirmStructuralOverride(): Promise<void> {
   const client = props.client
@@ -341,7 +386,16 @@ async function confirmStructuralOverride(): Promise<void> {
     || !reason
     || !structuralVerifierBudgetValid.value
   ) return
-  const allowLlm = structuralOverrideAllowLlm.value
+  const pendingOperation = row.pending_structural_operation || null
+  const allowLlm = pendingOperation
+    ? pendingOperation.allow_llm
+    : structuralOverrideAllowLlm.value
+  const verifierMaxCalls = pendingOperation
+    ? pendingOperation.verifier_budget.max_calls
+    : (allowLlm ? queueMaxCalls.value : 0)
+  const verifierMaxTotalTokens = pendingOperation
+    ? pendingOperation.verifier_budget.max_total_tokens
+    : (allowLlm ? queueTokenBudget.value : 0)
   adjudicationBusy.value = true
   try {
     await client.confirmClaimStructuralOverride({
@@ -352,11 +406,18 @@ async function confirmStructuralOverride(): Promise<void> {
       priorStructuralReason: "repeated_page_furniture",
       reason,
       actor: "reviewer",
-      requestIdempotencyKey: newIdempotencyKey("claim-structural"),
+      requestIdempotencyKey: pendingOperation
+        ? ""
+        : newIdempotencyKey("claim-structural"),
       allowLlm,
-      route: allowLlm ? "openai_compatible" : "stub",
-      verifierMaxCalls: allowLlm ? queueMaxCalls.value : 0,
-      verifierMaxTotalTokens: allowLlm ? queueTokenBudget.value : 0,
+      route: pendingOperation?.route_requested
+        || (allowLlm ? "openai_compatible" : "stub"),
+      verifierMaxCalls,
+      verifierMaxTotalTokens,
+      ...(pendingOperation ? { operationId: pendingOperation.operation_id } : {}),
+      ...(pendingOperation?.needs_reconfirmation
+        ? { reconfirmPaidWork: structuralPaidWorkReconfirmed.value }
+        : {}),
     })
     closeDetails()
     await loadOverview(false)
@@ -364,6 +425,7 @@ async function confirmStructuralOverride(): Promise<void> {
     message.value = error instanceof Error ? error.message : "结构复核失败"
     await loadOverview(false)
   } finally {
+    structuralPaidWorkReconfirmed.value = false
     adjudicationBusy.value = false
   }
 }
@@ -387,7 +449,12 @@ async function loadOverview(allowRetry = true): Promise<boolean> {
         offset: offset.value,
       }),
       client.loadClaimMetrics(),
-      client.loadClaimQueue(),
+      client.loadClaimQueue({
+        limit: PAGE_SIZE,
+        offset: queueOffset.value,
+        compatLimit: PAGE_SIZE,
+        compatOffset: compatOffset.value,
+      }),
       client.loadAiExtractionStatus?.().catch(() => null) ?? Promise.resolve(null),
     ])
     if (generation !== overviewGeneration || client !== props.client) return false
@@ -397,6 +464,7 @@ async function loadOverview(allowRetry = true): Promise<boolean> {
       return false
     }
 
+    const previousPin = revisionPin.value
     catalog.value = nextCatalog
     metrics.value = nextMetrics
     queue.value = nextQueue
@@ -412,11 +480,28 @@ async function loadOverview(allowRetry = true): Promise<boolean> {
     }
 
     if (selectedClaim.value) {
+      const previousReconfirmation = structuralReconfirmationIdentity(
+        selectedClaim.value,
+      )
       const refreshed = nextCatalog.rows.find((row) => row.claim_id === selectedClaim.value?.claim_id)
+      if (
+        previousReconfirmation
+        !== structuralReconfirmationIdentity(refreshed || null)
+      ) {
+        structuralPaidWorkReconfirmed.value = false
+      }
       selectedClaim.value = refreshed || null
       if (!refreshed) {
         detailGroups.value = []
         detailEvents.value = []
+      } else if (previousPin !== revisionPin.value) {
+        // The revision pin moved under an open drawer: every previously loaded
+        // group/event/fact belongs to the old generation.  Adjudication stays
+        // disabled until the same-revision details have been reloaded.
+        detailGroups.value = []
+        detailEvents.value = []
+        detailsStale.value = true
+        if (!detailRefreshCycle) void loadDetails(refreshed.claim_id, false)
       }
     }
     if (!nextMetrics.effective_fresh) message.value = "账本待刷新：当前显示的是最近一次已提交快照"
@@ -445,12 +530,70 @@ async function goPage(direction: -1 | 1) {
   await loadOverview()
 }
 
+async function goQueuePage(direction: -1 | 1) {
+  const nextOffset = Math.max(0, queueOffset.value + direction * PAGE_SIZE)
+  if (nextOffset === queueOffset.value) return
+  queueOffset.value = nextOffset
+  await loadOverview()
+}
+
+async function goCompatPage(direction: -1 | 1) {
+  const nextOffset = Math.max(0, compatOffset.value + direction * PAGE_SIZE)
+  if (nextOffset === compatOffset.value) return
+  compatOffset.value = nextOffset
+  await loadOverview()
+}
+
+const DETAIL_PAGE_SIZE = 500
+
+async function fetchGroupPages(
+  claimId: string,
+  expectedRevision: string,
+  generation: number,
+): Promise<ClaimCoverageGroupView[] | null> {
+  const client = props.client
+  if (!client) return null
+  const collected: ClaimCoverageGroupView[] = []
+  for (;;) {
+    const page = await client.loadClaimCoverageGroups(claimId, {
+      limit: DETAIL_PAGE_SIZE,
+      offset: collected.length,
+    })
+    if (generation !== detailGeneration || client !== props.client) return null
+    if (page.document_effective_revision !== expectedRevision) return null
+    collected.push(...(page.groups || []))
+    if (!page.groups?.length || collected.length >= (page.total || 0)) return collected
+  }
+}
+
+async function fetchEventPages(
+  claimId: string,
+  expectedRevision: string,
+  generation: number,
+): Promise<ClaimReviewEventView[] | null> {
+  const client = props.client
+  if (!client) return null
+  const collected: ClaimReviewEventView[] = []
+  for (;;) {
+    const page = await client.loadClaimReviewEvents(claimId, {
+      limit: DETAIL_PAGE_SIZE,
+      offset: collected.length,
+    })
+    if (generation !== detailGeneration || client !== props.client) return null
+    if (page.document_effective_revision !== expectedRevision) return null
+    collected.push(...(page.events || []))
+    if (!page.events?.length || collected.length >= (page.total || 0)) return collected
+  }
+}
+
 async function openDetails(row: ClaimCatalogViewRow) {
   adjudicationReason.value = ""
   structuralOverrideAllowLlm.value = false
+  structuralPaidWorkReconfirmed.value = false
   selectedClaim.value = row
   detailGroups.value = []
   detailEvents.value = []
+  detailsStale.value = true
   await loadDetails(row.claim_id, true)
 }
 
@@ -462,27 +605,32 @@ async function loadDetails(claimId: string, allowRefresh: boolean): Promise<void
   detailLoading.value = true
   try {
     const [groups, events] = await Promise.all([
-      client.loadClaimCoverageGroups(claimId),
-      client.loadClaimReviewEvents(claimId),
+      fetchGroupPages(claimId, expectedRevision, generation),
+      fetchEventPages(claimId, expectedRevision, generation),
     ])
     if (generation !== detailGeneration || client !== props.client) return
-    const revisionMatches = groups.document_effective_revision === expectedRevision
-      && events.document_effective_revision === expectedRevision
+    const revisionMatches = groups !== null && events !== null
       && revisionPin.value === expectedRevision
     if (!revisionMatches) {
       detailGroups.value = []
       detailEvents.value = []
       message.value = "详情与主列表版本不同，异代响应已丢弃"
       if (allowRefresh) {
-        const refreshed = await loadOverview(false)
-        if (refreshed && selectedClaim.value?.claim_id === claimId) {
-          await loadDetails(claimId, false)
+        detailRefreshCycle = true
+        try {
+          const refreshed = await loadOverview(false)
+          if (refreshed && selectedClaim.value?.claim_id === claimId) {
+            await loadDetails(claimId, false)
+          }
+        } finally {
+          detailRefreshCycle = false
         }
       }
       return
     }
-    detailGroups.value = groups.groups || []
-    detailEvents.value = events.events || []
+    detailGroups.value = groups
+    detailEvents.value = events
+    detailsStale.value = false
   } catch (error) {
     if (generation === detailGeneration) {
       message.value = error instanceof Error ? error.message : "Claim 详情加载失败"
@@ -499,7 +647,9 @@ function closeDetails() {
   detailEvents.value = []
   adjudicationReason.value = ""
   structuralOverrideAllowLlm.value = false
+  structuralPaidWorkReconfirmed.value = false
   detailLoading.value = false
+  detailsStale.value = false
 }
 
 function selectLedgerTab(tab: LedgerTab): void {
@@ -641,12 +791,12 @@ onUnmounted(() => {
 
       <section v-else class="queue-view" data-testid="claim-queue">
         <div class="queue-section">
-          <header><h5>Claim 提案</h5><span>{{ queue?.proposals.length || 0 }}</span></header>
+          <header><h5>Claim 提案</h5><span>{{ queueTotal }}</span></header>
           <div class="queue-budget" data-testid="claim-queue-budget">
             <label>调用上限<input v-model.number="queueMaxCalls" type="number" min="1" step="1" /></label>
             <label>Token 上限<input v-model.number="queueTokenBudget" type="number" min="1" step="1000" /></label>
           </div>
-          <div v-for="proposal in queue?.proposals || []" :key="proposal.proposal_id" class="queue-row">
+          <div v-for="proposal in queueProposals" :key="proposal.proposal_id" class="queue-row">
             <span class="lifecycle-badge" :class="proposal.lifecycle">{{ queueLifecycleLabel(proposal) }}</span>
             <div>
               <strong>{{ proposal.claim_id }}</strong>
@@ -664,10 +814,17 @@ onUnmounted(() => {
               {{ proposal.lifecycle === "rebuild_pending" ? "恢复" : "执行" }}
             </button>
           </div>
-          <p v-if="!queue?.proposals.length" class="queue-empty">没有待处理 Claim 提案</p>
+          <p v-if="!queueProposals.length" class="queue-empty">没有待处理 Claim 提案</p>
+          <footer v-if="queuePageCount > 1" class="pagination queue-pagination" data-testid="claim-queue-pagination">
+            <span>第 {{ queuePageNumber }} / {{ queuePageCount }} 页</span>
+            <div>
+              <button class="icon-command" type="button" :disabled="!queueCanGoBack" aria-label="队列上一页" title="上一页" @click="goQueuePage(-1)"><ChevronLeft :size="17" aria-hidden="true" /></button>
+              <button class="icon-command" type="button" :disabled="!queueCanGoForward" aria-label="队列下一页" title="下一页" @click="goQueuePage(1)"><ChevronRight :size="17" aria-hidden="true" /></button>
+            </div>
+          </footer>
         </div>
         <div class="queue-section compat">
-          <header><h5>兼容遗漏</h5><span>{{ queue?.compat_omissions.length || 0 }}</span></header>
+          <header><h5>兼容遗漏</h5><span>{{ compatOmissionTotal }}</span></header>
           <div v-for="(omission, index) in queue?.compat_omissions || []"
                :key="omission.omission_id || omission.block_id || index" class="queue-row">
             <span class="dry-run-badge">dry-run</span>
@@ -675,6 +832,20 @@ onUnmounted(() => {
             <code>compat_whole_block</code>
           </div>
           <p v-if="!queue?.compat_omissions.length" class="queue-empty">没有兼容遗漏项</p>
+          <footer v-if="compatPageCount > 1" class="pagination queue-pagination"
+                  data-testid="claim-compat-pagination">
+            <span>第 {{ compatPageNumber }} / {{ compatPageCount }} 页</span>
+            <div>
+              <button class="icon-command" type="button" :disabled="!compatCanGoBack"
+                      aria-label="兼容遗漏上一页" title="上一页" @click="goCompatPage(-1)">
+                <ChevronLeft :size="17" aria-hidden="true" />
+              </button>
+              <button class="icon-command" type="button" :disabled="!compatCanGoForward"
+                      aria-label="兼容遗漏下一页" title="下一页" @click="goCompatPage(1)">
+                <ChevronRight :size="17" aria-hidden="true" />
+              </button>
+            </div>
+          </footer>
         </div>
       </section>
     </template>
@@ -689,13 +860,17 @@ onUnmounted(() => {
             <X :size="17" aria-hidden="true" />
           </button>
         </header>
-        <p>本次定向补抽会调用 LLM。调用与 Token 均受以下上限约束。</p>
-        <dl>
+        <p v-if="queueIsDeterministicRecovery" data-testid="claim-queue-recovery-notice">
+          本次仅恢复已发布结果的确定性账本重建，不会调用 LLM，也不会产生新的模型费用。
+        </p>
+        <p v-else>本次定向补抽会调用 LLM。调用与 Token 均受以下上限约束。</p>
+        <dl v-if="!queueIsDeterministicRecovery">
           <div><dt>Route</dt><dd><code>openai_compatible</code></dd></div>
+          <div><dt>Model</dt><dd><code data-testid="claim-queue-model">{{ queue?.route_preflight?.model || "未配置" }}</code></dd></div>
           <div><dt>调用上限</dt><dd>{{ queueMaxCalls }}</dd></div>
           <div><dt>Token 上限</dt><dd>{{ queueTokenBudget.toLocaleString("zh-CN") }}</dd></div>
         </dl>
-        <label class="queue-authorization">
+        <label v-if="!queueIsDeterministicRecovery" class="queue-authorization">
           <input v-model="queueAllowLlm" type="checkbox" data-testid="claim-queue-allow-llm" />
           <span>我确认授权本次 LLM 调用及上述成本上限</span>
         </label>
@@ -707,7 +882,7 @@ onUnmounted(() => {
                   data-testid="claim-queue-confirm-execute" @click="executeProposal">
             <RefreshCw v-if="queueBusyId" class="spin" :size="15" aria-hidden="true" />
             <Play v-else :size="15" aria-hidden="true" />
-            确认执行
+            {{ queueIsDeterministicRecovery ? "恢复重建" : "确认执行" }}
           </button>
         </footer>
       </section>
@@ -769,39 +944,76 @@ onUnmounted(() => {
                   <option value="example">示例</option>
                   <option value="instrument_only">仅仪器说明</option>
                 </select>
-                <button type="button" :disabled="adjudicationBusy || !adjudicationReason.trim()"
+                <button type="button" :disabled="adjudicationBusy || detailsStale || detailLoading || !adjudicationReason.trim()"
                         data-testid="claim-adjudicate-covered" @click="adjudicateClaim('covered')">
                   <ShieldCheck :size="15" aria-hidden="true" />确认覆盖
                 </button>
-                <button type="button" :disabled="adjudicationBusy || !adjudicationReason.trim()"
+                <button type="button" :disabled="adjudicationBusy || detailsStale || detailLoading || !adjudicationReason.trim()"
                         data-testid="claim-adjudicate-excluded" @click="adjudicateClaim('excluded_non_normative')">
                   <X :size="15" aria-hidden="true" />排除
                 </button>
                 <button v-if="selectedClaim.resolution !== 'uncertain'" type="button"
-                        :disabled="adjudicationBusy || !adjudicationReason.trim()"
+                        :disabled="adjudicationBusy || detailsStale || detailLoading || !adjudicationReason.trim()"
                         data-testid="claim-adjudicate-reopen" @click="adjudicateClaim('reopen')">
                   <Undo2 :size="15" aria-hidden="true" />重开
                 </button>
               </div>
               <div v-if="structuralOverrideReason === 'repeated_page_furniture'"
                    class="structural-review" data-testid="claim-structural-review">
-                <label class="structural-mode">
+                <label v-if="!pendingStructuralOperation" class="structural-mode">
                   <input v-model="structuralOverrideAllowLlm" type="checkbox"
                          data-testid="claim-structural-llm" />
                   <span data-testid="claim-structural-mode">
                     {{ structuralOverrideAllowLlm ? "LLM 语义复核" : "确定性重建 · 0 LLM" }}
                   </span>
                 </label>
-                <div v-if="structuralOverrideAllowLlm" class="structural-budget"
+                <div v-else class="structural-operation-summary"
+                     data-testid="claim-structural-pending-authorization">
+                  <strong data-testid="claim-structural-mode">
+                    {{ pendingStructuralOperation.allow_llm
+                      ? `原授权 LLM：${pendingStructuralOperation.route_model || pendingStructuralOperation.route_requested}`
+                      : "原操作：确定性重建 · 0 LLM" }}
+                  </strong>
+                  <dl v-if="pendingStructuralOperation.allow_llm" class="structural-usage">
+                    <div>
+                      <dt>授权</dt>
+                      <dd>{{ pendingStructuralOperation.verifier_budget.max_calls }} 次 / {{ pendingStructuralOperation.verifier_budget.max_total_tokens.toLocaleString("zh-CN") }} tokens</dd>
+                    </div>
+                    <div>
+                      <dt>已尝试</dt>
+                      <dd>{{ pendingStructuralOperation.verifier_budget.attempted_calls }} 次 / {{ pendingStructuralOperation.verifier_budget.used_tokens.toLocaleString("zh-CN") }} tokens</dd>
+                    </div>
+                    <div>
+                      <dt>剩余</dt>
+                      <dd>{{ pendingStructuralOperation.verifier_budget.remaining_calls }} 次 / {{ pendingStructuralOperation.verifier_budget.remaining_tokens.toLocaleString("zh-CN") }} tokens</dd>
+                    </div>
+                    <div v-if="pendingStructuralOperation.verifier_budget.unknown_remote_result">
+                      <dt>待确认</dt>
+                      <dd>{{ pendingStructuralOperation.verifier_budget.reserved_tokens.toLocaleString("zh-CN") }} tokens 远端结果未知</dd>
+                    </div>
+                  </dl>
+                </div>
+                <div v-if="!pendingStructuralOperation && structuralOverrideAllowLlm" class="structural-budget"
                      data-testid="claim-structural-budget">
                   <label>调用上限<input v-model.number="queueMaxCalls" type="number" min="1" step="1" /></label>
                   <label>Token 上限<input v-model.number="queueTokenBudget" type="number" min="1" step="1000" /></label>
                 </div>
+                <label v-if="pendingStructuralOperation?.needs_reconfirmation"
+                       class="structural-mode structural-reconfirmation">
+                  <input v-model="structuralPaidWorkReconfirmed" type="checkbox"
+                         data-testid="claim-structural-paid-reconfirmation" />
+                  <span>确认按剩余预算继续付费复核</span>
+                </label>
                 <button class="structural-command" type="button"
-                        :disabled="adjudicationBusy || !adjudicationReason.trim() || !structuralVerifierBudgetValid"
+                        :disabled="adjudicationBusy || detailsStale || detailLoading || !adjudicationReason.trim() || !structuralVerifierBudgetValid"
                         data-testid="claim-structural-override" @click="confirmStructuralOverride">
-                  <Undo2 :size="15" aria-hidden="true" />撤销页眉页脚排除
+                  <Undo2 :size="15" aria-hidden="true" />{{ pendingStructuralOperation?.needs_reconfirmation
+                    ? "确认并恢复付费复核"
+                    : (pendingStructuralOperation ? "恢复结构复核重建" : "撤销页眉页脚排除") }}
                 </button>
+                <small v-if="pendingStructuralOperation" class="structural-pending">
+                  {{ pendingStructuralOperation.lifecycle }} · {{ pendingStructuralOperation.operation_id }}
+                </small>
               </div>
             </section>
           </template>
@@ -986,6 +1198,7 @@ onUnmounted(() => {
 .adjudication-row button:disabled,
 .structural-command:disabled { opacity: .45; cursor: default; }
 .queue-empty { margin: 0; padding: 28px 12px; color: #858b93; text-align: center; }
+.queue-pagination { padding: 0 11px; border-top: 1px solid #eef0f2; }
 
 .queue-confirm-layer { position: fixed; z-index: 35; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(28, 31, 36, .3); }
 .queue-confirm { width: min(460px, 100%); border: 1px solid #d7dbe0; border-radius: 7px; padding: 16px; background: #fff; box-shadow: 0 16px 48px rgba(35, 39, 45, .22); }
@@ -1028,7 +1241,14 @@ onUnmounted(() => {
 .structural-budget { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .structural-budget label { display: grid; gap: 4px; color: #656b74; font-size: 10px; }
 .structural-budget input { width: 100%; min-width: 0; min-height: 30px; border: 1px solid #cfd4da; border-radius: 5px; padding: 4px 7px; background: #fff; }
+.structural-operation-summary { display: grid; gap: 7px; color: #5f4a23; font-size: 11px; }
+.structural-usage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 12px; margin: 0; }
+.structural-usage > div { min-width: 0; }
+.structural-usage dt { color: #7a705f; font-size: 10px; }
+.structural-usage dd { margin: 2px 0 0; overflow-wrap: anywhere; color: #3f454d; }
+.structural-reconfirmation { align-items: flex-start; border-top: 1px solid #ead9b8; padding-top: 8px; }
 .structural-command { justify-self: start; border-color: #d2aa63; color: #6f470b; background: #fff8e9; }
+.structural-pending { color: #7a5a16; font-size: 10px; }
 .group-row { margin-top: 8px; border: 1px solid #dfe2e7; border-radius: 6px; padding: 10px; }
 .group-row header { display: flex; align-items: center; gap: 8px; }
 .group-row header strong { margin-right: auto; font-size: 11px; }

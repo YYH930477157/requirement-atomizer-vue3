@@ -30,7 +30,7 @@
   ],
   "properties": {
     "schema": {"const": "claim-catalog/v1"},
-    "catalog_version": {"const": "claim-catalog-v4"},
+    "catalog_version": {"const": "claim-catalog-v5"},
     "document_generation_id": {"$ref": "#/$defs/hash"},
     "catalog_generation_id": {"$ref": "#/$defs/hash"},
     "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},

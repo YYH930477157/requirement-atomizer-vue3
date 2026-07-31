@@ -226,13 +226,14 @@ class EffectiveFoldTests(unittest.TestCase):
 
         self.assertEqual(relevant, [event])
 
-    def test_document_effective_revision_is_sensitive_to_all_five_live_inputs(self) -> None:
+    def test_document_effective_revision_is_sensitive_to_all_authority_inputs(self) -> None:
         baseline_inputs = {
             "base_generation_id": _hash("base-generation"),
             "last_event_seq": 3,
             "event_prefix_sha256": _hash("event-prefix"),
             "target_set_hash": _hash("target-set"),
             "requirement_review_state_hash": _hash("review-state"),
+            "authority_projection_hash": _hash("authority-projection"),
         }
         baseline = claim_review_actions._document_effective_revision(
             **baseline_inputs
@@ -243,6 +244,7 @@ class EffectiveFoldTests(unittest.TestCase):
             "event_prefix_sha256": _hash("event-prefix-next"),
             "target_set_hash": _hash("target-set-next"),
             "requirement_review_state_hash": _hash("review-state-next"),
+            "authority_projection_hash": _hash("authority-projection-next"),
         }
 
         for field, value in mutations.items():
@@ -650,6 +652,10 @@ class EffectiveFoldTests(unittest.TestCase):
                 patch.object(
                     claim_review_actions,
                     "CLAIM_EFFECTIVE_REDUCER_VERSION",
+                    "claim-effective-reducer-vNEXT",
+                ),
+                patch(
+                    "claim_effective_contract.CLAIM_EFFECTIVE_REDUCER_VERSION",
                     "claim-effective-reducer-vNEXT",
                 ),
                 patch("ai_extract.refresh_claim_shadow") as refresh_shadow,
@@ -1546,6 +1552,13 @@ claim_review_actions.fold_effective_ledger(
                 actor_trigger="idempotency-check",
             )
             self.assertEqual(idempotent["event_append_count"], 0)
+            self.assertTrue(idempotent["publication_skipped"])
+            self.assertEqual(
+                claim_artifacts.load_committed_effective_snapshot(root)[
+                    "effective_ledger"
+                ][0]["effective_facts"]["reused_validation_group_ids"],
+                row["coverage_group_ids"],
+            )
 
     def test_projection_append_rejects_a_stale_effective_precondition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1664,6 +1677,120 @@ claim_review_actions.fold_effective_ledger(
             self.assertEqual(len({event["source_event_revision"] for event in events}), 3)
             self.assertTrue(all(event["trigger_kind"] == "target_set" for event in events))
 
+    def test_refold_rejects_forged_revision_instead_of_auditing_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="forged-revision-seed",
+            )
+            meta_path = root / claim_artifacts.CLAIM_EFFECTIVE_META
+            ledger_path = root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            rows = [
+                json.loads(line)
+                for line in ledger_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            forged_revision = _hash("forged-effective-revision")
+            rows[0]["claim_effective_revision"] = forged_revision
+            claim_artifacts.atomic_write_jsonl(ledger_path, rows)
+            meta["effective_ledger_sha256"] = claim_artifacts.file_sha256(
+                ledger_path
+            )
+            claim_artifacts._atomic_write_bytes(
+                meta_path,
+                claim_artifacts.canonical_json_value_bytes(meta),
+            )
+            claim_artifacts.atomic_write_jsonl(root / "ai_requirements.jsonl", [])
+
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "claim effective revision does not recompute",
+            ):
+                claim_review_actions.fold_effective_ledger(
+                    root,
+                    actor_trigger="forged-revision-refold",
+                )
+
+            self.assertEqual(
+                claim_review_actions.read_claim_review_events(root).rows,
+                [],
+            )
+
+    def test_authority_drift_refold_derives_cas_instead_of_reusing_forgery(self) -> None:
+        from claim_effective_contract import (
+            CLAIM_AUTHORITY_PROJECTION_VERSION,
+            compute_claim_effective_revision,
+            compute_document_effective_revision,
+            compute_effective_authority_projection_hash,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="coherent-forgery-seed",
+            )
+            snapshot = claim_artifacts.load_committed_effective_snapshot(root)
+            rows = copy.deepcopy(snapshot["effective_ledger"])
+            meta = copy.deepcopy(snapshot["effective_meta"])
+            inputs = rows[0]["revision_inputs"]
+            inputs["linked_targets"][0]["target_review_revision"] = _hash(
+                "forged-linked-target-revision"
+            )
+            inputs["authority_projection_hash"] = claim_artifacts.hash_json(
+                CLAIM_AUTHORITY_PROJECTION_VERSION,
+                {
+                    "ordered_relevant_event_hashes": inputs[
+                        "ordered_relevant_event_hashes"
+                    ],
+                    "linked_targets": inputs["linked_targets"],
+                    "expert_overlay": inputs["expert_overlay"],
+                },
+            )
+            forged_revision = compute_claim_effective_revision(inputs)
+            rows[0]["claim_effective_revision"] = forged_revision
+            projection_hash = compute_effective_authority_projection_hash(rows)
+            meta["authority_projection_hash"] = projection_hash
+            meta["document_effective_revision"] = compute_document_effective_revision(
+                base_generation_id=meta["base_generation_id"],
+                last_event_seq=meta["last_event_seq"],
+                event_prefix_sha256=meta["event_prefix_sha256"],
+                target_set_hash=meta["target_set_hash"],
+                requirement_review_state_hash=meta[
+                    "requirement_review_state_hash"
+                ],
+                authority_projection_hash=projection_hash,
+            )
+            claim_artifacts.atomic_write_jsonl(
+                root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER,
+                rows,
+            )
+            meta["effective_ledger_sha256"] = claim_artifacts.file_sha256(
+                root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER
+            )
+            claim_artifacts._atomic_write_bytes(
+                root / claim_artifacts.CLAIM_EFFECTIVE_META,
+                claim_artifacts.canonical_json_value_bytes(meta),
+            )
+            claim_artifacts.atomic_write_jsonl(root / "ai_requirements.jsonl", [])
+
+            result = claim_review_actions.fold_effective_ledger(
+                root,
+                actor_trigger="coherent-forgery-refold",
+            )
+
+            self.assertEqual(result["event_append_count"], 1)
+            event = claim_review_actions.read_claim_review_events(root).rows[0]
+            self.assertNotEqual(
+                event["expected_claim_effective_revision"],
+                forged_revision,
+            )
+            self.assertEqual(event["event_kind"], "target_invalidated")
+
     def test_freshness_reports_live_target_drift_without_folding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1686,12 +1813,11 @@ claim_review_actions.fold_effective_ledger(
 
             self.assertFalse(stale["effective_fresh"])
             self.assertIn("target_set_changed", stale["freshness_reasons"])
-            self.assertEqual(
-                claim_artifacts.load_committed_effective_snapshot_readonly(root)[
-                    "effective_meta"
-                ]["document_effective_revision"],
-                committed["effective_meta"]["document_effective_revision"],
-            )
+            with self.assertRaisesRegex(
+                claim_artifacts.ClaimArtifactError,
+                "authority changed",
+            ):
+                claim_artifacts.load_committed_effective_snapshot_readonly(root)
 
     def test_target_observation_change_is_audited_while_review_stays_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,17 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ratomizer.local/schemas/claim_effective_ledger.schema.json",
-  "title": "Claim effective ledger row v1",
+  "title": "Claim effective ledger row v2",
   "type": "object",
   "required": [
     "schema", "base_ledger_schema", "ledger_schema_version", "document_generation_id",
     "catalog_generation_id", "claim_id", "claim_hash", "owner_unit_id", "resolution",
     "classification", "classification_status", "exclusion_kind", "coverage_group_ids",
     "semantic_negative", "invalid_reasons", "base_claim_row_hash",
-    "claim_effective_revision", "effective_facts", "last_relevant_event_seq"
+    "claim_effective_revision", "revision_inputs", "effective_facts",
+    "last_relevant_event_seq"
   ],
   "properties": {
-    "schema": {"const": "claim-effective-ledger/v1"},
+    "schema": {"const": "claim-effective-ledger/v2"},
     "base_ledger_schema": {"const": "claim-ledger/v3"},
     "ledger_schema_version": {"const": "claim-ledger-v3"},
     "document_generation_id": {"$ref": "#/$defs/hash"},
@@ -42,6 +43,48 @@
     "invalid_reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
     "base_claim_row_hash": {"$ref": "#/$defs/hash"},
     "claim_effective_revision": {"$ref": "#/$defs/hash"},
+    "revision_inputs": {
+      "type": "object",
+      "required": [
+        "schema", "base_claim_row_hash", "ordered_relevant_event_hashes",
+        "linked_targets", "expert_overlay", "authority_projection_hash",
+        "effective_state_hash", "versions"
+      ],
+      "properties": {
+        "schema": {"const": "claim-effective-revision-inputs/v2"},
+        "base_claim_row_hash": {"$ref": "#/$defs/hash"},
+        "ordered_relevant_event_hashes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/hash"}
+        },
+        "linked_targets": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/linked_target"},
+          "uniqueItems": true
+        },
+        "expert_overlay": {"$ref": "#/$defs/expert_overlay"},
+        "authority_projection_hash": {"$ref": "#/$defs/hash"},
+        "effective_state_hash": {"$ref": "#/$defs/hash"},
+        "versions": {
+          "type": "object",
+          "required": [
+            "effective_ledger_schema", "reducer_version", "bridge_version",
+            "review_adapter_versions"
+          ],
+          "properties": {
+            "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
+            "reducer_version": {"type": "string", "minLength": 1},
+            "bridge_version": {"type": "string", "minLength": 1},
+            "review_adapter_versions": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"$ref": "#/$defs/review_adapter_version"}
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "effective_facts": {"$ref": "#/$defs/effective_facts"},
     "last_relevant_event_seq": {"type": "integer", "minimum": 0}
   },
@@ -109,6 +152,80 @@
   "additionalProperties": false,
   "$defs": {
     "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "review_adapter_version": {
+      "type": "object",
+      "required": ["target_kind", "adapter_version"],
+      "properties": {
+        "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
+        "adapter_version": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "linked_target": {
+      "type": "object",
+      "required": [
+        "target_kind", "target_requirement_id", "target_fingerprint",
+        "target_review_revision"
+      ],
+      "properties": {
+        "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
+        "target_requirement_id": {"type": "string", "minLength": 1},
+        "target_fingerprint": {"$ref": "#/$defs/hash"},
+        "target_review_revision": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "fact_hashes_by_polarity": {
+      "type": "object",
+      "required": ["positive", "negative"],
+      "properties": {
+        "positive": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true},
+        "negative": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "overlay_event": {
+      "type": "object",
+      "required": [
+        "event_hash", "event_kind", "evidence_current", "evidence_reason",
+        "active", "state_inputs"
+      ],
+      "properties": {
+        "event_hash": {"$ref": "#/$defs/hash"},
+        "event_kind": {"enum": ["expert_adjudication", "audit_conflict"]},
+        "adjudication": {"enum": ["covered", "excluded_non_normative", "reopen"]},
+        "evidence_current": {"type": "boolean"},
+        "evidence_reason": {"type": "string"},
+        "active": {"type": "boolean"},
+        "state_inputs": {"oneOf": [{"type": "object"}, {"type": "array"}]}
+      },
+      "additionalProperties": false
+    },
+    "active_resolution_fact": {
+      "type": "object",
+      "required": ["fact_hash", "kind", "polarity"],
+      "properties": {
+        "fact_hash": {"$ref": "#/$defs/hash"},
+        "kind": {"enum": ["coverage_group", "semantic_negative", "structural_exclusion", "expert_adjudication", "audit_conflict"]},
+        "polarity": {"enum": ["positive", "negative"]}
+      },
+      "additionalProperties": false
+    },
+    "expert_overlay": {
+      "type": "object",
+      "required": [
+        "base_fact_hashes", "superseded_base_fact_hashes",
+        "active_resolution_facts", "events", "forced_invalid_group_reasons"
+      ],
+      "properties": {
+        "base_fact_hashes": {"$ref": "#/$defs/fact_hashes_by_polarity"},
+        "superseded_base_fact_hashes": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true},
+        "active_resolution_facts": {"type": "array", "items": {"$ref": "#/$defs/active_resolution_fact"}, "uniqueItems": true},
+        "events": {"type": "array", "items": {"$ref": "#/$defs/overlay_event"}, "uniqueItems": true},
+        "forced_invalid_group_reasons": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": false
+    },
     "invalidated_target": {
       "type": "object",
       "required": [
@@ -132,7 +249,7 @@
     },
     "effective_facts": {
       "type": "object",
-      "required": ["valid_group_ids", "invalid_group_reasons", "validated_negative_id", "invalidated_targets", "reused_validation_group_ids"],
+      "required": ["valid_group_ids", "invalid_group_reasons", "validated_negative_id", "invalidated_targets", "reused_validation_group_ids", "active_resolution_facts"],
       "properties": {
         "valid_group_ids": {"type": "array", "items": {"type": "string", "pattern": "^CGR-[0-9a-f]{16}$"}, "uniqueItems": true},
         "invalid_group_reasons": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
@@ -144,7 +261,11 @@
         },
         "invalidated_targets": {"type": "array", "items": {"$ref": "#/$defs/invalidated_target"}},
         "reused_validation_group_ids": {"type": "array", "items": {"type": "string", "pattern": "^CGR-[0-9a-f]{16}$"}, "uniqueItems": true},
-        "superseded_base_fact_hashes": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true}
+        "superseded_base_fact_hashes": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true},
+        "active_resolution_facts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/active_resolution_fact"}
+        }
       },
       "additionalProperties": false
     }

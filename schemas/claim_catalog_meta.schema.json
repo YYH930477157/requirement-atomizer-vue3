@@ -27,7 +27,7 @@
   ],
   "properties": {
     "schema": {"const": "claim-catalog-meta/v1"},
-    "catalog_version": {"const": "claim-catalog-v4"},
+    "catalog_version": {"const": "claim-catalog-v5"},
     "packing_version": {"const": "claim-unit-packing-v1"},
     "document_generation_id": {"$ref": "#/$defs/hash"},
     "blocks_sha256": {"$ref": "#/$defs/hash"},
@@ -104,7 +104,10 @@
         "multi_owner_count",
         "owner_prompt_missing_count",
         "duplicate_leaf_locator_count",
-        "duplicate_leaf_hash_count"
+        "duplicate_leaf_hash_count",
+        "orphan_table_item_count",
+        "multi_consumed_table_item_count",
+        "non_table_parent_item_count"
       ],
       "properties": {
         "unmapped_source_span_count": {"type": "integer", "minimum": 0},
@@ -117,7 +120,10 @@
         "multi_owner_count": {"type": "integer", "minimum": 0},
         "owner_prompt_missing_count": {"type": "integer", "minimum": 0},
         "duplicate_leaf_locator_count": {"type": "integer", "minimum": 0},
-        "duplicate_leaf_hash_count": {"type": "integer", "minimum": 0}
+        "duplicate_leaf_hash_count": {"type": "integer", "minimum": 0},
+        "orphan_table_item_count": {"type": "integer", "minimum": 0},
+        "multi_consumed_table_item_count": {"type": "integer", "minimum": 0},
+        "non_table_parent_item_count": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     },

@@ -364,10 +364,10 @@ describe("RequirementApiClient", () => {
     expect(urls).toEqual([
       "http://127.0.0.1:8770/claim-catalog?limit=10&offset=20&resolution=covered&owner_unit_id=UNIT-1",
       "http://127.0.0.1:8770/claim-ledger?limit=5&offset=15&resolution=uncertain",
-      "http://127.0.0.1:8770/claim-coverage-groups?claim_id=CLM-1%2F2",
+      "http://127.0.0.1:8770/claim-coverage-groups?claim_id=CLM-1%2F2&limit=100&offset=0",
       "http://127.0.0.1:8770/claim-metrics",
-      "http://127.0.0.1:8770/claim-review-events?claim_id=CLM-1%2F2",
-      "http://127.0.0.1:8770/claim-queue",
+      "http://127.0.0.1:8770/claim-review-events?claim_id=CLM-1%2F2&limit=100&offset=0",
+      "http://127.0.0.1:8770/claim-queue?limit=100&offset=0&compat_limit=100&compat_offset=0",
     ])
     for (const [, init] of fetchMock.mock.calls) {
       expect(init).toEqual({ headers: { "X-Requirement-Atomizer-Token": "local-token" } })
@@ -398,6 +398,7 @@ describe("RequirementApiClient", () => {
       maximumCalls: 6,
       totalTokenBudget: 72000,
       requestIdempotencyKey: "queue-request-1",
+      expectedRouteConfigRevision: "sha256:queue-route-config-1",
     })
     await client.applyClaimAdjudication({
       claimId: "CLM-1",
@@ -427,6 +428,7 @@ describe("RequirementApiClient", () => {
       route: "openai_compatible",
       verifierMaxCalls: 2,
       verifierMaxTotalTokens: 12000,
+      reconfirmPaidWork: true,
     })
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8770/claim-queue/execute", {
@@ -445,6 +447,7 @@ describe("RequirementApiClient", () => {
         maximum_calls: 6,
         total_token_budget: 72000,
         request_idempotency_key: "queue-request-1",
+        expected_route_config_revision: "sha256:queue-route-config-1",
       }),
     })
     expect(fetchMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:8770/claim-adjudications", {
@@ -488,6 +491,7 @@ describe("RequirementApiClient", () => {
         route: "openai_compatible",
         verifier_max_calls: 2,
         verifier_max_total_tokens: 12000,
+        reconfirm_paid_work: true,
       }),
     })
   })

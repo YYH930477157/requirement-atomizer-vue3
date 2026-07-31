@@ -1398,6 +1398,88 @@ class ShadowCoverageTests(unittest.TestCase):
         self.assertEqual(len(result["groups"]), 2)
         self.assertEqual({group["status"] for group in result["groups"]}, {"validated", "invalid"})
 
+    def test_rejected_verbatim_does_not_mask_active_semantic_candidate(self) -> None:
+        source = "The meter shall provide user-programmable auxiliary outputs."
+        catalog = claim_catalog.build_claim_catalog([_block("B1", source)], [])
+        rejected = _requirement(
+            "AIR-1",
+            description=f"产品应支持以下能力：{source}",
+            source_quote=source,
+        )
+        active = _requirement(
+            "AIR-2",
+            description="辅助输出可由用户编程。",
+            source_quote=source,
+        )
+        state = {
+            "ai_req_id": "AIR-1",
+            "status": "rejected",
+            "source_fingerprint": claim_ledger.target_source_fingerprint(rejected),
+            "review_subject_fingerprint": claim_ledger.target_fingerprint(rejected),
+        }
+        calls: list[list[dict]] = []
+
+        def verifier(_unit_id: str, groups: list[dict]) -> dict:
+            calls.append(groups)
+            return {
+                "request_id": "verify-active-semantic",
+                "tokens": 7,
+                "usage_complete": True,
+                "decisions": {
+                    group["coverage_group_id"]: {
+                        "covered": True,
+                        "checks": {
+                            name: True
+                            for name in claim_ledger.SEMANTIC_COVERAGE_CHECKS
+                        },
+                    }
+                    for group in groups
+                },
+            }
+
+        result = claim_ledger.build_shadow_ledger(
+            catalog,
+            [rejected, active],
+            review_states={"AIR-1": state},
+            semantic_verifier=verifier,
+        )
+
+        self.assertEqual(len(calls), 1)
+        by_method = {
+            group["validation_method"]: group for group in result["groups"]
+        }
+        audit_group = by_method["deterministic_verbatim"]
+        self.assertEqual(audit_group["status"], "invalid")
+        self.assertEqual(audit_group["invalid_reason"], "target_rejected")
+        semantic_group = by_method["independent_semantic"]
+        self.assertEqual(semantic_group["status"], "validated")
+        self.assertEqual(result["ledger"][0]["resolution"], "covered")
+
+    def test_active_verbatim_still_skips_semantic_verifier(self) -> None:
+        source = "The meter shall provide user-programmable auxiliary outputs."
+        catalog = claim_catalog.build_claim_catalog([_block("B1", source)], [])
+        formal = _requirement("AIR-1", description=source, source_quote=source)
+        rewritten = _requirement(
+            "AIR-2",
+            description="辅助输出可由用户编程。",
+            source_quote=source,
+        )
+
+        def verifier(_unit_id: str, groups: list[dict]) -> dict:
+            self.fail("active formal exact must bypass the semantic verifier")
+
+        result = claim_ledger.build_shadow_ledger(
+            catalog,
+            [formal, rewritten],
+            semantic_verifier=verifier,
+        )
+
+        self.assertEqual(len(result["groups"]), 1)
+        self.assertEqual(
+            result["groups"][0]["validation_method"], "deterministic_verbatim"
+        )
+        self.assertEqual(result["ledger"][0]["resolution"], "covered")
+
     def test_duplicate_stable_target_id_is_ambiguous_and_cannot_close(self) -> None:
         source = "Output A is programmable."
         catalog = claim_catalog.build_claim_catalog([_block("B1", source)], [])

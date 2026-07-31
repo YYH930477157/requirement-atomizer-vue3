@@ -28,6 +28,7 @@ from claim_artifacts import (
     effective_versions_are_current,
     hash_json,
     load_committed_claim_base,
+    load_committed_effective_refold_seed,
     load_committed_shadow,
     publish_effective_snapshot,
     semantic_negative_id,
@@ -1342,45 +1343,111 @@ def _resolution_fact_hash(kind: str, payload: Any) -> str:
     )
 
 
-def _base_resolution_fact_hashes(
+def _base_resolution_facts(
     claim: dict[str, Any],
     reduced: dict[str, Any],
     adjusted_groups: list[dict[str, Any]],
-) -> dict[str, set[str]]:
-    positive = {
-        _resolution_fact_hash(
-            "coverage_group",
-            {
-                "claim_hash": claim.get("claim_hash"),
-                "coverage_group_id": group.get("coverage_group_id"),
-                "coverage_group_hash": claim_coverage_group_hash(group),
-            },
-        )
+) -> list[dict[str, str]]:
+    facts: list[dict[str, str]] = [
+        {
+            "fact_hash": _resolution_fact_hash(
+                "coverage_group",
+                {
+                    "claim_hash": claim.get("claim_hash"),
+                    "coverage_group_id": group.get("coverage_group_id"),
+                    "coverage_group_hash": claim_coverage_group_hash(group),
+                },
+            ),
+            "kind": "coverage_group",
+            "polarity": "positive",
+        }
         for group in adjusted_groups
         if group.get("status") == "validated"
-    }
-    negative: set[str] = set()
+    ]
     semantic_negative = reduced.get("semantic_negative")
     if (
         isinstance(semantic_negative, dict)
         and semantic_negative.get("status") == "validated"
     ):
-        negative.add(_resolution_fact_hash(
-            "semantic_negative",
-            {
-                "claim_hash": claim.get("claim_hash"),
-                "semantic_negative_id": semantic_negative_id(semantic_negative),
-            },
-        ))
+        facts.append({
+            "fact_hash": _resolution_fact_hash(
+                "semantic_negative",
+                {
+                    "claim_hash": claim.get("claim_hash"),
+                    "semantic_negative_id": semantic_negative_id(semantic_negative),
+                },
+            ),
+            "kind": "semantic_negative",
+            "polarity": "negative",
+        })
     if reduced.get("exclusion_kind") == "structural":
-        negative.add(_resolution_fact_hash(
-            "structural_exclusion",
-            {
-                "claim_hash": claim.get("claim_hash"),
-                "exclusion": claim.get("exclusion"),
-            },
-        ))
-    return {"positive": positive, "negative": negative}
+        facts.append({
+            "fact_hash": _resolution_fact_hash(
+                "structural_exclusion",
+                {
+                    "claim_hash": claim.get("claim_hash"),
+                    "exclusion": claim.get("exclusion"),
+                },
+            ),
+            "kind": "structural_exclusion",
+            "polarity": "negative",
+        })
+    return facts
+
+
+def _base_resolution_fact_hashes(
+    claim: dict[str, Any],
+    reduced: dict[str, Any],
+    adjusted_groups: list[dict[str, Any]],
+) -> dict[str, set[str]]:
+    facts = _base_resolution_facts(claim, reduced, adjusted_groups)
+    return {
+        "positive": {
+            fact["fact_hash"] for fact in facts if fact["polarity"] == "positive"
+        },
+        "negative": {
+            fact["fact_hash"] for fact in facts if fact["polarity"] == "negative"
+        },
+    }
+
+
+def claim_required_supersedes_fact_hashes(
+    adjudication: str,
+    active_facts: Iterable[dict[str, Any]],
+) -> list[str]:
+    """The exact supersedes set the server requires for one adjudication.
+
+    An active audit conflict must be explicitly closed by every action; an
+    active polarity conflict must be superseded on both sides; otherwise only
+    the opposing polarity is required.  ``reopen`` supersedes everything.
+    """
+    facts = list(active_facts)
+    audits = {
+        str(fact["fact_hash"])
+        for fact in facts
+        if fact.get("kind") == "audit_conflict"
+    }
+    positive = {
+        str(fact["fact_hash"])
+        for fact in facts
+        if fact.get("polarity") == "positive"
+    }
+    negative = {
+        str(fact["fact_hash"])
+        for fact in facts
+        if fact.get("polarity") == "negative"
+    }
+    if adjudication == "covered":
+        required = audits | negative
+    elif adjudication == "excluded_non_normative":
+        required = audits | positive
+    elif adjudication == "reopen":
+        required = audits | positive | negative
+    else:
+        raise ValueError("unsupported claim adjudication")
+    if positive and negative and adjudication != "reopen":
+        required |= positive | negative
+    return sorted(required)
 
 
 def claim_base_resolution_fact_hashes(
@@ -1654,11 +1721,16 @@ def _apply_expert_overlay(
         base_facts = _base_resolution_fact_hashes(
             claim, result, adjusted_groups
         )
+        structural_facts = sorted(
+            _base_resolution_facts(claim, result, adjusted_groups),
+            key=lambda fact: fact["fact_hash"],
+        )
         return result, base_valid_group_ids, {
             "base_fact_hashes": {
                 key: sorted(value) for key, value in base_facts.items()
             },
             "superseded_base_fact_hashes": [],
+            "active_resolution_facts": structural_facts,
             "events": diagnostics,
             "forced_invalid_group_reasons": {},
         }
@@ -1845,6 +1917,35 @@ def _apply_expert_overlay(
             list(result.get("invalid_reasons") or [])
             + ["expert_evidence_stale"]
         ))
+    active_facts: list[dict[str, str]] = [
+        fact
+        for fact in _base_resolution_facts(claim, result, adjusted_groups)
+        if fact["fact_hash"] not in superseded
+    ]
+    active_facts.extend(
+        {
+            "fact_hash": str(event.get("event_hash") or ""),
+            "kind": "expert_adjudication",
+            "polarity": (
+                "positive"
+                if str(event.get("adjudication") or "") == "covered"
+                else "negative"
+            ),
+        }
+        for event, _state in active_experts
+    )
+    active_facts.extend(
+        {
+            "fact_hash": str(event.get("event_hash") or ""),
+            "kind": "audit_conflict",
+            "polarity": "negative",
+        }
+        for event in active_audits
+    )
+    active_facts = sorted(
+        (fact for fact in active_facts if fact["fact_hash"]),
+        key=lambda fact: fact["fact_hash"],
+    )
     return result, valid_group_ids, {
         "base_fact_hashes": {
             key: sorted(value) for key, value in base_facts.items()
@@ -1854,6 +1955,7 @@ def _apply_expert_overlay(
                 base_facts["positive"] | base_facts["negative"]
             )
         ),
+        "active_resolution_facts": active_facts,
         "events": diagnostics,
         "forced_invalid_group_reasons": forced_invalid_group_reasons,
     }
@@ -1962,52 +2064,39 @@ def apply_claim_adjudication(
             ),
             all_groups=adjusted_groups,
         )
-        base_facts = _base_resolution_fact_hashes(
-            claim,
-            reduced,
-            adjusted_groups,
-        )
         event_snapshot = _scan_event_log_unlocked(root, repair=True)
-        known_fact_hashes = set(base_facts["positive"] | base_facts["negative"])
-        known_fact_hashes.update(
-            str(event.get("event_hash") or "")
-            for event in _relevant_events(event_snapshot.rows, base_row)
-            if event.get("event_kind") in {
-                "expert_adjudication", "audit_conflict",
-            }
+        relevant = _relevant_events(event_snapshot.rows, base_row)
+        _overlay_result, _overlay_valid_ids, overlay = _apply_expert_overlay(
+            claim=claim,
+            reduced=reduced,
+            groups=groups,
+            adjusted_groups=adjusted_groups,
+            records_by_id=records_by_id,
+            relevant_events=relevant,
         )
-        unknown_superseded = set(supersedes) - known_fact_hashes
-        if unknown_superseded:
-            raise ClaimReviewActionError(
-                "supersedes_fact_hashes contains a non-current fact"
+        # The server recomputes the required supersedes set under the lock:
+        # a missing active fact, an inactive/history hash, or a changed
+        # revision is a conflict (409), never a silent partial supersession.
+        active_facts = list(overlay.get("active_resolution_facts") or [])
+        required = set(
+            claim_required_supersedes_fact_hashes(adjudication, active_facts)
+        )
+        superseded_set = set(supersedes)
+        missing = required - superseded_set
+        if missing:
+            raise ClaimAdjudicationCasMismatch(
+                "supersedes_fact_hashes is missing an active fact: "
+                + ", ".join(sorted(missing))
+            )
+        active_hashes = {str(fact["fact_hash"]) for fact in active_facts}
+        stale_superseded = superseded_set - active_hashes
+        if stale_superseded:
+            raise ClaimAdjudicationCasMismatch(
+                "supersedes_fact_hashes contains an inactive or historical fact: "
+                + ", ".join(sorted(stale_superseded))
             )
         if adjudication == "reopen" and not supersedes:
             raise ClaimReviewActionError("reopen must supersede a concrete fact")
-        conflict_facts = set(base_facts["positive"] | base_facts["negative"])
-        if (
-            base_facts["positive"]
-            and base_facts["negative"]
-            and not conflict_facts.issubset(set(supersedes))
-        ):
-            raise ClaimReviewActionError(
-                "conflicting base facts must all be explicitly superseded"
-            )
-        if (
-            reduced.get("resolution") == "covered"
-            and adjudication in {"excluded_non_normative", "reopen"}
-            and not set(supersedes).intersection(base_facts["positive"])
-        ):
-            raise ClaimReviewActionError(
-                "opposing adjudication must supersede the current coverage fact"
-            )
-        if (
-            reduced.get("resolution") == "excluded"
-            and adjudication in {"covered", "reopen"}
-            and not set(supersedes).intersection(base_facts["negative"])
-        ):
-            raise ClaimReviewActionError(
-                "opposing adjudication must supersede the current exclusion fact"
-            )
 
         request_key = str(request_idempotency_key or "")
         idempotency_key = hash_json(
@@ -2094,34 +2183,9 @@ def _relevant_events(
 
 
 def _effective_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    total = len(rows)
-    eligible = [row for row in rows if row.get("exclusion_kind") != "structural"]
-    covered = sum(row.get("resolution") == "covered" for row in rows)
-    semantic = sum(row.get("exclusion_kind") == "semantic" for row in rows)
-    structural = sum(row.get("exclusion_kind") == "structural" for row in rows)
-    uncertain = sum(row.get("resolution") == "uncertain" for row in rows)
+    from claim_effective_contract import compute_effective_metrics
 
-    def ratio(numerator: int, denominator: int) -> dict[str, Any]:
-        return {
-            "numerator": numerator,
-            "denominator": denominator,
-            "value": numerator / denominator if denominator else None,
-        }
-
-    return {
-        "catalog_total_count": total,
-        "eligible_claim_count": len(eligible),
-        "covered_count": covered,
-        "semantic_excluded_count": semantic,
-        "structural_excluded_count": structural,
-        "uncertain_count": uncertain,
-        "inventory_accounted_ratio": ratio(total, total),
-        "verified_coverage_ratio": ratio(covered, len(eligible)),
-        "verified_semantic_exclusion_ratio": ratio(semantic, len(eligible)),
-        "verified_exclusion_ratio": ratio(structural + semantic, total),
-        "eligible_resolution_ratio": ratio(covered + semantic, len(eligible)),
-        "structural_exclusion_ratio": ratio(structural, total),
-    }
+    return compute_effective_metrics(rows)
 
 
 def _build_effective_rows(
@@ -2130,12 +2194,15 @@ def _build_effective_rows(
     event_rows: list[dict[str, Any]],
     old_effective_by_claim: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    # Kept in the signature for compatibility with callers migrating from the
+    # transition-based implementation.  Current rows are derived exclusively
+    # from committed base facts, the event prefix and authority projection.
+    del old_effective_by_claim
     catalog_by_claim = {
         str(row.get("claim_id") or ""): row for row in base["catalog"]
     }
     groups_by_claim = _groups_by_claim(base)
     records_by_id = _records_by_target_id(authority)
-    adapter_versions = effective_review_adapter_versions()
     rows: list[dict[str, Any]] = []
     for base_row in base["ledger"]:
         claim_id = str(base_row.get("claim_id") or "")
@@ -2249,32 +2316,54 @@ def _build_effective_rows(
                 for group_id, reason in invalid_group_reasons.items()
                 if group_id not in set(valid_group_ids)
             }
-        previous = old_effective_by_claim.get(claim_id) or {}
-        previous_invalid = set(
-            dict(previous.get("effective_facts") or {}).get(
-                "invalid_group_reasons", {}
+        reactivated_target_keys = {
+            (
+                str(event.get("target_kind") or ""),
+                str(event.get("target_requirement_id") or ""),
+                canonical_target_fingerprint(event.get("target_fingerprint")),
             )
-        )
-        reused = sorted(previous_invalid.intersection(valid_group_ids))
+            for event in relevant
+            if event.get("event_kind") == "target_reactivated"
+        }
+        reused = sorted({
+            str(group.get("coverage_group_id") or "")
+            for group in groups_by_claim.get(claim_id, [])
+            if str(group.get("coverage_group_id") or "") in set(valid_group_ids)
+            and any(
+                (
+                    str(edge.get("target_kind") or ""),
+                    str(edge.get("target_requirement_id") or ""),
+                    canonical_target_fingerprint(edge.get("target_fingerprint")),
+                ) in reactivated_target_keys
+                for edge in group.get("edges") or []
+            )
+        } - {""})
         base_row_hash = hash_json("claim-base-row/v1", base_row)
         linked_target_rows = [linked_targets[key] for key in sorted(linked_targets)]
-        claim_revision = hash_json(
-            "claim-effective-revision/v1",
-            {
-                "base_claim_row_hash": base_row_hash,
-                "ordered_relevant_event_hashes": [
-                    row["event_hash"] for row in relevant
-                ],
-                "linked_targets": linked_target_rows,
-                "expert_overlay": expert_overlay,
-                "effective_ledger_schema": CLAIM_EFFECTIVE_LEDGER_SCHEMA,
-                "reducer_version": CLAIM_EFFECTIVE_REDUCER_VERSION,
-                "bridge_version": CLAIM_REVIEW_BRIDGE_VERSION,
-                "review_adapter_versions": adapter_versions,
+        effective_facts = {
+            "valid_group_ids": sorted(valid_group_ids),
+            "invalid_group_reasons": {
+                key: invalid_group_reasons[key]
+                for key in sorted(invalid_group_reasons)
             },
+            "validated_negative_id": semantic_negative_id(
+                reduced.get("semantic_negative")
+            ),
+            "invalidated_targets": [
+                invalidated_targets[key] for key in sorted(invalidated_targets)
+            ],
+            "reused_validation_group_ids": reused,
+            "superseded_base_fact_hashes": list(
+                expert_overlay.get("superseded_base_fact_hashes") or []
+            ),
+            "active_resolution_facts": list(
+                expert_overlay.get("active_resolution_facts") or []
+            ),
+        }
+        last_relevant_event_seq = (
+            int(relevant[-1]["event_seq"]) if relevant else 0
         )
-        rows.append({
-            **base_row,
+        effective_state = {
             **{
                 field: reduced[field]
                 for field in (
@@ -2285,34 +2374,44 @@ def _build_effective_rows(
                     "invalid_reasons",
                 )
             },
+            "semantic_negative": reduced.get("semantic_negative"),
+            "effective_facts": effective_facts,
+            "last_relevant_event_seq": last_relevant_event_seq,
+        }
+        from claim_effective_contract import (
+            build_claim_revision_inputs,
+            compute_claim_effective_revision,
+        )
+
+        revision_inputs = build_claim_revision_inputs(
+            base_claim_row_hash=base_row_hash,
+            ordered_relevant_event_hashes=[
+                str(row["event_hash"]) for row in relevant
+            ],
+            linked_targets=linked_target_rows,
+            expert_overlay=dict(expert_overlay),
+            effective_state=effective_state,
+        )
+        claim_revision = compute_claim_effective_revision(revision_inputs)
+        rows.append({
+            **base_row,
+            **effective_state,
             "schema": CLAIM_EFFECTIVE_LEDGER_SCHEMA,
             "base_ledger_schema": base_row["schema"],
-            "semantic_negative": reduced.get("semantic_negative"),
             "base_claim_row_hash": base_row_hash,
             "claim_effective_revision": claim_revision,
-            "effective_facts": {
-                "valid_group_ids": sorted(valid_group_ids),
-                "invalid_group_reasons": {
-                    key: invalid_group_reasons[key]
-                    for key in sorted(invalid_group_reasons)
-                },
-                "validated_negative_id": semantic_negative_id(
-                    reduced.get("semantic_negative")
-                ),
-                "invalidated_targets": [
-                    invalidated_targets[key]
-                    for key in sorted(invalidated_targets)
-                ],
-                "reused_validation_group_ids": reused,
-                "superseded_base_fact_hashes": list(
-                    expert_overlay.get("superseded_base_fact_hashes") or []
-                ),
-            },
-            "last_relevant_event_seq": (
-                int(relevant[-1]["event_seq"]) if relevant else 0
-            ),
+            "revision_inputs": revision_inputs,
         })
     return rows
+
+
+def derive_authoritative_effective_rows(
+    base: dict[str, Any],
+    authority: dict[str, Any],
+    event_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Pure current-row reduction shared by fold, publish and read validation."""
+    return _build_effective_rows(base, authority, event_rows, {})
 
 
 def _build_queue(
@@ -2498,6 +2597,22 @@ def read_effective_health(out_dir: Path | str) -> dict[str, Any]:
             value.setdefault("legacy_authority_write_gap_count", 0)
             value.setdefault("legacy_authority_write_gaps", [])
             value.setdefault("effective_snapshot_migrations", [])
+            for migration in value["effective_snapshot_migrations"]:
+                if isinstance(migration, dict) and not migration.get("migration_id"):
+                    migration["migration_id"] = hash_json(
+                        "claim-effective-migration/v1",
+                        {
+                            "base_generation_id": migration.get(
+                                "base_generation_id"
+                            ),
+                            "source_effective_snapshot_version": migration.get(
+                                "source_effective_snapshot_version"
+                            ),
+                            "target_effective_snapshot_version": migration.get(
+                                "target_effective_snapshot_version"
+                            ),
+                        },
+                    )
         _validate_schema(
             value,
             "claim_effective_health.schema.json",
@@ -2508,40 +2623,46 @@ def read_effective_health(out_dir: Path | str) -> dict[str, Any]:
     return value
 
 
-def _record_effective_snapshot_migration(
+def _reconcile_migration_health_from_meta(
     health: dict[str, Any],
-    *,
-    source_version: str,
     effective_meta: dict[str, Any],
-    base_generation_id: str,
+    *,
     actor_trigger: str,
-) -> None:
-    if source_version != LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
-        return
+) -> bool:
+    """Idempotently backfill the migration record from committed meta.
+
+    The migration identity lives in the effective meta (committed atomically
+    with the snapshot), so a crash between commit and the health write is
+    healed by the next fold rather than lost.
+    """
+    migrated_from = str(effective_meta.get("migrated_from_version") or "")
+    migration_id = str(effective_meta.get("migration_id") or "")
+    if not migrated_from or not migration_id:
+        return False
     record = {
-        "base_generation_id": base_generation_id,
-        "source_effective_snapshot_version": source_version,
+        "migration_id": migration_id,
+        "base_generation_id": str(effective_meta.get("base_generation_id") or ""),
+        "source_effective_snapshot_version": migrated_from,
         "target_effective_snapshot_version": CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
-        "effective_run_id": str(effective_meta["run_id"]),
-        "migrated_at": str(effective_meta["committed_at"]),
+        "effective_run_id": str(effective_meta.get("run_id") or ""),
+        "migrated_at": str(effective_meta.get("committed_at") or ""),
         "actor_trigger": actor_trigger,
     }
-    migration_key = (
-        record["base_generation_id"],
-        record["source_effective_snapshot_version"],
-        record["target_effective_snapshot_version"],
-    )
     migrations = list(health.get("effective_snapshot_migrations") or [])
-    if not any(
-        (
-            item.get("base_generation_id"),
-            item.get("source_effective_snapshot_version"),
-            item.get("target_effective_snapshot_version"),
-        ) == migration_key
-        for item in migrations
-    ):
-        migrations.append(record)
+    for item in migrations:
+        if migration_id and item.get("migration_id") == migration_id:
+            return False
+        if (
+            item.get("base_generation_id") == record["base_generation_id"]
+            and item.get("source_effective_snapshot_version")
+            == record["source_effective_snapshot_version"]
+            and item.get("target_effective_snapshot_version")
+            == record["target_effective_snapshot_version"]
+        ):
+            return False
+    migrations.append(record)
     health["effective_snapshot_migrations"] = migrations
+    return True
 
 
 def assess_effective_freshness(
@@ -2694,24 +2815,17 @@ def _document_effective_revision(
     event_prefix_sha256: str,
     target_set_hash: str,
     requirement_review_state_hash: str,
+    authority_projection_hash: str,
 ) -> str:
-    return hash_json(
-        "claim-document-effective-revision/v1",
-        {
-            "base_generation_id": base_generation_id,
-            "last_event_seq": last_event_seq,
-            "event_prefix_sha256": event_prefix_sha256,
-            "target_set_hash": target_set_hash,
-            "requirement_review_state_hash": requirement_review_state_hash,
-            "effective_ledger_schema": CLAIM_EFFECTIVE_LEDGER_SCHEMA,
-            "effective_snapshot_version": CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
-            "effective_artifact_version": (
-                CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION
-            ),
-            "reducer_version": CLAIM_EFFECTIVE_REDUCER_VERSION,
-            "bridge_version": CLAIM_REVIEW_BRIDGE_VERSION,
-            "queue_version": CLAIM_QUEUE_VERSION,
-        },
+    from claim_effective_contract import compute_document_effective_revision
+
+    return compute_document_effective_revision(
+        base_generation_id=base_generation_id,
+        last_event_seq=last_event_seq,
+        event_prefix_sha256=event_prefix_sha256,
+        target_set_hash=target_set_hash,
+        requirement_review_state_hash=requirement_review_state_hash,
+        authority_projection_hash=authority_projection_hash,
     )
 
 
@@ -2726,6 +2840,8 @@ def _effective_snapshot_matches_candidate(
     authority: dict[str, Any],
     effective_metrics: dict[str, Any],
 ) -> bool:
+    from claim_effective_contract import compute_effective_authority_projection_hash
+
     if not effective_versions_are_current(committed):
         return False
     if committed.get("effective_ledger") != effective_rows:
@@ -2742,6 +2858,9 @@ def _effective_snapshot_matches_candidate(
         "requirement_review_state_hash": authority[
             "requirement_review_state_hash"
         ],
+        "authority_projection_hash": compute_effective_authority_projection_hash(
+            effective_rows
+        ),
         "effective_ledger_schema": CLAIM_EFFECTIVE_LEDGER_SCHEMA,
         "review_adapter_versions": effective_review_adapter_versions(),
         "reducer_version": CLAIM_EFFECTIVE_REDUCER_VERSION,
@@ -2777,6 +2896,21 @@ def fold_effective_ledger(
                     root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
                 ).is_file()
                 base = load_committed_claim_base(root)
+                from claim_artifacts import committed_base_versions_are_current
+
+                if not committed_base_versions_are_current(
+                    base,
+                    require_environment_match=False,
+                ):
+                    return {
+                        "ok": False,
+                        "error": "base_migration_required",
+                        "reason": "base_migration_required",
+                        "publication_skipped": True,
+                        "actor_trigger": actor_trigger,
+                        "attempt": attempt,
+                        "event_append_count": 0,
+                    }
                 if (
                     interrupted_effective_publication
                     and not interrupted_recovery_recorded
@@ -2821,37 +2955,61 @@ def fold_effective_ledger(
                             "reason": "authority_hook_declaration_mismatch",
                             "event_append_count": 0,
                         }
-                committed = load_committed_shadow(root)
-                source_effective_version = str(
-                    dict(committed.get("effective_meta") or {}).get(
-                        "effective_snapshot_version"
-                    ) or ""
+                refold_seed = load_committed_effective_refold_seed(root)
+                source_effective_meta = dict(
+                    refold_seed["source_effective_meta"]
                 )
-                old_effective_by_claim = {
-                    str(row.get("claim_id") or ""): row
-                    for row in committed.get("effective_ledger") or []
-                }
+                committed = refold_seed.get("trusted_current_snapshot")
+                source_effective_version = str(
+                    source_effective_meta.get("effective_snapshot_version") or ""
+                )
+                migration_health = read_effective_health(root)
+                if _reconcile_migration_health_from_meta(
+                    migration_health,
+                    source_effective_meta,
+                    actor_trigger=actor_trigger,
+                ):
+                    # The source meta can be replaced later in this fold. Make
+                    # its committed migration durable before that overwrite.
+                    _write_effective_health(root, migration_health)
                 authority = _load_declared_authority(root, generation)
                 authority_identity = _authority_cas_identity(authority)
+                pre_reconcile_events = _scan_event_log_unlocked(
+                    root,
+                    repair=False,
+                )
+                pre_reconcile_rows = derive_authoritative_effective_rows(
+                    base,
+                    authority,
+                    pre_reconcile_events.rows,
+                )
+                effective_by_claim = {
+                    str(row.get("claim_id") or ""): row
+                    for row in pre_reconcile_rows
+                }
                 try:
                     reconcile = reconcile_claim_review_events(
                         root,
                         base=base,
                         authority=authority,
-                        effective_by_claim=old_effective_by_claim,
+                        effective_by_claim=effective_by_claim,
                     )
                 except ClaimProjectionCasMismatch as exc:
                     last_cas_error = exc
                     continue
                 event_snapshot = _scan_event_log_unlocked(root, repair=False)
-                effective_rows = _build_effective_rows(
-                    base,
-                    authority,
-                    event_snapshot.rows,
-                    old_effective_by_claim,
+                effective_rows = derive_authoritative_effective_rows(
+                    base, authority, event_snapshot.rows
                 )
                 queue = _build_queue(root, base, effective_rows, authority)
                 effective_metrics = _effective_metrics(effective_rows)
+                from claim_effective_contract import (
+                    compute_effective_authority_projection_hash,
+                )
+
+                authority_projection_hash = (
+                    compute_effective_authority_projection_hash(effective_rows)
+                )
                 document_revision = _document_effective_revision(
                     base_generation_id=claim_base_generation_id(generation),
                     last_event_seq=event_snapshot.last_event_seq,
@@ -2860,6 +3018,7 @@ def fold_effective_ledger(
                     requirement_review_state_hash=authority[
                         "requirement_review_state_hash"
                     ],
+                    authority_projection_hash=authority_projection_hash,
                 )
                 confirmed = _load_declared_authority(root, generation)
                 if _authority_cas_identity(confirmed) != authority_identity:
@@ -2867,7 +3026,7 @@ def fold_effective_ledger(
                         f"authority changed during effective fold attempt {attempt}"
                     )
                     continue
-                if _effective_snapshot_matches_candidate(
+                if committed is not None and _effective_snapshot_matches_candidate(
                     committed,
                     effective_rows,
                     queue,
@@ -2878,7 +3037,16 @@ def fold_effective_ledger(
                     effective_metrics=effective_metrics,
                 ):
                     health = read_effective_health(root)
-                    if int(health["bridge_fold_lag"]) or interrupted_recovery_recorded:
+                    migration_backfilled = _reconcile_migration_health_from_meta(
+                        health,
+                        dict(committed["effective_meta"]),
+                        actor_trigger=actor_trigger,
+                    )
+                    if (
+                        migration_backfilled
+                        or int(health["bridge_fold_lag"])
+                        or interrupted_recovery_recorded
+                    ):
                         health.update({
                             "bridge_fold_lag": 0,
                             "authority_cas_gap": False,
@@ -2897,6 +3065,25 @@ def fold_effective_ledger(
                         "event_append_count": reconcile["appended_count"],
                         "health": health,
                     }
+                migrating_from = (
+                    source_effective_version
+                    if source_effective_version != CLAIM_EFFECTIVE_SNAPSHOT_VERSION
+                    else None
+                )
+                migration_id = (
+                    hash_json(
+                        "claim-effective-migration/v1",
+                        {
+                            "base_generation_id": claim_base_generation_id(generation),
+                            "source_effective_snapshot_version": migrating_from,
+                            "target_effective_snapshot_version": (
+                                CLAIM_EFFECTIVE_SNAPSHOT_VERSION
+                            ),
+                        },
+                    )
+                    if migrating_from
+                    else None
+                )
                 meta = publish_effective_snapshot(
                     root,
                     effective_rows,
@@ -2913,6 +3100,7 @@ def fold_effective_ledger(
                         "requirement_review_state_hash": authority[
                             "requirement_review_state_hash"
                         ],
+                        "authority_projection_hash": authority_projection_hash,
                         "effective_ledger_schema": CLAIM_EFFECTIVE_LEDGER_SCHEMA,
                         "review_adapter_versions": (
                             effective_review_adapter_versions()
@@ -2921,14 +3109,14 @@ def fold_effective_ledger(
                         "bridge_version": CLAIM_REVIEW_BRIDGE_VERSION,
                         "queue_version": CLAIM_QUEUE_VERSION,
                         "effective_metrics": effective_metrics,
+                        "migrated_from_version": migrating_from,
+                        "migration_id": migration_id,
                     },
                 )
                 health = read_effective_health(root)
-                _record_effective_snapshot_migration(
+                _reconcile_migration_health_from_meta(
                     health,
-                    source_version=source_effective_version,
-                    effective_meta=meta,
-                    base_generation_id=claim_base_generation_id(generation),
+                    meta,
                     actor_trigger=actor_trigger,
                 )
                 review_snapshot = dict(authority["review_snapshot"])

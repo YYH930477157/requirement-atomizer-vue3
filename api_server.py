@@ -280,6 +280,20 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 offset = parse_claim_page_value(
                     one(params, "offset"), name="offset", default=0
                 )
+                compat_limit = (
+                    parse_claim_page_value(
+                        one(params, "compat_limit"),
+                        name="compat_limit",
+                        default=100,
+                    )
+                    if one(params, "compat_limit")
+                    else None
+                )
+                compat_offset = parse_claim_page_value(
+                    one(params, "compat_offset"),
+                    name="compat_offset",
+                    default=0,
+                )
             except ValueError as exc:
                 self.send_json({"error": str(exc), "retryable": False}, status=400)
                 return
@@ -292,6 +306,8 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                     claim_id=one(params, "claim_id"),
                     limit=limit,
                     offset=offset,
+                    compat_limit=compat_limit,
+                    compat_offset=compat_offset,
                 )
             except ClaimViewMigrationRequired as exc:
                 self.send_json({
@@ -354,6 +370,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/claim-structural-overrides":
             self.handle_claim_structural_override()
+            return
+        if parsed.path == "/claim-maintenance":
+            self.handle_claim_maintenance()
             return
         if parsed.path in ("/spot-extract", "/api/spot-extract"):
             # 点解析（WP-B）：/spot-extract 为现有无前缀约定的正规路径，
@@ -877,6 +896,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 ClaimQueueExecutionUnprocessable,
                 execute_claim_queue_proposal,
             )
+            from omission_actions import OmissionConflictError
 
             result = execute_claim_queue_proposal(
                 self.output_dir,
@@ -899,6 +919,12 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 request_idempotency_key=str(
                     payload.get("request_idempotency_key") or ""
                 ).strip(),
+                expected_route_config_revision=(
+                    str(
+                        payload.get("expected_route_config_revision") or ""
+                    ).strip()
+                    or None
+                ),
             )
         except ClaimQueueExecutionConflict as exc:
             self.send_json({
@@ -919,6 +945,15 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 "retryable": True,
                 **exc.result,
             }, status=503)
+            return
+        except OmissionConflictError as exc:
+            # An omission CAS race is a conflict, never a malformed request:
+            # it must not fall through to the ValueError -> 400 mapping.
+            self.send_json({
+                "error": str(exc),
+                "needs_reconfirmation": True,
+                "retryable": True,
+            }, status=409)
             return
         except (TypeError, ValueError) as exc:
             self.send_json({"error": str(exc), "retryable": False}, status=400)
@@ -963,6 +998,12 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 verifier_max_total_tokens=payload.get(
                     "verifier_max_total_tokens", -1
                 ),
+                operation_id=(
+                    str(payload.get("operation_id") or "").strip() or None
+                ),
+                reconfirm_paid_work=payload.get(
+                    "reconfirm_paid_work", False,
+                ),
             )
         except ClaimStructuralOverrideStale as exc:
             self.send_json({
@@ -979,6 +1020,23 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if not result.get("ok") and result.get("status") == "rebuild_pending":
             self.send_json(result, status=503)
+            return
+        if not result.get("ok") and result.get("status") == "needs_reconfirmation":
+            self.send_json(result, status=409)
+            return
+        self.send_json(result)
+
+    def handle_claim_maintenance(self) -> None:
+        try:
+            result = run_claim_startup_maintenance(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        except Exception as exc:
+            self.send_json({
+                "error": f"claim maintenance failed: {exc}",
+                "retryable": True,
+            }, status=503)
             return
         self.send_json(result)
 
@@ -2051,7 +2109,12 @@ def run_claim_startup_maintenance(out_dir: Path) -> dict:
         ClaimArtifactError,
         load_committed_effective_snapshot_readonly,
     )
+    from claim_reextract_attempts import recover_interrupted_attempts
     from claim_review_actions import assess_effective_freshness, fold_effective_ledger
+
+    # Attempt recovery is a write-side duty of startup/explicit maintenance
+    # and queue execute; GET handlers stay read-only.
+    recover_interrupted_attempts(root)
 
     try:
         snapshot = load_committed_effective_snapshot_readonly(root)

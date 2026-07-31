@@ -531,7 +531,8 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     # ——section/unit 文本与 source_blocks 结构变,旧 ai-extract 缓存失效重抽
     "ai-extract": "v5",
     "assemble": "v2",
-    "functional-synthesis": "v3",
+    # v4: consumes is_compliance_requirement; compliance-rules v2 invalidates old caches.
+    "functional-synthesis": "v4",
     # v6：hardware_dependency 落交付物渲染（xlsx 说明列/co_design_items.md）——
     # 纯渲染变更不动 analyze 缓存版本，靠 impl 戳让阶段重跑重渲染（审计 P1-b）
     "requirements-analysis": "v6",
@@ -580,10 +581,11 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 AI_VERIFY_PROMPT_VERSION,
                 EXTRACT_GUARDS_VERSION,
             )
+            from compliance import COMPLIANCE_SCHEMA
             from merged_consistency import MERGED_CONSISTENCY_VERSION
             producer = (f"{AI_EXTRACT_PROMPT_VERSION}+{EXTRACT_GUARDS_VERSION}"
                         f"+{AI_VERIFY_PROMPT_VERSION}+{AI_NORMATIVE_FRAMING_VERSION}"
-                        f"+{MERGED_CONSISTENCY_VERSION}")
+                        f"+{MERGED_CONSISTENCY_VERSION}+{COMPLIANCE_SCHEMA}")
         elif stage == "atomize":
             # PDF text repair changes blocks consumed by every downstream stage. Include both
             # the algorithm version and the bundled vocabulary content in the producer so a
@@ -620,7 +622,11 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                         f"+{ENRICH_GUARDS_VERSION}")
         elif stage == "requirements-analysis":
             from requirements_analysis import ANALYZE_PROMPT_VERSION, UNFOUNDED_RULE_VERSION
-            producer = f"{ANALYZE_PROMPT_VERSION}+{UNFOUNDED_RULE_VERSION}"
+            from requirements_analysis_rules import ANALYZE_RULES_VERSION
+            producer = (
+                f"{ANALYZE_PROMPT_VERSION}+{UNFOUNDED_RULE_VERSION}"
+                f"+{ANALYZE_RULES_VERSION}"
+            )
         elif stage == "functional-synthesis":
             producer = FUNCTIONAL_SYNTHESIS_VERSION
         elif stage == "export-annotation-html":
