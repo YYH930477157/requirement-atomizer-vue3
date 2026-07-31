@@ -385,7 +385,14 @@ async function confirmStructuralOverride(): Promise<void> {
     || !catalog.value?.catalog_generation_id
     || !reason
     || !structuralVerifierBudgetValid.value
-  ) return
+    || detailsStale.value
+    || detailLoading.value
+  ) {
+    if (detailsStale.value || detailLoading.value) {
+      message.value = "账本版本正在切换，详情重载完成前禁止结构复核"
+    }
+    return
+  }
   const pendingOperation = row.pending_structural_operation || null
   const allowLlm = pendingOperation
     ? pendingOperation.allow_llm
@@ -501,7 +508,9 @@ async function loadOverview(allowRetry = true): Promise<boolean> {
         detailGroups.value = []
         detailEvents.value = []
         detailsStale.value = true
-        if (!detailRefreshCycle) void loadDetails(refreshed.claim_id, false)
+        if (!detailRefreshCycle) {
+          void loadDetails(refreshed.claim_id, DETAIL_REFRESH_BUDGET)
+        }
       }
     }
     if (!nextMetrics.effective_fresh) message.value = "账本待刷新：当前显示的是最近一次已提交快照"
@@ -594,50 +603,58 @@ async function openDetails(row: ClaimCatalogViewRow) {
   detailGroups.value = []
   detailEvents.value = []
   detailsStale.value = true
-  await loadDetails(row.claim_id, true)
+  await loadDetails(row.claim_id, DETAIL_REFRESH_BUDGET)
 }
 
-async function loadDetails(claimId: string, allowRefresh: boolean): Promise<void> {
+const DETAIL_REFRESH_BUDGET = 2
+
+async function loadDetails(claimId: string, refreshBudget: number): Promise<void> {
   const client = props.client
   if (!client || !revisionPin.value) return
-  const expectedRevision = revisionPin.value
-  const generation = ++detailGeneration
-  detailLoading.value = true
-  try {
-    const [groups, events] = await Promise.all([
-      fetchGroupPages(claimId, expectedRevision, generation),
-      fetchEventPages(claimId, expectedRevision, generation),
-    ])
-    if (generation !== detailGeneration || client !== props.client) return
-    const revisionMatches = groups !== null && events !== null
-      && revisionPin.value === expectedRevision
-    if (!revisionMatches) {
+  const maxAttempts = 1 + Math.max(0, Math.min(refreshBudget, DETAIL_REFRESH_BUDGET))
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const expectedRevision = revisionPin.value
+    const generation = ++detailGeneration
+    detailLoading.value = true
+    try {
+      const [groups, events] = await Promise.all([
+        fetchGroupPages(claimId, expectedRevision, generation),
+        fetchEventPages(claimId, expectedRevision, generation),
+      ])
+      if (generation !== detailGeneration || client !== props.client) return
+      const revisionMatches = groups !== null && events !== null
+        && revisionPin.value === expectedRevision
+      if (revisionMatches) {
+        detailGroups.value = groups
+        detailEvents.value = events
+        detailsStale.value = false
+        return
+      }
       detailGroups.value = []
       detailEvents.value = []
       message.value = "详情与主列表版本不同，异代响应已丢弃"
-      if (allowRefresh) {
-        detailRefreshCycle = true
-        try {
-          const refreshed = await loadOverview(false)
-          if (refreshed && selectedClaim.value?.claim_id === claimId) {
-            await loadDetails(claimId, false)
-          }
-        } finally {
-          detailRefreshCycle = false
-        }
+      if (attempt >= maxAttempts) break
+      // Details saw a newer revision: refresh the overview once and retry within the
+      // bounded budget. detailRefreshCycle keeps loadOverview's own stale-reload hook
+      // (the L504 passive reload) from re-entering loadDetails while we drive convergence.
+      detailRefreshCycle = true
+      try {
+        const refreshed = await loadOverview(false)
+        if (!refreshed || selectedClaim.value?.claim_id !== claimId) return
+      } finally {
+        detailRefreshCycle = false
+      }
+    } catch (error) {
+      if (generation === detailGeneration) {
+        message.value = error instanceof Error ? error.message : "Claim 详情加载失败"
       }
       return
+    } finally {
+      if (generation === detailGeneration) detailLoading.value = false
     }
-    detailGroups.value = groups
-    detailEvents.value = events
-    detailsStale.value = false
-  } catch (error) {
-    if (generation === detailGeneration) {
-      message.value = error instanceof Error ? error.message : "Claim 详情加载失败"
-    }
-  } finally {
-    if (generation === detailGeneration) detailLoading.value = false
   }
+  // Persistent drift exhausted the bounded budget: stay stale, no further recursion.
+  detailsStale.value = true
 }
 
 function closeDetails() {

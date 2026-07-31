@@ -2164,6 +2164,23 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
                 claim_artifacts.read_claim_verifier_attempts(root)
             self.assertIn("attempt event hash", str(raised.exception))
 
+    def test_torn_verifier_attempt_tail_fails_closed_after_retry_window(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            attempts = root / claim_artifacts.CLAIM_VERIFIER_ATTEMPTS
+            # Append a real partial final line (no terminating newline) — a suspected
+            # torn tail. With the retry window pinned to zero the read must fail closed
+            # with the dedicated torn-tail error, not a generic artifact error.
+            attempts.write_bytes(attempts.read_bytes() + b'\n{"partial')
+            with patch.dict(os.environ, {"RATOMIZER_ATTEMPT_LOG_TORN_RETRIES": "0"}):
+                with self.assertRaises(claim_artifacts.ClaimAttemptLogTornTail) as raised:
+                    claim_artifacts.read_claim_verifier_attempts(root)
+            self.assertIn("torn tail", str(raised.exception))
+
     def test_failed_scope_records_budget_calls_and_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -183,9 +183,10 @@ def read_attempt_log_stable(
 ) -> AttemptLogSnapshot:
     """Double-read stable snapshot for lock-free readers (GET paths).
 
-    A concurrent append can make a single read observe a torn tail.  Re-read
-    and retry while the bytes keep changing; a byte-identical failure across
-    two reads is permanent corruption and stays fail-closed.
+    A concurrent append can make a read observe a torn tail. Invalid bytes are
+    retried for the complete bounded window: a slow writer may legitimately
+    expose the same partial bytes more than once. Valid bytes still require a
+    stable second read unless they appear on the final attempt.
     """
     import time
 
@@ -193,17 +194,25 @@ def read_attempt_log_stable(
     path = root / CLAIM_REEXTRACT_ATTEMPTS
     if not path.is_file():
         return AttemptLogSnapshot([], b"", _EMPTY_SHA256, 0, _EMPTY_SHA256, frozenset())
-    previous_raw: bytes | None = None
-    for _ in range(max(2, int(max_attempts))):
+    attempts = max(2, int(max_attempts))
+    previous_valid_raw: bytes | None = None
+    last_error: ClaimReextractAttemptError | None = None
+    for attempt in range(attempts):
         raw = path.read_bytes()
-        if previous_raw is None or raw != previous_raw:
-            previous_raw = raw
+        try:
+            snapshot = _scan_bytes(raw)
+        except ClaimReextractAttemptError as exc:
+            last_error = exc
+            previous_valid_raw = None
+        else:
+            if previous_valid_raw == raw or attempt == attempts - 1:
+                return snapshot
+            previous_valid_raw = raw
+            last_error = None
+        if attempt < attempts - 1:
             time.sleep(delay_seconds)
-            continue
-        # Only return (or classify corruption as permanent) after observing
-        # the exact same bytes twice. A valid first read may still race an
-        # append and therefore is not a stable snapshot on its own.
-        return _scan_bytes(raw)
+    if last_error is not None:
+        raise last_error
     raise ClaimReextractAttemptError(
         "claim re-extraction attempt log did not stabilize during read"
     )

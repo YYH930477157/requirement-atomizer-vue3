@@ -6,6 +6,7 @@ from typing import Any
 
 from claim_artifacts import (
     ClaimArtifactError,
+    claim_base_generation_id,
     claim_publication_lock,
     hash_json,
     load_committed_claim_base,
@@ -346,6 +347,15 @@ def _recover_published(
         )
 
     generation = dict(base.get("generation_meta") or {})
+    base_generation_id = claim_base_generation_id(generation)
+    append_events(root, [{
+        "operation_id": operation_id,
+        "event_kind": "base_rebuild_published",
+        "idempotency_key": overrides._event_key(
+            operation_id, "base_rebuild_published",
+        ),
+        "base_generation_id": base_generation_id,
+    }])
     preconditions = dict(request.get("preconditions") or {})
     if (
         generation.get("target_generation_id")
@@ -409,6 +419,58 @@ def _recover_published(
     return True
 
 
+def _terminalize_stale(
+    root: Path,
+    *,
+    operation_id: str,
+    state: dict[str, Any],
+    error: Exception,
+    append_events: Any,
+) -> None:
+    """Single terminalizer for every ClaimStructuralOverrideStale.
+
+    Pre-publication staleness closes as ``operation_aborted_stale``; once the
+    base is published (or folded) the operation closes as
+    ``operation_recovery_failed_post_publication`` with its last binding kept,
+    never disguised as an unpublished abort.
+    """
+    if state.get("closed"):
+        return
+    checkpoints = dict(state.get("checkpoints") or {})
+    effective_checkpoint = dict(checkpoints.get("effective_folded") or {})
+    base_checkpoint = dict(checkpoints.get("base_rebuild_published") or {})
+    if effective_checkpoint:
+        kind = "operation_recovery_failed_post_publication"
+        binding = dict(effective_checkpoint.get("binding") or {})
+    elif base_checkpoint:
+        kind = "operation_recovery_failed_post_publication"
+        binding = {
+            "base_generation_id": str(
+                base_checkpoint.get("base_generation_id") or ""
+            )
+        }
+    else:
+        kind = "operation_aborted_stale"
+        binding = {}
+    payload: dict[str, Any] = {
+        "operation_id": operation_id,
+        "event_kind": kind,
+        "idempotency_key": overrides._event_key(
+            operation_id, kind, str(error),
+        ),
+        "outcome": {
+            "code": "authority_changed",
+            "message": str(error)[:1000],
+            "retryable": False,
+            "needs_reconfirmation": True,
+        },
+        "usage": overrides._operation_usage(state),
+    }
+    if binding:
+        payload["binding"] = binding
+    append_events(root, [payload])
+
+
 def _settle_unknown_budget(snapshot: dict[str, Any]) -> dict[str, Any]:
     settled = dict(snapshot)
     reserved = int(settled.get("reserved_tokens") or 0)
@@ -432,12 +494,20 @@ def _settle_unknown_budget(snapshot: dict[str, Any]) -> dict[str, Any]:
 def _has_unconfirmed_paid_work(state: dict[str, Any]) -> bool:
     """Return whether a paid attempt lacks a decision or later confirmation."""
     checkpoints = dict(state.get("checkpoints") or {})
-    if "verifier_checkpoint" in checkpoints:
-        return False
     latest = dict(state.get("latest_budget") or {})
     attempted = int(latest.get("attempted_calls") or 0)
     if attempted <= 0:
         return False
+    checkpoint = checkpoints.get("verifier_checkpoint")
+    if isinstance(checkpoint, dict) and checkpoint:
+        # A decision checkpoint confirms work only when it binds the latest
+        # budget event; any checkpoint is not a blanket confirmation.
+        binding = dict(checkpoint.get("binding") or {})
+        bound_hash = str(binding.get("budget_event_hash") or "")
+        latest_budget_event_hash = str(
+            dict(state.get("latest_budget_event") or {}).get("event_hash") or ""
+        )
+        return not (bound_hash and bound_hash == latest_budget_event_hash)
     reconfirmed = state.get("last_reconfirmation")
     if not isinstance(reconfirmed, dict):
         return True
@@ -690,7 +760,10 @@ def confirm_structural_override(
                 if state["lifecycle"] == "succeeded":
                     overrides._load_verified_replay(root, state)
                     return response(ok=True, status="rebuilt", replay=True)
-                if state["lifecycle"] == "aborted_stale":
+                if state["lifecycle"] in {
+                    "aborted_stale",
+                    "recovery_failed_post_publication",
+                }:
                     raise overrides.ClaimStructuralOverrideStale(
                         "structural operation was aborted after its authority changed"
                     )
@@ -709,14 +782,27 @@ def confirm_structural_override(
                             claim_id=claim_id,
                             override_hash=str(binding["override_hash"]),
                         )
-                    except (ClaimArtifactError, OSError) as exc:
-                        raise overrides.ClaimStructuralOverrideStale(
-                            "folded structural operation lost its effective artifacts"
-                        ) from exc
+                    except overrides.ClaimStructuralOverrideStale as exc:
+                        _terminalize_stale(
+                            root,
+                            operation_id=operation_key,
+                            state=current_state(),
+                            error=exc,
+                            append_events=append_operation_events,
+                        )
+                        raise
                     if current_binding != binding:
-                        raise overrides.ClaimStructuralOverrideStale(
+                        stale = overrides.ClaimStructuralOverrideStale(
                             "folded structural operation no longer matches current artifacts"
                         )
+                        _terminalize_stale(
+                            root,
+                            operation_id=operation_key,
+                            state=current_state(),
+                            error=stale,
+                            append_events=append_operation_events,
+                        )
+                        raise stale
                     append_operation_events(root, [{
                         "operation_id": operation_key,
                         "event_kind": "operation_succeeded",
@@ -756,31 +842,34 @@ def confirm_structural_override(
                             resolved_route_config,
                         ) = overrides._resume_preflight(root, request, state)
                 except overrides.ClaimStructuralOverrideStale as exc:
-                    append_operation_events(root, [{
-                        "operation_id": operation_key,
-                        "event_kind": "operation_aborted_stale",
-                        "idempotency_key": overrides._event_key(
-                            operation_key, "operation_aborted_stale", str(exc),
-                        ),
-                        "outcome": {
-                            "code": "authority_changed",
-                            "message": str(exc)[:1000],
-                            "retryable": False,
-                            "needs_reconfirmation": True,
-                        },
-                        "usage": overrides._operation_usage(state),
-                    }])
+                    _terminalize_stale(
+                        root,
+                        operation_id=operation_key,
+                        state=current_state(),
+                        error=exc,
+                        append_events=append_operation_events,
+                    )
                     raise
 
-                _register_and_audit(
-                    root,
-                    operation_id=operation_key,
-                    request=request,
-                    snapshot=authority_snapshot,
-                    state=state,
-                    append_events=append_operation_events,
-                    current_state=current_state,
-                )
+                try:
+                    _register_and_audit(
+                        root,
+                        operation_id=operation_key,
+                        request=request,
+                        snapshot=authority_snapshot,
+                        state=state,
+                        append_events=append_operation_events,
+                        current_state=current_state,
+                    )
+                except overrides.ClaimStructuralOverrideStale as exc:
+                    _terminalize_stale(
+                        root,
+                        operation_id=operation_key,
+                        state=current_state(),
+                        error=exc,
+                        append_events=append_operation_events,
+                    )
+                    raise
                 state = current_state()
                 latest_budget = overrides._operation_usage(state)
                 verifier_checkpoint = dict(
@@ -906,11 +995,24 @@ def confirm_structural_override(
                 def persist_decision(shadow: dict[str, Any]) -> None:
                     latest = current_state()
                     current_budget = dict(latest.get("latest_budget") or {})
+                    # Persistence requires this round's attempted calls to have
+                    # grown, at least one new settled success, and no unsettled
+                    # reservation.  failed_calls stays honest bookkeeping (e.g.
+                    # a 500/429 before the 200) but must not block the successful
+                    # decision's checkpoint; an all-failed round has no success
+                    # and stays fail-closed.
+                    current_succeeded = (
+                        int(current_budget.get("attempted_calls") or 0)
+                        - int(current_budget.get("failed_calls") or 0)
+                    )
+                    start_succeeded = (
+                        int(budget_start.get("attempted_calls") or 0)
+                        - int(budget_start.get("failed_calls") or 0)
+                    )
                     if (
                         int(current_budget.get("attempted_calls") or 0)
                         <= int(budget_start.get("attempted_calls") or 0)
-                        or int(current_budget.get("failed_calls") or 0)
-                        != int(budget_start.get("failed_calls") or 0)
+                        or current_succeeded <= start_succeeded
                         or int(current_budget.get("reserved_tokens") or 0) != 0
                     ):
                         raise overrides.ClaimStructuralOverrideError(

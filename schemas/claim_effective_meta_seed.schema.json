@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_effective_meta_seed.schema.json",
+  "title": "Claim effective snapshot meta v1 (refold seed)",
+  "description": "Read-only schema used only with refold_seed_only=True. It accepts the current v3 component vector plus one explicitly supported stale reducer vector, so a deterministic component bump can still seed a refold. Unknown versions and forged mixes are rejected.",
+  "type": "object",
+  "required": [
+    "schema", "artifact_protocol_version", "effective_artifact_version",
+    "effective_snapshot_version", "run_id", "committed_at",
+    "base_generation_id", "document_generation_id", "catalog_generation_id",
+    "generation_meta_sha256", "base_ledger_sha256", "effective_ledger_sha256",
+    "queue_sha256", "queue_count", "ledger_count", "claim_events_enabled",
+    "event_prefix_sha256", "last_event_seq", "document_effective_revision",
+    "target_set_hash", "target_publication_revision", "requirement_review_state_hash",
+    "authority_projection_hash",
+    "effective_ledger_schema", "review_adapter_versions", "reducer_version",
+    "bridge_version", "queue_version", "effective_metrics", "versions",
+    "migrated_from_version", "migration_id"
+  ],
+  "properties": {
+    "schema": {"const": "claim-effective-meta/v1"},
+    "artifact_protocol_version": {"const": "claim-effective-artifacts-v2"},
+    "effective_artifact_version": {"const": "claim-effective-artifacts-v2"},
+    "effective_snapshot_version": {"const": "claim-effective-snapshot-v3"},
+    "run_id": {"type": "string"},
+    "committed_at": {"type": "string", "format": "date-time"},
+    "base_generation_id": {"$ref": "#/$defs/hash"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "generation_meta_sha256": {"$ref": "#/$defs/hash"},
+    "base_ledger_sha256": {"$ref": "#/$defs/hash"},
+    "effective_ledger_sha256": {"$ref": "#/$defs/hash"},
+    "queue_sha256": {"$ref": "#/$defs/hash"},
+    "queue_count": {"type": "integer", "minimum": 0},
+    "ledger_count": {"type": "integer", "minimum": 0},
+    "claim_events_enabled": {"const": true},
+    "event_prefix_sha256": {"$ref": "#/$defs/hash"},
+    "last_event_seq": {"type": "integer", "minimum": 0},
+    "document_effective_revision": {"$ref": "#/$defs/hash"},
+    "target_set_hash": {"$ref": "#/$defs/hash"},
+    "target_publication_revision": {"$ref": "#/$defs/hash"},
+    "requirement_review_state_hash": {"$ref": "#/$defs/hash"},
+    "authority_projection_hash": {"$ref": "#/$defs/hash"},
+    "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
+    "review_adapter_versions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/review_adapter_version"},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "reducer_version": {"type": "string", "minLength": 1},
+    "bridge_version": {"type": "string", "minLength": 1},
+    "queue_version": {"type": "string", "minLength": 1},
+    "effective_metrics": {"$ref": "#/$defs/effective_metrics"},
+    "versions": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "Current v3 component vector.",
+          "required": [
+            "effective_artifacts", "effective_ledger_schema", "effective_reducer",
+            "effective_snapshot", "queue", "review_bridge", "review_event_schema",
+            "revision_inputs"
+          ],
+          "properties": {
+            "effective_artifacts": {"const": "claim-effective-artifacts-v2"},
+            "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
+            "effective_reducer": {"const": "claim-effective-reducer-v3"},
+            "effective_snapshot": {"const": "claim-effective-snapshot-v3"},
+            "queue": {"const": "claim-queue-v3"},
+            "review_bridge": {"const": "claim-review-bridge-v2"},
+            "review_event_schema": {"const": "claim-review-event/v2"},
+            "revision_inputs": {"const": "claim-effective-revision-inputs/v2"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "Supported stale v3 vector for a reducer-only bump. It may seed a refold; a forged mix matches neither branch and is rejected.",
+          "required": [
+            "effective_artifacts", "effective_ledger_schema", "effective_reducer",
+            "effective_snapshot", "queue", "review_bridge", "review_event_schema",
+            "revision_inputs"
+          ],
+          "properties": {
+            "effective_artifacts": {"const": "claim-effective-artifacts-v2"},
+            "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
+            "effective_reducer": {"const": "claim-effective-reducer-v2"},
+            "effective_snapshot": {"const": "claim-effective-snapshot-v3"},
+            "queue": {"const": "claim-queue-v3"},
+            "review_bridge": {"const": "claim-review-bridge-v2"},
+            "review_event_schema": {"const": "claim-review-event/v2"},
+            "revision_inputs": {"const": "claim-effective-revision-inputs/v2"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "migrated_from_version": {
+      "oneOf": [
+        {"enum": ["claim-effective-snapshot-v1", "claim-effective-snapshot-v2"]},
+        {"type": "null"}
+      ]
+    },
+    "migration_id": {
+      "oneOf": [
+        {"$ref": "#/$defs/hash"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"migrated_from_version": {"type": "null"}}},
+      "then": {"properties": {"migration_id": {"type": "null"}}},
+      "else": {"properties": {"migration_id": {"$ref": "#/$defs/hash"}}}
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "review_adapter_version": {
+      "type": "object",
+      "required": ["target_kind", "adapter_version"],
+      "properties": {
+        "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
+        "adapter_version": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "ratio": {
+      "type": "object",
+      "required": ["numerator", "denominator", "value"],
+      "properties": {
+        "numerator": {"type": "integer", "minimum": 0},
+        "denominator": {"type": "integer", "minimum": 0},
+        "value": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "effective_metrics": {
+      "type": "object",
+      "required": [
+        "catalog_total_count", "eligible_claim_count", "covered_count",
+        "semantic_excluded_count", "structural_excluded_count", "uncertain_count",
+        "inventory_accounted_ratio", "verified_coverage_ratio",
+        "verified_semantic_exclusion_ratio", "verified_exclusion_ratio",
+        "eligible_resolution_ratio", "structural_exclusion_ratio"
+      ],
+      "properties": {
+        "catalog_total_count": {"type": "integer", "minimum": 0},
+        "eligible_claim_count": {"type": "integer", "minimum": 0},
+        "covered_count": {"type": "integer", "minimum": 0},
+        "semantic_excluded_count": {"type": "integer", "minimum": 0},
+        "structural_excluded_count": {"type": "integer", "minimum": 0},
+        "uncertain_count": {"type": "integer", "minimum": 0},
+        "inventory_accounted_ratio": {"$ref": "#/$defs/ratio"},
+        "verified_coverage_ratio": {"$ref": "#/$defs/ratio"},
+        "verified_semantic_exclusion_ratio": {"$ref": "#/$defs/ratio"},
+        "verified_exclusion_ratio": {"$ref": "#/$defs/ratio"},
+        "eligible_resolution_ratio": {"$ref": "#/$defs/ratio"},
+        "structural_exclusion_ratio": {"$ref": "#/$defs/ratio"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

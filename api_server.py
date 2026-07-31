@@ -275,15 +275,16 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 return
             try:
                 limit = parse_claim_page_value(
-                    one(params, "limit"), name="limit", default=100
+                    one(params, "limit"), name="limit", kind="limit", default=100
                 )
                 offset = parse_claim_page_value(
-                    one(params, "offset"), name="offset", default=0
+                    one(params, "offset"), name="offset", kind="offset", default=0
                 )
                 compat_limit = (
                     parse_claim_page_value(
                         one(params, "compat_limit"),
                         name="compat_limit",
+                        kind="limit",
                         default=100,
                     )
                     if one(params, "compat_limit")
@@ -292,6 +293,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 compat_offset = parse_claim_page_value(
                     one(params, "compat_offset"),
                     name="compat_offset",
+                    kind="offset",
                     default=0,
                 )
             except ValueError as exc:
@@ -896,6 +898,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 ClaimQueueExecutionUnprocessable,
                 execute_claim_queue_proposal,
             )
+            from claim_reextract_attempts import ClaimReextractAttemptError
             from omission_actions import OmissionConflictError
 
             result = execute_claim_queue_proposal(
@@ -946,6 +949,13 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 **exc.result,
             }, status=503)
             return
+        except ClaimReextractAttemptError as exc:
+            self.send_json({
+                "error": "claim_reextract_attempt_recovery_required",
+                "detail": str(exc)[:1000],
+                "retryable": True,
+            }, status=503)
+            return
         except OmissionConflictError as exc:
             # An omission CAS race is a conflict, never a malformed request:
             # it must not fall through to the ValueError -> 400 mapping.
@@ -964,6 +974,10 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         self.send_json(result)
 
     def handle_claim_structural_override(self) -> None:
+        from claim_artifacts import ClaimArtifactError
+        from claim_review_actions import ClaimReviewActionError
+        from claim_structural_operations import ClaimStructuralOperationError
+
         payload = self.read_json_body()
         if payload is None:
             return
@@ -1014,6 +1028,30 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         except ClaimStructuralOverrideError as exc:
             self.send_json({"error": str(exc), "retryable": False}, status=400)
+            return
+        except ClaimStructuralOperationError as exc:
+            self.send_json({
+                "error": "claim_structural_operation_recovery_required",
+                "detail": str(exc)[:1000],
+                "retryable": True,
+            }, status=503)
+            return
+        except ClaimReviewActionError as exc:
+            # A torn or broken claim review-event log must surface as a structured
+            # retryable 503. This endpoint never truncates or repairs event bytes;
+            # explicit claim maintenance performs quarantining recovery.
+            self.send_json({
+                "error": "claim_review_event_recovery_required",
+                "detail": str(exc)[:1000],
+                "retryable": True,
+            }, status=503)
+            return
+        except ClaimArtifactError as exc:
+            self.send_json({
+                "error": "claim_artifact_recovery_required",
+                "detail": str(exc)[:1000],
+                "retryable": True,
+            }, status=503)
             return
         except (TimeoutError, OSError) as exc:
             self.send_json({"error": str(exc), "retryable": True}, status=503)
@@ -1180,22 +1218,32 @@ def parse_int(value: str, *, default: int) -> int:
         return default
 
 
-def parse_claim_page_value(value: str, *, name: str, default: int) -> int:
-    """Parse the strict pagination contract used by all Claim Ledger GETs."""
+def parse_claim_page_value(
+    value: str,
+    *,
+    name: str,
+    kind: str,
+    default: int,
+) -> int:
+    """Parse the strict pagination contract used by all Claim Ledger GETs.
+
+    ``kind`` ("limit" | "offset") drives validation; ``name`` is only the
+    query field echoed in error messages.
+    """
     if not value:
         return default
     try:
         parsed = int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid claim {name}") from exc
-    if name == "limit":
+    if kind == "limit":
         if not 1 <= parsed <= 500:
-            raise ValueError("claim limit must be between 1 and 500")
-    elif name == "offset":
+            raise ValueError(f"claim {name} must be between 1 and 500")
+    elif kind == "offset":
         if parsed < 0:
-            raise ValueError("claim offset must be non-negative")
+            raise ValueError(f"claim {name} must be non-negative")
     else:  # pragma: no cover - internal programming error
-        raise ValueError(f"unknown claim pagination field: {name}")
+        raise ValueError(f"unknown claim pagination kind: {kind}")
     return parsed
 
 

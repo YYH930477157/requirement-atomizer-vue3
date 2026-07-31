@@ -10,7 +10,7 @@ import ai_extract
 import claim_queue_execution as execution
 import claim_reextract_attempts
 import omission_actions
-from claim_artifacts import atomic_write_jsonl, hash_json
+from claim_artifacts import atomic_write_jsonl, file_sha256, hash_json
 from llm_client import LLMClientConfig, LLMConnectionError
 
 
@@ -41,7 +41,8 @@ def _proposal() -> dict:
             "text": "The output shall be configurable.",
         },
         "execution_preconditions": {
-            "claim_effective_revision": _hash("old-effective"),
+            "expected_claim_effective_revision": _hash("old-effective"),
+            "expected_ledger_state": "uncertain",
             "target_publication_revision": _hash("old-publication"),
         },
     }
@@ -809,6 +810,428 @@ class ClaimQueueExecutionTests(unittest.TestCase):
 
         self.assertEqual(rows, [])
         self.assertEqual(diagnostics[0]["reason"], "unsupported_strategy_version")
+
+
+class ClaimReplayRevisionKeyTests(unittest.TestCase):
+    def _started(self, schema: str, preconditions: dict) -> dict:
+        started = {
+            "schema": schema,
+            "request_idempotency_key": "request-1",
+            "actor": "expert:yyh",
+            "route": "openai_compatible",
+            "budgets": {"max_calls": 4, "max_total_tokens": 20000},
+            "preconditions": preconditions,
+        }
+        if schema == "claim-reextract-attempt/v2":
+            started["route_config_revision"] = _hash("route")
+        return started
+
+    def _replay(self, started: dict, *, revision: str) -> None:
+        execution._require_matching_replay_request(
+            started,
+            expected_claim_effective_revision=revision,
+            expected_ledger_state="uncertain",
+            actor="expert:yyh",
+            allow_llm=True,
+            route="openai_compatible",
+            maximum_calls=4,
+            total_token_budget=20000,
+            request_idempotency_key="request-1",
+            expected_route_config_revision=_hash("route"),
+        )
+
+    def test_v2_attempt_uses_only_the_expected_revision_key(self) -> None:
+        started = self._started(
+            "claim-reextract-attempt/v2",
+            {"expected_claim_effective_revision": _hash("rev")},
+        )
+        self._replay(started, revision=_hash("rev"))
+        with self.assertRaises(execution.ClaimQueueExecutionConflict):
+            self._replay(started, revision=_hash("other"))
+
+    def test_v2_reader_identity_survives_a_future_writer_version_bump(self) -> None:
+        started = self._started(
+            "claim-reextract-attempt/v2",
+            {"expected_claim_effective_revision": _hash("rev")},
+        )
+        with mock.patch.object(
+            claim_reextract_attempts,
+            "CLAIM_REEXTRACT_ATTEMPT_SCHEMA",
+            "claim-reextract-attempt/v3",
+        ):
+            self._replay(started, revision=_hash("rev"))
+
+    def test_v2_attempt_never_falls_back_to_the_legacy_key(self) -> None:
+        started = self._started(
+            "claim-reextract-attempt/v2",
+            {"claim_effective_revision": _hash("rev")},
+        )
+        with self.assertRaises(execution.ClaimQueueExecutionConflict):
+            self._replay(started, revision=_hash("rev"))
+
+    def test_v1_attempt_prefers_the_historical_canonical_key(self) -> None:
+        started = self._started(
+            "claim-reextract-attempt/v1",
+            {"expected_claim_effective_revision": _hash("rev")},
+        )
+        # A current client supplies its preflight revision. Historical v1 starts
+        # did not persist one, so it is deliberately outside the v1 identity.
+        self._replay(started, revision=_hash("rev"))
+
+    def test_v1_attempt_may_use_the_legacy_key(self) -> None:
+        started = self._started(
+            "claim-reextract-attempt/v1",
+            {"claim_effective_revision": _hash("rev")},
+        )
+        self._replay(started, revision=_hash("rev"))
+
+    def test_conflicting_revision_keys_fail_closed(self) -> None:
+        for schema in (
+            "claim-reextract-attempt/v1",
+            "claim-reextract-attempt/v2",
+        ):
+            with self.subTest(schema=schema):
+                started = self._started(schema, {
+                    "expected_claim_effective_revision": _hash("canonical"),
+                    "claim_effective_revision": _hash("legacy"),
+                })
+                with self.assertRaisesRegex(
+                    execution.ClaimQueueExecutionConflict,
+                    "claim_effective_revision_keys",
+                ):
+                    self._replay(started, revision=_hash("canonical"))
+
+    def test_v2_attempt_strictly_matches_route_config_revision(self) -> None:
+        started = self._started(
+            "claim-reextract-attempt/v2",
+            {"expected_claim_effective_revision": _hash("rev")},
+        )
+        started.pop("route_config_revision")
+        with self.assertRaisesRegex(
+            execution.ClaimQueueExecutionConflict,
+            "expected_route_config_revision",
+        ):
+            self._replay(started, revision=_hash("rev"))
+
+    def test_unknown_attempt_schema_fails_closed(self) -> None:
+        started = self._started(
+            "claim-reextract-attempt/v99",
+            {"expected_claim_effective_revision": _hash("rev")},
+        )
+        with self.assertRaisesRegex(
+            execution.ClaimQueueExecutionConflict,
+            "unsupported re-extract attempt schema",
+        ):
+            self._replay(started, revision=_hash("rev"))
+
+
+class HistoricalV1ClaimQueueReplayTests(unittest.TestCase):
+    """Replay the exact v1 start shape produced by commit bb69305."""
+
+    @staticmethod
+    def _append_started(root: Path) -> tuple[dict, str]:
+        proposal = _proposal()
+        attempt_id = execution.make_attempt_id(
+            proposal["proposal_id"], "historical-request-1",
+        )
+        started = {
+            "schema": "claim-reextract-attempt/v1",
+            **execution._common_event(
+                attempt_id=attempt_id,
+                proposal=proposal,
+                actor="expert:yyh",
+                event_kind="reextract_started",
+                detail="historical-request-1",
+            ),
+            "request_idempotency_key": "historical-request-1",
+            "route": "openai_compatible",
+            "model": "deepseek-chat",
+            "budgets": {
+                "max_calls": 4,
+                "max_total_tokens": 20000,
+                "allow_semantic_verifier": True,
+            },
+            # v1 production proposals already used this canonical key. They did
+            # not carry route_config_revision.
+            "preconditions": copy.deepcopy(proposal["execution_preconditions"]),
+            "focus": copy.deepcopy(proposal["focus"]),
+        }
+        claim_reextract_attempts.append_attempt_events(root, [started])
+        return proposal, attempt_id
+
+    @staticmethod
+    def _execute(root: Path, proposal: dict, **overrides):
+        arguments = {
+            "proposal_id": proposal["proposal_id"],
+            "expected_claim_effective_revision": proposal[
+                "claim_effective_revision"
+            ],
+            "expected_ledger_state": "uncertain",
+            "actor": "expert:yyh",
+            "allow_llm": True,
+            "route": "openai_compatible",
+            "maximum_calls": 4,
+            "total_token_budget": 20000,
+            "request_idempotency_key": "historical-request-1",
+            "expected_route_config_revision": _hash("current-client-route"),
+        }
+        arguments.update(overrides)
+        return execution.execute_claim_queue_proposal(root, **arguments)
+
+    def test_real_v1_terminal_attempt_replays_with_canonical_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proposal, attempt_id = self._append_started(root)
+            claim_reextract_attempts.append_attempt_events(root, [{
+                "schema": "claim-reextract-attempt/v1",
+                **execution._common_event(
+                    attempt_id=attempt_id,
+                    proposal=proposal,
+                    actor="expert:yyh",
+                    event_kind="reextract_failed",
+                    detail="historical-failure",
+                ),
+                "outcome": {
+                    "code": "remote_error",
+                    "message": "historical terminal attempt",
+                    "retryable": True,
+                },
+                "usage": {
+                    "calls": 1,
+                    "total_tokens": 17,
+                    "usage_complete": True,
+                },
+            }])
+
+            with mock.patch.object(
+                ai_extract,
+                "config_for_route",
+                side_effect=AssertionError("terminal replay must stay LLM-free"),
+            ):
+                result = self._execute(root, proposal)
+
+        self.assertTrue(result["idempotent_replay"])
+        self.assertEqual(result["lifecycle"], "failed")
+        self.assertEqual(result["attempt_id"], attempt_id)
+
+    def test_real_v1_rebuild_pending_resumes_without_route_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proposal, attempt_id = self._append_started(root)
+            atomic_write_jsonl(root / ai_extract.AI_REQUIREMENTS, [])
+            requirements_hash = file_sha256(root / ai_extract.AI_REQUIREMENTS)
+            publication_revision = _hash("historical-publication")
+            claim_reextract_attempts.append_attempt_events(root, [
+                {
+                    "schema": "claim-reextract-attempt/v1",
+                    **execution._common_event(
+                        attempt_id=attempt_id,
+                        proposal=proposal,
+                        actor="expert:yyh",
+                        event_kind="supplement_persisted",
+                        detail="SUP-0123456789ab",
+                    ),
+                    "supplement_id": "SUP-0123456789ab",
+                    "supplement_hash": _hash("historical-supplement"),
+                },
+                {
+                    "schema": "claim-reextract-attempt/v1",
+                    **execution._common_event(
+                        attempt_id=attempt_id,
+                        proposal=proposal,
+                        actor="expert:yyh",
+                        event_kind="requirements_published",
+                        detail=publication_revision,
+                    ),
+                    "requirements_sha256": requirements_hash,
+                    "target_publication_revision": publication_revision,
+                },
+            ])
+            expected_result = {
+                "schema": "claim-queue-execution/v1",
+                "lifecycle": "executed",
+                "attempt_id": attempt_id,
+            }
+
+            with mock.patch.object(
+                execution,
+                "_load_b_track_authority",
+                return_value={
+                    "target_publication_revision": publication_revision,
+                },
+            ), mock.patch.object(
+                execution,
+                "_finish_rebuild",
+                return_value=expected_result,
+            ) as finish, mock.patch.object(
+                ai_extract,
+                "config_for_route",
+                side_effect=AssertionError("rebuild recovery must stay LLM-free"),
+            ):
+                result = self._execute(
+                    root,
+                    proposal,
+                    allow_llm=False,
+                    maximum_calls=0,
+                    total_token_budget=0,
+                )
+
+        self.assertEqual(result, expected_result)
+        self.assertIsNone(finish.call_args.kwargs["budget"])
+        self.assertIsNone(finish.call_args.kwargs["resolved_route_config"])
+
+
+class ClaimQueueRealFoldReplayTests(unittest.TestCase):
+    """End-to-end: proposal born from a real effective fold, replay is LLM-free."""
+
+    def _seed_uncertain(self, root: Path) -> dict:
+        import ai_review_actions
+        import claim_ledger
+        import claim_review_actions
+        from tests.test_claim_artifacts import (
+            _catalog,
+            _publish,
+            _requirement,
+        )
+
+        catalog = _catalog()
+        block = {
+            "block_id": "B1",
+            "order": 1,
+            "type": "paragraph",
+            "text": catalog["catalog"][0]["text"],
+            "raw_text": catalog["catalog"][0]["text"],
+            "section_path": ["4 Functions"],
+            "noise": False,
+        }
+        atomic_write_jsonl(root / "blocks.jsonl", [block])
+        _publish(root, catalog)
+        requirement = _requirement(catalog)
+        ai_review_actions.apply_ai_review_action(
+            root,
+            "AIR-1",
+            "rejected",
+            actor="real-fold-seed",
+            reason="reject to produce a queue proposal",
+            source_fingerprint_value=claim_ledger.target_source_fingerprint(
+                requirement
+            ),
+            review_subject_fingerprint_value=claim_ledger.target_fingerprint(
+                requirement
+            ),
+        )
+        snapshot = execution.load_committed_effective_snapshot(root)
+        proposals = [
+            row for row in snapshot["queue_proposals"]
+            if row.get("lifecycle") in {"open", None} or True
+        ]
+        self.assertTrue(proposals)
+        proposal = proposals[0]
+        self.assertEqual(proposal["schema"], "claim-queue-proposal/v2")
+        self.assertIn(
+            "expected_claim_effective_revision",
+            proposal["execution_preconditions"],
+        )
+        return proposal
+
+    def test_real_fold_proposal_executes_and_replays_without_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proposal = self._seed_uncertain(root)
+            config = LLMClientConfig(
+                base_url="https://example.invalid/v1",
+                model="deepseek-chat",
+                max_tokens=128,
+                max_retries=0,
+            )
+            claim_text = "The product shall provide user-programmable auxiliary outputs."
+
+            def targeted(root_dir, *args, **kwargs):
+                current = kwargs["claim_execution"]
+                budget = current["request_budget"]
+                reservation = budget.reserve({"model": "x", "max_tokens": 32})
+                budget.commit(reservation, {"total_tokens": 41})
+                current["pre_publish_check"]()
+                current["on_supplement_persisted"]({
+                    "supplement_id": "SUP-0123456789ab",
+                    "origin": {"kind": "claim_queue"},
+                })
+                atomic_write_jsonl(root_dir / ai_extract.AI_REQUIREMENTS, [{
+                    "ai_req_id": "AIR-1",
+                    "title": "Auxiliary outputs",
+                    "description": claim_text,
+                    "source_quote": claim_text,
+                    "source_block_ids": ["B1"],
+                    "sub_items": [],
+                    "acceptance_criteria": [],
+                }])
+                current["on_requirements_published"]([])
+                return {"schema": "claim-reextract-mutation/v1", "requirements": 1}
+
+            with mock.patch.object(
+                ai_extract, "config_for_route", return_value=config,
+            ), mock.patch.object(
+                execution, "apply_min_tokens",
+                side_effect=lambda value, _purpose: value,
+            ), mock.patch.object(
+                execution, "targeted_reextract", side_effect=targeted,
+            ):
+                route_revision = execution._resolved_route_preflight(
+                    "openai_compatible", config,
+                )[1]["route_config_revision"]
+                first = execution.execute_claim_queue_proposal(
+                    root,
+                    proposal_id=proposal["proposal_id"],
+                    expected_claim_effective_revision=proposal[
+                        "claim_effective_revision"
+                    ],
+                    expected_ledger_state="uncertain",
+                    actor="expert:yyh",
+                    allow_llm=True,
+                    route="openai_compatible",
+                    maximum_calls=4,
+                    total_token_budget=20000,
+                    request_idempotency_key="request-1",
+                    expected_route_config_revision=route_revision,
+                )
+            self.assertEqual(first["lifecycle"], "executed")
+
+            with mock.patch.object(
+                ai_extract,
+                "config_for_route",
+                side_effect=AssertionError("replay must not load LLM config"),
+            ), mock.patch.object(
+                execution,
+                "targeted_reextract",
+                side_effect=AssertionError("replay must not call the LLM"),
+            ):
+                replay = execution.execute_claim_queue_proposal(
+                    root,
+                    proposal_id=proposal["proposal_id"],
+                    expected_claim_effective_revision=proposal[
+                        "claim_effective_revision"
+                    ],
+                    expected_ledger_state="uncertain",
+                    actor="expert:yyh",
+                    allow_llm=True,
+                    route="openai_compatible",
+                    maximum_calls=4,
+                    total_token_budget=20000,
+                    request_idempotency_key="request-1",
+                    expected_route_config_revision=route_revision,
+                )
+            rows = claim_reextract_attempts.read_attempt_log(root).rows
+
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(replay["lifecycle"], "executed")
+        self.assertEqual(
+            sum(row["event_kind"] == "reextract_started" for row in rows),
+            1,
+        )
+        self.assertEqual(
+            sum(row["event_kind"] == "reextract_succeeded" for row in rows),
+            1,
+        )
 
 
 class ClaimQueueRoutePreflightTests(unittest.TestCase):

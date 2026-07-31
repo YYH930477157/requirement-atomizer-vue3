@@ -902,4 +902,162 @@ describe("ClaimLedger", () => {
     expect((wrapper.get('textarea[aria-label="Claim 裁决理由"]').element as HTMLTextAreaElement).value)
       .toBe("版本切换探针")
   })
+
+  it("converges through a two-step revision drift R1->R2->R3 and keeps the draft", async () => {
+    const revision1 = "sha256:revision-1"
+    const revision2 = "sha256:revision-2"
+    const revision3 = "sha256:revision-3"
+    const loadClaimCatalog = vi.fn()
+      .mockResolvedValueOnce(catalogPayload(revision1))
+      .mockResolvedValueOnce(catalogPayload(revision2))
+      .mockResolvedValueOnce(catalogPayload(revision3))
+    const loadClaimMetrics = vi.fn()
+      .mockResolvedValueOnce(metricsPayload(revision1))
+      .mockResolvedValueOnce(metricsPayload(revision2))
+      .mockResolvedValueOnce(metricsPayload(revision3))
+    const loadClaimQueue = vi.fn()
+      .mockResolvedValueOnce(queuePayload(revision1))
+      .mockResolvedValueOnce(queuePayload(revision2))
+      .mockResolvedValueOnce(queuePayload(revision3))
+    // The server is already at R3 while the drawer opens at R1: groups come back at
+    // R3 twice (discarded against R1 then R2) before the overview catches up to R3.
+    const loadClaimCoverageGroups = vi.fn()
+      .mockResolvedValueOnce(groupsPayload(revision3, "STALE3"))
+      .mockResolvedValueOnce(groupsPayload(revision3, "STALE3"))
+      .mockResolvedValueOnce(groupsPayload(revision3, "FRESH3"))
+    const loadClaimReviewEvents = vi.fn()
+      .mockResolvedValueOnce(eventsPayload(revision3))
+      .mockResolvedValueOnce(eventsPayload(revision3))
+      .mockResolvedValueOnce(eventsPayload(revision3))
+    const client = makeClient({
+      loadClaimCatalog,
+      loadClaimMetrics,
+      loadClaimQueue,
+      loadClaimCoverageGroups,
+      loadClaimReviewEvents,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    await wrapper.get('textarea[aria-label="Claim 裁决理由"]').setValue("收敛探针")
+    await flushPromises()
+
+    const detail = wrapper.get('[data-testid="claim-detail"]').text()
+    expect(detail).toContain("FRESH3")
+    expect(detail).not.toContain("STALE3")
+    // Bounded budget: a two-step drift converges in exactly three detail fetches.
+    expect(loadClaimCoverageGroups).toHaveBeenCalledTimes(3)
+    expect((wrapper.get('textarea[aria-label="Claim 裁决理由"]').element as HTMLTextAreaElement).value)
+      .toBe("收敛探针")
+  })
+
+  it("converges an already-open drawer through passive R1->R2->R3 refresh", async () => {
+    const revision1 = "sha256:revision-1"
+    const revision2 = "sha256:revision-2"
+    const revision3 = "sha256:revision-3"
+    const loadClaimCatalog = vi.fn()
+      .mockResolvedValueOnce(catalogPayload(revision1))
+      .mockResolvedValueOnce(catalogPayload(revision2))
+      .mockResolvedValueOnce(catalogPayload(revision3))
+    const loadClaimMetrics = vi.fn()
+      .mockResolvedValueOnce(metricsPayload(revision1))
+      .mockResolvedValueOnce(metricsPayload(revision2))
+      .mockResolvedValueOnce(metricsPayload(revision3))
+    const loadClaimQueue = vi.fn()
+      .mockResolvedValueOnce(queuePayload(revision1))
+      .mockResolvedValueOnce(queuePayload(revision2))
+      .mockResolvedValueOnce(queuePayload(revision3))
+    const loadClaimCoverageGroups = vi.fn()
+      .mockResolvedValueOnce(groupsPayload(revision1, "INITIAL-R1"))
+      .mockResolvedValueOnce(groupsPayload(revision3, "STALE-R3"))
+      .mockResolvedValueOnce(groupsPayload(revision3, "FRESH-R3"))
+    const loadClaimReviewEvents = vi.fn()
+      .mockResolvedValueOnce(eventsPayload(revision1))
+      .mockResolvedValueOnce(eventsPayload(revision3))
+      .mockResolvedValueOnce(eventsPayload(revision3))
+    const client = makeClient({
+      loadClaimCatalog,
+      loadClaimMetrics,
+      loadClaimQueue,
+      loadClaimCoverageGroups,
+      loadClaimReviewEvents,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.get('[data-testid="claim-detail"]').text()).toContain("INITIAL-R1")
+    await wrapper.get('textarea[aria-label="Claim 裁决理由"]').setValue("被动收敛草稿")
+
+    await wrapper.get('[data-testid="claim-refresh"]').trigger("click")
+    await flushPromises()
+
+    const detail = wrapper.get('[data-testid="claim-detail"]').text()
+    expect(detail).toContain("FRESH-R3")
+    expect(detail).not.toContain("INITIAL-R1")
+    expect(detail).not.toContain("STALE-R3")
+    expect(loadClaimCoverageGroups).toHaveBeenCalledTimes(3)
+    expect((wrapper.get('textarea[aria-label="Claim 裁决理由"]').element as HTMLTextAreaElement).value)
+      .toBe("被动收敛草稿")
+  })
+
+  it("stops bounded refresh on persistent drift and keeps structural mutation gated", async () => {
+    const revision1 = "sha256:revision-1"
+    const catalog2 = catalogPayload("sha256:revision-2")
+    Object.assign(catalog2.rows[0], {
+      resolution: "excluded",
+      exclusion_kind: "structural",
+      exclusion: { reason: "repeated_page_furniture" },
+    })
+    const loadClaimCatalog = vi.fn()
+      .mockResolvedValueOnce(catalogPayload(revision1))
+      .mockResolvedValue(catalog2)
+    const loadClaimMetrics = vi.fn()
+      .mockResolvedValueOnce(metricsPayload(revision1))
+      .mockResolvedValue(metricsPayload("sha256:revision-2"))
+    const loadClaimQueue = vi.fn()
+      .mockResolvedValueOnce(queuePayload(revision1))
+      .mockResolvedValue(queuePayload("sha256:revision-2"))
+    // The server always answers details at a revision newer than the pinned one, so
+    // the drawer can never converge — it must stop at the bounded budget and stay stale.
+    const loadClaimCoverageGroups = vi.fn().mockImplementation(({ revision }) =>
+      Promise.resolve(groupsPayload(`${revision}-drift`, "DRIFT")),
+    )
+    const loadClaimReviewEvents = vi.fn().mockImplementation(({ revision }) =>
+      Promise.resolve(eventsPayload(`${revision}-drift`)),
+    )
+    const confirmClaimStructuralOverride = vi.fn().mockResolvedValue({
+      ok: true,
+      status: "rebuilt",
+      effective_fresh: true,
+    })
+    const client = makeClient({
+      loadClaimCatalog,
+      loadClaimMetrics,
+      loadClaimQueue,
+      loadClaimCoverageGroups,
+      loadClaimReviewEvents,
+      confirmClaimStructuralOverride,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+
+    // Persistent drift is bounded: at most DETAIL_REFRESH_BUDGET+1 detail fetches, and
+    // the drawer never shows the never-converging DRIFT group.
+    expect(loadClaimCoverageGroups).toHaveBeenCalledTimes(3)
+    expect(wrapper.get('[data-testid="claim-detail"]').text()).not.toContain("DRIFT")
+    // Details stay stale, so the structural mutation button stays disabled and the
+    // handler gate keeps the mutation API unreached even on a forced click.
+    const structuralBtn = wrapper.get('[data-testid="claim-structural-override"]')
+    expect(structuralBtn.attributes("disabled")).toBeDefined()
+    await structuralBtn.trigger("click")
+    await flushPromises()
+    expect(confirmClaimStructuralOverride).not.toHaveBeenCalled()
+  })
 })

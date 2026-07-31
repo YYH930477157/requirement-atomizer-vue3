@@ -1990,6 +1990,59 @@ class ContextEngineeringTests(unittest.TestCase):
         self.assertNotEqual(a, b)                                  # 背景变 → 指纹变（缓存失效重抽）
         self.assertEqual(a, ai_extract.section_fingerprint(sec, "m", "ctxA"))  # 同背景稳定
 
+    def test_section_fingerprint_pins_guards_and_compliance_via_shared_vector(self) -> None:
+        """Section cache + producer lineage must pin compliance_schema alongside guards.
+
+        v17 漏钉缺口:``COMPLIANCE_SCHEMA`` 只在 desktop stage producer 里,``section_fingerprint``
+        与 ``current_ai_requirements_producer_lineage`` 都漏钉——ownership/compliance 确定性分类
+        收口后,旧 section 缓存与旧发布需求仍被复用。section cache 使用付费缓存子向量,
+        producer/stage 使用完整 lineage；guards 或 compliance 任一 bump 都必须使缓存失效。
+        """
+        from compliance import COMPLIANCE_SCHEMA
+        from unittest import mock
+
+        versions = ai_extract.section_cache_versions()
+        self.assertIn("compliance_schema", versions)
+        self.assertEqual(versions["compliance_schema"], COMPLIANCE_SCHEMA)
+        self.assertEqual(versions["extract_guards_version"], ai_extract.EXTRACT_GUARDS_VERSION)
+
+        lineage = ai_extract.current_ai_requirements_producer_lineage()
+        self.assertEqual(lineage["compliance_schema"], COMPLIANCE_SCHEMA)
+        self.assertEqual(lineage["schema"], ai_extract.AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION)
+
+        section = {"text": "Auxiliary outputs are user-programmable.", "heading": "4.1"}
+        current = ai_extract.section_fingerprint(section, "m")
+        # A stale guards version (a pre-bump cache row) must not collide with the current
+        # fingerprint — this cache miss is what protects runs after a guards bump.
+        with mock.patch.object(ai_extract, "EXTRACT_GUARDS_VERSION", "guards-v17-stale"):
+            stale = ai_extract.section_fingerprint(section, "m")
+        self.assertNotEqual(stale, current)
+        # A compliance classification bump must also invalidate the section cache (the v17 gap).
+        with mock.patch("compliance.COMPLIANCE_SCHEMA", "compliance-requirements/v-stale"):
+            self.assertNotEqual(
+                ai_extract.section_fingerprint(section, "m"),
+                current,
+            )
+
+    def test_section_cache_excludes_post_cache_lineage_versions(self) -> None:
+        from unittest import mock
+
+        section = {"text": "The output shall be configurable.", "heading": "4.1"}
+        current = ai_extract.section_fingerprint(section, "m")
+        with mock.patch.object(
+            ai_extract, "AI_NORMATIVE_FRAMING_VERSION", "framing-stale",
+        ):
+            self.assertEqual(ai_extract.section_fingerprint(section, "m"), current)
+        with mock.patch.object(
+            ai_extract, "AI_VERIFY_PROMPT_VERSION", "verify-stale",
+        ):
+            self.assertEqual(ai_extract.section_fingerprint(section, "m"), current)
+
+        lineage = ai_extract.producer_lineage_versions()
+        self.assertIn("normative_framing_version", lineage)
+        self.assertIn("merged_consistency_version", lineage)
+        self.assertIn("verify_prompt_version", lineage)
+
     def test_extract_section_injects_context_into_user_prompt(self) -> None:
         captured: dict = {}
 

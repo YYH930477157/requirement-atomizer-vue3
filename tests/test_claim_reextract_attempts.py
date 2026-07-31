@@ -214,6 +214,32 @@ class AttemptLogStableReadTests(unittest.TestCase):
         self.assertEqual(snapshot.last_event_seq, 1)
         self.assertEqual(snapshot.prefix_bytes, full)
 
+    def test_stable_read_does_not_call_identical_partial_bytes_permanent(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_id = attempts.attempt_id("CQP-12345678-9abcdef0", "request-1")
+            attempts.append_attempt_events(root, [_started(current_id)])
+            path = root / attempts.CLAIM_REEXTRACT_ATTEMPTS
+            full = path.read_bytes()
+            torn = full + b'{"schema":"claim-reextract-attempt/v1"'
+            reads = iter([torn, torn, full, full])
+            original = Path.read_bytes
+
+            def fake_read(self: Path) -> bytes:
+                if self == path:
+                    return next(reads)
+                return original(self)
+
+            with mock.patch.object(Path, "read_bytes", fake_read):
+                snapshot = attempts.read_attempt_log_stable(
+                    root, max_attempts=4, delay_seconds=0,
+                )
+
+        self.assertEqual(snapshot.last_event_seq, 1)
+        self.assertEqual(snapshot.prefix_bytes, full)
+
     def test_stable_read_does_not_return_a_valid_but_changing_first_read(self) -> None:
         from unittest import mock
 

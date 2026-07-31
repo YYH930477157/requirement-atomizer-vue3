@@ -23,7 +23,11 @@ from process_file_lock import process_file_lock
 
 
 CLAIM_STRUCTURAL_OPERATIONS = "claim_structural_operations.jsonl"
-CLAIM_STRUCTURAL_OPERATION_SCHEMA = "claim-structural-operation/v2"
+CLAIM_STRUCTURAL_OPERATION_SCHEMA = "claim-structural-operation/v3"
+_SUPPORTED_OPERATION_SCHEMAS = frozenset({
+    "claim-structural-operation/v2",
+    CLAIM_STRUCTURAL_OPERATION_SCHEMA,
+})
 
 _LOCK_NAME = "claim_structural_operations.lock"
 _EXECUTION_LOCK_NAME = "claim_structural_execution.lock"
@@ -47,8 +51,13 @@ _OPERATION_EVENT_KINDS = frozenset({
     "effective_folded",
     "operation_succeeded",
     "operation_aborted_stale",
+    "operation_recovery_failed_post_publication",
 })
-_CLOSING_KINDS = frozenset({"operation_succeeded", "operation_aborted_stale"})
+_CLOSING_KINDS = frozenset({
+    "operation_succeeded",
+    "operation_aborted_stale",
+    "operation_recovery_failed_post_publication",
+})
 _SINGLE_CHECKPOINT_KINDS = frozenset({
     "override_registered",
     "audit_appended",
@@ -57,6 +66,7 @@ _SINGLE_CHECKPOINT_KINDS = frozenset({
     "effective_folded",
     "operation_succeeded",
     "operation_aborted_stale",
+    "operation_recovery_failed_post_publication",
 })
 
 
@@ -145,7 +155,8 @@ def _validate_row(row: dict[str, Any], expected_seq: int, previous_hash: str) ->
         )
     except ClaimArtifactError as exc:
         raise ClaimStructuralOperationError(str(exc)) from exc
-    if row.get("schema") != CLAIM_STRUCTURAL_OPERATION_SCHEMA:
+    row_schema = str(row.get("schema") or "")
+    if row_schema not in _SUPPORTED_OPERATION_SCHEMAS:
         raise ClaimStructuralOperationError(
             "claim structural operation row has an invalid schema"
         )
@@ -162,9 +173,7 @@ def _validate_row(row: dict[str, Any], expected_seq: int, previous_hash: str) ->
         raise ClaimStructuralOperationError(
             "claim structural operation hash chain is broken"
         )
-    expected_hash = hash_json(
-        CLAIM_STRUCTURAL_OPERATION_SCHEMA, _without_hash(row)
-    )
+    expected_hash = hash_json(row_schema, _without_hash(row))
     if row.get("event_hash") != expected_hash:
         raise ClaimStructuralOperationError(
             "claim structural operation event hash is invalid"
@@ -342,6 +351,10 @@ def _validate_operation_history(operation_rows: list[dict[str, Any]]) -> None:
                 raise ClaimStructuralOperationError(
                     "structural budget checkpoint is out of order"
                 )
+            if "verifier_checkpoint" in seen:
+                raise ClaimStructuralOperationError(
+                    "structural budget checkpoint follows a verifier decision checkpoint"
+                )
             current_budget = _budget_snapshot(row)
             if request.get("allow_llm") is not True:
                 raise ClaimStructuralOperationError(
@@ -458,6 +471,22 @@ def _validate_operation_history(operation_rows: list[dict[str, Any]]) -> None:
             if stage >= 3:
                 raise ClaimStructuralOperationError(
                     "published structural operation cannot be aborted as stale"
+                )
+            closed = True
+        elif kind == "operation_recovery_failed_post_publication":
+            if stage < 3:
+                raise ClaimStructuralOperationError(
+                    "post-publication recovery failure requires a published base"
+                )
+            binding = dict(row.get("binding") or {})
+            expected_binding = (
+                effective_binding
+                if stage == 4
+                else {"base_generation_id": base_generation_id}
+            )
+            if binding != expected_binding:
+                raise ClaimStructuralOperationError(
+                    "post-publication recovery failure lacks its exact publication binding"
                 )
             closed = True
         else:  # pragma: no cover - schema and row validation guard this
@@ -697,7 +726,11 @@ def derive_operation_states(
                 reconfirmation_required = row
             elif kind == "operation_reconfirmed":
                 last_reconfirmation = row
-            elif kind not in {"operation_succeeded", "operation_aborted_stale"}:
+            elif kind not in {
+                "operation_succeeded",
+                "operation_aborted_stale",
+                "operation_recovery_failed_post_publication",
+            }:
                 checkpoints[kind] = row
         last = history[-1]
         last_kind = str(last.get("event_kind") or "")
@@ -706,6 +739,9 @@ def derive_operation_states(
             closed = True
         elif last_kind == "operation_aborted_stale":
             lifecycle = "aborted_stale"
+            closed = True
+        elif last_kind == "operation_recovery_failed_post_publication":
+            lifecycle = "recovery_failed_post_publication"
             closed = True
         elif (
             reconfirmation_required is not None

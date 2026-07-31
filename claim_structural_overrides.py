@@ -740,19 +740,17 @@ def _load_verified_replay(
     terminal = dict(state.get("terminal") or {})
     expected_binding = dict(terminal.get("binding") or {})
     request = dict(state.get("request") or {})
-    try:
-        snapshot = load_committed_effective_snapshot_readonly(root)
-        freshness = assess_effective_freshness(root, snapshot, readonly=True)
-        current_binding = _effective_binding(
-            root,
-            snapshot,
-            claim_id=str(request.get("claim_id") or ""),
-            override_hash=str(expected_binding.get("override_hash") or ""),
-        )
-    except (ClaimArtifactError, OSError) as exc:
-        raise ClaimStructuralOverrideStale(
-            "completed structural operation cannot verify its current artifacts"
-        ) from exc
+    # Artifact/I/O failures are recovery conditions, not proof that authority
+    # changed. Let them surface as retryable 503s at the HTTP boundary. Only a
+    # successfully read snapshot with a missing claim or different binding is stale.
+    snapshot = load_committed_effective_snapshot_readonly(root)
+    freshness = assess_effective_freshness(root, snapshot, readonly=True)
+    current_binding = _effective_binding(
+        root,
+        snapshot,
+        claim_id=str(request.get("claim_id") or ""),
+        override_hash=str(expected_binding.get("override_hash") or ""),
+    )
     registry = read_structural_overrides(root)
     if (
         freshness.get("effective_fresh") is not True

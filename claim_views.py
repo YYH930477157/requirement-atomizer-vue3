@@ -720,6 +720,14 @@ def build_claim_view(
     compat_limit: int | None = None,
     compat_offset: int = 0,
 ) -> dict[str, Any]:
+    """Build one revision-pinned Claim Ledger GET view.
+
+    ``compat_limit``/``compat_offset`` page the legacy ``compat_omissions`` partition
+    independently of the claim proposals. Omitting ``compat_limit`` means *unpaged*:
+    every omission from ``compat_offset`` onward is returned and ``compat_omission_limit``
+    echoes the actual returned count (not a request cap). Passing ``compat_limit``
+    switches to capped pagination clamped to 1..500. This contract is pinned by tests.
+    """
     if view not in _VIEW_SCHEMAS:
         raise ValueError(f"unknown claim view: {view}")
     root = Path(out_dir).expanduser().resolve()

@@ -96,7 +96,7 @@ DOC_CONTEXT_OUTLINE_MAX = 60      # 章节大纲最多条目
 AI_EXTRACT_CACHE = "ai_extract_cache.jsonl"
 AI_REQUIREMENTS = "ai_requirements.jsonl"
 AI_REQUIREMENTS_META = "ai_requirements.meta.json"
-AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION = "ai-requirements-producer-lineage-v2"
+AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION = "ai-requirements-producer-lineage-v3"  # v3:lineage 经共享 deterministic_extraction_versions() 纳入 compliance_schema(v2 漏钉)
 AI_NORMATIVE_FRAMING_VERSION = "ai-normative-framing-v2"
 NO_LEDGER_BASELINE_LINEAGE_VERSION = "no-ledger-baseline-lineage-v2"
 COMPLIANCE_REQUIREMENTS = "compliance_requirements.json"
@@ -396,18 +396,49 @@ def no_ledger_baseline_lineage_matches(
     )
 
 
-def current_ai_requirements_producer_lineage() -> dict[str, str]:
-    """Return the code lineage that defines the published B-track target text."""
+def section_cache_versions() -> dict[str, str]:
+    """Versions that change the paid per-section cache payload itself.
+
+    Normative framing and merged consistency run after cached rows are loaded, so
+    their versions belong to publication lineage but not this paid cache key. The
+    verify prompt is already included in ``context_key`` only when verification is
+    enabled; keeping it out here avoids invalidating verify-off caches.
+    """
+    from compliance import COMPLIANCE_SCHEMA
+
+    return {
+        "extract_prompt_version": AI_EXTRACT_PROMPT_VERSION,
+        "extract_guards_version": EXTRACT_GUARDS_VERSION,
+        "compliance_schema": COMPLIANCE_SCHEMA,
+    }
+
+
+def producer_lineage_versions() -> dict[str, str]:
+    """Complete version vector for published ai-extract artifacts."""
+    from compliance import COMPLIANCE_SCHEMA
     from merged_consistency import MERGED_CONSISTENCY_VERSION
 
     return {
+        "extract_prompt_version": AI_EXTRACT_PROMPT_VERSION,
+        "extract_guards_version": EXTRACT_GUARDS_VERSION,
+        "verify_prompt_version": AI_VERIFY_PROMPT_VERSION,
+        "normative_framing_version": AI_NORMATIVE_FRAMING_VERSION,
+        "merged_consistency_version": MERGED_CONSISTENCY_VERSION,
+        "compliance_schema": COMPLIANCE_SCHEMA,
+    }
+
+
+def deterministic_extraction_versions() -> dict[str, str]:
+    """Backward-compatible name for the complete producer lineage vector."""
+    return producer_lineage_versions()
+
+
+def current_ai_requirements_producer_lineage() -> dict[str, str]:
+    """Return the code lineage that defines the published B-track target text."""
+    return {
         "schema": AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION,
         "producer": "ai_extract",
-        "extract_prompt_version": AI_EXTRACT_PROMPT_VERSION,
-        "verify_prompt_version": AI_VERIFY_PROMPT_VERSION,
-        "extract_guards_version": EXTRACT_GUARDS_VERSION,
-        "merged_consistency_version": MERGED_CONSISTENCY_VERSION,
-        "normative_framing_version": AI_NORMATIVE_FRAMING_VERSION,
+        **producer_lineage_versions(),
     }
 
 
@@ -1492,7 +1523,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v17"  # v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v18"  # v18:section cache 与完整 producer lineage 分层纳入 compliance_schema,堵死 v17 漏钉且避免缓存后处理版本触发付费重抽;v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -1500,8 +1531,9 @@ def section_fingerprint(section: dict[str, Any], model: str, context_key: str = 
     refs_key = hashlib.sha256(json.dumps(refs, ensure_ascii=False).encode("utf-8")).hexdigest()[:12] if refs else ""
     drift_source = str(section.get("drift_source") or section.get("text") or "")
     drift_key = hashlib.sha256(drift_source.encode("utf-8")).hexdigest()[:16]
+    version_key = "+".join(section_cache_versions().values())
     digest = hashlib.sha256(
-        f"{section.get('text', '')}\n{model}\n{AI_EXTRACT_PROMPT_VERSION}\n{EXTRACT_GUARDS_VERSION}"
+        f"{section.get('text', '')}\n{model}\n{version_key}"
         f"\n{context_key}\n{refs_key}\n{drift_key}".encode("utf-8")
     ).hexdigest()
     return digest[:24]

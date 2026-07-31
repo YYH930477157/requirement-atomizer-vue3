@@ -95,6 +95,17 @@ class ClaimEffectiveAuthorityChanged(ClaimArtifactError):
     """Raised when a committed effective snapshot no longer matches live authority."""
 
 
+class ClaimAttemptLogTornTail(ClaimArtifactError):
+    """Raised when a verdict-attempt ledger ends in a partial line that never settles.
+
+    A missing trailing newline is only a *suspected* torn tail — the publisher may
+    still be appending. Read paths re-read within a bounded window and only raise
+    this once the partial tail stays stable across the whole window. A complete line
+    whose hash/chain/schema is forged is a different failure: ``_validate_attempt_rows``
+    rejects it immediately, never retried.
+    """
+
+
 def _publication_process_lock(root: Path) -> RLock:
     with _PUBLICATION_LOCKS_GUARD:
         return _PUBLICATION_LOCKS.setdefault(root, RLock())
@@ -1909,6 +1920,29 @@ def _read_claim_verifier_attempts_unlocked(
         if allow_missing:
             return []
         raise ClaimArtifactError(f"missing verifier attempt ledger: {path.name}")
+    raw = path.read_bytes()
+    if raw and not raw.endswith(b"\n"):
+        # A missing trailing newline on the final line is a suspected torn tail: the
+        # publisher may still be appending. Re-read within a bounded window and only
+        # declare permanent corruption if the partial tail never settles. A complete
+        # line whose hash/chain/schema is forged is distinguished by
+        # _validate_attempt_rows below and rejected immediately, never retried.
+        max_retries = int(os.environ.get("RATOMIZER_ATTEMPT_LOG_TORN_RETRIES", "3"))
+        retry_delay = float(os.environ.get("RATOMIZER_ATTEMPT_LOG_TORN_DELAY", "0.005"))
+        settled = False
+        for _ in range(max_retries):
+            time.sleep(retry_delay)
+            candidate = path.read_bytes()
+            if candidate.endswith(b"\n"):
+                raw = candidate
+                settled = True
+                break
+            if candidate != raw:
+                raw = candidate  # still moving; keep observing within the window
+        if not settled and raw and not raw.endswith(b"\n"):
+            raise ClaimAttemptLogTornTail(
+                "verifier attempt ledger has a persistent torn tail that never settled"
+            )
     rows = _read_jsonl(path, label="verifier attempt ledger")
     _validate_attempt_rows(rows)
     return rows
@@ -4453,7 +4487,11 @@ def _load_committed_effective_unlocked(
     if effective_version == CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
         _validate_schema(
             effective,
-            "claim_effective_meta.schema.json",
+            (
+                "claim_effective_meta_seed.schema.json"
+                if refold_seed_only
+                else "claim_effective_meta.schema.json"
+            ),
             label="effective claim meta",
         )
         _require_canonical_json_value(

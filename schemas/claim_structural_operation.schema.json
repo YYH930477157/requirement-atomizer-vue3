@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ratomizer.local/schemas/claim_structural_operation.schema.json",
-  "title": "Claim structural operation event v2",
+  "title": "Claim structural operation event v3",
   "oneOf": [
     {"$ref": "#/$defs/started"},
     {"$ref": "#/$defs/override_registered"},
@@ -14,7 +14,8 @@
     {"$ref": "#/$defs/base_rebuild"},
     {"$ref": "#/$defs/effective_fold"},
     {"$ref": "#/$defs/succeeded"},
-    {"$ref": "#/$defs/aborted_stale"}
+    {"$ref": "#/$defs/aborted_stale"},
+    {"$ref": "#/$defs/recovery_failed_post_publication"}
   ],
   "$defs": {
     "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
@@ -25,7 +26,12 @@
         "operation_id", "event_kind", "recorded_at", "idempotency_key"
       ],
       "properties": {
-        "schema": {"const": "claim-structural-operation/v2"},
+        "schema": {
+          "enum": [
+            "claim-structural-operation/v2",
+            "claim-structural-operation/v3"
+          ]
+        },
         "event_seq": {"type": "integer", "minimum": 1},
         "event_id": {"type": "string", "pattern": "^CSOE-[1-9][0-9]*-[0-9a-f]{12}$"},
         "prev_event_hash": {"$ref": "#/$defs/hash"},
@@ -37,7 +43,8 @@
             "budget_checkpoint", "verifier_checkpoint", "operation_failed",
             "operation_reconfirmation_required", "operation_reconfirmed",
             "base_rebuild_published", "effective_folded",
-            "operation_succeeded", "operation_aborted_stale"
+            "operation_succeeded", "operation_aborted_stale",
+            "operation_recovery_failed_post_publication"
           ]
         },
         "recorded_at": {"type": "string", "format": "date-time"},
@@ -358,6 +365,28 @@
             "event_kind": {"const": "operation_aborted_stale"},
             "outcome": {"$ref": "#/$defs/outcome"},
             "usage": {"oneOf": [{"$ref": "#/$defs/usage"}, {"type": "null"}]}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "recovery_failed_post_publication": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "required": ["outcome", "usage", "binding"],
+          "properties": {
+            "schema": {"const": "claim-structural-operation/v3"},
+            "event_kind": {
+              "const": "operation_recovery_failed_post_publication"
+            },
+            "outcome": {"$ref": "#/$defs/outcome"},
+            "usage": {"oneOf": [{"$ref": "#/$defs/usage"}, {"type": "null"}]},
+            "binding": {
+              "type": "object",
+              "minProperties": 1
+            }
           }
         }
       ],

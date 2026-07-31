@@ -573,19 +573,17 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
         producer = f"{producer}+{AGENT_POLICY_VERSION}"
     try:
         if stage == "ai-extract":
-            # 版本戳必须覆盖全部影响产物的代码层；否则 guards/verify 升级后
-            # chain 续跑仍可能复用旧结果。
+            # 版本戳必须覆盖全部影响产物的代码层；否则 guards/verify/compliance 升级后
+            # chain 续跑仍可能复用旧结果。阶段戳采用完整 producer lineage；付费 section
+            # cache 只钉实际改变缓存行的子集，避免纯发布后处理升级触发无必要重抽。
             from ai_extract import (
-                AI_EXTRACT_PROMPT_VERSION,
-                AI_NORMATIVE_FRAMING_VERSION,
-                AI_VERIFY_PROMPT_VERSION,
-                EXTRACT_GUARDS_VERSION,
+                AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION,
+                producer_lineage_versions,
             )
-            from compliance import COMPLIANCE_SCHEMA
-            from merged_consistency import MERGED_CONSISTENCY_VERSION
-            producer = (f"{AI_EXTRACT_PROMPT_VERSION}+{EXTRACT_GUARDS_VERSION}"
-                        f"+{AI_VERIFY_PROMPT_VERSION}+{AI_NORMATIVE_FRAMING_VERSION}"
-                        f"+{MERGED_CONSISTENCY_VERSION}+{COMPLIANCE_SCHEMA}")
+            producer = "+".join((
+                AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION,
+                *producer_lineage_versions().values(),
+            ))
         elif stage == "atomize":
             # PDF text repair changes blocks consumed by every downstream stage. Include both
             # the algorithm version and the bundled vocabulary content in the producer so a

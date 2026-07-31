@@ -438,21 +438,87 @@ class ClaimLedgerHttpTests(unittest.TestCase):
                         "offset=abc",
                     )
                 ]
-                compat_limit = _http_json(
-                    base_url, "/claim-queue?compat_limit=0"
-                )
-                compat_offset = _http_json(
-                    base_url, "/claim-queue?compat_offset=-1"
-                )
+                compat_cases = {
+                    "compat_limit=0": "claim compat_limit must be between 1 and 500",
+                    "compat_limit=501": "claim compat_limit must be between 1 and 500",
+                    "compat_limit=abc": "invalid claim compat_limit",
+                    "compat_offset=-1": "claim compat_offset must be non-negative",
+                    "compat_offset=abc": "invalid claim compat_offset",
+                }
+                compat_responses = {
+                    query: _http_json(base_url, f"/claim-queue?{query}")
+                    for query in compat_cases
+                }
 
         self.assertTrue(all(status == 400 for status, _payload in responses))
         self.assertTrue(all(
             payload["retryable"] is False for _status, payload in responses
         ))
-        self.assertEqual(compat_limit[0], 400)
-        self.assertIn("compat_limit", compat_limit[1]["error"])
-        self.assertEqual(compat_offset[0], 400)
-        self.assertIn("compat_offset", compat_offset[1]["error"])
+        for query, expected in compat_cases.items():
+            status, payload = compat_responses[query]
+            self.assertEqual(status, 400, query)
+            self.assertEqual(payload["error"], expected, query)
+            self.assertFalse(payload["retryable"], query)
+
+    def test_compat_omission_pagination_slices_with_real_totals(self) -> None:
+        import omission_actions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            blocks = [
+                {"block_id": f"B{index}", "text": f"omitted block {index}"}
+                for index in range(4)
+            ]
+            claim_artifacts.atomic_write_jsonl(root / "blocks.jsonl", blocks)
+            claim_artifacts.atomic_write_jsonl(
+                root / omission_actions.OMISSION_STATES,
+                [
+                    {
+                        "omission_id": omission_actions.make_omission_id(
+                            block["block_id"], block["text"],
+                        ),
+                        "block_id": block["block_id"],
+                        "status": "needs_extraction",
+                        "reason": "compat pagination probe",
+                    }
+                    for block in blocks
+                ],
+            )
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(
+                    base_url, "/claim-queue?compat_limit=2&compat_offset=1",
+                )
+                status_rest, rest = _http_json(
+                    base_url, "/claim-queue?compat_limit=2&compat_offset=3",
+                )
+                status_unpaged, unpaged = _http_json(base_url, "/claim-queue")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["compat_omission_total"], 4)
+        self.assertEqual(payload["compat_omission_limit"], 2)
+        self.assertEqual(payload["compat_omission_offset"], 1)
+        self.assertEqual(status_rest, 200)
+        self.assertEqual(rest["compat_omission_offset"], 3)
+        self.assertEqual(status_unpaged, 200)
+        self.assertEqual(len(unpaged["compat_omissions"]), 4)
+        # Unpaged contract: limit equals the returned row count.
+        self.assertEqual(unpaged["compat_omission_limit"], 4)
+        stable_order = [
+            row["omission_id"] for row in unpaged["compat_omissions"]
+        ]
+        self.assertEqual(
+            [row["omission_id"] for row in payload["compat_omissions"]],
+            stable_order[1:3],
+        )
+        self.assertEqual(
+            [row["omission_id"] for row in rest["compat_omissions"]],
+            stable_order[3:],
+        )
+        self.assertEqual(
+            payload["compat_omission_revision"],
+            unpaged["compat_omission_revision"],
+        )
 
     def test_http_review_events_hide_previous_generation_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -682,6 +748,38 @@ class ClaimMutationHttpTests(unittest.TestCase):
         self.assertTrue(payload["retryable"])
         self.assertIn("omission state changed", payload["error"])
 
+    def test_claim_queue_execute_torn_attempt_log_is_structured_503(self) -> None:
+        import claim_reextract_attempts
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            attempt_path = root / claim_reextract_attempts.CLAIM_REEXTRACT_ATTEMPTS
+            torn = b'{"schema":"claim-reextract-attempt/v1"'
+            attempt_path.write_bytes(torn)
+            with _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(base_url, "/claim-queue/execute", {
+                    "proposal_id": "CQP-12345678-9abcdef0",
+                    "expected_claim_effective_revision": "sha256:" + "1" * 64,
+                    "expected_ledger_state": "uncertain",
+                    "actor": "expert:yyh",
+                    "allow_llm": True,
+                    "route": "openai_compatible",
+                    "maximum_calls": 4,
+                    "total_token_budget": 20000,
+                    "request_idempotency_key": "http-torn-attempt-1",
+                    "expected_route_config_revision": "sha256:" + "2" * 64,
+                }, token=self.TOKEN)
+            after = attempt_path.read_bytes()
+
+        self.assertEqual(status, 503)
+        self.assertEqual(
+            payload["error"],
+            "claim_reextract_attempt_recovery_required",
+        )
+        self.assertIn("torn tail", payload["detail"])
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(after, torn)
+
     @staticmethod
     def _structural_override_payload() -> dict:
         return {
@@ -795,6 +893,88 @@ class ClaimMutationHttpTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertFalse(payload["retryable"])
         self.assertIn("not runtime-overridable", payload["error"])
+
+    def test_claim_structural_override_torn_event_log_is_503_without_recovery(self) -> None:
+        from claim_review_actions import ClaimReviewActionError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            events_path = root / claim_review_actions.CLAIM_REVIEW_EVENTS
+            before = events_path.read_bytes() if events_path.is_file() else b""
+
+            with patch(
+                "claim_structural_overrides.confirm_structural_override",
+                side_effect=ClaimReviewActionError(
+                    "claim review event log has a torn tail"
+                ),
+            ), _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    self._structural_override_payload(),
+                    token=self.TOKEN,
+                )
+
+            after = events_path.read_bytes() if events_path.is_file() else b""
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "claim_review_event_recovery_required")
+        self.assertTrue(payload["retryable"])
+        # The endpoint must never truncate or repair the event log itself; explicit
+        # claim maintenance (repair=True) is the only thing that quarantines a torn tail.
+        self.assertEqual(after, before)
+
+    def test_claim_structural_override_artifact_failure_is_distinct_retryable_503(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_structural_overrides.confirm_structural_override",
+                side_effect=claim_artifacts.ClaimArtifactError(
+                    "effective snapshot is temporarily unavailable"
+                ),
+            ), _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    self._structural_override_payload(),
+                    token=self.TOKEN,
+                )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "claim_artifact_recovery_required")
+        self.assertTrue(payload["retryable"])
+        self.assertIn("temporarily unavailable", payload["detail"])
+
+    def test_claim_structural_override_torn_operation_log_is_503_without_recovery(self) -> None:
+        import claim_structural_operations
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            operation_path = (
+                root / claim_structural_operations.CLAIM_STRUCTURAL_OPERATIONS
+            )
+            torn = b'{"schema":"claim-structural-operation/v3"'
+            operation_path.write_bytes(torn)
+
+            with _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    self._structural_override_payload(),
+                    token=self.TOKEN,
+                )
+
+            after = operation_path.read_bytes()
+
+        self.assertEqual(status, 503)
+        self.assertEqual(
+            payload["error"],
+            "claim_structural_operation_recovery_required",
+        )
+        self.assertIn("torn tail", payload["detail"])
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(after, torn)
 
     def test_claim_structural_override_real_http_rebuild_pending_is_503(self) -> None:
         pending = {

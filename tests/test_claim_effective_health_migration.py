@@ -1,4 +1,5 @@
 import json
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,147 @@ from tests.test_claim_artifacts import _catalog, _effective_candidate, _publish
 
 
 class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
+    def test_refold_seed_schema_splits_current_and_legacy_vectors(self) -> None:
+        """Split current vs refold-seed schema (任务5).
+
+        正式读取/发布继续要求当前 versions const(reducer-v3);``refold_seed_only=True``
+        改用独立 seed schema,其 ``versions`` 用 oneOf 列出合法 v3 向量(当前 + 受支持的旧
+        reducer-v2),拒绝伪造混合与未知版本——历史版本绝不放宽为任意字符串。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            folded = claim_review_actions.fold_effective_ledger(
+                root, actor_trigger="seed-schema-test",
+            )
+            meta = dict(folded["effective_meta"])
+
+            # Current v3 vector validates against both schemas.
+            claim_artifacts._validate_schema(
+                dict(meta), "claim_effective_meta.schema.json", label="current meta",
+            )
+            claim_artifacts._validate_schema(
+                dict(meta), "claim_effective_meta_seed.schema.json", label="current seed",
+            )
+
+            def _with_versions(overlay: dict[str, object]) -> dict:
+                merged = dict(meta)
+                versions = dict(meta["versions"])
+                versions.update(overlay)
+                merged["versions"] = versions
+                return merged
+
+            # Simulated next-component bump: the seed schema accepts this internally
+            # consistent stale v3 vector only as refold input. It is not presented as
+            # the historical snapshot-v2 wire format, which is covered separately.
+            legacy = _with_versions({"effective_reducer": "claim-effective-reducer-v2"})
+            legacy["reducer_version"] = "claim-effective-reducer-v2"
+            claim_artifacts._validate_schema(
+                legacy, "claim_effective_meta_seed.schema.json", label="legacy seed",
+            )
+            self.assertFalse(
+                claim_artifacts.effective_versions_are_current({"effective_meta": legacy})
+            )
+
+            # Forged mix (current reducer + a queue that never shipped with v3 snapshot): the
+            # seed oneOf matches neither legal vector and must reject it.
+            forged = _with_versions({"queue": "claim-queue-v2"})
+            with self.assertRaises(claim_artifacts.ClaimArtifactError):
+                claim_artifacts._validate_schema(
+                    forged, "claim_effective_meta_seed.schema.json", label="forged seed",
+                )
+
+            # Unknown version is rejected by both schemas.
+            unknown = _with_versions({"effective_reducer": "claim-effective-reducer-v99"})
+            with self.assertRaises(claim_artifacts.ClaimArtifactError):
+                claim_artifacts._validate_schema(
+                    unknown, "claim_effective_meta_seed.schema.json", label="unknown seed",
+                )
+
+    def test_simulated_stale_reducer_vector_loads_as_seed_and_refolds_current(self) -> None:
+        from claim_effective_contract import (
+            compute_claim_effective_revision,
+            compute_effective_authority_projection_hash,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _publish(root, _catalog())
+            claim_review_actions.fold_effective_ledger(
+                root, actor_trigger="legacy-seed-fixture",
+            )
+            current = claim_artifacts.load_committed_effective_snapshot_readonly(root)
+            rows = copy.deepcopy(current["effective_ledger"])
+            meta = copy.deepcopy(current["effective_meta"])
+
+            for row in rows:
+                inputs = dict(row["revision_inputs"])
+                input_versions = dict(inputs["versions"])
+                input_versions["reducer_version"] = "claim-effective-reducer-v2"
+                inputs["versions"] = input_versions
+                row["revision_inputs"] = inputs
+                row["claim_effective_revision"] = compute_claim_effective_revision(
+                    inputs
+                )
+
+            projection_hash = compute_effective_authority_projection_hash(rows)
+            meta["reducer_version"] = "claim-effective-reducer-v2"
+            versions = dict(meta["versions"])
+            versions["effective_reducer"] = "claim-effective-reducer-v2"
+            meta["versions"] = versions
+            meta["authority_projection_hash"] = projection_hash
+            meta["document_effective_revision"] = claim_artifacts.hash_json(
+                "claim-document-effective-revision/v2",
+                {
+                    "base_generation_id": meta["base_generation_id"],
+                    "last_event_seq": meta["last_event_seq"],
+                    "event_prefix_sha256": meta["event_prefix_sha256"],
+                    "target_set_hash": meta["target_set_hash"],
+                    "requirement_review_state_hash": meta[
+                        "requirement_review_state_hash"
+                    ],
+                    "authority_projection_hash": projection_hash,
+                    "effective_ledger_schema": meta["effective_ledger_schema"],
+                    "effective_snapshot_version": meta[
+                        "effective_snapshot_version"
+                    ],
+                    "effective_artifact_version": meta[
+                        "effective_artifact_version"
+                    ],
+                    "reducer_version": meta["reducer_version"],
+                    "bridge_version": meta["bridge_version"],
+                    "queue_version": meta["queue_version"],
+                },
+            )
+            claim_artifacts.atomic_write_jsonl(
+                root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER, rows,
+            )
+            meta["effective_ledger_sha256"] = claim_artifacts.file_sha256(
+                root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER
+            )
+            claim_artifacts.atomic_write_canonical_json(
+                root / claim_artifacts.CLAIM_EFFECTIVE_META, meta,
+            )
+
+            seed = claim_artifacts.load_committed_effective_refold_seed(root)
+            self.assertIsNone(seed["trusted_current_snapshot"])
+            self.assertEqual(
+                seed["source_effective_meta"]["reducer_version"],
+                "claim-effective-reducer-v2",
+            )
+            claim_review_actions.fold_effective_ledger(
+                root, actor_trigger="legacy-seed-refold",
+            )
+            refolded = claim_artifacts.load_committed_effective_snapshot_readonly(
+                root
+            )
+
+            self.assertTrue(claim_artifacts.effective_versions_are_current(refolded))
+            self.assertEqual(
+                refolded["effective_meta"]["reducer_version"],
+                "claim-effective-reducer-v3",
+            )
+
     def test_pre_migration_health_sidecar_gets_additive_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -201,7 +343,7 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
                 [record],
             )
 
-    def test_real_v2_protocol_fixture_migrates_during_startup(self) -> None:
+    def test_supported_v2_protocol_shape_migrates_during_startup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _publish(root, _catalog())

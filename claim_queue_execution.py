@@ -76,6 +76,20 @@ def _event_key(attempt_id: str, kind: str, detail: Any) -> str:
 
 CLAIM_QUEUE_ROUTE_CONFIG_REVISION_VERSION = "claim-queue-route-config/v2"
 
+# Persisted attempt schemas are a read contract, not an alias for the current
+# writer version. Keep every supported reader identity explicit so a future v3
+# writer does not accidentally make historical v2 attempts unreadable.
+_REPLAY_ATTEMPT_SCHEMA_POLICIES = {
+    "claim-reextract-attempt/v1": {
+        "allow_legacy_revision_key": True,
+        "has_route_config_revision": False,
+    },
+    "claim-reextract-attempt/v2": {
+        "allow_legacy_revision_key": False,
+        "has_route_config_revision": True,
+    },
+}
+
 
 def _credential_identity(config: Any) -> dict[str, Any]:
     """Return a non-secret identity for the credential used by this route."""
@@ -232,10 +246,29 @@ def _require_matching_replay_request(
     differs("actor", actor, str(started.get("actor") or ""))
     differs("route", route, str(started.get("route") or ""))
     differs("expected_ledger_state", expected_ledger_state, "uncertain")
+    started_schema = str(started.get("schema") or "")
+    schema_policy = _REPLAY_ATTEMPT_SCHEMA_POLICIES.get(started_schema)
+    if schema_policy is None:
+        raise ClaimQueueExecutionConflict(
+            f"unsupported re-extract attempt schema: {started_schema or 'missing'}"
+        )
+    canonical_revision = str(
+        preconditions.get("expected_claim_effective_revision") or ""
+    )
+    legacy_revision = str(preconditions.get("claim_effective_revision") or "")
+    if (
+        canonical_revision
+        and legacy_revision
+        and canonical_revision != legacy_revision
+    ):
+        mismatches.append("claim_effective_revision_keys")
+    committed_revision = canonical_revision
+    if not committed_revision and schema_policy["allow_legacy_revision_key"]:
+        committed_revision = legacy_revision
     differs(
         "expected_claim_effective_revision",
         expected_claim_effective_revision,
-        str(preconditions.get("claim_effective_revision") or ""),
+        committed_revision,
     )
     if not deterministic_recovery:
         differs("allow_llm", allow_llm is True, True)
@@ -253,12 +286,10 @@ def _require_matching_replay_request(
             requested_tokens,
             budgets.get("max_total_tokens"),
         )
-        committed_route_revision = str(
-            started.get("route_config_revision") or ""
-        )
-        # v1 attempts did not persist this field. For v2, confirmation must
-        # identify the same paid request; replay never re-resolves live config.
-        if expected_route_config_revision or committed_route_revision:
+        if schema_policy["has_route_config_revision"]:
+            committed_route_revision = str(
+                started.get("route_config_revision") or ""
+            )
             differs(
                 "expected_route_config_revision",
                 expected_route_config_revision,

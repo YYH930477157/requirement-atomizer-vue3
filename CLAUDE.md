@@ -34,6 +34,14 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - 推送前全量测试必须绿（`python -m unittest discover -s tests` + `cd ui && npm test`），message 不写未经测试验证的声明
 - 已推送的历史不改写；信息写错了用新提交修正，不 amend/force-push
 
+## 重大更新（2026-07-31）——Claim Ledger 加固复审修复（分支 `codex/claim-gate-hardening`，未提交）
+
+- **HTTP 与重放契约**：`compat_limit`/`compat_offset` 按兼容分页语义校验，真实 HTTP 调用不再因字段名被拒；队列重放显式区分 v1/v2 writer，生产 proposal 使用 `expected_claim_effective_revision`，旧键只在 v1 受控兼容，双键冲突与未来 writer 一律拒绝。
+- **付费结构覆盖恢复**：verifier 首次失败后重试成功可持久化已结算决策；checkpoint 绑定最新预算事件。base 已提交而 operation WAL 尚未写入时的真实子进程 `os._exit` 恢复，不重复抽取或付费，并恰好补齐 `base_rebuild_published`、`effective_folded`、`operation_succeeded` 三个 checkpoint。瞬时 `PermissionError`/产物读取失败保持 operation 开放并返回可重试错误，只有成功读取后确认 authority/binding 漂移才写不可逆终态。
+- **账本读取与有效快照**：review-event、structural-operation、attempt WAL 撕裂尾分别映射为结构化 503，不在 GET 中截断或修复；attempt 稳定读取覆盖完整有界窗口。effective refold seed schema 允许明确枚举的陈旧组件向量用于重建，正式读取仍严格要求当前版本。
+- **缓存血缘与前端一致性**：`ai_extract` section cache 纳入 compliance/guards 版本，producer lineage 单独纳入完整 compliance/verify/framing/merge 版本，`ai-extract` stage producer 同时钉住 lineage schema 常量；`EXTRACT_GUARDS_VERSION` 升至 `guards-v18`。Claim Ledger 抽屉采用有界 R1→R3 重取，并在函数内拒绝 stale/detail-loading 的结构操作。
+- **验证**：设置历史样本环境变量后，后端全量 `2372 tests OK (skipped=18)`；golden `6/6` 零漂移；`agent_eval` 四类均 `1.0`、`unreviewed=0`；前端 Vitest `170 passed`、`npm run build` 通过；`py_compile` 与 `git diff --check` 通过。未修改 `golden_sets/`、冻结 golden 输出或 LLM prompt。
+
 ## 重大更新（2026-07-30）——Claim Ledger 强化 8 修 + 4 增强（分支 `codex/claim-hardening-v5`；主检出全量 2336 tests OK、18 项冻结 PySide6 GUI 测试因依赖未安装而跳过、golden 6/6 零漂移、agent_eval 4×1.0、前端 vitest 167 + vue-tsc/Vite build）
 
 统一版本迁移：**catalog v4→v5、effective snapshot v2→v3、effective artifacts v1→v2、effective ledger v1→v2、effective reducer v2→v3、queue v2→v3、candidate policy v3→v4-active-formal-gate、coverage runtime v10→v11**。旧 base 由版本闸（`base_versions_are_current`）检出后返回 `base_migration_required`，必须先经上游 extraction/base publication 重建，startup/POST `/claim-maintenance` 不会绕过该门禁；base 已为 current 时，API startup 或显式 maintenance fold 才迁移 effective v1/v2→v3，并把迁移记进 health（含确定性 `migration_id`）。冻结 golden held-out 按 `GOLDEN_CATALOG_VERSIONS` 回放 catalog-v4 身份哈希，baseline 未动。
