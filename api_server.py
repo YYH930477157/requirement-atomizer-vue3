@@ -985,40 +985,61 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             from claim_structural_overrides import (
                 ClaimStructuralOverrideError,
                 ClaimStructuralOverrideStale,
+                confirm_structural_exclusion,
                 confirm_structural_override,
             )
 
-            result = confirm_structural_override(
-                self.output_dir,
-                claim_id=str(payload.get("claim_id") or "").strip(),
-                claim_hash=str(payload.get("claim_hash") or "").strip(),
-                expected_catalog_generation_id=str(
+            common = {
+                "claim_id": str(payload.get("claim_id") or "").strip(),
+                "claim_hash": str(payload.get("claim_hash") or "").strip(),
+                "expected_catalog_generation_id": str(
                     payload.get("expected_catalog_generation_id") or ""
                 ).strip(),
-                expected_claim_effective_revision=str(
+                "expected_claim_effective_revision": str(
                     payload.get("expected_claim_effective_revision") or ""
                 ).strip(),
-                prior_structural_reason=str(
+                "prior_structural_reason": str(
                     payload.get("prior_structural_reason") or ""
                 ).strip(),
-                actor=str(payload.get("actor") or "").strip(),
-                reason=str(payload.get("reason") or "").strip(),
-                request_idempotency_key=str(
+                "actor": str(payload.get("actor") or "").strip(),
+                "reason": str(payload.get("reason") or "").strip(),
+                "request_idempotency_key": str(
                     payload.get("request_idempotency_key") or ""
                 ).strip(),
-                allow_llm=payload.get("allow_llm"),
-                route=str(payload.get("route") or "").strip(),
-                verifier_max_calls=payload.get("verifier_max_calls", -1),
-                verifier_max_total_tokens=payload.get(
-                    "verifier_max_total_tokens", -1
-                ),
-                operation_id=(
-                    str(payload.get("operation_id") or "").strip() or None
-                ),
-                reconfirm_paid_work=payload.get(
-                    "reconfirm_paid_work", False,
-                ),
-            )
+            }
+            decision = str(
+                payload.get("decision") or "promote_to_claim"
+            ).strip()
+            if decision == "confirm_exclusion":
+                if payload.get("operation_id") or payload.get("allow_llm") is True:
+                    raise ClaimStructuralOverrideError(
+                        "exclusion confirmation cannot resume or authorize LLM work"
+                    )
+                result = confirm_structural_exclusion(
+                    self.output_dir,
+                    **common,
+                )
+            elif decision == "promote_to_claim":
+                result = confirm_structural_override(
+                    self.output_dir,
+                    **common,
+                    allow_llm=payload.get("allow_llm"),
+                    route=str(payload.get("route") or "").strip(),
+                    verifier_max_calls=payload.get("verifier_max_calls", -1),
+                    verifier_max_total_tokens=payload.get(
+                        "verifier_max_total_tokens", -1
+                    ),
+                    operation_id=(
+                        str(payload.get("operation_id") or "").strip() or None
+                    ),
+                    reconfirm_paid_work=payload.get(
+                        "reconfirm_paid_work", False,
+                    ),
+                )
+            else:
+                raise ClaimStructuralOverrideError(
+                    "unknown structural candidate decision"
+                )
         except ClaimStructuralOverrideStale as exc:
             self.send_json({
                 "error": str(exc),
@@ -1325,6 +1346,9 @@ _BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
                  "text_repair_candidates_before", "text_repair_candidates_after",
                  # 表格块渲染真表格所需（旧 blocks.jsonl 无这些字段 → None，前端回退扁平文字）
                  "table_title", "table_source", "header_rows", "data_rows",
+                 # 物理行坐标（v15）：thead/title 行 cell 按钮与合并跨度 DOM 渲染的
+                 # 物理定位（cell_context 是物理 R×C，data_rows 是数据区序号）
+                 "title_row_indexes", "header_row_indexes",
                  # 行级渲染的表头（v12 行热区/行卡/v13 行区切片都要 _row_render_line(headers)——
                  # 缺它时行文本为空,行几何与行卡静默全灭,STO 实证）
                  "headers")

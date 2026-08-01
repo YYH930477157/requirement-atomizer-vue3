@@ -63,7 +63,7 @@
         "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
         "effective_reducer": {"type": "string", "minLength": 1},
         "effective_snapshot": {"const": "claim-effective-snapshot-v3"},
-        "queue": {"const": "claim-queue-v3"},
+        "queue": {"const": "claim-queue-v4"},
         "review_bridge": {"const": "claim-review-bridge-v2"},
         "review_event_schema": {"const": "claim-review-event/v2"},
         "revision_inputs": {"const": "claim-effective-revision-inputs/v2"}

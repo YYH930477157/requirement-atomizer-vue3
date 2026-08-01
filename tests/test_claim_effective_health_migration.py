@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 import claim_artifacts
+import claim_catalog
 import claim_review_actions
 import api_server
 import review_state
@@ -16,8 +17,9 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
         """Split current vs refold-seed schema (任务5).
 
         正式读取/发布继续要求当前 versions const(reducer-v3);``refold_seed_only=True``
-        改用独立 seed schema,其 ``versions`` 用 oneOf 列出合法 v3 向量(当前 + 受支持的旧
-        reducer-v2),拒绝伪造混合与未知版本——历史版本绝不放宽为任意字符串。
+        改用独立 seed schema,其 ``versions`` 用 oneOf 列出合法 v3 向量（当前 queue-v4
+        + 已发布的旧 queue-v3/reducer-v3 与 queue-v3/reducer-v2），拒绝伪造混合与
+        未知版本——历史版本绝不放宽为任意字符串。
         """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -45,13 +47,30 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
             # Simulated next-component bump: the seed schema accepts this internally
             # consistent stale v3 vector only as refold input. It is not presented as
             # the historical snapshot-v2 wire format, which is covered separately.
-            legacy = _with_versions({"effective_reducer": "claim-effective-reducer-v2"})
+            legacy = _with_versions({
+                "effective_reducer": "claim-effective-reducer-v2",
+                "queue": "claim-queue-v3",
+            })
             legacy["reducer_version"] = "claim-effective-reducer-v2"
+            legacy["queue_version"] = "claim-queue-v3"
             claim_artifacts._validate_schema(
                 legacy, "claim_effective_meta_seed.schema.json", label="legacy seed",
             )
             self.assertFalse(
                 claim_artifacts.effective_versions_are_current({"effective_meta": legacy})
+            )
+
+            legacy_queue = _with_versions({"queue": "claim-queue-v3"})
+            legacy_queue["queue_version"] = "claim-queue-v3"
+            claim_artifacts._validate_schema(
+                legacy_queue,
+                "claim_effective_meta_seed.schema.json",
+                label="legacy queue seed",
+            )
+            self.assertFalse(
+                claim_artifacts.effective_versions_are_current({
+                    "effective_meta": legacy_queue
+                })
             )
 
             # Forged mix (current reducer + a queue that never shipped with v3 snapshot): the
@@ -69,7 +88,7 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
                     unknown, "claim_effective_meta_seed.schema.json", label="unknown seed",
                 )
 
-    def test_simulated_stale_reducer_vector_loads_as_seed_and_refolds_current(self) -> None:
+    def test_simulated_stale_queue_and_reducer_vector_refolds_current(self) -> None:
         from claim_effective_contract import (
             compute_claim_effective_revision,
             compute_effective_authority_projection_hash,
@@ -83,6 +102,7 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
             )
             current = claim_artifacts.load_committed_effective_snapshot_readonly(root)
             rows = copy.deepcopy(current["effective_ledger"])
+            queue = copy.deepcopy(current["queue_proposals"])
             meta = copy.deepcopy(current["effective_meta"])
 
             for row in rows:
@@ -99,7 +119,9 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
             meta["reducer_version"] = "claim-effective-reducer-v2"
             versions = dict(meta["versions"])
             versions["effective_reducer"] = "claim-effective-reducer-v2"
+            versions["queue"] = "claim-queue-v3"
             meta["versions"] = versions
+            meta["queue_version"] = "claim-queue-v3"
             meta["authority_projection_hash"] = projection_hash
             meta["document_effective_revision"] = claim_artifacts.hash_json(
                 "claim-document-effective-revision/v2",
@@ -127,8 +149,38 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
             claim_artifacts.atomic_write_jsonl(
                 root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER, rows,
             )
+            for proposal in queue:
+                proposal["schema"] = "claim-queue-proposal/v2"
+                proposal["queue_version"] = "claim-queue-v3"
+                focus = dict(proposal["focus"])
+                focus["adapter_version"] = "claim-focus-adapter-v2"
+                proposal["focus"] = focus
+                preconditions = dict(proposal["execution_preconditions"])
+                preconditions["focus_adapter_version"] = "claim-focus-adapter-v2"
+                proposal["execution_preconditions"] = preconditions
+                proposal_hash = claim_artifacts.hash_json(
+                    "claim-queue-proposal-id/v2",
+                    {
+                        "claim_id": proposal["claim_id"],
+                        "claim_effective_revision": proposal[
+                            "claim_effective_revision"
+                        ],
+                        "action": "needs_extraction",
+                        "queue_version": "claim-queue-v3",
+                    },
+                )
+                proposal["proposal_id"] = (
+                    f"CQP-{claim_artifacts.digest_hex(proposal['claim_hash'])[:8]}-"
+                    f"{claim_artifacts.digest_hex(proposal_hash)[:8]}"
+                )
+            claim_artifacts.atomic_write_jsonl(
+                root / claim_artifacts.CLAIM_QUEUE_PROPOSALS, queue,
+            )
             meta["effective_ledger_sha256"] = claim_artifacts.file_sha256(
                 root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER
+            )
+            meta["queue_sha256"] = claim_artifacts.file_sha256(
+                root / claim_artifacts.CLAIM_QUEUE_PROPOSALS
             )
             claim_artifacts.atomic_write_canonical_json(
                 root / claim_artifacts.CLAIM_EFFECTIVE_META, meta,
@@ -152,6 +204,14 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
                 refolded["effective_meta"]["reducer_version"],
                 "claim-effective-reducer-v3",
             )
+            self.assertEqual(
+                refolded["effective_meta"]["queue_version"],
+                "claim-queue-v4",
+            )
+            self.assertTrue(all(
+                proposal["schema"] == "claim-queue-proposal/v3"
+                for proposal in refolded["queue_proposals"]
+            ))
 
     def test_pre_migration_health_sidecar_gets_additive_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -442,7 +502,7 @@ class ClaimEffectiveHealthMigrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 candidate["catalog_meta"]["catalog_version"],
-                "claim-catalog-v6",
+                claim_catalog.CLAIM_CATALOG_VERSION,
             )
             with self.assertRaisesRegex(
                 claim_artifacts.ClaimArtifactError,

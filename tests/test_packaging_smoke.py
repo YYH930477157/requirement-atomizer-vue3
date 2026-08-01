@@ -64,11 +64,14 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "schemas/claim_effective_publication_journal.schema.json",
                 "schemas/claim_queue_proposal.schema.json",
                 "schemas/claim_queue_proposal_v2.schema.json",
+                "schemas/claim_queue_proposal_v3.schema.json",
                 "schemas/claim_review_event.schema.json",
                 "schemas/claim_review_event_v2.schema.json",
                 "schemas/claim_reextract_attempt.schema.json",
                 "schemas/claim_structural_operation.schema.json",
                 "schemas/claim_structural_override.schema.json",
+                "schemas/claim_structural_candidate_decision.schema.json",
+                "schemas/claim_structural_candidate_decision_v2.schema.json",
                 "golden_sets/claim_ledger_v1/manifest.json",
                 "golden_sets/claim_ledger_v1/history/programmable-equivalent-001-v2-rejection.json",
                 "llm_agents/review_pipeline.yaml", "domain_packs/dlms_cosem/pack.yaml",
@@ -100,10 +103,13 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "'claim_effective_meta_seed.schema.json',"
                 "'claim_effective_publication_journal.schema.json',"
                 "'claim_queue_proposal.schema.json','claim_queue_proposal_v2.schema.json',"
+                "'claim_queue_proposal_v3.schema.json',"
                 "'claim_review_event.schema.json',"
                 "'claim_review_event_v2.schema.json','claim_reextract_attempt.schema.json',"
                 "'claim_structural_operation.schema.json',"
-                "'claim_structural_override.schema.json'];"
+                "'claim_structural_override.schema.json',"
+                "'claim_structural_candidate_decision.schema.json',"
+                "'claim_structural_candidate_decision_v2.schema.json'];"
                 "[Draft202012Validator.check_schema(json.loads((schema_root/name).read_text(encoding='utf-8')))"
                 " for name in phase1_schemas];"
                 "claim_held_out.load_golden_held_out();"

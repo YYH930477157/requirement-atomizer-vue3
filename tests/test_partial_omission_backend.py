@@ -1108,5 +1108,250 @@ class OmissionEndpointTests(unittest.TestCase):
                 implementation.assert_not_called()
 
 
+class ClaimFocusEvidenceTests(unittest.TestCase):
+    """P0-3 复审：上下文与可引用证据分离；矩阵 marker 三者同现才成立。"""
+
+    @staticmethod
+    def _section() -> dict:
+        return {
+            "section_id": "s1",
+            "heading": "S",
+            "text": (
+                "The meter shall authenticate all clients. "
+                "The meter shall log authentication failures."
+            ),
+            "block_ids": ["B1"],
+            "source_blocks": [{
+                "block_id": "B1",
+                "text": (
+                    "The meter shall authenticate all clients. "
+                    "The meter shall log authentication failures."
+                ),
+            }],
+        }
+
+    def test_marker_cell_focus_builds_composite_fact(self) -> None:
+        focus = {
+            "kind": "table_cell",
+            "table_cell_id": "TBL-000001-R000002-C000002",
+            "table_title": "Optical communication interface capabilities",
+            "header_path": ["Mode A"],
+            "row_header_context": ["Feature=Encryption"],
+            "text": "X",
+        }
+        evidence = omission_actions._claim_focus_evidence(Path("."), focus)
+        roles = [entry["role"] for entry in evidence]
+        self.assertEqual(roles.count("prompt_context"), 3)
+        title_context = next(
+            entry for entry in evidence
+            if entry.get("context_kind") == "table_title"
+        )
+        self.assertEqual(
+            title_context["text"], "Optical communication interface capabilities"
+        )
+        composite = next(
+            entry for entry in evidence if entry["role"] == "composite_matrix_fact"
+        )
+        self.assertEqual(composite["subject"], "Feature=Encryption")
+        self.assertEqual(composite["dimension"], "Mode A")
+        self.assertEqual(composite["marker"], "X")
+
+    def test_sentence_cell_focus_separates_context_from_evidence(self) -> None:
+        focus = {
+            "kind": "table_cell",
+            "table_cell_id": "TBL-000001-R000002-C000002",
+            "table_title": "Optical communication interface capabilities",
+            "header_path": ["Behavior"],
+            "row_header_context": ["Feature=Encryption"],
+            "text": "The meter shall authenticate all clients.",
+        }
+        evidence = omission_actions._claim_focus_evidence(Path("."), focus)
+        verbatim = [
+            entry for entry in evidence if entry["role"] == "verbatim_evidence"
+        ]
+        context = [entry for entry in evidence if entry["role"] == "prompt_context"]
+        self.assertEqual([entry["text"] for entry in verbatim],
+                         ["The meter shall authenticate all clients."])
+        self.assertTrue(context)
+        self.assertFalse(
+            any(entry["role"] == "composite_matrix_fact" for entry in evidence)
+        )
+
+    def test_table_title_is_prompt_context_but_never_quote_evidence(self) -> None:
+        title = "Optical communication interface capabilities"
+        evidence = [
+            {
+                "role": "prompt_context",
+                "context_kind": "table_title",
+                "text": title,
+            },
+            {
+                "role": "composite_matrix_fact",
+                "text": "X",
+                "subject": "Interface=Data access",
+                "dimension": "GET",
+                "marker": "X",
+            },
+        ]
+        prompts: list[str] = []
+
+        def chat(_system: str, user: str) -> dict:
+            prompts.append(user)
+            return {"requirements": [], "supplements": []}
+
+        ai_extract.critique_section(
+            self._section(),
+            [],
+            chat,
+            strict_focus=True,
+            focus_evidence=evidence,
+        )
+        self.assertEqual(len(prompts), 1)
+        self.assertIn(f"表标题：{title}", prompts[0])
+        self.assertIn("消解证据中省略的产品/接口适用范围", prompts[0])
+        self.assertIn("禁止作为 source_quote", prompts[0])
+
+        title_as_quote = {
+            "title": "Data access GET",
+            "description": (
+                f"{title}: Data access shall support GET using matrix marker X."
+            ),
+            "source_quote": title,
+        }
+        self.assertEqual(
+            self._critique({"requirements": [title_as_quote]}, evidence), []
+        )
+
+    def _critique(self, payload: dict, evidence: list[dict]) -> list[dict]:
+        chat = lambda system, user: payload  # noqa: E731
+        extra, _supplements = ai_extract.critique_section(
+            self._section(),
+            [],
+            chat,
+            strict_focus=True,
+            focus_evidence=evidence,
+        )
+        return extra
+
+    def test_context_echo_does_not_pass_quote_gate(self) -> None:
+        # P0-3 复现：模型回显定位上下文（Feature=Encryption）+ 编造描述——
+        # v1 闸门放行，v2 拒收（上下文不是可引用证据）
+        evidence = [
+            {"role": "prompt_context", "text": "Feature=Encryption"},
+            {"role": "verbatim_evidence",
+             "text": "The meter shall authenticate all clients."},
+        ]
+        payload = {"requirements": [{
+            "title": "加密特性",
+            "description": "Feature=Encryption 应支持企业级密钥轮换与双向证书吊销。",
+            "source_quote": "Feature=Encryption",
+        }]}
+        self.assertEqual(self._critique(payload, evidence), [])
+
+    def test_verbatim_quote_passes_quote_gate(self) -> None:
+        evidence = [
+            {"role": "prompt_context", "text": "Feature=Encryption"},
+            {"role": "verbatim_evidence",
+             "text": "The meter shall authenticate all clients."},
+        ]
+        payload = {"requirements": [{
+            "title": "客户端认证",
+            "description": "The meter shall authenticate all clients.",
+            "source_quote": "The meter shall authenticate all clients.",
+        }]}
+        self.assertEqual(len(self._critique(payload, evidence)), 1)
+
+    def test_composite_matrix_fact_requires_subject_dimension_marker(self) -> None:
+        composite = {
+            "role": "composite_matrix_fact",
+            "text": "X",
+            "subject": "Feature=Encryption",
+            "dimension": '"GET"',
+            "marker": "X",
+        }
+        base = {
+            "title": "Encryption shall support GET.",
+            "description": "Encryption shall support GET (matrix marker X).",
+            "source_quote": "X",
+        }
+        self.assertEqual(len(self._critique({"requirements": [base]}, [composite])), 1)
+        # 缺维度 → 拒收（三者同现，不接受任一片段）
+        missing_dimension = {**base, "description": "Encryption is supported (X).",
+                             "title": "Encryption support X"}
+        self.assertEqual(
+            self._critique({"requirements": [missing_dimension]}, [composite]), []
+        )
+        # 单字符 marker 词边界：X509 不冒充 X（scope guard 无 quote 字段兜底）
+        fake_marker_row = [{
+            "source_block_ids": ["B1"],
+            "description": "Encryption shall support GET via X509.",
+        }]
+        with self.assertRaises(omission_actions.OmissionNoResultError):
+            omission_actions._claim_output_scope_guard(
+                fake_marker_row,
+                block_id="B1",
+                section_block_ids={"B1"},
+                focus_evidence=[composite],
+            )
+
+    def test_scope_guard_rejects_context_only_binding(self) -> None:
+        evidence = [
+            {"role": "prompt_context", "text": "Feature=Encryption"},
+            {"role": "verbatim_evidence",
+             "text": "The meter shall authenticate all clients."},
+        ]
+        context_only = [{
+            "source_block_ids": ["B1"],
+            "description": "Feature=Encryption 需要企业级密钥轮换。",
+        }]
+        with self.assertRaises(omission_actions.OmissionNoResultError):
+            omission_actions._claim_output_scope_guard(
+                context_only,
+                block_id="B1",
+                section_block_ids={"B1"},
+                focus_evidence=evidence,
+            )
+        bound = [{
+            "source_block_ids": ["B1"],
+            "description": "The meter shall authenticate all clients.",
+        }]
+        omission_actions._claim_output_scope_guard(
+            bound,
+            block_id="B1",
+            section_block_ids={"B1"},
+            focus_evidence=evidence,
+        )
+
+    def test_scope_guard_composite_triple(self) -> None:
+        composite = {
+            "role": "composite_matrix_fact",
+            "text": "X",
+            "subject": "Feature=Encryption",
+            "dimension": '"GET"',
+            "marker": "X",
+        }
+        bound = [{
+            "source_block_ids": ["B1"],
+            "description": "Encryption shall support GET (X).",
+        }]
+        omission_actions._claim_output_scope_guard(
+            bound,
+            block_id="B1",
+            section_block_ids={"B1"},
+            focus_evidence=[composite],
+        )
+        missing_marker = [{
+            "source_block_ids": ["B1"],
+            "description": "Encryption shall support GET.",
+        }]
+        with self.assertRaises(omission_actions.OmissionNoResultError):
+            omission_actions._claim_output_scope_guard(
+                missing_marker,
+                block_id="B1",
+                section_block_ids={"B1"},
+                focus_evidence=[composite],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

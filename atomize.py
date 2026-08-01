@@ -29,14 +29,24 @@ from source_spans import source_alignment_fields
 from table_pattern_engine import load_table_patterns, match_table_pattern
 from table_structure import (
     TABLE_STRUCTURE_VERSION,
+    _MATRIX_DIMENSION_MAX_LEN,
+    NOTE_HEADER_RE,
     analyze_table,
     build_cell_items,
     cell_context_text,
     classify_table_kind as classify_table_kind_structure,
     effective_headers as structure_effective_headers,
+    inherit_merged_text,
+    is_normative_text as structure_is_normative_text,
+    marker_majority_columns,
+    matrix_dimension_evidence,
     matrix_fact_columns,
+    merge_ranges_overlap,
     normalize_merge_ranges,
     plan_table_leaves,
+    row_bears_normative_sentence,
+    row_is_weak_signal,
+    validate_merge_text,
 )
 from version import __version__
 
@@ -310,24 +320,37 @@ def table_matrix(table: Table) -> list[list[str]]:
 
 def docx_table_grid_evidence(
     table: Table,
-) -> tuple[list[tuple[int, int, int, int]], list[int]]:
+) -> tuple[list[tuple[int, int, int, int]], list[int], bool]:
     """DOCX 表 XML 级结构证据：gridSpan/vMerge 合并区域 + tblHeader 显式表头行。
 
     纯确定性解析 OOXML；python-docx 的 row.cells 已把合并值填充到覆盖格（扁平矩阵
     口径不变），这里只还原合并关系本身，供 table_structure 判标题/分组/canonical cell。
+
+    vMerge 链按 anchor 归组：一次 restart 只登记一个 anchor，continue 推进该格
+    gridSpan 覆盖的全部列游标所属的 anchor，关闭时每个 anchor 恰好产出一个
+    range——同一逻辑合并绝不拆成重叠双份（此前逐游标存链会把二维 merge 拆成
+    (1,1,1,2)+(1,1,2,2) 的重叠证据）。continue 无 anchor / 横跨多个 anchor /
+    与本行普通格冲突 = 结构矛盾 → merge_conflict=True，调用方放弃全部合并证据
+    （保留文本、结构标 needs_review），绝不伪造。
     """
     merge_ranges: list[tuple[int, int, int, int]] = []
     explicit_header_rows: list[int] = []
-    # 进行中的纵向合并：列游标位置 → [anchor_row, anchor_col, col_span, last_row]
-    active_vmerge: dict[int, list[int]] = {}
+    # anchor_key=(row, col) → {"col_span": int, "last_row": int, "cursors": set[int]}
+    anchors: dict[tuple[int, int], dict[str, Any]] = {}
+    cursor_to_anchor: dict[int, tuple[int, int]] = {}
+    merge_conflict = False
 
-    def close_vmerge(column_cursor: int) -> None:
-        active = active_vmerge.pop(column_cursor, None)
-        if active is None:
+    def close_anchor(key: tuple[int, int]) -> None:
+        state = anchors.pop(key, None)
+        if state is None:
             return
-        anchor_row, anchor_col, col_span, last_row = active
-        if last_row > anchor_row or col_span > 1:
-            merge_ranges.append((anchor_row, anchor_col, last_row, anchor_col + col_span - 1))
+        for cursor in state["cursors"]:
+            cursor_to_anchor.pop(cursor, None)
+        anchor_row, anchor_col = key
+        if state["last_row"] > anchor_row or state["col_span"] > 1:
+            merge_ranges.append(
+                (anchor_row, anchor_col, state["last_row"], anchor_col + state["col_span"] - 1)
+            )
 
     for row_index, tr in enumerate(table._tbl.tr_lst, start=1):
         tr_pr = tr.trPr
@@ -335,6 +358,17 @@ def docx_table_grid_evidence(
             explicit_header_rows.append(row_index)
         column_cursor = 1
         seen_columns: set[int] = set()
+        continued_this_row: set[tuple[int, int]] = set()
+
+        def close_anchors_on(cursors: Iterable[int]) -> None:
+            nonlocal merge_conflict
+            keys = {cursor_to_anchor[c] for c in cursors if c in cursor_to_anchor}
+            for key in keys:
+                if key in continued_this_row:
+                    # 同一逻辑合并在本行一部分 continue、一部分出现普通格 = 矛盾
+                    merge_conflict = True
+                close_anchor(key)
+
         for tc in tr.tc_lst:
             tc_pr = tc.tcPr
             col_span = 1
@@ -351,35 +385,46 @@ def docx_table_grid_evidence(
                 if vmerge is not None:
                     has_vmerge = True
                     vmerge_val = vmerge.get(qn("w:val")) or "continue"
-            for offset in range(col_span):
-                seen_columns.add(column_cursor + offset)
+            cursors = set(range(column_cursor, column_cursor + col_span))
+            seen_columns |= cursors
             if has_vmerge and vmerge_val == "restart":
-                for offset in range(col_span):
-                    close_vmerge(column_cursor + offset)
-                    active_vmerge[column_cursor + offset] = [
-                        row_index, column_cursor, col_span, row_index,
-                    ]
+                close_anchors_on(cursors)
+                key = (row_index, column_cursor)
+                anchors[key] = {
+                    "col_span": col_span,
+                    "last_row": row_index,
+                    "cursors": cursors,
+                }
+                for cursor in cursors:
+                    cursor_to_anchor[cursor] = key
             elif has_vmerge:
-                active = active_vmerge.get(column_cursor)
-                if active is not None:
-                    active[3] = row_index
+                keys = {cursor_to_anchor.get(cursor) for cursor in cursors}
+                if None in keys or len(keys) != 1:
+                    # continue 无 anchor 或横跨多个 anchor = 结构矛盾
+                    merge_conflict = True
+                else:
+                    key = next(iter(keys))
+                    anchors[key]["last_row"] = max(anchors[key]["last_row"], row_index)
+                    continued_this_row.add(key)
             else:
-                for offset in range(col_span):
-                    close_vmerge(column_cursor + offset)
+                close_anchors_on(cursors)
                 if col_span > 1:
                     merge_ranges.append(
                         (row_index, column_cursor, row_index, column_cursor + col_span - 1)
                     )
             column_cursor += col_span
         # 本行未出现的列若挂着 vmerge 链 → 链在此行之前终止
-        for cursor in list(active_vmerge):
+        for cursor in list(cursor_to_anchor):
             if cursor not in seen_columns:
-                close_vmerge(cursor)
-    for cursor in list(active_vmerge):
-        close_vmerge(cursor)
-    # 去重（横向 span 与 vmerge 链可能对同一区域各记一次）
+                key = cursor_to_anchor[cursor]
+                if key in continued_this_row:
+                    merge_conflict = True
+                close_anchor(key)
+    for key in list(anchors):
+        close_anchor(key)
+    # 去重（同一区域被不同路径各记一次的防御）并升序
     deduped = sorted(set(merge_ranges))
-    return deduped, explicit_header_rows
+    return deduped, explicit_header_rows, merge_conflict
 
 
 def build_table_artifacts(
@@ -395,6 +440,7 @@ def build_table_artifacts(
     parse_incomplete: bool = False,
     parse_incomplete_reason: dict[str, Any] | None = None,
     merge_ranges: Iterable[Iterable[int]] | None = None,
+    merge_evidence_conflict: bool = False,
     explicit_header_rows: list[int] | None = None,
     source_format: str = "docx",
     sheet_name: str | None = None,
@@ -408,8 +454,32 @@ def build_table_artifacts(
     table-structure-v2：标题/表头/合并/粒度全部由 table_structure 确定性识别；
     不新增顶层 block，行/格身份用 item_id/cell_id。"""
     normalized_merges = normalize_merge_ranges(merge_ranges)
+    # 合并证据矛盾（上游解析冲突/面积相交）→ 放弃精确几何、保留全部文本，
+    # 结构标 needs_review；绝不拿自相矛盾的 merge 照常产出（伪造合并事故）
+    if merge_ranges is None:
+        merge_evidence_status = "unavailable"
+    elif normalized_merges:
+        merge_evidence_status = "available"
+    else:
+        merge_evidence_status = "known_none"
+    if merge_evidence_conflict or (
+        normalized_merges and merge_ranges_overlap(normalized_merges)
+    ):
+        normalized_merges = []
+        merge_evidence_status = "dropped_conflict"
+    else:
+        # B6：被覆盖格文本校验——covered 坐标的几何身份只是上游主张，其文本
+        # 非空且与 anchor 不逐字一致时，该 range 覆盖的是另一条独立内容；
+        # 照常合并会让被覆盖义务随 cell 删除消失（计数器全零的静默丢失）。
+        # 冲突 range 整体拒收（全部格保留为独立 cell），结构标 needs_review
+        valid_merges, text_conflicts = validate_merge_text(matrix, normalized_merges)
+        if text_conflicts:
+            normalized_merges = valid_merges
+            merge_evidence_status = "dropped_text_conflict"
     structure = analyze_table(
         matrix,
+        # 当前解析无几何证据与确认无合并都不得授予分组标题；区别只通过
+        # merge_evidence_status 如实保留，旧产物由版本迁移门处理。
         merge_ranges=normalized_merges,
         explicit_header_rows=explicit_header_rows,
     )
@@ -417,23 +487,58 @@ def build_table_artifacts(
     height = structure["height"]
     title_row_indexes = structure["title_row_indexes"]
     header_row_indexes = structure["header_row_indexes"]
-    header_count = structure["header_row_count"]
     data_row_indexes = structure["data_row_indexes"]
+    # 歧义"表头"保留结构角色（规范性内容经 structural_row 出 cell claim），但
+    # 其文本不得参与列名渲染：按行过滤——单格题注候选（ambiguous_structure_rows）
+    # /义务句行（modal/pattern）/弱信号说明句行（sentence_shape）永不充当列名
+    # （"Outputs selected by the operator" 类句子列名事故），列名回退 column_N；
+    # 其余干净表头行仍供给列名——v4 首版只要状态 ambiguous 就整表坍缩 column_N，
+    # 首行单格题注候选会把次行的真实表头（Label/Value/Formula）一并灭失
+    ambiguous_row_set = set(structure.get("ambiguous_structure_rows") or [])
+    naming_row_indexes = [
+        row_index
+        for row_index in header_row_indexes
+        if row_index not in ambiguous_row_set
+        and not row_bears_normative_sentence(matrix[row_index - 1])
+        and not row_is_weak_signal(matrix[row_index - 1])
+    ]
+    header_count = len(header_row_indexes)
     header_rows = [pad_row(matrix[row_index - 1], width) for row_index in header_row_indexes]
     data_rows = [pad_row(matrix[row_index - 1], width) for row_index in data_row_indexes]
-    headers = effective_table_headers(header_rows, width)
+    # 有效矩阵（covered 坐标继承 anchor 文本）只用于分类/表头/事实列判定——
+    # 与 docx 扁平填充口径对齐（纵向合并的对象名对后续行可见）；
+    # 块渲染与行/格正文恒用真实矩阵
+    effective_matrix = inherit_merged_text(matrix, normalized_merges)
+    effective_data_rows = [
+        pad_row(effective_matrix[row_index - 1], width) for row_index in data_row_indexes
+    ]
+    headers = effective_table_headers(
+        [
+            pad_row(effective_matrix[row_index - 1], width)
+            for row_index in naming_row_indexes
+        ],
+        width,
+    )
     # 标题行（全宽合并）提升为表标题；无标题行时保留 caption/sheet/回退标题
     if title_row_indexes:
         first_title_row = matrix[title_row_indexes[0] - 1]
         title_text = next((clean_text(value) for value in first_title_row if clean_text(value)), "")
         if title_text:
             table_title = title_text
-    table_kind = classify_table_kind_structure(headers, data_rows, section_path)
+    table_kind = classify_table_kind_structure(headers, effective_data_rows, section_path)
     # 矩阵事实列：mapping_matrix 全表取；parameter/other 组合表（DLMS 属性×服务矩阵）
-    # 也取——marker 格按 cell 闭环（mixed），COSEM 行 join 与 A 轨能力事实同时保留
-    fact_columns = matrix_fact_columns(headers, data_rows)
+    # 也取——marker 格按 cell 闭环（mixed），COSEM 行 join 与 A 轨能力事实同时保留。
+    # P0-4：唯一来源是共享的正向维度证据（一次计算，分类/plan/块载荷/A 轨同消费）
+    dimension_evidence = matrix_dimension_evidence(headers, effective_data_rows)
+    fact_columns = set(dimension_evidence)
+    rejected_marker_columns = {
+        column
+        for column in marker_majority_columns(headers, effective_data_rows) - fact_columns
+        if not NOTE_HEADER_RE.search(str(headers[column] or ""))
+    }
     plan = plan_table_leaves(
-        structure, matrix, table_kind=table_kind, merge_ranges=normalized_merges,
+        structure, matrix, table_kind=table_kind,
+        merge_ranges=normalized_merges,
         headers=headers, fact_columns=fact_columns,
     )
     table_text_full = render_table_text(headers, data_rows)
@@ -467,6 +572,28 @@ def build_table_artifacts(
         "context_cells": [
             f"{table_id}-R{row_index:06d}-C{column_index:06d}"
             for row_index, column_index in plan["context_cells"]
+        ],
+        "multi_duty_cells": [
+            f"{table_id}-R{row_index:06d}-C{column_index:06d}"
+            for row_index, column_index in (plan.get("multi_duty_cells") or [])
+        ],
+        "weak_signal_cells": [
+            f"{table_id}-R{row_index:06d}-C{column_index:06d}"
+            for row_index, column_index in (plan.get("weak_signal_cells") or [])
+        ],
+        "unsignaled_data_cells": [
+            f"{table_id}-R{row_index:06d}-C{column_index:06d}"
+            for row_index, column_index in (plan.get("unsignaled_data_cells") or [])
+        ],
+        # P0-5：无结构证据的单格"标题/表头"——可定位的歧义资格候选，
+        # 计数进账本审计并联动 needs_review，绝不静默关闭
+        "ambiguous_structure_cells": [
+            f"{table_id}-R{row_index:06d}-C{column_index:06d}"
+            for row_index, column_index in (plan.get("ambiguous_structure_cells") or [])
+        ],
+        "untyped_colon_spec_cells": [
+            f"{table_id}-R{row_index:06d}-C{column_index:06d}"
+            for row_index, column_index in (plan.get("untyped_colon_spec_cells") or [])
         ],
     }
     block = {
@@ -504,7 +631,19 @@ def build_table_artifacts(
         "header_row_indexes": header_row_indexes,
         "header_detection_status": structure["header_detection_status"],
         "header_detection_evidence": structure["header_detection_evidence"],
+        "merge_evidence_status": merge_evidence_status,
         "merge_ranges": [list(entry) for entry in normalized_merges],
+        "matrix_fact_columns": sorted(fact_columns),
+        # P0-4：正向维度证据随块下发（审核面）——{0-based 列号: operation/
+        # qualified_operation/axis_member}；下游（mixed 判定/marker 句式合成）只消费本结果与
+        # matrix_fact_columns，禁止另行推导事实列
+        "matrix_dimension_evidence": {
+            str(column): tag for column, tag in dimension_evidence.items()
+        },
+        # marker 占多数但被维度证据闸拒收的列（B3/B4 审核面）：X 列的表头是处置词/
+        # 泛称包装词/合成列名——marker 以原文保留（行容器/cell context），但不合成
+        # 自然语言义务、也不成 cell leaf；非空即结构待审证据
+        "matrix_rejected_marker_columns": sorted(rejected_marker_columns),
         "leaf_plan": leaf_plan_payload,
     }
     if parse_incomplete_reason:
@@ -973,7 +1112,7 @@ def extract_docx(
             table_id = f"TBL-{table_count:06d}"
             table_title = infer_table_title(last_caption, table_count)
             section_path = sections.path()
-            merge_ranges, explicit_header_rows = docx_table_grid_evidence(item)
+            merge_ranges, explicit_header_rows, merge_conflict = docx_table_grid_evidence(item)
 
             order += 1
             block_id = f"BLK-{order:06d}"
@@ -987,6 +1126,7 @@ def extract_docx(
                 section_path=section_path,
                 knowledge_bases=knowledge_bases,
                 merge_ranges=merge_ranges,
+                merge_evidence_conflict=merge_conflict,
                 explicit_header_rows=explicit_header_rows or None,
                 source_format="docx",
             )
@@ -1288,16 +1428,15 @@ def build_atomic_candidates(
         if str(block.get("table_kind") or "") in {"mapping_matrix", "prose_grid"}
     }
     # 组合表（parameter + 真实矩阵事实列）：行候选保留（COSEM 行级化），矩阵事实
-    # 改由 marker cell 产出——同一物理事实不重复成 atom
+    # 改由 marker cell 产出——同一物理事实不重复成 atom。
+    # P0-4：只消费块载荷里构建期算好的 matrix_fact_columns（共享正向维度证据），
+    # 禁止下游用别的口径重新推导事实列；旧产物无该字段即无事实列（重解析后才有）
     mixed_fact_blocks = {
         block_id
         for block_id, block in blocks_by_id.items()
         if block_id not in cell_mode_blocks
         and str(block.get("table_kind") or "")
-        and matrix_fact_columns(
-            [str(h or "") for h in (block.get("headers") or [])],
-            [list(row) for row in (block.get("data_rows") or [])],
-        )
+        and block.get("matrix_fact_columns")
     }
 
     def add(row: dict[str, Any]) -> None:
@@ -1439,20 +1578,48 @@ def build_atomic_candidates(
         column_index = int(cell.get("column_index") or 0)
         marker_cell = table_kind == "mapping_matrix" or block_id in mixed_fact_blocks
         if marker_cell and is_positive_marker(cell_text):
+            # 结构角色闸：只有数据区格的 marker 才参与句式合成——表头/标题位的
+            # marker 词永不合成（"Item shall support Required." 幻觉事故）
+            if str(cell.get("structural_role") or "") != "data":
+                continue
             if block_id not in fact_columns_by_block:
-                fact_columns_by_block[block_id] = matrix_fact_columns(
-                    [str(h or "") for h in (parent.get("headers") or [])],
-                    [list(row) for row in (parent.get("data_rows") or [])],
-                )
+                stored_fact_columns = parent.get("matrix_fact_columns")
+                if stored_fact_columns is not None:
+                    fact_columns_by_block[block_id] = {
+                        int(value) for value in stored_fact_columns
+                    }
+                else:
+                    # P0-4：旧产物无共享维度证据时不重新推导——无事实列即不合成
+                    # （重解析后由构建期的 matrix_dimension_evidence 统一供给）
+                    fact_columns_by_block[block_id] = set()
             if column_index - 1 not in fact_columns_by_block[block_id]:
                 continue  # 非矩阵事实列的 marker 只是原文，不成句式
             subject = ""
-            if cell.get("row_header_context"):
+            subject_header = ""
+            # subject 取标识条目的纯值（结构化 row_header_entries），不反解析
+            # "Header=Value" 显示串（row_header_context 是 claim 上下文形态）
+            identity_entries = cell.get("row_header_entries")
+            if identity_entries:
+                last_entry = identity_entries[-1]
+                subject = clean_text(last_entry.get("value"))
+                subject_header = str(last_entry.get("header") or "")
+            elif cell.get("row_header_context"):
                 subject = clean_text(cell["row_header_context"][-1])
             predicate = ""
             if cell.get("header_path"):
                 predicate = clean_table_header(str(cell["header_path"][-1] or ""))
-            if not subject or not predicate:
+            # subject/predicate 真实性闸：空值、marker 词、纯数字、规范性句子
+            # （被误判为行头的义务句）都不是对象名/能力名——证据不全时保留原始
+            # cell（B 轨闭环），不合成自然语言义务
+            if (
+                not subject
+                or not predicate
+                or is_positive_marker(subject)
+                or is_positive_marker(predicate)
+                or re.fullmatch(r"[\d.,/\-\s]+", subject)
+                or len(subject) > _MATRIX_DIMENSION_MAX_LEN
+                or structure_is_normative_text(subject)
+            ):
                 continue
             add(
                 atomic_row(
@@ -1469,7 +1636,7 @@ def build_atomic_candidates(
                         "table_title": cell.get("table_title"),
                         "row_index": cell.get("row_index"),
                         "column_index": column_index,
-                        "subject_header": (cell.get("row_header_context") or [""])[0],
+                        "subject_header": subject_header,
                         "predicate_header": (cell.get("header_path") or [""])[-1],
                         "marker": cell_text,
                     },
@@ -1703,7 +1870,11 @@ def extract_valued_matrix_facts(fields: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     # 索引号 subject（"1"/"2."）不是对象名——"1 shall have Requirement set to …"
     # 与 "1 shall support Note." 同族伪句式，一律不产
-    from table_structure import NOTE_HEADER_RE, PARAM_INDEX_CELL_RE
+    from table_structure import (
+        _DISPOSITION_HEADER_RE,
+        NOTE_HEADER_RE,
+        PARAM_INDEX_CELL_RE,
+    )
 
     if PARAM_INDEX_CELL_RE.match(subject):
         return []
@@ -1715,6 +1886,11 @@ def extract_valued_matrix_facts(fields: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if NOTE_HEADER_RE.search(str(key)):
             continue  # Note 列保持原文，永远不是 valued 事实
+        if _DISPOSITION_HEADER_RE.search(str(key)):
+            # 处置/泛称包装列（Status/Result/Requirement/Value…）不是能力维度——
+            # "Voltage shall have Status set to ok." 伪句式（B4）：值保持原文在
+            # 行容器与 cell claim 中，不合成自然语言义务
+            continue
         facts.append(
             {
                 "subject_header": first_key,

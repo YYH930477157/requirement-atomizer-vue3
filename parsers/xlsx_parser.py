@@ -28,6 +28,10 @@ def extract_xlsx(
     # （返回 None），导致所有 sheet 被误判为空。改用 read_only=False 保证维度可靠，
     # 且 _merged_fill_values 需要 sheet.cell() 随机访问（read_only 下不可用）。
     workbook = load_workbook(input_path, data_only=True, read_only=False)
+    # B7：公式双视图——data_only=True 对无缓存公式返回 None（`="The meter shall …"`
+    # 单元格凭空消失且 parse_incomplete=False）；data_only=False 视图识别公式存在性，
+    # 有公式但无缓存值 = 内容不可见，必须 fail-closed 并计入非空守恒
+    formula_workbook = load_workbook(input_path, data_only=False, read_only=False)
     merge_ranges_by_sheet = _merged_ranges_by_sheet(input_path)
     blocks: list[dict[str, Any]] = []
     table_items: list[dict[str, Any]] = []
@@ -39,10 +43,29 @@ def extract_xlsx(
         for sheet in workbook.worksheets:
             if sheet.sheet_state != "visible":
                 continue
+            formula_sheet = next(
+                (candidate for candidate in formula_workbook.worksheets
+                 if candidate.title == sheet.title),
+                None,
+            )
+            unavailable_formulas = _formula_cells_without_cached_values(
+                sheet, formula_sheet
+            )
             sheet_merges = merge_ranges_by_sheet.get(sheet.title, [])
             parse_audit: dict[str, Any] = {}
+            if unavailable_formulas:
+                parse_audit["parse_incomplete"] = True
+                parse_audit["parse_incomplete_reason"] = {
+                    "code": "xlsx_formula_value_unavailable",
+                    "cell_count": len(unavailable_formulas),
+                    "sample": [
+                        f"R{row_index}C{column_index}"
+                        for row_index, column_index in sorted(unavailable_formulas)[:10]
+                    ],
+                }
             regions, region_merges, region_headers = _sheet_table_regions(
-                sheet, sheet_merges, audit=parse_audit
+                sheet, sheet_merges, audit=parse_audit,
+                extra_non_empty=unavailable_formulas,
             )
             if not regions:
                 continue
@@ -85,7 +108,7 @@ def extract_xlsx(
                     parse_incomplete=bool(parse_audit.get("parse_incomplete")),
                     parse_incomplete_reason=parse_audit.get("parse_incomplete_reason"),
                     merge_ranges=region_merges[region_index],
-                    explicit_header_rows=region_headers[region_index] or None,
+                    explicit_header_rows=region_headers[region_index],
                     source_format="xlsx",
                     sheet_name=sheet.title,
                     a1_origin=(min_row, min_col),
@@ -97,8 +120,37 @@ def extract_xlsx(
                 table_cell_items.extend(new_cell_items)
     finally:
         workbook.close()
+        formula_workbook.close()
 
     return blocks, table_items, table_cell_items
+
+
+def _formula_cells_without_cached_values(
+    sheet: Any,
+    formula_sheet: Any,
+) -> set[tuple[int, int]]:
+    """有公式但无缓存值的单元格坐标（B7）。
+
+    data_only=True 对无缓存公式返回 None——内容不可见；不得假装它是空格
+    （守恒/连通性都看不到 = 静默丢失）。坐标计入 extra_non_empty 并由
+    调用方 fail-closed（xlsx_formula_value_unavailable）。"""
+    unavailable: set[tuple[int, int]] = set()
+    if formula_sheet is None:
+        return unavailable
+    max_row = min(sheet.max_row or 0, MAX_SHEET_ROWS)
+    max_column = sheet.max_column or 0
+    if max_row == 0 or max_column == 0:
+        return unavailable
+    for row in formula_sheet.iter_rows(
+        min_row=1, max_row=max_row, max_col=max_column
+    ):
+        for cell in row:
+            if getattr(cell, "data_type", None) != "f":
+                continue
+            cached = sheet.cell(row=cell.row, column=cell.column).value
+            if cached is None or not str(cached).strip():
+                unavailable.add((cell.row, cell.column))
+    return unavailable
 
 
 def _sheet_table_regions(
@@ -106,6 +158,7 @@ def _sheet_table_regions(
     merge_ranges: list[tuple[int, int, int, int]],
     *,
     audit: dict[str, Any],
+    extra_non_empty: set[tuple[int, int]] | None = None,
 ) -> tuple[
     list[tuple[int, int, int, int]],
     list[list[tuple[int, int, int, int]]],
@@ -113,9 +166,12 @@ def _sheet_table_regions(
 ]:
     """同一 sheet 的表区域拆分：优先 Excel Table 定义，否则按非空连通区域。
 
-    返回 (regions, per-region 相对 merge ranges, per-region 显式表头行)。
-    区域保留左上角 A1 坐标（非 A1 起始区域不丢溯源）；不再把整张 sheet 强制视作一张表。
-    """
+    返回 (regions, per-region 相对 merge ranges, per-region 表头证据)。
+    表头证据三态：list[int]（显式表头行，空列表=显式 headerless）| None（无证据，
+    走推断）。区域保留左上角 A1 坐标（非 A1 起始区域不丢溯源）。
+    extra_non_empty：值视图不可见但内容确实存在的坐标（B7 无缓存公式格）——
+    连通性与守恒计数一律按非空对待。"""
+    extra_non_empty = extra_non_empty or set()
     max_row = sheet.max_row or 0
     max_column = sheet.max_column or 0
     if max_row == 0 or max_column == 0:
@@ -123,24 +179,92 @@ def _sheet_table_regions(
     if max_row > MAX_SHEET_ROWS:
         LOGGER.warning("sheet %s has %s rows; truncating to %s", sheet.title, max_row, MAX_SHEET_ROWS)
         audit["parse_incomplete"] = True
-        audit["parse_incomplete_reason"] = {
-            "code": "xlsx_row_limit",
-            "observed_rows": max_row,
-            "parsed_rows": MAX_SHEET_ROWS,
-            "limit": MAX_SHEET_ROWS,
-        }
+        audit.setdefault(
+            "parse_incomplete_reason",
+            {
+                "code": "xlsx_row_limit",
+                "observed_rows": max_row,
+                "parsed_rows": MAX_SHEET_ROWS,
+                "limit": MAX_SHEET_ROWS,
+            },
+        )
         max_row = MAX_SHEET_ROWS
 
     table_defs = _excel_table_regions(sheet, max_row=max_row)
     if table_defs:
         regions = [entry[0] for entry in table_defs]
-        header_rows = [entry[1] for entry in table_defs]
+        header_rows: list[list[int] | None] = [entry[1] for entry in table_defs]
+        # ListObject 之外仍须守恒：表定义覆盖不到的非空连通区域同样成表（否则表外
+        # 需求彻底消失且任何下游计数器都看不到）
+        covered_cells: set[tuple[int, int]] = set()
+        for min_row, min_col, region_max_row, max_col in regions:
+            for row_index in range(min_row, region_max_row + 1):
+                for column_index in range(min_col, max_col + 1):
+                    covered_cells.add((row_index, column_index))
+        leftovers = _connected_regions(
+            sheet, max_row=max_row, max_column=max_column, skip=covered_cells,
+            extra_non_empty=extra_non_empty,
+        )
+        regions.extend(leftovers)
+        header_rows.extend([None for _ in leftovers])
+        regions, header_rows = zip(
+            *sorted(zip(regions, header_rows), key=lambda entry: (entry[0][0], entry[0][1]))
+        )
+        regions, header_rows = list(regions), list(header_rows)
     else:
-        regions = _connected_regions(sheet, max_row=max_row, max_column=max_column)
-        header_rows = [[] for _ in regions]
+        regions = _connected_regions(
+            sheet, max_row=max_row, max_column=max_column,
+            extra_non_empty=extra_non_empty,
+        )
+        header_rows = [None for _ in regions]
     region_merges = [
         _clip_merges_to_region(merge_ranges, region) for region in regions
     ]
+    # sheet 级守恒计数器：每个非空格必须落在恰好一个区域内。区域拆分（ListObject
+    # 矩形 + 表外连通区域）理论上全覆盖，但覆盖盲区/区域重叠 = 静默丢内容——
+    # 计数器把"相信全覆盖"变成 fail-closed 硬门（宁 parse_incomplete 不丢字）
+    coverage: dict[tuple[int, int], int] = {}
+    for min_row, min_col, region_max_row, region_max_col in regions:
+        for row_index in range(min_row, region_max_row + 1):
+            for column_index in range(min_col, region_max_col + 1):
+                key = (row_index, column_index)
+                coverage[key] = coverage.get(key, 0) + 1
+    dropped_cells: list[tuple[int, int]] = []
+    multi_covered_cells: list[tuple[int, int]] = []
+    for row_index, row in enumerate(
+        sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_column, values_only=True),
+        start=1,
+    ):
+        for column_index, value in enumerate(row, start=1):
+            if value is None or not str(value).strip():
+                continue
+            count = coverage.get((row_index, column_index), 0)
+            if count == 0:
+                dropped_cells.append((row_index, column_index))
+            elif count > 1:
+                multi_covered_cells.append((row_index, column_index))
+    # 无缓存公式格（值视图不可见）同样参与守恒：区域内不丢、区域外如实 dropped
+    for coord in sorted(extra_non_empty):
+        if coverage.get(coord, 0) == 0:
+            dropped_cells.append(coord)
+    if dropped_cells or multi_covered_cells:
+        LOGGER.warning(
+            "sheet %s region conservation violated: dropped=%s multi_covered=%s",
+            sheet.title, len(dropped_cells), len(multi_covered_cells),
+        )
+        audit["parse_incomplete"] = True
+        audit.setdefault(
+            "parse_incomplete_reason",
+            {
+                "code": "xlsx_region_conservation",
+                "dropped_cell_count": len(dropped_cells),
+                "multi_covered_cell_count": len(multi_covered_cells),
+                "dropped_sample": [
+                    f"R{row_index}C{column_index}"
+                    for row_index, column_index in dropped_cells[:10]
+                ],
+            },
+        )
     return regions, region_merges, header_rows
 
 
@@ -164,6 +288,7 @@ def _excel_table_regions(
         header_count = getattr(table, "headerRowCount", None)
         if header_count is None:
             header_count = 1
+        # headerRowCount=0 是显式 headerless 证据，不得抹成 None 走推断
         header_rows = list(range(1, max(0, int(header_count)) + 1))
         regions.append(((min_row, min_col, table_max_row, max_col), header_rows))
     regions.sort(key=lambda entry: (entry[0][0], entry[0][1]))
@@ -171,20 +296,28 @@ def _excel_table_regions(
 
 
 def _connected_regions(
-    sheet: Any, *, max_row: int, max_column: int
+    sheet: Any, *, max_row: int, max_column: int,
+    skip: set[tuple[int, int]] | None = None,
+    extra_non_empty: set[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int, int, int]]:
     """无 Excel Table 定义时按非空连通区域拆表（保留区域左上角坐标）。
 
     八连通：矩阵表的角落孤格（如仅对角相邻的 X marker）仍属同一张表；
-    真正分立的表之间至少隔一整行/列空白，不会被粘连。"""
+    真正分立的表之间至少隔一整行/列空白，不会被粘连。skip 坐标（已被
+    ListObject 覆盖）不参与扫描。extra_non_empty 坐标（无缓存公式格）
+    值视图不可见但按非空参与连通。"""
+    skip = skip or set()
     non_empty: set[tuple[int, int]] = set()
     for row_index, row in enumerate(
         sheet.iter_rows(min_row=1, max_row=max_row, max_col=max_column, values_only=True),
         start=1,
     ):
         for column_index, value in enumerate(row, start=1):
+            if (row_index, column_index) in skip:
+                continue
             if value is not None and str(value).strip():
                 non_empty.add((row_index, column_index))
+    non_empty.update(coord for coord in (extra_non_empty or set()) if coord not in skip)
     regions: list[tuple[int, int, int, int]] = []
     remaining = set(non_empty)
     while remaining:
@@ -292,11 +425,32 @@ def _merged_fill_values(
     *,
     max_row: int,
 ) -> dict[tuple[int, int], Any]:
+    """covered 格填充 anchor 值——但先校验原文（B6）。
+
+    xlsx 的 covered 格通常为空（MergedCell.value=None）；若某 covered 格带有
+    与 anchor 不同的非空原文（脏文件/隐藏内容），填充会静默覆盖别人的内容。
+    冲突 range 整体不填充（保留全部原值）——矩阵带着异文进入
+    validate_merge_text，该 range 被拒收并标 dropped_text_conflict/needs_review。"""
     values: dict[tuple[int, int], Any] = {}
     for min_row, min_col, range_max_row, max_col in merge_ranges:
         if min_row > max_row:
             continue
         top_left = sheet.cell(row=min_row, column=min_col).value
+        anchor_text = clean_text(_stringify_cell_value(top_left))
+        conflict = False
+        for row_index in range(min_row, min(range_max_row, max_row) + 1):
+            if conflict:
+                break
+            for column_index in range(min_col, max_col + 1):
+                if (row_index, column_index) == (min_row, min_col):
+                    continue
+                raw_value = sheet.cell(row=row_index, column=column_index).value
+                covered_text = clean_text(_stringify_cell_value(raw_value))
+                if covered_text and covered_text != anchor_text:
+                    conflict = True
+                    break
+        if conflict:
+            continue
         for row_index in range(min_row, min(range_max_row, max_row) + 1):
             for column_index in range(min_col, max_col + 1):
                 values[(row_index, column_index)] = top_left

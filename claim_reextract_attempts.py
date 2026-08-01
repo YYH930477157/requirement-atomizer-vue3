@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +10,7 @@ from typing import Any, Iterable
 from claim_artifacts import (
     ClaimArtifactError,
     _validate_schema,
+    atomic_write_jsonl,
     canonical_json_value_bytes,
     digest_hex,
     hash_json,
@@ -21,7 +21,7 @@ from omission_actions import extraction_operation_lock
 
 CLAIM_REEXTRACT_ATTEMPTS = "claim_reextract_attempts.jsonl"
 CLAIM_REEXTRACT_ATTEMPT_SCHEMA = "claim-reextract-attempt/v2"
-CLAIM_REEXTRACT_ATTEMPT_VERSION = "claim-reextract-attempt-log-v2"
+CLAIM_REEXTRACT_ATTEMPT_VERSION = "claim-reextract-attempt-log-v3"
 _SUPPORTED_ATTEMPT_SCHEMAS = frozenset({
     "claim-reextract-attempt/v1",
     CLAIM_REEXTRACT_ATTEMPT_SCHEMA,
@@ -144,6 +144,7 @@ def _validate_attempt_histories(rows: list[dict[str, Any]]) -> None:
         terminal_seen = False
         identity = tuple(first.get(key) for key in ("proposal_id", "claim_id", "claim_hash"))
         seen_kinds: set[str] = set()
+        highest_budget_calls = 0
         for row in attempt_rows:
             if tuple(row.get(key) for key in ("proposal_id", "claim_id", "claim_hash")) != identity:
                 raise ClaimReextractAttemptError("attempt identity changed within its history")
@@ -152,6 +153,14 @@ def _validate_attempt_histories(rows: list[dict[str, Any]]) -> None:
                 raise ClaimReextractAttemptError("attempt history continues after a terminal event")
             if kind in _TERMINAL_EVENTS:
                 terminal_seen = True
+            if kind == "budget_checkpoint":
+                checkpoint = dict(row.get("checkpoint") or {})
+                calls = int(checkpoint.get("calls") or 0)
+                if calls < highest_budget_calls:
+                    raise ClaimReextractAttemptError(
+                        "attempt budget checkpoint calls regressed"
+                    )
+                highest_budget_calls = calls
             if kind in {
                 "supplement_persisted",
                 "requirements_published",
@@ -223,51 +232,44 @@ def _append_unlocked(root: Path, drafts: Iterable[dict[str, Any]]) -> dict[str, 
     rows = list(snapshot.rows)
     keys = set(snapshot.idempotency_keys)
     appended: list[dict[str, Any]] = []
-    handle = None
-    try:
-        for raw in drafts:
-            draft = dict(raw)
-            if {"event_seq", "event_id", "prev_event_hash", "event_hash"}.intersection(draft):
-                raise ClaimReextractAttemptError("attempt draft contains chain fields")
-            draft.setdefault("schema", CLAIM_REEXTRACT_ATTEMPT_SCHEMA)
-            draft.setdefault("recorded_at", _utc_now())
-            key = str(draft.get("idempotency_key") or "")
-            if not key:
-                raise ClaimReextractAttemptError("attempt event idempotency key is required")
-            if key in keys:
-                continue
-            seq = len(rows) + 1
-            event = {
-                **draft,
-                "event_seq": seq,
-                "event_id": _event_id(seq, key),
-                "prev_event_hash": str(rows[-1]["event_hash"]) if rows else _EMPTY_SHA256,
-            }
-            event_schema = str(event.get("schema") or "")
-            if event_schema not in _SUPPORTED_ATTEMPT_SCHEMAS:
-                raise ClaimReextractAttemptError(
-                    "claim re-extract attempt schema is unsupported"
-                )
-            event["event_hash"] = hash_json(event_schema, _without_hash(event))
-            _validate_schema(
-                event,
-                "claim_reextract_attempt.schema.json",
-                label="claim re-extract attempt",
+    for raw in drafts:
+        draft = dict(raw)
+        if {"event_seq", "event_id", "prev_event_hash", "event_hash"}.intersection(draft):
+            raise ClaimReextractAttemptError("attempt draft contains chain fields")
+        draft.setdefault("schema", CLAIM_REEXTRACT_ATTEMPT_SCHEMA)
+        draft.setdefault("recorded_at", _utc_now())
+        key = str(draft.get("idempotency_key") or "")
+        if not key:
+            raise ClaimReextractAttemptError("attempt event idempotency key is required")
+        if key in keys:
+            continue
+        seq = len(rows) + 1
+        event = {
+            **draft,
+            "event_seq": seq,
+            "event_id": _event_id(seq, key),
+            "prev_event_hash": str(rows[-1]["event_hash"]) if rows else _EMPTY_SHA256,
+        }
+        event_schema = str(event.get("schema") or "")
+        if event_schema not in _SUPPORTED_ATTEMPT_SCHEMAS:
+            raise ClaimReextractAttemptError(
+                "claim re-extract attempt schema is unsupported"
             )
-            candidate_rows = rows + [event]
-            _validate_attempt_histories(candidate_rows)
-            if handle is None:
-                handle = (root / CLAIM_REEXTRACT_ATTEMPTS).open("ab")
-            handle.write(canonical_json_value_bytes(event) + b"\n")
-            rows.append(event)
-            appended.append(event)
-            keys.add(key)
-        if handle is not None:
-            handle.flush()
-            os.fsync(handle.fileno())
-    finally:
-        if handle is not None:
-            handle.close()
+        event["event_hash"] = hash_json(event_schema, _without_hash(event))
+        _validate_schema(
+            event,
+            "claim_reextract_attempt.schema.json",
+            label="claim re-extract attempt",
+        )
+        candidate_rows = rows + [event]
+        _validate_attempt_histories(candidate_rows)
+        rows.append(event)
+        appended.append(event)
+        keys.add(key)
+    if appended:
+        # Replacing the complete canonical prefix while holding the extraction
+        # operation lock means readers see either generation, never a partial row.
+        atomic_write_jsonl(root / CLAIM_REEXTRACT_ATTEMPTS, rows)
     committed = _scan(root)
     return {
         "appended": appended,
@@ -365,16 +367,20 @@ def _recovered_usage(history: list[dict[str, Any]]) -> dict[str, Any]:
     if not checkpoints:
         return {"calls": 0, "total_tokens": 0, "usage_complete": True}
     latest = checkpoints[-1]
-    if latest.get("status") == "settled":
-        return {
-            "calls": int(latest.get("calls") or 0),
-            "total_tokens": latest.get("total_tokens"),
-            "usage_complete": bool(latest.get("usage_complete")),
-        }
+    total_tokens = latest.get("total_tokens")
+    if latest.get("status") != "settled" and total_tokens == 0:
+        # Historical v2 reserved checkpoints stored only settled tokens, so a
+        # zero here did not describe the in-flight reservation ceiling.
+        total_tokens = None
     return {
         "calls": int(latest.get("calls") or 0),
-        "total_tokens": None,
-        "usage_complete": False,
+        # Reserved checkpoints carry the conservative reservation ceiling.
+        # Preserve it instead of erasing known paid exposure to ``null``.
+        "total_tokens": total_tokens,
+        "usage_complete": (
+            bool(latest.get("usage_complete"))
+            and latest.get("status") == "settled"
+        ),
     }
 
 
@@ -409,11 +415,33 @@ def recover_interrupted_attempts(
     can continue without another paid call; every earlier crash window becomes an
     explicit, retryable ``interrupted`` attempt.
     """
-    from claim_artifacts import file_sha256
+    from claim_artifacts import (
+        CLAIM_BUDGET_CHECKPOINT_OUTBOX,
+        file_sha256,
+        recover_claim_budget_checkpoint_outbox,
+    )
     from io_utils import read_jsonl
     from omission_actions import AI_SUPPLEMENTS, read_supplement_patches
 
     root = Path(out_dir).expanduser().resolve()
+    if (root / CLAIM_BUDGET_CHECKPOINT_OUTBOX).is_file():
+        # Complete the durable queue/verifier fanout before lifecycle folding.
+        # Otherwise an interrupted attempt could be terminalized from the stale
+        # queue prefix while the verifier WAL already contains paid work.
+        if operation_lock_held:
+            recover_claim_budget_checkpoint_outbox(
+                root,
+                operation_lock_held=True,
+            )
+        else:
+            with extraction_operation_lock(
+                root,
+                operation="claim-budget-checkpoint-recovery",
+            ):
+                recover_claim_budget_checkpoint_outbox(
+                    root,
+                    operation_lock_held=True,
+                )
     preflight = _scan(root)
     if not any(
         state.get("lifecycle") == "executing"

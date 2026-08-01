@@ -35,7 +35,11 @@
         "claim-catalog-v3",
         "claim-catalog-v4",
         "claim-catalog-v5",
-        "claim-catalog-v6"
+        "claim-catalog-v6",
+        "claim-catalog-v7",
+        "claim-catalog-v8",
+        "claim-catalog-v9",
+        "claim-catalog-v10"
       ]
     },
     "packing_version": {
@@ -86,7 +90,13 @@
           "minimum": 0
         },
         "table_structure_version": {
-          "const": "table-structure-v2"
+          "enum": [
+            "table-structure-v2",
+            "table-structure-v3",
+            "table-structure-v4",
+            "table-structure-v5",
+            "table-structure-v6"
+          ]
         }
       },
       "additionalProperties": false
@@ -95,7 +105,10 @@
       "$ref": "#/$defs/hash"
     },
     "structural_override_version": {
-      "const": "claim-structural-override-v1"
+      "enum": [
+        "claim-structural-override-v1",
+        "claim-structural-override-v2"
+      ]
     },
     "structural_override_prefix_sha256": {
       "$ref": "#/$defs/hash"
@@ -167,6 +180,10 @@
           "minimum": 0
         },
         "table_cell_claim_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "structural_review_candidate_count": {
           "type": "integer",
           "minimum": 0
         }
@@ -267,6 +284,30 @@
         "normative_context_only_count": {
           "type": "integer",
           "minimum": 0
+        },
+        "orphan_table_cell_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicate_table_cell_id_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "weak_signal_context_cell_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsignaled_data_cell_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ambiguous_structure_cell_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "untyped_colon_spec_cell_count": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -365,7 +406,13 @@
       ]
     },
     "table_structure_version": {
-      "const": "table-structure-v2"
+      "enum": [
+        "table-structure-v2",
+        "table-structure-v3",
+        "table-structure-v4",
+        "table-structure-v5",
+        "table-structure-v6"
+      ]
     }
   },
   "additionalProperties": false,

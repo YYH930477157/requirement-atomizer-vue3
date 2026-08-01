@@ -129,7 +129,15 @@ const currentRevisionLabel = computed(() => {
 })
 
 function sameEffectiveRevision(envelopes: ClaimViewEnvelope[]): boolean {
-  return new Set(envelopes.map((payload) => payload.document_effective_revision)).size <= 1
+  return new Set(envelopes.map((payload) => {
+    const registry = payload.structural_candidate_decision_registry
+    return [
+      payload.document_effective_revision,
+      registry?.version || "",
+      registry?.prefix_sha256 || "",
+      registry?.prefix_count ?? 0,
+    ].join(":")
+  })).size <= 1
 }
 
 function ratioLabel(metric?: ClaimRatioMetric): string {
@@ -378,6 +386,18 @@ const structuralOverrideReason = computed(() => {
   return String((exclusion as Record<string, unknown>).reason || "")
 })
 
+const cellStructuralReviewReasons = new Set([
+  "ambiguous_table_structure",
+  "weak_signal_table_cell",
+  "unsignaled_table_cell",
+  "rejected_matrix_marker_cell",
+  "untyped_colon_spec_cell",
+])
+const isCellStructuralReviewCandidate = computed(() =>
+  cellStructuralReviewReasons.has(structuralOverrideReason.value))
+const structuralReviewConfirmed = computed(() =>
+  selectedClaim.value?.structural_review_status === "confirmed_excluded")
+
 const pendingStructuralOperation = computed(() =>
   selectedClaim.value?.pending_structural_operation || null)
 const structuralVerifierBudgetValid = computed(() => {
@@ -401,7 +421,11 @@ async function confirmStructuralOverride(): Promise<void> {
     !client?.confirmClaimStructuralOverride
     || !row?.claim_hash
     || !row.claim_effective_revision
-    || structuralOverrideReason.value !== "repeated_page_furniture"
+    || (
+      structuralOverrideReason.value !== "repeated_page_furniture"
+      && !isCellStructuralReviewCandidate.value
+    )
+    || structuralReviewConfirmed.value
     || !catalog.value?.catalog_generation_id
     || !reason
     || !structuralVerifierBudgetValid.value
@@ -430,7 +454,11 @@ async function confirmStructuralOverride(): Promise<void> {
       claimHash: row.claim_hash,
       expectedCatalogGenerationId: catalog.value.catalog_generation_id,
       expectedClaimEffectiveRevision: row.claim_effective_revision,
-      priorStructuralReason: "repeated_page_furniture",
+      priorStructuralReason: structuralOverrideReason.value as
+        "repeated_page_furniture" | "ambiguous_table_structure" |
+        "weak_signal_table_cell" | "unsignaled_table_cell" |
+        "rejected_matrix_marker_cell" | "untyped_colon_spec_cell",
+      decision: "promote_to_claim",
       reason,
       actor: "reviewer",
       requestIdempotencyKey: pendingOperation
@@ -453,6 +481,58 @@ async function confirmStructuralOverride(): Promise<void> {
     await loadOverview(false)
   } finally {
     structuralPaidWorkReconfirmed.value = false
+    adjudicationBusy.value = false
+  }
+}
+
+function structuralReviewLabel(row: ClaimCatalogViewRow): string {
+  if (row.structural_review_status === "pending_review") return "结构待审"
+  if (row.structural_review_status === "confirmed_excluded") return "已确认排除"
+  return ""
+}
+
+async function confirmStructuralExclusion(): Promise<void> {
+  const client = props.client
+  const row = selectedClaim.value
+  const reason = adjudicationReason.value.trim()
+  if (
+    !client?.confirmClaimStructuralOverride
+    || !row?.claim_hash
+    || !row.claim_effective_revision
+    || !isCellStructuralReviewCandidate.value
+    || structuralReviewConfirmed.value
+    || !catalog.value?.catalog_generation_id
+    || !reason
+    || detailsStale.value
+    || detailLoading.value
+  ) return
+  adjudicationBusy.value = true
+  message.value = ""
+  try {
+    await client.confirmClaimStructuralOverride({
+      claimId: row.claim_id,
+      claimHash: row.claim_hash,
+      expectedCatalogGenerationId: catalog.value.catalog_generation_id,
+      expectedClaimEffectiveRevision: row.claim_effective_revision,
+      priorStructuralReason: structuralOverrideReason.value as
+        "ambiguous_table_structure" | "weak_signal_table_cell" |
+        "unsignaled_table_cell" | "rejected_matrix_marker_cell" |
+        "untyped_colon_spec_cell",
+      decision: "confirm_exclusion",
+      reason,
+      actor: "reviewer",
+      requestIdempotencyKey: newIdempotencyKey("claim-structural-exclusion"),
+      allowLlm: false,
+      route: "stub",
+      verifierMaxCalls: 0,
+      verifierMaxTotalTokens: 0,
+    })
+    closeDetails()
+    await loadOverview(false)
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : "结构排除确认失败"
+    await loadOverview(false)
+  } finally {
     adjudicationBusy.value = false
   }
 }
@@ -715,7 +795,7 @@ onUnmounted(() => {
       <div>
         <div class="ledger-title-row">
           <h4>Claim Ledger</h4>
-          <span class="observation-badge">双写观察期 · 不影响 READY 判定</span>
+          <span class="observation-badge">双写观察期 · 结构待审阻断 Ledger Ready</span>
         </div>
         <p>Revision <code>{{ currentRevisionLabel }}</code></p>
       </div>
@@ -749,6 +829,16 @@ onUnmounted(() => {
         <span class="status-item" :class="metrics?.effective_fresh ? 'ok' : 'warn'">
           <Clock3 :size="15" aria-hidden="true" />
           {{ metrics?.effective_fresh ? "快照已同步" : "账本待刷新" }}
+        </span>
+        <span class="status-item" :class="(metrics?.structural_review_pending_count || 0) > 0 ? 'warn' : 'ok'"
+              data-testid="claim-structural-pending-count">
+          <TriangleAlert :size="15" aria-hidden="true" />
+          结构待审：{{ metrics?.structural_review_pending_count ?? 0 }}
+        </span>
+        <span class="status-item" :class="(metrics?.structural_review_confirmed_exclusion_count || 0) > 0 ? 'ok' : 'neutral'"
+              data-testid="claim-structural-confirmed-count">
+          <CircleCheck :size="15" aria-hidden="true" />
+          已确认排除：{{ metrics?.structural_review_confirmed_exclusion_count ?? 0 }}
         </span>
       </section>
 
@@ -806,7 +896,12 @@ onUnmounted(() => {
             <tbody>
               <tr v-for="row in rows" :key="row.claim_id" tabindex="0" data-testid="claim-row"
                   @click="openDetails(row)" @keydown.enter="openDetails(row)">
-                <td><span class="resolution-chip" :class="row.resolution">{{ resolutionLabel(row.resolution) }}</span></td>
+                <td>
+                  <span class="resolution-chip" :class="row.resolution">{{ resolutionLabel(row.resolution) }}</span>
+                  <small v-if="structuralReviewLabel(row)" class="structural-status-chip"
+                         :class="row.structural_review_status"
+                         data-testid="claim-structural-list-status">{{ structuralReviewLabel(row) }}</small>
+                </td>
                 <td class="claim-id">{{ row.claim_id }}</td>
                 <td class="claim-text">{{ row.text }}</td>
                 <td class="locator">{{ formatLocator(row.locator) }}<span v-if="formatCellContext(row)" class="locator-context" :title="formatCellContext(row)"> ⓘ</span></td>
@@ -995,16 +1090,21 @@ onUnmounted(() => {
                   <Undo2 :size="15" aria-hidden="true" />重开
                 </button>
               </div>
-              <div v-if="structuralOverrideReason === 'repeated_page_furniture'"
+              <div v-if="structuralOverrideReason === 'repeated_page_furniture' || isCellStructuralReviewCandidate"
                    class="structural-review" data-testid="claim-structural-review">
-                <label v-if="!pendingStructuralOperation" class="structural-mode">
+                <div v-if="structuralReviewConfirmed" class="structural-operation-summary"
+                     data-testid="claim-structural-confirmed-exclusion">
+                  <strong>已确认保持结构排除</strong>
+                  <small>{{ selectedClaim.structural_candidate_decision?.reason }}</small>
+                </div>
+                <label v-if="!structuralReviewConfirmed && !pendingStructuralOperation" class="structural-mode">
                   <input v-model="structuralOverrideAllowLlm" type="checkbox"
                          data-testid="claim-structural-llm" />
                   <span data-testid="claim-structural-mode">
                     {{ structuralOverrideAllowLlm ? "LLM 语义复核" : "确定性重建 · 0 LLM" }}
                   </span>
                 </label>
-                <div v-else class="structural-operation-summary"
+                <div v-else-if="pendingStructuralOperation" class="structural-operation-summary"
                      data-testid="claim-structural-pending-authorization">
                   <strong data-testid="claim-structural-mode">
                     {{ pendingStructuralOperation.allow_llm
@@ -1030,7 +1130,7 @@ onUnmounted(() => {
                     </div>
                   </dl>
                 </div>
-                <div v-if="!pendingStructuralOperation && structuralOverrideAllowLlm" class="structural-budget"
+                <div v-if="!structuralReviewConfirmed && !pendingStructuralOperation && structuralOverrideAllowLlm" class="structural-budget"
                      data-testid="claim-structural-budget">
                   <label>调用上限<input v-model.number="queueMaxCalls" type="number" min="1" step="1" /></label>
                   <label>Token 上限<input v-model.number="queueTokenBudget" type="number" min="1" step="1000" /></label>
@@ -1041,12 +1141,19 @@ onUnmounted(() => {
                          data-testid="claim-structural-paid-reconfirmation" />
                   <span>确认按剩余预算继续付费复核</span>
                 </label>
-                <button class="structural-command" type="button"
+                <button v-if="!structuralReviewConfirmed" class="structural-command" type="button"
                         :disabled="adjudicationBusy || detailsStale || detailLoading || !adjudicationReason.trim() || !structuralVerifierBudgetValid"
                         data-testid="claim-structural-override" @click="confirmStructuralOverride">
                   <Undo2 :size="15" aria-hidden="true" />{{ pendingStructuralOperation?.needs_reconfirmation
                     ? "确认并恢复付费复核"
-                    : (pendingStructuralOperation ? "恢复结构复核重建" : "撤销页眉页脚排除") }}
+                    : (pendingStructuralOperation ? "恢复结构复核重建" : (isCellStructuralReviewCandidate ? "提升为 claim 并重建" : "撤销页眉页脚排除")) }}
+                </button>
+                <button v-if="isCellStructuralReviewCandidate && !structuralReviewConfirmed && !pendingStructuralOperation"
+                        class="structural-command" type="button"
+                        :disabled="adjudicationBusy || detailsStale || detailLoading || !adjudicationReason.trim()"
+                        data-testid="claim-structural-confirm-exclusion"
+                        @click="confirmStructuralExclusion">
+                  <X :size="15" aria-hidden="true" />确认保持排除
                 </button>
                 <small v-if="pendingStructuralOperation" class="structural-pending">
                   {{ pendingStructuralOperation.lifecycle }} · {{ pendingStructuralOperation.operation_id }}
@@ -1192,6 +1299,9 @@ onUnmounted(() => {
 .resolution-chip.covered { color: #17663c; background: #e8f5ed; }
 .resolution-chip.excluded { color: #5f6368; background: #eceef1; }
 .resolution-chip.uncertain { color: #8b5108; background: #fff0d4; }
+.structural-status-chip { display: block; width: fit-content; margin-top: 4px; font-size: 10px; }
+.structural-status-chip.pending_review { color: #8b5108; }
+.structural-status-chip.confirmed_excluded { color: #17663c; }
 .table-empty { height: 110px !important; text-align: center; color: #858b93; }
 .pagination { display: flex; align-items: center; justify-content: space-between; min-height: 48px; color: #6c727a; font-size: 12px; }
 .pagination > div { display: flex; gap: 6px; }

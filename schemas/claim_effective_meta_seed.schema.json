@@ -56,7 +56,7 @@
       "oneOf": [
         {
           "type": "object",
-          "description": "Current v3 component vector.",
+          "description": "Current v3 component vector (queue v4).",
           "required": [
             "effective_artifacts", "effective_ledger_schema", "effective_reducer",
             "effective_snapshot", "queue", "review_bridge", "review_event_schema",
@@ -67,7 +67,7 @@
             "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
             "effective_reducer": {"const": "claim-effective-reducer-v3"},
             "effective_snapshot": {"const": "claim-effective-snapshot-v3"},
-            "queue": {"const": "claim-queue-v3"},
+            "queue": {"const": "claim-queue-v4"},
             "review_bridge": {"const": "claim-review-bridge-v2"},
             "review_event_schema": {"const": "claim-review-event/v2"},
             "revision_inputs": {"const": "claim-effective-revision-inputs/v2"}
@@ -86,6 +86,26 @@
             "effective_artifacts": {"const": "claim-effective-artifacts-v2"},
             "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
             "effective_reducer": {"const": "claim-effective-reducer-v2"},
+            "effective_snapshot": {"const": "claim-effective-snapshot-v3"},
+            "queue": {"const": "claim-queue-v3"},
+            "review_bridge": {"const": "claim-review-bridge-v2"},
+            "review_event_schema": {"const": "claim-review-event/v2"},
+            "revision_inputs": {"const": "claim-effective-revision-inputs/v2"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "Supported stale v3 vector for the queue v3 to v4 focus-contract bump. It may seed a refold only.",
+          "required": [
+            "effective_artifacts", "effective_ledger_schema", "effective_reducer",
+            "effective_snapshot", "queue", "review_bridge", "review_event_schema",
+            "revision_inputs"
+          ],
+          "properties": {
+            "effective_artifacts": {"const": "claim-effective-artifacts-v2"},
+            "effective_ledger_schema": {"const": "claim-effective-ledger/v2"},
+            "effective_reducer": {"const": "claim-effective-reducer-v3"},
             "effective_snapshot": {"const": "claim-effective-snapshot-v3"},
             "queue": {"const": "claim-queue-v3"},
             "review_bridge": {"const": "claim-review-bridge-v2"},

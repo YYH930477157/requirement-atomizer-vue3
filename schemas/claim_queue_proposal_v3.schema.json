@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ratomizer.local/schemas/claim_queue_proposal_v2.schema.json",
-  "title": "Claim queue proposal v2",
+  "$id": "https://ratomizer.local/schemas/claim_queue_proposal_v3.schema.json",
+  "title": "Claim queue proposal v3",
   "type": "object",
   "required": [
     "schema",
@@ -27,7 +27,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "claim-queue-proposal/v2"
+      "const": "claim-queue-proposal/v3"
     },
     "proposal_id": {
       "type": "string",
@@ -66,7 +66,7 @@
       "const": false
     },
     "queue_version": {
-      "const": "claim-queue-v3"
+      "const": "claim-queue-v4"
     },
     "expected_ledger_state": {
       "const": "uncertain"
@@ -234,8 +234,7 @@
         },
         "adapter_version": {
           "enum": [
-            "claim-focus-adapter-v1",
-            "claim-focus-adapter-v2"
+            "claim-focus-adapter-v3"
           ]
         },
         "claim_id": {
@@ -404,8 +403,7 @@
         },
         "adapter_version": {
           "enum": [
-            "claim-focus-adapter-v1",
-            "claim-focus-adapter-v2"
+            "claim-focus-adapter-v3"
           ]
         },
         "reason": {
@@ -559,8 +557,7 @@
         },
         "focus_adapter_version": {
           "enum": [
-            "claim-focus-adapter-v1",
-            "claim-focus-adapter-v2"
+            "claim-focus-adapter-v3"
           ]
         }
       },
@@ -610,6 +607,7 @@
             "column_index",
             "cell_start",
             "cell_end",
+            "table_title",
             "header_path",
             "row_header_context",
             "merge_anchor",
@@ -647,6 +645,9 @@
             "cell_end": {
               "type": "integer",
               "minimum": 1
+            },
+            "table_title": {
+              "type": "string"
             },
             "header_path": {
               "type": "array",

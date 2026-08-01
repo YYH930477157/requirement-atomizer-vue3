@@ -59,6 +59,10 @@ export type DocumentBlock = {
   table_source?: string
   header_rows?: string[][]
   data_rows?: string[][]
+  // 物理行坐标（1-based，v15）：thead/title 行的 cell_context 物理定位与合并跨度渲染所需；
+  // 旧产物无此字段时前端按 title=0、header=header_rows.length 顺序回退
+  title_row_indexes?: number[]
+  header_row_indexes?: number[]
   // 块级中文翻译（annotation_translations.json 内容哈希缓存,后端装配时附带）
   translation?: string
   translation_note?: string
@@ -119,8 +123,9 @@ export type PdfRowContext = {
   req_ids?: string[]
   covered_req_ids?: string[]
 }
-// 单元格级卡片数据（v14,键 "<block_id>#<cell_id>"）：表标题/行头/列头/正文 + 如实来源坐标。
-// 没有真实 bbox 的 cell 只给 R×C 身份——前端只用表格 DOM 单元格，不伪造 PDF 几何
+// 单元格级卡片数据（v15,键 "<block_id>#<cell_id>"）：表标题/行头/列头/正文 + 如实来源坐标
+// + 合并跨度（row_span/column_span/covered_coordinates，DOM colspan/rowspan 渲染真实合并格，
+// covered 坐标只读不可点）。没有真实 bbox 的 cell 只给 R×C 身份——前端只用表格 DOM 单元格，不伪造 PDF 几何
 export type PdfCellContext = {
   cell_id: string
   block_id: string
@@ -129,6 +134,9 @@ export type PdfCellContext = {
   column_index: number
   data_row_index?: number | null
   structural_role?: string
+  row_span?: number
+  column_span?: number
+  covered_coordinates?: [number, number][]
   header_path?: string[]
   row_header_context?: string[]
   text?: string
@@ -414,6 +422,11 @@ export type ClaimViewEnvelope = {
   base_generation_id: string | null
   catalog_generation_id?: string | null
   event_prefix_sha256: string | null
+  structural_candidate_decision_registry?: {
+    version: string
+    prefix_sha256: string
+    prefix_count: number
+  }
   effective_fresh: boolean
   reason?: string
 }
@@ -463,6 +476,14 @@ export type ClaimCatalogViewRow = Record<string, unknown> & {
       unknown_remote_result: boolean
     }
     needs_reconfirmation: boolean
+  } | null
+  structural_review_status?: "pending_review" | "confirmed_excluded" | null
+  structural_candidate_decision?: {
+    decision_id: string
+    decision: "confirm_exclusion"
+    actor: string
+    reason: string
+    recorded_at: string
   } | null
 }
 
@@ -598,6 +619,8 @@ export type ClaimMetricsViewPayload = ClaimViewEnvelope & {
   generation_metrics_version?: string
   effective_metrics_version?: string
   document_ready: boolean | null
+  structural_review_pending_count?: number
+  structural_review_confirmed_exclusion_count?: number
   health?: Record<string, unknown>
 }
 
@@ -706,7 +729,11 @@ export type ClaimStructuralOverrideInput = {
   claimHash: string
   expectedCatalogGenerationId: string
   expectedClaimEffectiveRevision: string
-  priorStructuralReason: "repeated_page_furniture"
+  priorStructuralReason: "repeated_page_furniture" |
+    "ambiguous_table_structure" | "weak_signal_table_cell" |
+    "unsignaled_table_cell" | "rejected_matrix_marker_cell" |
+    "untyped_colon_spec_cell"
+  decision: "promote_to_claim" | "confirm_exclusion"
   reason: string
   actor?: string
   requestIdempotencyKey: string
@@ -1026,6 +1053,7 @@ export class RequirementApiClient {
         expected_catalog_generation_id: input.expectedCatalogGenerationId,
         expected_claim_effective_revision: input.expectedClaimEffectiveRevision,
         prior_structural_reason: input.priorStructuralReason,
+        decision: input.decision,
         reason: input.reason,
         actor: input.actor || "reviewer",
         request_idempotency_key: input.requestIdempotencyKey,

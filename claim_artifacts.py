@@ -33,6 +33,7 @@ CLAIM_QUEUE_PROPOSALS = "claim_queue_proposals.jsonl"
 CLAIM_EFFECTIVE_HEALTH = "claim_effective_health.json"
 CLAIM_VERIFIER_ATTEMPTS = "claim_verifier_attempts.jsonl"
 CLAIM_VERIFIER_ATTEMPT_CHECKPOINT = ".claim_verifier_attempt.checkpoint.json"
+CLAIM_BUDGET_CHECKPOINT_OUTBOX = ".claim_budget_checkpoint.outbox.json"
 CLAIM_PUBLICATION_JOURNAL = ".claim_publication.journal.json"
 CLAIM_EFFECTIVE_PUBLICATION_JOURNAL = ".claim_effective_publication.journal.json"
 
@@ -60,6 +61,7 @@ PREVIOUS_CLAIM_ARTIFACT_PROTOCOL_VERSION = "claim-artifacts-v6"
 CLAIM_PUBLICATION_JOURNAL_SCHEMA = "claim-publication-journal/v1"
 CLAIM_EFFECTIVE_PUBLICATION_JOURNAL_SCHEMA = "claim-effective-publication-journal/v1"
 CLAIM_VERIFIER_ATTEMPT_CHECKPOINT_SCHEMA = "claim-verifier-attempt-checkpoint/v1"
+CLAIM_BUDGET_CHECKPOINT_OUTBOX_SCHEMA = "claim-budget-checkpoint-outbox/v1"
 
 _REPLACE_ATTEMPTS = 8
 _REPLACE_RETRY_DELAY_S = 0.02
@@ -1120,6 +1122,260 @@ def _update_verifier_attempt_checkpoint_unlocked(
     _write_verifier_attempt_checkpoint_unlocked(root, checkpoint)
 
 
+def _budget_outbox_without_hash(outbox: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in outbox.items()
+        if key != "outbox_sha256"
+    }
+
+
+def claim_budget_checkpoint_payload(
+    snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Project one LLM budget snapshot into the queue accounting contract."""
+    calls = int(snapshot.get("attempted_calls") or 0)
+    if calls <= 0:
+        return None
+    reserved = max(0, int(snapshot.get("reserved_tokens") or 0))
+    failed = int(snapshot.get("failed_calls") or 0)
+    return {
+        "phase": "pre_call" if reserved > 0 else "error" if failed else "post_call",
+        "calls": calls,
+        "total_tokens": int(snapshot.get("tokens") or 0) + reserved,
+        "usage_complete": bool(snapshot.get("usage_complete")) and reserved == 0,
+        "status": "reserved" if reserved > 0 else "failed" if failed else "settled",
+    }
+
+
+def claim_budget_checkpoint_event_idempotency_key(
+    *,
+    attempt_id: str,
+    transition_id: str,
+    checkpoint: dict[str, Any],
+) -> str:
+    return hash_json(
+        "claim-reextract-event-idempotency/v1",
+        {
+            "attempt_id": str(attempt_id),
+            "event_kind": "budget_checkpoint",
+            "detail": {
+                "transition_id": str(transition_id),
+                **dict(checkpoint),
+            },
+        },
+    )
+
+
+def _validate_budget_checkpoint_outbox(
+    outbox: dict[str, Any],
+) -> dict[str, Any]:
+    expected_fields = {
+        "schema",
+        "transaction_id",
+        "verifier_nonce",
+        "created_at",
+        "budget_snapshot",
+        "queue_event",
+        "outbox_sha256",
+    }
+    if set(outbox) != expected_fields:
+        raise ClaimArtifactError("invalid budget checkpoint outbox fields")
+    if outbox.get("schema") != CLAIM_BUDGET_CHECKPOINT_OUTBOX_SCHEMA:
+        raise ClaimArtifactError("unsupported budget checkpoint outbox")
+    transaction_id = str(outbox.get("transaction_id") or "")
+    verifier_nonce = str(outbox.get("verifier_nonce") or "")
+    if any(
+        len(value) != 32
+        or any(character not in "0123456789abcdef" for character in value)
+        for value in (transaction_id, verifier_nonce)
+    ):
+        raise ClaimArtifactError("invalid budget checkpoint outbox identity")
+    if not isinstance(outbox.get("created_at"), str) or not outbox.get("created_at"):
+        raise ClaimArtifactError("invalid budget checkpoint outbox timestamp")
+    snapshot = outbox.get("budget_snapshot")
+    required_snapshot_fields = {
+        "version",
+        "max_calls",
+        "max_tokens",
+        "attempted_calls",
+        "failed_calls",
+        "tokens",
+        "reserved_tokens",
+        "remaining_calls",
+        "remaining_tokens",
+        "usage_complete",
+        "denied",
+        "termination_reason",
+    }
+    if not isinstance(snapshot, dict) or set(snapshot) != required_snapshot_fields:
+        raise ClaimArtifactError("invalid budget checkpoint outbox snapshot")
+    if snapshot.get("version") != "llm-request-budget-v1":
+        raise ClaimArtifactError("unsupported budget checkpoint outbox snapshot")
+    for field in (
+        "max_calls",
+        "max_tokens",
+        "attempted_calls",
+        "failed_calls",
+        "tokens",
+        "reserved_tokens",
+        "remaining_calls",
+        "remaining_tokens",
+    ):
+        value = snapshot.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ClaimArtifactError("invalid budget checkpoint outbox accounting")
+    if (
+        not isinstance(snapshot.get("usage_complete"), bool)
+        or not isinstance(snapshot.get("denied"), bool)
+        or not isinstance(snapshot.get("termination_reason"), str)
+    ):
+        raise ClaimArtifactError("invalid budget checkpoint outbox state")
+    if (
+        snapshot["max_calls"] <= 0
+        or snapshot["max_tokens"] <= 0
+        or snapshot["attempted_calls"] > snapshot["max_calls"]
+        or snapshot["failed_calls"] > snapshot["attempted_calls"]
+        or snapshot["remaining_calls"]
+        != max(0, snapshot["max_calls"] - snapshot["attempted_calls"])
+        or snapshot["remaining_tokens"]
+        != max(
+            0,
+            snapshot["max_tokens"]
+            - snapshot["tokens"]
+            - snapshot["reserved_tokens"],
+        )
+        or bool(snapshot["termination_reason"]) != snapshot["denied"]
+        or (snapshot["failed_calls"] > 0 and snapshot["usage_complete"])
+        or (
+            snapshot["tokens"] > snapshot["max_tokens"]
+            and (
+                snapshot["denied"] is not True
+                or snapshot["termination_reason"]
+                != "reported_token_budget_exceeded"
+            )
+        )
+        or (
+            snapshot["reserved_tokens"] > 0
+            and snapshot["tokens"] + snapshot["reserved_tokens"]
+            > snapshot["max_tokens"]
+        )
+    ):
+        raise ClaimArtifactError("inconsistent budget checkpoint outbox snapshot")
+    queue_event = outbox.get("queue_event")
+    if (
+        not isinstance(queue_event, dict)
+        or queue_event.get("event_kind") != "budget_checkpoint"
+        or not isinstance(queue_event.get("idempotency_key"), str)
+        or not queue_event.get("idempotency_key")
+        or {
+            "event_seq",
+            "event_id",
+            "prev_event_hash",
+            "event_hash",
+        }.intersection(queue_event)
+    ):
+        raise ClaimArtifactError("invalid budget checkpoint outbox queue event")
+    expected_checkpoint = claim_budget_checkpoint_payload(snapshot)
+    if (
+        expected_checkpoint is None
+        or queue_event.get("checkpoint") != expected_checkpoint
+        or queue_event.get("idempotency_key")
+        != claim_budget_checkpoint_event_idempotency_key(
+            attempt_id=str(queue_event.get("attempt_id") or ""),
+            transition_id=transaction_id,
+            checkpoint=expected_checkpoint,
+        )
+    ):
+        raise ClaimArtifactError("budget checkpoint outbox projections do not match")
+    if outbox.get("outbox_sha256") != _sha256_payload(
+        _budget_outbox_without_hash(outbox)
+    ):
+        raise ClaimArtifactError("budget checkpoint outbox hash mismatch")
+    return outbox
+
+
+def _write_budget_checkpoint_outbox_unlocked(
+    root: Path,
+    *,
+    transaction_id: str,
+    verifier_nonce: str,
+    budget_snapshot: dict[str, Any],
+    queue_event: dict[str, Any],
+) -> None:
+    path = root / CLAIM_BUDGET_CHECKPOINT_OUTBOX
+    if path.exists():
+        raise ClaimArtifactError("unfinished budget checkpoint outbox was not recovered")
+    outbox = {
+        "schema": CLAIM_BUDGET_CHECKPOINT_OUTBOX_SCHEMA,
+        "transaction_id": transaction_id,
+        "verifier_nonce": verifier_nonce,
+        "created_at": _utc_now(),
+        "budget_snapshot": dict(budget_snapshot),
+        "queue_event": dict(queue_event),
+    }
+    outbox["outbox_sha256"] = _sha256_payload(outbox)
+    atomic_write_json(path, outbox)
+
+
+def _recover_budget_checkpoint_outbox_unlocked(
+    root: Path,
+) -> dict[str, Any] | None:
+    """Idempotently project one budget transition to both durable sinks."""
+    path = root / CLAIM_BUDGET_CHECKPOINT_OUTBOX
+    if not path.is_file():
+        return None
+    outbox = _validate_budget_checkpoint_outbox(
+        _read_json(path, label="budget checkpoint outbox")
+    )
+    checkpoint = _read_verifier_attempt_checkpoint_unlocked(root)
+    nonce = str(outbox["verifier_nonce"])
+    if str(dict(checkpoint["owner"])["nonce"]) != nonce:
+        raise ClaimArtifactError("budget checkpoint outbox owner changed")
+
+    # The queue event is the recovery authority for the paid operation.  Its
+    # append is hash-chained and idempotent, so a kill after fsync simply replays
+    # as a no-op.  Only after that projection exists do we advance the verifier
+    # WAL to the exact same cumulative snapshot.
+    from claim_reextract_attempts import append_attempt_events
+
+    append_attempt_events(
+        root,
+        [dict(outbox["queue_event"])],
+        operation_lock_held=True,
+    )
+    snapshot = dict(outbox["budget_snapshot"])
+    _update_verifier_attempt_checkpoint_unlocked(
+        root,
+        nonce=nonce,
+        budget_snapshot=snapshot,
+    )
+    _unlink_with_retry(path)
+    return snapshot
+
+
+def recover_claim_budget_checkpoint_outbox(
+    out_dir: Path | str,
+    *,
+    operation_lock_held: bool = False,
+) -> dict[str, Any] | None:
+    """Recover a queue/verifier budget fanout before attempt-state folding."""
+    root = Path(out_dir).expanduser().resolve()
+    if not operation_lock_held:
+        from omission_actions import extraction_operation_lock
+
+        with extraction_operation_lock(
+            root,
+            operation="claim-budget-checkpoint-recovery",
+        ):
+            return recover_claim_budget_checkpoint_outbox(
+                root,
+                operation_lock_held=True,
+            )
+    with claim_publication_lock(root):
+        return _recover_budget_checkpoint_outbox_unlocked(root)
+
+
 def _discard_matching_verifier_checkpoint_unlocked(
     root: Path,
     recovery: dict[str, Any],
@@ -1430,6 +1686,14 @@ def _recover_claim_state_unlocked(
     *,
     allow_live_checkpoint_nonce: str | None = None,
 ) -> dict[str, Any] | None:
+    if (root / CLAIM_BUDGET_CHECKPOINT_OUTBOX).is_file():
+        # Queue events are protected by the extraction-operation lock.  Claim
+        # GETs hold only the publication lock and must remain byte-invariant, so
+        # they fail closed until the write-side maintenance path replays this
+        # outbox in the canonical extraction -> publication lock order.
+        raise ClaimArtifactError(
+            "budget checkpoint recovery requires claim maintenance"
+        )
     binding = _recover_interrupted_publication_unlocked(root)
     _recover_interrupted_effective_publication_unlocked(root)
     checkpoint_binding = _recover_abandoned_verifier_checkpoint_unlocked(
@@ -1535,6 +1799,24 @@ def _require_hash(path: Path, expected: object, *, label: str) -> None:
         raise ClaimArtifactError(
             f"hash mismatch for {label}: expected {wanted}, got {actual}"
         )
+
+
+def _catalog_meta_requires_cell_binding(catalog_meta: dict[str, Any]) -> bool:
+    """当前版本表格结构目录且含表块 → cell 产物哈希绑定是硬义务。
+
+    纯段落目录没有 canonical cell（无表即无 cell 产物可绑）；已判
+    base_migration_required 的旧结构目录走迁移门禁，不在此绑定。"""
+    from table_structure import TABLE_STRUCTURE_VERSION
+
+    if str(catalog_meta.get("table_structure_version") or "") != TABLE_STRUCTURE_VERSION:
+        return False
+    if str(catalog_meta.get("table_structure_status") or "") == "base_migration_required":
+        return False
+    mappings = catalog_meta.get("container_mappings") or []
+    return any(
+        isinstance(mapping, dict) and str(mapping.get("kind") or "") == "table"
+        for mapping in mappings
+    )
 
 
 def _utc_now() -> str:
@@ -2459,6 +2741,7 @@ def _record_failed_attempt_from_scope(
     if not context.get("failure_context"):
         return
     with claim_publication_lock(root):
+        recovered_budget_snapshot = _recover_budget_checkpoint_outbox_unlocked(root)
         recovered = _recover_interrupted_publication_unlocked(root)
         if recovered is not None:
             context["recorded_attempt_id"] = recovered["attempt_id"]
@@ -2466,11 +2749,14 @@ def _record_failed_attempt_from_scope(
         checkpoint_path = root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT
         if checkpoint_path.is_file():
             budget = dict(context["failure_context"]).get("verifier_budget")
-            if hasattr(budget, "snapshot"):
+            budget_snapshot = recovered_budget_snapshot
+            if budget_snapshot is None and hasattr(budget, "snapshot"):
+                budget_snapshot = budget.snapshot()
+            if budget_snapshot is not None:
                 _update_verifier_attempt_checkpoint_unlocked(
                     root,
                     nonce=str(context.get("checkpoint_nonce") or ""),
-                    budget_snapshot=budget.snapshot(),
+                    budget_snapshot=budget_snapshot,
                 )
             binding = _finalize_verifier_attempt_checkpoint_unlocked(
                 root,
@@ -2527,6 +2813,9 @@ def claim_verifier_attempt_scope(
         "checkpoint_nonce": None,
         "checkpoint_registered": False,
         "budget_checkpoint_attached": False,
+        "budget_checkpoint_atomic_swap": False,
+        "budget_checkpoint_owner": None,
+        "previous_budget_checkpoint": None,
     }
     token = _VERIFIER_ATTEMPT_CONTEXT.set(context)
     budget = context["failure_context"].get("verifier_budget")
@@ -2554,16 +2843,71 @@ def claim_verifier_attempt_scope(
                 )
                 context["checkpoint_registered"] = True
             if hasattr(budget, "set_checkpoint"):
+                # Preserve the queue owner across the verifier stage. Production
+                # owners expose a serializable queue event, allowing the outbox
+                # below to project one snapshot to both durable accounting logs.
+                previous_checkpoint = (
+                    budget.checkpoint() if hasattr(budget, "checkpoint") else None
+                )
+                swap_checkpoint = getattr(budget, "swap_checkpoint", None)
+                if previous_checkpoint is not None and not callable(swap_checkpoint):
+                    # set_checkpoint rejects replacing one non-null owner with
+                    # another; persist_budget takes ownership temporarily.
+                    budget.set_checkpoint(None)
+
                 def persist_budget(snapshot: dict[str, Any]) -> None:
                     with claim_publication_lock(root):
+                        prepare_fanout = getattr(
+                            previous_checkpoint,
+                            "prepare_fanout_event",
+                            None,
+                        )
+                        if callable(prepare_fanout):
+                            transaction_id = uuid.uuid4().hex
+                            queue_event = prepare_fanout(
+                                snapshot,
+                                transaction_id,
+                            )
+                            if queue_event is not None:
+                                outbox_path = root / CLAIM_BUDGET_CHECKPOINT_OUTBOX
+                                outbox_preexisted = outbox_path.exists()
+                                try:
+                                    _write_budget_checkpoint_outbox_unlocked(
+                                        root,
+                                        transaction_id=transaction_id,
+                                        verifier_nonce=str(context["checkpoint_nonce"]),
+                                        budget_snapshot=snapshot,
+                                        queue_event=queue_event,
+                                    )
+                                    _recover_budget_checkpoint_outbox_unlocked(root)
+                                except BaseException as exc:
+                                    if (
+                                        not outbox_preexisted
+                                        and outbox_path.is_file()
+                                    ):
+                                        from llm_client import (
+                                            mark_budget_checkpoint_durable,
+                                        )
+
+                                        mark_budget_checkpoint_durable(exc)
+                                    raise
+                                return
                         _update_verifier_attempt_checkpoint_unlocked(
                             root,
                             nonce=str(context["checkpoint_nonce"]),
                             budget_snapshot=snapshot,
                         )
+                    if previous_checkpoint is not None:
+                        previous_checkpoint(snapshot)
 
-                budget.set_checkpoint(persist_budget)
+                if callable(swap_checkpoint):
+                    swap_checkpoint(previous_checkpoint, persist_budget)
+                    context["budget_checkpoint_atomic_swap"] = True
+                else:
+                    budget.set_checkpoint(persist_budget)
                 context["budget_checkpoint_attached"] = True
+                context["budget_checkpoint_owner"] = persist_budget
+                context["previous_budget_checkpoint"] = previous_checkpoint
         yield
         if (
             context["failure_context"]
@@ -2587,7 +2931,18 @@ def claim_verifier_attempt_scope(
                 context["budget_checkpoint_attached"]
                 and hasattr(budget, "set_checkpoint")
             ):
-                budget.set_checkpoint(None)
+                previous_checkpoint = context.get("previous_budget_checkpoint")
+                if context.get("budget_checkpoint_atomic_swap"):
+                    budget.swap_checkpoint(
+                        context.get("budget_checkpoint_owner"),
+                        previous_checkpoint,
+                    )
+                else:
+                    # Compatibility path for injected budget doubles that only
+                    # implement the original set_checkpoint protocol.
+                    budget.set_checkpoint(None)
+                    if previous_checkpoint is not None:
+                        budget.set_checkpoint(previous_checkpoint)
         finally:
             if context["checkpoint_registered"]:
                 _unregister_active_verifier_checkpoint(
@@ -2992,6 +3347,15 @@ def _publish_shadow_generation_unlocked(
         if isinstance(producer_lineage, dict):
             requirements_producer_lineage = dict(producer_lineage)
 
+    # 含表块的当前版本目录必须带 canonical cell 产物——缺失即哈希绑定空洞，
+    # 拒绝提交（base 一旦没有 cell 绑定，篡改/删除 cell 产物将无法检出）
+    if _catalog_meta_requires_cell_binding(catalog_meta) and not (
+        root / "table_cell_items.jsonl"
+    ).is_file():
+        raise ClaimArtifactError(
+            "table cell items artifact missing for current table structure catalog"
+        )
+
     generation_meta = {
         "schema": "claim-generation-meta/v1",
         "artifact_protocol_version": CLAIM_ARTIFACT_PROTOCOL_VERSION,
@@ -3030,6 +3394,11 @@ def _publish_shadow_generation_unlocked(
         "table_items_file_sha256": (
             file_sha256(root / "table_items.jsonl")
             if (root / "table_items.jsonl").is_file()
+            else ""
+        ),
+        "table_cell_items_file_sha256": (
+            file_sha256(root / "table_cell_items.jsonl")
+            if (root / "table_cell_items.jsonl").is_file()
             else ""
         ),
         "catalog_sha256": str(catalog_commit["catalog_sha256"]),
@@ -3734,14 +4103,32 @@ def _validate_effective_projection(
                 )
         effective_by_id[claim_id] = row
 
+    queue_contracts = {
+        "claim-queue-v3": (
+            "claim-queue-proposal/v2",
+            "claim_queue_proposal_v2.schema.json",
+            "claim-queue-proposal-id/v2",
+        ),
+        "claim-queue-v4": (
+            "claim-queue-proposal/v3",
+            "claim_queue_proposal_v3.schema.json",
+            "claim-queue-proposal-id/v3",
+        ),
+    }
+    queue_contract = queue_contracts.get(queue_version)
+    if queue_contract is None:
+        raise ClaimArtifactError("unsupported effective queue version")
+    expected_proposal_schema, proposal_schema_file, proposal_id_domain = (
+        queue_contract
+    )
+
     proposal_by_claim: dict[str, dict[str, Any]] = {}
     for proposal in queue_rows:
         proposal_schema = str(proposal.get("schema") or "")
-        if proposal_schema == "claim-queue-proposal/v2":
-            proposal_schema_file = "claim_queue_proposal_v2.schema.json"
-            proposal_id_domain = "claim-queue-proposal-id/v2"
-        else:
-            raise ClaimArtifactError("unsupported claim queue proposal schema")
+        if proposal_schema != expected_proposal_schema:
+            raise ClaimArtifactError(
+                "claim queue proposal schema does not match its queue version"
+            )
         _validate_schema(
             proposal,
             proposal_schema_file,
@@ -4222,6 +4609,7 @@ def load_committed_effective_snapshot_readonly(
             name for name in (
                 CLAIM_PUBLICATION_JOURNAL,
                 CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
+                CLAIM_BUDGET_CHECKPOINT_OUTBOX,
             )
             if (root / name).is_file()
         ]
@@ -4277,6 +4665,7 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     for name, meta_key in (
         ("blocks.jsonl", "blocks_file_sha256"),
         ("table_items.jsonl", "table_items_file_sha256"),
+        ("table_cell_items.jsonl", "table_cell_items_file_sha256"),
     ):
         expected = str(generation.get(meta_key) or "")
         if expected:
@@ -4284,6 +4673,14 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
 
     catalog_build = _load_catalog_probe_unlocked(root)
     catalog_meta = dict(catalog_build["meta"])
+    # 含表块的当前版本目录：cell 产物哈希绑定是硬义务（不是可选字段）——
+    # 绑定缺失/文件被删除/内容被替换全部 fail-closed，绝不加载无绑定 base
+    if _catalog_meta_requires_cell_binding(catalog_meta):
+        _require_hash(
+            root / "table_cell_items.jsonl",
+            generation.get("table_cell_items_file_sha256"),
+            label="table_cell_items.jsonl",
+        )
     structural_fields = (
         "structural_override_version",
         "structural_override_prefix_sha256",
@@ -4529,10 +4926,15 @@ def _load_committed_effective_unlocked(
 
         if any(row.get("schema") != _row_schema for row in effective_ledger):
             raise ClaimArtifactError("invalid effective ledger row schema")
-        if any(
-            row.get("schema") != "claim-queue-proposal/v2" for row in queue
-        ):
-            raise ClaimArtifactError("invalid claim queue proposal schema")
+        expected_queue_schema = (
+            "claim-queue-proposal/v3"
+            if str(effective.get("queue_version") or "") == "claim-queue-v4"
+            else "claim-queue-proposal/v2"
+        )
+        if any(row.get("schema") != expected_queue_schema for row in queue):
+            raise ClaimArtifactError(
+                "claim queue proposal schema does not match effective queue version"
+            )
         _require_canonical_jsonl(
             root / CLAIM_EFFECTIVE_LEDGER,
             effective_ledger,
@@ -4604,6 +5006,7 @@ def committed_base_versions_are_current(
     """
     from claim_catalog import CLAIM_CATALOG_VERSION, CLAIM_UNIT_PACKING_VERSION
     from claim_structural_overrides import CLAIM_STRUCTURAL_OVERRIDE_VERSION
+    from table_structure import TABLE_STRUCTURE_VERSION
     from claim_ledger import (
         CLAIM_COVERAGE_RUNTIME_VERSION,
         current_base_versions,
@@ -4705,6 +5108,11 @@ def committed_base_versions_are_current(
     return (
         catalog_meta.get("catalog_version") == CLAIM_CATALOG_VERSION
         and catalog_meta.get("packing_version") == CLAIM_UNIT_PACKING_VERSION
+        # 表格结构版本是 base 迁移门的一部分：旧结构产物（或目录层已判
+        # base_migration_required）不算 current，必须经上游 extraction/base
+        # publication 重建——startup/maintenance 不得绕过该门禁
+        and catalog_meta.get("table_structure_version") == TABLE_STRUCTURE_VERSION
+        and catalog_meta.get("table_structure_status") != "base_migration_required"
         and source_versions_are_current
         and structural_overrides_are_current
         and target_producer_is_current

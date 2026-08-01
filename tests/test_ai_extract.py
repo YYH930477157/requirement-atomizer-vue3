@@ -1348,8 +1348,18 @@ class RouteTests(unittest.TestCase):
                 patch.object(ai_extract, "config_for_route", return_value=None),
                 patch.object(
                     claim_artifacts,
-                    "load_committed_shadow",
+                    "load_committed_claim_base",
                     return_value=previous,
+                ),
+                patch.object(
+                    # 突变刷新只读 committed base（generation_meta）；requirements
+                    # publication 已推进 target authority，严格加载完整 shadow 会对
+                    # 它正要修复的 effective 漂移 fail-closed（rebuild 永远 pending）
+                    claim_artifacts,
+                    "load_committed_shadow",
+                    side_effect=AssertionError(
+                        "mutation refresh must not strict-load the stale effective view"
+                    ),
                 ),
                 patch.object(
                     claim_artifacts,
@@ -2037,6 +2047,65 @@ class ContextEngineeringTests(unittest.TestCase):
             ai_extract, "AI_VERIFY_PROMPT_VERSION", "verify-stale",
         ):
             self.assertEqual(ai_extract.section_fingerprint(section, "m"), current)
+
+    def test_section_fingerprint_binds_cell_semantics_not_geometry(self) -> None:
+        """P1-2：付费 section cache 骨架绑定 cell 语义而非几何。
+
+        v19 骨架只哈希 row/cell 的 ID——只改列头/格文本（语义）时指纹不变，
+        付费缓存假命中；反之几何重算（bbox/页码）不应触发重抽。
+        """
+        base_section = {
+            "text": "Feature table",
+            "heading": "5.1",
+            "source_blocks": [
+                {
+                    "block_id": "TB1",
+                    "rows": [
+                        {"row_index": 1, "item_id": "TBL-000001-R000002",
+                         "text": "Encryption | X"},
+                    ],
+                    "cells": [
+                        {"cell_id": "TBL-000001-R000001-C000002", "row_index": 1,
+                         "column_index": 2, "text": "Behavior",
+                         "bbox": [10, 20, 100, 40], "page_number": 3},
+                        {"cell_id": "TBL-000001-R000002-C000002", "row_index": 2,
+                         "column_index": 2, "text": "X",
+                         "bbox": [10, 40, 100, 60], "page_number": 3},
+                    ],
+                }
+            ],
+        }
+        import copy
+
+        current = ai_extract.section_fingerprint(base_section, "m")
+
+        # 语义变化 → miss：列头文本变化
+        header_changed = copy.deepcopy(base_section)
+        header_changed["source_blocks"][0]["cells"][0]["text"] = "Behaviour"
+        self.assertNotEqual(
+            ai_extract.section_fingerprint(header_changed, "m"), current
+        )
+        # 语义变化 → miss：数据格文本变化
+        cell_changed = copy.deepcopy(base_section)
+        cell_changed["source_blocks"][0]["cells"][1]["text"] = "—"
+        self.assertNotEqual(
+            ai_extract.section_fingerprint(cell_changed, "m"), current
+        )
+        # 语义变化 → miss：行文本变化
+        row_changed = copy.deepcopy(base_section)
+        row_changed["source_blocks"][0]["rows"][0]["text"] = "Encryption | —"
+        self.assertNotEqual(
+            ai_extract.section_fingerprint(row_changed, "m"), current
+        )
+        # 几何变化 → hit：bbox/页码重算不进指纹
+        geometry_changed = copy.deepcopy(base_section)
+        geometry_changed["source_blocks"][0]["cells"][0]["bbox"] = [0, 0, 50, 50]
+        geometry_changed["source_blocks"][0]["cells"][0]["page_number"] = 9
+        geometry_changed["source_blocks"][0]["cells"][1]["bbox"] = None
+        self.assertEqual(
+            ai_extract.section_fingerprint(geometry_changed, "m"), current
+        )
+
 
         lineage = ai_extract.producer_lineage_versions()
         self.assertIn("normative_framing_version", lineage)

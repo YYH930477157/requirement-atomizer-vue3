@@ -822,6 +822,44 @@ class ClaimMutationHttpTests(unittest.TestCase):
         self.assertEqual(confirm.call_args.kwargs["verifier_max_calls"], 0)
         self.assertEqual(confirm.call_args.kwargs["verifier_max_total_tokens"], 0)
 
+    def test_claim_structural_override_real_http_routes_exclusion_confirmation(self) -> None:
+        expected = {
+            "ok": True,
+            "status": "confirmed_excluded",
+            "appended": True,
+        }
+        request = self._structural_override_payload()
+        request.update({
+            "decision": "confirm_exclusion",
+            "prior_structural_reason": "untyped_colon_spec_cell",
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "claim_structural_overrides.confirm_structural_exclusion",
+                return_value=expected,
+            ) as confirm_exclusion, patch(
+                "claim_structural_overrides.confirm_structural_override",
+            ) as promote, _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(
+                    base_url,
+                    "/claim-structural-overrides",
+                    request,
+                    token=self.TOKEN,
+                )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        promote.assert_not_called()
+        self.assertEqual(
+            confirm_exclusion.call_args.kwargs["prior_structural_reason"],
+            "untyped_colon_spec_cell",
+        )
+        self.assertEqual(
+            confirm_exclusion.call_args.kwargs["expected_claim_effective_revision"],
+            request["expected_claim_effective_revision"],
+        )
+
     def test_claim_structural_override_real_http_forwards_paid_reconfirmation(self) -> None:
         expected = {"ok": True, "status": "rebuilt", "effective_fresh": True}
         request = self._structural_override_payload()

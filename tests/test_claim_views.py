@@ -62,8 +62,22 @@ class ClaimViewTests(unittest.TestCase):
             ]
 
             self.assertTrue(all(not payload["available"] for payload in payloads))
+            self.assertTrue(all(
+                payload["structural_candidate_decision_registry"]["prefix_count"]
+                == 0
+                for payload in payloads
+            ))
             self.assertEqual(
                 len({payload["document_effective_revision"] for payload in payloads}),
+                1,
+            )
+            self.assertEqual(
+                len({
+                    payload["structural_candidate_decision_registry"][
+                        "prefix_sha256"
+                    ]
+                    for payload in payloads
+                }),
                 1,
             )
             self.assertTrue(all(
@@ -277,64 +291,27 @@ class ClaimViewSnapshotCacheTests(unittest.TestCase):
         )
 
     def _seed_table(self, root: Path) -> None:
-        table_text = (
-            "Requirement | Value\n"
-            "Output | The product shall provide a configurable output."
+        # 当前结构契约（table-structure-v3）的表块——迁移门只认 build_table_artifacts
+        # 的真实结构证据；手工拼的 legacy 块会落 base_migration_required 且 fold 拒绝
+        from atomize import build_table_artifacts
+        from requirement_kb import KnowledgeRepository
+
+        block, table_items, table_cells = build_table_artifacts(
+            [
+                ["Requirement", "Value"],
+                ["Output", "The product shall provide a configurable output."],
+            ],
+            table_id="TBL-000001",
+            block_id="B1",
+            order=1,
+            table_title="Requirements",
+            section_path=["4 Functions"],
+            knowledge_bases=KnowledgeRepository.from_paths([]),
         )
-        blocks = [{
-            "block_id": "B1",
-            "order": 1,
-            "type": "table",
-            "text": table_text,
-            "raw_text": table_text,
-            "text_repair_checked": True,
-            "text_repair_version": "identity-v1",
-            "raw_to_repaired_spans": [{
-                "raw_start": 0,
-                "raw_end": len(table_text),
-                "repaired_start": 0,
-                "repaired_end": len(table_text),
-                "operation": "equal",
-            }],
-            "section_path": ["4 Functions"],
-            "noise": False,
-            "headers": ["Requirement", "Value"],
-            "data_rows": [[
-                "Output",
-                "The product shall provide a configurable output.",
-            ]],
-            "header_row_count": 1,
-            "rows": 2,
-        }]
-        item_text = (
-            "Requirement=Output | "
-            "Value=The product shall provide a configurable output."
-        )
-        table_items = [{
-            "item_id": "T1-R2",
-            "table_block_id": "B1",
-            "row_index": 2,
-            "fields": {
-                "Requirement": "Output",
-                "Value": "The product shall provide a configurable output.",
-            },
-            "text": item_text,
-            "raw_text": item_text,
-            "text_repair_checked": True,
-            "text_repair_version": "identity-v1",
-            "raw_to_repaired_spans": [{
-                "raw_start": 0,
-                "raw_end": len(item_text),
-                "repaired_start": 0,
-                "repaired_end": len(item_text),
-                "operation": "equal",
-            }],
-            "section_path": ["4 Functions"],
-        }]
-        claim_artifacts.atomic_write_jsonl(root / "blocks.jsonl", blocks)
+        claim_artifacts.atomic_write_jsonl(root / "blocks.jsonl", [block])
+        claim_artifacts.atomic_write_jsonl(root / "table_items.jsonl", table_items)
         claim_artifacts.atomic_write_jsonl(
-            root / "table_items.jsonl",
-            table_items,
+            root / "table_cell_items.jsonl", table_cells
         )
         _publish(root, claim_catalog.build_catalog_from_directory(root))
         claim_review_actions.fold_effective_ledger(
@@ -464,6 +441,16 @@ class ClaimViewSnapshotCacheTests(unittest.TestCase):
             claim_views.build_claim_view(root, "metrics")
             journal = root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
             journal.write_bytes(b'{"unfinished":true}')
+            with self.assertRaises(claim_artifacts.ClaimEffectiveRecoveryPending):
+                claim_views.build_claim_view(root, "metrics")
+
+    def test_pending_budget_outbox_is_never_served_from_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            claim_views.build_claim_view(root, "metrics")
+            outbox = root / claim_artifacts.CLAIM_BUDGET_CHECKPOINT_OUTBOX
+            outbox.write_bytes(b'{"unfinished":true}')
             with self.assertRaises(claim_artifacts.ClaimEffectiveRecoveryPending):
                 claim_views.build_claim_view(root, "metrics")
 

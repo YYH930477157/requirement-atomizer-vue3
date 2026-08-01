@@ -31,10 +31,8 @@ def _build_corpus_docx(path: Path) -> None:
     table = document.add_table(rows=6, cols=3)
     for i, h in enumerate(["No.", "Parameter Name", "Technical requirements"]):
         table.cell(0, i).text = h
-    # 分组标题行（合并单元格 → 全同值）
-    table.cell(1, 0).text = "1. GENERAL"
-    table.cell(1, 1).text = "1. GENERAL"
-    table.cell(1, 2).text = "1. GENERAL"
+    # 分组标题行（真实全宽 merge；不可用同值普通格伪造合并证据）
+    table.cell(1, 0).merge(table.cell(1, 2)).text = "1. GENERAL"
     # 节号 + 名称 + 要求 行
     table.cell(2, 0).text = "1.1"
     table.cell(2, 1).text = "Rated voltage"
@@ -155,7 +153,7 @@ class SyntheticCorpusTests(unittest.TestCase):
         self.assertEqual(classify_table_kind(block), "other")
 
     def test_mapping_matrix_is_cell_mode_not_expanded(self) -> None:
-        """场景 4：映射矩阵（table-structure-v2）→ mapping_matrix + cell 闭环，
+        """场景 4：映射矩阵（table-structure-v6）→ mapping_matrix + cell 闭环，
         不走参数行展开（行只作容器，marker 格各自成 claim）。"""
         block = self._table_by_title("Table 4")
         self.assertEqual(classify_table_kind(block), "mapping_matrix")

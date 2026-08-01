@@ -29,9 +29,15 @@ from source_spans import (
     SOURCE_TRANSFORMATION_RULESET_VERSION,
     source_alignment_fields,
 )
-from table_structure import TABLE_STRUCTURE_VERSION, is_normative_text, matrix_fact_columns
+from table_structure import (
+    TABLE_STRUCTURE_VERSION,
+    is_normative_text,
+    is_positive_marker,
+    matrix_fact_columns,
+    row_bears_normative_sentence,
+)
 
-CLAIM_CATALOG_VERSION = "claim-catalog-v6"
+CLAIM_CATALOG_VERSION = "claim-catalog-v10"
 CLAIM_UNIT_PACKING_VERSION = "claim-unit-packing-v1"
 CLAIM_CATALOG_SCHEMA = "claim-catalog/v2"
 CLAIM_CATALOG_META_SCHEMA = "claim-catalog-meta/v1"
@@ -46,10 +52,9 @@ _LIST_MARKER_RE = re.compile(
 )
 _LIST_INTRO_RE = re.compile(r"[^\n]{1,160}[:\uff1a]\s*$")
 _WS_RE = re.compile(r"\s+")
-_ABBREVIATIONS = frozenset({
-    "e.g.", "i.e.", "etc.", "fig.", "no.", "dr.", "mr.", "mrs.", "ms.",
-    "prof.", "vs.", "approx.", "incl.", "excl.", "cf.", "st.",
-})
+
+# \u5207\u53e5\u5668\u5355\u6e90\u5728 table_structure\uff08\u7ed3\u6784\u5c42\u591a\u4e49\u52a1\u683c\u5224\u5b9a\u4e0e claim \u5c42\u6309\u53e5\u51fa claim \u540c\u53e3\u5f84\uff09
+from table_structure import sentence_spans as _sentence_spans
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -160,71 +165,6 @@ def _looks_like_list(text: str, block: dict[str, Any]) -> bool:
         any(_LIST_MARKER_RE.match(line) for line in lines)
         or (_LIST_INTRO_RE.fullmatch(lines[0]) and len(lines) > 1)
     )
-
-
-def _dot_is_boundary(text: str, index: int) -> bool:
-    if (
-        index
-        and index + 1 < len(text)
-        and text[index - 1].isalnum()
-        and text[index + 1].isalnum()
-    ):
-        return False
-    prefix = text[max(0, index - 12):index + 1].casefold()
-    if any(prefix.endswith(abbreviation) for abbreviation in _ABBREVIATIONS):
-        return False
-    return True
-
-
-def _sentence_spans(text: str) -> list[tuple[int, int]]:
-    """Split without normalizing the source; returned spans exactly partition text."""
-    if not text:
-        return []
-    spans: list[tuple[int, int]] = []
-    start = 0
-    index = 0
-    while index < len(text):
-        char = text[index]
-        boundary = char in "!?;\u3002\uff01\uff1f\uff1b\n\r"
-        if char == ".":
-            boundary = _dot_is_boundary(text, index)
-        if boundary:
-            end = index + 1
-            while end < len(text) and text[end] in ".!?;\u3002\uff01\uff1f\uff1b":
-                end += 1
-            while end < len(text) and text[end].isspace():
-                end += 1
-            if end > start and text[start:end].strip():
-                spans.append((start, end))
-                start = end
-            index = end
-            continue
-        index += 1
-    if start < len(text):
-        if spans and not text[start:].strip():
-            left_start, _ = spans[-1]
-            spans[-1] = (left_start, len(text))
-        else:
-            spans.append((start, len(text)))
-    if not spans:
-        return [(0, len(text))]
-
-    # PDF repair can leave punctuation-only fragments between otherwise valid
-    # sentences. Keep those characters in the source partition, but attach them
-    # to a neighboring lexical span instead of manufacturing a standalone claim.
-    merged: list[tuple[int, int]] = []
-    leading_start: int | None = None
-    for span_start, span_end in spans:
-        if any(char.isalnum() for char in text[span_start:span_end]):
-            if leading_start is not None:
-                span_start = leading_start
-                leading_start = None
-            merged.append((span_start, span_end))
-        elif merged:
-            merged[-1] = (merged[-1][0], span_end)
-        elif leading_start is None:
-            leading_start = span_start
-    return merged or [(0, len(text))]
 
 
 def _mapping_partition_is_complete(
@@ -879,6 +819,17 @@ def _enumerate_leaves(
         "dangling_table_item_reference_count": 0,
         "dangling_table_cell_reference_count": 0,
         "normative_context_only_count": 0,
+        "orphan_table_cell_count": 0,
+        "duplicate_table_cell_id_count": 0,
+        # table-structure-v3 内容保全审计（informational，非 hard-fail）：
+        # 弱信号说明句/无信号数据格落入 context = 内容从 claim 面消失——
+        # 计数如实暴露并联动 needs_review，绝不呈现"零计数=ok"假象
+        "weak_signal_context_cell_count": 0,
+        "unsignaled_data_cell_count": 0,
+        # table-structure-v4（P0-5 复审）：无结构证据的单格"标题/表头"格——
+        # 可定位的歧义资格候选，计数如实暴露并联动 needs_review
+        "ambiguous_structure_cell_count": 0,
+        "untyped_colon_spec_cell_count": 0,
     }
     structure_status = "ok"
     items_by_block: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -887,10 +838,17 @@ def _enumerate_leaves(
     for items in items_by_block.values():
         items.sort(key=lambda item: (int(item.get("row_index") or 0), str(item.get("item_id") or "")))
     cells_by_block: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    seen_cell_ids: set[str] = set()
+    duplicate_cell_ids = 0
     for cell in table_cell_items or []:
         cell_id = str(cell.get("cell_id") or "")
+        if cell_id and cell_id in seen_cell_ids:
+            duplicate_cell_ids += 1
+            continue  # 重复 cell_id 不覆盖先到的 canonical cell，但必须入账
         if cell_id:
-            cells_by_block[str(cell.get("table_block_id") or "")][cell_id] = cell
+            seen_cell_ids.add(cell_id)
+        cells_by_block[str(cell.get("table_block_id") or "")][cell_id] = cell
+    audit["duplicate_table_cell_id_count"] = duplicate_cell_ids
     table_item_consumers: dict[str, int] = defaultdict(int)
     block_types: dict[str, set[str]] = defaultdict(set)
     for block in blocks:
@@ -906,12 +864,84 @@ def _enumerate_leaves(
             # ---- table-structure-v2：leaf plan 唯一 owner 闭环 --------------------
             if str(block.get("header_detection_status") or "") == "ambiguous":
                 structure_status = "needs_review"
+            if str(block.get("merge_evidence_status") or "") in {
+                "dropped_conflict",
+                "dropped_text_conflict",
+            }:
+                # 合并证据自相矛盾/覆盖异文被降级（保留全部文本与全部格）——结构进审核
+                structure_status = "needs_review"
             leaf_plan = block.get("leaf_plan") if isinstance(block.get("leaf_plan"), dict) else {}
+            weak_signal_count = len(leaf_plan.get("weak_signal_cells") or [])
+            unsignaled_count = len(leaf_plan.get("unsignaled_data_cells") or [])
+            if weak_signal_count or unsignaled_count:
+                # B5 第三维如实暴露：弱信号说明句/无信号数据格未进 claim 面——
+                # 不计 hard-fail（内容原文仍在 context/行文本中保留），但必须
+                # 计数并联动 needs_review，"零计数 ok"不得掩盖未知内容
+                audit["weak_signal_context_cell_count"] += weak_signal_count
+                audit["unsignaled_data_cell_count"] += unsignaled_count
+                structure_status = "needs_review"
+            ambiguous_structure_count = len(leaf_plan.get("ambiguous_structure_cells") or [])
+            if ambiguous_structure_count:
+                # P0-5：无结构证据的单格"标题/表头"内容格——可定位的歧义资格
+                # 候选；计数 + needs_review，"0 claim + 审计全零 + ok"不得再现
+                audit["ambiguous_structure_cell_count"] += ambiguous_structure_count
+                structure_status = "needs_review"
+            untyped_colon_spec_count = len(
+                leaf_plan.get("untyped_colon_spec_cells") or []
+            )
+            if untyped_colon_spec_count:
+                audit["untyped_colon_spec_cell_count"] += untyped_colon_spec_count
+                structure_status = "needs_review"
+            if block.get("matrix_rejected_marker_columns"):
+                # B3/B4：marker 占多数但表头不是能力维度的列——X 以原文保留、
+                # 不合成义务、不成 cell leaf；"3 个裸 X claim 且审计全绿"的反例
+                # 不得再现：拒收列存在即结构待审
+                structure_status = "needs_review"
             row_leaf_indexes = {int(value) for value in (leaf_plan.get("row_leaves") or [])}
             cell_leaf_ids = [str(value) for value in (leaf_plan.get("cell_leaves") or [])]
             context_cell_ids = [str(value) for value in (leaf_plan.get("context_cells") or [])]
             cell_leaf_id_set = set(cell_leaf_ids)
             context_cell_id_set = set(context_cell_ids)
+            ambiguous_candidate_ids = {
+                str(value)
+                for value in (leaf_plan.get("ambiguous_structure_cells") or [])
+            }
+            weak_signal_candidate_ids = {
+                str(value)
+                for value in (leaf_plan.get("weak_signal_cells") or [])
+            }
+            unsignaled_candidate_ids = {
+                str(value)
+                for value in (leaf_plan.get("unsignaled_data_cells") or [])
+            }
+            untyped_colon_candidate_ids = {
+                str(value)
+                for value in (leaf_plan.get("untyped_colon_spec_cells") or [])
+            }
+            rejected_marker_columns = {
+                int(value)
+                for value in (block.get("matrix_rejected_marker_columns") or [])
+            }
+            rejected_marker_candidate_ids = {
+                str(cell_id)
+                for cell_id, cell in cells_by_block.get(block_id, {}).items()
+                if (
+                    str(cell.get("structural_role") or "") == "data"
+                    and int(cell.get("column_index") or 0) - 1
+                    in rejected_marker_columns
+                    and is_positive_marker(str(cell.get("text") or ""))
+                )
+            }
+            # A cell already admitted as a claim is directly reviewable and must
+            # not gain a second, excluded catalog identity. The remaining weak
+            # cells are materialized as default-excluded review candidates.
+            review_candidate_ids = (
+                ambiguous_candidate_ids
+                | weak_signal_candidate_ids
+                | unsignaled_candidate_ids
+                | untyped_colon_candidate_ids
+                | rejected_marker_candidate_ids
+            ) - cell_leaf_id_set
             block_cells = cells_by_block.get(block_id, {})
             table_rows = items_by_block.get(block_id, [])
             mapping = {"container_block_id": block_id, "kind": "table", "leaf_locator_keys": []}
@@ -933,21 +963,56 @@ def _enumerate_leaves(
             # 闭环，同一物理内容只有一个 owner
             fact_header_names: set[str] = set()
             if row_leaf_indexes and cell_leaf_id_set:
+                stored_fact_columns = block.get("matrix_fact_columns")
+                if stored_fact_columns is not None:
+                    fact_column_indexes = {int(value) for value in stored_fact_columns}
+                else:
+                    fact_column_indexes = matrix_fact_columns(
+                        headers, list(block.get("data_rows") or [])
+                    )
                 fact_header_names = {
                     headers[column]
-                    for column in matrix_fact_columns(headers, list(block.get("data_rows") or []))
+                    for column in fact_column_indexes
                     if column < len(headers)
                 }
+            # 多义务格（同格 ≥2 条独立规范性句）按 (行, 列) 逐格排除出行文本——
+            # 该格由按句 cell claim 闭环，行仍 own 其余字段（不株连整列）
+            multi_duty_fields: dict[int, set[str]] = {}
+            for cell_id in (leaf_plan.get("multi_duty_cells") or []):
+                duty_cell = block_cells.get(str(cell_id))
+                if duty_cell is None:
+                    continue
+                duty_row = int(duty_cell.get("row_index") or 0)
+                duty_column = int(duty_cell.get("column_index") or 0)
+                if duty_row and 1 <= duty_column <= len(headers):
+                    multi_duty_fields.setdefault(duty_row, set()).add(headers[duty_column - 1])
+            review_candidate_fields: dict[int, set[str]] = {}
+            for cell_id in review_candidate_ids:
+                candidate_cell = block_cells.get(cell_id)
+                if candidate_cell is None:
+                    continue
+                candidate_row = int(candidate_cell.get("row_index") or 0)
+                candidate_column = int(candidate_cell.get("column_index") or 0)
+                if candidate_row and 1 <= candidate_column <= len(headers):
+                    review_candidate_fields.setdefault(candidate_row, set()).add(
+                        headers[candidate_column - 1]
+                    )
             item_rows = {int(item.get("row_index") or 0) for item in table_rows}
             for row_index in sorted(row_leaf_indexes):
                 if row_index not in item_rows:
                     audit["dangling_table_item_reference_count"] += 1
             for item in table_rows:
-                if int(item.get("row_index") or 0) not in row_leaf_indexes:
+                item_row_index = int(item.get("row_index") or 0)
+                if item_row_index not in row_leaf_indexes:
                     continue  # cell/mixed 模式中的行仅作容器，不生成重复父 claim
+                excluded_names = (
+                    fact_header_names
+                    | multi_duty_fields.get(item_row_index, set())
+                    | review_candidate_fields.get(item_row_index, set())
+                )
                 ordered = [
                     (key, value) for key, value in _ordered_fields(item, headers)
-                    if key not in fact_header_names
+                    if key not in excluded_names
                 ]
                 row_text = _table_row_text(ordered)
                 locator = {
@@ -960,8 +1025,8 @@ def _enumerate_leaves(
                     "row_index": int(item.get("row_index") or 0),
                 }
                 item_text = str(item.get("text") or row_text)
-                if fact_header_names:
-                    # trimmed claim 文本需要同口径 raw 投影（剔除事实列后的 raw 行）
+                if excluded_names:
+                    # trimmed claim 文本需要同口径 raw 投影（剔除事实列/多义务格后的 raw 行）
                     raw_fields = item.get("raw_fields") if isinstance(item.get("raw_fields"), dict) else {}
                     raw_trimmed = " | ".join(
                         f"{key}={str(raw_fields.get(key) or '')}" for key, _value in ordered
@@ -1012,22 +1077,64 @@ def _enumerate_leaves(
                 for leaf in _table_cell_leaves(block, cell, headers, catalog_version=catalog_version):
                     leaves.append(leaf)
                     mapping["leaf_locator_keys"].append(_leaf_locator_key(leaf))
+            for cell_id in sorted(review_candidate_ids):
+                cell = block_cells.get(cell_id)
+                if cell is None:
+                    audit["dangling_table_cell_reference_count"] += 1
+                    continue
+                if cell_id in untyped_colon_candidate_ids:
+                    candidate_reason = "untyped_colon_spec_cell"
+                elif cell_id in ambiguous_candidate_ids:
+                    candidate_reason = "ambiguous_table_structure"
+                elif cell_id in weak_signal_candidate_ids:
+                    candidate_reason = "weak_signal_table_cell"
+                elif cell_id in rejected_marker_candidate_ids:
+                    candidate_reason = "rejected_matrix_marker_cell"
+                else:
+                    candidate_reason = "unsignaled_table_cell"
+                leaf = _table_cell_review_candidate_leaf(
+                    block,
+                    cell,
+                    headers,
+                    reason=candidate_reason,
+                    catalog_version=catalog_version,
+                )
+                if leaf is None:
+                    audit["dangling_table_cell_reference_count"] += 1
+                    continue
+                leaves.append(leaf)
+                mapping["leaf_locator_keys"].append(_leaf_locator_key(leaf))
             for cell_id in context_cell_ids:
                 cell = block_cells.get(cell_id)
                 if cell is None:
                     continue
-                if is_normative_text(str(cell.get("text") or "")):
-                    # 规范性内容被路由成纯 context = 静默丢失，hard-fail
+                if cell_id in review_candidate_ids:
+                    continue
+                cell_text = str(cell.get("text") or "")
+                # 裸 marker 词（"Required"/"X"）是矩阵记号不是义务——粒度规划
+                # 刻意路由为 context（同 normative_context_only 不互斥的同口径）；
+                # 其余规范性内容被路由成纯 context = 静默丢失，hard-fail。
+                # 标题/表头位的冒号规格/短标签（"xDLMS Service: GET" 服务名）是
+                # 维度名，刻意作 context——只有句子型规范性内容才算静默丢失
+                if is_positive_marker(cell_text):
+                    continue
+                role = str(cell.get("structural_role") or "data")
+                if role in {"title", "header"}:
+                    if row_bears_normative_sentence([cell_text]):
+                        audit["normative_context_only_count"] += 1
+                elif is_normative_text(cell_text):
                     audit["normative_context_only_count"] += 1
             # 每个非空 canonical cell 恰好被消费一次（cell leaf 优先于行 ownership：
             # mixed 组合表的 marker 格由 cell claim 闭环，不再计入行消费）
             for cell_id, cell in block_cells.items():
                 consumed = 0
-                if cell_id in cell_leaf_id_set:
+                if cell_id in review_candidate_ids:
                     consumed += 1
-                if cell_id in context_cell_id_set:
+                elif cell_id in cell_leaf_id_set:
                     consumed += 1
-                if (
+                elif cell_id in context_cell_id_set:
+                    consumed += 1
+                elif (
                     int(cell.get("row_index") or 0) in row_leaf_indexes
                     and cell_id not in cell_leaf_id_set
                 ):
@@ -1317,6 +1424,12 @@ def _enumerate_leaves(
                 audit["non_table_parent_item_count"] += len(items)
             else:
                 audit["orphan_table_item_count"] += len(items)
+    # 孤立 cell：父块不存在或不是表格块——不得被 cells_by_block 静默吞掉
+    for cell_block_id, cells in cells_by_block.items():
+        if not cells:
+            continue
+        if cell_block_id not in block_types or "table" not in block_types[cell_block_id]:
+            audit["orphan_table_cell_count"] += len(cells)
     return leaves, container_mappings, audit, structure_status
 
 
@@ -1326,11 +1439,14 @@ def _table_cell_leaves(
     headers: list[str],
     *,
     catalog_version: str = CLAIM_CATALOG_VERSION,
+    split_sentences: bool = True,
 ) -> list[dict[str, Any]]:
     """一个 cell leaf 的按句切分：同格两条独立义务生成两个 claim。
 
     locator.position_basis=table_cell_text，cell_start/end 是 cell 正文（修复后文本）
-    内的半开区间；raw 投影经 cell 自身的 raw_text 对齐计算。"""
+    内的半开区间；raw 投影经 cell 自身的 raw_text 对齐计算。每个 leaf 携带
+    semantic_context（表标题+行头+列头+正文，确定性拼装）——裸格（如 "X"）
+    对 verifier 没有语义，上下文是验证证据的一部分。"""
     block_id = str(block.get("block_id") or "")
     cell_id = str(cell.get("cell_id") or "")
     cell_text = str(cell.get("text") or "")
@@ -1342,14 +1458,38 @@ def _table_cell_leaves(
         "raw_to_repaired_spans": alignment.get("raw_to_repaired_spans") or [],
         "table_block_id": block_id,
     }
-    spans = _sentence_spans(cell_text) or [(0, len(cell_text))]
+    from table_structure import cell_context_text
+
+    full_context = cell_context_text(cell)
+    context_prefix = full_context[: len(full_context) - len(cell_text)] if cell_text and full_context.endswith(cell_text) else ""
+    spans = (
+        (_sentence_spans(cell_text) or [(0, len(cell_text))])
+        if split_sentences
+        else [(0, len(cell_text))]
+    )
     region_source = {**block}
     if cell.get("page_number") is not None:
         region_source["page_number"] = cell.get("page_number")
     leaves: list[dict[str, Any]] = []
+    leaves_by_sentence: dict[str, dict[str, Any]] = {}
     for start, end in spans:
         sentence = cell_text[start:end]
         if not sentence.strip():
+            continue
+        # 同格内逐字节重复（含空白差）的句子只出一个 claim：DOCX 合并把两格
+        # 文本拼进同一 tc，同句重复是拼接伪影，重复 claim 会制造孪生 open 行。
+        # M4：被合并出现的全部别名 locator 必须保留在 span_aliases——合并 ≠
+        # 抹除位置证据，审计/热区仍可定位每一次出现
+        sentence_key = " ".join(sentence.split())
+        if sentence_key in leaves_by_sentence:
+            alias: dict[str, Any] = {"cell_start": start, "cell_end": end}
+            _alias_raw, alias_raw_locator = _raw_leaf_projection(shim, cell_text, start, end)
+            if alias_raw_locator is not None:
+                alias_raw_locator["table_cell_id"] = cell_id
+                alias_raw_locator["row_index"] = int(cell.get("row_index") or 0)
+                alias_raw_locator["column_index"] = int(cell.get("column_index") or 0)
+            alias["raw_locator"] = alias_raw_locator
+            leaves_by_sentence[sentence_key]["span_aliases"].append(alias)
             continue
         locator = {
             "block_id": block_id,
@@ -1385,9 +1525,62 @@ def _table_cell_leaves(
             "table_title": str(block.get("table_title") or cell.get("table_title") or ""),
             "structural_role": str(cell.get("structural_role") or "data"),
         }
+        leaf["semantic_context"] = f"{context_prefix}{sentence}"
         leaf["source_order"] = int(block.get("order") or 0)
+        leaf["span_aliases"] = []
+        leaves_by_sentence[sentence_key] = leaf
         leaves.append(leaf)
     return leaves
+
+
+_TABLE_CELL_REVIEW_RULES = {
+    "ambiguous_table_structure": "catalog-ambiguous-table-structure",
+    "weak_signal_table_cell": "catalog-weak-signal-table-cell",
+    "unsignaled_table_cell": "catalog-unsignaled-table-cell",
+    "rejected_matrix_marker_cell": "catalog-rejected-matrix-marker-cell",
+    "untyped_colon_spec_cell": "catalog-untyped-colon-spec-cell",
+}
+
+
+def _table_cell_review_candidate_leaf(
+    block: dict[str, Any],
+    cell: dict[str, Any],
+    headers: list[str],
+    *,
+    reason: str,
+    catalog_version: str,
+) -> dict[str, Any] | None:
+    """Materialize one reviewable, default-excluded candidate per physical cell."""
+    if reason not in _TABLE_CELL_REVIEW_RULES:
+        raise ValueError(f"unsupported table-cell review reason: {reason}")
+    leaves = _table_cell_leaves(
+        block,
+        cell,
+        headers,
+        catalog_version=catalog_version,
+        split_sentences=False,
+    )
+    if not leaves:
+        return None
+    leaf = leaves[0]
+    cell_text = str(cell.get("text") or "")
+    block_id = str(block.get("block_id") or "")
+    cell_id = str(cell.get("cell_id") or "")
+    leaf["eligibility"] = "excluded"
+    leaf["exclusion"] = {
+        "reason": reason,
+        "rule_id": _TABLE_CELL_REVIEW_RULES[reason],
+        "rule_version": catalog_version,
+        "evidence": {
+            "table_structure_version": TABLE_STRUCTURE_VERSION,
+            "table_block_id": block_id,
+            "table_cell_id": cell_id,
+            "row_index": int(cell.get("row_index") or 0),
+            "column_index": int(cell.get("column_index") or 0),
+            "cell_text_sha256": _sha256_bytes(cell_text.encode("utf-8")),
+        },
+    }
+    return leaf
 
 
 def _materialize_claim_identity(
@@ -1437,7 +1630,15 @@ def _render_unit_prompt(rows: list[dict[str, Any]]) -> str:
     for row in rows:
         context = row.get("table_context") if isinstance(row.get("table_context"), dict) else None
         header = ""
-        if context and context.get("headers"):
+        if row.get("source_kind") == "table_cell":
+            # cell claim 必须带确定性 semantic_context（表标题+行头+列头）——
+            # 裸格（"X"）对验证者没有语义
+            semantic = str(row.get("semantic_context") or "")
+            if semantic:
+                header = f"SEMANTIC CONTEXT: {semantic}\n"
+            elif context and context.get("headers"):
+                header = "TABLE HEADERS: " + " | ".join(str(value) for value in context["headers"]) + "\n"
+        elif context and context.get("headers"):
             header = "TABLE HEADERS: " + " | ".join(str(value) for value in context["headers"]) + "\n"
         chunks.append(f"[CLAIM {row['claim_id']}]\n{header}{row['text']}")
     return "\n\n".join(chunks)
@@ -1627,6 +1828,8 @@ def build_claim_catalog(
         "dangling_table_item_reference_count",
         "dangling_table_cell_reference_count",
         "normative_context_only_count",
+        "orphan_table_cell_count",
+        "duplicate_table_cell_id_count",
     )
     accounting_status = "complete" if all(int(audit[key]) == 0 for key in hard_fail_keys) else "incomplete"
     meta = {
@@ -1650,7 +1853,17 @@ def build_claim_catalog(
             "catalog_total_count": len(rows),
             "eligible_claim_count": sum(row.get("eligibility") == "claim" for row in rows),
             "structural_excluded_count": sum(row.get("eligibility") == "excluded" for row in rows),
-            "table_cell_claim_count": sum(row.get("source_kind") == "table_cell" for row in rows),
+            "table_cell_claim_count": sum(
+                row.get("source_kind") == "table_cell"
+                and row.get("eligibility") == "claim"
+                for row in rows
+            ),
+            "structural_review_candidate_count": sum(
+                row.get("eligibility") == "excluded"
+                and isinstance(row.get("exclusion"), dict)
+                and row["exclusion"].get("reason") in _TABLE_CELL_REVIEW_RULES
+                for row in rows
+            ),
             "owner_unit_count": len(units),
         },
         "audit": audit,

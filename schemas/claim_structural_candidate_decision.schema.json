@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/claim_structural_candidate_decision.schema.json",
+  "title": "Claim structural candidate decision v1",
+  "type": "object",
+  "required": [
+    "schema", "decision_seq", "decision_id", "prev_decision_hash",
+    "decision_hash", "registry_prefix_sha256", "claim_id", "claim_hash",
+    "document_generation_id", "catalog_generation_id",
+    "claim_effective_revision", "prior_structural_reason",
+    "original_exclusion", "decision", "actor", "reason", "recorded_at",
+    "idempotency_key"
+  ],
+  "properties": {
+    "schema": {"const": "claim-structural-candidate-decision/v1"},
+    "decision_seq": {"type": "integer", "minimum": 1},
+    "decision_id": {"type": "string", "pattern": "^CSCD-[0-9a-f]{16}$"},
+    "prev_decision_hash": {"$ref": "#/$defs/hash"},
+    "decision_hash": {"$ref": "#/$defs/hash"},
+    "registry_prefix_sha256": {"$ref": "#/$defs/hash"},
+    "claim_id": {"type": "string", "pattern": "^CLM-[0-9a-f]{16}$"},
+    "claim_hash": {"$ref": "#/$defs/hash"},
+    "document_generation_id": {"$ref": "#/$defs/hash"},
+    "catalog_generation_id": {"$ref": "#/$defs/hash"},
+    "claim_effective_revision": {
+      "$ref": "#/$defs/hash",
+      "description": "Append-time CAS revision observed when this terminal structural decision was committed."
+    },
+    "prior_structural_reason": {
+      "enum": [
+        "ambiguous_table_structure",
+        "weak_signal_table_cell",
+        "unsignaled_table_cell"
+      ]
+    },
+    "original_exclusion": {
+      "type": "object",
+      "required": ["reason", "rule_id", "rule_version", "evidence"],
+      "properties": {
+        "reason": {
+          "enum": [
+            "ambiguous_table_structure",
+            "weak_signal_table_cell",
+            "unsignaled_table_cell"
+          ]
+        },
+        "rule_id": {
+          "enum": [
+            "catalog-ambiguous-table-structure",
+            "catalog-weak-signal-table-cell",
+            "catalog-unsignaled-table-cell"
+          ]
+        },
+        "rule_version": {"type": "string", "minLength": 1},
+        "evidence": {
+          "type": "object",
+          "required": [
+            "table_structure_version", "table_block_id", "table_cell_id",
+            "row_index", "column_index", "cell_text_sha256"
+          ],
+          "properties": {
+            "table_structure_version": {"type": "string", "minLength": 1},
+            "table_block_id": {"type": "string", "minLength": 1},
+            "table_cell_id": {"type": "string", "minLength": 1},
+            "row_index": {"type": "integer", "minimum": 1},
+            "column_index": {"type": "integer", "minimum": 1},
+            "cell_text_sha256": {"$ref": "#/$defs/hash"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "decision": {"const": "confirm_exclusion"},
+    "actor": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "idempotency_key": {"$ref": "#/$defs/hash"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

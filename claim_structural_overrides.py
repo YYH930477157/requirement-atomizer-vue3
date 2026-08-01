@@ -1,6 +1,7 @@
 """Append-only authority for accepted claim structural overrides."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -25,12 +26,57 @@ from process_file_lock import process_file_lock
 
 CLAIM_STRUCTURAL_OVERRIDES = "claim_structural_overrides.jsonl"
 CLAIM_STRUCTURAL_OVERRIDE_SCHEMA = "claim-structural-override/v1"
-CLAIM_STRUCTURAL_OVERRIDE_VERSION = "claim-structural-override-v1"
+CLAIM_STRUCTURAL_OVERRIDE_VERSION = "claim-structural-override-v2"
 CLAIM_STRUCTURAL_DECISIONS_DIR = "claim_structural_decisions"
 CLAIM_STRUCTURAL_DECISION_SCHEMA = "claim-structural-verifier-decision/v1"
-ALLOWED_STRUCTURAL_OVERRIDE_REASONS = frozenset({"repeated_page_furniture"})
+CLAIM_STRUCTURAL_CANDIDATE_DECISIONS = "claim_structural_candidate_decisions.jsonl"
+LEGACY_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA = (
+    "claim-structural-candidate-decision/v1"
+)
+CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA = (
+    "claim-structural-candidate-decision/v2"
+)
+CLAIM_STRUCTURAL_CANDIDATE_DECISION_VERSION = (
+    "claim-structural-candidate-decision-v2"
+)
+_CANDIDATE_DECISION_ID_DOMAIN_V1 = (
+    "claim-structural-candidate-decision-id/v1"
+)
+_CANDIDATE_DECISION_PROTOCOLS = {
+    LEGACY_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA: (
+        "claim_structural_candidate_decision.schema.json",
+        LEGACY_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
+        _CANDIDATE_DECISION_ID_DOMAIN_V1,
+    ),
+    CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA: (
+        "claim_structural_candidate_decision_v2.schema.json",
+        CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
+        _CANDIDATE_DECISION_ID_DOMAIN_V1,
+    ),
+}
+CELL_REVIEW_STRUCTURAL_REASONS = frozenset({
+    "ambiguous_table_structure",
+    "weak_signal_table_cell",
+    "unsignaled_table_cell",
+    "rejected_matrix_marker_cell",
+    "untyped_colon_spec_cell",
+})
+ALLOWED_STRUCTURAL_OVERRIDE_REASONS = frozenset({
+    "repeated_page_furniture",
+    *CELL_REVIEW_STRUCTURAL_REASONS,
+})
+
+_STRUCTURAL_RULE_IDS = {
+    "repeated_page_furniture": "catalog-repeated-page-furniture",
+    "ambiguous_table_structure": "catalog-ambiguous-table-structure",
+    "weak_signal_table_cell": "catalog-weak-signal-table-cell",
+    "unsignaled_table_cell": "catalog-unsignaled-table-cell",
+    "rejected_matrix_marker_cell": "catalog-rejected-matrix-marker-cell",
+    "untyped_colon_spec_cell": "catalog-untyped-colon-spec-cell",
+}
 
 _LOCK_NAME = "claim_structural_overrides.lock"
+_CANDIDATE_DECISION_LOCK_NAME = "claim_structural_candidate_decisions.lock"
 _LOCK_TIMEOUT_S = 15.0
 _EMPTY_SHA256 = sha256_bytes(b"")
 _PROCESS_LOCKS: dict[Path, RLock] = {}
@@ -52,6 +98,16 @@ class StructuralOverrideSnapshot:
     prefix_sha256: str
     last_override_seq: int
     last_override_hash: str
+    idempotency_keys: frozenset[str]
+
+
+@dataclass(frozen=True)
+class StructuralCandidateDecisionSnapshot:
+    rows: list[dict[str, Any]]
+    prefix_bytes: bytes
+    prefix_sha256: str
+    last_decision_seq: int
+    last_decision_hash: str
     idempotency_keys: frozenset[str]
 
 
@@ -206,6 +262,198 @@ def current_structural_override_identity(out_dir: Path | str) -> dict[str, Any]:
     return structural_override_identity(read_structural_overrides(out_dir))
 
 
+def _candidate_decision_id(
+    claim_hash: str,
+    idempotency_key: str,
+    schema_name: str,
+) -> str:
+    protocol = _CANDIDATE_DECISION_PROTOCOLS.get(schema_name)
+    if protocol is None:
+        raise ClaimStructuralOverrideError(
+            "unsupported claim structural candidate decision schema"
+        )
+    digest = hash_json(
+        protocol[2],
+        {"claim_hash": claim_hash, "idempotency_key": idempotency_key},
+    )
+    return "CSCD-" + digest_hex(digest)[:16]
+
+
+def empty_structural_candidate_decision_snapshot(
+) -> StructuralCandidateDecisionSnapshot:
+    return StructuralCandidateDecisionSnapshot(
+        rows=[],
+        prefix_bytes=b"",
+        prefix_sha256=_EMPTY_SHA256,
+        last_decision_seq=0,
+        last_decision_hash=_EMPTY_SHA256,
+        idempotency_keys=frozenset(),
+    )
+
+
+def empty_structural_candidate_decision_identity() -> dict[str, Any]:
+    return {
+        "version": CLAIM_STRUCTURAL_CANDIDATE_DECISION_VERSION,
+        "prefix_sha256": _EMPTY_SHA256,
+        "prefix_count": 0,
+    }
+
+
+def structural_candidate_decision_identity(
+    snapshot: StructuralCandidateDecisionSnapshot,
+) -> dict[str, Any]:
+    return {
+        "version": CLAIM_STRUCTURAL_CANDIDATE_DECISION_VERSION,
+        "prefix_sha256": snapshot.prefix_sha256,
+        "prefix_count": snapshot.last_decision_seq,
+    }
+
+
+def _candidate_decision_target(
+    row: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("document_generation_id") or ""),
+        str(row.get("catalog_generation_id") or ""),
+        str(row.get("claim_id") or ""),
+        str(row.get("claim_hash") or ""),
+    )
+
+
+def _scan_candidate_decision_bytes(
+    raw: bytes,
+) -> StructuralCandidateDecisionSnapshot:
+    if not raw:
+        return empty_structural_candidate_decision_snapshot()
+    rows: list[dict[str, Any]] = []
+    keys: set[str] = set()
+    targets: set[tuple[str, str, str, str]] = set()
+    previous_hash = _EMPTY_SHA256
+    offset = 0
+    while offset < len(raw):
+        newline = raw.find(b"\n", offset)
+        if newline < 0:
+            raise ClaimStructuralOverrideError(
+                "claim structural candidate decision registry has a torn tail"
+            )
+        line = raw[offset:newline + 1]
+        try:
+            row = json.loads(line[:-1].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ClaimStructuralOverrideError(
+                "invalid claim structural candidate decision JSONL"
+            ) from exc
+        if not isinstance(row, dict) or canonical_json_value_bytes(row) + b"\n" != line:
+            raise ClaimStructuralOverrideError(
+                "claim structural candidate decision row is not canonical"
+            )
+        schema_name = str(row.get("schema") or "")
+        protocol = _CANDIDATE_DECISION_PROTOCOLS.get(schema_name)
+        if protocol is None:
+            raise ClaimStructuralOverrideError(
+                "unsupported claim structural candidate decision schema"
+            )
+        schema_file, hash_domain, _id_domain = protocol
+        try:
+            _validate_schema(
+                row,
+                schema_file,
+                label="claim structural candidate decision",
+            )
+        except ClaimArtifactError as exc:
+            raise ClaimStructuralOverrideError(str(exc)) from exc
+        expected_seq = len(rows) + 1
+        idempotency_key = str(row.get("idempotency_key") or "")
+        if row.get("decision_seq") != expected_seq:
+            raise ClaimStructuralOverrideError(
+                "claim structural candidate decision sequence is not contiguous"
+            )
+        if row.get("decision_id") != _candidate_decision_id(
+            str(row.get("claim_hash") or ""),
+            idempotency_key,
+            schema_name,
+        ):
+            raise ClaimStructuralOverrideError(
+                "claim structural candidate decision id is invalid"
+            )
+        if row.get("registry_prefix_sha256") != sha256_bytes(raw[:offset]):
+            raise ClaimStructuralOverrideError(
+                "claim structural candidate decision prefix binding is invalid"
+            )
+        if row.get("prev_decision_hash") != previous_hash:
+            raise ClaimStructuralOverrideError(
+                "claim structural candidate decision hash chain is broken"
+            )
+        body = {key: value for key, value in row.items() if key != "decision_hash"}
+        expected_hash = hash_json(
+            hash_domain,
+            body,
+        )
+        if row.get("decision_hash") != expected_hash:
+            raise ClaimStructuralOverrideError(
+                "claim structural candidate decision hash is invalid"
+            )
+        target = _candidate_decision_target(row)
+        if idempotency_key in keys:
+            raise ClaimStructuralOverrideError(
+                "claim structural candidate decision idempotency key is duplicated"
+            )
+        if target in targets:
+            raise ClaimStructuralOverrideError(
+                "claim has more than one structural candidate decision"
+            )
+        rows.append(row)
+        keys.add(idempotency_key)
+        targets.add(target)
+        previous_hash = str(row["decision_hash"])
+        offset = newline + 1
+    return StructuralCandidateDecisionSnapshot(
+        rows=rows,
+        prefix_bytes=raw,
+        prefix_sha256=sha256_bytes(raw),
+        last_decision_seq=len(rows),
+        last_decision_hash=previous_hash,
+        idempotency_keys=frozenset(keys),
+    )
+
+
+def read_structural_candidate_decisions(
+    out_dir: Path | str,
+) -> StructuralCandidateDecisionSnapshot:
+    root = Path(out_dir).expanduser().resolve()
+    path = root / CLAIM_STRUCTURAL_CANDIDATE_DECISIONS
+    try:
+        raw = path.read_bytes() if path.is_file() else b""
+    except OSError as exc:
+        raise ClaimStructuralOverrideError(
+            "failed to read claim structural candidate decision registry"
+        ) from exc
+    return _scan_candidate_decision_bytes(raw)
+
+
+def structural_candidate_decisions_by_claim(
+    snapshot: StructuralCandidateDecisionSnapshot,
+    *,
+    document_generation_id: str,
+    catalog_generation_id: str,
+) -> dict[str, dict[str, Any]]:
+    """Return terminal decisions for one explicit catalog generation."""
+    return {
+        str(row.get("claim_id") or ""): dict(row)
+        for row in snapshot.rows
+        if row.get("document_generation_id") == document_generation_id
+        and row.get("catalog_generation_id") == catalog_generation_id
+    }
+
+
+def current_structural_candidate_decision_identity(
+    out_dir: Path | str,
+) -> dict[str, Any]:
+    return structural_candidate_decision_identity(
+        read_structural_candidate_decisions(out_dir)
+    )
+
+
 def _validate_original_exclusion(
     prior_structural_reason: str,
     original_exclusion: dict[str, Any],
@@ -220,14 +468,79 @@ def _validate_original_exclusion(
         raise ClaimStructuralOverrideError(
             "original structural proof reason does not match the override"
         )
+    expected_rule_id = _STRUCTURAL_RULE_IDS[prior_structural_reason]
+    evidence = original_exclusion.get("evidence")
     if (
-        original_exclusion.get("rule_id") != "catalog-repeated-page-furniture"
+        original_exclusion.get("rule_id") != expected_rule_id
         or not isinstance(original_exclusion.get("rule_version"), str)
         or not original_exclusion.get("rule_version")
-        or not isinstance(original_exclusion.get("evidence"), dict)
+        or not isinstance(evidence, dict)
     ):
         raise ClaimStructuralOverrideError(
-            "original repeated-page-furniture proof is malformed"
+            "original structural proof is malformed"
+        )
+    if prior_structural_reason in CELL_REVIEW_STRUCTURAL_REASONS:
+        required = {
+            "table_structure_version",
+            "table_block_id",
+            "table_cell_id",
+            "row_index",
+            "column_index",
+            "cell_text_sha256",
+        }
+        if (
+            set(evidence) != required
+            or not isinstance(evidence.get("table_structure_version"), str)
+            or not evidence.get("table_structure_version")
+            or not isinstance(evidence.get("table_block_id"), str)
+            or not evidence.get("table_block_id")
+            or not isinstance(evidence.get("table_cell_id"), str)
+            or not evidence.get("table_cell_id")
+            or not isinstance(evidence.get("row_index"), int)
+            or evidence.get("row_index", 0) < 1
+            or not isinstance(evidence.get("column_index"), int)
+            or evidence.get("column_index", 0) < 1
+            or not isinstance(evidence.get("cell_text_sha256"), str)
+            or not str(evidence.get("cell_text_sha256")).startswith("sha256:")
+        ):
+            raise ClaimStructuralOverrideError(
+                "table-cell structural proof is malformed"
+            )
+
+
+def _validate_cell_candidate_binding(
+    claim: dict[str, Any],
+    prior_structural_reason: str,
+    original_exclusion: dict[str, Any],
+) -> None:
+    _validate_original_exclusion(prior_structural_reason, original_exclusion)
+    if prior_structural_reason not in CELL_REVIEW_STRUCTURAL_REASONS:
+        return
+    locator = claim.get("locator")
+    evidence = original_exclusion.get("evidence")
+    if not isinstance(locator, dict) or not isinstance(evidence, dict):
+        raise ClaimStructuralOverrideError(
+            "table-cell structural candidate locator is missing"
+        )
+    text_bytes = str(claim.get("text") or "").encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(len(text_bytes).to_bytes(8, "big"))
+    digest.update(text_bytes)
+    text_hash = "sha256:" + digest.hexdigest()
+    if (
+        claim.get("source_kind") != "table_cell"
+        or locator.get("position_basis") != "table_cell_text"
+        or str(locator.get("block_id") or "")
+        != str(evidence.get("table_block_id") or "")
+        or str(locator.get("table_cell_id") or "")
+        != str(evidence.get("table_cell_id") or "")
+        or int(locator.get("row_index") or 0) != int(evidence.get("row_index") or 0)
+        or int(locator.get("column_index") or 0)
+        != int(evidence.get("column_index") or 0)
+        or text_hash != evidence.get("cell_text_sha256")
+    ):
+        raise ClaimStructuralOverrideError(
+            "table-cell structural candidate identity binding is invalid"
         )
 
 
@@ -394,7 +707,22 @@ def register_structural_override(
         exclusion = claim.get("exclusion")
         if claim.get("eligibility") != "excluded" or not isinstance(exclusion, dict):
             raise ClaimStructuralOverrideError("claim is not structurally excluded")
-        _validate_original_exclusion(prior_structural_reason, exclusion)
+        _validate_cell_candidate_binding(claim, prior_structural_reason, exclusion)
+        if prior_structural_reason in CELL_REVIEW_STRUCTURAL_REASONS:
+            decision_target = (
+                str(generation.get("document_generation_id") or ""),
+                expected_catalog_generation_id,
+                claim_id,
+                claim_hash,
+            )
+            existing_decision = next((
+                row for row in read_structural_candidate_decisions(root).rows
+                if _candidate_decision_target(row) == decision_target
+            ), None)
+            if existing_decision is not None:
+                raise ClaimStructuralOverrideError(
+                    "structural candidate exclusion is already confirmed"
+                )
         catalog_meta = dict(base.get("catalog_meta") or {})
         committed_prefix = str(
             catalog_meta.get("structural_override_prefix_sha256") or ""
@@ -424,6 +752,226 @@ def register_structural_override(
             request_idempotency_key=request_idempotency_key,
             expected_registry_prefix_sha256=committed_prefix,
         )
+
+
+def _candidate_decision_idempotency_key(
+    *,
+    claim_id: str,
+    claim_hash: str,
+    document_generation_id: str,
+    catalog_generation_id: str,
+    claim_effective_revision: str,
+    prior_structural_reason: str,
+    original_exclusion: dict[str, Any],
+    actor: str,
+    reason: str,
+    request_idempotency_key: str,
+) -> str:
+    return hash_json(
+        "claim-structural-candidate-decision-idempotency/v1",
+        {
+            "claim_id": claim_id,
+            "claim_hash": claim_hash,
+            "document_generation_id": document_generation_id,
+            "catalog_generation_id": catalog_generation_id,
+            "claim_effective_revision": claim_effective_revision,
+            "prior_structural_reason": prior_structural_reason,
+            "original_exclusion": original_exclusion,
+            "decision": "confirm_exclusion",
+            "actor": actor,
+            "reason": reason,
+            "request_idempotency_key": request_idempotency_key,
+        },
+    )
+
+
+def confirm_structural_exclusion(
+    out_dir: Path | str,
+    *,
+    claim_id: str,
+    claim_hash: str,
+    expected_catalog_generation_id: str,
+    expected_claim_effective_revision: str,
+    prior_structural_reason: str,
+    actor: str,
+    reason: str,
+    request_idempotency_key: str,
+) -> dict[str, Any]:
+    """Confirm one cell candidate without rebuilding the base.
+
+    ``expected_claim_effective_revision`` is an append-time CAS token. An exact
+    replay of an already committed decision remains idempotent if a later fold
+    changes that revision while the document, catalog, and claim stay current.
+    """
+    required_values = (
+        claim_id,
+        claim_hash,
+        expected_catalog_generation_id,
+        expected_claim_effective_revision,
+        prior_structural_reason,
+        actor,
+        reason,
+        request_idempotency_key,
+    )
+    if not all(isinstance(value, str) and value.strip() for value in required_values):
+        raise ClaimStructuralOverrideError(
+            "structural candidate identity, actor, reason, and idempotency key are required"
+        )
+    if prior_structural_reason not in CELL_REVIEW_STRUCTURAL_REASONS:
+        raise ClaimStructuralOverrideError(
+            "only table-cell review candidates support exclusion confirmation"
+        )
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    from claim_artifacts import load_committed_shadow
+    from claim_review_actions import assess_effective_freshness
+    from claim_structural_operations import pending_structural_operations
+
+    with claim_publication_lock(root):
+        snapshot = load_committed_shadow(root)
+        freshness = assess_effective_freshness(root, snapshot, readonly=False)
+        if freshness.get("effective_fresh") is not True:
+            raise ClaimStructuralOverrideStale(
+                "claim snapshot changed; refresh before confirming the structural exclusion"
+            )
+        generation = dict(snapshot.get("generation_meta") or {})
+        if generation.get("catalog_generation_id") != expected_catalog_generation_id:
+            raise ClaimStructuralOverrideStale("catalog generation changed")
+        claim = next((
+            row for row in snapshot.get("catalog") or []
+            if row.get("claim_id") == claim_id
+        ), None)
+        effective = next((
+            row for row in snapshot.get("effective_ledger") or []
+            if row.get("claim_id") == claim_id
+        ), None)
+        if (
+            claim is None
+            or effective is None
+            or claim.get("claim_hash") != claim_hash
+        ):
+            raise ClaimStructuralOverrideStale(
+                "claim identity changed"
+            )
+        exclusion = claim.get("exclusion")
+        if claim.get("eligibility") != "excluded" or not isinstance(exclusion, dict):
+            raise ClaimStructuralOverrideError("claim is not structurally excluded")
+        _validate_cell_candidate_binding(claim, prior_structural_reason, exclusion)
+        if claim_id in pending_structural_operations(root):
+            raise ClaimStructuralOverrideStale(
+                "a structural promotion operation is already pending"
+            )
+        if any(
+            row.get("claim_id") == claim_id and row.get("claim_hash") == claim_hash
+            for row in read_structural_overrides(root).rows
+        ):
+            raise ClaimStructuralOverrideStale(
+                "the structural candidate has already been promoted"
+            )
+        key = _candidate_decision_idempotency_key(
+            claim_id=claim_id,
+            claim_hash=claim_hash,
+            document_generation_id=str(generation.get("document_generation_id") or ""),
+            catalog_generation_id=expected_catalog_generation_id,
+            claim_effective_revision=expected_claim_effective_revision,
+            prior_structural_reason=prior_structural_reason,
+            original_exclusion=dict(exclusion),
+            actor=actor.strip(),
+            reason=reason.strip(),
+            request_idempotency_key=request_idempotency_key,
+        )
+        with _process_lock(root):
+            with process_file_lock(
+                root / _CANDIDATE_DECISION_LOCK_NAME,
+                timeout_s=_LOCK_TIMEOUT_S,
+                label="claim structural candidate decision lock",
+            ):
+                registry = read_structural_candidate_decisions(root)
+                for row in registry.rows:
+                    if row.get("idempotency_key") == key:
+                        return {
+                            "ok": True,
+                            "status": "confirmed_excluded",
+                            "decision": dict(row),
+                            "appended": False,
+                        }
+                if (
+                    effective.get("claim_effective_revision")
+                    != expected_claim_effective_revision
+                ):
+                    raise ClaimStructuralOverrideStale(
+                        "claim effective revision changed"
+                    )
+                if any(
+                    _candidate_decision_target(row) == (
+                        str(generation.get("document_generation_id") or ""),
+                        expected_catalog_generation_id,
+                        claim_id,
+                        claim_hash,
+                    )
+                    for row in registry.rows
+                ):
+                    raise ClaimStructuralOverrideError(
+                        "structural candidate already has a terminal decision"
+                    )
+                seq = registry.last_decision_seq + 1
+                row = {
+                    "schema": CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
+                    "decision_seq": seq,
+                    "decision_id": _candidate_decision_id(
+                        claim_hash,
+                        key,
+                        CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
+                    ),
+                    "prev_decision_hash": registry.last_decision_hash,
+                    "registry_prefix_sha256": registry.prefix_sha256,
+                    "claim_id": claim_id,
+                    "claim_hash": claim_hash,
+                    "document_generation_id": str(
+                        generation.get("document_generation_id") or ""
+                    ),
+                    "catalog_generation_id": expected_catalog_generation_id,
+                    "claim_effective_revision": expected_claim_effective_revision,
+                    "prior_structural_reason": prior_structural_reason,
+                    "original_exclusion": dict(exclusion),
+                    "decision": "confirm_exclusion",
+                    "actor": actor.strip(),
+                    "reason": reason.strip(),
+                    "recorded_at": _utc_now(),
+                    "idempotency_key": key,
+                }
+                body = dict(row)
+                row["decision_hash"] = hash_json(
+                    CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
+                    body,
+                )
+                _validate_schema(
+                    row,
+                    _CANDIDATE_DECISION_PROTOCOLS[
+                        CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA
+                    ][0],
+                    label="claim structural candidate decision",
+                )
+                payload = (
+                    registry.prefix_bytes
+                    + canonical_json_value_bytes(row)
+                    + b"\n"
+                )
+                _atomic_write_bytes(
+                    root / CLAIM_STRUCTURAL_CANDIDATE_DECISIONS,
+                    payload,
+                )
+                committed = read_structural_candidate_decisions(root)
+                if committed.rows[-1].get("decision_hash") != row["decision_hash"]:
+                    raise ClaimStructuralOverrideError(
+                        "structural candidate decision commit verification failed"
+                    )
+                return {
+                    "ok": True,
+                    "status": "confirmed_excluded",
+                    "decision": dict(committed.rows[-1]),
+                    "appended": True,
+                }
 
 
 CLAIM_STRUCTURAL_ROUTE_CONFIG_VERSION = "claim-structural-route-config-v2"
@@ -534,7 +1082,23 @@ def _initial_preflight(
     exclusion = catalog_row.get("exclusion")
     if catalog_row.get("eligibility") != "excluded" or not isinstance(exclusion, dict):
         raise ClaimStructuralOverrideError("claim is not structurally excluded")
-    _validate_original_exclusion(request["prior_structural_reason"], exclusion)
+    _validate_cell_candidate_binding(
+        catalog_row, request["prior_structural_reason"], exclusion,
+    )
+    if request["prior_structural_reason"] in CELL_REVIEW_STRUCTURAL_REASONS:
+        decision_target = (
+            str(generation.get("document_generation_id") or ""),
+            str(request["expected_catalog_generation_id"]),
+            str(request["claim_id"]),
+            str(request["claim_hash"]),
+        )
+        if any(
+            _candidate_decision_target(row) == decision_target
+            for row in read_structural_candidate_decisions(root).rows
+        ):
+            raise ClaimStructuralOverrideError(
+                "structural candidate exclusion is already confirmed"
+            )
     effective_meta = dict(snapshot.get("effective_meta") or {})
     event_snapshot = read_claim_review_events(root, repair=False)
     route_state = _route_preflight(
@@ -777,22 +1341,52 @@ class _StructuralBudgetProxy:
         self._budget = budget
         self._observer = observer
         self._primary: Callable[[dict[str, Any]], None] | None = None
+        self._primary_lock = RLock()
         self._budget.set_checkpoint(self._dispatch)
 
     def _dispatch(self, snapshot: dict[str, Any]) -> None:
-        self._observer(dict(snapshot))
-        if self._primary is not None:
-            self._primary(dict(snapshot))
+        with self._primary_lock:
+            self._observer(dict(snapshot))
+            if self._primary is not None:
+                self._primary(dict(snapshot))
+
+    def checkpoint(self) -> Callable[[dict[str, Any]], None] | None:
+        with self._primary_lock:
+            return self._primary
 
     def set_checkpoint(
         self,
         checkpoint: Callable[[dict[str, Any]], None] | None,
     ) -> None:
-        if checkpoint is not None and self._primary is not None:
-            raise RuntimeError("structural verifier budget already has a primary checkpoint")
-        self._primary = checkpoint
-        if checkpoint is not None:
-            checkpoint(self.snapshot())
+        with self._primary_lock:
+            if checkpoint is not None and self._primary is not None:
+                raise RuntimeError(
+                    "structural verifier budget already has a primary checkpoint"
+                )
+            previous = self._primary
+            self._primary = checkpoint
+            try:
+                if checkpoint is not None:
+                    checkpoint(self.snapshot())
+            except BaseException:
+                self._primary = previous
+                raise
+
+    def swap_checkpoint(
+        self,
+        expected: Callable[[dict[str, Any]], None] | None,
+        checkpoint: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        with self._primary_lock:
+            if self._primary is not expected:
+                raise RuntimeError("structural verifier checkpoint owner changed")
+            self._primary = checkpoint
+            try:
+                if checkpoint is not None:
+                    checkpoint(self.snapshot())
+            except BaseException:
+                self._primary = expected
+                raise
 
     def reserve(self, payload: dict[str, Any]) -> int:
         return self._budget.reserve(payload)
@@ -807,7 +1401,8 @@ class _StructuralBudgetProxy:
         return self._budget.snapshot()
 
     def close(self) -> None:
-        self._primary = None
+        with self._primary_lock:
+            self._primary = None
         self._budget.set_checkpoint(None)
 
 
@@ -1216,7 +1811,7 @@ def apply_structural_overrides(
     rows: list[dict[str, Any]],
     snapshot: StructuralOverrideSnapshot,
 ) -> int:
-    """Make only exact, still-current repeated-furniture proofs eligible."""
+    """Make only exact, still-current structural exclusions eligible."""
     by_identity = {
         (str(row.get("claim_id") or ""), str(row.get("claim_hash") or "")): row
         for row in rows
@@ -1234,7 +1829,7 @@ def apply_structural_overrides(
             row.get("eligibility") != "excluded"
             or not isinstance(exclusion, dict)
             or exclusion != override.get("original_exclusion")
-            or exclusion.get("reason") != "repeated_page_furniture"
+            or exclusion.get("reason") not in ALLOWED_STRUCTURAL_OVERRIDE_REASONS
         ):
             continue
         row["eligibility"] = "claim"

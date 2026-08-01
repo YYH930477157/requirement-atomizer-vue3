@@ -168,7 +168,7 @@ describe("review workspace shell", () => {
 
     await wrapper.find('[data-testid="nav-Claim 账本"]').trigger("click")
     expect(wrapper.find('[data-testid="claim-ledger"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="claim-ledger"]').text()).toContain("双写观察期 · 不影响 READY 判定")
+    expect(wrapper.find('[data-testid="claim-ledger"]').text()).toContain("双写观察期 · 结构待审阻断 Ledger Ready")
 
     await wrapper.find('[data-testid="nav-设置"]').trigger("click")
     expect(wrapper.find('[data-testid="settings-panel"]').exists()).toBe(true)

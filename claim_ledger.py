@@ -36,7 +36,11 @@ CLAIM_LEDGER_SCHEMA = "claim-ledger/v3"
 CLAIM_SEMANTIC_NEGATIVE_SCHEMA = "claim-semantic-negative/v3"
 CLAIM_COVERAGE_GROUP_SCHEMA = "claim-coverage-group/v3"
 CLAIM_LEDGER_PROMPT_VERSION = "claim-ledger-shadow-prompt-v4"
-CLAIM_CANDIDATE_POLICY_VERSION = "claim-coverage-candidate-v4-active-formal-gate"
+# v5: table_cell claim 的 source_quote 与格全文逐字相等时授予 source_quote_span
+# （marker 格 "X" 仅 1 alnum，此前永落在 shared_block_locator 而被候选闸拒绝，
+#  marker claim 在生产上永远无法到达独立 verifier——P1-4 复审实测）。豁免只
+# 放行候选；闭合仍由 verifier 按完整 semantic_context 七维严格裁定。
+CLAIM_CANDIDATE_POLICY_VERSION = "claim-coverage-candidate-v5-table-cell-exact-text"
 CLAIM_EDGE_PREFILTER_VERSION = "claim-edge-prefilter-v3"
 CLAIM_COVERAGE_VALIDATOR_VERSION = "claim-coverage-validator-v6"
 CLAIM_NEGATIVE_POLICY_VERSION = "claim-negative-policy-v2"
@@ -51,8 +55,8 @@ CLAIM_EFFECTIVE_LEDGER_SCHEMA = "claim-effective-ledger/v2"
 LEGACY_CLAIM_REVIEW_EVENT_SCHEMA = "claim-review-event/v1"
 CLAIM_REVIEW_EVENT_SCHEMA = "claim-review-event/v2"
 CLAIM_VALIDATION_REUSE_VERSION = "claim-validation-reuse-v2"
-CLAIM_QUEUE_VERSION = "claim-queue-v3"
-CLAIM_QUEUE_PROPOSAL_SCHEMA = "claim-queue-proposal/v2"
+CLAIM_QUEUE_VERSION = "claim-queue-v4"
+CLAIM_QUEUE_PROPOSAL_SCHEMA = "claim-queue-proposal/v3"
 CLAIM_AUDIT_POLICY_VERSION = "claim-audit-shadow-v4"
 CLAIM_COVERAGE_RUNTIME_VERSION = "claim-coverage-runtime-v11"
 CLAIM_VERIFIER_BATCH_POLICY_VERSION = "claim-verifier-batch-v3-full-http-body"
@@ -975,6 +979,15 @@ def b_track_effective_authority(
 
 
 def _claim_content(claim: dict[str, Any]) -> tuple[str, int, int]:
+    # table_cell claim：裸格（"X"）对匹配/验证没有语义——证据文本采用确定性
+    # semantic_context（表标题+行头+列头+正文），span 指正文在上下文行内的位置
+    semantic = str(claim.get("semantic_context") or "")
+    if str(claim.get("source_kind") or "") == "table_cell" and semantic:
+        text = str(claim.get("text") or "")
+        anchor = semantic.rfind(text) if text else -1
+        if anchor >= 0:
+            return semantic, anchor, anchor + len(text)
+        return semantic, 0, len(semantic)
     text = str(claim.get("text") or "")
     leading = len(text) - len(text.lstrip())
     trailing_end = len(text.rstrip())
@@ -991,6 +1004,16 @@ def _candidate_basis(claim: dict[str, Any], target: dict[str, Any]) -> list[str]
     basis: list[str] = []
     if claim_norm and quote_norm:
         if claim_norm == quote_norm:
+            basis.append("source_quote_span")
+        elif (
+            str(claim.get("source_kind") or "") == "table_cell"
+            and quote_norm == _normalized(claim.get("text"))
+        ):
+            # marker 格 claim（"X"/"●"）：claim 正文 = 格全文，source_quote 与格
+            # 全文逐字相等是精确的格身份绑定，不是 6-alnum 下限要防的残缺片段
+            # 子串（页码/标点/残词形成的笛卡尔误配）。豁免下限只让 claim 到达
+            # 独立 verifier——主体/维度仍按完整 semantic_context 七维严格裁定，
+            # 同表其余 marker 格不会被同一 requirement 闭合。
             basis.append("source_quote_span")
         elif claim_norm in quote_norm or quote_norm in claim_norm:
             matched = claim_norm if len(claim_norm) <= len(quote_norm) else quote_norm

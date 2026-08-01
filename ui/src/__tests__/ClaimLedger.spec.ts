@@ -15,6 +15,11 @@ function envelope(revision = "sha256:revision-1") {
     document_effective_revision: revision,
     base_generation_id: "sha256:base-generation",
     event_prefix_sha256: "sha256:event-prefix",
+    structural_candidate_decision_registry: {
+      version: "claim-structural-candidate-decision-v2",
+      prefix_sha256: "sha256:decision-prefix-1",
+      prefix_count: 0,
+    },
     effective_fresh: true,
   }
 }
@@ -58,6 +63,8 @@ function metricsPayload(revision = "sha256:revision-1") {
       uncertain_count: 1,
     },
     document_ready: false,
+    structural_review_pending_count: 1,
+    structural_review_confirmed_exclusion_count: 2,
     health: {},
   }
 }
@@ -175,7 +182,9 @@ describe("ClaimLedger", () => {
     const wrapper = mount(ClaimLedger, { props: { client, active: true } })
     await flushPromises()
 
-    expect(wrapper.text()).toContain("双写观察期 · 不影响 READY 判定")
+    expect(wrapper.text()).toContain("双写观察期 · 结构待审阻断 Ledger Ready")
+    expect(wrapper.get('[data-testid="claim-structural-pending-count"]').text()).toContain("1")
+    expect(wrapper.get('[data-testid="claim-structural-confirmed-count"]').text()).toContain("2")
     expect(wrapper.get('[data-testid="claim-metric-coverage"]').text()).toContain("70.0%")
     expect(wrapper.get('[data-testid="claim-metric-coverage"]').text()).toContain("7 / 10")
     expect(wrapper.text()).toContain("82.5%")
@@ -188,6 +197,51 @@ describe("ClaimLedger", () => {
     expect(wrapper.get('[data-testid="claim-queue"]').text()).toContain("OM-BLK-10")
     expect(wrapper.get('[data-testid="claim-queue"]').text()).toContain("dry-run")
     expect(wrapper.get('[data-testid="claim-execute-CLM-2222222222222222"]').text()).toContain("执行")
+  })
+
+  it("retries overview when the structural decision registry changes mid-read", async () => {
+    const firstCatalog = catalogPayload()
+    const firstMetrics = metricsPayload()
+    const firstQueue = queuePayload()
+    firstMetrics.structural_candidate_decision_registry = {
+      version: "claim-structural-candidate-decision-v2",
+      prefix_sha256: "sha256:decision-prefix-2",
+      prefix_count: 1,
+    }
+    const settledCatalog = catalogPayload()
+    const settledMetrics = metricsPayload()
+    const settledQueue = queuePayload()
+    for (const payload of [settledCatalog, settledMetrics, settledQueue]) {
+      payload.structural_candidate_decision_registry = {
+        version: "claim-structural-candidate-decision-v2",
+        prefix_sha256: "sha256:decision-prefix-2",
+        prefix_count: 1,
+      }
+    }
+    const loadClaimCatalog = vi.fn()
+      .mockResolvedValueOnce(firstCatalog)
+      .mockResolvedValue(settledCatalog)
+    const loadClaimMetrics = vi.fn()
+      .mockResolvedValueOnce(firstMetrics)
+      .mockResolvedValue(settledMetrics)
+    const loadClaimQueue = vi.fn()
+      .mockResolvedValueOnce(firstQueue)
+      .mockResolvedValue(settledQueue)
+    const client = makeClient({
+      loadClaimCatalog,
+      loadClaimMetrics,
+      loadClaimQueue,
+    })
+
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(loadClaimCatalog).toHaveBeenCalledTimes(2)
+    expect(loadClaimMetrics).toHaveBeenCalledTimes(2)
+    expect(loadClaimQueue).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-testid="claim-row"]').text()).toContain(
+      "The product shall support",
+    )
   })
 
   it("forwards Queue v2 budgets and refreshes all overview views after execution", async () => {
@@ -464,6 +518,7 @@ describe("ClaimLedger", () => {
       expectedCatalogGenerationId: "sha256:catalog-generation",
       expectedClaimEffectiveRevision: "sha256:revision-1-claim",
       priorStructuralReason: "repeated_page_furniture",
+      decision: "promote_to_claim",
       reason: "确认该内容不是重复页眉页脚",
       actor: "reviewer",
       requestIdempotencyKey: expect.stringMatching(/^claim-structural-/),
@@ -1059,5 +1114,68 @@ describe("ClaimLedger", () => {
     await structuralBtn.trigger("click")
     await flushPromises()
     expect(confirmClaimStructuralOverride).not.toHaveBeenCalled()
+  })
+
+  it("shows structural review badges and can confirm a cell exclusion without LLM", async () => {
+    const pending = catalogPayload() as any
+    pending.catalog_generation_id = "sha256:catalog-generation"
+    Object.assign(pending.rows[0], {
+      eligibility: "excluded",
+      resolution: "excluded",
+      classification: "non_normative",
+      exclusion_kind: "structural",
+      exclusion: { reason: "untyped_colon_spec_cell" },
+      structural_review_status: "pending_review",
+      structural_candidate_decision: null,
+    })
+    const confirmed = structuredClone(pending)
+    Object.assign(confirmed.rows[0], {
+      structural_review_status: "confirmed_excluded",
+      structural_candidate_decision: {
+        decision_id: "CSCD-1111111111111111",
+        decision: "confirm_exclusion",
+        actor: "reviewer",
+        reason: "确认该冒号规格属于上下文",
+        recorded_at: "2026-08-01T12:00:00Z",
+      },
+    })
+    const loadClaimCatalog = vi.fn()
+      .mockResolvedValueOnce(pending)
+      .mockResolvedValue(confirmed)
+    const confirmClaimStructuralOverride = vi.fn().mockResolvedValue({
+      ok: true,
+      status: "confirmed_excluded",
+      appended: true,
+    })
+    const client = makeClient({
+      loadClaimCatalog,
+      confirmClaimStructuralOverride,
+    })
+    const wrapper = mount(ClaimLedger, { props: { client, active: true } })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="claim-structural-list-status"]').text())
+      .toContain("结构待审")
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    await wrapper.get('textarea[aria-label="Claim 裁决理由"]')
+      .setValue("确认该冒号规格属于上下文")
+    await wrapper.get('[data-testid="claim-structural-confirm-exclusion"]').trigger("click")
+    await flushPromises()
+
+    expect(confirmClaimStructuralOverride).toHaveBeenCalledWith(expect.objectContaining({
+      priorStructuralReason: "untyped_colon_spec_cell",
+      decision: "confirm_exclusion",
+      allowLlm: false,
+      route: "stub",
+      verifierMaxCalls: 0,
+      verifierMaxTotalTokens: 0,
+    }))
+    expect(wrapper.get('[data-testid="claim-structural-list-status"]').text())
+      .toContain("已确认排除")
+    await wrapper.get('[data-testid="claim-row"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.get('[data-testid="claim-structural-confirmed-exclusion"]').text())
+      .toContain("确认该冒号规格属于上下文")
   })
 })

@@ -1119,15 +1119,17 @@ class ChainAndManifestTests(unittest.TestCase):
                 f"+{SOURCE_ALIGNMENT_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"
-                f"+{TABLE_STRUCTURE_VERSION}+impl-v8"
+                f"+{TABLE_STRUCTURE_VERSION}+impl-v12"
             ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
+            # M3（table-structure 闭环）：table_structure 版本进 producer lineage——
+            # 结构角色/信号规则变化时旧抽取产物不得假装仍然新鲜
             "ai-extract": (
                 "ai-requirements-producer-lineage-v3"
-                "+ai-extract-v23+guards-v19+ai-verify-v4+ai-normative-framing-v2"
+                "+ai-extract-v23+guards-v20+ai-verify-v4+ai-normative-framing-v2"
                 "+merged-consistency/v3-noise-tolerant-window"
-                "+compliance-requirements/v2"
+                f"+compliance-requirements/v2+{TABLE_STRUCTURE_VERSION}"
                 "+ai-supplement-v3-identity-preconditions+impl-v6"
             ),
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
@@ -1137,8 +1139,8 @@ class ChainAndManifestTests(unittest.TestCase):
             "clarification-report": "clarification/v8-param-row-aggregate+ai-supplement-v3-identity-preconditions+impl-v6",
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "export-annotation-html": (
-                "doc_annotation_export/v14-claim-distribution-claim-focus+claim-annotation-v14"
-                "+claim-focus-adapter-v2+annotation-translation-v2-segment-fallback"
+                "doc_annotation_export/v16-cell-claim-projection+claim-annotation-v16"
+                "+claim-focus-adapter-v3+annotation-translation-v2-segment-fallback"
                 "+annotation-translation-guards-v1+doc-facsimile-v1"
                 "+ai-supplement-v3-identity-preconditions"
             ),
@@ -1282,6 +1284,7 @@ class ChainAndManifestTests(unittest.TestCase):
         import claim_artifacts
         import claim_focus
         import claim_ledger
+        import claim_queue_execution
         import claim_reextract_attempts
         import claim_structural_overrides
         import doc_annotation_export
@@ -1302,6 +1305,10 @@ class ChainAndManifestTests(unittest.TestCase):
             (claim_artifacts, "CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION"),
             (ai_extract, "CLAIM_FOCUS_CRITIQUE_VERSION"),
             (claim_focus, "CLAIM_FOCUS_ADAPTER_VERSION"),
+            (
+                claim_queue_execution,
+                "CLAIM_BUDGET_CHECKPOINT_FANOUT_VERSION",
+            ),
             (claim_reextract_attempts, "CLAIM_REEXTRACT_ATTEMPT_SCHEMA"),
             (claim_reextract_attempts, "CLAIM_REEXTRACT_ATTEMPT_VERSION"),
             (claim_structural_overrides, "CLAIM_STRUCTURAL_OVERRIDE_SCHEMA"),

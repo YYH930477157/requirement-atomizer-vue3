@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import claim_reextract_attempts as attempts
 from claim_artifacts import atomic_write_jsonl, hash_json
@@ -187,6 +188,40 @@ class ClaimReextractAttemptTests(unittest.TestCase):
                 "torn tail",
             ):
                 attempts.read_attempt_log(root)
+
+    def test_failed_atomic_append_preserves_committed_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_id = attempts.attempt_id(
+                "CQP-12345678-9abcdef0",
+                "request-1",
+            )
+            attempts.append_attempt_events(root, [_started(current_id)])
+            path = root / attempts.CLAIM_REEXTRACT_ATTEMPTS
+            before = path.read_bytes()
+            event = {
+                **_common(current_id, "budget_checkpoint", "atomic-failure"),
+                "checkpoint": {
+                    "phase": "pre_call",
+                    "calls": 1,
+                    "total_tokens": 4000,
+                    "usage_complete": False,
+                    "status": "reserved",
+                },
+            }
+
+            with mock.patch.object(
+                attempts,
+                "atomic_write_jsonl",
+                side_effect=OSError("replace unavailable"),
+            ):
+                with self.assertRaisesRegex(OSError, "replace unavailable"):
+                    attempts.append_attempt_events(root, [event])
+
+            self.assertEqual(path.read_bytes(), before)
+            snapshot = attempts.read_attempt_log(root)
+            self.assertEqual(snapshot.last_event_seq, 1)
+            self.assertEqual(len(snapshot.rows), 1)
 
 
 class AttemptLogStableReadTests(unittest.TestCase):

@@ -2470,7 +2470,7 @@ def _build_queue(
         claim_id = str(row["claim_id"])
         claim = catalog_by_claim[claim_id]
         proposal_hash = hash_json(
-            "claim-queue-proposal-id/v2",
+            "claim-queue-proposal-id/v3",
             {
                 "claim_id": claim_id,
                 "claim_effective_revision": row["claim_effective_revision"],

@@ -87,7 +87,13 @@ from extract_guards import (  # noqa: F401
 LOGGER = logging.getLogger("requirement_atomizer")
 
 AI_EXTRACT_PROMPT_VERSION = "ai-extract-v23"  # v23：正式 target 叶子强制自包含产品义务成文
-CLAIM_FOCUS_CRITIQUE_VERSION = "claim-focus-critique-v1"
+# v3：table_cell 的表标题作为独立 prompt_context 下发，可用于消解正文/marker
+# 省略的产品或接口范围，但仍禁止充当 source_quote/独立事实；v2（P0-3 复审）：
+# focus evidence 结构化——prompt_context（仅定位、禁引用）与
+# verbatim_evidence（可引用）分离，矩阵 marker 以 composite_matrix_fact
+# （主体+维度+marker 三者同现）绑定；v1 把行头/列头/正文混在同一 focus_lines，
+# 模型回显上下文即可通过引用闸（"回显 Feature=Encryption 同时编造描述"事故）
+CLAIM_FOCUS_CRITIQUE_VERSION = "claim-focus-critique-v3"
 SELF_CHECK_ENV = "RATOMIZER_AI_SELFCHECK"  # 完整性自检开关（默认开；=0/false/off 关）
 SELF_CHECK_ROUNDS_ENV = "RATOMIZER_AI_SELFCHECK_ROUNDS"  # 自检收敛轮数上限（默认 3，防发散）
 DEFAULT_SELF_CHECK_MAX_ROUNDS = 3
@@ -248,14 +254,28 @@ def atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def extraction_input_fingerprint(out_dir: Path) -> str:
-    """Bind partial generations to the exact parsed document consumed by extraction."""
-    path = Path(out_dir).expanduser().resolve() / "blocks.jsonl"
-    digest = hashlib.sha256()
-    if not path.exists() or not path.is_file():
+    """Bind partial generations to the exact parsed artifacts consumed by extraction.
+
+    M3：三件套绑定——只绑 blocks.jsonl 时，table_items/canonical cell 的变化
+    （table-structure 演进、行级化、cell 闭环）不改指纹，抽取产物会假装仍然新鲜。
+    blocks/table_items/table_cell_items 内容 + TABLE_STRUCTURE_VERSION 同时进指纹；
+    缺失文件显式绑定缺席状态（段落型文档无表格产物是合法形态，不冒充存在）。"""
+    from table_structure import TABLE_STRUCTURE_VERSION
+
+    root = Path(out_dir).expanduser().resolve()
+    if not (root / "blocks.jsonl").is_file():
         return ""
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    digest = hashlib.sha256()
+    digest.update(f"<table_structure:{TABLE_STRUCTURE_VERSION}>".encode("utf-8"))
+    for name in ("blocks.jsonl", "table_items.jsonl", "table_cell_items.jsonl"):
+        path = root / name
+        if not path.is_file():
+            digest.update(f"<missing:{name}>".encode("utf-8"))
+            continue
+        digest.update(f"<file:{name}>".encode("utf-8"))
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -419,6 +439,7 @@ def producer_lineage_versions() -> dict[str, str]:
     """Complete version vector for published ai-extract artifacts."""
     from compliance import COMPLIANCE_SCHEMA
     from merged_consistency import MERGED_CONSISTENCY_VERSION
+    from table_structure import TABLE_STRUCTURE_VERSION
 
     return {
         "extract_prompt_version": AI_EXTRACT_PROMPT_VERSION,
@@ -427,6 +448,9 @@ def producer_lineage_versions() -> dict[str, str]:
         "normative_framing_version": AI_NORMATIVE_FRAMING_VERSION,
         "merged_consistency_version": MERGED_CONSISTENCY_VERSION,
         "compliance_schema": COMPLIANCE_SCHEMA,
+        # M3：表格结构版本进 lineage——cell 闭环/行级化的行为演进必须使旧
+        # ai_requirements 代际如实 stale，不得假装与结构无关
+        "table_structure_version": TABLE_STRUCTURE_VERSION,
     }
 
 
@@ -578,6 +602,7 @@ def refresh_claim_shadow(
         file_sha256,
         hash_json,
         load_committed_attempt_lineage,
+        load_committed_claim_base,
         load_committed_shadow,
     )
     from claim_ledger import (
@@ -619,12 +644,23 @@ def refresh_claim_shadow(
         else extraction_operation_lock(root, operation="claim-shadow-refresh")
     )
     with operation_lock:
-        try:
-            previous_snapshot = load_committed_shadow(root)
-        except Exception:
-            previous_snapshot = None
         mutation_attempt_id = str(claim_mutation_attempt_id or "").strip()
         mutation_refresh = bool(mutation_attempt_id)
+        if mutation_refresh:
+            # 突变刷新发生在 requirements publication 之后——target authority 已被
+            # 本次发布有意推进，旧 effective 投影按设计处于待替换状态。此时只需要
+            # 已提交 base 的 generation_meta（校验 attempt 基于已提交目标），若按
+            # 完整 shadow 严格加载，会对它正要修复的 authority 漂移 fail-closed
+            # （ClaimEffectiveAuthorityChanged），队列执行永远停在 rebuild_pending。
+            try:
+                previous_snapshot = load_committed_claim_base(root)
+            except Exception:
+                previous_snapshot = None
+        else:
+            try:
+                previous_snapshot = load_committed_shadow(root)
+            except Exception:
+                previous_snapshot = None
         committed_attempt_lineage: dict[str, Any] | None = None
         if mutation_refresh:
             if previous_snapshot is None:
@@ -1577,7 +1613,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v19"  # v19:table-structure-v2 接入(删参数表≥3行硬门/merge anchor分组标题/权威row/cell ID去重键/cell级assemble输入+TABLE_STRUCTURE_VERSION与leaf plan结构hash进section指纹);v18:section cache 与完整 producer lineage 分层纳入 compliance_schema,堵死 v17 漏钉且避免缓存后处理版本触发付费重抽;v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v20"  # v20:section cache 骨架绑定 cell 语义（rows 哈希 item_id+text、cells 哈希 cell_id+row+column+text，bbox 等几何不进指纹——语义变化 miss、几何变化 hit，P1-2）;v19:table-structure-v2 接入(删参数表≥3行硬门/merge anchor分组标题/权威row/cell ID去重键/cell级assemble输入+TABLE_STRUCTURE_VERSION与leaf plan结构hash进section指纹);v18:section cache 与完整 producer lineage 分层纳入 compliance_schema,堵死 v17 漏钉且避免缓存后处理版本触发付费重抽;v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -1588,11 +1624,28 @@ def section_fingerprint(section: dict[str, Any], model: str, context_key: str = 
     version_key = "+".join(section_cache_versions().values())
     # leaf plan 结构 hash（guards-v19）：source_blocks 的权威 row/cell ID 骨架——
     # 结构路由（row/cell owner）变化即使文本不变也必须让缓存失效
+    # guards-v20（P1-2）：骨架绑定 cell 语义——rows 哈希 item_id+text、cells 哈希
+    # cell_id+row+column+text；bbox/页码等几何不进指纹（几何重算不得触发付费重抽，
+    # 语义变化不得命中旧缓存）
     structure_skeleton = [
         {
             "block_id": str(sb.get("block_id") or ""),
-            "rows": [str(row.get("item_id") or "") for row in (sb.get("rows") or [])],
-            "cells": [str(cell.get("cell_id") or "") for cell in (sb.get("cells") or [])],
+            "rows": [
+                {
+                    "item_id": str(row.get("item_id") or ""),
+                    "text": str(row.get("text") or ""),
+                }
+                for row in (sb.get("rows") or [])
+            ],
+            "cells": [
+                {
+                    "cell_id": str(cell.get("cell_id") or ""),
+                    "row_index": cell.get("row_index"),
+                    "column_index": cell.get("column_index"),
+                    "text": str(cell.get("text") or ""),
+                }
+                for cell in (sb.get("cells") or [])
+            ],
         }
         for sb in (section.get("source_blocks") or [])
         if isinstance(sb, dict) and (sb.get("rows") or sb.get("cells"))
@@ -2516,16 +2569,110 @@ def _process_raw_requirements(raw_reqs: list[Any], section: dict[str, Any],
 # 研发看不出"完成"长什么样。命中空话短语且不含任何数字/编码/比较判据的验收条 → 标记待澄清。
 
 
+# --- 结构化 focus evidence（claim-focus-critique-v3） ----------------------------
+
+FOCUS_ROLE_CONTEXT = "prompt_context"
+FOCUS_ROLE_VERBATIM = "verbatim_evidence"
+FOCUS_ROLE_COMPOSITE = "composite_matrix_fact"
+FOCUS_EVIDENCE_ROLES = frozenset(
+    {FOCUS_ROLE_CONTEXT, FOCUS_ROLE_VERBATIM, FOCUS_ROLE_COMPOSITE}
+)
+
+
+def normalize_focus_evidence(
+    focus_lines: list[str] | None,
+    focus_evidence: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """结构化 focus evidence 归一；旧 list[str] 调用方逐行按 verbatim_evidence 兼容。"""
+    if focus_evidence is not None:
+        entries: list[dict[str, Any]] = []
+        for entry in focus_evidence:
+            if not isinstance(entry, dict):
+                continue
+            role = str(entry.get("role") or "")
+            text = str(entry.get("text") or "").strip()
+            if role not in FOCUS_EVIDENCE_ROLES or not text:
+                continue
+            normalized = {"role": role, "text": text}
+            for key in ("subject", "subject_value", "dimension", "marker"):
+                value = str(entry.get(key) or "").strip()
+                if value:
+                    normalized[key] = value
+            context_kind = str(entry.get("context_kind") or "").strip()
+            if role == FOCUS_ROLE_CONTEXT and context_kind in {
+                "table_title", "header_path", "row_header_context"
+            }:
+                normalized["context_kind"] = context_kind
+            entries.append(normalized)
+        return entries
+    return [
+        {"role": FOCUS_ROLE_VERBATIM, "text": str(line or "").strip()}
+        for line in (focus_lines or [])
+        if str(line or "").strip()
+    ]
+
+
+def _composite_fragment_present(fragment: str, rendered: str) -> bool:
+    """复合事实片段匹配：剥成对引号后匹配（表头 '"GET"' 对输出 "GET"）；
+    短 marker（≤2 字母数字，如 "X"）用词边界，不命中 "X509"。"""
+    probe = " ".join(str(fragment or "").split()).casefold()
+    probe = probe.strip("\"'«»“”")
+    if not probe:
+        return False
+    if len(probe) <= 2 and probe.isalnum():
+        return re.search(
+            r"(?<![0-9a-z])" + re.escape(probe) + r"(?![0-9a-z])", rendered
+        ) is not None
+    return probe in rendered
+
+
+def focus_evidence_composite_bound(entry: dict[str, Any], rendered: str) -> bool:
+    """composite_matrix_fact 绑定判定：主体+维度+marker 三者同现（不接受任一片段）。
+
+    主体以值部分匹配（行头 "Feature=Encryption" 的对象名是 "Encryption"——
+    自然语言需求不会逐字携带 "Header=" 前缀）；维度多级组合
+    （"Customer application process / xDLMS Service"）以末段为准——末段才是
+    该列的维度名，前缀是上级表头定位。"""
+    subject = str(entry.get("subject_value") or entry.get("subject") or "")
+    subject_candidates = [subject]
+    if "=" in subject:
+        # 行头全文 "Feature=Encryption" 的值部分是自然语言输出里的主体形态；
+        # 构建方未显式给 subject_value 时绑定判定自足派生
+        subject_candidates.append(subject.rsplit("=", 1)[-1].strip())
+    dimension = str(entry.get("dimension") or "")
+    marker = str(entry.get("marker") or entry.get("text") or "")
+    if not any(
+        _composite_fragment_present(candidate, rendered)
+        for candidate in subject_candidates
+    ):
+        return False
+    dimension_parts = [
+        part.strip() for part in re.split(r"\s+/\s+", dimension) if part.strip()
+    ]
+    dimension_probe = dimension_parts[-1] if dimension_parts else dimension
+    if not _composite_fragment_present(dimension_probe, rendered):
+        return False
+    return _composite_fragment_present(marker, rendered)
+
+
 def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
                      chat: ChatFn, doc_context: str = "",
                      context_ints: frozenset[str] | set[str] = frozenset(),
                      focus_lines: list[str] | None = None, *,
-                     strict_focus: bool = False) -> list[dict[str, Any]]:
+                     strict_focus: bool = False,
+                     focus_evidence: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """完整性自检：对着原文找已抽取需求**未覆盖**的遗漏项，补上（去重 + 同一套漂移护栏）。
 
     focus_lines：解析层标记 requirement_like 但未被任何已抽需求覆盖的原文语句——
     定向查漏的重点核查清单（比盲查更准）。strict_focus 默认关闭；开启时
     focus_lines 是唯一允许的来源证据，且 supplements 被确定性禁用。
+
+    focus_evidence（claim-focus-critique-v3）：结构化证据条目
+    [{"role": "prompt_context"|"verbatim_evidence"|"composite_matrix_fact",
+      "text": ..., "subject"/"dimension"/"marker": ...}]——上下文与可引用证据
+    分离：prompt_context 只供定位，引用闸与输出绑定闸都不接受它；矩阵 marker
+    必须主体+维度+marker 三者同现。未提供时 strict 路径把 focus_lines 逐行按
+    verbatim_evidence 兼容处理（旧调用方行为不变）。
     """
     # 给模型看**结构摘要**而非裸标题：真实案例（4.14）——初抽按条款族正确合成一条（子项
     # a-e + 验收），自检只见标题、看不见 a-e 已在 sub_items 里 → 判"遗漏"又拆回 4 条碎片，
@@ -2579,18 +2726,62 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
         hints = "\n".join(f"- {line}" for line in focus_lines[:12])
         parts.append(f"重点核查以下原文语句是否含被遗漏的需求（解析层判定疑似需求但尚无需求覆盖）：\n{hints}")
     if strict_focus:
-        strict_lines = [str(line or "").strip() for line in (focus_lines or []) if str(line or "").strip()]
-        if not strict_lines:
-            return [], 0
-        hints = "\n".join(f"- {line}" for line in strict_lines[:12])
-        parts = [
-            "【严格定向需求抽取】只能依据下面的 focus evidence 生成 requirements。"
-            "不要使用章节中的相邻行、文档上下文或已有需求作为来源证据。"
-            "输出 JSON 对象 {\"requirements\": [...], \"supplements\": []}。"
-            "每条 requirement 的 source_quote 必须逐字复制某一条 focus evidence 的连续片段；"
-            "无法从 focus evidence 独立形成需求时返回两个空数组。",
-            f"唯一允许的 focus evidence：\n{hints}",
+        # v3：表标题以带类型的 prompt_context 下发，仅用于消解省略的产品/接口范围；
+        # v2（P0-3）：证据分角色——可引用证据（verbatim）/ 矩阵复合事实（主体+
+        # 维度+marker 三者同现）/ 定位上下文（禁引用）。回显定位上下文不再能
+        # 充当来源证据（"回显 Feature=Encryption 同时编造描述"事故的根因）。
+        evidence = normalize_focus_evidence(focus_lines, focus_evidence)
+        verbatim_lines = [
+            entry["text"] for entry in evidence if entry["role"] == FOCUS_ROLE_VERBATIM
         ]
+        context_lines = [
+            entry["text"] for entry in evidence if entry["role"] == FOCUS_ROLE_CONTEXT
+        ]
+        composite_entries = [
+            entry for entry in evidence if entry["role"] == FOCUS_ROLE_COMPOSITE
+        ]
+        if not verbatim_lines and not composite_entries:
+            return [], 0
+        parts = [
+            "【严格定向需求抽取】只能依据下面列出的可引用证据与矩阵事实生成 requirements。"
+            "不要使用章节中的相邻行、文档上下文、定位上下文或已有需求作为来源证据。"
+            "输出 JSON 对象 {\"requirements\": [...], \"supplements\": []}。",
+        ]
+        if verbatim_lines:
+            hints = "\n".join(f"- {line}" for line in verbatim_lines[:12])
+            parts.append(
+                "可引用证据（每条 requirement 的 source_quote 必须逐字复制其中"
+                f"某一条的连续片段）：\n{hints}"
+            )
+        if composite_entries:
+            rendered_facts = "\n".join(
+                f"- 矩阵事实：主体={entry.get('subject', '')} ｜ "
+                f"维度={entry.get('dimension', '')} ｜ "
+                f"取值={entry.get('marker') or entry['text']}"
+                for entry in composite_entries[:12]
+            )
+            parts.append(
+                "矩阵事实（需求必须同时绑定主体、维度与取值三者，不能只引用任一"
+                f"片段；source_quote 逐字取取值格文本）：\n{rendered_facts}"
+            )
+        if context_lines:
+            context_labels = {
+                "table_title": "表标题",
+                "header_path": "列头",
+                "row_header_context": "行头",
+            }
+            context_hints = "\n".join(
+                f"- {context_labels.get(str(entry.get('context_kind') or ''), '上下文')}："
+                f"{entry['text']}"
+                for entry in evidence
+                if entry["role"] == FOCUS_ROLE_CONTEXT
+            )
+            parts.append(
+                "定位上下文（禁止作为 source_quote 或独立事实依据；表标题只可用于"
+                "消解证据中省略的产品/接口适用范围，不得据此新增义务；行头/列头只可"
+                f"解释矩阵位置）：\n{context_hints}"
+            )
+        parts.append("无法从证据独立形成需求时返回两个空数组。")
     payload = chat(SYSTEM_PROMPT, "\n\n".join(parts))
     raw = payload.get("requirements") if isinstance(payload, dict) else None
     if strict_focus:
@@ -2610,9 +2801,24 @@ def critique_section(section: dict[str, Any], existing: list[dict[str, Any]],
     for req in _process_raw_requirements(raw, section, context_ints):
         if strict_focus:
             quote = _norm_ws(req.get("source_quote"))
-            if len(quote) < 3 or not any(
-                quote in _norm_ws(line) for line in (focus_lines or [])
-            ):
+            # 绑定只核对内容字段：source_quote 本身不许充当主体/维度/marker 证据
+            rendered_req = _norm_ws(
+                json.dumps(
+                    {k: v for k, v in req.items() if k != "source_quote"},
+                    ensure_ascii=False, sort_keys=True,
+                )
+            ).casefold()
+            # v2：引用闸只认可引用证据；矩阵事实要求主体+维度+marker 同现且
+            # source_quote 逐字等于取值格文本；定位上下文不接受为证据
+            verbatim_ok = len(quote) >= 3 and any(
+                quote in _norm_ws(line) for line in verbatim_lines
+            )
+            composite_ok = any(
+                focus_evidence_composite_bound(entry, rendered_req)
+                and quote == _norm_ws(entry.get("marker") or entry["text"])
+                for entry in composite_entries
+            )
+            if not (verbatim_ok or composite_ok):
                 continue
         key = _req_key(req)
         if not key or key in seen:

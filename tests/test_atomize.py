@@ -214,7 +214,12 @@ class AtomizeTableTests(unittest.TestCase):
         marker_cell = cell_by_id["TBL-000001-R000002-C000002"]
         self.assertEqual(marker_cell["leaf_kind"], "cell")
         self.assertEqual(marker_cell["header_path"], ["Mode A"])
-        self.assertEqual(marker_cell["row_header_context"], ["Encryption"])
+        # B1：前置标识格带列头（Header=Value）；结构化条目保留纯值供 subject 提取
+        self.assertEqual(marker_cell["row_header_context"], ["Feature=Encryption"])
+        self.assertEqual(
+            marker_cell["row_header_entries"],
+            [{"header": "Feature", "value": "Encryption"}],
+        )
         note_cell = cell_by_id["TBL-000001-R000002-C000004"]
         self.assertEqual(note_cell["leaf_kind"], "context")
 

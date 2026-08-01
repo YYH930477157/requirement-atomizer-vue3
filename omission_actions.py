@@ -18,6 +18,7 @@ from threading import RLock
 from typing import Any, Iterator
 
 from io_utils import read_jsonl, read_jsonl_recover_torn_tail
+from table_structure import is_positive_marker
 
 
 OMISSION_STATES = "omission_states.jsonl"
@@ -718,11 +719,21 @@ def _append_patch_once(out_dir: Path, patch: dict[str, Any]) -> dict[str, Any]:
     return patch
 
 
-def _claim_focus_lines(root: Path, focus: dict[str, Any]) -> list[str]:
+def _claim_focus_evidence(root: Path, focus: dict[str, Any]) -> list[dict[str, Any]]:
+    """结构化 focus evidence（claim-focus-critique-v3）。
+
+    角色三分：
+    - verbatim_evidence：可引用证据——source_quote 只准逐字取自这些条目；
+    - prompt_context：定位上下文（表标题/列头路径/行头上下文）——只供定位，引用闸与
+      输出绑定闸都不接受它（v1 把上下文与正文混在同一 focus_lines，模型回显
+      "Feature=Encryption" 即可通过闸门同时编造无证据描述）；
+    - composite_matrix_fact：矩阵 marker 格——主体+维度+marker 三者同现才成立，
+      不能只匹配任一片段。
+    """
     kind = str(focus.get("kind") or "")
     if kind in {"text_span", "list_item"}:
         text = str(focus.get("text") or "").strip()
-        return [text] if text else []
+        return [{"role": "verbatim_evidence", "text": text}] if text else []
     if kind == "table_item":
         fields = [
             f"{str(field.get('name') or '').strip()}: "
@@ -732,14 +743,18 @@ def _claim_focus_lines(root: Path, focus: dict[str, Any]) -> list[str]:
             and (str(field.get("name") or "").strip()
                  or str(field.get("value") or "").strip())
         ]
-        return [" | ".join(fields)] if fields else []
+        return (
+            [{"role": "verbatim_evidence", "text": " | ".join(fields)}]
+            if fields
+            else []
+        )
     if kind == "table_data_rows":
         block = _block_by_id(root, str(focus.get("block_id") or ""))
         rows = list(block.get("data_rows") or [])
         header_rows = int(block.get("header_row_count") or 0)
         start = int(focus.get("row_start") or 0) - header_rows
         end = int(focus.get("row_end") or 0) - header_rows
-        lines: list[str] = []
+        entries: list[dict[str, Any]] = []
         for row in rows[max(0, start):max(0, end)]:
             if isinstance(row, dict):
                 values = [f"{key}: {row[key]}" for key in sorted(row)]
@@ -749,9 +764,76 @@ def _claim_focus_lines(root: Path, focus: dict[str, Any]) -> list[str]:
                 values = [str(row or "")]
             line = " | ".join(value.strip() for value in values if value.strip())
             if line:
-                lines.append(line)
-        return lines
+                entries.append({"role": "verbatim_evidence", "text": line})
+        return entries
+    if kind == "table_cell":
+        # cell claim 的抽取证据 = 确定性上下文（表标题/列头路径/行头上下文，仅定位）
+        # + 逐字格句（可引用）或矩阵复合事实（marker 格，三者同现）。
+        # text 已是按 cell_start/cell_end 切好的义务句，此处不再切片。
+        text = str(focus.get("text") or "").strip()
+
+        def _context_part(value: Any) -> str:
+            # header_path/row_header_context 在 focus adapter 里是 list[str]——直接 str()
+            # 会把 Python repr（"['Behavior']"）泄漏进付费 prompt；按序列渲染，兼容 string。
+            if isinstance(value, (list, tuple)):
+                return " | ".join(
+                    str(item or "").strip()
+                    for item in value
+                    if str(item or "").strip()
+                )
+            return str(value or "").strip()
+
+        entries = []
+        for context_kind, part in (
+            ("table_title", _context_part(focus.get("table_title"))),
+            ("header_path", _context_part(focus.get("header_path"))),
+            ("row_header_context", _context_part(focus.get("row_header_context"))),
+        ):
+            if part:
+                entries.append({
+                    "role": "prompt_context",
+                    "context_kind": context_kind,
+                    "text": part,
+                })
+        if not text:
+            return entries
+        if is_positive_marker(text):
+            # 矩阵 marker 格：裸 "X" 不是可引用句——事实 = 主体×维度×取值 复合。
+            # 主体取行头上下文末条（离该格最近的对象名），维度取列头路径末条
+            row_context = [
+                str(value or "").strip()
+                for value in (focus.get("row_header_context") or [])
+                if str(value or "").strip()
+            ]
+            header_path = [
+                str(value or "").strip()
+                for value in (focus.get("header_path") or [])
+                if str(value or "").strip()
+            ]
+            subject = row_context[-1] if row_context else ""
+            entries.append({
+                "role": "composite_matrix_fact",
+                "text": text,
+                "subject": subject,
+                # 主体值部分（"Feature=Encryption" 的对象名 "Encryption"）——
+                # 绑定判定的匹配面，完整 "Header=Value" 保留供审计
+                "subject_value": subject.rsplit("=", 1)[-1].strip() if "=" in subject else subject,
+                "dimension": header_path[-1] if header_path else "",
+                "marker": text,
+            })
+        else:
+            entries.append({"role": "verbatim_evidence", "text": text})
+        return entries
     return []
+
+
+def _focus_evidence_lines(evidence: list[dict[str, Any]]) -> list[str]:
+    """持久化/展示用的扁平行（保持旧 focus_lines 形态可读；判定语义一律走结构化条目）。"""
+    return [
+        str(entry.get("text") or "").strip()
+        for entry in evidence
+        if str(entry.get("text") or "").strip()
+    ]
 
 
 def _claim_output_scope_guard(
@@ -759,13 +841,25 @@ def _claim_output_scope_guard(
     *,
     block_id: str,
     section_block_ids: set[str],
-    focus_lines: list[str],
+    focus_lines: list[str] | None = None,
+    focus_evidence: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Reject a claim repair that edits evidence outside its focused source."""
-    normalized_focus = [
-        " ".join(value.split()).casefold()
-        for value in focus_lines
-        if len(" ".join(str(value or "").split())) >= 3
+    """Reject a claim repair that edits evidence outside its focused source.
+
+    v2（P0-3）：输出绑定只认可引用证据与矩阵复合事实——定位上下文
+    （行头/列头）从绑定片段集合中剔除，回显 "Feature=Encryption" 不再能
+    冒充"输出绑定了证据"；矩阵事实要求主体+维度+marker 三者同现。"""
+    import ai_extract
+
+    evidence = ai_extract.normalize_focus_evidence(focus_lines, focus_evidence)
+    verbatim_fragments = [
+        " ".join(entry["text"].split()).casefold()
+        for entry in evidence
+        if entry["role"] == ai_extract.FOCUS_ROLE_VERBATIM
+        and len(" ".join(entry["text"].split())) >= 3
+    ]
+    composite_entries = [
+        entry for entry in evidence if entry["role"] == ai_extract.FOCUS_ROLE_COMPOSITE
     ]
     for row in upserts:
         source_ids = {
@@ -776,18 +870,26 @@ def _claim_output_scope_guard(
                 "claim extraction produced a requirement outside the focused source block"
             )
         rendered = " ".join(
-            json.dumps(row, ensure_ascii=False, sort_keys=True).split()
+            json.dumps(
+                {k: v for k, v in row.items() if k != "source_quote"},
+                ensure_ascii=False, sort_keys=True,
+            ).split()
         ).casefold()
-        if normalized_focus and not any(
+        bound = any(
             fragment in rendered or rendered in fragment
-            for fragment in normalized_focus
-        ):
+            for fragment in verbatim_fragments
+        ) or any(
+            ai_extract.focus_evidence_composite_bound(entry, rendered)
+            for entry in composite_entries
+        )
+        if not bound and (verbatim_fragments or composite_entries):
             # Table adapters often carry one field per fragment rather than the
-            # complete joined row. Retaining any non-trivial field value is enough
-            # to bind the output while protected-number guards remain in force.
+            # complete joined row. Retaining any non-trivial VERBATIM field value
+            # is enough to bind the output while protected-number guards remain
+            # in force; prompt_context 片段永远不得充当绑定依据（P0-3）。
             pieces = {
                 " ".join(piece.split()).casefold()
-                for line in normalized_focus
+                for line in verbatim_fragments
                 for piece in line.split("|")
                 if len(" ".join(piece.split())) >= 3
             }
@@ -873,9 +975,10 @@ def _targeted_reextract_claim(
             )
         ]
         existing = copy.deepcopy(existing_original)
-        focused = _claim_focus_lines(root, focus)
-        if not focused:
+        focused_evidence = _claim_focus_evidence(root, focus)
+        if not focused_evidence:
             raise ValueError("claim focus has no extractable evidence")
+        focused = _focus_evidence_lines(focused_evidence)
 
         config = execution.get("resolved_route_config")
         if config is None:
@@ -905,6 +1008,7 @@ def _targeted_reextract_claim(
             context_ints,
             focus_lines=focused,
             strict_focus=True,
+            focus_evidence=focused_evidence,
         )
 
         strategy_fp = claim_supplement_strategy_fingerprint(
@@ -934,7 +1038,7 @@ def _targeted_reextract_claim(
             upserts,
             block_id=block_id,
             section_block_ids=section_block_ids,
-            focus_lines=focused,
+            focus_evidence=focused_evidence,
         )
 
         # The second CAS is deliberately after the paid response and immediately
@@ -999,6 +1103,9 @@ def _targeted_reextract_claim(
             "model": config.model,
             "focus": copy.deepcopy(focus),
             "focus_lines": focused,
+            # v2（P0-3）：结构化证据随补丁持久化（上下文/可引用/矩阵复合的角色
+            # 边界可审计）；focus_lines 扁平行保留供展示与旧消费者兼容
+            "focus_evidence": copy.deepcopy(focused_evidence),
             "origin": origin,
             "upserts": upserts,
             "preconditions": preconditions,

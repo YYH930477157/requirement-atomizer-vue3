@@ -133,10 +133,24 @@ class RowExpansionTests(unittest.TestCase):
         """合并单元格展开成全同值的分组标题行不是需求（STO 实证"3. TECHNICAL REQUIREMENTS"×N列）。"""
         block = _param_block()
         block["data_rows"].insert(0, ["2. PARAMETERS"] * 3)
+        block["columns"] = 3
+        block["merge_ranges"] = [[2, 1, 2, 3]]
         block["text"] = render_table_text(block["headers"], block["data_rows"])
         result = _supplement_parameter_table_rows([], [block])
         self.assertEqual(len(result), 3)
         self.assertNotIn("2. PARAMETERS", [row["title"] for row in result])
+
+    def test_unmerged_repeated_values_are_not_silently_discarded(self) -> None:
+        block = _param_block()
+        block["data_rows"].insert(0, ["2. PARAMETERS"] * 3)
+        block["columns"] = 3
+        block["merge_ranges"] = []
+        block["text"] = render_table_text(block["headers"], block["data_rows"])
+
+        result = _supplement_parameter_table_rows([], [block])
+
+        self.assertEqual(len(result), 4)
+        self.assertIn("2. PARAMETERS", [row["title"] for row in result])
 
     def test_multi_level_index_not_used_as_title(self) -> None:
         """多级节号（3.1.1）是编号不是名称——标题取真实名称单元格。"""

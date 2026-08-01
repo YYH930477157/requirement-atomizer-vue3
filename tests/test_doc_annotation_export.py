@@ -240,29 +240,41 @@ class DocAnnotationExportTests(unittest.TestCase):
             second["rect"]["left"],
         )
 
+    @staticmethod
+    def _current_table(matrix: list[list[str]]) -> tuple[dict, list[dict], list[dict]]:
+        """当前版本（table-structure-v2+）表格块——迁移门只认此结构。"""
+        from atomize import build_table_artifacts
+        from requirement_kb import KnowledgeRepository
+
+        return build_table_artifacts(
+            matrix,
+            table_id="TBL-000001",
+            block_id="TB1",
+            order=1,
+            table_title="",
+            section_path=["4 Functions"],
+            knowledge_bases=KnowledgeRepository.from_paths([]),
+        )
+
     def test_table_claim_uses_data_row_card_and_pdf_row_geometry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
-            table = _block(
-                "TB1", "Name | Value\nA | 10 V", block_type="table",
-                headers=["Name", "Value"], header_row_count=1,
-                header_rows=[["Name", "Value"]], data_rows=[["A", "10 V"]],
+            table, items, cells = self._current_table([["Name", "Value"], ["A", "10 V"]])
+            catalog = claim_catalog.build_claim_catalog(
+                [table], items, table_cell_items=cells
             )
-            item = {"item_id": "T1-R2", "table_block_id": "TB1", "row_index": 2,
-                    "fields": {"Name": "A", "Value": "10 V"},
-                    "section_path": ["4 Functions"]}
-            catalog = claim_catalog.build_claim_catalog([table], [item])
             claim_id = catalog["catalog"][0]["claim_id"]
             claim_artifacts.atomic_write_jsonl(out / "blocks.jsonl", [table])
-            claim_artifacts.atomic_write_jsonl(out / "table_items.jsonl", [item])
+            claim_artifacts.atomic_write_jsonl(out / "table_items.jsonl", items)
+            claim_artifacts.atomic_write_jsonl(out / "table_cell_items.jsonl", cells)
             claim_artifacts.atomic_write_jsonl(out / "ai_requirements.jsonl", [])
-            ai_extract.write_ai_requirements_metadata(out, input_fingerprint="annotation-v13")
+            ai_extract.write_ai_requirements_metadata(out, input_fingerprint="annotation-v15")
             shadow = claim_ledger.build_shadow_ledger(catalog, [])
             claim_artifacts.publish_shadow_generation(
-                out, catalog, shadow, run_id="annotation-v13-table",
+                out, catalog, shadow, run_id="annotation-v15-table",
                 requirements_sha256=claim_artifacts.file_sha256(out / "ai_requirements.jsonl"),
             )
-            claim_review_actions.fold_effective_ledger(out, actor_trigger="annotation-v13-table")
+            claim_review_actions.fold_effective_ledger(out, actor_trigger="annotation-v15-table")
             optimized = dae.render_annotation_html(out, layout_mode="optimized")
             region = {"page_number": 2, "bbox": [60, 200, 540, 230],
                       "page_width": 600, "page_height": 800}
@@ -277,22 +289,26 @@ class DocAnnotationExportTests(unittest.TestCase):
         self.assertIn(f'data-claim-id="{claim_id}"', original)
         self.assertIn('data-row-index="1"', original)
 
-    def test_table_fallback_claim_maps_rows_in_both_layouts(self) -> None:
+    def test_table_row_claims_map_rows_in_both_layouts(self) -> None:
+        # 当前结构表的逐行 claim 行映射（optimized + pdf_original 双布局）。
+        # 旧 table_fallback claim 只存在于 legacy 结构表——F6 迁移门拒折旧结构 base,
+        # 该路径不再可达，本用例以逐行 claim 守住双布局行映射契约
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
-            table = _block(
-                "TB1", "truncated display", block_type="table",
-                headers=["Name", "Value"], header_row_count=1,
-                header_rows=[["Name", "Value"]],
-                data_rows=[["A", "10 V"], ["B", "20 V"]],
+            table, items, cells = self._current_table(
+                [["Name", "Value"], ["A", "10 V"], ["B", "20 V"]]
             )
-            catalog = claim_catalog.build_claim_catalog([table], [])
-            claim_id = catalog["catalog"][0]["claim_id"]
+            catalog = claim_catalog.build_claim_catalog(
+                [table], items, table_cell_items=cells
+            )
+            claim_ids = [row["claim_id"] for row in catalog["catalog"]]
+            self.assertEqual(len(claim_ids), 2)
             claim_artifacts.atomic_write_jsonl(out / "blocks.jsonl", [table])
-            claim_artifacts.atomic_write_jsonl(out / "table_items.jsonl", [])
+            claim_artifacts.atomic_write_jsonl(out / "table_items.jsonl", items)
+            claim_artifacts.atomic_write_jsonl(out / "table_cell_items.jsonl", cells)
             _publish(out, catalog)
             claim_review_actions.fold_effective_ledger(
-                out, actor_trigger="annotation-v13-table-fallback"
+                out, actor_trigger="annotation-v15-table-rows"
             )
             optimized = dae.render_annotation_html(out, layout_mode="optimized")
             regions = {
@@ -308,12 +324,131 @@ class DocAnnotationExportTests(unittest.TestCase):
                 pdf_geometry={}, pdf_row_geometry={"TB1": regions},
             )
 
-        record = self._claims_from_html(optimized)[0]
-        self.assertEqual(record["data_row_indexes"], [1, 2])
-        self.assertGreaterEqual(optimized.count(f'data-claim-id="{claim_id}"'), 2)
-        self.assertIn(f'data-claim-id="{claim_id}"', original)
+        records = self._claims_from_html(optimized)
+        self.assertEqual(
+            sorted(tuple(record["data_row_indexes"]) for record in records),
+            [(1,), (2,)],
+        )
+        for claim_id in claim_ids:
+            self.assertIn(f'data-claim-id="{claim_id}"', optimized)
+            self.assertIn(f'data-claim-id="{claim_id}"', original)
         self.assertIn('data-row-index="1"', original)
         self.assertIn('data-row-index="2"', original)
+
+    def test_table_cell_claims_reach_records_payload_and_cells_index(self) -> None:
+        """P0-2 真实链路：catalog→publish→fold→annotation 全程 table_cell claim 不得丢失。
+
+        修复前 `_claim_annotation_state` 的 cell 分支 `continue` 跳过公共
+        records.append——catalog_cell_claims=2 而 claim_records/claim_zones 全为 0，
+        前端只能消费手工 mock 的数据。本测试用真实 catalog/publish/fold 驱动，
+        断言三个消费面（state records、应用内 payload、导出 HTML claims_json）。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            table, items, cells = self._current_table([
+                ["Feature", "Behavior", "Note"],
+                ["Encryption",
+                 "The meter shall authenticate all clients. "
+                 "The meter shall log authentication failures.",
+                 "see below"],
+                ["Signing", "The meter shall sign responses.", "free text"],
+            ])
+            catalog = claim_catalog.build_claim_catalog(
+                [table], items, table_cell_items=cells
+            )
+            cell_claims = [
+                row for row in catalog["catalog"] if row["source_kind"] == "table_cell"
+            ]
+            # 夹具守门：结构变化使 cell claim 归零时必须先修夹具，不许空断言放行
+            formal_cell_claims = [
+                row for row in cell_claims if row["eligibility"] == "claim"
+            ]
+            excluded_candidates = [
+                row for row in cell_claims if row["eligibility"] == "excluded"
+            ]
+            self.assertEqual(len(formal_cell_claims), 2)
+            self.assertEqual(len(excluded_candidates), 1)
+            self.assertEqual(
+                excluded_candidates[0]["exclusion"]["reason"],
+                "unsignaled_table_cell",
+            )
+            claim_artifacts.atomic_write_jsonl(out / "blocks.jsonl", [table])
+            claim_artifacts.atomic_write_jsonl(out / "table_items.jsonl", items)
+            claim_artifacts.atomic_write_jsonl(out / "table_cell_items.jsonl", cells)
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(
+                out, actor_trigger="annotation-v16-cell-records"
+            )
+
+            state = dae._claim_annotation_state(out, [table])
+            state_cell_records = [
+                row for row in state["records"] if row["source_kind"] == "table_cell"
+            ]
+            self.assertEqual(
+                sorted(row["claim_id"] for row in state_cell_records),
+                sorted(row["claim_id"] for row in cell_claims),
+            )
+            for record in state_cell_records:
+                self.assertTrue(record["mapped"])
+                self.assertIn("table_cell_id", record)
+                self.assertIn("header_path", record)
+            self.assertEqual(
+                sorted(row["claim_id"] for row in state["cells_by_block"].get("TB1", [])),
+                sorted(row["claim_id"] for row in cell_claims),
+            )
+
+            payload = dae.build_pdf_annotation_payload(out)
+            payload_cell_records = [
+                row for row in payload["claim_records"]
+                if row["source_kind"] == "table_cell"
+            ]
+            self.assertEqual(
+                sorted(row["claim_id"] for row in payload_cell_records),
+                sorted(row["claim_id"] for row in cell_claims),
+            )
+
+            rendered = dae.render_annotation_html(out, layout_mode="optimized")
+            html_cell_records = [
+                row for row in self._claims_from_html(rendered)
+                if row["source_kind"] == "table_cell"
+            ]
+            self.assertEqual(
+                sorted(row["claim_id"] for row in html_cell_records),
+                sorted(row["claim_id"] for row in cell_claims),
+            )
+
+            # P1-3：静态审核 HTML 按物理 R×C 在 <td> 内渲染 cell claim 入口——
+            # 两条 cell claim 同属 Encryption 行的 Behavior 格（locator R2-C2，数据行 1）
+            formal_cell_ids = {
+                row["locator"]["table_cell_id"] for row in formal_cell_claims
+            }
+            candidate_cell_ids = {
+                row["locator"]["table_cell_id"] for row in excluded_candidates
+            }
+            self.assertEqual(len(formal_cell_ids), 1)
+            self.assertEqual(len(candidate_cell_ids), 1)
+            cell_id = next(iter(formal_cell_ids))
+            candidate_cell_id = next(iter(candidate_cell_ids))
+            self.assertNotEqual(cell_id, candidate_cell_id)
+            chip_cells = re.findall(
+                r'class="claim-cell-chip [^"]*"[^>]*data-table-cell-id="([^"]+)"',
+                rendered,
+            )
+            self.assertEqual(
+                sorted(chip_cells),
+                sorted([cell_id, cell_id, candidate_cell_id]),
+            )
+            for row in cell_claims:
+                self.assertIn(f'data-claim-id="{row["claim_id"]}"', rendered)
+            # 落在正确 <td>：Encryption 数据行（第 2 个 <tr>）的 Behavior 格内
+            body_rows = re.findall(r"<tr[^>]*>(.*?)</tr>", rendered, re.DOTALL)
+            encryption_row = next(
+                row_html for row_html in body_rows if "Encryption" in row_html
+            )
+            tds = re.findall(r"<td>(.*?)</td>", encryption_row, re.DOTALL)
+            self.assertIn("claim-cell-chip", tds[1])
+            self.assertIn("claim-cell-chip", tds[2])
+            self.assertNotIn("claim-cell-chip", tds[0])
 
     def test_full_html_uses_committed_claim_distribution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2144,7 +2279,9 @@ class MarkerTranslationTests(unittest.TestCase):
         import desktop_tasks
 
         producer = desktop_tasks.stage_producer("export-annotation-html")
-        self.assertIn("doc_annotation_export/v14-claim-distribution-claim-focus", producer)
+        # v16 阶段戳（P0-2/P1-3：cell claim 进入 records/zones + 静态 HTML 按
+        # 物理 R×C 渲染 claim 入口）——随 P0-2 修复从 v15 升位，两处钉串同源
+        self.assertIn("doc_annotation_export/v16-cell-claim-projection", producer)
         self.assertIn(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION, producer)
         self.assertIn(dae.ANNOTATION_TRANSLATION_GUARDS_VERSION, producer)
 

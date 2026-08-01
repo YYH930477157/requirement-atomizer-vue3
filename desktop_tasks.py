@@ -527,13 +527,27 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
 
 
 STAGE_IMPLEMENTATION_REVISIONS = {
+    # v12：table-structure-v6 候选闭环（未类型化冒号规格与拒收矩阵 marker
+    # 进入可操作 cell 审核面）——leaf plan/catalog 输入变化，全部输入须重解析
+    # v11：table-structure-v5 证据契约（受控矩阵轴、当前 PDF 无 merge 几何不再
+    # 启用旧 group-header 启发式、类型化 colon_spec 资格）——结构与 claims 变化，
+    # 全部输入须重解析
+    # v10：table-structure-v4 复审闭环（正向 matrix_dimension_evidence 取代黑名单、
+    # merge 证据 [] 与 None 显式区分、单格无结构证据行转 ambiguous_structure_cells
+    # 候选、other 表资格按强义务信号授权）——blocks/table_items/cells 变化，
+    # 全部输入须重解析
+    # v9：table-structure-v3 审核闭环（结构角色/内容资格解耦为 structural_role ×
+    # obligation_signal × 内容守恒三维、同行义务句携前置标识格 Header=Value 上下文、
+    # 合成表头/处置列矩阵闸、同格重复句去重、xlsx sheet 守恒计数器 + 无缓存公式
+    # fail-closed、合并格被覆盖文本逐字校验、PDF 几何冲突显式状态）——blocks/
+    # table_items/cells 变化，全部输入须重解析
     # v8：table-structure-v2（cell 级闭环 + table_cell_items.jsonl + 标题/表头确定性识别
     # + merge 证据）——blocks/table_items 结构面变化，全部输入须重解析
     # v7：render_table_text 取消 20 行截断（大参数表 21 行起内容进不了管线,STO 实证）
     # v6：表格块扁平文本取消 [:5000] 截断（初始提交遗留）——大参数表 88% 内容此前
     # 进不了抽取管线（STO/俄标实证）；blocks 内容变化,docx 输入须重解析
     # v5：PDF 清单段合并（名词式清单项并整段，微块可锚定）——块结构变化，PDF 输入须重解析
-    "atomize": "v8",
+    "atomize": "v12",
     # v6：cell 级 assemble 输入（cells source_block）+ 权威 row/cell ID 去重键 + 发布断言
     # ——section/unit 文本与 source_blocks 结构变,旧 ai-extract 缓存失效重抽
     # v5：表格行级化(封堵一 chunk 表头注入 + 行级 source_blocks/rows + 封堵二去重 + 封堵三澄清聚合)
@@ -557,11 +571,18 @@ _STAGE_BASE_PRODUCERS = {
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v8-param-row-aggregate",
     "compose": "engineering_composer/v1",
-    # v14-claim-distribution-claim-focus：cell 级闭环（cell claim 记录/几何/卡片）
+    # v16-cell-claim-projection：P0-2 cell claim 落公共 records（claims_json/claim_zones
+    # 不再丢失生产 table_cell claim）+ P1-3 静态 HTML 按物理 R×C/merge anchor 在
+    # <th>/<td> 内渲染 cell claim 入口
+    # + v15-cell-merge-span-context：cell_context 增 row_span/column_span/
+    # covered_coordinates（UI 标题/表头 cell 按钮 + 合并跨度 DOM 渲染）
+    # + table_cell claim 几何热区真实落页（消费 cell bbox 记录）+ 不可用负载
+    # 也携 cell_context（非影印模式可取上下文）
+    # + v14-claim-distribution-claim-focus：cell 级闭环（cell claim 记录/几何/卡片）
     # + v13 三线联合戳——v13=行区占比切片互斥（远端 rowcell）
     # + claim-distribution（Phase 1 块级角标）+ claim-focus（Phase 1.5 claim span/row 级定位，
     # 经 claim_focus 确定性映射）——三侧缓存产物一并失效；v12=表格行级热区、v11=几何回填
-    "export-annotation-html": "doc_annotation_export/v14-claim-distribution-claim-focus",
+    "export-annotation-html": "doc_annotation_export/v16-cell-claim-projection",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }

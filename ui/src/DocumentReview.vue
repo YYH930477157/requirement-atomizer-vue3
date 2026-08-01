@@ -603,17 +603,110 @@ function claimsForDataRow(blockId: string, rowIndex: number): ClaimAnnotationRec
     (claim) => (claim.data_row_indexes || []).includes(rowIndex),
   )
 }
-// v14 cell 级：block+数据区行列 → cell_context 条目索引（DOM 数据格定位用）
-const cellContextIndex = computed(() => {
+// v15 cell 级：block+物理 R×C 全量 cell_context 索引——标题/表头/数据格全覆盖
+//（v14 只索引 data_row_index 非空的格,标题/表头 cell claim 在 UI 不可达）
+const cellContextByPhysical = computed(() => {
   const index = new Map<string, PdfCellContext>()
   for (const entry of Object.values(pdfData.value?.cell_context || {})) {
-    if (!entry || entry.data_row_index == null) continue
-    index.set(`${entry.block_id}:D${entry.data_row_index}C${entry.column_index}`, entry)
+    if (!entry) continue
+    index.set(`${entry.block_id}:R${entry.row_index}C${entry.column_index}`, entry)
   }
   return index
 })
-function cellContextFor(blockId: string, dataRowIndex: number, columnIndex: number): PdfCellContext | null {
-  return cellContextIndex.value.get(`${blockId}:D${dataRowIndex}C${columnIndex}`) || null
+// 每个 block 的 covered 坐标集（合并覆盖格）：不渲染独立 td、不可点
+const coveredCellIndex = computed(() => {
+  const map = new Map<string, Set<string>>()
+  for (const entry of Object.values(pdfData.value?.cell_context || {})) {
+    if (!entry) continue
+    let set = map.get(entry.block_id)
+    if (!set) {
+      set = new Set<string>()
+      map.set(entry.block_id, set)
+    }
+    for (const pair of entry.covered_coordinates || []) {
+      if (Array.isArray(pair) && pair.length === 2) set.add(`R${pair[0]}C${pair[1]}`)
+    }
+  }
+  return map
+})
+// 数据区行号 → 物理行（优先 cell_context 实测对照,旧产物按 标题数+表头数 顺序回退）
+const dataRowPhysicalIndex = computed(() => {
+  const map = new Map<string, Map<number, number>>()
+  for (const entry of Object.values(pdfData.value?.cell_context || {})) {
+    if (!entry || entry.data_row_index == null) continue
+    let rows = map.get(entry.block_id)
+    if (!rows) {
+      rows = new Map<number, number>()
+      map.set(entry.block_id, rows)
+    }
+    rows.set(entry.data_row_index, entry.row_index)
+  }
+  return map
+})
+function headerPhysicalRow(b: DocumentBlock, hi: number): number {
+  const indexes = b.header_row_indexes || []
+  if (indexes.length > hi) return indexes[hi]
+  return (b.title_row_indexes || []).length + hi + 1
+}
+function dataPhysicalRow(b: DocumentBlock, dataRowIndex: number): number {
+  const measured = dataRowPhysicalIndex.value.get(b.block_id)?.get(dataRowIndex)
+  if (measured) return measured
+  const titles = (b.title_row_indexes || []).length
+  const headers = (b.header_row_indexes || []).length || (b.header_rows || []).length
+  return titles + headers + dataRowIndex
+}
+type GridCell = {
+  text: string
+  colIndex: number
+  physicalRow: number
+  entry: PdfCellContext | null
+  colspan: number
+  rowspan: number
+}
+// 一行渲染描述：covered 坐标不渲染（anchor 的 colspan/rowspan 已覆盖其面积），
+// 其余格带 cell_context 条目（有则渲染 cell 按钮）与真实合并跨度
+function gridRowCells(b: DocumentBlock, row: string[], physicalRow: number): GridCell[] {
+  const covered = coveredCellIndex.value.get(b.block_id)
+  const cells: GridCell[] = []
+  row.forEach((text, ci) => {
+    const colIndex = ci + 1
+    if (covered?.has(`R${physicalRow}C${colIndex}`)) return
+    const entry = cellContextByPhysical.value.get(`${b.block_id}:R${physicalRow}C${colIndex}`) || null
+    cells.push({
+      text,
+      colIndex,
+      physicalRow,
+      entry,
+      colspan: Math.max(1, entry?.column_span || 1),
+      rowspan: Math.max(1, entry?.row_span || 1),
+    })
+  })
+  return cells
+}
+// 标题行 cell（title role）：figcaption 旁渲染 cell 按钮,标题格 claim 不再不可达
+function titleCellsFor(b: DocumentBlock): PdfCellContext[] {
+  const rows = new Set(b.title_row_indexes || [])
+  return Object.values(pdfData.value?.cell_context || {})
+    .filter((entry) => entry && entry.block_id === b.block_id
+      && (rows.size ? rows.has(entry.row_index) : entry.structural_role === "title"))
+    .sort((x, y) => x.row_index - y.row_index || x.column_index - y.column_index)
+}
+// 整表网格模型缓存：blocks/cell_context 变化时整表重算一次,模板不再逐格重复扫描
+type TableGrid = { headerRows: GridCell[][]; bodyRows: GridCell[][] }
+const tableGrids = computed(() => {
+  const grids = new Map<string, TableGrid>()
+  for (const b of blocks.value) {
+    if (b.type !== "table") continue
+    const headerRows = (b.header_rows || []).map((hr, hi) =>
+      gridRowCells(b, padRow(b, hr), headerPhysicalRow(b, hi)))
+    const bodyRows = (b.data_rows || []).map((row, ri) =>
+      gridRowCells(b, padRow(b, row), dataPhysicalRow(b, ri + 1)))
+    grids.set(b.block_id, { headerRows, bodyRows })
+  }
+  return grids
+})
+function tableGridFor(b: DocumentBlock): TableGrid {
+  return tableGrids.value.get(b.block_id) || { headerRows: [], bodyRows: [] }
 }
 function claimsForCell(cellId: string): ClaimAnnotationRecord[] {
   return (pdfData.value?.claim_records || []).filter((claim) => claim.table_cell_id === cellId)
@@ -1552,17 +1645,42 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
               >{{ reqNumber(r) }} · {{ moduleOf(r) }}</button>
             </div>
             <figure v-if="isTable(b)" class="doc-table" data-testid="doc-table">
-              <figcaption v-if="b.table_title">{{ b.table_title }}<span v-if="b.table_source === 'text_layout'" class="table-badge">无画线重建</span></figcaption>
+              <figcaption v-if="b.table_title || titleCellsFor(b).length"><template
+                v-if="titleCellsFor(b).length"><button
+                v-for="titleCell in titleCellsFor(b)" :key="titleCell.cell_id"
+                type="button"
+                class="cell-btn title-cell-btn"
+                :class="{ 'has-claims': claimsForCell(titleCell.cell_id).length, 'cell-sel': titleCell.cell_id === selectedCellKey }"
+                :data-testid="`cell-${b.block_id}-R${titleCell.row_index}-C${titleCell.column_index}`"
+                :title="`单元格 R${titleCell.row_index}C${titleCell.column_index} · ${titleCell.cell_id}`"
+                @click.stop="selectCellCard(titleCell.cell_id)"
+              >{{ titleCell.text || b.table_title }}</button></template><template
+                v-else>{{ b.table_title }}</template><span v-if="b.table_source === 'text_layout'" class="table-badge">无画线重建</span></figcaption>
               <div class="table-scroll">
                 <table>
-                  <thead v-if="(b.header_rows || []).length">
-                    <tr v-for="(hr, hi) in b.header_rows" :key="hi"><th v-for="(c, ci) in padRow(b, hr)" :key="ci">{{ c }}</th></tr>
+                  <thead v-if="tableGridFor(b).headerRows.length">
+                    <tr v-for="(headerCells, hi) in tableGridFor(b).headerRows" :key="hi"><th
+                        v-for="cell in headerCells" :key="cell.colIndex"
+                        :colspan="cell.colspan > 1 ? cell.colspan : undefined"
+                        :rowspan="cell.rowspan > 1 ? cell.rowspan : undefined"
+                        :class="{ 'cell-hot': cell.entry, 'cell-sel': cell.entry && cell.entry.cell_id === selectedCellKey }"><template
+                        v-if="cell.entry"><button
+                        type="button"
+                        class="cell-btn"
+                        :class="{ 'has-claims': claimsForCell(cell.entry.cell_id).length }"
+                        :data-testid="`cell-${b.block_id}-R${cell.physicalRow}-C${cell.colIndex}`"
+                        :title="`单元格 R${cell.physicalRow}C${cell.colIndex} · ${cell.entry.cell_id}`"
+                        @click.stop="selectCellCard(cell.entry.cell_id)"
+                      >{{ cell.text }}</button></template><template v-else>{{ cell.text }}</template></th></tr>
                   </thead>
                   <tbody>
-                    <tr v-for="(row, ri) in b.data_rows" :key="ri"
-                        :class="{ 'claim-table-row': claimsForDataRow(b.block_id, ri + 1).length }"><td v-for="(c, ci) in padRow(b, row)" :key="ci"
-                        :class="{ 'cell-hot': cellContextFor(b.block_id, ri + 1, ci + 1), 'cell-sel': selectedCellKey && cellContextFor(b.block_id, ri + 1, ci + 1)?.cell_id === selectedCellKey }"><button
-                      v-if="ci === 0 && props.client?.spotExtract"
+                    <tr v-for="(bodyCells, ri) in tableGridFor(b).bodyRows" :key="ri"
+                        :class="{ 'claim-table-row': claimsForDataRow(b.block_id, ri + 1).length }"><td
+                        v-for="(cell, cellIdx) in bodyCells" :key="cell.colIndex"
+                        :colspan="cell.colspan > 1 ? cell.colspan : undefined"
+                        :rowspan="cell.rowspan > 1 ? cell.rowspan : undefined"
+                        :class="{ 'cell-hot': cell.entry, 'cell-sel': cell.entry && cell.entry.cell_id === selectedCellKey }"><button
+                      v-if="cellIdx === 0 && props.client?.spotExtract"
                       type="button"
                       class="spot-extract-btn spot-row-btn"
                       :data-testid="`spot-extract-row-${b.block_id}-${ri + 1}`"
@@ -1571,15 +1689,15 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                       :aria-label="`解析此行（第 ${ri + 1} 行）`"
                       @click.stop="spotExtractBlock(b, ri + 1)"
                     ><Wand2 :size="11" aria-hidden="true" /></button><template
-                      v-if="cellContextFor(b.block_id, ri + 1, ci + 1)"><button
+                      v-if="cell.entry"><button
                       type="button"
                       class="cell-btn"
-                      :class="{ 'has-claims': claimsForCell(cellContextFor(b.block_id, ri + 1, ci + 1)!.cell_id).length }"
-                      :data-testid="`cell-${b.block_id}-${ri + 1}-${ci + 1}`"
-                      :title="`单元格 R${cellContextFor(b.block_id, ri + 1, ci + 1)!.row_index}C${ci + 1} · ${cellContextFor(b.block_id, ri + 1, ci + 1)!.cell_id}`"
-                      @click.stop="selectCellCard(cellContextFor(b.block_id, ri + 1, ci + 1)!.cell_id)"
-                    >{{ c }}</button></template><template v-else>{{ c }}</template><span
-                      v-if="ci === padRow(b, row).length - 1 && claimsForDataRow(b.block_id, ri + 1).length"
+                      :class="{ 'has-claims': claimsForCell(cell.entry.cell_id).length }"
+                      :data-testid="`cell-${b.block_id}-R${cell.physicalRow}-C${cell.colIndex}`"
+                      :title="`单元格 R${cell.physicalRow}C${cell.colIndex} · ${cell.entry.cell_id}`"
+                      @click.stop="selectCellCard(cell.entry.cell_id)"
+                    >{{ cell.text }}</button></template><template v-else>{{ cell.text }}</template><span
+                      v-if="cellIdx === bodyCells.length - 1 && claimsForDataRow(b.block_id, ri + 1).length"
                       class="claim-row-controls"><button
                         v-for="claim in claimsForDataRow(b.block_id, ri + 1)" :key="claim.claim_id"
                         type="button" class="claim-row-chip"
@@ -1679,7 +1797,7 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
       </article>
 
       <aside class="doc-detail" data-testid="doc-detail">
-        <div v-if="!selectedReq && !selectedBlock && !selectedRow && !selectedClaim" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
+        <div v-if="!selectedReq && !selectedBlock && !selectedRow && !selectedClaim && !selectedCell" class="doc-detail-empty"><MessageSquareText :size="26" :stroke-width="1.6" aria-hidden="true" /><span>点击原文段落或页边编号查看解析结果</span></div>
         <div v-else-if="selectedClaim" class="doc-detail-card" data-testid="claim-card">
           <div class="dd-head">
             <span class="dd-module">Claim Ledger</span>
@@ -2108,13 +2226,16 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 .spot-extract-btn:hover { color: #1e41c9; border-color: #1e41c9; background: #eef2ff; }
 .spot-extract-btn:disabled { cursor: wait; color: #b6c3f0; }
 .spot-row-btn { margin: 0 4px 0 0; vertical-align: middle; }
-/* v14 cell 级闭环：有 cell_context 的格可点出 cell 卡片（R×C + 双表头上下文） */
+/* v15 cell 级闭环：有 cell_context 的格可点出 cell 卡片（R×C + 双表头上下文）;
+   标题/表头格同式（th/figcaption 一并着色） */
 .cell-btn { display: inline; padding: 0 1px; border: 0; border-bottom: 1px dotted transparent;
   background: transparent; font: inherit; text-align: left; cursor: pointer; }
-td.cell-hot .cell-btn { border-bottom-color: #b6c3f0; }
-td.cell-hot .cell-btn:hover { background: #eef2ff; border-bottom-color: #1e41c9; }
-td.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
+td.cell-hot .cell-btn, th.cell-hot .cell-btn { border-bottom-color: #b6c3f0; }
+td.cell-hot .cell-btn:hover, th.cell-hot .cell-btn:hover { background: #eef2ff; border-bottom-color: #1e41c9; }
+td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
 .cell-btn.has-claims { border-bottom-color: #1d8a5c; }
+.title-cell-btn { font-weight: inherit; margin-right: 6px; }
+.title-cell-btn.cell-sel { outline: 2px solid #5978f7; outline-offset: -1px; }
 .echo-jump { display: block; margin: 3px 0; padding: 0; border: 0; background: transparent;
   color: #1d7a5b; font: inherit; text-align: left; text-decoration: underline dotted; cursor: pointer; }
 .table-omission-tag { margin-top: 4px; vertical-align: baseline; }

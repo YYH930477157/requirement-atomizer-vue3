@@ -182,6 +182,122 @@ describe("DocumentReview", () => {
     expect(wrapper.find('[data-testid="claim-card"]').exists()).toBe(false)
   })
 
+  it("reaches title/header/data cell claims and renders merge spans per contract (v15)", async () => {
+    // F9：标题/表头 cell claim 必须可点（v14 只索引数据区格,标题/表头格不可达）；
+    // 合并格按真实跨度渲染,covered 坐标不渲染独立 td、不可点
+    const client = makeClient({
+      loadDocument: vi.fn().mockResolvedValue({
+        count: 1,
+        blocks: [{
+          block_id: "T2", order: 1, type: "table", text: "Name | Requirement | Note",
+          table_title: "Table 1 - Electrical",
+          title_row_indexes: [1], header_row_indexes: [2],
+          header_rows: [["Name", "Requirement", "Note"]],
+          data_rows: [
+            ["Voltage", "The meter shall operate at 230 V.", "mandatory"],
+            ["General", "The meter shall be secure.", "The meter shall be secure."],
+          ],
+          section_path: ["4"], requirement_like: false, noise: false,
+        }],
+      }),
+      loadAiRequirements: vi.fn().mockResolvedValue([]),
+      loadPdfAnnotation: vi.fn().mockResolvedValue({
+        available: false, reason: "影印页尚未生成", pages: [],
+        requirement_markers: [], omission_markers: [], block_zones: [],
+        claim_annotation_version: "claim-annotation-v16",
+        claim_records: [
+          {
+            claim_id: "CLM-TITLE", claim_hash: "sha256:title", block_id: "T2",
+            source_kind: "table_cell", text: "Table 1 - Electrical",
+            table_cell_id: "TBL-000001-R000001-C000001",
+            eligibility: "eligible", resolution: "uncertain", mapped: true,
+            focus: { kind: "table_cell" },
+          },
+          {
+            claim_id: "CLM-HEADER", claim_hash: "sha256:header", block_id: "T2",
+            source_kind: "table_cell", text: "Requirement",
+            table_cell_id: "TBL-000001-R000002-C000002",
+            eligibility: "eligible", resolution: "covered", mapped: true,
+            focus: { kind: "table_cell" },
+          },
+          {
+            claim_id: "CLM-MERGED", claim_hash: "sha256:merged", block_id: "T2",
+            source_kind: "table_cell", text: "The meter shall be secure.",
+            table_cell_id: "TBL-000001-R000004-C000002",
+            eligibility: "eligible", resolution: "covered", mapped: true,
+            focus: { kind: "table_cell" },
+          },
+        ],
+        claim_zones: [],
+        cell_context: {
+          "T2#TBL-000001-R000001-C000001": {
+            cell_id: "TBL-000001-R000001-C000001", block_id: "T2",
+            table_title: "Table 1 - Electrical", row_index: 1, column_index: 1,
+            data_row_index: null, structural_role: "title",
+            row_span: 1, column_span: 3, covered_coordinates: [[1, 2], [1, 3]],
+            text: "Table 1 - Electrical",
+          },
+          "T2#TBL-000001-R000002-C000002": {
+            cell_id: "TBL-000001-R000002-C000002", block_id: "T2",
+            table_title: "Table 1 - Electrical", row_index: 2, column_index: 2,
+            data_row_index: null, structural_role: "header",
+            row_span: 1, column_span: 1, covered_coordinates: [],
+            text: "Requirement",
+          },
+          "T2#TBL-000001-R000003-C000001": {
+            cell_id: "TBL-000001-R000003-C000001", block_id: "T2",
+            table_title: "Table 1 - Electrical", row_index: 3, column_index: 1,
+            data_row_index: 1, structural_role: "data",
+            row_span: 1, column_span: 1, covered_coordinates: [],
+            text: "Voltage",
+          },
+          "T2#TBL-000001-R000004-C000002": {
+            cell_id: "TBL-000001-R000004-C000002", block_id: "T2",
+            table_title: "Table 1 - Electrical", row_index: 4, column_index: 2,
+            data_row_index: 2, structural_role: "data",
+            row_span: 1, column_span: 2, covered_coordinates: [[4, 3]],
+            text: "The meter shall be secure.",
+          },
+        },
+      }),
+    })
+    const wrapper = mount(DocumentReview, { props: { client, active: true } })
+    await flushPromises()
+    await wrapper.find('[data-testid="mode-text"]').trigger("click")
+
+    // 标题格按钮在 figcaption,点击开出 cell 卡并链到其 claim（此前标题格 claim 不可达）
+    const titleBtn = wrapper.find('[data-testid="cell-T2-R1-C1"]')
+    expect(titleBtn.exists()).toBe(true)
+    expect(titleBtn.text()).toContain("Table 1 - Electrical")
+    await titleBtn.trigger("click")
+    expect(wrapper.find('[data-testid="table-cell-card"]').text()).toContain("TBL-000001-R000001-C000001")
+    await wrapper.find('[data-testid="cell-claim-CLM-TITLE"]').trigger("click")
+    expect(wrapper.find('[data-testid="claim-card"]').text()).toContain("CLM-TITLE")
+
+    // 表头格按钮在 thead,点击开出 cell 卡并链到其 claim
+    const headerBtn = wrapper.find('[data-testid="cell-T2-R2-C2"]')
+    expect(headerBtn.exists()).toBe(true)
+    expect(headerBtn.element.tagName).toBe("BUTTON")
+    expect(headerBtn.element.closest("th")).toBeTruthy()
+    await headerBtn.trigger("click")
+    expect(wrapper.find('[data-testid="table-cell-card"]').text()).toContain("TBL-000001-R000002-C000002")
+    await wrapper.find('[data-testid="cell-claim-CLM-HEADER"]').trigger("click")
+    expect(wrapper.find('[data-testid="claim-card"]').text()).toContain("CLM-HEADER")
+
+    // 合并数据格：anchor td 带真实 colspan,covered 坐标不渲染独立 td
+    const bodyRows = wrapper.findAll("tbody tr")
+    expect(bodyRows[1].findAll("td").length).toBe(2)
+    const mergedBtn = wrapper.find('[data-testid="cell-T2-R4-C2"]')
+    expect(mergedBtn.exists()).toBe(true)
+    const mergedTd = mergedBtn.element.closest("td")!
+    expect(mergedTd.getAttribute("colspan")).toBe("2")
+    expect(wrapper.find('[data-testid="cell-T2-R4-C3"]').exists()).toBe(false)
+    await mergedBtn.trigger("click")
+    expect(wrapper.find('[data-testid="table-cell-card"]').text()).toContain("TBL-000001-R000004-C000002")
+    await wrapper.find('[data-testid="cell-claim-CLM-MERGED"]').trigger("click")
+    expect(wrapper.find('[data-testid="claim-card"]').text()).toContain("CLM-MERGED")
+  })
+
   it("keeps text and table claims interactive when PDF pages are unavailable", async () => {
     const client = makeClaimAnnotationClient()
     const payload = await client.loadPdfAnnotation()

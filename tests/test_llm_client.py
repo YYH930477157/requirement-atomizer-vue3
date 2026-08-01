@@ -18,7 +18,9 @@ from llm_client import (
     LLMRequestBudget,
     LLMResponseError,
     _read_error_body,
+    mark_budget_checkpoint_durable,
     chat_json,
+    _post_json,
 )
 
 
@@ -125,6 +127,116 @@ class LLMClientTests(unittest.TestCase):
         snapshot = budget.snapshot()
         self.assertEqual(snapshot["attempted_calls"], 0)
         self.assertEqual(snapshot["reserved_tokens"], 0)
+
+    def test_durable_checkpoint_failure_retains_reserved_budget(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+
+        def checkpoint(snapshot: dict) -> None:
+            if snapshot["attempted_calls"]:
+                error = OSError("second sink unavailable")
+                mark_budget_checkpoint_durable(error)
+                raise error
+
+        budget.set_checkpoint(checkpoint)
+        with self.assertRaisesRegex(OSError, "second sink unavailable"):
+            budget.reserve({"messages": [], "max_tokens": 32})
+
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["attempted_calls"], 1)
+        self.assertGreater(snapshot["reserved_tokens"], 0)
+        with self.assertRaises(LLMBudgetExceeded):
+            budget.reserve({"messages": [], "max_tokens": 32})
+
+    def test_post_response_checkpoint_failure_never_retries_paid_request(self) -> None:
+        budget = LLMRequestBudget(max_calls=2, max_tokens=100_000)
+        failed_once = False
+
+        def checkpoint(snapshot: dict) -> None:
+            nonlocal failed_once
+            if (
+                not failed_once
+                and snapshot["attempted_calls"] == 1
+                and snapshot["reserved_tokens"] == 0
+                and snapshot["tokens"] == 7
+            ):
+                failed_once = True
+                raise OSError("settled checkpoint unavailable")
+
+        budget.set_checkpoint(checkpoint)
+        responses = [
+            {"body": {**openai_response({}), "usage": {"total_tokens": 7}}},
+            {"body": {**openai_response({}), "usage": {"total_tokens": 7}}},
+        ]
+        with MockOpenAIService(responses) as service:
+            stats: dict[str, int] = {}
+            with self.assertRaisesRegex(OSError, "settled checkpoint unavailable"):
+                _post_json(
+                    LLMClientConfig(
+                        base_url=service.base_url,
+                        model="mock-model",
+                        api_key_env="",
+                        timeout_s=2,
+                        max_retries=1,
+                    ),
+                    {"model": "mock-model", "messages": [], "max_tokens": 32},
+                    _request_budget=budget,
+                    _request_stats=stats,
+                )
+
+        self.assertEqual(len(service.requests), 1)
+        self.assertEqual(stats, {"call_count": 1})
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["attempted_calls"], 1)
+        self.assertEqual(snapshot["failed_calls"], 0)
+        self.assertEqual(snapshot["tokens"], 7)
+        self.assertEqual(snapshot["reserved_tokens"], 0)
+
+    def test_checkpoint_owner_swap_blocks_reserve_until_new_owner_is_durable(self) -> None:
+        budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)
+        old_snapshots: list[int] = []
+        new_snapshots: list[int] = []
+        replacement_entered = threading.Event()
+        release_replacement = threading.Event()
+        reserve_finished = threading.Event()
+
+        def old_owner(snapshot: dict) -> None:
+            old_snapshots.append(int(snapshot["attempted_calls"]))
+
+        def new_owner(snapshot: dict) -> None:
+            calls = int(snapshot["attempted_calls"])
+            new_snapshots.append(calls)
+            if calls == 0:
+                replacement_entered.set()
+                self.assertTrue(release_replacement.wait(timeout=2))
+
+        budget.set_checkpoint(old_owner)
+        swap_thread = threading.Thread(
+            target=lambda: budget.swap_checkpoint(old_owner, new_owner)
+        )
+        swap_thread.start()
+        self.assertTrue(replacement_entered.wait(timeout=2))
+
+        reservation_ids: list[int] = []
+
+        def reserve() -> None:
+            reservation_ids.append(
+                budget.reserve({"messages": [], "max_tokens": 1})
+            )
+            reserve_finished.set()
+
+        reserve_thread = threading.Thread(target=reserve)
+        reserve_thread.start()
+        self.assertFalse(reserve_finished.wait(timeout=0.05))
+        release_replacement.set()
+        swap_thread.join(timeout=2)
+        reserve_thread.join(timeout=2)
+
+        self.assertFalse(swap_thread.is_alive())
+        self.assertFalse(reserve_thread.is_alive())
+        self.assertEqual(old_snapshots, [0])
+        self.assertEqual(new_snapshots[:2], [0, 1])
+        self.assertIs(budget.checkpoint(), new_owner)
+        budget.commit(reservation_ids[0], {"total_tokens": 1})
 
     def test_request_budget_checkpoint_tracks_reserve_and_commit(self) -> None:
         budget = LLMRequestBudget(max_calls=1, max_tokens=100_000)

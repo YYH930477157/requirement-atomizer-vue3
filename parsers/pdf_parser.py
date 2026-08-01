@@ -934,8 +934,18 @@ def extract_pdf(
                 cell_bboxes: dict[tuple[int, int], Any] | None = None
                 pdf_merge_ranges: list[tuple[int, int, int, int]] | None = None
                 geometry_kind: str | None = None
+                geometry_conflict = False
                 if kind == "ruled":
-                    cell_bboxes, pdf_merge_ranges = _pdfplumber_cell_evidence(payload[0])
+                    matrix_width = max((len(row) for row in matrix), default=0)
+                    cell_bboxes, pdf_merge_ranges, geometry_status = _pdfplumber_cell_evidence(
+                        payload[0],
+                        expected_rows=len(matrix),
+                        expected_columns=matrix_width or None,
+                    )
+                    # M1：几何矛盾（conflict）与无几何（none）显式区分——矛盾证据
+                    # 必须传播为 merge_evidence_conflict → 结构 needs_review，
+                    # 不得与"文本重建表本就无几何"同等静默
+                    geometry_conflict = geometry_status == "conflict"
                     geometry_kind = "pdfplumber_cell" if cell_bboxes else None
                 table_block, new_table_items, new_cell_items = build_table_artifacts(
                     matrix,
@@ -947,6 +957,7 @@ def extract_pdf(
                     section_path=sections.path(),
                     knowledge_bases=knowledge_bases,
                     merge_ranges=pdf_merge_ranges,
+                    merge_evidence_conflict=geometry_conflict,
                     source_format="pdf",
                     page_number=page_number,
                     cell_bboxes=cell_bboxes,
@@ -1647,35 +1658,110 @@ def _clean_table_matrix(raw_matrix: list[list[Any]] | None) -> list[list[str]]:
     return matrix
 
 
+def _cluster_boundaries(values: list[float], *, tolerance: float = 2.0) -> list[float] | None:
+    """坐标边界聚类：相近边界（≤tolerance pt）并为一簇，返回簇中心（升序）。
+
+    任何两簇中心相距仍 ≤tolerance 说明证据自相矛盾（无法形成稳定网格）→ None。"""
+    if not values:
+        return None
+    ordered = sorted(values)
+    clusters: list[list[float]] = [[ordered[0]]]
+    for value in ordered[1:]:
+        if value - clusters[-1][-1] <= tolerance:
+            clusters[-1].append(value)
+        else:
+            clusters.append([value])
+    centers = [sum(cluster) / len(cluster) for cluster in clusters]
+    for left, right in zip(centers, centers[1:]):
+        if right - left <= tolerance:
+            return None
+    return centers
+
+
 def _pdfplumber_cell_evidence(
     table: Any,
-) -> tuple[dict[tuple[int, int], list[float]] | None, list[tuple[int, int, int, int]] | None]:
+    *,
+    expected_rows: int | None = None,
+    expected_columns: int | None = None,
+) -> tuple[
+    dict[tuple[int, int], list[float]] | None,
+    list[tuple[int, int, int, int]] | None,
+    str,
+]:
     """画线表 cell 级证据：anchor 格 bbox（页面坐标）+ 合并区域（1-based 闭区间）。
 
-    pdfplumber table.cells 对合并区域只给一个大 bbox——anchor 位置由 bbox 起点落在
-    全局网格的行列序号推出；任何坐标对不齐都如实返回 None，绝不伪造精确结构。
+    返回 (cell_bboxes, merge_ranges, status)。status 三态（M1：消灭"无几何"与
+    "几何矛盾"同返 (None,None) 的歧义）：
+    - "ok"：证据完整可用；
+    - "none"：无可用证据（无 cell 矩形/网格不可判定/解析异常）——如实降级，
+      不是矛盾；
+    - "conflict"：证据存在但自相矛盾（占用冲突/覆盖空洞/维度与文本矩阵不符/
+      坐标脱网/退化矩形）——调用方必须放弃精确几何并把结构标 needs_review，
+      绝不伪造精确结构。
+    保守口径（任一不满足即整体放弃精确几何）：
+    1. 边界聚类——x/y 边界分别聚类成稳定网格；
+    2. 无重叠——每个 anchor 独占其网格矩形；
+    3. 覆盖守恒——每个网格位置恰好是一个 anchor 或被一个 merge 覆盖；
+    4. 维度匹配——网格行列数与文本矩阵一致。
     """
     try:
-        all_cells = [tuple(cell) for cell in (table.cells or []) if cell]
-        if not all_cells:
-            return None, None
-        xs = sorted({round(float(c[0]), 2) for c in all_cells} | {round(float(c[2]), 2) for c in all_cells})
-        ys = sorted({round(float(c[1]), 2) for c in all_cells} | {round(float(c[3]), 2) for c in all_cells})
+        raw_cells = [tuple(cell) for cell in (table.cells or []) if cell]
+        if not raw_cells:
+            return None, None, "none"
+        # 完全相同的 bbox 是 pdfplumber 偶发的重复输出（合法），先去重；
+        # 去重后任何占用冲突（anchor×anchor / anchor×covered / covered×anchor）
+        # 都是几何矛盾——不得把错位矩形解释成跨行跨列 merge
+        raw_cells = sorted(set(raw_cells))
+        xs = _cluster_boundaries(
+            [float(c[0]) for c in raw_cells] + [float(c[2]) for c in raw_cells]
+        )
+        ys = _cluster_boundaries(
+            [float(c[1]) for c in raw_cells] + [float(c[3]) for c in raw_cells]
+        )
+        if not xs or not ys or len(xs) < 2 or len(ys) < 2:
+            return None, None, "none"  # 网格不可判定 = 证据不足，非矛盾
+
+        def _locate(value: float, axis: list[float]) -> int | None:
+            best_index = min(range(len(axis)), key=lambda i: abs(axis[i] - value))
+            return best_index if abs(axis[best_index] - value) <= 2.0 else None
+
+        width = len(xs) - 1
+        height = len(ys) - 1
+        if expected_rows is not None and expected_rows != height:
+            return None, None, "conflict"  # 几何网格与文本矩阵维度互相矛盾
+        if expected_columns is not None and expected_columns != width:
+            return None, None, "conflict"
+
+        occupancy: dict[tuple[int, int], str] = {}
         cell_bboxes: dict[tuple[int, int], list[float]] = {}
         merge_ranges: list[tuple[int, int, int, int]] = []
-        for bbox in all_cells:
-            x0, top, x1, bottom = (round(float(v), 2) for v in bbox)
-            column_start = xs.index(x0)
-            column_end = xs.index(x1)
-            row_start = ys.index(top)
-            row_end = ys.index(bottom)
+        for bbox in raw_cells:
+            x0, top, x1, bottom = (float(v) for v in bbox)
+            if x1 <= x0 or bottom <= top:
+                return None, None, "conflict"  # 退化矩形 = 证据损坏
+            column_start = _locate(x0, xs)
+            column_end = _locate(x1, xs)
+            row_start = _locate(top, ys)
+            row_end = _locate(bottom, ys)
+            if None in (column_start, column_end, row_start, row_end):
+                return None, None, "conflict"  # 坐标脱网 = 证据内部矛盾
+            if column_end <= column_start or row_end <= row_start:
+                return None, None, "conflict"
             anchor = (row_start + 1, column_start + 1)
-            cell_bboxes[anchor] = [round(float(v), 1) for v in bbox]
+            for row in range(row_start + 1, row_end + 1):
+                for column in range(column_start + 1, column_end + 1):
+                    if (row, column) in occupancy:
+                        return None, None, "conflict"  # 占用冲突（含 anchor 落进他人 covered 区）
+                    occupancy[(row, column)] = "anchor" if (row, column) == anchor else "covered"
+            cell_bboxes[anchor] = [round(v, 1) for v in bbox]
             if (row_end - row_start) > 1 or (column_end - column_start) > 1:
                 merge_ranges.append((row_start + 1, column_start + 1, row_end, column_end))
-        return cell_bboxes or None, (sorted(merge_ranges) or None)
+        # 覆盖守恒：网格内不得有既非 anchor 又未被任何 merge 覆盖的空洞
+        if len(occupancy) != width * height:
+            return None, None, "conflict"
+        return cell_bboxes or None, (sorted(merge_ranges) or None), "ok"
     except (AttributeError, TypeError, ValueError, IndexError):
-        return None, None
+        return None, None, "none"  # 证据不可解释 = 不可用，非矛盾
 
 
 _TOC_CELL_RE = re.compile(r"[.·…]{4,}\s*\d{1,3}\s*$")

@@ -135,6 +135,227 @@ class EvidenceLocatorTests(unittest.TestCase):
                       {(row["field"], row["item_index"]) for row in evidence})
 
 
+class TableCellClaimContentTests(unittest.TestCase):
+    """F4 永久回归：裸 marker cell claim（"X"）的证据文本必须是确定性
+    semantic_context（表标题+行头+列头+正文），span 指正文——verifier/匹配
+    绝不见裸词。"""
+
+    def _matrix_claims(self) -> list[dict]:
+        from atomize import build_table_artifacts
+        from requirement_kb import KnowledgeRepository
+
+        block, items, cells = build_table_artifacts(
+            [
+                ["Feature", "Mode A", "Mode B"],
+                ["Encryption", "X", ""],
+                ["Signing", "X", "X"],
+            ],
+            table_id="TBL-000001",
+            block_id="BLK-000002",
+            order=2,
+            table_title="Security matrix",
+            section_path=["5 Security"],
+            knowledge_bases=KnowledgeRepository.from_paths([]),
+        )
+        result = claim_catalog.build_claim_catalog([block], items, table_cell_items=cells)
+        return result["catalog"]
+
+    def test_bare_marker_claim_content_is_semantic_context(self) -> None:
+        claims = self._matrix_claims()
+        marker_claim = next(
+            claim for claim in claims
+            if claim["source_kind"] == "table_cell"
+            and claim["locator"].get("table_cell_id") == "TBL-000001-R000002-C000002"
+        )
+        self.assertEqual(marker_claim["text"].strip(), "X")
+        content, start, end = claim_ledger._claim_content(marker_claim)
+        # 内容 = 完整 semantic_context，含表标题/行头/列头/正文四要素
+        self.assertEqual(content, marker_claim["semantic_context"])
+        self.assertIn("Security matrix", content)
+        self.assertIn("Encryption", content)
+        self.assertIn("Mode A", content)
+        # span 精确指向上下文行内的正文 "X"（不是整个上下文串）
+        self.assertEqual(content[start:end], "X")
+        self.assertEqual(end, len(content))
+        self.assertGreater(start, 0)
+
+    def test_paragraph_claim_content_unchanged(self) -> None:
+        # 非 table_cell claim 行为不变：正文去首尾空白，span 指去空白后区间
+        block = _block("B1", "  The meter shall log events.  ")
+        result = claim_catalog.build_claim_catalog([block], [])
+        claim = result["catalog"][0]
+        content, start, end = claim_ledger._claim_content(claim)
+        self.assertEqual(content, "The meter shall log events.")
+        self.assertEqual(claim["text"][start:end], content)
+
+    def test_table_cell_without_semantic_context_falls_back_to_text(self) -> None:
+        claim = {
+            "source_kind": "table_cell",
+            "text": "  The meter shall be secure.  ",
+            "semantic_context": "",
+        }
+        content, start, end = claim_ledger._claim_content(claim)
+        self.assertEqual(content, "The meter shall be secure.")
+        self.assertEqual(claim["text"][start:end], content)
+
+
+class TableCellCandidateBasisTests(unittest.TestCase):
+    """candidate-v5 永久回归：table_cell claim 的 source_quote 与格全文逐字
+    相等时授予 source_quote_span——marker 格（"X"，1 alnum）此前只能落在
+    shared_block_locator，被候选闸「too broad to justify」拒绝，生产上永远
+    到达不了独立 verifier（P1-4 复审实测）。豁免仅限格全文精确相等；残缺
+    片段子串与非 cell claim 仍受 6-alnum 下限约束。"""
+
+    @staticmethod
+    def _marker_claim(text: str = "X") -> dict:
+        return {
+            "source_kind": "table_cell",
+            "text": text,
+            "semantic_context": f"Security matrix | Feature=Encryption | Mode A = {text}",
+            "locator": {"block_id": "BLK-000002"},
+        }
+
+    @staticmethod
+    def _target(quote: str, block_ids: list[str] | None = None) -> dict:
+        return {
+            "requirement": {
+                "source_quote": quote,
+                "source_block_ids": block_ids or ["BLK-000002"],
+            }
+        }
+
+    def test_exact_cell_text_quote_grants_span_despite_short_marker(self) -> None:
+        basis = claim_ledger._candidate_basis(
+            self._marker_claim("X"), self._target("X")
+        )
+        self.assertIn("source_quote_span", basis)
+
+    def test_exact_cell_text_match_is_normalized(self) -> None:
+        basis = claim_ledger._candidate_basis(
+            self._marker_claim("X"), self._target("  x  ")
+        )
+        self.assertIn("source_quote_span", basis)
+
+    def test_fragment_of_cell_text_is_not_granted(self) -> None:
+        # quote 只是格全文的一个片段（非逐字相等）→ 不豁免，1 alnum 被下限拦下
+        basis = claim_ledger._candidate_basis(
+            self._marker_claim("X.5"), self._target("X")
+        )
+        self.assertNotIn("source_quote_span", basis)
+        self.assertIn("shared_block_locator", basis)
+
+    def test_non_cell_claim_short_quote_still_blocked(self) -> None:
+        # 非 cell claim 的短 quote 只构成包含关系（非逐字全等）时，6-alnum
+        # 下限行为不变（"X" ⊂ "Profile X" 不得放行）
+        claim = {
+            "source_kind": "paragraph",
+            "text": "Profile X",
+            "locator": {"block_id": "BLK-000002"},
+        }
+        basis = claim_ledger._candidate_basis(claim, self._target("X"))
+        self.assertNotIn("source_quote_span", basis)
+        self.assertIn("shared_block_locator", basis)
+
+
+class TableCellMarkerReachesVerifierTests(unittest.TestCase):
+    """账本闸集成回归：marker cell claim 经候选闸进入独立 verifier，
+    且只有主体×维度同时成立的 claim 被闭合（宽候选、严闭合）。"""
+
+    def _matrix_catalog(self) -> dict:
+        from atomize import build_table_artifacts
+        from requirement_kb import KnowledgeRepository
+
+        block, items, cells = build_table_artifacts(
+            [
+                ["Feature", "Mode A", "Mode B"],
+                ["Encryption", "X", ""],
+                ["Signing", "X", "X"],
+            ],
+            table_id="TBL-000001",
+            block_id="BLK-000002",
+            order=2,
+            table_title="Security matrix",
+            section_path=["5 Security"],
+            knowledge_bases=KnowledgeRepository.from_paths([]),
+        )
+        return claim_catalog.build_claim_catalog(
+            [block], items, table_cell_items=cells
+        )
+
+    def test_marker_claims_reach_verifier_and_close_strictly(self) -> None:
+        catalog = self._matrix_catalog()
+        cell_claims = [
+            row for row in catalog["catalog"] if row["source_kind"] == "table_cell"
+        ]
+        self.assertEqual(len(cell_claims), 3)
+        requirement = _requirement(
+            "AIR-1",
+            description="Encryption — Mode A: the product shall support this capability.",
+            source_quote="X",
+            block_ids=["BLK-000002"],
+        )
+        seen: list[dict] = []
+
+        def verifier(_unit_id: str, groups: list[dict]) -> dict:
+            seen.extend(groups)
+            return {
+                "request_id": "verify-marker-1",
+                "tokens": 20,
+                "usage_complete": True,
+                "decisions": {
+                    # 严闭合：只对主体 Encryption × 维度 Mode A 同时成立的组判 covered
+                    group["coverage_group_id"]: {
+                        "covered": (
+                            "Encryption" in group["source_evidence"]["text"]
+                            and "Mode A" in group["source_evidence"]["text"]
+                        ),
+                        "checks": {
+                            name: (
+                                "Encryption" in group["source_evidence"]["text"]
+                                and "Mode A" in group["source_evidence"]["text"]
+                            )
+                            for name in claim_ledger.SEMANTIC_COVERAGE_CHECKS
+                        },
+                    }
+                    for group in groups
+                },
+            }
+
+        result = claim_ledger.build_shadow_ledger(
+            catalog, [requirement], semantic_verifier=verifier
+        )
+
+        # 宽候选：三条 marker claim 全部到达独立 verifier（v4 时计数为 0）
+        seen_claim_ids = {
+            str(group.get("claim_id") or "") for group in seen
+        }
+        if not any(seen_claim_ids):
+            # group 未直接暴露 claim_id 时退化为按 source_evidence 文本辨认
+            seen_claim_ids = {
+                str(row["claim_id"])
+                for row in cell_claims
+                if any(
+                    group["source_evidence"]["text"] == row["semantic_context"]
+                    for group in seen
+                )
+            }
+        self.assertEqual(
+            seen_claim_ids, {row["claim_id"] for row in cell_claims}
+        )
+        claim_locators = {
+            row["claim_id"]: row["locator"]["table_cell_id"]
+            for row in cell_claims
+        }
+        resolutions = {
+            claim_locators[row["claim_id"]]: row["resolution"]
+            for row in result["ledger"]
+            if row["claim_id"] in claim_locators
+        }
+        self.assertEqual(resolutions["TBL-000001-R000002-C000002"], "covered")
+        self.assertEqual(resolutions["TBL-000001-R000003-C000002"], "uncertain")
+        self.assertEqual(resolutions["TBL-000001-R000003-C000003"], "uncertain")
+
+
 class EffectiveAuthorityIdentityTests(unittest.TestCase):
     def test_b_track_review_revision_excludes_timestamp_and_free_form_rationale(self) -> None:
         requirement = _requirement(

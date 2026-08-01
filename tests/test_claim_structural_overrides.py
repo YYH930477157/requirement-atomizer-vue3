@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -11,15 +12,19 @@ from pathlib import Path
 from unittest.mock import patch
 from unittest import mock
 
+from jsonschema import Draft202012Validator
+
 import claim_artifacts
 import claim_catalog
 import claim_ledger
 import claim_review_actions
 import claim_structural_operations
 import claim_structural_overrides
+import claim_views
 from llm_client import LLMClientConfig
 from tests.test_claim_artifacts import _publish, _shadow
 from tests.test_claim_catalog import _block
+from tests.test_table_structure_cells import _artifacts
 
 
 def _furniture_blocks() -> list[dict]:
@@ -255,6 +260,635 @@ class ClaimStructuralOverrideCatalogTests(unittest.TestCase):
                 registered["registry"]["prefix_sha256"],
             )
             self.assertEqual(fresh["catalog"][0]["eligibility"], "claim")
+
+    def test_table_cell_candidate_override_promotes_only_exact_bound_cell(self) -> None:
+        block, items, cells = _artifacts([
+            ["Configurable auxiliary output", ""],
+            ["Name", "Requirement"],
+            ["Logger", "The meter shall log events."],
+        ], merges=[])
+        before = claim_catalog.build_claim_catalog(
+            [block], items, table_cell_items=cells,
+        )
+        candidate = next(
+            row for row in before["catalog"]
+            if (row.get("exclusion") or {}).get("reason")
+            == "ambiguous_table_structure"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            identity = claim_structural_overrides.current_structural_override_identity(root)
+            claim_structural_overrides.append_structural_override(
+                root,
+                claim_id=candidate["claim_id"],
+                claim_hash=candidate["claim_hash"],
+                document_generation_id=before["meta"]["document_generation_id"],
+                catalog_generation_id=before["meta"]["catalog_generation_id"],
+                prior_structural_reason="ambiguous_table_structure",
+                original_exclusion=candidate["exclusion"],
+                actor="expert:test",
+                reason="cell is a product capability",
+                request_idempotency_key="promote-table-cell-1",
+                expected_registry_prefix_sha256=identity["prefix_sha256"],
+            )
+            after = claim_catalog.build_claim_catalog(
+                [block],
+                items,
+                table_cell_items=cells,
+                structural_override_snapshot=(
+                    claim_structural_overrides.read_structural_overrides(root)
+                ),
+            )
+        promoted = next(
+            row for row in after["catalog"]
+            if row["claim_id"] == candidate["claim_id"]
+        )
+        self.assertEqual(promoted["eligibility"], "claim")
+        self.assertIsNone(promoted["exclusion"])
+
+
+class ClaimStructuralCandidateDecisionTests(unittest.TestCase):
+    def _published_candidate(self, root: Path) -> tuple[dict, dict, dict]:
+        block, items, cells = _artifacts([
+            ["Configurable auxiliary output", ""],
+            ["Name", "Requirement"],
+            ["Logger", "The meter shall log events."],
+        ], merges=[])
+        claim_artifacts.atomic_write_jsonl(root / "blocks.jsonl", [block])
+        claim_artifacts.atomic_write_jsonl(root / "table_items.jsonl", items)
+        claim_artifacts.atomic_write_jsonl(root / "table_cell_items.jsonl", cells)
+        build = claim_catalog.build_catalog_from_directory(root)
+        _publish(root, build, _shadow(build))
+        claim_review_actions.fold_effective_ledger(
+            root, actor_trigger="structural-candidate-seed",
+        )
+        snapshot = claim_artifacts.load_committed_shadow(root)
+        candidate = next(
+            row for row in build["catalog"]
+            if (row.get("exclusion") or {}).get("reason")
+            == "ambiguous_table_structure"
+        )
+        effective = next(
+            row for row in snapshot["effective_ledger"]
+            if row["claim_id"] == candidate["claim_id"]
+        )
+        return build, candidate, effective
+
+    def _confirm(self, root: Path, build: dict, claim: dict, effective: dict) -> dict:
+        return claim_structural_overrides.confirm_structural_exclusion(
+            root,
+            claim_id=claim["claim_id"],
+            claim_hash=claim["claim_hash"],
+            expected_catalog_generation_id=build["meta"]["catalog_generation_id"],
+            expected_claim_effective_revision=effective["claim_effective_revision"],
+            prior_structural_reason="ambiguous_table_structure",
+            actor="expert:test",
+            reason="confirmed as table context",
+            request_idempotency_key="confirm-table-cell-exclusion-1",
+        )
+
+    @staticmethod
+    def _with_catalog_generation(
+        snapshot: dict,
+        catalog_generation_id: str,
+        claim_effective_revision: str,
+    ) -> dict:
+        changed = copy.deepcopy(snapshot)
+        changed["generation_meta"]["catalog_generation_id"] = catalog_generation_id
+        changed["catalog_meta"]["catalog_generation_id"] = catalog_generation_id
+        for row in changed["catalog"]:
+            row["catalog_generation_id"] = catalog_generation_id
+        for row in changed["effective_ledger"]:
+            row["claim_effective_revision"] = claim_effective_revision
+        return changed
+
+    def _legacy_decision_row(
+        self,
+        build: dict,
+        claim: dict,
+        effective: dict,
+        *,
+        decision_seq: int = 1,
+        previous_hash: str | None = None,
+        prefix_bytes: bytes = b"",
+    ) -> dict:
+        schema_name = (
+            claim_structural_overrides
+            .LEGACY_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA
+        )
+        actor = "expert:test"
+        reason = "confirmed as table context"
+        request_key = "confirm-table-cell-exclusion-1"
+        exclusion = dict(claim["exclusion"])
+        key = claim_structural_overrides._candidate_decision_idempotency_key(
+            claim_id=claim["claim_id"],
+            claim_hash=claim["claim_hash"],
+            document_generation_id=build["meta"]["document_generation_id"],
+            catalog_generation_id=build["meta"]["catalog_generation_id"],
+            claim_effective_revision=effective["claim_effective_revision"],
+            prior_structural_reason="ambiguous_table_structure",
+            original_exclusion=exclusion,
+            actor=actor,
+            reason=reason,
+            request_idempotency_key=request_key,
+        )
+        row = {
+            "schema": schema_name,
+            "decision_seq": decision_seq,
+            "decision_id": claim_structural_overrides._candidate_decision_id(
+                claim["claim_hash"], key, schema_name
+            ),
+            "prev_decision_hash": (
+                previous_hash or claim_artifacts.sha256_bytes(b"")
+            ),
+            "registry_prefix_sha256": claim_artifacts.sha256_bytes(prefix_bytes),
+            "claim_id": claim["claim_id"],
+            "claim_hash": claim["claim_hash"],
+            "document_generation_id": build["meta"]["document_generation_id"],
+            "catalog_generation_id": build["meta"]["catalog_generation_id"],
+            "claim_effective_revision": effective["claim_effective_revision"],
+            "prior_structural_reason": "ambiguous_table_structure",
+            "original_exclusion": exclusion,
+            "decision": "confirm_exclusion",
+            "actor": actor,
+            "reason": reason,
+            "recorded_at": "2026-08-01T00:00:00+00:00",
+            "idempotency_key": key,
+        }
+        row["decision_hash"] = claim_artifacts.hash_json(schema_name, row)
+        return row
+
+    def test_confirmation_is_idempotent_audited_and_does_not_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            before_generation = claim_artifacts.file_sha256(
+                root / claim_artifacts.CLAIM_GENERATION_META
+            )
+            from claim_views import build_claim_view
+
+            before_metrics = build_claim_view(root, "metrics")
+            self.assertFalse(before_metrics["document_ready"])
+            self.assertEqual(
+                before_metrics["structural_candidate_decision_registry"][
+                    "prefix_count"
+                ],
+                0,
+            )
+            self.assertEqual(before_metrics["structural_review_pending_count"], 1)
+            self.assertEqual(
+                before_metrics["structural_review_confirmed_exclusion_count"], 0,
+            )
+            before_ready_context = claim_views._context(root)
+            self.assertIsNotNone(before_ready_context)
+            before_ready_context = {
+                **before_ready_context,
+                "generation": {
+                    **before_ready_context["generation"],
+                    "shadow_meta": {
+                        **before_ready_context["generation"]["shadow_meta"],
+                        "document_ready": True,
+                    },
+                },
+                "freshness": {"effective_fresh": True},
+                "health": {},
+                "effective": {"effective_metrics": {"uncertain_count": 0}},
+            }
+            self.assertFalse(claim_views._document_ready(before_ready_context))
+            first = self._confirm(root, build, candidate, effective)
+            replay = self._confirm(root, build, candidate, effective)
+
+            self.assertTrue(first["appended"])
+            self.assertFalse(replay["appended"])
+            self.assertEqual(first["status"], "confirmed_excluded")
+            self.assertEqual(
+                claim_structural_overrides.current_structural_candidate_decision_identity(
+                    root
+                ),
+                {
+                    "version": (
+                        claim_structural_overrides
+                        .CLAIM_STRUCTURAL_CANDIDATE_DECISION_VERSION
+                    ),
+                    "prefix_sha256": claim_artifacts.file_sha256(
+                        root
+                        / claim_structural_overrides
+                        .CLAIM_STRUCTURAL_CANDIDATE_DECISIONS
+                    ),
+                    "prefix_count": 1,
+                },
+            )
+            self.assertEqual(
+                claim_artifacts.file_sha256(root / claim_artifacts.CLAIM_GENERATION_META),
+                before_generation,
+            )
+            committed_candidate = next(
+                row for row in claim_artifacts.load_committed_shadow(root)["catalog"]
+                if row["claim_id"] == candidate["claim_id"]
+            )
+            self.assertEqual(committed_candidate["eligibility"], "excluded")
+            view = build_claim_view(root, "catalog")
+            row = next(
+                item for item in view["rows"]
+                if item["claim_id"] == candidate["claim_id"]
+            )
+            self.assertEqual(row["structural_review_status"], "confirmed_excluded")
+            self.assertEqual(
+                row["structural_candidate_decision"]["decision"],
+                "confirm_exclusion",
+            )
+            after_metrics = build_claim_view(root, "metrics")
+            self.assertEqual(
+                after_metrics["structural_candidate_decision_registry"][
+                    "prefix_count"
+                ],
+                1,
+            )
+            self.assertEqual(after_metrics["structural_review_pending_count"], 0)
+            self.assertEqual(
+                after_metrics["structural_review_confirmed_exclusion_count"], 1,
+            )
+            after_ready_context = claim_views._context(root)
+            self.assertIsNotNone(after_ready_context)
+            after_ready_context = {
+                **after_ready_context,
+                "generation": {
+                    **after_ready_context["generation"],
+                    "shadow_meta": {
+                        **after_ready_context["generation"]["shadow_meta"],
+                        "document_ready": True,
+                    },
+                },
+                "freshness": {"effective_fresh": True},
+                "health": {},
+                "effective": {"effective_metrics": {"uncertain_count": 0}},
+            }
+            self.assertTrue(claim_views._document_ready(after_ready_context))
+
+    def test_exact_replay_survives_a_later_effective_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            first = self._confirm(root, build, candidate, effective)
+            changed = copy.deepcopy(claim_artifacts.load_committed_shadow(root))
+            changed_effective = next(
+                row for row in changed["effective_ledger"]
+                if row["claim_id"] == candidate["claim_id"]
+            )
+            changed_effective["claim_effective_revision"] = "sha256:" + "e" * 64
+
+            with patch.object(
+                claim_artifacts,
+                "load_committed_shadow",
+                return_value=changed,
+            ), patch.object(
+                claim_review_actions,
+                "assess_effective_freshness",
+                return_value={"effective_fresh": True},
+            ):
+                replay = self._confirm(root, build, candidate, effective)
+
+        self.assertTrue(first["appended"])
+        self.assertFalse(replay["appended"])
+        self.assertEqual(
+            replay["decision"]["decision_hash"],
+            first["decision"]["decision_hash"],
+        )
+
+    def test_same_claim_can_be_confirmed_again_in_a_new_catalog_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            first = self._confirm(root, build, candidate, effective)
+            generation_b = "sha256:" + "b" * 64
+            revision_b = "sha256:" + "c" * 64
+            snapshot_b = self._with_catalog_generation(
+                claim_artifacts.load_committed_shadow(root),
+                generation_b,
+                revision_b,
+            )
+            effective_b = next(
+                row for row in snapshot_b["effective_ledger"]
+                if row["claim_id"] == candidate["claim_id"]
+            )
+
+            with patch.object(
+                claim_artifacts,
+                "load_committed_shadow",
+                return_value=snapshot_b,
+            ), patch.object(
+                claim_review_actions,
+                "assess_effective_freshness",
+                return_value={"effective_fresh": True},
+            ):
+                second = claim_structural_overrides.confirm_structural_exclusion(
+                    root,
+                    claim_id=candidate["claim_id"],
+                    claim_hash=candidate["claim_hash"],
+                    expected_catalog_generation_id=generation_b,
+                    expected_claim_effective_revision=(
+                        effective_b["claim_effective_revision"]
+                    ),
+                    prior_structural_reason="ambiguous_table_structure",
+                    actor="expert:test",
+                    reason="confirmed again for rebuilt catalog",
+                    request_idempotency_key="confirm-table-cell-exclusion-2",
+                )
+
+            registry = (
+                claim_structural_overrides.read_structural_candidate_decisions(root)
+            )
+            decisions, pending, confirmed = claim_views._structural_review_state({
+                "snapshot": snapshot_b,
+                "generation": snapshot_b["generation_meta"],
+                "structural_candidate_decisions": registry.rows,
+            })
+
+        self.assertTrue(first["appended"])
+        self.assertTrue(second["appended"])
+        self.assertEqual(registry.last_decision_seq, 2)
+        self.assertEqual(
+            second["decision"]["prev_decision_hash"],
+            first["decision"]["decision_hash"],
+        )
+        first_bytes = (
+            claim_artifacts.canonical_json_value_bytes(first["decision"]) + b"\n"
+        )
+        self.assertEqual(
+            second["decision"]["registry_prefix_sha256"],
+            claim_artifacts.sha256_bytes(first_bytes),
+        )
+        self.assertEqual(pending, 0)
+        self.assertEqual(confirmed, 1)
+        self.assertEqual(
+            decisions[candidate["claim_id"]]["decision_hash"],
+            second["decision"]["decision_hash"],
+        )
+        self.assertEqual(
+            claim_structural_overrides.structural_candidate_decisions_by_claim(
+                registry,
+                document_generation_id=snapshot_b["generation_meta"][
+                    "document_generation_id"
+                ],
+                catalog_generation_id=generation_b,
+            )[candidate["claim_id"]]["decision_hash"],
+            second["decision"]["decision_hash"],
+        )
+
+    def test_same_generation_rejects_a_second_terminal_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            self._confirm(root, build, candidate, effective)
+            with self.assertRaisesRegex(
+                claim_structural_overrides.ClaimStructuralOverrideError,
+                "terminal decision",
+            ):
+                claim_structural_overrides.confirm_structural_exclusion(
+                    root,
+                    claim_id=candidate["claim_id"],
+                    claim_hash=candidate["claim_hash"],
+                    expected_catalog_generation_id=(
+                        build["meta"]["catalog_generation_id"]
+                    ),
+                    expected_claim_effective_revision=(
+                        effective["claim_effective_revision"]
+                    ),
+                    prior_structural_reason="ambiguous_table_structure",
+                    actor="expert:test",
+                    reason="a second terminal decision must not append",
+                    request_idempotency_key="confirm-table-cell-exclusion-2",
+                )
+
+    def test_prior_generation_decision_does_not_block_current_promotion_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            self._confirm(root, build, candidate, effective)
+            generation_b = "sha256:" + "d" * 64
+            revision_b = "sha256:" + "e" * 64
+            snapshot_b = self._with_catalog_generation(
+                claim_artifacts.load_committed_shadow(root),
+                generation_b,
+                revision_b,
+            )
+            request = {
+                "claim_id": candidate["claim_id"],
+                "claim_hash": candidate["claim_hash"],
+                "expected_catalog_generation_id": generation_b,
+                "expected_claim_effective_revision": revision_b,
+                "prior_structural_reason": "ambiguous_table_structure",
+                "actor": "expert:test",
+                "reason": "promote in rebuilt catalog",
+                "request_idempotency_key": "promote-table-cell-generation-b",
+                "allow_llm": False,
+                "route": "stub",
+                "verifier_max_calls": 0,
+                "verifier_max_total_tokens": 0,
+            }
+            with patch.object(
+                claim_artifacts,
+                "load_committed_shadow",
+                return_value=snapshot_b,
+            ), patch.object(
+                claim_review_actions,
+                "assess_effective_freshness",
+                return_value={"effective_fresh": True},
+            ):
+                preflight_snapshot, _preconditions, _config = (
+                    claim_structural_overrides._initial_preflight(root, request)
+                )
+
+            base_b = copy.deepcopy(claim_artifacts.load_committed_claim_base(root))
+            base_b["generation_meta"]["catalog_generation_id"] = generation_b
+            base_b["catalog_meta"]["catalog_generation_id"] = generation_b
+            for row in base_b["catalog"]:
+                row["catalog_generation_id"] = generation_b
+            with patch.object(
+                claim_structural_overrides,
+                "load_committed_claim_base",
+                return_value=base_b,
+            ):
+                promoted = claim_structural_overrides.register_structural_override(
+                    root,
+                    claim_id=candidate["claim_id"],
+                    claim_hash=candidate["claim_hash"],
+                    expected_catalog_generation_id=generation_b,
+                    prior_structural_reason="ambiguous_table_structure",
+                    actor="expert:test",
+                    reason="promote in rebuilt catalog",
+                    request_idempotency_key="promote-table-cell-generation-b",
+                )
+
+        self.assertIs(preflight_snapshot, snapshot_b)
+        self.assertTrue(promoted["appended"])
+        self.assertEqual(promoted["override"]["catalog_generation_id"], generation_b)
+
+    def test_v1_and_v2_decisions_form_one_hash_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            legacy_claim = copy.deepcopy(candidate)
+            legacy_claim["claim_id"] = "CLM-0000000000000001"
+            legacy_claim["claim_hash"] = "sha256:" + "1" * 64
+            legacy_effective = copy.deepcopy(effective)
+            legacy_effective["claim_effective_revision"] = "sha256:" + "2" * 64
+            legacy = self._legacy_decision_row(
+                build, legacy_claim, legacy_effective
+            )
+            legacy_bytes = claim_artifacts.canonical_json_value_bytes(legacy) + b"\n"
+            path = (
+                root
+                / claim_structural_overrides
+                .CLAIM_STRUCTURAL_CANDIDATE_DECISIONS
+            )
+            path.write_bytes(legacy_bytes)
+
+            current = self._confirm(root, build, candidate, effective)
+            snapshot = claim_structural_overrides.read_structural_candidate_decisions(
+                root
+            )
+            committed_bytes = path.read_bytes()
+
+        self.assertTrue(committed_bytes.startswith(legacy_bytes))
+        self.assertEqual(
+            [row["schema"] for row in snapshot.rows],
+            [
+                claim_structural_overrides
+                .LEGACY_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
+                claim_structural_overrides.CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
+            ],
+        )
+        self.assertEqual(
+            current["decision"]["prev_decision_hash"], legacy["decision_hash"]
+        )
+        self.assertEqual(
+            current["decision"]["registry_prefix_sha256"],
+            claim_artifacts.sha256_bytes(legacy_bytes),
+        )
+
+    def test_exact_replay_of_a_v1_decision_returns_the_historical_row(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            legacy = self._legacy_decision_row(build, candidate, effective)
+            original = claim_artifacts.canonical_json_value_bytes(legacy) + b"\n"
+            path = (
+                root
+                / claim_structural_overrides
+                .CLAIM_STRUCTURAL_CANDIDATE_DECISIONS
+            )
+            path.write_bytes(original)
+
+            replay = self._confirm(root, build, candidate, effective)
+
+            self.assertEqual(path.read_bytes(), original)
+        self.assertFalse(replay["appended"])
+        self.assertEqual(replay["decision"]["schema"], legacy["schema"])
+        self.assertEqual(
+            replay["decision"]["decision_hash"], legacy["decision_hash"]
+        )
+
+    def test_v1_schema_is_frozen_and_unknown_versions_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            legacy = self._legacy_decision_row(build, candidate, effective)
+            legacy["prior_structural_reason"] = "untyped_colon_spec_cell"
+            legacy["original_exclusion"] = {
+                **legacy["original_exclusion"],
+                "reason": "untyped_colon_spec_cell",
+                "rule_id": "catalog-untyped-colon-spec-cell",
+            }
+            legacy["decision_hash"] = claim_artifacts.hash_json(
+                legacy["schema"],
+                {key: value for key, value in legacy.items() if key != "decision_hash"},
+            )
+            schema_root = Path(__file__).resolve().parents[1] / "schemas"
+            v1_schema = json.loads(
+                (schema_root / "claim_structural_candidate_decision.schema.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertFalse(Draft202012Validator(v1_schema).is_valid(legacy))
+
+            current = {
+                **legacy,
+                "schema": (
+                    claim_structural_overrides
+                    .CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA
+                ),
+            }
+            current["decision_hash"] = claim_artifacts.hash_json(
+                current["schema"],
+                {key: value for key, value in current.items() if key != "decision_hash"},
+            )
+            current_schema = json.loads(
+                (
+                    schema_root
+                    / "claim_structural_candidate_decision_v2.schema.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertTrue(Draft202012Validator(current_schema).is_valid(current))
+
+            unknown = {**current, "schema": "claim-structural-candidate-decision/v3"}
+            unknown["decision_hash"] = claim_artifacts.hash_json(
+                unknown["schema"],
+                {key: value for key, value in unknown.items() if key != "decision_hash"},
+            )
+            with self.assertRaisesRegex(
+                claim_structural_overrides.ClaimStructuralOverrideError,
+                "unsupported",
+            ):
+                claim_structural_overrides._scan_candidate_decision_bytes(
+                    claim_artifacts.canonical_json_value_bytes(unknown) + b"\n"
+                )
+
+    def test_confirmation_binds_revision_and_blocks_later_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            with self.assertRaises(claim_structural_overrides.ClaimStructuralOverrideStale):
+                claim_structural_overrides.confirm_structural_exclusion(
+                    root,
+                    claim_id=candidate["claim_id"],
+                    claim_hash=candidate["claim_hash"],
+                    expected_catalog_generation_id=build["meta"]["catalog_generation_id"],
+                    expected_claim_effective_revision="sha256:" + "0" * 64,
+                    prior_structural_reason="ambiguous_table_structure",
+                    actor="expert:test",
+                    reason="stale",
+                    request_idempotency_key="stale-table-cell-exclusion",
+                )
+            self._confirm(root, build, candidate, effective)
+            with self.assertRaisesRegex(
+                claim_structural_overrides.ClaimStructuralOverrideError,
+                "already confirmed",
+            ):
+                claim_structural_overrides.register_structural_override(
+                    root,
+                    claim_id=candidate["claim_id"],
+                    claim_hash=candidate["claim_hash"],
+                    expected_catalog_generation_id=(
+                        build["meta"]["catalog_generation_id"]
+                    ),
+                    prior_structural_reason="ambiguous_table_structure",
+                    actor="expert:test",
+                    reason="late promotion",
+                    request_idempotency_key="late-table-cell-promotion",
+                )
+
+    def test_torn_candidate_decision_registry_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build, candidate, effective = self._published_candidate(root)
+            self._confirm(root, build, candidate, effective)
+            path = root / claim_structural_overrides.CLAIM_STRUCTURAL_CANDIDATE_DECISIONS
+            path.write_bytes(path.read_bytes().removesuffix(b"\n"))
+            with self.assertRaisesRegex(
+                claim_structural_overrides.ClaimStructuralOverrideError,
+                "torn tail",
+            ):
+                claim_structural_overrides.read_structural_candidate_decisions(root)
 
 
 class ClaimStructuralOverrideConfirmationTests(unittest.TestCase):

@@ -9,6 +9,8 @@ import ai_extract
 from claim_artifacts import (
     ClaimArtifactError,
     canonical_target_fingerprint,
+    claim_budget_checkpoint_event_idempotency_key,
+    claim_budget_checkpoint_payload,
     claim_base_generation_id,
     file_sha256,
     hash_json,
@@ -16,7 +18,9 @@ from claim_artifacts import (
     load_committed_effective_snapshot,
 )
 from claim_focus import ClaimFocusError, build_claim_focus_adapter
+from claim_ledger import CLAIM_QUEUE_PROPOSAL_SCHEMA
 from claim_reextract_attempts import (
+    CLAIM_REEXTRACT_ATTEMPT_SCHEMA,
     append_attempt_events,
     attempt_id as make_attempt_id,
     derive_attempt_states,
@@ -75,6 +79,7 @@ def _event_key(attempt_id: str, kind: str, detail: Any) -> str:
 
 
 CLAIM_QUEUE_ROUTE_CONFIG_REVISION_VERSION = "claim-queue-route-config/v2"
+CLAIM_BUDGET_CHECKPOINT_FANOUT_VERSION = "claim-budget-checkpoint-fanout-v1"
 
 # Persisted attempt schemas are a read contract, not an alias for the current
 # writer version. Keep every supported reader identity explicit so a future v3
@@ -182,6 +187,78 @@ def _append_event(
     )
 
 
+class _ClaimQueueBudgetCheckpoint:
+    """Durable owner for queue budget snapshots.
+
+    ``claim_verifier_attempt_scope`` recognizes ``prepare_fanout_event`` and
+    wraps the queue event plus verifier-WAL update in its recoverable outbox.
+    Outside that scope this remains a normal single-sink callback.
+    """
+
+    FANOUT_VERSION = CLAIM_BUDGET_CHECKPOINT_FANOUT_VERSION
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        attempt_id: str,
+        proposal: dict[str, Any],
+        actor: str,
+    ) -> None:
+        self._root = root
+        self._attempt_id = attempt_id
+        self._proposal = proposal
+        self._actor = actor
+        self._highest_emitted_calls = 0
+
+    @staticmethod
+    def _payload(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        return claim_budget_checkpoint_payload(snapshot)
+
+    def prepare_fanout_event(
+        self,
+        snapshot: dict[str, Any],
+        transition_id: str,
+    ) -> dict[str, Any] | None:
+        payload = self._payload(snapshot)
+        if payload is None:
+            return None
+        calls = int(payload["calls"])
+        if calls < self._highest_emitted_calls:
+            return None
+        self._highest_emitted_calls = calls
+        detail = {
+            "transition_id": str(transition_id),
+            **payload,
+        }
+        event = {
+            "schema": CLAIM_REEXTRACT_ATTEMPT_SCHEMA,
+            **_common_event(
+                attempt_id=self._attempt_id,
+                proposal=self._proposal,
+                actor=self._actor,
+                event_kind="budget_checkpoint",
+                detail=detail,
+            ),
+            "checkpoint": payload,
+        }
+        event["idempotency_key"] = claim_budget_checkpoint_event_idempotency_key(
+            attempt_id=self._attempt_id,
+            transition_id=str(transition_id),
+            checkpoint=payload,
+        )
+        return event
+
+    def __call__(self, snapshot: dict[str, Any]) -> None:
+        event = self.prepare_fanout_event(snapshot, os.urandom(16).hex())
+        if event is not None:
+            _append_event(
+                self._root,
+                event,
+                operation_lock_held=True,
+            )
+
+
 def _proposal_attempt_state(
     root: Path,
     proposal_id: str,
@@ -205,7 +282,7 @@ def _proposal_from_attempt_history(history: list[dict[str, Any]]) -> dict[str, A
     started = history[0]
     focus = dict(started.get("focus") or {})
     return {
-        "schema": "claim-queue-proposal/v2",
+        "schema": CLAIM_QUEUE_PROPOSAL_SCHEMA,
         "proposal_id": str(started["proposal_id"]),
         "claim_id": str(started["claim_id"]),
         "claim_hash": str(started["claim_hash"]),
@@ -341,8 +418,8 @@ def _validate_current_proposal(
         raise ClaimQueueExecutionConflict(
             "claim queue proposal is no longer current; refresh before execution"
         )
-    if proposal.get("schema") != "claim-queue-proposal/v2":
-        raise ClaimQueueExecutionUnprocessable("claim queue proposal requires v2 migration")
+    if proposal.get("schema") != CLAIM_QUEUE_PROPOSAL_SCHEMA:
+        raise ClaimQueueExecutionUnprocessable("claim queue proposal requires v3 migration")
     row = next(
         (
             dict(item)
@@ -449,6 +526,22 @@ def _usage_from_history(history: list[dict[str, Any]]) -> dict[str, Any]:
         "total_tokens": latest.get("total_tokens"),
         "usage_complete": bool(latest.get("usage_complete")),
     }
+
+
+def _durable_usage(
+    root: Path,
+    *,
+    attempt_id: str,
+    budget: LLMRequestBudget,
+) -> dict[str, Any]:
+    history = [
+        row
+        for row in read_attempt_log(root).rows
+        if row.get("attempt_id") == attempt_id
+    ]
+    if any(row.get("event_kind") == "budget_checkpoint" for row in history):
+        return _usage_from_history(history)
+    return _usage_from_budget(budget)
 
 
 def _append_terminal(
@@ -634,6 +727,9 @@ def _finish_rebuild(
     refresh: dict[str, Any] | None = None
     base = _current_published_base(root, attempt_id)
     if base is None:
+        # Keep the queue checkpoint owner attached through refresh. The
+        # verifier scope fans each cumulative transition through its durable
+        # outbox, so recovery retains extraction and verifier costs.
         try:
             refresh = ai_extract.refresh_claim_shadow(
                 root,
@@ -775,7 +871,11 @@ def _finish_rebuild(
             operation_lock_held=True,
         )
         if budget is not None:
-            usage = _usage_from_budget(budget)
+            usage = _durable_usage(
+                root,
+                attempt_id=attempt_id,
+                budget=budget,
+            )
         else:
             attempt_rows = [
                 item
@@ -1028,41 +1128,12 @@ def execute_claim_queue_proposal(
                 "focus": copy.deepcopy(proposal["focus"]),
             }
             _append_event(root, started, operation_lock_held=True)
-            checkpoint_number = 0
-
-            def checkpoint(snapshot: dict[str, Any]) -> None:
-                nonlocal checkpoint_number
-                calls = int(snapshot.get("attempted_calls") or 0)
-                if calls <= 0:
-                    return
-                checkpoint_number += 1
-                reserved = int(snapshot.get("reserved_tokens") or 0)
-                failed = int(snapshot.get("failed_calls") or 0)
-                phase = "pre_call" if reserved > 0 else "error" if failed else "post_call"
-                status = "reserved" if reserved > 0 else "failed" if failed else "settled"
-                payload = {
-                    "phase": phase,
-                    "calls": calls,
-                    "total_tokens": int(snapshot.get("tokens") or 0),
-                    "usage_complete": bool(snapshot.get("usage_complete")),
-                    "status": status,
-                }
-                _append_event(
-                    root,
-                    {
-                        **_common_event(
-                            attempt_id=current_attempt_id,
-                            proposal=proposal,
-                            actor=actor,
-                            event_kind="budget_checkpoint",
-                            detail={"number": checkpoint_number, **payload},
-                        ),
-                        "checkpoint": payload,
-                    },
-                    operation_lock_held=True,
-                )
-
-            budget.set_checkpoint(checkpoint)
+            budget.set_checkpoint(_ClaimQueueBudgetCheckpoint(
+                root,
+                attempt_id=current_attempt_id,
+                proposal=proposal,
+                actor=actor,
+            ))
 
             def revalidate() -> None:
                 _validate_current_proposal(
@@ -1153,7 +1224,11 @@ def execute_claim_queue_proposal(
                     operation_lock_held=True,
                 )
             except ClaimQueueExecutionConflict:
-                usage = _usage_from_budget(budget)
+                usage = _durable_usage(
+                    root,
+                    attempt_id=current_attempt_id,
+                    budget=budget,
+                )
                 _append_terminal(
                     root,
                     attempt_id=current_attempt_id,
@@ -1169,7 +1244,11 @@ def execute_claim_queue_proposal(
                 budget.set_checkpoint(None)
                 raise
             except OmissionConflictError as exc:
-                usage = _usage_from_budget(budget)
+                usage = _durable_usage(
+                    root,
+                    attempt_id=current_attempt_id,
+                    budget=budget,
+                )
                 _append_terminal(
                     root,
                     attempt_id=current_attempt_id,
@@ -1185,7 +1264,11 @@ def execute_claim_queue_proposal(
                 budget.set_checkpoint(None)
                 raise ClaimQueueExecutionConflict(str(exc)) from exc
             except (OmissionNoResultError, LLMBudgetExceeded) as exc:
-                usage = _usage_from_budget(budget)
+                usage = _durable_usage(
+                    root,
+                    attempt_id=current_attempt_id,
+                    budget=budget,
+                )
                 _append_terminal(
                     root,
                     attempt_id=current_attempt_id,
@@ -1201,7 +1284,11 @@ def execute_claim_queue_proposal(
                 budget.set_checkpoint(None)
                 raise ClaimQueueExecutionUnprocessable(str(exc)) from exc
             except (LLMConnectionError, LLMResponseError) as exc:
-                usage = _usage_from_budget(budget)
+                usage = _durable_usage(
+                    root,
+                    attempt_id=current_attempt_id,
+                    budget=budget,
+                )
                 _append_terminal(
                     root,
                     attempt_id=current_attempt_id,
@@ -1218,7 +1305,11 @@ def execute_claim_queue_proposal(
                 raise ClaimQueueExecutionRemoteError(str(exc)) from exc
             except Exception as exc:
                 if not requirements_published:
-                    usage = _usage_from_budget(budget)
+                    usage = _durable_usage(
+                        root,
+                        attempt_id=current_attempt_id,
+                        budget=budget,
+                    )
                     _append_terminal(
                         root,
                         attempt_id=current_attempt_id,

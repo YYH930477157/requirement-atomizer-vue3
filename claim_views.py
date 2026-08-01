@@ -67,6 +67,10 @@ class ClaimViewMigrationRequired(ClaimArtifactError):
 
 
 def _unavailable(view: str) -> dict[str, Any]:
+    from claim_structural_overrides import (
+        empty_structural_candidate_decision_identity,
+    )
+
     payload: dict[str, Any] = {
         "schema": _VIEW_SCHEMAS[view],
         "available": False,
@@ -77,6 +81,9 @@ def _unavailable(view: str) -> dict[str, Any]:
         "catalog_generation_id": None,
         "event_prefix_sha256": None,
         "last_event_seq": 0,
+        "structural_candidate_decision_registry": (
+            empty_structural_candidate_decision_identity()
+        ),
         "effective_fresh": False,
         "freshness_reasons": ["claim_generation_unavailable"],
         "reason": "当前输出目录尚无 Claim Ledger generation",
@@ -132,6 +139,7 @@ _CONTEXT_STAT_FILES = (
     "claim_verifier_attempts.jsonl",
     "claim_reextract_attempts.jsonl",
     "claim_structural_overrides.jsonl",
+    "claim_structural_candidate_decisions.jsonl",
     "claim_structural_operations.jsonl",
     "omission_states.jsonl",
     "blocks.jsonl",
@@ -150,8 +158,10 @@ _CONTEXT_CONTENT_DIRECTORIES = (
 
 def _context_revision_key(root: Path) -> tuple:
     from claim_artifacts import (
+        CLAIM_BUDGET_CHECKPOINT_OUTBOX,
         CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
         CLAIM_PUBLICATION_JOURNAL,
+        CLAIM_VERIFIER_ATTEMPT_CHECKPOINT,
     )
 
     parts: list[tuple] = []
@@ -204,7 +214,12 @@ def _context_revision_key(root: Path) -> tuple:
         except OSError:
             digest = None
         parts.append((f"{name}:sha256", digest))
-    for name in (CLAIM_PUBLICATION_JOURNAL, CLAIM_EFFECTIVE_PUBLICATION_JOURNAL):
+    for name in (
+        CLAIM_PUBLICATION_JOURNAL,
+        CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
+        CLAIM_VERIFIER_ATTEMPT_CHECKPOINT,
+        CLAIM_BUDGET_CHECKPOINT_OUTBOX,
+    ):
         parts.append((name, (root / name).is_file()))
     return tuple(parts)
 
@@ -258,6 +273,12 @@ def _context(root: Path) -> dict[str, Any] | None:
         if freshness.get("authority_audit_gap"):
             health = {**health, "authority_audit_gap": True}
         from claim_structural_operations import pending_structural_operations
+        from claim_structural_overrides import (
+            read_structural_candidate_decisions,
+            structural_candidate_decision_identity,
+        )
+
+        candidate_decisions = read_structural_candidate_decisions(root)
 
         context = {
             "snapshot": snapshot,
@@ -267,6 +288,10 @@ def _context(root: Path) -> dict[str, Any] | None:
             "events": event_log.rows[:committed_count],
             "health": health,
             "structural_pending": pending_structural_operations(root),
+            "structural_candidate_decisions": candidate_decisions.rows,
+            "structural_candidate_decision_registry": (
+                structural_candidate_decision_identity(candidate_decisions)
+            ),
         }
         confirmed_key = _context_revision_key(root)
         if confirmed_key != key:
@@ -287,6 +312,10 @@ def _context(root: Path) -> dict[str, Any] | None:
 
 
 def _envelope(view: str, context: dict[str, Any]) -> dict[str, Any]:
+    from claim_structural_overrides import (
+        empty_structural_candidate_decision_identity,
+    )
+
     effective = context["effective"]
     generation = context["generation"]
     freshness = context["freshness"]
@@ -300,6 +329,9 @@ def _envelope(view: str, context: dict[str, Any]) -> dict[str, Any]:
         "catalog_generation_id": generation["catalog_generation_id"],
         "event_prefix_sha256": effective["event_prefix_sha256"],
         "last_event_seq": effective["last_event_seq"],
+        "structural_candidate_decision_registry": context.get(
+            "structural_candidate_decision_registry"
+        ) or empty_structural_candidate_decision_identity(),
         "effective_fresh": freshness["effective_fresh"],
         "freshness_reasons": freshness["freshness_reasons"],
     }
@@ -328,6 +360,55 @@ def _effective_by_claim(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
+_CELL_STRUCTURAL_REVIEW_REASONS = frozenset({
+    "ambiguous_table_structure",
+    "weak_signal_table_cell",
+    "unsignaled_table_cell",
+    "rejected_matrix_marker_cell",
+    "untyped_colon_spec_cell",
+})
+
+
+def _structural_review_state(
+    context: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], int, int]:
+    snapshot = context["snapshot"]
+    generation = dict(context.get("generation") or {})
+    current_claims = {
+        str(row.get("claim_id") or ""): row
+        for row in snapshot.get("catalog") or []
+    }
+    decisions: dict[str, dict[str, Any]] = {}
+    for raw in context.get("structural_candidate_decisions") or []:
+        row = dict(raw)
+        claim_id = str(row.get("claim_id") or "")
+        claim = current_claims.get(claim_id)
+        if (
+            claim is not None
+            and row.get("claim_hash") == claim.get("claim_hash")
+            and row.get("document_generation_id")
+            == generation.get("document_generation_id")
+            and row.get("catalog_generation_id")
+            == generation.get("catalog_generation_id")
+        ):
+            decisions[claim_id] = row
+    candidates: list[str] = []
+    for claim in current_claims.values():
+        exclusion = claim.get("exclusion")
+        reason = (
+            str(exclusion.get("reason") or "")
+            if isinstance(exclusion, dict)
+            else ""
+        )
+        if (
+            claim.get("eligibility") == "excluded"
+            and reason in _CELL_STRUCTURAL_REVIEW_REASONS
+        ):
+            candidates.append(str(claim.get("claim_id") or ""))
+    confirmed = sum(claim_id in decisions for claim_id in candidates)
+    return decisions, len(candidates) - confirmed, confirmed
+
+
 def _catalog_rows(context: dict[str, Any]) -> list[dict[str, Any]]:
     snapshot = context["snapshot"]
     effective_by_claim = _effective_by_claim(snapshot)
@@ -338,6 +419,9 @@ def _catalog_rows(context: dict[str, Any]) -> list[dict[str, Any]]:
     for group in snapshot["groups"]:
         groups_by_claim.setdefault(str(group.get("claim_id") or ""), []).append(group)
     pending_operations = dict(context.get("structural_pending") or {})
+    candidate_decisions, _pending_count, _confirmed_count = (
+        _structural_review_state(context)
+    )
     rows: list[dict[str, Any]] = []
     for claim in snapshot["catalog"]:
         claim_id = str(claim.get("claim_id") or "")
@@ -348,6 +432,14 @@ def _catalog_rows(context: dict[str, Any]) -> list[dict[str, Any]]:
             )
             or []
         )
+        exclusion = claim.get("exclusion")
+        structural_reason = (
+            str(exclusion.get("reason") or "")
+            if isinstance(exclusion, dict)
+            else ""
+        )
+        candidate_decision = candidate_decisions.get(claim_id)
+        is_review_candidate = structural_reason in _CELL_STRUCTURAL_REVIEW_REASONS
         rows.append({
             **claim,
             "source_text_hash": claim_source_evidence_hash(claim),
@@ -366,6 +458,14 @@ def _catalog_rows(context: dict[str, Any]) -> list[dict[str, Any]]:
                 )
             },
             "pending_structural_operation": pending_operations.get(claim_id),
+            "structural_review_status": (
+                "confirmed_excluded"
+                if candidate_decision is not None
+                else "pending_review"
+                if is_review_candidate
+                else None
+            ),
+            "structural_candidate_decision": candidate_decision,
             **{
                 key: effective.get(key)
                 for key in (
@@ -496,12 +596,16 @@ def build_claim_coverage_group_view(
 def _document_ready(context: dict[str, Any]) -> bool:
     generation = context["generation"]
     shadow_meta = dict(generation.get("shadow_meta") or {})
+    _decisions, pending_structural_reviews, _confirmed = (
+        _structural_review_state(context)
+    )
     return bool(
         shadow_meta.get("document_ready") is True
         and context["freshness"]["effective_fresh"]
         and not context["health"].get("authority_audit_gap")
         and int(context["effective"]["effective_metrics"].get("uncertain_count") or 0)
         == 0
+        and pending_structural_reviews == 0
     )
 
 
@@ -510,6 +614,9 @@ def build_claim_metrics_view(
     context: dict[str, Any],
 ) -> dict[str, Any]:
     generation = context["generation"]
+    _decisions, pending_structural_reviews, confirmed_structural_exclusions = (
+        _structural_review_state(context)
+    )
     return {
         **_envelope("metrics", context),
         "generation_metrics": context["snapshot"]["metrics"],
@@ -521,6 +628,10 @@ def build_claim_metrics_view(
             "effective_ledger_schema"
         ],
         "document_ready": _document_ready(context),
+        "structural_review_pending_count": pending_structural_reviews,
+        "structural_review_confirmed_exclusion_count": (
+            confirmed_structural_exclusions
+        ),
         "health": context["health"],
     }
 

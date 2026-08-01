@@ -5,7 +5,7 @@ from typing import Any, Iterable
 from claim_artifacts import hash_json
 
 
-CLAIM_FOCUS_ADAPTER_VERSION = "claim-focus-adapter-v2"
+CLAIM_FOCUS_ADAPTER_VERSION = "claim-focus-adapter-v3"
 
 
 class ClaimFocusError(ValueError):
@@ -22,11 +22,12 @@ def _rows_by_id(rows: Iterable[dict[str, Any]], key: str) -> dict[str, dict[str,
 
 def _block_fingerprint(block: dict[str, Any]) -> str:
     return hash_json(
-        "claim-focus-parent-block/v1",
+        "claim-focus-parent-block/v2",
         {
             "block_id": str(block.get("block_id") or ""),
             "type": str(block.get("type") or ""),
             "text": str(block.get("text") or ""),
+            "table_title": str(block.get("table_title") or ""),
             "headers": list(block.get("headers") or []),
             "data_rows": list(block.get("data_rows") or []),
         },
@@ -201,10 +202,21 @@ def build_claim_focus_adapter(
             or cell_text[cell_start:cell_end] != text
         ):
             raise ClaimFocusError("table cell locator no longer matches its source")
-        # 行头/列头/merge anchor 是 cell 身份的一部分：漂移即指纹失效
+        # 标题/行头/列头/merge anchor 是 cell 身份的一部分：漂移即指纹失效。
+        # 标题同时存在于 catalog claim、canonical cell 与 parent block；三侧必须
+        # 逐字一致，不能在补抽时悄悄换掉产品/接口适用范围。
         header_path = [str(value) for value in (cell.get("header_path") or [])]
         row_header_context = [str(value) for value in (cell.get("row_header_context") or [])]
         claim_context = dict(claim.get("table_context") or {})
+        if "table_title" not in claim_context:
+            raise ClaimFocusError("table cell claim has no table title identity")
+        claim_table_title = str(claim_context.get("table_title") or "")
+        cell_table_title = str(cell.get("table_title") or "")
+        block_table_title = str(block.get("table_title") or "")
+        if cell_table_title != block_table_title:
+            raise ClaimFocusError("table cell and parent block titles disagree")
+        if claim_table_title != cell_table_title:
+            raise ClaimFocusError("table cell title changed")
         if "header_path" in claim_context and [
             str(value) for value in (claim_context.get("header_path") or [])
         ] != header_path:
@@ -222,6 +234,7 @@ def build_claim_focus_adapter(
             ],
         }
         context_identity = {
+            "table_title": claim_table_title,
             "header_path": header_path,
             "row_header_context": row_header_context,
             "merge_anchor": merge_identity,
@@ -236,10 +249,11 @@ def build_claim_focus_adapter(
             "data_row_index": cell.get("data_row_index"),
             "cell_start": cell_start,
             "cell_end": cell_end,
+            "table_title": claim_table_title,
             "header_path": header_path,
             "row_header_context": row_header_context,
             "merge_anchor": merge_identity,
-            "context_identity_hash": hash_json("claim-focus-table-cell/v1", context_identity),
+            "context_identity_hash": hash_json("claim-focus-table-cell/v2", context_identity),
             "text_hash": hash_json("claim-focus-text/v1", text),
             "text": text,
         }

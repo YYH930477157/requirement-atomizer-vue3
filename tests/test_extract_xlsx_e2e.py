@@ -68,7 +68,13 @@ class ExtractXlsxE2ETests(unittest.TestCase):
         matrix_item = next(item for item in table_items if item["table_title"] == "Capability Matrix" and item["matrix_facts"])
         self.assertEqual(matrix_item["matrix_facts"][0]["predicate_header"], "xDLMS Service / GET")
 
-        mixed_item = next(item for item in table_items if item["table_title"] == "Mixed Type Values" and item["fields"].get("Label") == "Integer float")
+        # P0-5 契约：无合并/题注证据的首行单格（"Mixed Type Values"）不静默判
+        # 标题——保留为可定位歧义候选（context+计数+needs_review），表标题如实
+        # 回退 sheet 名；真实表头行（Label/Value/Formula）仍须被识别供列名
+        # （v4 首版整表坍缩 column_N 的回归修复）
+        mixed_block = next(block for block in blocks if block.get("table_title") == "Mixed Types")
+        self.assertEqual(mixed_block["headers"], ["Label", "Value", "Formula"])
+        mixed_item = next(item for item in table_items if item["table_title"] == "Mixed Types" and item["fields"].get("Label") == "Integer float")
         self.assertEqual(mixed_item["fields"]["Value"], "42")
         date_item = next(item for item in table_items if item["fields"].get("Label") == "Date value")
         self.assertEqual(date_item["fields"]["Value"], "2026-06-12")
@@ -80,6 +86,36 @@ class ExtractXlsxE2ETests(unittest.TestCase):
         candidate_types = {candidate["requirement_type"] for candidate in candidates}
         self.assertIn("capability_matrix", candidate_types)
         self.assertTrue(any(candidate["source_type"] == "table_row" for candidate in candidates))
+
+    def test_formula_without_cached_value_is_fail_closed(self) -> None:
+        """B7：`="…"` 公式无缓存值时 data_only=True 返回 None——内容凭空消失且
+        parse_incomplete=False 的反例不得再现：双视图识别公式存在性，fail-closed。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "formula_no_cache.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Formulas"
+            sheet.append(["Name", "Requirement"])
+            sheet.append(["Logger", "The meter shall log events."])
+            sheet.append(["Formula row", '="The meter shall log events."'])
+            workbook.save(input_path)
+
+            blocks, table_items, table_cell_items = extract_xlsx(
+                input_path, knowledge_bases=[], document_profile=None
+            )
+
+        table_blocks = [block for block in blocks if block.get("type") == "table"]
+        self.assertTrue(table_blocks)
+        for block in table_blocks:
+            self.assertTrue(block["parse_incomplete"])
+            self.assertEqual(
+                (block.get("parse_incomplete_reason") or {}).get("code"),
+                "xlsx_formula_value_unavailable",
+            )
+        # 公式格计入非空守恒：行容器仍在（不因值视图不可见而整行消失）
+        self.assertTrue(
+            any("Formula row" in str(item.get("text") or "") for item in table_items)
+        )
 
     def test_run_atomizer_pipeline_dispatches_xlsx_and_writes_manifest_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

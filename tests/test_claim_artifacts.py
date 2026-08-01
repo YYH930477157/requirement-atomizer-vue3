@@ -1158,6 +1158,74 @@ claim_artifacts.publish_effective_snapshot(root, ledger, queue, meta=meta)
                 claim_artifacts._sha256_bytes(claim_artifacts._jsonl_bytes(rows)),
             )
 
+    def test_attempt_scope_chains_and_restores_previous_budget_checkpoint(self) -> None:
+        """P0-1：scope 链接既有 checkpoint 而非替换；退出时恢复原 callback。
+
+        队列 attempt 的 budget_checkpoint 事件链在 verifier 段继续累计（同一
+        budget 的累计快照）；此前 scope 要求空 checkpoint 强制交棒，verifier
+        段成本从崩溃恢复数据源里消失。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog = _catalog()
+            requirement = _requirement(catalog)
+            claim_artifacts.atomic_write_jsonl(
+                root / "ai_requirements.jsonl",
+                [requirement],
+            )
+            ai_extract.write_ai_requirements_metadata(
+                root,
+                input_fingerprint="test-input",
+                run_id="chain-request-1",
+            )
+            requirements_hash = claim_artifacts.file_sha256(
+                root / "ai_requirements.jsonl"
+            )
+            shadow = _shadow(catalog)
+            requirements_meta = json.loads(
+                (root / "ai_requirements.meta.json").read_text(encoding="utf-8")
+            )
+            budget = LLMRequestBudget(max_calls=4, max_tokens=100000)
+            chained: list[dict] = []
+
+            def queue_checkpoint(snapshot: dict) -> None:
+                chained.append(dict(snapshot))
+
+            budget.set_checkpoint(queue_checkpoint)
+            failure_context = {
+                "catalog_build": catalog,
+                "target_generation_id": shadow["meta"]["target_generation_id"],
+                "requirements_sha256": requirements_hash,
+                "verifier_runtime": shadow["meta"]["verifier_runtime"],
+                "baseline_cost": dict(requirements_meta["no_ledger_baseline_cost"]),
+                "verifier_budget": budget,
+                "reused_group_count": 0,
+            }
+            with claim_artifacts.claim_verifier_attempt_scope(
+                root,
+                attempt_kind="cold",
+                attempt_request_id="chain-request-1",
+                requirements_request_id="chain-request-1",
+                failure_context=failure_context,
+            ):
+                reservation = budget.reserve({"messages": [], "max_tokens": 1})
+                budget.commit(reservation, {"total_tokens": 20})
+                claim_artifacts.publish_shadow_generation(
+                    root,
+                    catalog,
+                    shadow,
+                    run_id="chain-request-1",
+                    requirements_sha256=requirements_hash,
+                )
+
+            # scope 内的 reserve/commit 穿透到既有 callback（累计快照）
+            self.assertTrue(
+                any(int(row.get("attempted_calls") or 0) >= 1 for row in chained)
+            )
+            self.assertEqual(chained[-1]["tokens"], 20)
+            # 退出后既有 callback 恢复原位（非清空）
+            self.assertIs(budget.checkpoint(), queue_checkpoint)
+
     def test_killed_publisher_is_recovered_from_durable_journal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2229,7 +2297,15 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
             self.assertEqual(event["attempt_metrics"]["verifier_tokens"], 11)
             self.assertTrue(event["attempt_metrics"]["verifier_usage_complete"])
 
-    def test_failed_checkpoint_attachment_keeps_existing_budget_owner(self) -> None:
+    def test_pre_owned_budget_checkpoint_is_chained_not_rejected(self) -> None:
+        """P0-1：带既有 checkpoint 的 budget 进入 scope 链式累计，不再拒绝。
+
+        旧契约「scope 必须以空 checkpoint 起步」迫使队列 attempt 在进入
+        verifier 前交棒清空——verifier 段成本只写 verifier WAL，崩溃恢复按
+        队列日志重建时终态少记（探针：3 calls/60 tokens → 1/20）。
+        新契约：scope 摘下既有 callback 并由 persist_budget 链式驱动，
+        退出时恢复原 owner。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             catalog = _catalog()
@@ -2242,51 +2318,54 @@ with claim_artifacts.claim_publication_lock(Path(sys.argv[1])):
                 root,
                 input_fingerprint="test-input",
                 run_id="checkpoint-owner-request",
-                no_ledger_baseline_cost=_baseline_cost(),
             )
-            target = claim_ledger.b_track_authority_state([requirement], {})
+            shadow = _shadow(catalog)
+            requirements_meta = json.loads(
+                (root / "ai_requirements.meta.json").read_text(encoding="utf-8")
+            )
             budget = LLMRequestBudget(max_calls=2, max_tokens=100000)
-            runtime = claim_ledger.semantic_verifier_runtime(
-                route_mode="llm",
-                enabled=True,
-                rounds=1,
-                budget_policy_version=LLMRequestBudget.VERSION,
-                max_calls=2,
-                max_total_tokens=100000,
-            )
             observed_calls: list[int] = []
-            budget.set_checkpoint(
-                lambda snapshot: observed_calls.append(
-                    int(snapshot["attempted_calls"])
-                )
+
+            def owner(snapshot: dict) -> None:
+                observed_calls.append(int(snapshot["attempted_calls"]))
+
+            budget.set_checkpoint(owner)
+            requirements_hash = claim_artifacts.file_sha256(
+                root / "ai_requirements.jsonl"
             )
-
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "already has a checkpoint",
+            with claim_artifacts.claim_verifier_attempt_scope(
+                root,
+                attempt_kind="cold",
+                attempt_request_id="checkpoint-owner-request",
+                requirements_request_id="checkpoint-owner-request",
+                failure_context={
+                    "catalog_build": catalog,
+                    "target_generation_id": shadow["meta"]["target_generation_id"],
+                    "requirements_sha256": requirements_hash,
+                    "verifier_runtime": shadow["meta"]["verifier_runtime"],
+                    "baseline_cost": dict(requirements_meta["no_ledger_baseline_cost"]),
+                    "verifier_budget": budget,
+                },
             ):
-                with claim_artifacts.claim_verifier_attempt_scope(
+                reservation = budget.reserve({"messages": [], "max_tokens": 1})
+                budget.commit(reservation, {"total_tokens": 3})
+                claim_artifacts.publish_shadow_generation(
                     root,
-                    attempt_kind="cold",
-                    attempt_request_id="checkpoint-owner-request",
-                    requirements_request_id="checkpoint-owner-request",
-                    failure_context={
-                        "catalog_build": catalog,
-                        "target_generation_id": target["target_generation_id"],
-                        "requirements_sha256": claim_artifacts.file_sha256(
-                            root / "ai_requirements.jsonl"
-                        ),
-                        "verifier_runtime": runtime,
-                        "baseline_cost": _baseline_cost(),
-                        "verifier_budget": budget,
-                    },
-                ):
-                    self.fail("scope must not start with a pre-owned budget")
+                    catalog,
+                    shadow,
+                    run_id="checkpoint-owner-request",
+                    requirements_sha256=requirements_hash,
+                )
 
+            # 既有 owner 在 scope 内持续收到累计快照（起步 0 → 付费后 1）
+            self.assertEqual(observed_calls[0], 0)
+            self.assertIn(1, observed_calls)
+            # 退出后原 owner 恢复，后续变动继续送达
+            self.assertIs(budget.checkpoint(), owner)
             reservation = budget.reserve({"messages": [], "max_tokens": 1})
             budget.commit(reservation, {"total_tokens": 3})
             budget.set_checkpoint(None)
-            self.assertEqual(observed_calls, [0, 1, 1])
+            self.assertEqual(observed_calls[-1], 2)
             self.assertFalse(
                 (root / claim_artifacts.CLAIM_VERIFIER_ATTEMPT_CHECKPOINT).exists()
             )
@@ -3997,6 +4076,127 @@ class EffectiveContractTamperTests(unittest.TestCase):
                 "queue proposal schema",
             ):
                 claim_artifacts.load_committed_effective_snapshot_readonly(root)
+
+
+class TableCellArtifactBindingTests(unittest.TestCase):
+    """F5/F6：table_cell_items.jsonl 哈希绑定（篡改/删除/替换/缺绑定 fail-closed）
+    + 表格结构版本进 base 迁移门。"""
+
+    def _table_catalog(self) -> tuple[dict, list[dict]]:
+        from atomize import build_table_artifacts
+        from requirement_kb import KnowledgeRepository
+
+        kb = KnowledgeRepository.from_paths([])
+        block, items, cells = build_table_artifacts(
+            [["Name", "Requirement"], ["Voltage", "The meter shall operate at 230 V."]],
+            table_id="TBL-000001",
+            block_id="BLK-000002",
+            order=2,
+            table_title="Electrical",
+            section_path=["4 Functions"],
+            knowledge_bases=kb,
+        )
+        catalog = claim_catalog.build_claim_catalog(
+            [block], items, table_cell_items=cells
+        )
+        return catalog, cells
+
+    def _publish_table(self, root: Path, *, write_cells: bool = True) -> dict:
+        catalog, cells = self._table_catalog()
+        self.assertEqual(
+            catalog["meta"].get("table_structure_status"), "ok",
+            "fixture catalog must be structurally clean",
+        )
+        if write_cells:
+            claim_artifacts.atomic_write_jsonl(root / "table_cell_items.jsonl", cells)
+        return _publish(root, catalog)
+
+    def test_cell_items_hash_bound_and_base_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._publish_table(root)
+            generation = json.loads(
+                (root / claim_artifacts.CLAIM_GENERATION_META).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                generation.get("table_cell_items_file_sha256"),
+                claim_artifacts.file_sha256(root / "table_cell_items.jsonl"),
+            )
+            loaded = claim_artifacts.load_committed_claim_base(root)
+            self.assertTrue(
+                claim_artifacts.committed_base_versions_are_current(loaded)
+            )
+
+    def test_cell_items_tamper_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._publish_table(root)
+            with (root / "table_cell_items.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"cell_id": "tampered"}) + "\n")
+            with self.assertRaises(claim_artifacts.ClaimArtifactError):
+                claim_artifacts.load_committed_claim_base(root)
+
+    def test_cell_items_delete_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._publish_table(root)
+            (root / "table_cell_items.jsonl").unlink()
+            with self.assertRaises(claim_artifacts.ClaimArtifactError):
+                claim_artifacts.load_committed_claim_base(root)
+
+    def test_cell_items_swap_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._publish_table(root)
+            _catalog_unused, cells = self._table_catalog()
+            swapped = [dict(cell, text="swapped text") for cell in cells]
+            claim_artifacts.atomic_write_jsonl(root / "table_cell_items.jsonl", swapped)
+            with self.assertRaises(claim_artifacts.ClaimArtifactError):
+                claim_artifacts.load_committed_claim_base(root)
+
+    def test_missing_cell_hash_binding_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._publish_table(root)
+            generation_path = root / claim_artifacts.CLAIM_GENERATION_META
+            generation = json.loads(generation_path.read_text(encoding="utf-8"))
+            del generation["table_cell_items_file_sha256"]
+            claim_artifacts.atomic_write_json(generation_path, generation)
+            with self.assertRaises(claim_artifacts.ClaimArtifactError):
+                claim_artifacts.load_committed_claim_base(root)
+
+    def test_publish_table_catalog_without_cell_items_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(claim_artifacts.ClaimArtifactError):
+                self._publish_table(root, write_cells=False)
+
+    def test_versions_gate_covers_table_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._publish_table(root)
+            loaded = claim_artifacts.load_committed_claim_base(root)
+            self.assertTrue(
+                claim_artifacts.committed_base_versions_are_current(loaded)
+            )
+            stale_version = copy.deepcopy(loaded)
+            stale_version["catalog_meta"]["table_structure_version"] = "table-structure-v1"
+            self.assertFalse(
+                claim_artifacts.committed_base_versions_are_current(stale_version)
+            )
+            migration = copy.deepcopy(loaded)
+            migration["catalog_meta"]["table_structure_status"] = "base_migration_required"
+            self.assertFalse(
+                claim_artifacts.committed_base_versions_are_current(migration)
+            )
+            needs_review = copy.deepcopy(loaded)
+            needs_review["catalog_meta"]["table_structure_status"] = "needs_review"
+            # needs_review 是审核状态不是迁移阻塞——base 仍 current
+            self.assertTrue(
+                claim_artifacts.committed_base_versions_are_current(needs_review)
+            )
 
 
 if __name__ == "__main__":

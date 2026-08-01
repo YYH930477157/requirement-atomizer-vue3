@@ -21,7 +21,7 @@ def _hash(label: str) -> str:
 def _proposal() -> dict:
     claim_hash = _hash("claim")
     return {
-        "schema": "claim-queue-proposal/v2",
+        "schema": "claim-queue-proposal/v3",
         "proposal_id": "CQP-12345678-9abcdef0",
         "claim_id": "CLM-0123456789abcdef",
         "claim_hash": claim_hash,
@@ -30,7 +30,7 @@ def _proposal() -> dict:
         "expected_ledger_state": "uncertain",
         "focus": {
             "kind": "text_span",
-            "adapter_version": "claim-focus-adapter-v1",
+            "adapter_version": "claim-focus-adapter-v3",
             "claim_id": "CLM-0123456789abcdef",
             "claim_hash": claim_hash,
             "block_id": "B1",
@@ -433,6 +433,101 @@ class ClaimQueueExecutionTests(unittest.TestCase):
         self.assertEqual(raised.exception.result["lifecycle"], "rebuild_pending")
         self.assertEqual(current["lifecycle"], "rebuild_pending")
         self.assertEqual(rows[-1]["event_kind"], "requirements_published")
+
+    def test_crash_after_base_publication_recovers_full_verifier_usage(self) -> None:
+        """P0-1：verifier 段成本必须累计进 attempt 日志，恢复终态不少记。
+
+        复审探针：实际 3 calls/60 tokens，发布后崩溃并恢复——修复前 refresh
+        前交棒清空 checkpoint，verifier 段只写 verifier WAL，
+        ``_usage_from_history`` 只见抽取段（终态仅 1 call/20 tokens）。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def targeted(*_args, **kwargs):
+                current = kwargs["claim_execution"]
+                budget = current["request_budget"]
+                reservation = budget.reserve({"model": "x", "max_tokens": 32})
+                budget.commit(reservation, {"total_tokens": 20})
+                current["pre_publish_check"]()
+                patch = {
+                    "supplement_id": "SUP-0123456789ab",
+                    "origin": {"kind": "claim_queue"},
+                }
+                current["on_supplement_persisted"](patch)
+                atomic_write_jsonl(root / ai_extract.AI_REQUIREMENTS, [{
+                    "ai_req_id": "AIR-1",
+                    "title": "Configurable output",
+                }])
+                current["on_requirements_published"]([])
+                return {"schema": "claim-reextract-mutation/v1", "requirements": 1}
+
+            def crashy_refresh(_root_dir, **kwargs):
+                budget = kwargs["verifier_request_budget"]
+                # verifier 段两次付费调用——queue checkpoint 未被交棒清空时
+                # 必须持续向 attempt 日志追加累计快照
+                for _ in range(2):
+                    reservation = budget.reserve({"messages": [], "max_tokens": 1})
+                    budget.commit(reservation, {"total_tokens": 20})
+                raise RuntimeError("crash after base publication")
+
+            with self.assertRaises(execution.ClaimQueueExecutionUnavailable):
+                self._run(root, targeted, refresh=mock.Mock(side_effect=crashy_refresh))
+            rows = claim_reextract_attempts.read_attempt_log(root).rows
+            checkpoints = [
+                row for row in rows if row["event_kind"] == "budget_checkpoint"
+            ]
+            # 抽取 1 call/20 tokens + verifier 2 calls/40 tokens 全量累计
+            self.assertEqual(checkpoints[-1]["checkpoint"]["calls"], 3)
+            self.assertEqual(checkpoints[-1]["checkpoint"]["total_tokens"], 60)
+
+            proposal = _proposal()
+            second_refresh = mock.Mock(return_value={
+                "kind": "claim_shadow_refresh",
+                "claim_shadow": {"effective_fresh": True},
+            })
+            with mock.patch.object(
+                ai_extract,
+                "config_for_route",
+                mock.Mock(side_effect=AssertionError(
+                    "deterministic recovery must not load LLM config"
+                )),
+            ), mock.patch.object(
+                execution, "_load_b_track_authority",
+                return_value={"target_publication_revision": _hash("new-publication")},
+            ), mock.patch.object(
+                ai_extract, "refresh_claim_shadow", second_refresh,
+            ), mock.patch.object(
+                execution, "load_committed_effective_snapshot",
+                return_value=_final_snapshot(proposal),
+            ), mock.patch.object(
+                execution, "assess_effective_freshness",
+                return_value={"effective_fresh": True, "freshness_reasons": []},
+            ):
+                recovered = execution.execute_claim_queue_proposal(
+                    root,
+                    proposal_id=proposal["proposal_id"],
+                    expected_claim_effective_revision=proposal[
+                        "claim_effective_revision"
+                    ],
+                    expected_ledger_state="uncertain",
+                    actor="expert:yyh",
+                    allow_llm=False,
+                    route="openai_compatible",
+                    maximum_calls=0,
+                    total_token_budget=0,
+                    request_idempotency_key="request-1",
+                )
+            rows = claim_reextract_attempts.read_attempt_log(root).rows
+
+        self.assertEqual(recovered["lifecycle"], "executed")
+        # 恢复终态（返回值 + 终态事件）必须是全量 3 calls/60 tokens
+        self.assertEqual(recovered["usage"]["calls"], 3)
+        self.assertEqual(recovered["usage"]["total_tokens"], 60)
+        self.assertEqual(rows[-1]["event_kind"], "reextract_succeeded")
+        self.assertEqual(rows[-1]["usage"]["calls"], 3)
+        self.assertEqual(rows[-1]["usage"]["total_tokens"], 60)
+
 
     def test_same_idempotency_key_replays_terminal_without_revalidating_proposal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1127,7 +1222,7 @@ class ClaimQueueRealFoldReplayTests(unittest.TestCase):
         ]
         self.assertTrue(proposals)
         proposal = proposals[0]
-        self.assertEqual(proposal["schema"], "claim-queue-proposal/v2")
+        self.assertEqual(proposal["schema"], "claim-queue-proposal/v3")
         self.assertIn(
             "expected_claim_effective_revision",
             proposal["execution_preconditions"],

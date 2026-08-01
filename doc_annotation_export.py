@@ -43,7 +43,7 @@ PDF_PAGE_RENDER_DPI = 144
 LAYOUT_OPTIMIZED = "optimized"
 LAYOUT_PDF_ORIGINAL = "pdf_original"
 ANNOTATION_LAYOUT_MODES = {LAYOUT_OPTIMIZED, LAYOUT_PDF_ORIGINAL}
-CLAIM_ANNOTATION_VERSION = "claim-annotation-v14"
+CLAIM_ANNOTATION_VERSION = "claim-annotation-v16"
 
 
 class ClaimAnnotationUnavailable(ValueError):
@@ -329,6 +329,7 @@ def _claim_annotation_state(
         "records": [],
         "spans_by_block": {},
         "rows_by_block": {},
+        "cells_by_block": {},
         "distribution": {},
     }
     try:
@@ -466,23 +467,41 @@ def _claim_annotation_state(
                     if isinstance(cell_row, dict) and cell_row.get("bbox"):
                         cell_bbox = cell_row.get("bbox")
                     if cell_bbox and cell_row.get("page_number") is not None:
+                        # 页尺寸取自表块 pdf_regions（cell bbox 是页面坐标，
+                        # 百分比换算必须带真实页宽页高，不猜默认尺寸）
+                        cell_page = int(cell_row.get("page_number"))
+                        dims = next(
+                            (
+                                region
+                                for region in (
+                                    source_blocks_by_id.get(block_id, {}).get("pdf_regions") or []
+                                )
+                                if _page_number(region.get("page_number")) == cell_page
+                            ),
+                            None,
+                        )
                         state.setdefault("cell_geometry", {}).setdefault(block_id, {})[
                             record["table_cell_id"]
                         ] = {
-                            "page": int(cell_row.get("page_number")),
+                            "page": cell_page,
                             "bbox": cell_bbox,
+                            "page_width": float(dims.get("page_width") or 0.0) if dims else 0.0,
+                            "page_height": float(dims.get("page_height") or 0.0) if dims else 0.0,
                         }
-                    continue
-                data_rows = _claim_table_data_rows(
-                    source_blocks_by_id.get(block_id, {}), focus
-                )
-                if not data_rows:
-                    raise ClaimFocusError("claim table focus has no unique current data row")
-                record["data_row_indexes"] = data_rows
-                record["mapped"] = True
-                by_row = state["rows_by_block"].setdefault(block_id, {})
-                for row_index in data_rows:
-                    by_row.setdefault(row_index, []).append(record)
+                    # P0-2：cell claim 必须落到公共 records（此前 continue 跳过
+                    # records.append，生产链路 claim_records/claim_zones 全为 0）
+                    state["cells_by_block"].setdefault(block_id, []).append(record)
+                else:
+                    data_rows = _claim_table_data_rows(
+                        source_blocks_by_id.get(block_id, {}), focus
+                    )
+                    if not data_rows:
+                        raise ClaimFocusError("claim table focus has no unique current data row")
+                    record["data_row_indexes"] = data_rows
+                    record["mapped"] = True
+                    by_row = state["rows_by_block"].setdefault(block_id, {})
+                    for row_index in data_rows:
+                        by_row.setdefault(row_index, []).append(record)
         except ClaimFocusError as exc:
             record["mapping_error"] = str(exc)
         state["records"].append(record)
@@ -496,14 +515,49 @@ def _claim_pdf_zones(
     records: list[dict[str, Any]],
     geometry: dict[str, list[dict[str, Any]]],
     row_geometry: dict[str, dict[int, list[dict[str, Any]]]] | None,
+    cell_geometry: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Attach mapped claim identities to available PDF block/row geometry."""
+    """Attach mapped claim identities to available PDF block/row/cell geometry."""
     zones: list[dict[str, Any]] = []
     for record in records:
         if not record.get("mapped"):
             continue
         block_id = str(record.get("block_id") or "")
         focus = dict(record.get("focus") or {})
+        if focus.get("kind") == "table_cell":
+            # M2：cell 级 claim 热区——记录阶段已绑定真实 pdfplumber cell bbox，
+            # 此处消费出区；此前 table_cell 记录落入行分支但无 data_row_indexes，
+            # 真实 PDF 的 cell claim 永远没有热区
+            cell_id = str(record.get("table_cell_id") or focus.get("table_cell_id") or "")
+            entry = ((cell_geometry or {}).get(block_id) or {}).get(cell_id) or {}
+            page = _page_number(entry.get("page"))
+            bbox = entry.get("bbox")
+            page_width = float(entry.get("page_width") or 0.0)
+            page_height = float(entry.get("page_height") or 0.0)
+            if (
+                page
+                and isinstance(bbox, list)
+                and len(bbox) == 4
+                and page_width > 0
+                and page_height > 0
+            ):
+                zones.append({
+                    "claim_id": str(record.get("claim_id") or ""),
+                    "claim_hash": str(record.get("claim_hash") or ""),
+                    "block_id": block_id,
+                    "page": page,
+                    "rect": _pdf_zone_rect({
+                        "bbox": [float(value) for value in bbox],
+                        "page_width": page_width,
+                        "page_height": page_height,
+                    }),
+                    "resolution": str(record.get("resolution") or "uncertain"),
+                    "focus_kind": "table_cell",
+                    "row_index": int(record.get("row_index") or 0),
+                    "column_index": int(record.get("column_index") or 0),
+                    "table_cell_id": cell_id,
+                })
+            continue
         if focus.get("kind") in {"text_span", "list_item"}:
             region_sets = [(None, geometry.get(block_id) or [])]
         else:
@@ -1024,7 +1078,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
                    marker_state: dict[str, Any] | None = None,
                    claim_distribution: dict[str, dict[str, int]] | None = None,
                    claim_spans: dict[str, list[dict[str, Any]]] | None = None,
-                   claim_rows: dict[str, dict[int, list[dict[str, Any]]]] | None = None) -> str:
+                   claim_rows: dict[str, dict[int, list[dict[str, Any]]]] | None = None,
+                   claim_cells: dict[str, list[dict[str, Any]]] | None = None) -> str:
     """渲染文档块：正文正常，非正文区折叠，noise 灰显，纯符号行跳过。"""
     parts: list[str] = []
     collapse_open = False
@@ -1081,7 +1136,8 @@ def _render_blocks(blocks: list[dict[str, Any]], anchor_map: dict[str, list[dict
                                        echo_reqs=(echo_map or {}).get(bid) or [],
                                        claim_counts=(claim_distribution or {}).get(bid),
                                        claim_spans=(claim_spans or {}).get(bid) or [],
-                                       claim_rows=(claim_rows or {}).get(bid) or {})
+                                       claim_rows=(claim_rows or {}).get(bid) or {},
+                                       claim_cells=(claim_cells or {}).get(bid) or [])
 
         # 非正文区：攒进折叠缓冲（region 变化时先 flush 旧组，开新组）
         if region in _COLLAPSIBLE_REGIONS:
@@ -1321,10 +1377,25 @@ def _source_classification_marker(owner: str, marker_state: dict[str, Any], text
     )
 
 
+def _claim_cell_chip(claim: dict[str, Any]) -> str:
+    """cell 级 claim 入口小圆点（P1-3）——挂在物理 R×C 对应的 <th>/<td> 内。"""
+    claim_id = html.escape(str(claim.get("claim_id") or ""), quote=True)
+    resolution = html.escape(str(claim.get("resolution") or "uncertain"), quote=True)
+    cell_id = html.escape(str(claim.get("table_cell_id") or ""), quote=True)
+    return (
+        f'<button class="claim-cell-chip claim-{resolution}" type="button" '
+        f'data-claim-id="{claim_id}" data-claim-resolution="{resolution}" '
+        f'data-table-cell-id="{cell_id}" '
+        f'title="Claim {claim_id} · {resolution}" aria-label="Claim {claim_id} · {resolution}">'
+        '<i></i></button>'
+    )
+
+
 def _render_table_inner(block: dict, anchored: list[dict[str, Any]] | None = None,
                         req_numbers: dict[str, int] | None = None,
                         marker_state: dict[str, Any] | None = None,
-                        claim_rows: dict[int, list[dict[str, Any]]] | None = None
+                        claim_rows: dict[int, list[dict[str, Any]]] | None = None,
+                        claim_cells: list[dict[str, Any]] | None = None
                         ) -> tuple[str, set[str]]:
     """表格块渲染成真 <table>（题注 + 表头 + 斑马纹数据行 + 横向滚动容器）。"""
     header_rows = block.get("header_rows") or []
@@ -1338,18 +1409,46 @@ def _render_table_inner(block: dict, anchored: list[dict[str, Any]] | None = Non
     placed: set[str] = set()
     title = str(block.get("table_title") or "")
     rebuilt = block.get("table_source") == "text_layout"
+    # P1-3：cell claim 按物理 R×C 落位——表头行按 header_row_indexes 定位 <th>，
+    # 数据格按 cell 记录的 data_row_index 定位 <td>，标题格挂题注；
+    # 无显式定位依据（既非表头/标题物理行、又无 data_row_index）不猜坐标。
+    title_row_indexes = {int(value) for value in (block.get("title_row_indexes") or [])}
+    header_row_index_list = [int(value) for value in (block.get("header_row_indexes") or [])]
+    header_position = {row_index: pos for pos, row_index in enumerate(header_row_index_list)}
+    caption_claims: list[dict[str, Any]] = []
+    head_claims: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    body_claims: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for record in claim_cells or []:
+        row_index = int(record.get("row_index") or 0)
+        column_index = int(record.get("column_index") or 0)
+        data_row_index = record.get("data_row_index")
+        if row_index in title_row_indexes:
+            caption_claims.append(record)
+        elif row_index in header_position:
+            head_claims.setdefault((header_position[row_index], column_index), []).append(record)
+        elif isinstance(data_row_index, int) and not isinstance(data_row_index, bool):
+            body_claims.setdefault((data_row_index, column_index), []).append(record)
     caption = ""
-    if title:
+    if title or caption_claims:
         badge = '<span class="table-badge">无画线重建</span>' if rebuilt else ""
-        caption = f'<figcaption>{html.escape(title)}{badge}</figcaption>'
-    head = "".join(
-        "<tr>" + "".join(f"<th>{html.escape(str(c))}</th>" for c in list(row) + [""] * (ncols - len(row))) + "</tr>"
-        for row in header_rows
-    )
+        caption_chips = "".join(_claim_cell_chip(claim) for claim in caption_claims)
+        caption = (f'<figcaption>{html.escape(title)}{badge}'
+                   f'<span class="claim-cell-controls">{caption_chips}</span></figcaption>')
+    head_rows_html: list[str] = []
+    for head_pos, row in enumerate(header_rows):
+        th_cells: list[str] = []
+        for col_offset, c in enumerate(list(row) + [""] * (ncols - len(row))):
+            chips = "".join(
+                _claim_cell_chip(claim)
+                for claim in head_claims.get((head_pos, col_offset + 1)) or []
+            )
+            th_cells.append(f"<th>{html.escape(str(c))}{chips}</th>")
+        head_rows_html.append("<tr>" + "".join(th_cells) + "</tr>")
+    head = "".join(head_rows_html)
     body_rows: list[str] = []
     for data_row_index, row in enumerate(data_rows, start=1):
         cells: list[str] = []
-        for c in list(row) + [""] * (ncols - len(row)):
+        for col_offset, c in enumerate(list(row) + [""] * (ncols - len(row))):
             cell_text = str(c)
             rendered_cell, newly_placed = _render_text_with_quote_markers(
                 cell_text, anchored_rows, numbers, placed, state
@@ -1358,6 +1457,12 @@ def _render_table_inner(block: dict, anchored: list[dict[str, Any]] | None = Non
                 owner = _unanalyzed_owner_for_text(cell_text)
                 if owner:
                     rendered_cell += _source_classification_marker(owner, state, cell_text)
+            cell_chips = "".join(
+                _claim_cell_chip(claim)
+                for claim in body_claims.get((data_row_index, col_offset + 1)) or []
+            )
+            if cell_chips:
+                rendered_cell += f'<span class="claim-cell-controls">{cell_chips}</span>'
             cells.append(f"<td>{rendered_cell}</td>")
         row_claims = list((claim_rows or {}).get(data_row_index) or [])
         if cells and row_claims:
@@ -1485,7 +1590,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
                       echo_reqs: list[dict[str, Any]] | None = None,
                       claim_counts: dict[str, int] | None = None,
                       claim_spans: list[dict[str, Any]] | None = None,
-                      claim_rows: dict[int, list[dict[str, Any]]] | None = None) -> str:
+                      claim_rows: dict[int, list[dict[str, Any]]] | None = None,
+                      claim_cells: list[dict[str, Any]] | None = None) -> str:
     cls = ["doc-block"]
     if is_heading:
         cls.append("heading")
@@ -1572,7 +1678,8 @@ def _render_one_block(bid: str, text: str, path: list, region: str,
         )
     if is_table and block is not None:
         table_html, placed_ids = _render_table_inner(
-            block, anchored, numbers, state, claim_rows=claim_rows
+            block, anchored, numbers, state, claim_rows=claim_rows,
+            claim_cells=claim_cells,
         )
         fallback = _render_fallback_chips(anchored, numbers, placed_ids, state)
         sub_chips = _render_sub_anchor_chips(sub_anchors, numbers, state)
@@ -1639,6 +1746,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
     claim_distribution = dict(claim_state["distribution"])
     claim_spans = dict(claim_state["spans_by_block"])
     claim_rows = dict(claim_state["rows_by_block"])
+    claim_cells = dict(claim_state["cells_by_block"])
 
     anchor_map: dict[str, list[dict[str, Any]]] = {}
     for req in requirements:
@@ -1700,7 +1808,8 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
             blocks, requirements, pdf_geometry or {}, covered, semantics=pdf_semantics,
             row_geometry=pdf_row_geometry)
         claim_pdf_zones = _claim_pdf_zones(
-            claim_records, pdf_geometry or {}, pdf_row_geometry
+            claim_records, pdf_geometry or {}, pdf_row_geometry,
+            cell_geometry=dict(claim_state.get("cell_geometry") or {}),
         )
         pdf_context_map = _pdf_context_records(
             blocks, block_zones, include_requirements=True, semantics=pdf_semantics)
@@ -1723,6 +1832,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
             claim_distribution=claim_distribution,
             claim_spans=claim_spans,
             claim_rows=claim_rows,
+            claim_cells=claim_cells,
         )
         allocated = {
             str(key): int(value)
@@ -1744,6 +1854,7 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
             claim_distribution=claim_distribution,
             claim_spans=claim_spans,
             claim_rows=claim_rows,
+            claim_cells=claim_cells,
         )
     reqs_json = json.dumps(requirements, ensure_ascii=False).replace("</", "<\\/")
     omissions_json = json.dumps(omission_items, ensure_ascii=False).replace("</", "<\\/")
@@ -2729,6 +2840,11 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
         claim_id = str(zone.get("claim_id") or "")
         if zone.get("row_index") is not None:
             locator_attrs = f' data-row-index="{int(zone["row_index"])}"'
+            if zone.get("table_cell_id"):
+                locator_attrs += (
+                    f' data-cell-id="{html.escape(str(zone["table_cell_id"]), quote=True)}"'
+                    f' data-column-index="{int(zone.get("column_index") or 0)}"'
+                )
         else:
             locator_attrs = (
                 f' data-claim-start="{int(zone.get("start") or 0)}"'
@@ -2779,6 +2895,57 @@ def _render_pdf_page_stack(pages: list[dict[str, Any]], requirements: list[dict[
         f'<div class="pdf-page-list" id="pdf-page-list">{"".join(page_html)}</div></div>')
 
 
+def _cell_context_payload(
+    out_dir: Path,
+    cell_geometry: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    """cell 级卡片数据（table-structure 单元格闭环）：表标题/行头/列头/正文 + 如实来源坐标。
+
+    没有真实 bbox 的 cell 只给 R×C 身份（UI 用表格 DOM 单元格，不伪造 PDF 几何）。
+    该数据与页图/几何无关——影印不可用时也必须可用（M2：docx/xlsx 无转换器环境
+    不应连 DOM 表格的 cell 卡片都拿不到）。"""
+    cell_context: dict[str, dict[str, Any]] = {}
+    try:
+        payload_cells = read_jsonl(out_dir / "table_cell_items.jsonl")
+    except (OSError, ValueError, json.JSONDecodeError):
+        payload_cells = []
+    for cell in payload_cells:
+        if not isinstance(cell, dict):
+            continue
+        cell_id = str(cell.get("cell_id") or "")
+        block_id = str(cell.get("table_block_id") or "")
+        if not cell_id or not block_id:
+            continue
+        geometry_entry = (cell_geometry.get(block_id) or {}).get(cell_id) or {}
+        cell_context[f"{block_id}#{cell_id}"] = {
+            "cell_id": cell_id,
+            "block_id": block_id,
+            "table_title": str(cell.get("table_title") or ""),
+            "row_index": int(cell.get("row_index") or 0),
+            "column_index": int(cell.get("column_index") or 0),
+            "data_row_index": cell.get("data_row_index"),
+            "structural_role": str(cell.get("structural_role") or ""),
+            # 合并跨度：UI 用 DOM colspan/rowspan 渲染真实合并格，
+            # covered 坐标只读展示（不可点），不冒充独立单元格
+            "row_span": int(cell.get("row_span") or 1),
+            "column_span": int(cell.get("column_span") or 1),
+            "covered_coordinates": [
+                [int(pair[0]), int(pair[1])]
+                for pair in (cell.get("covered_coordinates") or [])
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            ],
+            "header_path": list(cell.get("header_path") or []),
+            "row_header_context": list(cell.get("row_header_context") or []),
+            "text": str(cell.get("text") or ""),
+            "page": geometry_entry.get("page"),
+            "bbox": geometry_entry.get("bbox"),
+            "geometry_kind": str(cell.get("geometry_kind") or ""),
+            "sheet_name": cell.get("sheet_name"),
+            "a1_address": cell.get("a1_address"),
+        }
+    return cell_context
+
+
 def build_pdf_annotation_payload(
     out_dir: Path,
     *,
@@ -2802,6 +2969,11 @@ def build_pdf_annotation_payload(
         "claim_annotation_version": CLAIM_ANNOTATION_VERSION,
         "claim_records": list(claim_state["records"]),
         "claim_zones": [],
+        # M2：cell 上下文与页图/几何无关——影印不可用的 early-return 同样下发，
+        # UI 的 DOM 表格 cell 卡片不依赖影印可用性
+        "cell_context": _cell_context_payload(
+            out_dir, dict(claim_state.get("cell_geometry") or {})
+        ),
     }
     source_pdf = _source_pdf_path(out_dir)
     facsimile_status: str | None = None
@@ -2899,7 +3071,8 @@ def build_pdf_annotation_payload(
     block_zones = _pdf_block_zones(blocks, requirements, geometry, covered,
                                    row_geometry=row_geometry)
     claim_zones = _claim_pdf_zones(
-        list(claim_state["records"]), geometry, row_geometry
+        list(claim_state["records"]), geometry, row_geometry,
+        cell_geometry=dict(claim_state.get("cell_geometry") or {}),
     )
     # 行级卡片数据（v12 表格行热区）：行原文/翻译/页码——翻译读批注译文 sidecar,
     # 与静态影印共用 _pdf_context_records 同源实现；查不到翻译如实空串,不编。
@@ -2910,39 +3083,9 @@ def build_pdf_annotation_payload(
         for key, record in _pdf_context_records(blocks, block_zones).items()
         if "#R" in key
     }
-    # cell 级卡片（table-structure-v2）：表标题/行头/列头/正文 + 如实来源坐标。
-    # 没有真实 bbox 的 cell 只给 R×C 身份（UI 用表格 DOM 单元格，不伪造 PDF 几何）。
-    cell_context: dict[str, dict[str, Any]] = {}
-    try:
-        _payload_cells = read_jsonl(out_dir / "table_cell_items.jsonl")
-    except (OSError, ValueError, json.JSONDecodeError):
-        _payload_cells = []
-    cell_geometry = dict(claim_state.get("cell_geometry") or {})
-    for cell in _payload_cells:
-        if not isinstance(cell, dict):
-            continue
-        cell_id = str(cell.get("cell_id") or "")
-        block_id = str(cell.get("table_block_id") or "")
-        if not cell_id or not block_id:
-            continue
-        geometry_entry = (cell_geometry.get(block_id) or {}).get(cell_id) or {}
-        cell_context[f"{block_id}#{cell_id}"] = {
-            "cell_id": cell_id,
-            "block_id": block_id,
-            "table_title": str(cell.get("table_title") or ""),
-            "row_index": int(cell.get("row_index") or 0),
-            "column_index": int(cell.get("column_index") or 0),
-            "data_row_index": cell.get("data_row_index"),
-            "structural_role": str(cell.get("structural_role") or ""),
-            "header_path": list(cell.get("header_path") or []),
-            "row_header_context": list(cell.get("row_header_context") or []),
-            "text": str(cell.get("text") or ""),
-            "page": geometry_entry.get("page"),
-            "bbox": geometry_entry.get("bbox"),
-            "geometry_kind": str(cell.get("geometry_kind") or ""),
-            "sheet_name": cell.get("sheet_name"),
-            "a1_address": cell.get("a1_address"),
-        }
+    # cell 级卡片与 early-return 同源（_cell_context_payload，已挂 claim_payload）——
+    # 两路输出一致靠共用实现，不是各写一份
+    cell_context = dict(claim_payload.get("cell_context") or {})
     return {"available": True, "pages": pages, "pages_dir": ANNOTATION_PAGES_DIR,
             "requirement_markers": requirement_markers, "omission_markers": omission_markers,
             # 影印来源血统：office 转换影印如实标引擎，原生 PDF 为 None——不冒充原生
@@ -3346,6 +3489,14 @@ mark.sc-quote {{ background: linear-gradient(transparent 44%, var(--highlight) 4
 .claim-row-chip.claim-excluded {{ color: #6b7280; }}
 .claim-row-chip.claim-uncertain {{ color: #9a6700; }}
 .claim-row-chip.selected {{ outline: 2px solid currentColor; outline-offset: 1px; }}
+.claim-cell-controls {{ display: inline-flex; gap: 3px; margin-left: 4px; vertical-align: middle; }}
+.claim-cell-chip {{ width: 12px; height: 12px; padding: 0; border: 0; background: transparent;
+  cursor: pointer; vertical-align: middle; }}
+.claim-cell-chip i {{ display: block; width: 6px; height: 6px; margin: auto; border-radius: 2px; background: currentColor; }}
+.claim-cell-chip.claim-covered {{ color: #2f6842; }}
+.claim-cell-chip.claim-excluded {{ color: #6b7280; }}
+.claim-cell-chip.claim-uncertain {{ color: #9a6700; }}
+.claim-cell-chip.selected {{ outline: 2px solid currentColor; outline-offset: 1px; }}
 .badge.st-accepted {{ background: var(--st-accepted); color: var(--st-accepted-tx); }}
 .badge.st-rejected {{ background: var(--st-rejected); color: var(--st-rejected-tx); }}
 .badge.st-needs_discussion {{ background: var(--st-discussion); color: var(--st-discussion-tx); }}

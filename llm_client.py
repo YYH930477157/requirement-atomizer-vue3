@@ -37,6 +37,16 @@ def apply_min_tokens(config, purpose: str):
 
 RATE_LIMIT_MIN_ATTEMPTS = 8
 LLM_ATTEMPT_POLICY_VERSION = "llm-attempt-policy-v1"
+_DURABLE_BUDGET_CHECKPOINT_ATTR = "_ratomizer_budget_checkpoint_durable"
+
+
+def mark_budget_checkpoint_durable(exc: BaseException) -> None:
+    """Mark that a failed checkpoint callback already crossed its commit point."""
+    setattr(exc, _DURABLE_BUDGET_CHECKPOINT_ATTR, True)
+
+
+def budget_checkpoint_is_durable(exc: BaseException) -> bool:
+    return getattr(exc, _DURABLE_BUDGET_CHECKPOINT_ATTR, False) is True
 
 # 截断自动升级上限（test3 实证：3.22 章推理模型 reasoning 吃光 6144 预算 → 空响应 →
 # JSON 修复调用同样被截 → 整章稳定失败）。finish_reason=length 或空 content 时 max_tokens
@@ -337,6 +347,16 @@ class LLMRequestBudget:
             "termination_reason": self._termination_reason,
         }
 
+    def checkpoint(self) -> Callable[[dict[str, Any]], None] | None:
+        """Current checkpoint callback, if any.
+
+        P0-1：阶段交棒（队列 attempt → verifier attempt scope）需要读取既有
+        callback 做链式累计，而不是强行清空后替换——否则 verifier 阶段的付费
+        调用/token 从崩溃恢复的数据源（队列 attempt 日志）里消失。
+        """
+        with self._checkpoint_lock:
+            return self._checkpoint
+
     def set_checkpoint(
         self,
         checkpoint: Callable[[dict[str, Any]], None] | None,
@@ -355,6 +375,26 @@ class LLMRequestBudget:
             except BaseException:
                 with self._lock:
                     self._checkpoint = previous
+                raise
+
+    def swap_checkpoint(
+        self,
+        expected: Callable[[dict[str, Any]], None] | None,
+        checkpoint: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        """CAS the checkpoint owner without exposing an ownerless mutation window."""
+        with self._checkpoint_lock:
+            with self._lock:
+                if self._checkpoint is not expected:
+                    raise RuntimeError("LLM request budget checkpoint owner changed")
+                self._checkpoint = checkpoint
+                snapshot = self._snapshot_unlocked()
+            try:
+                if checkpoint is not None:
+                    checkpoint(snapshot)
+            except BaseException:
+                with self._lock:
+                    self._checkpoint = expected
                 raise
 
     @staticmethod
@@ -388,11 +428,16 @@ class LLMRequestBudget:
             try:
                 if checkpoint is not None:
                     checkpoint(snapshot)
-            except BaseException:
+            except BaseException as exc:
                 # Persistence failed before the caller could issue the HTTP request.
-                with self._lock:
-                    if self._reservations.pop(reservation_id, None) is not None:
-                        self._attempted_calls -= 1
+                # A fanout owner may already have committed the reservation to a
+                # durable outbox before its second sink failed. That transition is
+                # irreversible: retain the in-memory reservation so later callers
+                # cannot reuse paid call/token authorization.
+                if not budget_checkpoint_is_durable(exc):
+                    with self._lock:
+                        if self._reservations.pop(reservation_id, None) is not None:
+                            self._attempted_calls -= 1
                 raise
         return reservation_id
 
@@ -981,6 +1026,11 @@ def _post_json(
                 ) from exc
             raise LLMResponseError(f"LLM service returned HTTP {exc.code}: {raw}") from exc
         except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+            if request_succeeded:
+                # A valid provider response has already consumed the paid call.
+                # Local checkpoint/trace failures must never re-enter transport
+                # retry and issue the same request again.
+                raise
             # http.client.HTTPException（IncompleteRead/RemoteDisconnected/BadStatusLine）不是
             # URLError 子类——漏捕时一次传输抖动直接中止整轮抽取（test3 实测三连崩）。
             LOGGER.warning("LLM 连接异常 model=%s dur=%.1fs attempt=%d err=%s",

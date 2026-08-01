@@ -41,7 +41,11 @@
         "claim-catalog-v3",
         "claim-catalog-v4",
         "claim-catalog-v5",
-        "claim-catalog-v6"
+        "claim-catalog-v6",
+        "claim-catalog-v7",
+        "claim-catalog-v8",
+        "claim-catalog-v9",
+        "claim-catalog-v10"
       ]
     },
     "document_generation_id": {
@@ -176,6 +180,40 @@
     },
     "table_context": {
       "$ref": "#/$defs/table_context"
+    },
+    "semantic_context": {
+      "type": "string"
+    },
+    "span_aliases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "cell_start",
+          "cell_end"
+        ],
+        "properties": {
+          "cell_start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cell_end": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "raw_locator": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/raw_locator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "allOf": [
@@ -1072,7 +1110,12 @@
             "empty",
             "exact_container_duplicate",
             "repeated_page_furniture",
-            "separator_only"
+            "separator_only",
+            "ambiguous_table_structure",
+            "weak_signal_table_cell",
+            "unsignaled_table_cell",
+            "rejected_matrix_marker_cell",
+            "untyped_colon_spec_cell"
           ]
         },
         "rule_id": {
