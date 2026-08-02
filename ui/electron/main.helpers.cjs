@@ -365,9 +365,127 @@ function appendBackendLog(logsDir, label, chunk, deps = {}) {
   }
 }
 
+// --- 最近会话（重启后直接查看上次结果）---------------------------------------
+// 持久化在 <userData>/recent-sessions.json（机器本地，只含输出目录路径与时间，无敏感内容）。
+// 每次成功连接审查会话（含复用）都登记；重启时主进程自动恢复最近一个仍然存在的输出目录，
+// 渲染进程的 loadInitialApiSession 轮询 getApiSession 自然接上——查看历史结果不必重跑管线。
+const OUTPUT_DIR_MARKERS = ["manifest.json", "blocks.jsonl", "ai_requirements.jsonl"];
+const RECENT_SESSIONS_LIMIT = 8;
+const RECENT_SESSIONS_VERSION = 1;
+
+function isLikelyOutputDir(dirPath, deps = {}) {
+  const fsImpl = deps.fs || fs;
+  const dir = String(dirPath || "").trim();
+  if (!dir) return false;
+  try {
+    if (!fsImpl.statSync(dir).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+  // manifest 一旦存在就必须可解析；否则即使还有 blocks/AI 文件，也不能把半截目录
+  // 选成自动恢复目标。没有 manifest 的旧 B 轨目录仍可由其他阶段产物恢复。
+  const manifestPath = path.join(dir, "manifest.json");
+  if (fsImpl.existsSync(manifestPath)) {
+    try {
+      if (!fsImpl.statSync(manifestPath).isFile()) return false;
+      const manifest = JSON.parse(fsImpl.readFileSync(manifestPath, "utf8"));
+      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return OUTPUT_DIR_MARKERS
+    .filter((marker) => marker !== "manifest.json")
+    .some((marker) => {
+      try {
+        return fsImpl.statSync(path.join(dir, marker)).isFile();
+      } catch {
+        return false;
+      }
+    }) || fsImpl.existsSync(manifestPath);
+}
+
+function loadRecentSessions(filePath, deps = {}) {
+  const fsImpl = deps.fs || fs;
+  try {
+    const payload = JSON.parse(fsImpl.readFileSync(filePath, "utf8"));
+    const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+    return entries
+      .map((entry) => ({
+        outputDir: String(entry?.outputDir || "").trim(),
+        openedAt: String(entry?.openedAt || "").trim(),
+      }))
+      .filter((entry) => entry.outputDir);
+  } catch {
+    // 缺失/损坏按"无历史"处理——下次成功连接自愈，绝不影响应用启动
+    return [];
+  }
+}
+
+function recordRecentSession(filePath, outputDir, deps = {}) {
+  const fsImpl = deps.fs || fs;
+  const now = deps.now || new Date();
+  const dir = String(outputDir || "").trim();
+  if (!dir) return loadRecentSessions(filePath, deps);
+  const normalized = normalizeFsPath(dir);
+  // 按归一化路径去重（大小写/分隔符变体同一条），最新在前，封顶 8 条
+  const rest = loadRecentSessions(filePath, deps)
+    .filter((entry) => normalizeFsPath(entry.outputDir) !== normalized);
+  const entries = [{ outputDir: dir, openedAt: now.toISOString() }, ...rest]
+    .slice(0, RECENT_SESSIONS_LIMIT);
+  // tmp+rename 原子写：崩溃不留半截 JSON（损坏即当无历史，下次成功连接自愈）
+  fsImpl.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  fsImpl.writeFileSync(
+    tmp,
+    JSON.stringify({ version: RECENT_SESSIONS_VERSION, entries }, null, 2),
+    "utf8",
+  );
+  fsImpl.renameSync(tmp, filePath);
+  return entries;
+}
+
+function recentSessionLabel(outputDir, deps = {}) {
+  const fsImpl = deps.fs || fs;
+  // 优先用 manifest 里的源文档名作展示标签（"哪份标准的结果"一眼可辨）；
+  // 无 manifest（如纯 B 轨目录）或损坏时退回目录名
+  try {
+    const manifest = JSON.parse(
+      fsImpl.readFileSync(path.join(outputDir, "manifest.json"), "utf8"),
+    );
+    const input = String(manifest?.input || "").trim();
+    if (input) return path.basename(input);
+  } catch {
+    /* fall through to directory name */
+  }
+  return path.basename(outputDir) || outputDir;
+}
+
+function listRecentSessions(filePath, deps = {}) {
+  const fsImpl = deps.fs || fs;
+  return loadRecentSessions(filePath, deps).map((entry) => ({
+    ...entry,
+    label: recentSessionLabel(entry.outputDir, deps),
+    exists: fsImpl.existsSync(entry.outputDir),
+    isOutput: isLikelyOutputDir(entry.outputDir, deps),
+  }));
+}
+
+function resolveAutoRestoreCandidates(filePath, deps = {}) {
+  return listRecentSessions(filePath, deps)
+    .filter((entry) => entry.exists && entry.isOutput)
+    .map((entry) => entry.outputDir);
+}
+
+function resolveAutoRestoreDir(filePath, deps = {}) {
+  return resolveAutoRestoreCandidates(filePath, deps)[0] || "";
+}
+
 module.exports = {
   DEFAULT_LLM_SETTINGS,
+  OUTPUT_DIR_MARKERS,
   PROGRESS_PREFIX,
+  RECENT_SESSIONS_LIMIT,
   appendBackendLog,
   backendLogPath,
   bindAmbientLlmCredential,
@@ -376,9 +494,16 @@ module.exports = {
   buildExportAnnotationArgs,
   buildRunPipelineArgs,
   drainProgressLines,
+  isLikelyOutputDir,
+  listRecentSessions,
   loadLlmSettingsConfig,
+  loadRecentSessions,
   normalizeLlmEndpoint,
   normalizeLlmSettings,
+  recordRecentSession,
+  recentSessionLabel,
+  resolveAutoRestoreCandidates,
+  resolveAutoRestoreDir,
   resolveLlmTestConnection,
   resolveBackendCommand,
   resolveBoundLlmApiKey,

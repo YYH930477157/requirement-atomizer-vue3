@@ -1,19 +1,26 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { describe, expect, it } from "vitest"
 import path from "node:path"
 
 import {
   PROGRESS_PREFIX,
+  RECENT_SESSIONS_LIMIT,
   bindAmbientLlmCredential,
   buildChainArgs,
   buildExportAnnotationArgs,
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
+  isLikelyOutputDir,
+  listRecentSessions,
   loadLlmSettingsConfig,
+  loadRecentSessions,
   normalizeLlmEndpoint,
   normalizeLlmSettings,
+  recordRecentSession,
+  resolveAutoRestoreCandidates,
+  resolveAutoRestoreDir,
   resolveBackendCommand,
   resolveBoundLlmApiKey,
   resolveLlmTestConnection,
@@ -456,5 +463,147 @@ describe("appendBackendLog", () => {
     expect(() => appendBackendLog("/logs", "api", "text", { fs: boomFs })).not.toThrow()
     expect(backendLogPath("/logs", new Date("2026-01-02T00:00:00Z")).replace(/\\/g, "/"))
       .toBe("/logs/backend-2026-01-02.log")
+  })
+})
+
+
+describe("recent sessions helpers", () => {
+  it("loads an empty history for missing or corrupt files", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-recent-"))
+    try {
+      const file = path.join(dir, "recent-sessions.json")
+      expect(loadRecentSessions(file)).toEqual([])
+      writeFileSync(file, "{ not json", "utf8")
+      expect(loadRecentSessions(file)).toEqual([])
+      // 条目缺 outputDir 的行被丢弃
+      writeFileSync(file, JSON.stringify({ entries: [{ openedAt: "2026-01-01" }, { outputDir: "  " }] }), "utf8")
+      expect(loadRecentSessions(file)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("records deduped most-recent-first entries capped at the limit", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-recent-"))
+    try {
+      const file = path.join(dir, "recent-sessions.json")
+      for (let index = 0; index < 10; index += 1) {
+        recordRecentSession(file, path.join(dir, `out-${index}`), {
+          now: new Date(Date.UTC(2026, 0, index + 1)),
+        })
+      }
+      const entries = loadRecentSessions(file)
+      expect(entries).toHaveLength(RECENT_SESSIONS_LIMIT)
+      expect(entries[0].outputDir).toBe(path.join(dir, "out-9"))
+      // 再次打开同一条目 → 提到最前且不重复
+      recordRecentSession(file, path.join(dir, "out-5"), { now: new Date("2026-02-01T00:00:00Z") })
+      const bumped = loadRecentSessions(file)
+      expect(bumped[0].outputDir).toBe(path.join(dir, "out-5"))
+      expect(bumped.filter((entry) => entry.outputDir === path.join(dir, "out-5"))).toHaveLength(1)
+      expect(bumped[0].openedAt).toBe("2026-02-01T00:00:00.000Z")
+      // 原子写：不残留 tmp 文件，主体是合法 JSON
+      expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([])
+      expect(JSON.parse(readFileSync(file, "utf8")).version).toBe(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("detects likely output dirs by marker files only", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-recent-"))
+    try {
+      const outDir = path.join(dir, "out")
+      mkdirSync(outDir, { recursive: true })
+      expect(isLikelyOutputDir(outDir)).toBe(false)
+      writeFileSync(path.join(outDir, "blocks.jsonl"), "", "utf8")
+      expect(isLikelyOutputDir(outDir)).toBe(true)
+      expect(isLikelyOutputDir(path.join(dir, "missing"))).toBe(false)
+      expect(isLikelyOutputDir("")).toBe(false)
+      // 标记也可以是 B 轨产物
+      const bDir = path.join(dir, "b-track")
+      mkdirSync(bDir, { recursive: true })
+      writeFileSync(path.join(bDir, "ai_requirements.jsonl"), "", "utf8")
+      expect(isLikelyOutputDir(bDir)).toBe(true)
+
+      const corrupt = path.join(dir, "corrupt")
+      mkdirSync(corrupt, { recursive: true })
+      writeFileSync(path.join(corrupt, "manifest.json"), "{broken", "utf8")
+      writeFileSync(path.join(corrupt, "blocks.jsonl"), "", "utf8")
+      expect(isLikelyOutputDir(corrupt)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("labels recents from the manifest input and flags missing dirs", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-recent-"))
+    try {
+      const outDir = path.join(dir, "run-001")
+      mkdirSync(outDir, { recursive: true })
+      writeFileSync(
+        path.join(outDir, "manifest.json"),
+        JSON.stringify({ input: "D:/standards/ABNT NBR 16968.docx" }),
+        "utf8",
+      )
+      const goneDir = path.join(dir, "gone")
+      const file = path.join(dir, "recent-sessions.json")
+      recordRecentSession(file, outDir, { now: new Date("2026-01-01T00:00:00Z") })
+      recordRecentSession(file, goneDir, { now: new Date("2026-01-02T00:00:00Z") })
+
+      const listed = listRecentSessions(file)
+      expect(listed).toHaveLength(2)
+      expect(listed[0].outputDir).toBe(goneDir)
+      expect(listed[0].exists).toBe(false)
+      expect(listed[0].isOutput).toBe(false)
+      expect(listed[0].label).toBe("gone")
+      expect(listed[1].exists).toBe(true)
+      expect(listed[1].isOutput).toBe(true)
+      expect(listed[1].label).toBe("ABNT NBR 16968.docx")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("auto-restore picks the first surviving output dir or none", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-recent-"))
+    try {
+      const gone = path.join(dir, "gone")
+      const plain = path.join(dir, "plain")
+      mkdirSync(plain, { recursive: true })
+      const valid = path.join(dir, "valid")
+      mkdirSync(valid, { recursive: true })
+      writeFileSync(path.join(valid, "manifest.json"), "{}", "utf8")
+      const file = path.join(dir, "recent-sessions.json")
+      recordRecentSession(file, valid, { now: new Date("2026-01-01T00:00:00Z") })
+      recordRecentSession(file, plain, { now: new Date("2026-01-02T00:00:00Z") })
+      recordRecentSession(file, gone, { now: new Date("2026-01-03T00:00:00Z") })
+      // 最新的已删除、次新的不是输出目录 → 跳过，落到最早的有效目录
+      expect(resolveAutoRestoreDir(file)).toBe(valid)
+      rmSync(valid, { recursive: true, force: true })
+      expect(resolveAutoRestoreDir(file)).toBe("")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns surviving output candidates in recent order for startup fallback", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-recent-"))
+    try {
+      const first = path.join(dir, "first")
+      const second = path.join(dir, "second")
+      const missing = path.join(dir, "missing")
+      mkdirSync(first, { recursive: true })
+      mkdirSync(second, { recursive: true })
+      writeFileSync(path.join(first, "manifest.json"), JSON.stringify({ input: "first.docx" }), "utf8")
+      writeFileSync(path.join(second, "manifest.json"), JSON.stringify({ input: "second.docx" }), "utf8")
+      const file = path.join(dir, "recent-sessions.json")
+      recordRecentSession(file, first, { now: new Date("2026-01-01T00:00:00Z") })
+      recordRecentSession(file, second, { now: new Date("2026-01-02T00:00:00Z") })
+      recordRecentSession(file, missing, { now: new Date("2026-01-03T00:00:00Z") })
+
+      expect(resolveAutoRestoreCandidates(file)).toEqual([second, first])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

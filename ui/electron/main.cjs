@@ -12,7 +12,10 @@ const {
   buildLlmEnvironment,
   buildRunPipelineArgs,
   drainProgressLines,
+  listRecentSessions,
   loadLlmSettingsConfig,
+  recordRecentSession,
+  resolveAutoRestoreCandidates,
   resolveBackendCommand,
   resolveBoundLlmApiKey,
   resolveLlmTestConnection,
@@ -69,8 +72,12 @@ app.whenReady().then(() => {
   const flagIndex = process.argv.indexOf("--out-dir");
   const outDir = flagIndex >= 0 ? process.argv[flagIndex + 1] : "";
   if (outDir) {
-    void startApiServer(outDir).catch(() => undefined);
+    void startApiServer(outDir, { notifyRenderer: true }).catch(() => undefined);
+    return;
   }
+  // 自动恢复上次结果：重启后不必重跑管线，也不必手动找目录。
+  // 无历史 / 目录已删除 / 目录不是输出产物时静默跳过，停在首页（最近结果列表仍可手动打开）。
+  void autoRestoreRecentSession(resolveAutoRestoreCandidates(recentSessionsPath()));
 });
 
 app.on("window-all-closed", () => {
@@ -120,12 +127,15 @@ ipcMain.handle("shell:open-path", async (_event, targetPath) => {
 
 ipcMain.handle("api:get-session", async () => apiSession);
 ipcMain.handle("api:start-session", async (_event, outDir) => startApiServer(outDir));
+ipcMain.handle("session:get-recent", async () => listRecentSessions(recentSessionsPath()));
 ipcMain.handle("llm:get-settings", async () => loadLlmSettings());
 ipcMain.handle("llm:save-settings", async (_event, input) => saveLlmSettings(input));
 ipcMain.handle("llm:test-connection", async (_event, input) => testLlmConnection(input));
 ipcMain.handle("task:run-pipeline", async (_event, input) => {
   const payload = await runDesktopTaskProcess(buildRunPipelineArgs(input));
   const outDir = String(payload.out_dir || input.outDir);
+  // 结果已经生成就先登记，API 启动失败也不能让重启后的历史入口丢失。
+  rememberRecentSession(outDir);
   try {
     await startApiServer(outDir);
   } catch (error) {
@@ -135,14 +145,14 @@ ipcMain.handle("task:run-pipeline", async (_event, input) => {
   }
   return payload;
 });
-ipcMain.handle("task:ai-extract", async (_event, input) => runDesktopTaskProcess([
+ipcMain.handle("task:ai-extract", async (_event, input) => runAndRememberOutput([
   "ai-extract",
   "--out",
   input.outDir,
   ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
   ...(input.limitSections ? ["--limit-sections", String(input.limitSections)] : []),
   ...(input.sampleRatio ? ["--sample-ratio", String(input.sampleRatio)] : []),
-]));
+], input.outDir));
 
 ipcMain.handle("logs:open", async () => {
   const dir = logsDirPath();
@@ -151,40 +161,40 @@ ipcMain.handle("logs:open", async () => {
   return { dir };
 });
 
-ipcMain.handle("task:assemble", async (_event, input) => runDesktopTaskProcess([
+ipcMain.handle("task:assemble", async (_event, input) => runAndRememberOutput([
   "assemble",
   "--out",
   input.outDir,
   ...(input.enrichRoute ? ["--enrich-route", input.enrichRoute] : []),
-]));
+], input.outDir));
 
 ipcMain.handle("task:compose", async (_event, input) =>
-  runDesktopTaskProcess(["compose", "--out", input.outDir]));
+  runAndRememberOutput(["compose", "--out", input.outDir], input.outDir));
 
-ipcMain.handle("task:requirements-analysis", async (_event, input) => runDesktopTaskProcess([
+ipcMain.handle("task:requirements-analysis", async (_event, input) => runAndRememberOutput([
   "requirements-analysis",
   "--out",
   input.outDir,
   ...(input.llmRoute ? ["--llm-route", input.llmRoute] : []),
   ...(input.templatePath ? ["--template", input.templatePath] : []),
-]));
+], input.outDir));
 
 // 交付物链单命令编排（编排在后端，UI 只发一条命令 + 渲染进度）
 ipcMain.handle("task:chain", async (_event, input) =>
-  runDesktopTaskProcess(buildChainArgs(input)));
+  runAndRememberOutput(buildChainArgs(input), input.outDir));
 
 // 澄清清单：全链疑问信号聚合 + 就绪判定（确定性零 LLM）
 ipcMain.handle("task:clarification-report", async (_event, input) =>
-  runDesktopTaskProcess(["clarification-report", "--out", input.outDir]));
+  runAndRememberOutput(["clarification-report", "--out", input.outDir], input.outDir));
 
 // 成文：analyze 结果按公司标准化需求列表格式追加进对应模块 sheet（确定性零 LLM）
-ipcMain.handle("task:template-write", async (_event, input) => runDesktopTaskProcess([
+ipcMain.handle("task:template-write", async (_event, input) => runAndRememberOutput([
   "template-write",
   "--out",
   input.outDir,
   "--template",
   input.templatePath,
-]));
+], input.outDir));
 
 ipcMain.handle("dialog:open-template", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -195,7 +205,7 @@ ipcMain.handle("dialog:open-template", async () => {
 });
 
 ipcMain.handle("task:export-annotation-html", async (_event, input) =>
-  runDesktopTaskProcess(buildExportAnnotationArgs(input)));
+  runAndRememberOutput(buildExportAnnotationArgs(input), input.outDir));
 
 ipcMain.handle("task:summary", async (_event, input) =>
   runDesktopTaskProcess(["summary", "--out", input.outDir]));
@@ -208,7 +218,7 @@ ipcMain.handle("task:import-ai-decisions", async (_event, input) => {
   if (result.canceled || !result.filePaths.length) {
     return { kind: "ai_decisions_import", applied: 0, skipped: 0, canceled: true };
   }
-  return runDesktopTaskProcess(["import-ai-decisions", "--out", input.outDir, "--file", result.filePaths[0]]);
+  return runAndRememberOutput(["import-ai-decisions", "--out", input.outDir, "--file", result.filePaths[0]], input.outDir);
 });
 
 // 澄清处置回灌：同一工作簿同时导入客户答复与内部核对动作。
@@ -220,17 +230,34 @@ ipcMain.handle("task:import-clarification-answers", async (_event, input) => {
   if (result.canceled || !result.filePaths.length) {
     return { kind: "clarification_answers", imported: 0, canceled: true };
   }
-  return runDesktopTaskProcess(["import-clarification-answers", "--out", input.outDir, "--file", result.filePaths[0]]);
+  return runAndRememberOutput(["import-clarification-answers", "--out", input.outDir, "--file", result.filePaths[0]], input.outDir);
 });
 
-async function startApiServer(outputDir) {
+// 会话启动串行化：所有 startApiServer 调用（自动恢复 / 用户选目录 / 管线完成回连 /
+// 保存 LLM 设置重连）排入同一条 promise 链。否则自动恢复的重试回路可能在用户已另选
+// 目录后仍在跑，launchApiServer 开头的 stopApiServer 会反杀用户的新会话。
+let sessionStartQueue = Promise.resolve();
+
+function startApiServer(outputDir, options = {}) {
+  const run = sessionStartQueue.then(() => startApiServerExclusive(outputDir, options));
+  // 链本身永不 reject（失败只影响本次调用方，后续排队照常进行）
+  sessionStartQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function startApiServerExclusive(outputDir, options = {}) {
   if (shouldReuseApiSession(apiSession, apiProcess, outputDir)) {
+    rememberRecentSession(outputDir);
+    notifyApiSessionReady(apiSession, options);
     return apiSession;
   }
   let lastError = null;
   for (let attempt = 1; attempt <= API_STARTUP_ATTEMPTS; attempt += 1) {
     try {
-      return await launchApiServer(outputDir);
+      const session = await launchApiServer(outputDir);
+      rememberRecentSession(outputDir);
+      notifyApiSessionReady(session, options);
+      return session;
     } catch (error) {
       lastError = error;
       appendBackendLog(logsDirPath(), "api",
@@ -242,6 +269,47 @@ async function startApiServer(outputDir) {
     }
   }
   throw new Error(`API server startup failed after ${API_STARTUP_ATTEMPTS} attempts: ${lastError?.message || "unknown error"}`);
+}
+
+async function autoRestoreRecentSession(candidates) {
+  let lastError = null;
+  for (const outputDir of candidates || []) {
+    try {
+      await startApiServer(outputDir, { notifyRenderer: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      appendBackendLog(logsDirPath(), "api", `auto-restore candidate skipped (${outputDir}): ${error.message}`);
+    }
+  }
+  if (lastError) {
+    appendBackendLog(logsDirPath(), "api", `auto-restore skipped: ${lastError.message}`);
+  }
+}
+
+function notifyApiSessionReady(session, options = {}) {
+  if (!options.notifyRenderer || !session) return;
+  mainWindow?.webContents.send("api:session-ready", session);
+}
+
+async function runAndRememberOutput(args, fallbackOutDir) {
+  const payload = await runDesktopTaskProcess(args);
+  const outputDir = String(payload?.out_dir || payload?.outDir || fallbackOutDir || "");
+  rememberRecentSession(outputDir);
+  return payload;
+}
+
+function rememberRecentSession(outputDir) {
+  try {
+    recordRecentSession(recentSessionsPath(), outputDir);
+  } catch (error) {
+    // 历史登记失败绝不阻断会话本身
+    appendBackendLog(logsDirPath(), "api", `recent-session record failed: ${error.message}`);
+  }
+}
+
+function recentSessionsPath() {
+  return path.join(app.getPath("userData"), "recent-sessions.json");
 }
 
 async function launchApiServer(outputDir) {

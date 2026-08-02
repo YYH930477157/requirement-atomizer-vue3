@@ -7,6 +7,12 @@ contextBridge.exposeInMainWorld("ratomizerDesktop", {
   openPath: (targetPath) => ipcRenderer.invoke("shell:open-path", targetPath),
   getApiSession: () => ipcRenderer.invoke("api:get-session"),
   startApiSession: (outDir) => ipcRenderer.invoke("api:start-session", outDir),
+  getRecentSessions: () => ipcRenderer.invoke("session:get-recent"),
+  onApiSessionReady: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on("api:session-ready", listener);
+    return () => ipcRenderer.removeListener("api:session-ready", listener);
+  },
   getLlmSettings: () => ipcRenderer.invoke("llm:get-settings"),
   saveLlmSettings: (input) => ipcRenderer.invoke("llm:save-settings", input),
   testLlmConnection: (input) => ipcRenderer.invoke("llm:test-connection", input),
