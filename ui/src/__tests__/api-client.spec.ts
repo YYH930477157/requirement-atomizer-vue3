@@ -22,6 +22,26 @@ describe("RequirementApiClient", () => {
     })
   })
 
+  it("loads the source manifest for restored run context", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ input: "C:\\input\\standard.docx", counts: { blocks: 3 } }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770/",
+      token: "local-token",
+      fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadManifest()).resolves.toEqual({
+      input: "C:\\input\\standard.docx",
+      counts: { blocks: 3 },
+    })
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8770/manifest", {
+      headers: { "X-Requirement-Atomizer-Token": "local-token" },
+    })
+  })
+
   it("posts review actions with reason and actor", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

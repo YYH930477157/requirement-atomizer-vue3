@@ -1,4 +1,4 @@
-﻿/// <reference types="vite/client" />
+/// <reference types="vite/client" />
 
 declare module "*.vue"
 declare module "katex"
@@ -8,6 +8,14 @@ declare global {
     baseUrl: string
     token: string
     outputDir?: string
+  }
+
+  type RequirementAtomizerRecentSession = {
+    outputDir: string
+    label: string
+    openedAt: string
+    exists: boolean
+    isOutput: boolean
   }
 
   type RequirementAtomizerTaskPayload = {
@@ -51,6 +59,8 @@ declare global {
       openPath: (targetPath: string) => Promise<void>
       getApiSession: () => Promise<RequirementAtomizerApiSession | null>
       startApiSession: (outDir: string) => Promise<RequirementAtomizerApiSession | null>
+      getRecentSessions: () => Promise<RequirementAtomizerRecentSession[]>
+      onApiSessionReady?: (handler: (session: RequirementAtomizerApiSession) => void) => () => void
       getLlmSettings: () => Promise<{
         enabled: boolean
         visionCapable: boolean

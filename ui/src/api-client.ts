@@ -797,6 +797,10 @@ export class RequirementApiClient {
     return this.request<BackendRequirement[]>(`/requirements?limit=${limit}`)
   }
 
+  async loadManifest(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("/manifest")
+  }
+
   async applyReviewAction(input: ReviewActionInput): Promise<ReviewStatePayload> {
     return this.request<ReviewStatePayload>("/review-actions", {
       method: "POST",

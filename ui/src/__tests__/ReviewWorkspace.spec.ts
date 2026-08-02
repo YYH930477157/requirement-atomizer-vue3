@@ -517,6 +517,123 @@ describe("review workspace shell", () => {
     expect(translationCalls).toHaveLength(1)
   })
 
+  it("restores a delayed desktop session through the ready event and opens the review workspace", async () => {
+    let readyHandler: ((session: RequirementAtomizerApiSession) => void) | undefined
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        onApiSessionReady: vi.fn((handler: (session: RequirementAtomizerApiSession) => void) => {
+          readyHandler = handler
+          return () => undefined
+        }),
+        getRecentSessions: vi.fn().mockResolvedValue([]),
+        getOutputSummary: vi.fn().mockResolvedValue({
+          kind: "summary",
+          out_dir: "E:\\out\\restored",
+          summary: {
+            run_manifest: {
+              stages: {
+                atomize: { status: "ok" },
+                "ai-extract": { status: "ok" },
+              },
+            },
+          },
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith("/requirements?limit=5000")) {
+        return {
+          ok: true,
+          json: async () => [{
+            stable_req_id: "SREQ-RESTORED",
+            requirement_type: "functional",
+            object_name: "Restored meter",
+            description: "Restored requirement",
+            review_state: { status: "candidate" },
+          }],
+        } as Response
+      }
+      if (url.endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
+      if (url.endsWith("/manifest")) {
+        return { ok: true, json: async () => ({ input: "C:\\input\\restored.docx" }) } as Response
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    const wrapper = mount(App)
+    expect(readyHandler).toBeDefined()
+    readyHandler?.({
+      baseUrl: "http://127.0.0.1:8770",
+      token: "restored-token",
+      outputDir: "E:\\out\\restored",
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="row-SREQ-RESTORED"]').exists()).toBe(true)
+    })
+
+    expect(wrapper.find('[data-testid="nav-审查工作台"]').classes()).toContain("active")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    expect(wrapper.find('[data-testid="selected-output-dir"]').text()).toContain("E:\\out\\restored")
+    expect(wrapper.find('[data-testid="selected-input-path"]').text()).toContain("C:\\input\\restored.docx")
+  })
+
+  it("opens a persisted recent output without running the pipeline again", async () => {
+    const startApiSession = vi.fn().mockResolvedValue({
+      baseUrl: "http://127.0.0.1:8770",
+      token: "recent-token",
+      outputDir: "E:\\out\\previous",
+    })
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        getRecentSessions: vi.fn().mockResolvedValue([{
+          outputDir: "E:\\out\\previous",
+          label: "standard.docx",
+          openedAt: "2026-08-02T12:00:00.000Z",
+          exists: true,
+          isOutput: true,
+        }]),
+        startApiSession,
+        getOutputSummary: vi.fn().mockResolvedValue({
+          kind: "summary", out_dir: "E:\\out\\previous", summary: { run_manifest: { stages: {} } },
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith("/requirements?limit=5000")) {
+        return { ok: true, json: async () => [{
+          stable_req_id: "SREQ-HISTORY",
+          requirement_type: "functional",
+          object_name: "Historical meter",
+          description: "Historical requirement",
+          review_state: { status: "candidate" },
+        }] } as Response
+      }
+      if (url.endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
+      if (url.endsWith("/manifest")) {
+        return { ok: true, json: async () => ({ input: "C:\\input\\previous.docx" }) } as Response
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    const wrapper = mount(App)
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="recent-open-0"]').exists()).toBe(true))
+    await wrapper.find('[data-testid="recent-open-0"]').trigger("click")
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-HISTORY"]').exists()).toBe(true))
+
+    expect(startApiSession).toHaveBeenCalledWith("E:\\out\\previous")
+    expect(wrapper.find('[data-testid="nav-审查工作台"]').classes()).toContain("active")
+  })
+
   it("clears mock rows when the connected API session has no requirements", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,

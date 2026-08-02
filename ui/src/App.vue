@@ -227,6 +227,33 @@
               </div>
             </div>
           </div>
+
+          <div v-if="recentSessions.length" class="panel-card recent-card" data-testid="recent-sessions">
+            <div class="board-head">
+              <h4>最近结果</h4>
+              <span class="path-hint">重启应用自动恢复最近一次；点击直接打开历史输出目录，无需重跑</span>
+            </div>
+            <ul class="recent-list">
+              <li v-for="(entry, index) in recentSessions" :key="entry.outputDir">
+                <button
+                  class="recent-item"
+                  :class="{ 'is-current': isCurrentOutputSession(entry.outputDir) }"
+                  type="button"
+                  :disabled="!entry.exists || !entry.isOutput || isCurrentOutputSession(entry.outputDir)"
+                  :title="entry.outputDir"
+                  :data-testid="`recent-open-${index}`"
+                  @click="openRecentSession(entry)"
+                >
+                  <History :size="15" aria-hidden="true" />
+                  <span class="recent-label">{{ entry.label }}</span>
+                  <span class="recent-path">{{ tailPath(entry.outputDir) }}</span>
+                  <span class="recent-time">{{ formatRecentTime(entry.openedAt) }}</span>
+                  <span v-if="isCurrentOutputSession(entry.outputDir)" class="recent-current">当前会话</span>
+                  <span v-else-if="!entry.exists || !entry.isOutput" class="recent-missing">目录已移动或删除</span>
+                </button>
+              </li>
+            </ul>
+          </div>
         </section>
 
         <template v-if="activeNav === 'review'">
@@ -602,6 +629,7 @@ import {
   FlaskConical,
   FolderOpen,
   FolderOutput,
+  History,
   MessageSquareReply,
   MessagesSquare,
   ListChecks,
@@ -686,8 +714,10 @@ const activeNavLabel = computed(
 const llmMode = ref(false)
 const apiClient = ref<RequirementApiClient | null>(null)
 const reviewSessionKey = ref("")
+const recentSessions = ref<RequirementAtomizerRecentSession[]>([])
 const documentRefreshToken = ref(0)
 let apiSessionLoadGeneration = 0
+let stopApiSessionReady: (() => void) | undefined
 const apiMessage = ref("")
 const apiMessageExpanded = ref(false)
 watch(apiMessage, () => { apiMessageExpanded.value = false })
@@ -1155,7 +1185,11 @@ onMounted(() => {
     startProgressDemo()
     return
   }
+  stopApiSessionReady = window.ratomizerDesktop?.onApiSessionReady?.((session) => {
+    void loadFromSession(session, { restoreContext: true }).catch(() => undefined)
+  })
   loadInitialApiSession()
+  void loadRecentSessions()
   // 恢复已保存的 LLM 开关/端点：此前只在打开设置面板时才加载——重启后 llmMode 恒 false，
   // 整条 AI 交付物轨静默降级 stub（2026-07-08 审计 A2）
   void loadLlmSettings()
@@ -1163,6 +1197,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopProgressDemo()
+  stopApiSessionReady?.()
+  stopApiSessionReady = undefined
   if (heartbeatTimer) clearInterval(heartbeatTimer)
 })
 
@@ -1820,7 +1856,7 @@ async function loadInitialApiSession() {
     const session = await window.ratomizerDesktop?.getApiSession?.()
     if (session) {
       try {
-        await loadFromSession(session)
+        await loadFromSession(session, { restoreContext: true })
       } catch {
         // loadFromSession 已把原因写进 apiMessage
       }
@@ -1830,7 +1866,10 @@ async function loadInitialApiSession() {
   }
 }
 
-async function loadFromSession(session: { baseUrl: string; token: string; outputDir?: string }) {
+async function loadFromSession(
+  session: { baseUrl: string; token: string; outputDir?: string },
+  options: { restoreContext?: boolean } = {},
+) {
   const nextSessionKey = reviewSessionIdentity(session)
   const sameSession = Boolean(nextSessionKey && nextSessionKey === reviewSessionKey.value)
   const generation = ++apiSessionLoadGeneration
@@ -1848,6 +1887,10 @@ async function loadFromSession(session: { baseUrl: string; token: string; output
       selectedRequirementId.value = rows[0]?.id ?? ""
     }
     apiMessage.value = session.outputDir ? `已连接输出目录：${tailPath(session.outputDir)}` : "已连接审查会话"
+    void loadRecentSessions()
+    if (options.restoreContext && session.outputDir) {
+      await restoreOutputContext(client, session.outputDir, generation)
+    }
   } catch (error) {
     if (generation === apiSessionLoadGeneration) {
       clearReviewSessionState()
@@ -1866,6 +1909,25 @@ async function loadFromSession(session: { baseUrl: string; token: string; output
   }
 }
 
+async function restoreOutputContext(client: RequirementApiClient, outDir: string, generation: number) {
+  const summaryLoader = window.ratomizerDesktop?.getOutputSummary
+  const summaryPromise = summaryLoader ? summaryLoader({ outDir }) : Promise.resolve(null)
+  const [summaryResult, manifestResult] = await Promise.allSettled([
+    summaryPromise,
+    summaryLoader ? client.loadManifest() : Promise.resolve(null),
+  ])
+  if (generation !== apiSessionLoadGeneration) return
+  if (summaryResult.status === "fulfilled" && summaryResult.value) {
+    latestTaskSummary.value = objectValue(summaryResult.value.summary)
+    applyRunManifestSummary(latestTaskSummary.value)
+  }
+  if (manifestResult.status === "fulfilled" && manifestResult.value) {
+    const input = String(manifestResult.value.input || "").trim()
+    if (input) currentInputPath.value = input
+  }
+  if (summaryLoader) activeNav.value = "review"
+}
+
 function disconnectReviewSession() {
   apiSessionLoadGeneration += 1
   clearReviewSessionState()
@@ -1877,6 +1939,38 @@ function clearReviewSessionState() {
   requirementRows.value = []
   selectedRequirementId.value = ""
   reviewInsights.value = []
+}
+
+// 最近结果列表（主进程持久化于 userData/recent-sessions.json）：重启自动恢复最近一次，
+// 历史目录在此一键打开——查看旧结果不必重跑管线
+async function loadRecentSessions() {
+  try {
+    recentSessions.value = (await window.ratomizerDesktop?.getRecentSessions?.()) || []
+  } catch {
+    recentSessions.value = []
+  }
+}
+
+async function openRecentSession(entry: RequirementAtomizerRecentSession) {
+  if (!entry.exists || !entry.isOutput || isCurrentOutputSession(entry.outputDir)) return
+  try {
+    const session = await window.ratomizerDesktop?.startApiSession?.(entry.outputDir)
+    if (session) {
+      await loadFromSession(session, { restoreContext: true })
+    } else {
+      apiMessage.value = `无法连接输出目录：${tailPath(entry.outputDir)}`
+    }
+  } catch (error) {
+    apiMessage.value = `无法连接输出目录：${error instanceof Error ? error.message : "本地 API 启动失败"}`
+  }
+}
+
+function formatRecentTime(value: string) {
+  const time = Date.parse(value)
+  if (!Number.isFinite(time)) return ""
+  return new Date(time).toLocaleString("zh-CN", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  })
 }
 
 async function refreshAfterDesktopTask(outDir: string): Promise<string> {
@@ -3274,6 +3368,41 @@ tbody tr.selected {
 
 .note-insight b { font-weight: 650; }
 .insight-list { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+
+/* 最近结果:重启自动恢复 + 一键打开历史输出目录 */
+.recent-card { margin-top: 14px; }
+
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.recent-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #e6e9f0;
+  border-radius: 10px;
+  background: #fff;
+  color: #1a2233;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recent-item:hover:not(:disabled) { border-color: #b9c6f2; background: #f7f9ff; }
+.recent-item:disabled { cursor: default; opacity: 0.65; }
+.recent-item.is-current { border-color: #c8d6ff; background: #f2f6ff; }
+.recent-label { font-weight: 650; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-path { color: #6b7487; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.recent-time { color: #98a0b3; flex: none; font-size: 12px; }
+.recent-missing { color: #b4562a; flex: none; font-size: 12px; }
+.recent-current { color: #1e41c9; flex: none; font-size: 12px; font-weight: 650; }
 
 /* 流水线格子:样机形态(左色条 + 底部细进度条) */
 .run-stage-board .run-stage-card { position: relative; }
