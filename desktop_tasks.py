@@ -39,6 +39,7 @@ from result_package import (
     package_artifact_path,
     package_root_for_analysis_root,
     publish_registered_deliverables,
+    record_analysis_partial,
     record_analysis_failure,
     record_package_warning,
     resolve_analysis_root,
@@ -2035,6 +2036,15 @@ def _result_package_main(args: argparse.Namespace) -> int:
     except ResultPackagePartialError as exc:
         # I6：部分阶段降级是稳定错误码——桌面端据此显示"分析未完成（部分阶段
         # 降级）"而非"运行失败"；语义仍 fail-closed（exit 2，不冒充完成）
+        # R2：拒绝即锁内持久化终止 attempt（marker 不得停留 running/running，
+        # 否则重开结果误显"运行中"）；持久化失败不掩盖原错误码
+        if args.command == "result-package-complete":
+            try:
+                record_analysis_partial(
+                    package_root, run_id=args.run_id, error=str(exc),
+                )
+            except Exception:
+                LOGGER.warning("partial attempt 状态持久化失败", exc_info=True)
         return _fail_with_envelope(kind, "requested_stage_partial", exc, 2)
     except ResultPackageError as exc:
         # 含 "legacy flat output requires explicit migration" 等布局拒绝

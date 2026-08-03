@@ -18,6 +18,7 @@ const {
   loadLlmSettingsConfig,
   parseTaskErrorEnvelope,
   planResultPackageStart,
+  probeApiSessionContent,
   recordRecentSession,
   resolveAutoRestoreCandidates,
   resolveBackendCommand,
@@ -354,6 +355,9 @@ async function startApiServerExclusive(outputDir, options = {}) {
       );
       // S8：新 API 成功就绪后才接管——启动失败时旧会话进程与状态原样保留，
       // 渲染层不会因为一次失败的"打开已有结果"丢掉当前审查会话
+      // R3：就绪 ≠ 能读内容（损坏产物会让 /requirements 直接断连）——
+      // 接管前实际探测关键端点，探测失败走 catch 只杀候选进程，旧会话保留
+      await probeApiSessionContent(session);
       stopApiServer();
       apiProcess = candidate.child;
       apiSession = session;

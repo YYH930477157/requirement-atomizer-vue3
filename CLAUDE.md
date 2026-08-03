@@ -31,6 +31,15 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **PR5 性能与维护项（S7/S9/S10/S13/S14/S16）**：Electron `requestSingleInstanceLock` 单实例（锁拿不到即退出并聚焦既有实例，替代 recent-sessions 跨进程锁）。**`LLM_ATTEMPT_POLICY_VERSION`→v2** 并显式声明：request_succeeded 分支（有效 2xx 后本地失败不得重复 HTTP）改变 provider attempt 次数属行为面——v1 绑定的 no-ledger baseline lineage/verifier attempt 血缘一律失配，成本门保守重算，产物内容不受影响。attempt 日志规模基准落地（N=300 实测 366.8s、N=50 共 11.2s，O(N²) 取舍注释+宽上限测试，千级事件前不改实现）。`_cluster_boundaries` 删不可达"矛盾"分支，None 统一=无证据。xlsx 工作簿加载 3→2 次（merge ranges 复用首载 workbook），公式扫描补 `MAX_SHEET_COLUMNS=16384` 列上限、超界以 `xlsx_column_limit` fail-closed 计审计。杂项：atomize 内联重复 import 归并、classifyOutputDir↔_validate_package 互指注释、export_requirements import 归位、`App.vue` `defaultOutputDir` 弃硬编码 `E:\Codex` 改 Electron documents/userData 派生（bridge 不可用退输入文件同级目录）。
 - **验证**：后端全量 **2570 tests OK (skipped=26)**（环境说明：本机用户目录为 C:/Users/YunHeYang，不存在 YYHwudi 路径下的历史样本文件——设 RATOMIZER_HISTORICAL_SAMPLE 指向缺失路径时 test_semantic_quality 两例 FileNotFoundError/available=False，属环境性非代码回归；不设 env 两例如实 skip 含于 skipped=26，与「机器相关路径换机需调整」纪律一致）；前端 Vitest 199/199，`npm run build`（vue-tsc+vite）通过；golden 6/6 零漂移（主检出复制 8 个冻结 baseline 文件实跑后清理）；claim-ledger schema golden 8/8；agent_eval 40/40、四类 1.0、unreviewed=0；`git diff --check` 与 py_compile 通过。未修改 `golden_sets/`、冻结 `out/` 或 LLM prompt；未推送，合并由用户决定。
 
+## 重大更新（2026-08-03，二轮）——复审残余三项修复（同分支追加提交）
+
+> 首轮 5 PR 合 main 后（`e2524c8` 已推 origin），复审在分支上确认 3 个残余问题，按同纪律修复（先失败测试后实现）。
+
+- **R1 发布并发窗口（P1）**：`_maybe_publish_after_command` 的 active_attempt 检查原在写锁外——两桌面进程交错时新 attempt 可在检查与发布之间启动，旧命令把新 attempt 的 pipeline 内容发布到根交付物（审核确定性复现：根 summary.md 被 NEW-ACTIVE-ATTEMPT 污染）。修复：`_publish_registered_deliverables_unlocked` 在写锁临界区内复查 active_attempt，存在即 fail-closed；锁外快查保留为常见路径优化，竞态触发走既有 warning 降级通道。
+- **R2 partial 状态持久化（P1）**：completion 因阶段降级拒签后 marker 原停留 running/running，重开结果误显「运行中」。修复：新增 `record_analysis_partial`（写锁内）——attempt 显式终止（`last_attempt.status="partial"`，schema 枚举同步扩），无既有完成代时 `analysis_status="incomplete"`，已有完成代字节级保留；attempt 语义明确为已终止不可续跑，重跑走新 attempt。marker 契约变更点仅 last_attempt 枚举，JS classifyOutputDir 不读该字段，无漂移面；`docs/cli-contract.md` 已同步。
+- **R3 接管前内容探测（P2）**：候选 API 输出启动 JSON 即 stopApiServer——合法 marker + 损坏 atomic_requirements.jsonl 时 /requirements 断连，旧会话被白杀。修复：新增 `probeApiSessionContent`，接管前对候选实际 GET `/requirements?limit=1`（token 头 + 5s 超时）；缺失文件返回空数组 200 不误伤，探测失败只杀候选、旧会话保留。
+- **验证**：后端全量 **2574 tests OK (skipped=26，环境性跳过同 PR1-PR5 口径）**；前端 Vitest 203/203（首次并发跑 1 例异步计数失败、单独/串行复跑均过——审核亦注明该既有测试时序不稳定）；`npm run build` 通过；golden 6/6 零漂移（复制主检出 baseline 实跑后清理）；agent_eval 40/40；无行为版本 bump（结果包运行时语义与桌面进程编排不进缓存指纹）。
+
 ## 热修复（2026-08-03）——结果包 legacy 哨兵自伤（main 工作区，未提交）
 
 - **症状**：打包实测"新建空文件夹也无法开始分析"，报 `legacy flat output requires explicit migration`。

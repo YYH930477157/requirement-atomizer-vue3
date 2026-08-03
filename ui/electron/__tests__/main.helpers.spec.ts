@@ -22,6 +22,7 @@ import {
   normalizeLlmSettings,
   parseTaskErrorEnvelope,
   planResultPackageStart,
+  probeApiSessionContent,
   recordRecentSession,
   resolveAutoRestoreCandidates,
   resolveAutoRestoreDir,
@@ -792,5 +793,53 @@ describe("acquireSingleInstanceLock (S7)", () => {
 
   it("treats runtimes without the lock API as acquired", () => {
     expect(acquireSingleInstanceLock({}, () => undefined)).toBe(true)
+  })
+})
+describe("probeApiSessionContent (R3)", () => {
+  // 2026-08-03 复审：候选 API 输出启动 JSON 只证明进程起来了，不证明能读内容
+  // （合法 marker + 损坏 atomic_requirements.jsonl → /requirements
+  // RemoteDisconnected）；接管旧会话前必须实际探测关键端点。
+
+  it("returns true when the key endpoint answers 2xx and sends the token header", async () => {
+    const calls = []
+    const fetchImpl = async (url, options) => {
+      calls.push({ url, options })
+      return { ok: true, status: 200 }
+    }
+    await expect(probeApiSessionContent(
+      { baseUrl: "http://127.0.0.1:9000", token: "tok" },
+      { fetchImpl },
+    )).resolves.toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe("http://127.0.0.1:9000/requirements?limit=1")
+    expect(calls[0].options.headers["X-Requirement-Atomizer-Token"]).toBe("tok")
+  })
+
+  it("throws on non-2xx so takeover is refused", async () => {
+    const fetchImpl = async () => ({ ok: false, status: 500 })
+    await expect(probeApiSessionContent(
+      { baseUrl: "http://127.0.0.1:9000", token: "" },
+      { fetchImpl },
+    )).rejects.toThrow(/500/)
+  })
+
+  it("throws when the connection drops (corrupt artifacts kill the handler)", async () => {
+    const fetchImpl = async () => {
+      throw new Error("fetch failed")
+    }
+    await expect(probeApiSessionContent(
+      { baseUrl: "http://127.0.0.1:9000", token: "" },
+      { fetchImpl },
+    )).rejects.toThrow(/content probe/)
+  })
+
+  it("times out a hung probe instead of waiting forever", async () => {
+    const fetchImpl = (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(new Error("aborted")))
+    })
+    await expect(probeApiSessionContent(
+      { baseUrl: "http://127.0.0.1:9000", token: "" },
+      { fetchImpl, timeoutMs: 20 },
+    )).rejects.toThrow(/content probe/)
   })
 })

@@ -520,6 +520,38 @@ function planResultPackageStart(outDir, deps = {}) {
   };
 }
 
+// R3（2026-08-03 复审）：候选 API 进程输出启动 JSON 只证明"进程起来了"，
+// 不证明它能读出内容——合法 marker + 损坏 atomic_requirements.jsonl 时
+// /requirements 直接 RemoteDisconnected，若此时已 stopApiServer()，旧会话
+// 被白白丢弃。接管前必须实际探测关键端点（渲染层接管后第一个加载的就是
+// /requirements；文件缺失返回空数组 200，只有真损坏才失败，无误伤面）。
+const API_CONTENT_PROBE_TIMEOUT_MS = 5000;
+
+async function probeApiSessionContent(session, deps = {}) {
+  const fetchImpl = deps.fetchImpl || globalThis.fetch;
+  const timeoutMs = deps.timeoutMs || API_CONTENT_PROBE_TIMEOUT_MS;
+  const headers = {};
+  if (session.token) {
+    headers["X-Requirement-Atomizer-Token"] = session.token;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(`${session.baseUrl}/requirements?limit=1`, {
+      headers,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return true;
+  } catch (error) {
+    throw new Error(`API content probe failed: ${error.message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // S7：单实例锁——双开桌面端会让两个 API 进程对同一输出目录互相抢锁/写
 // recent-sessions read-modify-write 也丢更新。锁拿不到即退出并让既有实例聚焦，
 // 不再为 recent-sessions 另加跨进程文件锁。注入 appLike 便于测试（无锁 API 的
@@ -674,6 +706,7 @@ module.exports = {
   normalizeLlmSettings,
   parseTaskErrorEnvelope,
   planResultPackageStart,
+  probeApiSessionContent,
   recordRecentSession,
   recentSessionLabel,
   resolveAutoRestoreCandidates,
