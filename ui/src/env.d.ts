@@ -67,6 +67,7 @@ declare global {
       openOutput: () => Promise<RequirementAtomizerApiSession | null>
       openPath: (targetPath: string) => Promise<void>
       getApiSession: () => Promise<RequirementAtomizerApiSession | null>
+      getDefaultOutputRoot: () => Promise<string>
       startApiSession: (outDir: string) => Promise<RequirementAtomizerApiSession | null>
       getRecentSessions: () => Promise<RequirementAtomizerRecentSession[]>
       onApiSessionReady?: (handler: (session: RequirementAtomizerApiSession) => void) => () => void

@@ -910,6 +910,29 @@ class LLMClientTests(unittest.TestCase):
                 )
 
 
+class AttemptPolicyVersionDeclarationTests(unittest.TestCase):
+    """S9（review-2026-08-03）：request_succeeded 分支（2xx 后本地 checkpoint/trace
+    失败不再重发 HTTP）直接改变 provider attempt 次数，属于 attempt policy 行为面，
+    版本常量必须随之 bump 并带显式声明——防止 lineage 自述与实际策略漂移。"""
+
+    def test_policy_version_bumped_for_post_2xx_no_retry(self) -> None:
+        import llm_client
+
+        self.assertEqual(llm_client.LLM_ATTEMPT_POLICY_VERSION, "llm-attempt-policy-v2")
+        policy = llm_client.llm_attempt_policy()
+        self.assertEqual(policy["version"], "llm-attempt-policy-v2")
+
+    def test_version_constant_carries_declaration_comment(self) -> None:
+        from pathlib import Path
+
+        source = Path("llm_client.py").read_text(encoding="utf-8")
+        marker = "LLM_ATTEMPT_POLICY_VERSION = "
+        index = source.index(marker)
+        declaration_window = source[max(0, index - 800): index]
+        self.assertIn("2xx", declaration_window)
+        self.assertIn("request_succeeded", declaration_window)
+
+
 class AdaptiveRateGateTests(unittest.TestCase):
     """429 自适应闸门（0714 批次一 S2）：全局冷却 + 在飞上限 AIMD。
     真实数据:EN 54321 全量跑并发 4 时 164/781 次 429,各线程独立退避互不通气。"""

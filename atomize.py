@@ -29,8 +29,10 @@ from source_spans import source_alignment_fields
 from table_pattern_engine import load_table_patterns, match_table_pattern
 from table_structure import (
     TABLE_STRUCTURE_VERSION,
+    _DISPOSITION_HEADER_RE,
     _MATRIX_DIMENSION_MAX_LEN,
     NOTE_HEADER_RE,
+    PARAM_INDEX_CELL_RE,
     analyze_table,
     build_cell_items,
     cell_context_text,
@@ -1870,12 +1872,6 @@ def extract_valued_matrix_facts(fields: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     # 索引号 subject（"1"/"2."）不是对象名——"1 shall have Requirement set to …"
     # 与 "1 shall support Note." 同族伪句式，一律不产
-    from table_structure import (
-        _DISPOSITION_HEADER_RE,
-        NOTE_HEADER_RE,
-        PARAM_INDEX_CELL_RE,
-    )
-
     if PARAM_INDEX_CELL_RE.match(subject):
         return []
 

@@ -644,6 +644,9 @@ def _cleanup_publication_backup(
 
 
 def _cleanup_orphan_publication_backups_unlocked(root: Path) -> None:
+    # S16 留注（review-2026-08-03）：清理范围只 glob state 根；更早期版本曾把
+    # publication backup 留在 analysis 根，那些历史孤儿目录不在此清理（洁癖级，
+    # 不影响正确性——备份目录从不被读取路径当作权威状态）。
     prefix = ".claim-publication-backup-"
     for backup_dir in _claim_state_root(root).glob(f"{prefix}*"):
         transaction_id = backup_dir.name[len(prefix):]
@@ -2960,6 +2963,9 @@ def claim_verifier_attempt_scope(
                 else:
                     # Compatibility path for injected budget doubles that only
                     # implement the original set_checkpoint protocol.
+                    # S16 留注（review-2026-08-03）：此兼容路径存在 ownerless 窗口
+                    # （先置 None 再恢复 previous），仅测试 double 可达——生产预算
+                    # 实现走上面的 expected-owner CAS swap_checkpoint，无此窗口。
                     budget.set_checkpoint(None)
                     if previous_checkpoint is not None:
                         budget.set_checkpoint(previous_checkpoint)

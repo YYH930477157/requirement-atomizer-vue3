@@ -1168,6 +1168,44 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("summary.md")
   })
 
+  it("derives the default output directory from the Electron documents root (S16)", async () => {
+    // 未选输出目录时默认落到 Electron documents 派生目录——禁止硬编码 E:\Codex（换机即失效）
+    localStorage.setItem("ratomizer.runStages.v2",
+      JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
+    const runPipeline = vi.fn().mockResolvedValue({
+      kind: "pipeline",
+      out_dir: "C:\\Users\\Tester\\Documents\\requirement-atomizer-runs\\Appendix 9",
+      summary: { counts: { requirements: 1 } },
+      api_warning: "API server startup timed out",
+    })
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        getDefaultOutputRoot: vi.fn().mockResolvedValue("C:\\Users\\Tester\\Documents\\requirement-atomizer-runs"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockRejectedValue(new Error("API server startup timed out")),
+        runPipeline,
+      },
+    })
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(window.ratomizerDesktop?.getDefaultOutputRoot).toHaveBeenCalled()
+    })
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+
+    await vi.waitFor(() => {
+      expect(runPipeline).toHaveBeenCalled()
+    })
+    const usedOutDir = String(runPipeline.mock.calls[0][0].outDir)
+    expect(usedOutDir).toBe("C:\\Users\\Tester\\Documents\\requirement-atomizer-runs\\Appendix 9")
+    expect(usedOutDir).not.toContain("E:\\Codex")
+  })
+
   it("collapses long global messages to one line with an expand toggle", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,

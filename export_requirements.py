@@ -5,11 +5,10 @@ import csv
 import json
 from collections import defaultdict
 from pathlib import Path
-
-from result_package import governed_artifact_path
 from typing import Any, Iterable
 
 from io_utils import read_jsonl
+from result_package import governed_artifact_path
 from text_normalize import formula_safe
 
 

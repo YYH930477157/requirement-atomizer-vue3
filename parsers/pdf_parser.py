@@ -1661,7 +1661,10 @@ def _clean_table_matrix(raw_matrix: list[list[Any]] | None) -> list[list[str]]:
 def _cluster_boundaries(values: list[float], *, tolerance: float = 2.0) -> list[float] | None:
     """坐标边界聚类：相近边界（≤tolerance pt）并为一簇，返回簇中心（升序）。
 
-    任何两簇中心相距仍 ≤tolerance 说明证据自相矛盾（无法形成稳定网格）→ None。"""
+    S13（review-2026-08-03）：链式聚类保证相邻簇中心距恒 > tolerance（下一簇首元素
+    已比本簇末元素远 tolerance 以上），"簇中心过近"分支不可达，已删除。None 统一
+    表示无证据（空输入/网格不可判定），调用方据此映射 status="none"——证据矛盾由
+    _pdfplumber_cell_evidence 的占用/维度检查单独报 "conflict"，不经由此函数。"""
     if not values:
         return None
     ordered = sorted(values)
@@ -1671,11 +1674,7 @@ def _cluster_boundaries(values: list[float], *, tolerance: float = 2.0) -> list[
             clusters[-1].append(value)
         else:
             clusters.append([value])
-    centers = [sum(cluster) / len(cluster) for cluster in clusters]
-    for left, right in zip(centers, centers[1:]):
-        if right - left <= tolerance:
-            return None
-    return centers
+    return [sum(cluster) / len(cluster) for cluster in clusters]
 
 
 def _pdfplumber_cell_evidence(

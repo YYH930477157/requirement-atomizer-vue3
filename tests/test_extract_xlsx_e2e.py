@@ -195,6 +195,55 @@ class ExtractXlsxE2ETests(unittest.TestCase):
         self.assertEqual(catalog["meta"]["audit"]["parse_incomplete_count"], 1)
         self.assertEqual(catalog["meta"]["accounting_status"], "incomplete")
 
+    def test_xlsx_workbook_is_loaded_exactly_twice(self) -> None:
+        # S14（review-2026-08-03）：主视图 + 公式双视图两次加载即可——merge ranges
+        # 复用首次加载的 workbook（与 data_only 无关），第三次加载是纯浪费
+        # （大 xlsx 解析成本 ×3）。
+        import parsers.xlsx_parser as xlsx_parser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "synthetic_standard.xlsx"
+            write_synthetic_xlsx(input_path)
+            real_load = xlsx_parser.load_workbook
+            calls = []
+
+            def counting_load(*args, **kwargs):
+                calls.append((args, kwargs))
+                return real_load(*args, **kwargs)
+
+            with mock.patch("parsers.xlsx_parser.load_workbook", side_effect=counting_load):
+                blocks, table_items, cell_items = extract_xlsx(
+                    input_path, knowledge_bases=[], document_profile=None)
+
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(any(block.get("type") == "table" for block in blocks))
+
+    def test_formula_scan_column_limit_is_fail_closed(self) -> None:
+        # S14：公式扫描列维此前无上限（行维有 MAX_SHEET_ROWS），口径不齐；
+        # 超上限必须 fail-closed 计入审计——超界列的无缓存公式格不得静默逃逸。
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "wide.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Wide"
+            sheet.append(["ID", "Requirement", "Extra"])
+            sheet.append(["R1", "The meter shall support GET.", "x"])
+            workbook.save(input_path)
+            workbook.close()
+
+            with mock.patch("parsers.xlsx_parser.MAX_SHEET_COLUMNS", 2):
+                blocks, items, cell_items = extract_xlsx(
+                    input_path, knowledge_bases=[], document_profile=None)
+
+        table = next(block for block in blocks if block["type"] == "table")
+        self.assertTrue(table["parse_incomplete"])
+        self.assertEqual(table["parse_incomplete_reason"], {
+            "code": "xlsx_column_limit",
+            "observed_columns": 3,
+            "scanned_columns": 2,
+            "limit": 2,
+        })
+
     def test_unsupported_excel_and_unknown_formats_are_input_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

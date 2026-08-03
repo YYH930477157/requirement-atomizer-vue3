@@ -36,7 +36,13 @@ def apply_min_tokens(config, purpose: str):
 
 
 RATE_LIMIT_MIN_ATTEMPTS = 8
-LLM_ATTEMPT_POLICY_VERSION = "llm-attempt-policy-v1"
+# v1→v2 行为面声明（S9，review-2026-08-03）：transport 层新增 request_succeeded 分支——
+# 收到有效 2xx 后本地失败（budget checkpoint/trace 写入 OSError 等）不得重复 HTTP，
+# 原路径会把同一付费请求重发。该分支直接改变 provider attempt 次数，属 attempt policy
+# 行为面，版本必须随行：本常量进入 no-ledger baseline lineage（ai_extract.py）与 claim
+# verifier attempt 血缘（claim_artifacts._validate_attempt_policy_identity），v1 绑定的
+# 旧基线/旧 attempt 一律失配，成本门按保守重算，不静默沿用。
+LLM_ATTEMPT_POLICY_VERSION = "llm-attempt-policy-v2"
 _DURABLE_BUDGET_CHECKPOINT_ATTR = "_ratomizer_budget_checkpoint_durable"
 
 

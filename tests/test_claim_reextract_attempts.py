@@ -224,6 +224,36 @@ class ClaimReextractAttemptTests(unittest.TestCase):
             self.assertEqual(len(snapshot.rows), 1)
 
 
+class AttemptLogScaleBenchmarkTests(unittest.TestCase):
+    """S10（review-2026-08-03）：_append_unlocked 每次在锁内整文件原子重写，
+    N 次追加为 O(N²) 磁盘写入。本测试只落规模基准与宽上限（文档化取舍），
+    不是性能门；达到明确阈值前不改实现，之后按 append+compaction 设计。"""
+
+    def test_sequential_appends_scale_baseline(self) -> None:
+        import time
+
+        event_count = 50
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started_at = time.monotonic()
+            for index in range(event_count):
+                event = _started(
+                    attempts.attempt_id("CQP-12345678-9abcdef0", f"request-{index}")
+                )
+                event["idempotency_key"] = _hash(f"started-{index}")
+                attempts.append_attempt_events(root, [event])
+            elapsed = time.monotonic() - started_at
+            snapshot = attempts.read_attempt_log(root)
+            self.assertEqual(len(snapshot.rows), event_count)
+            # 宽上限只挡数量级回归（如退化成逐字节重写）；基准数值见
+            # claim_reextract_attempts._append_unlocked 的 S10 注释。
+            self.assertLess(
+                elapsed,
+                120.0,
+                f"attempt log append regression: {elapsed:.2f}s for {event_count} events",
+            )
+
+
 class AttemptLogStableReadTests(unittest.TestCase):
     def test_stable_read_retries_transient_torn_tail_from_active_append(self) -> None:
         from unittest import mock

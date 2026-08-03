@@ -6,6 +6,7 @@ import path from "node:path"
 import {
   PROGRESS_PREFIX,
   RECENT_SESSIONS_LIMIT,
+  acquireSingleInstanceLock,
   bindAmbientLlmCredential,
   buildChainArgs,
   buildExportAnnotationArgs,
@@ -759,5 +760,37 @@ describe("parseTaskErrorEnvelope (I6 稳定错误码透传)", () => {
     expect(parseTaskErrorEnvelope(new Error("desktop task exited with code 2"))).toBeNull()
     expect(parseTaskErrorEnvelope(new Error("{not json}"))).toBeNull()
     expect(parseTaskErrorEnvelope(null)).toBeNull()
+  })
+})
+
+describe("acquireSingleInstanceLock (S7)", () => {
+  it("quits the second instance instead of racing shared session state", () => {
+    const calls = []
+    const appLike = {
+      requestSingleInstanceLock: () => false,
+      quit: () => calls.push("quit"),
+      on: (event, handler) => calls.push([event, handler]),
+    }
+    expect(acquireSingleInstanceLock(appLike, () => calls.push("focus"))).toBe(false)
+    expect(calls).toEqual(["quit"])
+  })
+
+  it("registers a second-instance focus handler when the lock is acquired", () => {
+    const calls = []
+    const appLike = {
+      requestSingleInstanceLock: () => true,
+      quit: () => calls.push("quit"),
+      on: (event, handler) => calls.push([event, handler]),
+    }
+    let focused = 0
+    expect(acquireSingleInstanceLock(appLike, () => { focused += 1 })).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe("second-instance")
+    calls[0][1]()
+    expect(focused).toBe(1)
+  })
+
+  it("treats runtimes without the lock API as acquired", () => {
+    expect(acquireSingleInstanceLock({}, () => undefined)).toBe(true)
   })
 })

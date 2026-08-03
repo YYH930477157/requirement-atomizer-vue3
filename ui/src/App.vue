@@ -1203,6 +1203,7 @@ onMounted(() => {
   })
   loadInitialApiSession()
   void loadRecentSessions()
+  void loadDefaultOutputRoot()
   // 恢复已保存的 LLM 开关/端点：此前只在打开设置面板时才加载——重启后 llmMode 恒 false，
   // 整条 AI 交付物轨静默降级 stub（2026-07-08 审计 A2）
   void loadLlmSettings()
@@ -2148,9 +2149,26 @@ function formatApiReconnectWarning(outDir: string, reason: string) {
   return `结果已生成在输出目录：${outDir}；但本地 API 暂时未连接（${text}）。无需重跑 AI，稍后重新选择该输出目录即可继续查看/批注`
 }
 
+// S16：默认输出根经 Electron 派生（app:get-default-output-root，documents/失败退回
+// userData），禁止硬编码开发机路径；bridge 不可用（浏览器调试）时退回输入文件同级目录。
+const defaultOutputRoot = ref("")
+
+async function loadDefaultOutputRoot() {
+  if (!window.ratomizerDesktop?.getDefaultOutputRoot) return
+  try {
+    defaultOutputRoot.value = await window.ratomizerDesktop.getDefaultOutputRoot()
+  } catch {
+    defaultOutputRoot.value = ""
+  }
+}
+
 function defaultOutputDir(inputPath: string) {
   const stem = inputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") || "run"
-  return `E:\\Codex\\requirement-atomizer-runs\\${stem}`
+  if (defaultOutputRoot.value) {
+    return `${defaultOutputRoot.value.replace(/[\\/]+$/, "")}\\${stem}`
+  }
+  const parent = inputPath.replace(/[\\/][^\\/]*$/, "")
+  return parent && parent !== inputPath ? `${parent}\\${stem}-run` : stem
 }
 
 function countStatus(status: ReviewStatus) {

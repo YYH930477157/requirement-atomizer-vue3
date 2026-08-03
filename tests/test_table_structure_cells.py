@@ -734,6 +734,23 @@ class XlsxRegionTests(unittest.TestCase):
 
 
 class PdfCellGeometryTests(unittest.TestCase):
+    def test_cluster_boundaries_none_means_no_evidence_only(self) -> None:
+        # S13（review-2026-08-03）：链式聚类保证相邻簇中心距恒 > tolerance，
+        # 旧"中心过近=证据自相矛盾→None"分支不可达；None 统一为"无证据"
+        # （空输入），与调用方把 falsy 映射为 status="none" 的口径一致。
+        from parsers.pdf_parser import _cluster_boundaries
+
+        self.assertIsNone(_cluster_boundaries([]))
+        # 非空输入恒返回簇中心——不存"矛盾"出口
+        self.assertEqual(_cluster_boundaries([0.0, 1.0, 5.0], tolerance=2.0), [0.5, 5.0])
+        self.assertEqual(_cluster_boundaries([3.0]), [3.0])
+        wide = _cluster_boundaries([0.0, 2.0, 4.5], tolerance=2.0)
+        self.assertIsNotNone(wide)
+        # docstring 不得再把 None 描述为矛盾证据（防未来聚类变动后语义回潮）
+        doc = (_cluster_boundaries.__doc__ or "")
+        self.assertNotIn("自相矛盾", doc)
+        self.assertIn("无证据", doc)
+
     def test_pdfplumber_cell_evidence_anchor_and_merge(self) -> None:
         from parsers.pdf_parser import _pdfplumber_cell_evidence
 

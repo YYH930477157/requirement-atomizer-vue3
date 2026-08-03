@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   DEFAULT_LLM_SETTINGS,
+  acquireSingleInstanceLock,
   appendBackendLog,
   bindAmbientLlmCredential,
   buildChainArgs,
@@ -64,37 +65,53 @@ function createWindow() {
 
 }
 
-app.whenReady().then(createWindow);
-
-app.whenReady().then(() => {
-  llmSettings = loadLlmSettings();
-});
-
-// 开发/演示入口：`npx electron . --out-dir <path>` 启动后直接连接该输出目录
-app.whenReady().then(() => {
-  const flagIndex = process.argv.indexOf("--out-dir");
-  const outDir = flagIndex >= 0 ? process.argv[flagIndex + 1] : "";
-  if (outDir) {
-    void startApiServer(outDir, { notifyRenderer: true }).catch(() => undefined);
+function focusMainWindow() {
+  if (!mainWindow) {
+    createWindow();
     return;
   }
-  // 自动恢复上次结果：重启后不必重跑管线，也不必手动找目录。
-  // 无历史 / 目录已删除 / 目录不是输出产物时静默跳过，停在首页（最近结果列表仍可手动打开）。
-  void autoRestoreRecentSession(resolveAutoRestoreCandidates(recentSessionsPath()));
-});
-
-app.on("window-all-closed", () => {
-  stopApiServer();
-  if (process.platform !== "darwin") {
-    app.quit();
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
   }
-});
+  mainWindow.focus();
+}
 
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
-});
+// S7：单实例——两个窗口各自起 API 进程会对同一输出目录互相抢写锁
+//（extraction operation lease / recent-sessions read-modify-write 丢更新）。
+// 锁拿不到时 acquireSingleInstanceLock 内部已 app.quit()，此分支直接不再注册启动。
+if (acquireSingleInstanceLock(app, focusMainWindow)) {
+  app.whenReady().then(createWindow);
+
+  app.whenReady().then(() => {
+    llmSettings = loadLlmSettings();
+  });
+
+  // 开发/演示入口：`npx electron . --out-dir <path>` 启动后直接连接该输出目录
+  app.whenReady().then(() => {
+    const flagIndex = process.argv.indexOf("--out-dir");
+    const outDir = flagIndex >= 0 ? process.argv[flagIndex + 1] : "";
+    if (outDir) {
+      void startApiServer(outDir, { notifyRenderer: true }).catch(() => undefined);
+      return;
+    }
+    // 自动恢复上次结果：重启后不必重跑管线，也不必手动找目录。
+    // 无历史 / 目录已删除 / 目录不是输出产物时静默跳过，停在首页（最近结果列表仍可手动打开）。
+    void autoRestoreRecentSession(resolveAutoRestoreCandidates(recentSessionsPath()));
+  });
+
+  app.on("window-all-closed", () => {
+    stopApiServer();
+    if (process.platform !== "darwin") {
+      app.quit();
+    }
+  });
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+}
 
 ipcMain.handle("dialog:open-document", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -149,6 +166,14 @@ ipcMain.handle("shell:open-path", async (_event, targetPath) => {
   await shell.openPath(targetPath);
 });
 
+// S16：默认输出根目录跟随系统"文档"目录派生，绝不硬编码开发者机器路径
+ipcMain.handle("app:get-default-output-root", async () => {
+  try {
+    return path.join(app.getPath("documents"), "requirement-atomizer-runs");
+  } catch {
+    return path.join(app.getPath("userData"), "requirement-atomizer-runs");
+  }
+});
 ipcMain.handle("api:get-session", async () => apiSession);
 ipcMain.handle("api:start-session", async (_event, outDir) => startApiServer(outDir));
 ipcMain.handle("session:get-recent", async () => listRecentSessions(recentSessionsPath()));

@@ -391,6 +391,11 @@ def _resolve_registered_path(root: Path, relative: str) -> Path:
 
 
 def _validate_package(package: Any) -> dict[str, Any]:
+    """marker 权威校验（与 schemas/result_package.schema.json 对齐）。
+
+    S16：Electron 端 classifyOutputDir（ui/electron/main.helpers.cjs）重实现了
+    本契约的一个只读子集用于打开前快速分类——任何一侧契约改动必须同步检查另一侧。"""
+
     if not isinstance(package, dict):
         raise ResultPackageCorrupt("result package marker must be a JSON object")
     schema = package.get("schema")

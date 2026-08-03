@@ -15,6 +15,10 @@ from requirement_kb import KnowledgeRepository
 
 LOGGER = logging.getLogger("requirement_atomizer")
 MAX_SHEET_ROWS = 50_000
+# S14：公式扫描的列维上限（xlsx 规格硬上限 16384 列）。行维有 MAX_SHEET_ROWS 截断
+# 审计而列维无上限，口径不齐；超限必须 fail-closed 计入审计，超界列的无缓存公式格
+# 不得静默逃逸。
+MAX_SHEET_COLUMNS = 16_384
 
 
 def extract_xlsx(
@@ -32,7 +36,8 @@ def extract_xlsx(
     # 单元格凭空消失且 parse_incomplete=False）；data_only=False 视图识别公式存在性，
     # 有公式但无缓存值 = 内容不可见，必须 fail-closed 并计入非空守恒
     formula_workbook = load_workbook(input_path, data_only=False, read_only=False)
-    merge_ranges_by_sheet = _merged_ranges_by_sheet(input_path)
+    # S14：merge ranges 复用首次加载的 workbook（与 data_only 无关），省掉第三次整文件加载
+    merge_ranges_by_sheet = _merged_ranges_by_sheet(workbook)
     blocks: list[dict[str, Any]] = []
     table_items: list[dict[str, Any]] = []
     table_cell_items: list[dict[str, Any]] = []
@@ -48,8 +53,8 @@ def extract_xlsx(
                  if candidate.title == sheet.title),
                 None,
             )
-            unavailable_formulas = _formula_cells_without_cached_values(
-                sheet, formula_sheet
+            unavailable_formulas, formula_scan_truncated = (
+                _formula_cells_without_cached_values(sheet, formula_sheet)
             )
             sheet_merges = merge_ranges_by_sheet.get(sheet.title, [])
             parse_audit: dict[str, Any] = {}
@@ -62,6 +67,16 @@ def extract_xlsx(
                         f"R{row_index}C{column_index}"
                         for row_index, column_index in sorted(unavailable_formulas)[:10]
                     ],
+                }
+            if formula_scan_truncated:
+                # 列超上限时公式扫描不完整（unavailable 集合只是部分结果）——
+                # 以截断原因为准 fail-closed，不得拿部分扫描冒充完整
+                parse_audit["parse_incomplete"] = True
+                parse_audit["parse_incomplete_reason"] = {
+                    "code": "xlsx_column_limit",
+                    "observed_columns": int(sheet.max_column or 0),
+                    "scanned_columns": MAX_SHEET_COLUMNS,
+                    "limit": MAX_SHEET_COLUMNS,
                 }
             regions, region_merges, region_headers = _sheet_table_regions(
                 sheet, sheet_merges, audit=parse_audit,
@@ -128,19 +143,23 @@ def extract_xlsx(
 def _formula_cells_without_cached_values(
     sheet: Any,
     formula_sheet: Any,
-) -> set[tuple[int, int]]:
-    """有公式但无缓存值的单元格坐标（B7）。
+) -> tuple[set[tuple[int, int]], bool]:
+    """有公式但无缓存值的单元格坐标（B7）+ 列扫描是否被上限截断（S14）。
 
     data_only=True 对无缓存公式返回 None——内容不可见；不得假装它是空格
     （守恒/连通性都看不到 = 静默丢失）。坐标计入 extra_non_empty 并由
-    调用方 fail-closed（xlsx_formula_value_unavailable）。"""
+    调用方 fail-closed（xlsx_formula_value_unavailable）。列维超
+    MAX_SHEET_COLUMNS 时扫描不完整，第二个返回值置 True，调用方必须以
+    xlsx_column_limit fail-closed——超界列的公式格不得静默逃逸。"""
     unavailable: set[tuple[int, int]] = set()
     if formula_sheet is None:
-        return unavailable
+        return unavailable, False
     max_row = min(sheet.max_row or 0, MAX_SHEET_ROWS)
-    max_column = sheet.max_column or 0
+    observed_columns = sheet.max_column or 0
+    max_column = min(observed_columns, MAX_SHEET_COLUMNS)
+    truncated = observed_columns > MAX_SHEET_COLUMNS
     if max_row == 0 or max_column == 0:
-        return unavailable
+        return unavailable, truncated
     for row in formula_sheet.iter_rows(
         min_row=1, max_row=max_row, max_col=max_column
     ):
@@ -150,7 +169,7 @@ def _formula_cells_without_cached_values(
             cached = sheet.cell(row=cell.row, column=cell.column).value
             if cached is None or not str(cached).strip():
                 unavailable.add((cell.row, cell.column))
-    return unavailable
+    return unavailable, truncated
 
 
 def _sheet_table_regions(
@@ -405,18 +424,16 @@ def _region_matrix(
     return matrix
 
 
-def _merged_ranges_by_sheet(input_path: Path) -> dict[str, list[tuple[int, int, int, int]]]:
-    workbook = load_workbook(input_path, data_only=True, read_only=False)
-    try:
-        return {
-            sheet.title: [
-                (cell_range.min_row, cell_range.min_col, cell_range.max_row, cell_range.max_col)
-                for cell_range in sheet.merged_cells.ranges
-            ]
-            for sheet in workbook.worksheets
-        }
-    finally:
-        workbook.close()
+def _merged_ranges_by_sheet(workbook: Any) -> dict[str, list[tuple[int, int, int, int]]]:
+    """S14：merge ranges 与 data_only 无关，复用 extract_xlsx 首次加载的 workbook——
+    不再整文件第三次加载（大 xlsx 上解析成本曾 ×3）。"""
+    return {
+        sheet.title: [
+            (cell_range.min_row, cell_range.min_col, cell_range.max_row, cell_range.max_col)
+            for cell_range in sheet.merged_cells.ranges
+        ]
+        for sheet in workbook.worksheets
+    }
 
 
 def _merged_fill_values(

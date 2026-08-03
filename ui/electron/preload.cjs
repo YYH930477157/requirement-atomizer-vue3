@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("ratomizerDesktop", {
   openOutput: () => ipcRenderer.invoke("dialog:open-output"),
   openPath: (targetPath) => ipcRenderer.invoke("shell:open-path", targetPath),
   getApiSession: () => ipcRenderer.invoke("api:get-session"),
+  getDefaultOutputRoot: () => ipcRenderer.invoke("app:get-default-output-root"),
   startApiSession: (outDir) => ipcRenderer.invoke("api:start-session", outDir),
   getRecentSessions: () => ipcRenderer.invoke("session:get-recent"),
   onApiSessionReady: (handler) => {
