@@ -751,7 +751,7 @@ def _outputs_exist(out_dir: Path, outputs: list[str]) -> bool:
         return False
     root = Path(out_dir).expanduser().resolve()
     for name in outputs:
-        path = governed_artifact_path(root, name)
+        path = governed_artifact_path(root, name, for_write=False)
         if not path.exists() or path.is_dir():
             return False
         try:
@@ -809,7 +809,7 @@ def stage_input_files_fingerprint(out_dir: Path, stage: str) -> str:
     for name in STAGE_INPUTS.get(stage, []):
         if name in ignored:
             continue
-        path = governed_artifact_path(root, name)
+        path = governed_artifact_path(root, name, for_write=False)
         payload.append({
             "path": name,
             "sha256": _hash_file(path) if path.is_file() else None,
@@ -846,7 +846,7 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
     root = Path(out_dir).expanduser().resolve()
     inputs: list[dict[str, Any]] = []
     for name in STAGE_INPUTS.get(stage, []):
-        path = governed_artifact_path(root, name)
+        path = governed_artifact_path(root, name, for_write=False)
         inputs.append({
             "path": name,
             "sha256": _hash_file(path) if path.exists() and path.is_file() else None,
@@ -1865,6 +1865,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     package_status_parser = subparsers.add_parser("result-package-status")
     package_status_parser.add_argument("--out", type=Path, required=True)
+    package_status_parser.add_argument(
+        "--verify",
+        action="store_true",
+        # S5：显式完整校验（「打开已有结果」）——重算交付物/完成证据 SHA
+        help="recompute deliverable and completion-evidence hashes (fail on mismatch)",
+    )
     return parser.parse_args(argv)
 
 
@@ -1995,7 +2001,11 @@ def _result_package_main(args: argparse.Namespace) -> int:
             )
         else:  # result-package-status
             layout = detect_result_layout(package_root)
-            package = load_result_package(package_root) if layout == "package_v1" else None
+            package = (
+                load_result_package(package_root, verify=bool(getattr(args, "verify", False)))
+                if layout == "package_v1"
+                else None
+            )
             print_json_payload({
                 "kind": kind,
                 "ok": True,
@@ -2014,6 +2024,13 @@ def _result_package_main(args: argparse.Namespace) -> int:
         })
         return 0
     except ResultPackageCorrupt as exc:
+        # S5：verify 发现交付物/完成证据哈希不一致是独立稳定错误面——
+        # 桌面端据此显示"结果文件已被修改"
+        if "changed" in str(exc):
+            return _fail_with_envelope(
+                kind, "result_package_modified",
+                ResultPackageCorrupt(f"结果文件已被修改：{exc}"), 3,
+            )
         return _fail_with_envelope(kind, "result_package_corrupt", exc, 3)
     except ResultPackagePartialError as exc:
         # I6：部分阶段降级是稳定错误码——桌面端据此显示"分析未完成（部分阶段

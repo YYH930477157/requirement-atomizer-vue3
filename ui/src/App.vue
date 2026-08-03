@@ -650,7 +650,7 @@ import {
   UserRound,
   X,
 } from "@lucide/vue"
-import { isNeedsReconfirmationError, RequirementApiClient } from "./api-client"
+import { isNeedsReconfirmationError, RequirementApiClient, RequirementApiError } from "./api-client"
 import ClaimLedger from "./ClaimLedger.vue"
 import DocumentReview from "./DocumentReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
@@ -2026,10 +2026,21 @@ async function loadFromSession(
     if (generation === apiSessionLoadGeneration) reviewInsights.value = []
   }
   try {
-    const packageState = await client.loadResultPackage()
+    const packageState = await client.loadResultPackage({
+      // S5：显式打开/恢复会话时做完整校验（哈希重算）；轮询式刷新保持纯存在性检查
+      verify: options.restoreContext === true,
+    })
     if (generation === apiSessionLoadGeneration) applyResultPackageState(packageState)
-  } catch {
-    // Older API builds have no package endpoint; keep the session usable.
+  } catch (error) {
+    // S5：完整校验发现交付物/完成证据哈希不一致——如实显示「结果文件已被修改」，
+    // 不静默吞掉；其余失败（老 API 无端点等）保持既有宽容
+    if (
+      generation === apiSessionLoadGeneration
+      && error instanceof RequirementApiError
+      && error.details?.error === "result_package_modified"
+    ) {
+      apiMessage.value = String(error.details.detail || "结果文件已被修改")
+    }
   }
 }
 

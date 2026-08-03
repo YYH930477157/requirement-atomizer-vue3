@@ -42,6 +42,24 @@ describe("RequirementApiClient", () => {
     })
   })
 
+  it("requests explicit package verification with verify=1 (S5)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ layout: "package_v1", package: null }),
+    })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770",
+      token: "local-token",
+      fetchImpl: fetchMock,
+    })
+
+    await client.loadResultPackage({ verify: true })
+
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8770/result-package?verify=1", {
+      headers: { "X-Requirement-Atomizer-Token": "local-token" },
+    })
+  })
+
   it("posts review actions with reason and actor", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

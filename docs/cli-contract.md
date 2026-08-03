@@ -23,7 +23,7 @@ claim-shadow-review-import --input RUN_SET.json --decisions DECISIONS.json --out
 python -m desktop_tasks result-package-start --out DIR --input FILE --stages a,b,c
 python -m desktop_tasks result-package-complete --out DIR --run-id RUN-ID --completed-stages a,b,c
 python -m desktop_tasks result-package-fail --out DIR --run-id RUN-ID --error MESSAGE
-python -m desktop_tasks result-package-status --out DIR
+python -m desktop_tasks result-package-status --out DIR [--verify]
 ```
 
 The four `result-package-*` desktop-bridge commands manage the `result-package.json`
@@ -35,7 +35,14 @@ migration` for a legacy flat output directory), `requested_stage_partial` (exit 
 requested stage ended degraded/failed, so `result-package-complete` refuses the completion
 commit; the active attempt stays `running` and the last completed generation is untouched),
 `result_package_corrupt` (exit 3 — damaged
-marker or interrupted publication journal), or `internal_error` (exit 1, traceback on stderr).
+marker or interrupted publication journal), `result_package_modified` (exit 3 — only with
+`result-package-status --verify`: a deliverable or completion-evidence hash no longer matches
+the marker, message prefixed with `结果文件已被修改`), or `internal_error` (exit 1, traceback on stderr).
+`--verify` recomputes every deliverable and completion-evidence SHA-256 against the marker;
+without it the status command performs existence checks only. The same explicit verification
+is exposed over HTTP as `GET /result-package?verify=1` (503 `result_package_modified`,
+`retryable: false` on mismatch) and is what the desktop 「打开已有结果」 flow runs before
+attaching a review session.
 While an attempt is active, stage commands write only inside `.ratomizer/`; root deliverables
 stay at the last completed generation and are published transactionally by
 `result-package-complete`. Read-only commands (`summary`, `result-package-status`) never

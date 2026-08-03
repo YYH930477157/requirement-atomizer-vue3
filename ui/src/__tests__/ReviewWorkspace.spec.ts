@@ -1130,6 +1130,44 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("结果目录标志已损坏")
   })
 
+  it("surfaces a modified-result notice when explicit verification fails (S5)", async () => {
+    // 打开已有结果的显式完整校验：交付物/完成证据哈希与 marker 不一致时，
+    // 后端 503 result_package_modified——UI 如实显示「结果文件已被修改」，不静默吞掉
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8765", token: "old-token", outputDir: "E:\\out\\pkg",
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes("/result-package") && url.includes("verify=1")) {
+        return {
+          ok: false,
+          status: 503,
+          json: async () => ({
+            error: "result_package_modified",
+            detail: "结果文件已被修改：deliverable changed: summary.md",
+            retryable: false,
+          }),
+        } as Response
+      }
+      if (url.endsWith("/requirements?limit=5000")) {
+        return { ok: true, json: async () => [] } as Response
+      }
+      return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+    })
+
+    const wrapper = mount(App)
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("结果文件已被修改")
+    })
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("summary.md")
+  })
+
   it("collapses long global messages to one line with an expand toggle", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,

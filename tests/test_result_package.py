@@ -893,6 +893,40 @@ class ResultPackagePublicationTimingTests(unittest.TestCase):
             self.assertFalse(envelope["ok"])
             self.assertIn("legacy", envelope["error"]["message"])
 
+    def test_result_package_status_verify_detects_modified_deliverable(self) -> None:
+        # S5：桌面桥显式完整校验——篡改交付物后 status --verify 返回
+        # result_package_modified（exit 3）；默认不带 --verify 保持纯存在性检查。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = self._start(root)
+            self._run_ai_extract_stub(root, "committed summary")
+            commit_analysis_completion(
+                root,
+                run_id=started["active_attempt"]["run_id"],
+                completed_stages=["ai-extract"],
+            )
+            (root / "summary.md").write_text("tampered\n", encoding="utf-8")
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                plain_exit = desktop_tasks.main([
+                    "result-package-status", "--out", str(root),
+                ])
+            self.assertEqual(plain_exit, 0)
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = desktop_tasks.main([
+                    "result-package-status", "--out", str(root), "--verify",
+                ])
+
+            self.assertEqual(exit_code, 3)
+            envelope = json.loads(stdout.getvalue())
+            self.assertFalse(envelope["ok"])
+            self.assertEqual(envelope["error"]["type"], "result_package_modified")
+            self.assertIn("结果文件已被修改", envelope["error"]["message"])
+
     def test_result_package_status_with_corrupt_marker_returns_exit_3(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1005,6 +1039,159 @@ class ClaimGenerationGatePackageLayoutTests(unittest.TestCase):
                 )
 
             fold.assert_called_once()
+
+
+class MarkerContractHardeningTests(unittest.TestCase):
+    """PR4（2026-08-03 清单 S3/S4/S6）：路径安全边角、marker 校验与 schema 对齐、
+    只读路径不建目录。"""
+
+    def _initialize(self, root: Path) -> dict:
+        source = root / "standard.docx"
+        source.write_bytes(b"docx-fixture")
+        return initialize_result_package(
+            root, input_path=source, requested_stages=["atomize"],
+        )
+
+    def _rewrite_marker(self, root: Path, mutate) -> None:
+        marker_path = root / RESULT_PACKAGE_FILE
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        mutate(marker)
+        marker_path.write_text(
+            json.dumps(marker, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
+
+    def test_safe_relative_path_rejects_dot_segments(self) -> None:
+        # S3：PurePosixPath(".").parts 为空，此前 parts[0] 抛裸 IndexError 绕过
+        # ResultPackageCorrupt——路径穿越防线的唯一关口必须 fail-closed 成结构化错误
+        import result_package
+
+        for value in (".", "./"):
+            with self.assertRaises(ResultPackageCorrupt, msg=value):
+                result_package._safe_relative_path(value, label="deliverable path")
+
+    def test_safe_relative_path_rejects_drive_relative_first_segment(self) -> None:
+        # S3："C:foo" 是盘符相对路径，首段含 ":" 但不以 ":" 结尾，此前漏检
+        import result_package
+
+        for value in ("C:foo", "C:foo/bar"):
+            with self.assertRaises(ResultPackageCorrupt, msg=value):
+                result_package._safe_relative_path(value, label="deliverable path")
+
+    def test_validate_package_requires_package_id(self) -> None:
+        # S4：schemas/result_package.schema.json 要求 package_id 且 ^RPK-[0-9a-f]+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(root, lambda marker: marker.pop("package_id"))
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_rejects_malformed_package_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(
+                root, lambda marker: marker.update(package_id="PKG-123"),
+            )
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_requires_tool_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(root, lambda marker: marker.pop("tool"))
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_requires_matching_tool_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(
+                root,
+                lambda marker: marker["tool"].update(output_layout_version="other-layout"),
+            )
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_requires_string_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(
+                root, lambda marker: marker.update(warnings=["ok", 1]),
+            )
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_rejects_unknown_top_level_keys(self) -> None:
+        # S4：schema additionalProperties=false——外来/手工 marker 不得带病通过
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(root, lambda marker: marker.update(surprise={}))
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_readonly_governed_path_does_not_create_directories(self) -> None:
+        # S6：只读解析不得落盘——for_write=False 纯解析，for_write=True 才建父目录
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            shutil.rmtree(root / ".ratomizer" / "state")
+
+            resolved = governed_artifact_path(
+                root, "review_states.jsonl", category="state", for_write=False,
+            )
+            self.assertEqual(
+                resolved, (root / ".ratomizer" / "state" / "review_states.jsonl").resolve(),
+            )
+            self.assertFalse((root / ".ratomizer" / "state").exists())
+
+            governed_artifact_path(root, "review_states.jsonl", category="state")
+            self.assertTrue((root / ".ratomizer" / "state").is_dir())
+
+    def test_package_artifact_path_readonly_does_not_create_directories(self) -> None:
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            shutil.rmtree(root / ".ratomizer" / "stages")
+
+            resolved = package_artifact_path(root, "run_manifest")
+            self.assertFalse((root / ".ratomizer" / "stages").exists())
+            self.assertEqual(
+                resolved,
+                (root / ".ratomizer" / "stages" / "run_manifest.json").resolve(),
+            )
+
+            package_artifact_path(root, "run_manifest", for_write=True)
+            self.assertTrue((root / ".ratomizer" / "stages").is_dir())
+
+    def test_claim_view_read_does_not_create_internal_directories(self) -> None:
+        # S6 消费方回归：claim 只读视图不得自称"无副作用"却在盘上建空目录
+        import shutil
+
+        import claim_views
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            analysis_root = resolve_analysis_root(root)
+            shutil.rmtree(root / ".ratomizer" / "state")
+
+            self.assertTrue(claim_views._has_no_generation(analysis_root))
+            self.assertFalse((root / ".ratomizer" / "state").exists())
 
 
 if __name__ == "__main__":

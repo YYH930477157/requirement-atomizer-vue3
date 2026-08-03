@@ -147,6 +147,40 @@ class ResultPackageEndpointTests(unittest.TestCase):
             self.assertEqual(status, 503)
             self.assertEqual(payload["error"], "result_package_unavailable")
 
+    def test_verify_detects_modified_deliverable(self) -> None:
+        # S5：显式完整校验（打开已有结果）——交付物哈希与 marker 不一致时返回
+        # result_package_modified 并提示"结果文件已被修改"；不带 verify 保持纯存在性检查
+        from result_package import commit_analysis_completion, package_artifact_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.docx"
+            source.write_bytes(b"fixture")
+            package = initialize_result_package(
+                root, input_path=source, requested_stages=["atomize"],
+            )
+            run_id = package["active_attempt"]["run_id"]
+            manifest = package_artifact_path(root, "run_manifest", for_write=True)
+            manifest.write_text(json.dumps({
+                "manifest_version": 2,
+                "stages": {"atomize": {"status": "ok", "attempt_run_id": run_id}},
+            }), encoding="utf-8")
+            package_artifact_path(root, "summary_md", for_write=True).write_text(
+                "# done\n", encoding="utf-8",
+            )
+            commit_analysis_completion(root, run_id=run_id, completed_stages=["atomize"])
+            (root / "summary.md").write_text("tampered\n", encoding="utf-8")
+
+            with _package_api(root) as base_url:
+                plain_status, _plain = _http_json(base_url, "/result-package")
+                status, payload = _http_json(base_url, "/result-package?verify=1")
+
+        self.assertEqual(plain_status, 200)
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "result_package_modified")
+        self.assertFalse(payload["retryable"])
+        self.assertIn("结果文件已被修改", payload["detail"])
+
 
 def _http_post_json(
     base_url: str,
@@ -236,6 +270,56 @@ class ClaimLedgerHttpTests(unittest.TestCase):
             root,
             actor_trigger="real-http-test",
         )
+
+    def _seed_stale_protocol(self, root: Path) -> None:
+        # S11 夹具：committed base 的 artifact_protocol_version 落后于当前协议
+        self._seed(root)
+        generation_path = root / claim_artifacts.CLAIM_GENERATION_META
+        generation = json.loads(generation_path.read_text(encoding="utf-8"))
+        generation["artifact_protocol_version"] = "claim-artifacts-v6"
+        claim_artifacts.atomic_write_json(generation_path, generation)
+
+    def test_stale_claim_protocol_maps_to_base_migration_required_on_gets(self) -> None:
+        # S11：陈旧 claim 产物协议不再是裸 500 风格错误——GET 视图统一映射为
+        # 结构化 503 base_migration_required，文案含迁移指引
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_stale_protocol(root)
+
+            with _claim_api(root) as base_url:
+                responses = [_http_json(base_url, path) for path in self.ENDPOINTS]
+
+        for path, (status, payload) in zip(self.ENDPOINTS, responses):
+            self.assertEqual(status, 503, path)
+            self.assertEqual(payload["error"], "base_migration_required", path)
+            self.assertIn("请重跑 atomize", payload["detail"], path)
+
+    def test_stale_claim_protocol_maps_to_base_migration_required_on_maintenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_stale_protocol(root)
+
+            with _claim_api(root, local_token="s11-token") as base_url:
+                status, payload = _http_post_json(
+                    base_url, "/claim-maintenance", {}, token="s11-token",
+                )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "base_migration_required")
+        self.assertIn("请重跑 atomize", payload["detail"])
+
+    def test_stale_claim_protocol_fold_returns_structured_dict(self) -> None:
+        # S11：fold 写路径同样走结构化 base_migration_required，不抛裸协议错误
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_stale_protocol(root)
+
+            result = claim_review_actions.fold_effective_ledger(
+                root, actor_trigger="s11-fold-test",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "base_migration_required")
 
     def test_document_pdf_returns_503_for_unreadable_existing_claim_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -99,6 +99,16 @@ class ClaimEffectiveAuthorityChanged(ClaimArtifactError):
     """Raised when a committed effective snapshot no longer matches live authority."""
 
 
+class ClaimBaseMigrationRequired(ClaimArtifactError):
+    """Committed claim artifacts predate the current artifact protocol.
+
+    S11（2026-08-03 清单）：陈旧协议不冒充通用 artifact 错误——API/视图层
+    把本子类映射为结构化 base_migration_required（HTTP 503，文案含
+    "请重跑 atomize"）；唯一合法恢复是重跑 atomize/base publication，
+    绝不静默升级或伪造迁移。
+    """
+
+
 class ClaimAttemptLogTornTail(ClaimArtifactError):
     """Raised when a verdict-attempt ledger ends in a partial line that never settles.
 
@@ -3008,7 +3018,11 @@ def _load_catalog_probe_unlocked(root: Path) -> dict[str, Any]:
     if committed.get("schema") != "claim-catalog-probe-meta/v1":
         raise ClaimArtifactError("unsupported catalog commit meta schema")
     if committed.get("artifact_protocol_version") != CLAIM_ARTIFACT_PROTOCOL_VERSION:
-        raise ClaimArtifactError("stale catalog artifact protocol")
+        raise ClaimBaseMigrationRequired(
+            "base_migration_required：catalog 产物协议版本陈旧"
+            f"（committed={committed.get('artifact_protocol_version')!r}，"
+            f"current={CLAIM_ARTIFACT_PROTOCOL_VERSION!r}），请重跑 atomize"
+        )
     _require_hash(
         claim_artifact_path(root, CLAIM_CATALOG),
         committed.get("catalog_sha256"),
@@ -3646,7 +3660,7 @@ def bootstrap_legacy_attempt_lineage(out_dir: Path | str) -> dict[str, Any]:
             CLAIM_SHADOW_METRICS: generation.get("shadow_metrics_sha256"),
         }
         for name, expected in committed_files.items():
-            _require_hash(governed_artifact_path(root, name), expected, label=f"legacy {name}")
+            _require_hash(governed_artifact_path(root, name, for_write=False), expected, label=f"legacy {name}")
 
         catalog_meta = _read_json(
             claim_artifact_path(root, CLAIM_CATALOG_META),
@@ -4621,7 +4635,7 @@ def load_committed_effective_snapshot_readonly(
                 CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
                 CLAIM_BUDGET_CHECKPOINT_OUTBOX,
             )
-            if governed_artifact_path(root, name).is_file()
+            if governed_artifact_path(root, name, for_write=False).is_file()
         ]
 
     pending = pending_journals()
@@ -4658,7 +4672,11 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     if generation.get("schema") != "claim-generation-meta/v1":
         raise ClaimArtifactError("unsupported claim generation meta schema")
     if generation.get("artifact_protocol_version") != CLAIM_ARTIFACT_PROTOCOL_VERSION:
-        raise ClaimArtifactError("stale claim artifact protocol")
+        raise ClaimBaseMigrationRequired(
+            "base_migration_required：claim 产物协议版本陈旧"
+            f"（committed={generation.get('artifact_protocol_version')!r}，"
+            f"current={CLAIM_ARTIFACT_PROTOCOL_VERSION!r}），请重跑 atomize"
+        )
     if not _shadow_meta_is_well_formed(dict(generation.get("shadow_meta") or {})):
         raise ClaimArtifactError("invalid committed shadow result meta")
 
@@ -4670,7 +4688,7 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
         CLAIM_SHADOW_METRICS: generation.get("shadow_metrics_sha256"),
     }
     for name, expected in committed_files.items():
-        _require_hash(governed_artifact_path(root, name), expected, label=name)
+        _require_hash(governed_artifact_path(root, name, for_write=False), expected, label=name)
 
     for name, meta_key in (
         ("blocks.jsonl", "blocks_file_sha256"),
@@ -4679,7 +4697,7 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     ):
         expected = str(generation.get(meta_key) or "")
         if expected:
-            _require_hash(governed_artifact_path(root, name), expected, label=name)
+            _require_hash(governed_artifact_path(root, name, for_write=False), expected, label=name)
 
     catalog_build = _load_catalog_probe_unlocked(root)
     catalog_meta = dict(catalog_build["meta"])

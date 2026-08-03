@@ -37,6 +37,14 @@ _MARKER_CONTRACT_CACHE_LOCK = RLock()
 # marker warnings[] 只追加不膨胀：保留最近 N 条，完整细节始终落在 run.log。
 _PACKAGE_WARNING_LIMIT = 50
 
+# schemas/result_package.schema.json additionalProperties=false 的代码侧镜像；
+# 两处必须同步演进（S4）
+_MARKER_TOP_LEVEL_KEYS = frozenset({
+    "schema", "layout_version", "package_id", "analysis_status",
+    "active_attempt", "last_attempt", "input", "analysis", "workspace",
+    "deliverables", "tool", "warnings",
+})
+
 
 class ResultPackageError(RuntimeError):
     pass
@@ -229,7 +237,14 @@ def governed_artifact_path(
     filename: str,
     *,
     category: str | None = None,
+    for_write: bool = True,
 ) -> Path:
+    """Resolve the governed location of a state/cache/log/pipeline artifact.
+
+    S6（2026-08-03 清单）：for_write=False 时纯解析不落盘——只读 GET/快照
+    读取不得自称"无副作用"却在盘上创建 .ratomizer/<category> 空目录；
+    只有显式 for_write=True（默认，兼容既有写路径）才创建父目录。
+    """
     base = Path(root).expanduser().resolve()
     package_root = package_root_for_analysis_root(base)
     if package_root is None:
@@ -253,7 +268,8 @@ def governed_artifact_path(
     if selected not in {"pipeline", "state", "cache", "logs", "stages"}:
         raise ResultPackageError(f"invalid internal artifact category: {selected}")
     target = package_root / INTERNAL_ROOT / selected / filename
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if for_write:
+        target.parent.mkdir(parents=True, exist_ok=True)
     return target
 
 
@@ -341,7 +357,16 @@ def _safe_relative_path(value: Any, *, label: str) -> str:
         raise ResultPackageCorrupt(f"invalid {label}")
     normalized = value.replace("\\", "/")
     candidate = PurePosixPath(normalized)
-    if candidate.is_absolute() or ".." in candidate.parts or candidate.parts[0].endswith(":"):
+    parts = candidate.parts
+    # S3（2026-08-03 清单）："." / "./" 的 parts 为空——此前 parts[0] 抛裸
+    # IndexError 绕过 ResultPackageCorrupt；首段任何含 ":" 的形态（含 "C:foo"
+    # 盘符相对路径）一律拒绝，这是路径穿越防线的唯一关口
+    if (
+        not parts
+        or candidate.is_absolute()
+        or ".." in parts
+        or ":" in parts[0]
+    ):
         raise ResultPackageCorrupt(f"unsafe {label}: {value}")
     return candidate.as_posix()
 
@@ -377,6 +402,36 @@ def _validate_package(package: Any) -> dict[str, Any]:
         raise ResultPackageVersionUnsupported(
             f"unsupported output layout: {package.get('layout_version')!r}"
         )
+    # S4（2026-08-03 清单）：与 schemas/result_package.schema.json 对齐——
+    # 顶层白名单（additionalProperties: false）、package_id 模式、tool 记录、
+    # warnings 全字符串。代码写出的 marker 永远合规，这里拒的是手工/外来 marker。
+    unknown_fields = sorted(set(package) - _MARKER_TOP_LEVEL_KEYS)
+    if unknown_fields:
+        raise ResultPackageCorrupt(
+            f"unknown result package fields: {', '.join(unknown_fields)}"
+        )
+    package_id = package.get("package_id")
+    if (
+        not isinstance(package_id, str)
+        or not package_id.startswith("RPK-")
+        or len(package_id) <= 4
+        or any(character not in "0123456789abcdef" for character in package_id[4:])
+    ):
+        raise ResultPackageCorrupt("invalid result package id")
+    tool = package.get("tool")
+    if (
+        not isinstance(tool, dict)
+        or not isinstance(tool.get("version"), str)
+        or not tool["version"]
+    ):
+        raise ResultPackageCorrupt("invalid result package tool record")
+    if tool.get("output_layout_version") != OUTPUT_LAYOUT_VERSION:
+        raise ResultPackageCorrupt("invalid tool output layout version")
+    warnings = package.get("warnings")
+    if not isinstance(warnings, list) or not all(
+        isinstance(item, str) for item in warnings
+    ):
+        raise ResultPackageCorrupt("invalid result package warnings")
     if package.get("analysis_status") not in {"running", "incomplete", "completed"}:
         raise ResultPackageCorrupt("invalid analysis_status")
     if package.get("workspace") != INTERNAL_ROOT:
@@ -639,7 +694,7 @@ def package_artifact_path(
     *,
     for_write: bool = False,
 ) -> Path:
-    del for_write  # Reserved for future read-through publication semantics.
+    # S6：for_write 不再是死参——默认纯解析，只有写路径显式 for_write=True 才建父目录
     result_root = Path(root).expanduser().resolve()
     registration = _ARTIFACTS.get(artifact_id)
     if registration is None:
@@ -649,7 +704,8 @@ def package_artifact_path(
         target = result_root / INTERNAL_ROOT / registration.package_path
     else:
         target = result_root / registration.legacy_path
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if for_write:
+        target.parent.mkdir(parents=True, exist_ok=True)
     return target
 
 

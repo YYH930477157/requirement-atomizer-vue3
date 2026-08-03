@@ -119,6 +119,19 @@ ipcMain.handle("dialog:open-output", async () => {
       : "所选文件夹不是需求分析结果目录";
     throw new Error(reason);
   }
+  if (classification.kind === "package_v1") {
+    // S5：打开已有结果时显式完整校验（重算交付物/完成证据 SHA）——哈希权威实现
+    // 单源在 Python 侧，JS 不重新实现，避免契约漂移（2026-08-03 清单 S16 同口径）
+    try {
+      await runDesktopTaskProcess(["result-package-status", "--out", outputDir, "--verify"]);
+    } catch (error) {
+      const envelope = parseTaskErrorEnvelope(error);
+      if (envelope?.error?.type === "result_package_modified") {
+        throw new Error(String(envelope.error.message || "结果文件已被修改"));
+      }
+      throw error;
+    }
+  }
   return startApiServer(outputDir);
 });
 
