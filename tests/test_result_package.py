@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -847,6 +847,33 @@ class ResultPackagePublicationTimingTests(unittest.TestCase):
             marker = load_result_package(root)
             self.assertTrue(marker["warnings"])
             self.assertIn("publication", marker["warnings"][-1])
+
+    def test_partial_completion_returns_stable_error_code(self) -> None:
+        # I6：请求阶段未全部成功 → exit 2 + envelope error.type=requested_stage_partial
+        # （桌面端据此显示"分析未完成（部分阶段降级）"而非"运行失败"）；
+        # 语义 fail-closed：active_attempt 保持 running，不冒充 completed。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = self._start(root, stages="ai-extract,requirements-analysis")
+            self._run_ai_extract_stub(root, "partial summary")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = desktop_tasks.main([
+                    "result-package-complete", "--out", str(root),
+                    "--run-id", started["active_attempt"]["run_id"],
+                    "--completed-stages", "ai-extract,requirements-analysis",
+                ])
+
+            self.assertEqual(exit_code, 2)
+            envelope = json.loads(stdout.getvalue())
+            self.assertFalse(envelope["ok"])
+            self.assertEqual(envelope["error"]["type"], "requested_stage_partial")
+            self.assertIn("requirements-analysis", envelope["error"]["message"])
+            # stderr 落同一 JSON 行（Electron 非零退出以 stderr 为错误消息）
+            self.assertIn("requested_stage_partial", stderr.getvalue())
+            self.assertEqual(load_result_package(root)["analysis_status"], "running")
 
     def test_result_package_start_on_legacy_returns_json_envelope(self) -> None:
         # S1/I2：legacy 硬拒走结构化 envelope（exit 2），不再裸 traceback。

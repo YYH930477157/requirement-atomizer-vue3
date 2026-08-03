@@ -15,6 +15,8 @@ const {
   drainProgressLines,
   listRecentSessions,
   loadLlmSettingsConfig,
+  parseTaskErrorEnvelope,
+  planResultPackageStart,
   recordRecentSession,
   resolveAutoRestoreCandidates,
   resolveBackendCommand,
@@ -140,26 +142,49 @@ ipcMain.handle("session:get-recent", async () => listRecentSessions(recentSessio
 ipcMain.handle("llm:get-settings", async () => loadLlmSettings());
 ipcMain.handle("llm:save-settings", async (_event, input) => saveLlmSettings(input));
 ipcMain.handle("llm:test-connection", async (_event, input) => testLlmConnection(input));
-ipcMain.handle("task:result-package-start", async (_event, input) => runDesktopTaskProcess([
-  "result-package-start",
-  "--out", input.outDir,
-  "--input", input.inputPath,
-  "--stages", (input.stages || []).join(","),
-]));
-ipcMain.handle("task:result-package-complete", async (_event, input) => runAndRememberOutput([
-  "result-package-complete",
-  "--out", input.outDir,
-  "--run-id", input.runId,
-  "--completed-stages", (input.completedStages || []).join(","),
-], input.outDir));
+ipcMain.handle("task:result-package-start", async (_event, input) => {
+  // I5：legacy 扁平目录按旧管线运行，不创建 marker/.ratomizer——
+  // Python initialize_result_package 保持 fail-closed，由 Electron 先行分类分流
+  const legacyPlan = planResultPackageStart(input.outDir);
+  if (legacyPlan) {
+    return legacyPlan;
+  }
+  return runDesktopTaskProcess([
+    "result-package-start",
+    "--out", input.outDir,
+    "--input", input.inputPath,
+    "--stages", (input.stages || []).join(","),
+  ]);
+});
+ipcMain.handle("task:result-package-complete", async (_event, input) => {
+  try {
+    return await runAndRememberOutput([
+      "result-package-complete",
+      "--out", input.outDir,
+      "--run-id", input.runId,
+      "--completed-stages", (input.completedStages || []).join(","),
+    ], input.outDir);
+  } catch (error) {
+    // I6：部分阶段降级不是运行失败——透传稳定错误码，渲染层显示
+    // "分析未完成（部分阶段降级）"；其余错误维持 reject
+    const envelope = parseTaskErrorEnvelope(error);
+    if (envelope?.error?.type === "requested_stage_partial") {
+      return {
+        kind: "result_package_complete",
+        ok: false,
+        code: "requested_stage_partial",
+        message: String(envelope.error.message || "requested stage partial"),
+        out_dir: input.outDir,
+      };
+    }
+    throw error;
+  }
+});
 ipcMain.handle("task:result-package-fail", async (_event, input) => runDesktopTaskProcess([
   "result-package-fail",
   "--out", input.outDir,
   "--run-id", input.runId,
   "--error", String(input.error || "analysis failed"),
-]));
-ipcMain.handle("task:result-package-status", async (_event, input) => runDesktopTaskProcess([
-  "result-package-status", "--out", input.outDir,
 ]));
 ipcMain.handle("task:run-pipeline", async (_event, input) => {
   const payload = await runDesktopTaskProcess(buildRunPipelineArgs(input));
@@ -265,7 +290,7 @@ ipcMain.handle("task:import-clarification-answers", async (_event, input) => {
 
 // 会话启动串行化：所有 startApiServer 调用（自动恢复 / 用户选目录 / 管线完成回连 /
 // 保存 LLM 设置重连）排入同一条 promise 链。否则自动恢复的重试回路可能在用户已另选
-// 目录后仍在跑，launchApiServer 开头的 stopApiServer 会反杀用户的新会话。
+// 目录后仍在跑，启动完成后的接管步骤会反杀用户的新会话。
 let sessionStartQueue = Promise.resolve();
 
 function startApiServer(outputDir, options = {}) {
@@ -283,16 +308,28 @@ async function startApiServerExclusive(outputDir, options = {}) {
   }
   let lastError = null;
   for (let attempt = 1; attempt <= API_STARTUP_ATTEMPTS; attempt += 1) {
+    let candidate = null;
     try {
-      const session = await launchApiServer(outputDir);
+      candidate = await spawnApiServer(outputDir);
+      const session = await waitForApiReady(
+        candidate.child, candidate.port, candidate.token, outputDir, API_STARTUP_TIMEOUT_MS,
+      );
+      // S8：新 API 成功就绪后才接管——启动失败时旧会话进程与状态原样保留，
+      // 渲染层不会因为一次失败的"打开已有结果"丢掉当前审查会话
+      stopApiServer();
+      apiProcess = candidate.child;
+      apiSession = session;
+      candidate = null;
       rememberRecentSession(outputDir);
       notifyApiSessionReady(session, options);
       return session;
     } catch (error) {
       lastError = error;
+      if (candidate?.child) {
+        candidate.child.kill();
+      }
       appendBackendLog(logsDirPath(), "api",
         `startup attempt ${attempt}/${API_STARTUP_ATTEMPTS} failed: ${error.message}`);
-      stopApiServer();
       if (attempt < API_STARTUP_ATTEMPTS) {
         await delay(API_STARTUP_RETRY_DELAY_MS * attempt);
       }
@@ -342,12 +379,13 @@ function recentSessionsPath() {
   return path.join(app.getPath("userData"), "recent-sessions.json");
 }
 
-async function launchApiServer(outputDir) {
-  stopApiServer();
+// 只 spawn 候选进程并等待就绪，绝不触碰 apiProcess/apiSession——
+// 是否接管由调用方在就绪成功后决定（S8 swap-after-ready）
+async function spawnApiServer(outputDir) {
   const token = crypto.randomBytes(24).toString("hex");
   const port = await findFreePort();
   const backend = resolveBackendCommand("api_server.py", { dirname: __dirname, resourcesPath: process.resourcesPath, existsSync: fs.existsSync });
-  apiProcess = spawn(backend.command, [
+  const child = spawn(backend.command, [
     ...backend.args,
     ...(backend.packaged ? ["--serve-api"] : []),
     "--out",
@@ -369,8 +407,7 @@ async function launchApiServer(outputDir) {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  apiSession = await waitForApiReady(apiProcess, port, token, outputDir, API_STARTUP_TIMEOUT_MS);
-  return apiSession;
+  return { child, port, token };
 }
 
 function stopApiServer() {

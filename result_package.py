@@ -50,6 +50,14 @@ class ResultPackageVersionUnsupported(ResultPackageError):
     pass
 
 
+class ResultPackagePartialError(ResultPackageError):
+    """请求阶段未全部成功（降级/缺失）——完成提交被拒绝的稳定错误面。
+
+    CLI 映射为 envelope ``error.type == "requested_stage_partial"``（exit 2），
+    桌面端据此显示"分析未完成（部分阶段降级）"而非"运行失败"；语义仍是
+    fail-closed（active_attempt 保持 running，不冒充 completed）。"""
+
+
 @contextmanager
 def _package_write_lock(root: Path):
     depth = _PACKAGE_LOCK_DEPTH.get()
@@ -925,7 +933,7 @@ def _completion_evidence(
         entry = stages.get(stage)
         if not isinstance(entry, dict) or entry.get("status") != "ok":
             actual = entry.get("status") if isinstance(entry, dict) else "missing"
-            raise ResultPackageError(
+            raise ResultPackagePartialError(
                 f"requested stage is not complete: {stage} ({actual})"
             )
         if entry.get("attempt_run_id") != run_id:
@@ -957,7 +965,7 @@ def _commit_analysis_completion_unlocked(
     completed = list(completed_stages)
     requested = list(active.get("requested_stages", []))
     if any(stage not in completed for stage in requested):
-        raise ResultPackageError("not all requested stages completed")
+        raise ResultPackagePartialError("not all requested stages completed")
     evidence = _completion_evidence(result_root, requested, run_id=run_id)
     finished_at = _utc_now()
     package["analysis_status"] = "completed"

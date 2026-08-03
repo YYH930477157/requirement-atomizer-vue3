@@ -30,6 +30,7 @@ from requirements_analysis_schema import normalize_ownership
 from result_package import (
     ResultPackageCorrupt,
     ResultPackageError,
+    ResultPackagePartialError,
     commit_analysis_completion,
     detect_result_layout,
     initialize_result_package,
@@ -2014,6 +2015,10 @@ def _result_package_main(args: argparse.Namespace) -> int:
         return 0
     except ResultPackageCorrupt as exc:
         return _fail_with_envelope(kind, "result_package_corrupt", exc, 3)
+    except ResultPackagePartialError as exc:
+        # I6：部分阶段降级是稳定错误码——桌面端据此显示"分析未完成（部分阶段
+        # 降级）"而非"运行失败"；语义仍 fail-closed（exit 2，不冒充完成）
+        return _fail_with_envelope(kind, "requested_stage_partial", exc, 2)
     except ResultPackageError as exc:
         # 含 "legacy flat output requires explicit migration" 等布局拒绝
         return _fail_with_envelope(kind, "input_error", exc, 2)

@@ -978,6 +978,158 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("API")
   })
 
+  it("reruns a legacy output directory without package tracking (I5)", async () => {
+    // legacy 目录重跑：startResultPackage 返回 layout=legacy（主进程分类后不创建
+    // marker/.ratomizer）——运行按旧管线完成，不要求 run_id，也不触 complete/fail
+    localStorage.setItem("ratomizer.runStages.v2",
+      JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false }))
+    const startResultPackage = vi.fn().mockResolvedValue({
+      kind: "result_package_start",
+      ok: true,
+      layout: "legacy",
+      package: null,
+    })
+    const completeResultPackage = vi.fn()
+    const failResultPackage = vi.fn()
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\legacy"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockRejectedValue(new Error("API server startup timed out")),
+        startResultPackage,
+        completeResultPackage,
+        failResultPackage,
+        runPipeline: vi.fn().mockResolvedValue({
+          kind: "pipeline",
+          out_dir: "E:\\out\\legacy",
+          summary: { counts: { requirements: 1 } },
+          api_warning: "API server startup timed out",
+        }),
+      },
+    })
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
+    })
+    expect(startResultPackage).toHaveBeenCalledOnce()
+    expect(completeResultPackage).not.toHaveBeenCalled()
+    expect(failResultPackage).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="run-progress"]').text()).not.toContain("运行失败")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("运行完成")
+    expect(wrapper.find('[data-testid="result-package-status"]').text()).toContain("旧版结果")
+  })
+
+  it("shows a partial-completion notice instead of a run failure (I6)", async () => {
+    // 部分阶段降级：completeResultPackage 返回稳定错误码 requested_stage_partial——
+    // UI 如实显示「分析未完成（部分阶段降级）」，不走「运行失败」也不把尝试记为失败
+    localStorage.setItem("ratomizer.runStages.v2",
+      JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
+    const startResultPackage = vi.fn().mockResolvedValue({
+      kind: "result_package_start",
+      package: {
+        analysis_status: "running",
+        active_attempt: { run_id: "RUN-partial", status: "running" },
+      },
+    })
+    const completeResultPackage = vi.fn().mockResolvedValue({
+      kind: "result_package_complete",
+      ok: false,
+      code: "requested_stage_partial",
+      message: "requested stage is not complete: ai-extract (failed)",
+    })
+    const failResultPackage = vi.fn()
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        openDocument: vi.fn().mockResolvedValue("C:\\input\\Appendix 9.docx"),
+        selectOutputDir: vi.fn().mockResolvedValue("E:\\out\\abnt"),
+        openOutput: vi.fn(),
+        openPath: vi.fn(),
+        startApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\out\\abnt",
+        }),
+        startResultPackage,
+        completeResultPackage,
+        failResultPackage,
+        runPipeline: vi.fn().mockResolvedValue({
+          kind: "pipeline",
+          out_dir: "E:\\out\\abnt",
+          summary: { counts: { requirements: 1 } },
+        }),
+        runChain: vi.fn().mockResolvedValue({
+          kind: "chain",
+          count: 2,
+          results: {},
+          summary: {},
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    } as Response)
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
+    await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
+
+    await vi.waitFor(() => {
+      expect(completeResultPackage).toHaveBeenCalled()
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="api-message"]').text()).toContain("分析未完成（部分阶段降级）")
+    })
+    expect(wrapper.find('[data-testid="run-progress"]').text()).not.toContain("运行失败")
+    expect(failResultPackage).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="result-package-status"]').text()).toContain("未完成")
+  })
+
+  it("keeps the current review session when opening an existing output fails (S8)", async () => {
+    // 选错目录/分类失败：保留当前审查会话——只有新 API 成功接管后才允许断开旧会话
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8765", token: "old-token", outputDir: "E:\\out\\old",
+        }),
+        openOutput: vi.fn().mockRejectedValue(new Error("结果目录标志已损坏或版本不受支持")),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).endsWith("/requirements?limit=5000")) {
+        return { ok: true, json: async () => [{
+          stable_req_id: "SREQ-OLD", requirement_type: "functional", object_name: "Old output",
+          description: "Old requirement", review_state: { status: "accepted" },
+        }] } as Response
+      }
+      return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+    })
+
+    const wrapper = mount(App)
+    await openReview(wrapper)
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-OLD"]').exists()).toBe(true))
+
+    await wrapper.find('[data-testid="action-open-existing-output"]').trigger("click")
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="row-SREQ-OLD"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("无法打开已有结果")
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("结果目录标志已损坏")
+  })
+
   it("collapses long global messages to one line with an expand toggle", async () => {
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,

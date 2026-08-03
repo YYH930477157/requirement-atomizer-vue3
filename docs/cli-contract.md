@@ -31,7 +31,10 @@ lifecycle marker (schema `ratomizer-result-package/v1`, layout `result-layout-v1
 write exactly one JSON envelope to stdout, including failures:
 `{"kind": "result_package_*", "ok": false, "error": {"type": ..., "message": ...}}` with
 `error.type` one of `input_error` (exit 2 — e.g. `legacy flat output requires explicit
-migration` for a legacy flat output directory), `result_package_corrupt` (exit 3 — damaged
+migration` for a legacy flat output directory), `requested_stage_partial` (exit 2 — a
+requested stage ended degraded/failed, so `result-package-complete` refuses the completion
+commit; the active attempt stays `running` and the last completed generation is untouched),
+`result_package_corrupt` (exit 3 — damaged
 marker or interrupted publication journal), or `internal_error` (exit 1, traceback on stderr).
 While an attempt is active, stage commands write only inside `.ratomizer/`; root deliverables
 stay at the last completed generation and are published transactionally by

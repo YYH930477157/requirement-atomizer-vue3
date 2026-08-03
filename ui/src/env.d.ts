@@ -138,7 +138,6 @@ declare global {
       startResultPackage: (input: { outDir: string; inputPath: string; stages: string[] }) => Promise<RequirementAtomizerTaskPayload>
       completeResultPackage: (input: { outDir: string; runId: string; completedStages: string[] }) => Promise<RequirementAtomizerTaskPayload>
       failResultPackage: (input: { outDir: string; runId: string; error: string }) => Promise<RequirementAtomizerTaskPayload>
-      getResultPackageStatus: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       getOutputSummary: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       aiExtract: (input: { outDir: string; llmRoute?: string; limitSections?: number; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
       exportAnnotationHtml: (input: { outDir: string; route?: string; layoutMode?: "optimized" | "pdf_original" }) => Promise<RequirementAtomizerTaskPayload>

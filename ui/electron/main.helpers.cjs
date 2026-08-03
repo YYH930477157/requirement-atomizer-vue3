@@ -497,6 +497,49 @@ function isLikelyOutputDir(dirPath, deps = {}) {
   return ["package_v1", "legacy"].includes(classifyOutputDir(dirPath, deps).kind);
 }
 
+// I5（2026-08-03 清单）：legacy 扁平目录重跑直接按 legacy pipeline 运行——
+// Electron 在调用 result-package-start 前先分类，legacy 目录不创建
+// marker/.ratomizer（Python initialize_result_package 保持 fail-closed 不放宽）。
+// 返回 null 表示走正常 package 启动路径（空目录初始化 / package_v1 续跑）。
+function planResultPackageStart(outDir, deps = {}) {
+  const classification = classifyOutputDir(outDir, deps);
+  if (classification.kind !== "legacy") {
+    return null;
+  }
+  return {
+    kind: "result_package_start",
+    ok: true,
+    out_dir: String(outDir),
+    layout: "legacy",
+    package: null,
+  };
+}
+
+// I6：后端失败 envelope 同时落 stdout 与 stderr（desktop_tasks._fail_with_envelope），
+// runDesktopTaskProcess 非零退出时以 stderr 文本为 Error.message——从中解析回
+// 结构化 envelope，让稳定错误码（如 requested_stage_partial）能透传到渲染层。
+function parseTaskErrorEnvelope(error) {
+  const text = String(error?.message || error || "");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const envelopeError = parsed.error;
+    if (!envelopeError || typeof envelopeError !== "object" || !envelopeError.type) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function loadRecentSessions(filePath, deps = {}) {
   const fsImpl = deps.fs || fs;
   try {
@@ -598,6 +641,8 @@ module.exports = {
   loadRecentSessions,
   normalizeLlmEndpoint,
   normalizeLlmSettings,
+  parseTaskErrorEnvelope,
+  planResultPackageStart,
   recordRecentSession,
   recentSessionLabel,
   resolveAutoRestoreCandidates,
