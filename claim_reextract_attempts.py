@@ -12,6 +12,7 @@ from claim_artifacts import (
     _validate_schema,
     atomic_write_jsonl,
     canonical_json_value_bytes,
+    claim_artifact_path,
     digest_hex,
     hash_json,
     sha256_bytes,
@@ -73,7 +74,7 @@ def _without_hash(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _scan(root: Path) -> AttemptLogSnapshot:
-    path = root / CLAIM_REEXTRACT_ATTEMPTS
+    path = claim_artifact_path(root, CLAIM_REEXTRACT_ATTEMPTS)
     if not path.is_file():
         return AttemptLogSnapshot([], b"", _EMPTY_SHA256, 0, _EMPTY_SHA256, frozenset())
     return _scan_bytes(path.read_bytes())
@@ -200,7 +201,7 @@ def read_attempt_log_stable(
     import time
 
     root = Path(out_dir).expanduser().resolve()
-    path = root / CLAIM_REEXTRACT_ATTEMPTS
+    path = claim_artifact_path(root, CLAIM_REEXTRACT_ATTEMPTS)
     if not path.is_file():
         return AttemptLogSnapshot([], b"", _EMPTY_SHA256, 0, _EMPTY_SHA256, frozenset())
     attempts = max(2, int(max_attempts))
@@ -269,7 +270,7 @@ def _append_unlocked(root: Path, drafts: Iterable[dict[str, Any]]) -> dict[str, 
     if appended:
         # Replacing the complete canonical prefix while holding the extraction
         # operation lock means readers see either generation, never a partial row.
-        atomic_write_jsonl(root / CLAIM_REEXTRACT_ATTEMPTS, rows)
+        atomic_write_jsonl(claim_artifact_path(root, CLAIM_REEXTRACT_ATTEMPTS), rows)
     committed = _scan(root)
     return {
         "appended": appended,
@@ -424,7 +425,7 @@ def recover_interrupted_attempts(
     from omission_actions import AI_SUPPLEMENTS, read_supplement_patches
 
     root = Path(out_dir).expanduser().resolve()
-    if (root / CLAIM_BUDGET_CHECKPOINT_OUTBOX).is_file():
+    if (claim_artifact_path(root, CLAIM_BUDGET_CHECKPOINT_OUTBOX)).is_file():
         # Complete the durable queue/verifier fanout before lifecycle folding.
         # Otherwise an interrupted attempt could be terminalized from the stale
         # queue prefix while the verifier WAL already contains paid work.

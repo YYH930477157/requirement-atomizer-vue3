@@ -9,6 +9,8 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from result_package import governed_artifact_path
 from typing import Any, Callable
 
 import yaml
@@ -271,7 +273,7 @@ def review_requirements_with_openai(
     scope_config = effective_review_scope(pipeline, scope)
     concurrency = max(1, int(route_payload.get("concurrency", 1) or 1))
     connection_failure_abort = max(1, int(route_payload.get("connection_failure_abort", 10) or 10))
-    cache_path = out_dir / "llm_review_cache.jsonl"
+    cache_path = governed_artifact_path(out_dir, "llm_review_cache.jsonl", category="cache")
     cache = read_llm_review_cache(cache_path)
     # Phase 2：yaml operations 声明 executor=tool_loop → 工具化融合审查（每条需求一次
     # 有界 tool-loop 调用，模型可调用 review_tools 的确定性只读工具取证）；未声明保持单发。
@@ -499,7 +501,9 @@ def _load_automatic_review_snapshot(
         if limit > 0:
             requirements = requirements[:limit]
         with review_state_lock(out_dir):
-            states = read_jsonl(out_dir / "review_states.jsonl")
+            states = read_jsonl(governed_artifact_path(
+                out_dir, "review_states.jsonl", category="state"
+            ))
             preconditions = _automatic_authority_preconditions(
                 out_dir,
                 requirements,
@@ -576,7 +580,9 @@ def _commit_automatic_review_states(
             reason="missing_automatic_merge_preconditions",
         )
         with review_state_lock(out_dir):
-            states = read_jsonl(out_dir / "review_states.jsonl")
+            states = read_jsonl(governed_artifact_path(
+                out_dir, "review_states.jsonl", category="state"
+            ))
         return {
             "status": "needs_reconfirmation",
             "reason": "missing_automatic_merge_preconditions",
@@ -595,7 +601,9 @@ def _commit_automatic_review_states(
             )
         except ValueError as exc:
             with review_state_lock(out_dir):
-                existing_states = read_jsonl(out_dir / "review_states.jsonl")
+                existing_states = read_jsonl(governed_artifact_path(
+                    out_dir, "review_states.jsonl", category="state"
+                ))
             return {
                 "status": "needs_reconfirmation",
                 "reason": str(exc),
@@ -603,7 +611,9 @@ def _commit_automatic_review_states(
                 "event_count": 0,
             }
         with review_state_lock(out_dir):
-            existing_states = read_jsonl(out_dir / "review_states.jsonl")
+            existing_states = read_jsonl(governed_artifact_path(
+                out_dir, "review_states.jsonl", category="state"
+            ))
             current_preconditions = _automatic_authority_preconditions(
                 out_dir,
                 selected_targets,
@@ -632,7 +642,7 @@ def _commit_automatic_review_states(
             )
             merged_states = merge_review_states(existing_states, bound_states)
             atomic_write_review_states(
-                out_dir / "review_states.jsonl",
+                governed_artifact_path(out_dir, "review_states.jsonl", category="state"),
                 merged_states,
             )
             event_count = append_review_state_events(

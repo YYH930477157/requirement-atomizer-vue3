@@ -1,7 +1,7 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
-> 状态快照截至 2026-07-29，里程碑推进后请同步更新本文件。
+> 状态快照截至 2026-08-02，里程碑推进后请同步更新本文件。
 
 ## 项目是什么
 
@@ -19,6 +19,15 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 > 2026-06-14 起「需求文档生成」轨道由 Claude 直接实现并自查（仍在 `codex/*` 分支、实测优先、用户决定合并、push 需用户同意）；解析等既有轨道沿用上面的 Codex 转交流程。
 > 2026-06-27：**GUI 正式以 Vue3+Electron（`ui/`）为准，PySide6（`gui/`）冻结**；终点交付物（`assemble`/`compose` 实现规格）数据完整性修复由 Claude 直接实现并自查（同上轨道纪律）。
 > 换机继续：项目上下文靠本文件 + `~/.claude/.../memory/` 自动加载；完整聊天 transcript 在 HOME `~/.claude/projects/<proj>/`，**不进代码仓**（含客户文档/业务细节，公开仓会泄密），如需带走走私有同步。
+
+## 重大更新（2026-08-02）——结果包完成标志与输出目录整理（分支 `codex/result-package-layout`，未提交）
+
+- **新版结果包**：桌面新任务生成 `result-package.json`（`ratomizer-result-package/v1`、`result-layout-v1`）和 `.ratomizer/{pipeline,state,cache,logs,stages}`；根目录只发布注册表内的人读交付物、marker 和用户未知文件。旧扁平目录继续兼容读取，不自动迁移、不在拒绝时创建 `.ratomizer`。
+- **完成语义**：自动需求分析请求阶段全部成功即 `completed`，人工审核不参与完成判定。新运行先写 `active_attempt.input`，顶层 `input`、`analysis` 和旧交付物清单在成功提交前保持上一完成代；失败重跑只记录 `last_attempt=failed`。每个请求阶段绑定 `attempt_run_id`，完成证据冻结到 `.ratomizer/stages/completions/<run_id>/run_manifest.json`，拒绝借用旧阶段状态。
+- **交付物事务**：全部新版根交付物先同卷暂存并备份旧版，再写 `.result-package-publication.json` 事务日志、替换根文件、原子提交 marker。多文件中途失败或 marker 写失败会整批回滚；进程硬中断由下一次写操作按 base/target marker 哈希恢复，只读识别 fail-closed，不把半发布目录冒充已完成。
+- **桌面恢复入口**：Electron 新增“打开已有结果”，严格区分 `package_v1`、旧版、损坏和非结果目录；最近结果显示完成/运行中/未完成/旧版状态，关闭应用后可直接重连本地审查 API，审核状态从 `.ratomizer/state/` 恢复且不改完成 marker。
+- **影印与批注资源**：DOCX/XLSX/PDF 统一发布根目录 `document_facsimile.pdf`；页图保存在 `.ratomizer/pipeline/document_pages/`，根目录 `document_annotation.html` 使用可解析的相对路径引用隐藏页图。转换不可用时继续如实记录 unavailable，不伪造影印页。
+- **验证与打包**：安装仓库已声明的 Windows `pywin32` 依赖后，后端全量 `2516 tests OK (skipped=25，worktree 无冻结 out/ 与环境型 GUI 项)`；随后只复制主检出冻结 baseline 的 8 个文件到 worktree，golden `6/6` 零漂移并清理复制件；agent_eval `40/40`、四类 `1.0`、`unreviewed=0`；前端 Vitest `185/185`，`vue-tsc --noEmit` 与 Vite build 通过。Electron 打包脚本新增 Office COM 依赖前置门禁，最终 portable 构建日志包含 `pythoncom/pywintypes/win32com` hooks 且无对应缺失警告。`golden_sets/`、主检出 `out/` 和 LLM prompt 未修改。
 
 ## 重大更新（2026-08-01）——表格单元格闭环终审加固（分支 `codex/table-structure-cell-closure`，未提交）
 

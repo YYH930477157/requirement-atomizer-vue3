@@ -21,6 +21,7 @@ import claim_artifacts
 import claim_catalog
 import claim_ledger
 import claim_review_actions
+from result_package import initialize_result_package, resolve_analysis_root
 from tests.test_claim_artifacts import _catalog, _publish, _requirement
 from tests.test_claim_review_actions import _publish_a_track
 from tests.test_claim_review_event_v2 import _source_exclusion_evidence
@@ -32,6 +33,7 @@ def _claim_api(out_dir: Path, *, local_token: str = ""):
         pass
 
     TestHandler.output_dir = out_dir.resolve()
+    TestHandler.package_root = out_dir.resolve()
     TestHandler.allowed_origins = set(api_server.DEFAULT_ALLOWED_ORIGINS)
     TestHandler.local_token = local_token
     server = api_server.ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
@@ -55,6 +57,45 @@ def _http_json(base_url: str, path: str) -> tuple[int, dict]:
             return exc.code, json.loads(exc.read().decode("utf-8"))
         finally:
             exc.close()
+
+
+@contextmanager
+def _package_api(package_root: Path):
+    class TestHandler(api_server.RequirementAPIHandler):
+        pass
+
+    TestHandler.package_root = package_root.resolve()
+    TestHandler.output_dir = resolve_analysis_root(package_root)
+    TestHandler.allowed_origins = set(api_server.DEFAULT_ALLOWED_ORIGINS)
+    TestHandler.local_token = ""
+    server = api_server.ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class ResultPackageEndpointTests(unittest.TestCase):
+    def test_exposes_package_root_and_internal_analysis_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.docx"
+            source.write_bytes(b"fixture")
+            initialize_result_package(root, input_path=source, requested_stages=["atomize"])
+
+            with _package_api(root) as base_url:
+                status, payload = _http_json(base_url, "/result-package")
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["layout"], "package_v1")
+            self.assertEqual(payload["package_root"], str(root.resolve()))
+            self.assertEqual(payload["analysis_root"], str(resolve_analysis_root(root)))
+            self.assertEqual(payload["package"]["analysis_status"], "running")
 
 
 def _http_post_json(

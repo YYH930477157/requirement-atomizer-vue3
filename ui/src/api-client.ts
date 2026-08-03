@@ -2,6 +2,14 @@ import type { ReviewStatus } from "./types"
 
 export type BackendRequirement = Record<string, unknown>
 
+export type ResultPackagePayload = {
+  layout: "package_v1" | "legacy_flat" | "legacy" | "empty"
+  package_root: string
+  analysis_root: string
+  package: Record<string, unknown> | null
+  review?: Record<string, unknown>
+}
+
 export type ReviewStatePayload = {
   requirement_id: string
   status: ReviewStatus
@@ -799,6 +807,10 @@ export class RequirementApiClient {
 
   async loadManifest(): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>("/manifest")
+  }
+
+  async loadResultPackage(): Promise<ResultPackagePayload> {
+    return this.request<ResultPackagePayload>("/result-package")
   }
 
   async applyReviewAction(input: ReviewActionInput): Promise<ReviewStatePayload> {

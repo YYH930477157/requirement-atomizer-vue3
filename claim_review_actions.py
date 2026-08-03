@@ -22,6 +22,7 @@ from claim_artifacts import (
     _validate_schema,
     canonical_target_fingerprint,
     canonical_json_value_bytes,
+    claim_artifact_path,
     claim_base_generation_id,
     claim_publication_lock,
     digest_hex,
@@ -231,7 +232,7 @@ def _validate_projection_cas_drafts(
 def _quarantine_suffix(root: Path, suffix: bytes) -> str:
     digest = digest_hex(sha256_bytes(suffix))
     name = f"{_EVENT_QUARANTINE_PREFIX}{digest}.bin"
-    path = root / name
+    path = claim_artifact_path(root, name)
     if path.is_file():
         if path.read_bytes() != suffix:
             raise ClaimReviewActionError("claim event quarantine digest collision")
@@ -251,7 +252,7 @@ def _repair_event_suffix(
     quarantine_file = None
     if suffix and not torn_tail:
         quarantine_file = _quarantine_suffix(root, suffix)
-    _atomic_write_bytes(root / CLAIM_REVIEW_EVENTS, raw[:valid_end])
+    _atomic_write_bytes(claim_artifact_path(root, CLAIM_REVIEW_EVENTS), raw[:valid_end])
     return raw[:valid_end], quarantine_file
 
 
@@ -261,7 +262,7 @@ def _scan_event_log_unlocked(
     repair: bool,
     raw: bytes | None = None,
 ) -> EventLogSnapshot:
-    path = root / CLAIM_REVIEW_EVENTS
+    path = claim_artifact_path(root, CLAIM_REVIEW_EVENTS)
     if raw is None and not path.exists():
         return EventLogSnapshot(
             rows=[],
@@ -367,7 +368,7 @@ def _scan_event_log_unlocked(
 
 def _read_claim_review_events_readonly(root: Path) -> EventLogSnapshot:
     """Read a stable event-log snapshot without touching publication locks."""
-    path = root / CLAIM_REVIEW_EVENTS
+    path = claim_artifact_path(root, CLAIM_REVIEW_EVENTS)
     before = path.read_bytes() if path.is_file() else None
     snapshot = _scan_event_log_unlocked(root, repair=False, raw=before)
     after = path.read_bytes() if path.is_file() else None
@@ -449,7 +450,7 @@ def append_claim_review_events(
                     label="claim review event",
                 )
                 if handle is None:
-                    handle = (root / CLAIM_REVIEW_EVENTS).open("ab")
+                    handle = (claim_artifact_path(root, CLAIM_REVIEW_EVENTS)).open("ab")
                 handle.write(canonical_json_value_bytes(event) + b"\n")
                 rows.append(event)
                 appended.append(event)
@@ -2588,7 +2589,7 @@ def _health_default() -> dict[str, Any]:
 
 def read_effective_health(out_dir: Path | str) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
-    path = root / CLAIM_EFFECTIVE_HEALTH
+    path = claim_artifact_path(root, CLAIM_EFFECTIVE_HEALTH)
     if not path.is_file():
         return _health_default()
     try:
@@ -2763,7 +2764,7 @@ def _write_effective_health(root: Path, health: dict[str, Any]) -> None:
         label="claim effective health",
     )
     _atomic_write_bytes(
-        root / CLAIM_EFFECTIVE_HEALTH,
+        claim_artifact_path(root, CLAIM_EFFECTIVE_HEALTH),
         canonical_json_value_bytes(health),
     )
 
@@ -2900,7 +2901,7 @@ def fold_effective_ledger(
         for attempt in range(1, max_attempts + 1):
             with claim_publication_lock(root):
                 interrupted_effective_publication = (
-                    root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
+                    claim_artifact_path(root, CLAIM_EFFECTIVE_PUBLICATION_JOURNAL)
                 ).is_file()
                 base = load_committed_claim_base(root)
                 from claim_artifacts import committed_base_versions_are_current

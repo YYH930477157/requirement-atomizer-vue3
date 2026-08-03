@@ -31,6 +31,7 @@ from clarification_check_states import (
     read_clarification_check_states,
 )
 from io_utils import read_jsonl
+from result_package import governed_artifact_path
 from text_normalize import formula_safe
 
 REPORT_JSON = "clarification_report.json"
@@ -854,7 +855,9 @@ def load_answers(out_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
     """已回灌答复：(来源需求id, 问题) → 答复条目。容错读，坏行跳过。"""
     root = Path(out_dir).expanduser().resolve()
     with clarification_answers_lock(root):
-        return _load_answers_unlocked(root / ANSWERS_FILE)
+        return _load_answers_unlocked(
+            governed_artifact_path(root, ANSWERS_FILE, category="state")
+        )
 
 
 def _load_answers_unlocked(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
@@ -880,9 +883,8 @@ def clarification_answers_lock(
 ) -> Iterator[None]:
     """Serialize customer-answer readers and writers across processes."""
     root = Path(out_dir).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    with _answer_process_lock_for(root):
-        lock_path = root / ANSWERS_LOCK
+    lock_path = governed_artifact_path(root, ANSWERS_LOCK, category="state")
+    with _answer_process_lock_for(lock_path.parent):
         deadline = time.monotonic() + timeout_s
         fd: int | None = None
         while fd is None:
@@ -1021,10 +1023,11 @@ def import_answers(out_dir: Path, xlsx_path: Path) -> dict[str, Any]:
     finally:
         wb.close()
     with clarification_answers_lock(out_dir):
-        merged = _load_answers_unlocked(out_dir / ANSWERS_FILE)
+        answers_path = governed_artifact_path(out_dir, ANSWERS_FILE, category="state")
+        merged = _load_answers_unlocked(answers_path)
         for entry in imported_entries:
             merged[(entry["source_id"], entry["question"])] = entry
-        _atomic_write_answers(out_dir / ANSWERS_FILE, list(merged.values()))
+        _atomic_write_answers(answers_path, list(merged.values()))
     return {"imported": len(imported_entries), "total_answers": len(merged),
             "written": [ANSWERS_FILE]}
 

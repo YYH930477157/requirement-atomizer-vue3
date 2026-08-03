@@ -33,9 +33,14 @@ from api_server import (ANNOTATION_TRANSLATIONS, ANNOTATION_TRANSLATION_GUARDS_V
                         load_annotation_translations, translation_key)
 from io_utils import read_jsonl
 from requirement_kb.matching import clean_text as normalize_text
+from result_package import (
+    INTERNAL_ROOT,
+    governed_artifact_path,
+    package_root_for_analysis_root,
+)
 
 ANNOTATION_HTML = "document_annotation.html"
-ANNOTATION_SOURCE_PDF = "document_source.pdf"
+ANNOTATION_SOURCE_PDF = "document_facsimile.pdf"
 ANNOTATION_PAGES_DIR = "document_pages"
 ANNOTATION_PAGES_MANIFEST = "manifest.json"
 ANNOTATION_PDF_GEOMETRY = "document_pdf_geometry.json"
@@ -132,7 +137,10 @@ _load_annotation_translations = load_annotation_translations
 def _read_translation_sidecar(out_dir: Path) -> dict[str, dict[str, Any]]:
     """生成侧读完整条目（含被拒留账的）；是否复用由当前策略版本决定。"""
     try:
-        data = json.loads((Path(out_dir) / ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        path = governed_artifact_path(
+            out_dir, ANNOTATION_TRANSLATIONS, category="cache"
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     items = data.get("items") if isinstance(data, dict) else None
@@ -2027,9 +2035,10 @@ def _translation_process_lock_for(out_dir: Path) -> RLock:
 @contextmanager
 def _translation_sidecar_lock(out_dir: Path) -> Iterator[None]:
     out_dir = Path(out_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with _translation_process_lock_for(out_dir):
-        lock_path = out_dir / "annotation_translations.lock"
+    lock_path = governed_artifact_path(
+        out_dir, "annotation_translations.lock", category="cache"
+    )
+    with _translation_process_lock_for(lock_path.parent):
         deadline = time.monotonic() + _TRANSLATION_LOCK_TIMEOUT_S
         fd: int | None = None
         while fd is None:
@@ -2089,7 +2098,9 @@ def _merge_translation_update(existing: dict[str, Any] | None,
 def _write_translation_sidecar(out_dir: Path, sidecar: dict[str, dict[str, Any]], model: str,
                                updated_keys: set[str]) -> None:
     out_dir = Path(out_dir).expanduser().resolve()
-    target = out_dir / ANNOTATION_TRANSLATIONS
+    target = governed_artifact_path(
+        out_dir, ANNOTATION_TRANSLATIONS, category="cache"
+    )
     with _translation_sidecar_lock(out_dir):
         latest = _read_translation_sidecar(out_dir)
         for key in updated_keys:
@@ -3128,6 +3139,12 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
                 source_pdf, blocks, cache_path=out_dir / ANNOTATION_PDF_GEOMETRY,
                 row_geometry=pdf_row_geometry)
             pdf_pages, page_files = _ensure_pdf_page_images(source_pdf, out_dir)
+            if package_root_for_analysis_root(out_dir) is not None:
+                for page in pdf_pages:
+                    page["href"] = (
+                        f"{INTERNAL_ROOT}/pipeline/{ANNOTATION_PAGES_DIR}/"
+                        f"{page['file']}"
+                    )
         except Exception as exc:
             pdf_render_error = str(exc)
 

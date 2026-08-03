@@ -13,6 +13,7 @@ from threading import RLock
 from typing import Any, Iterator
 
 from process_file_lock import process_file_lock
+from result_package import governed_artifact_path
 
 
 # 仅约束自动化路径（llm_pipeline 的 transition()）。专家入口 apply_expert_decision
@@ -117,8 +118,8 @@ def apply_expert_decision(
         raise ValueError(f"Unknown review status: {status}")
     out_dir = out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    states_path = out_dir / "review_states.jsonl"
-    events_path = out_dir / "review_state_events.jsonl"
+    states_path = governed_artifact_path(out_dir, "review_states.jsonl", category="state")
+    events_path = governed_artifact_path(out_dir, "review_state_events.jsonl", category="state")
 
     with review_state_lock(out_dir):
         states = _read_jsonl(states_path)
@@ -463,7 +464,7 @@ def _review_authority_snapshot_from_bytes(path: Path, raw: bytes) -> dict[str, A
 def read_review_authority_snapshot(out_dir: Path) -> dict[str, Any]:
     """Read A-track state and every embedded history event under its authority lock."""
     root = out_dir.expanduser().resolve()
-    path = root / "review_states.jsonl"
+    path = governed_artifact_path(root, "review_states.jsonl", category="state")
     with review_state_lock(root):
         if not path.is_file():
             return _empty_review_authority_snapshot(path)
@@ -473,7 +474,7 @@ def read_review_authority_snapshot(out_dir: Path) -> dict[str, Any]:
 def read_review_authority_snapshot_readonly(out_dir: Path) -> dict[str, Any]:
     """Read A-track authority without creating or changing a lock sidecar."""
     root = out_dir.expanduser().resolve()
-    path = root / "review_states.jsonl"
+    path = governed_artifact_path(root, "review_states.jsonl", category="state")
     before = path.read_bytes() if path.is_file() else None
     snapshot = (
         _empty_review_authority_snapshot(path)
@@ -578,7 +579,7 @@ def review_state_lock(out_dir: Path, *, timeout_s: float = 10.0, stale_after_s: 
     out_dir.mkdir(parents=True, exist_ok=True)
     process_lock = _process_lock_for(out_dir)
     with process_lock:
-        lock_path = out_dir / "review_states.lock"
+        lock_path = governed_artifact_path(out_dir, "review_states.lock", category="state")
         del stale_after_s
         with process_file_lock(
             lock_path,

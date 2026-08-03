@@ -11,6 +11,7 @@ const {
   buildExportAnnotationArgs,
   buildLlmEnvironment,
   buildRunPipelineArgs,
+  classifyOutputDir,
   drainProgressLines,
   listRecentSessions,
   loadLlmSettingsConfig,
@@ -108,7 +109,15 @@ ipcMain.handle("dialog:open-output", async () => {
   if (result.canceled) {
     return null;
   }
-  return startApiServer(result.filePaths[0]);
+  const outputDir = result.filePaths[0];
+  const classification = classifyOutputDir(outputDir);
+  if (!["package_v1", "legacy"].includes(classification.kind)) {
+    const reason = classification.kind === "invalid"
+      ? "结果目录标志已损坏或版本不受支持"
+      : "所选文件夹不是需求分析结果目录";
+    throw new Error(reason);
+  }
+  return startApiServer(outputDir);
 });
 
 ipcMain.handle("dialog:select-output-dir", async () => {
@@ -131,6 +140,27 @@ ipcMain.handle("session:get-recent", async () => listRecentSessions(recentSessio
 ipcMain.handle("llm:get-settings", async () => loadLlmSettings());
 ipcMain.handle("llm:save-settings", async (_event, input) => saveLlmSettings(input));
 ipcMain.handle("llm:test-connection", async (_event, input) => testLlmConnection(input));
+ipcMain.handle("task:result-package-start", async (_event, input) => runDesktopTaskProcess([
+  "result-package-start",
+  "--out", input.outDir,
+  "--input", input.inputPath,
+  "--stages", (input.stages || []).join(","),
+]));
+ipcMain.handle("task:result-package-complete", async (_event, input) => runAndRememberOutput([
+  "result-package-complete",
+  "--out", input.outDir,
+  "--run-id", input.runId,
+  "--completed-stages", (input.completedStages || []).join(","),
+], input.outDir));
+ipcMain.handle("task:result-package-fail", async (_event, input) => runDesktopTaskProcess([
+  "result-package-fail",
+  "--out", input.outDir,
+  "--run-id", input.runId,
+  "--error", String(input.error || "analysis failed"),
+]));
+ipcMain.handle("task:result-package-status", async (_event, input) => runDesktopTaskProcess([
+  "result-package-status", "--out", input.outDir,
+]));
 ipcMain.handle("task:run-pipeline", async (_event, input) => {
   const payload = await runDesktopTaskProcess(buildRunPipelineArgs(input));
   const outDir = String(payload.out_dir || input.outDir);

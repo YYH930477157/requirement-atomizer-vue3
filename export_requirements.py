@@ -5,6 +5,8 @@ import csv
 import json
 from collections import defaultdict
 from pathlib import Path
+
+from result_package import governed_artifact_path
 from typing import Any, Iterable
 
 from io_utils import read_jsonl
@@ -31,7 +33,9 @@ CSV_COLUMNS = [
 def export_requirements(out_dir: Path, *, formats: Iterable[str], status: str = "all") -> list[str]:
     out_dir = out_dir.expanduser().resolve()
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
-    states_by_id = review_states_by_id(read_jsonl(out_dir / "review_states.jsonl"))
+    states_by_id = review_states_by_id(read_jsonl(governed_artifact_path(
+        out_dir, "review_states.jsonl", category="state"
+    )))
     rows = [format_row(row, states_by_id) for row in requirements]
     if status != "all":
         rows = [row for row in rows if row["review_status"] == status]

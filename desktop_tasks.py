@@ -27,6 +27,18 @@ from llm_pipeline import DEFAULT_DOMAIN_PACK_PATH, DEFAULT_PIPELINE_PATH, read_j
 from requirement_kb.cli import default_kb_paths, package_root
 from requirements_analysis import requirements_analysis_enrichment_enabled, run_requirements_analysis
 from requirements_analysis_schema import normalize_ownership
+from result_package import (
+    commit_analysis_completion,
+    detect_result_layout,
+    initialize_result_package,
+    governed_artifact_path,
+    load_result_package,
+    package_artifact_path,
+    package_root_for_analysis_root,
+    publish_registered_deliverables,
+    record_analysis_failure,
+    resolve_analysis_root,
+)
 from spec_export import export_spec
 
 
@@ -683,7 +695,10 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
 
 
 def read_run_manifest(out_dir: Path) -> dict[str, Any]:
-    path = Path(out_dir).expanduser().resolve() / RUN_MANIFEST
+    root = Path(out_dir).expanduser().resolve()
+    package_root = package_root_for_analysis_root(root)
+    path = (package_artifact_path(package_root, "run_manifest")
+            if package_root is not None else root / RUN_MANIFEST)
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except (json.JSONDecodeError, OSError):
@@ -717,7 +732,7 @@ def _outputs_exist(out_dir: Path, outputs: list[str]) -> bool:
         return False
     root = Path(out_dir).expanduser().resolve()
     for name in outputs:
-        path = root / name
+        path = governed_artifact_path(root, name)
         if not path.exists() or path.is_dir():
             return False
         try:
@@ -771,14 +786,15 @@ def stage_input_files_fingerprint(out_dir: Path, stage: str) -> str:
     """Hash immutable stage inputs for the duration of a downstream read lease."""
     root = Path(out_dir).expanduser().resolve()
     ignored = _STAGE_MUTABLE_INPUTS.get(stage, set())
-    payload = [
-        {
+    payload = []
+    for name in STAGE_INPUTS.get(stage, []):
+        if name in ignored:
+            continue
+        path = governed_artifact_path(root, name)
+        payload.append({
             "path": name,
-            "sha256": _hash_file(root / name) if (root / name).is_file() else None,
-        }
-        for name in STAGE_INPUTS.get(stage, [])
-        if name not in ignored
-    ]
+            "sha256": _hash_file(path) if path.is_file() else None,
+        })
     return hashlib.sha256(json.dumps(
         payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
     ).encode("utf-8")).hexdigest()
@@ -811,7 +827,7 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
     root = Path(out_dir).expanduser().resolve()
     inputs: list[dict[str, Any]] = []
     for name in STAGE_INPUTS.get(stage, []):
-        path = root / name
+        path = governed_artifact_path(root, name)
         inputs.append({
             "path": name,
             "sha256": _hash_file(path) if path.exists() and path.is_file() else None,
@@ -887,7 +903,11 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
 
 
 def _stage_manifest_path(out_dir: Path, stage: str) -> Path:
-    return Path(out_dir).expanduser().resolve() / STAGES_DIR / stage / "stage_manifest.json"
+    root = Path(out_dir).expanduser().resolve()
+    package_root = package_root_for_analysis_root(root)
+    stages_root = (package_artifact_path(package_root, "stage_state")
+                   if package_root is not None else root / STAGES_DIR)
+    return stages_root / stage / "stage_manifest.json"
 
 
 @contextmanager
@@ -900,7 +920,9 @@ def _run_manifest_lock(
     root = Path(out_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     with _manifest_process_lock_for(root):
-        lock_path = root / "run_manifest.lock"
+        package_root = package_root_for_analysis_root(root)
+        lock_path = (package_artifact_path(package_root, "run_manifest_lock", for_write=True)
+                     if package_root is not None else root / "run_manifest.lock")
         deadline = time.monotonic() + timeout_s
         fd: int | None = None
         while fd is None:
@@ -1218,7 +1240,18 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
     """run_manifest.json：out_dir 的显式状态账本（阶段/状态/版本/时间）。写失败不阻断任务。"""
     import datetime as _dt
     root = Path(out_dir).expanduser().resolve()
-    path = root / RUN_MANIFEST
+    package_root = package_root_for_analysis_root(root)
+    path = (package_artifact_path(package_root, "run_manifest", for_write=True)
+            if package_root is not None else root / RUN_MANIFEST)
+    attempt_run_id: str | None = None
+    if package_root is not None:
+        package = load_result_package(package_root)
+        active_attempt = package.get("active_attempt")
+        if (
+            isinstance(active_attempt, dict)
+            and stage in (active_attempt.get("requested_stages") or [])
+        ):
+            attempt_run_id = str(active_attempt.get("run_id") or "") or None
     now = _dt.datetime.now().isoformat(timespec="seconds")
     try:
         with _run_manifest_lock(root):
@@ -1252,6 +1285,8 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
                     entry.pop("error", None)
                 if stage == "ai-extract" and status in {"ok", "partial"}:
                     entry["claim_components"] = _claim_component_manifest(root)
+            if attempt_run_id is not None:
+                entry["attempt_run_id"] = attempt_run_id
             stages[stage] = entry
             data.update({"manifest_version": 2, "stages": stages, "updated": now})
             _atomic_write_json(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
@@ -1644,7 +1679,9 @@ def build_output_summary(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
     reviews = read_jsonl(out_dir / "llm_review_results.jsonl")
-    states = read_jsonl(out_dir / "review_states.jsonl")
+    states = read_jsonl(
+        governed_artifact_path(out_dir, "review_states.jsonl", category="state")
+    )
     status_counts: dict[str, int] = {}
     type_counts: dict[str, int] = {}
     confidence_counts = {"high": 0, "medium": 0, "low": 0}
@@ -1781,6 +1818,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         required=True,
     )
+
+    package_start_parser = subparsers.add_parser("result-package-start")
+    package_start_parser.add_argument("--out", type=Path, required=True)
+    package_start_parser.add_argument("--input", type=Path, required=True)
+    package_start_parser.add_argument("--stages", required=True)
+
+    package_complete_parser = subparsers.add_parser("result-package-complete")
+    package_complete_parser.add_argument("--out", type=Path, required=True)
+    package_complete_parser.add_argument("--run-id", required=True)
+    package_complete_parser.add_argument("--completed-stages", required=True)
+
+    package_fail_parser = subparsers.add_parser("result-package-fail")
+    package_fail_parser.add_argument("--out", type=Path, required=True)
+    package_fail_parser.add_argument("--run-id", required=True)
+    package_fail_parser.add_argument("--error", required=True)
+
+    package_status_parser = subparsers.add_parser("result-package-status")
+    package_status_parser.add_argument("--out", type=Path, required=True)
     return parser.parse_args(argv)
 
 
@@ -1823,8 +1878,13 @@ def setup_run_logging(out_dir: Path | None) -> None:
     if out_dir is not None and "runlog" not in have:
         try:
             out_dir = Path(out_dir).expanduser().resolve()
-            out_dir.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(out_dir / "run.log", encoding="utf-8")
+            package_root = package_root_for_analysis_root(out_dir)
+            if package_root is None and detect_result_layout(out_dir) == "package_v1":
+                package_root = out_dir
+            log_path = (package_artifact_path(package_root, "run_log", for_write=True)
+                        if package_root is not None else out_dir / "run.log")
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(log_path, encoding="utf-8")
             file_handler.setFormatter(fmt)
             file_handler._ratomizer_tag = "runlog"  # type: ignore[attr-defined]
             logger.addHandler(file_handler)
@@ -1834,7 +1894,13 @@ def setup_run_logging(out_dir: Path | None) -> None:
     # 默认开（体量 ~几 MB/次运行，与 blocks.jsonl 同量级）；设 RATOMIZER_LLM_TRACE=0 可关。
     if out_dir is not None and os.environ.get("RATOMIZER_LLM_TRACE", "").strip() != "0":
         import llm_client
-        llm_client.set_trace_path(Path(out_dir) / "llm_trace.jsonl")
+        resolved = Path(out_dir).expanduser().resolve()
+        package_root = package_root_for_analysis_root(resolved)
+        if package_root is None and detect_result_layout(resolved) == "package_v1":
+            package_root = resolved
+        trace_path = (package_artifact_path(package_root, "llm_trace", for_write=True)
+                      if package_root is not None else resolved / "llm_trace.jsonl")
+        llm_client.set_trace_path(trace_path)
 
 
 def teardown_run_logging() -> None:
@@ -1850,6 +1916,60 @@ def teardown_run_logging() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.command == "result-package-start":
+        package_root = args.out.expanduser().resolve()
+        package = initialize_result_package(
+            package_root,
+            input_path=args.input,
+            requested_stages=split_formats(args.stages),
+        )
+        print_json_payload({
+            "kind": "result_package_start",
+            "out_dir": str(package_root),
+            "analysis_root": str(resolve_analysis_root(package_root)),
+            "package": package,
+        })
+        return 0
+    if args.command == "result-package-complete":
+        package_root = args.out.expanduser().resolve()
+        package = commit_analysis_completion(
+            package_root,
+            run_id=args.run_id,
+            completed_stages=split_formats(args.completed_stages),
+        )
+        print_json_payload({
+            "kind": "result_package_complete",
+            "out_dir": str(package_root),
+            "analysis_root": str(resolve_analysis_root(package_root)),
+            "package": package,
+        })
+        return 0
+    if args.command == "result-package-fail":
+        package_root = args.out.expanduser().resolve()
+        package = record_analysis_failure(
+            package_root,
+            run_id=args.run_id,
+            error=args.error,
+        )
+        print_json_payload({
+            "kind": "result_package_fail",
+            "out_dir": str(package_root),
+            "analysis_root": str(resolve_analysis_root(package_root)),
+            "package": package,
+        })
+        return 0
+    if args.command == "result-package-status":
+        package_root = args.out.expanduser().resolve()
+        layout = detect_result_layout(package_root)
+        package = load_result_package(package_root) if layout == "package_v1" else None
+        print_json_payload({
+            "kind": "result_package_status",
+            "out_dir": str(package_root),
+            "analysis_root": str(resolve_analysis_root(package_root)),
+            "layout": layout,
+            "package": package,
+        })
+        return 0
     if args.command == "claim-shadow-acceptance":
         from claim_acceptance import main as claim_acceptance_main
         forwarded = ["--input", str(args.input)]
@@ -1870,6 +1990,13 @@ def main(argv: list[str] | None = None) -> int:
             "--output", str(args.output),
             "--golden-manifest", str(args.golden_manifest),
         ])
+    package_root: Path | None = None
+    original_out = getattr(args, "out", None)
+    if original_out is not None:
+        original_out = Path(original_out).expanduser().resolve()
+        if detect_result_layout(original_out) == "package_v1":
+            package_root = original_out
+            args.out = resolve_analysis_root(original_out)
     setup_run_logging(getattr(args, "out", None))
     logging.getLogger("requirement_atomizer").info("desktop task 开始：%s", args.command)
     try:
@@ -1966,6 +2093,26 @@ def main(argv: list[str] | None = None) -> int:
             _stage_completion_status(args.command, payload),
             **manifest_context,
         )
+    if package_root is not None and isinstance(payload, dict):
+        published = publish_registered_deliverables(package_root)
+        payload["out_dir"] = str(package_root)
+        if published:
+            published_by_id = {item["artifact_id"]: item for item in published}
+            normalized_written: list[str] = []
+            for value in payload.get("written") or []:
+                name = Path(value).name
+                match = next(
+                    (
+                        item for item in published_by_id.values()
+                        if Path(item["path"]).name == name
+                    ),
+                    None,
+                )
+                normalized_written.append(
+                    str(package_root / match["path"]) if match is not None else str(value)
+                )
+            if "written" in payload:
+                payload["written"] = normalized_written
     print_json_payload(payload)
     return 0
 

@@ -16,6 +16,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Iterator
 
+from result_package import governed_artifact_path
+
 
 CHECK_STATES_FILE = "clarification_check_states.jsonl"
 CHECK_STATES_LOCK = "clarification_check_states.lock"
@@ -36,7 +38,9 @@ def read_clarification_check_history(out_dir: Path) -> list[dict[str, Any]]:
     """Read valid audit events in file order; corrupt historical lines are skipped."""
     root = Path(out_dir).expanduser().resolve()
     with clarification_check_state_lock(root):
-        return _read_history_unlocked(root / CHECK_STATES_FILE)
+        return _read_history_unlocked(
+            governed_artifact_path(root, CHECK_STATES_FILE, category="state")
+        )
 
 
 def read_clarification_check_states(out_dir: Path) -> dict[str, dict[str, Any]]:
@@ -75,8 +79,7 @@ def apply_clarification_check_action(
         note=note,
     )
     root = Path(out_dir).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / CHECK_STATES_FILE
+    path = governed_artifact_path(root, CHECK_STATES_FILE, category="state")
     with clarification_check_state_lock(root):
         history = _read_history_unlocked(path)
         history.append(event)
@@ -106,8 +109,7 @@ def apply_clarification_check_actions_batch(
     if not events:
         return []
     root = Path(out_dir).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / CHECK_STATES_FILE
+    path = governed_artifact_path(root, CHECK_STATES_FILE, category="state")
     with clarification_check_state_lock(root):
         history = _read_history_unlocked(path)
         history.extend(events)
@@ -167,9 +169,8 @@ def clarification_check_state_lock(
 ) -> Iterator[None]:
     """Serialize readers and writers across threads and processes."""
     root = Path(out_dir).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    with _process_lock_for(root):
-        lock_path = root / CHECK_STATES_LOCK
+    lock_path = governed_artifact_path(root, CHECK_STATES_LOCK, category="state")
+    with _process_lock_for(lock_path.parent):
         deadline = time.monotonic() + timeout_s
         fd: int | None = None
         while fd is None:

@@ -13,6 +13,7 @@ import {
   buildRunPipelineArgs,
   drainProgressLines,
   isLikelyOutputDir,
+  classifyOutputDir,
   listRecentSessions,
   loadLlmSettingsConfig,
   loadRecentSessions,
@@ -529,6 +530,80 @@ describe("recent sessions helpers", () => {
       mkdirSync(corrupt, { recursive: true })
       writeFileSync(path.join(corrupt, "manifest.json"), "{broken", "utf8")
       writeFileSync(path.join(corrupt, "blocks.jsonl"), "", "utf8")
+      expect(isLikelyOutputDir(corrupt)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("classifies completed result packages and rejects corrupt markers without fallback", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-package-"))
+    try {
+      const completed = path.join(dir, "completed")
+      const stages = path.join(completed, ".ratomizer", "stages", "completions", "RUN-1")
+      mkdirSync(stages, { recursive: true })
+      writeFileSync(path.join(stages, "run_manifest.json"), "{}", "utf8")
+      writeFileSync(path.join(completed, "summary.md"), "done", "utf8")
+      writeFileSync(path.join(completed, "result-package.json"), JSON.stringify({
+        schema: "ratomizer-result-package/v1",
+        layout_version: "result-layout-v1",
+        analysis_status: "completed",
+        workspace: ".ratomizer",
+        input: { display_name: "meter.docx" },
+        analysis: {
+          completion_evidence: [{
+            path: ".ratomizer/stages/completions/RUN-1/run_manifest.json",
+          }],
+        },
+        deliverables: [{ path: "summary.md" }],
+      }), "utf8")
+      expect(classifyOutputDir(completed)).toMatchObject({
+        kind: "package_v1",
+        analysisStatus: "completed",
+        displayName: "meter.docx",
+      })
+      expect(isLikelyOutputDir(completed)).toBe(true)
+
+      const updatingMarker = JSON.parse(
+        readFileSync(path.join(completed, "result-package.json"), "utf8"),
+      )
+      updatingMarker.active_attempt = { status: "running" }
+      writeFileSync(
+        path.join(completed, "result-package.json"),
+        JSON.stringify(updatingMarker),
+        "utf8",
+      )
+      expect(classifyOutputDir(completed).analysisStatus).toBe("running")
+
+      const publicationJournal = path.join(
+        completed, ".ratomizer", "stages", ".result-package-publication.json",
+      )
+      writeFileSync(publicationJournal, "{}", "utf8")
+      expect(classifyOutputDir(completed)).toMatchObject({
+        kind: "invalid",
+        reason: "interrupted_publication",
+      })
+      rmSync(publicationJournal)
+
+      writeFileSync(path.join(completed, "result-package.json"), JSON.stringify({
+        schema: "ratomizer-result-package/v1",
+        layout_version: "result-layout-v1",
+        analysis_status: "completed",
+        workspace: ".ratomizer",
+        input: { display_name: "meter.docx" },
+        analysis: { completion_evidence: [{ path: "../outside.json" }] },
+        deliverables: [],
+      }), "utf8")
+      expect(classifyOutputDir(completed)).toMatchObject({
+        kind: "invalid",
+        reason: "missing_completion_evidence",
+      })
+
+      const corrupt = path.join(dir, "corrupt-package")
+      mkdirSync(corrupt, { recursive: true })
+      writeFileSync(path.join(corrupt, "result-package.json"), "{broken", "utf8")
+      writeFileSync(path.join(corrupt, "blocks.jsonl"), "", "utf8")
+      expect(classifyOutputDir(corrupt).kind).toBe("invalid")
       expect(isLikelyOutputDir(corrupt)).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })

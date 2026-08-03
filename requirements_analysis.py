@@ -7,6 +7,8 @@ import logging
 import os
 from dataclasses import replace
 from pathlib import Path
+
+from result_package import governed_artifact_path
 from typing import Any, Callable
 
 from ai_review_actions import read_ai_review_states, source_ai_requirement_id
@@ -512,7 +514,7 @@ def _enrich_key(req: dict[str, Any], model: str, template_refs: str = "") -> str
 
 
 def _load_enrich_cache(out_dir: Path, model: str) -> dict[str, Any]:
-    path = out_dir / ANALYZE_ENRICH_CACHE
+    path = governed_artifact_path(out_dir, ANALYZE_ENRICH_CACHE, category="cache")
     if not path.exists():
         return {}
     try:
@@ -530,7 +532,7 @@ def _load_enrich_cache(out_dir: Path, model: str) -> dict[str, Any]:
 
 
 def _save_enrich_cache(out_dir: Path, model: str, cache: dict[str, Any]) -> None:
-    path = out_dir / ANALYZE_ENRICH_CACHE
+    path = governed_artifact_path(out_dir, ANALYZE_ENRICH_CACHE, category="cache")
     payload = {"_meta": {"prompt": ANALYZE_PROMPT_VERSION, "model": model}, "items": cache}
     try:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

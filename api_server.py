@@ -33,6 +33,12 @@ from io_utils import read_jsonl
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
 from requirement_kb.matching import clean_text as normalize_text
+from result_package import (
+    detect_result_layout,
+    governed_artifact_path,
+    load_result_package,
+    resolve_analysis_root,
+)
 
 
 DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
@@ -125,6 +131,7 @@ def _rebuilder() -> DeliverableRebuilder:
 
 class RequirementAPIHandler(BaseHTTPRequestHandler):
     output_dir: Path = DEFAULT_OUTPUT
+    package_root: Path = DEFAULT_OUTPUT
     allowed_origins: set[str] = set(DEFAULT_ALLOWED_ORIGINS)
     local_token: str = ""
 
@@ -149,6 +156,17 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if not token_is_valid(self.local_token, self.headers, params):
             self.send_json({"error": "unauthorized"}, status=401)
+            return
+        if parsed.path == "/result-package":
+            layout = detect_result_layout(self.package_root)
+            package = load_result_package(self.package_root) if layout == "package_v1" else None
+            self.send_json({
+                "layout": layout,
+                "package_root": str(self.package_root),
+                "analysis_root": str(self.output_dir),
+                "package": package,
+                "review": build_review_summary(self.output_dir),
+            })
             return
         if parsed.path == "/document/pdf":
             # 惰性反向导入（同 _clean_block_text 先例）：影印批注数据的唯一权威实现在导出侧,
@@ -209,7 +227,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/review-states":
             limit = parse_int(one(params, "limit"), default=50)
             status = one(params, "status")
-            rows = read_jsonl(self.output_dir / "review_states.jsonl")
+            rows = read_jsonl(governed_artifact_path(
+                self.output_dir, "review_states.jsonl", category="state"
+            ))
             if status:
                 rows = [row for row in rows if row.get("status") == status]
             self.send_json(rows[:limit])
@@ -1367,7 +1387,10 @@ def translation_key(text: object) -> str:
 def load_annotation_translations(output_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
     """Load only translations already validated by the current anti-drift guards."""
     try:
-        data = json.loads((Path(output_dir) / ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        path = governed_artifact_path(
+            output_dir, ANNOTATION_TRANSLATIONS, category="cache"
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}, {}
     items = data.get("items") if isinstance(data, dict) else None
@@ -1502,7 +1525,7 @@ _REQ_MEMO_SOURCES = ("merged_spec_requirements.json", "ai_requirements_doc.json"
 def _source_signature(output_dir: Path, names: tuple[str, ...]) -> tuple:
     signature = []
     for name in names:
-        path = output_dir / name
+        path = governed_artifact_path(output_dir, name)
         try:
             st = path.stat()
             signature.append((name, st.st_mtime_ns, st.st_size))
@@ -2100,7 +2123,9 @@ def requirement_identity_keys(row: dict) -> list[str]:
 
 def build_review_summary(output_dir: Path) -> dict:
     reviews = read_jsonl(output_dir / "llm_review_results.jsonl")
-    states = read_jsonl(output_dir / "review_states.jsonl")
+    states = read_jsonl(governed_artifact_path(
+        output_dir, "review_states.jsonl", category="state"
+    ))
     decision_counts: dict[str, int] = {}
     risk_counts: dict[str, int] = {}
     status_counts: dict[str, int] = {}
@@ -2217,7 +2242,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     from desktop_tasks import setup_run_logging
     setup_run_logging(args.out)  # 长驻 API 的裁决回流/重建告警同样落 run.log + stderr
-    RequirementAPIHandler.output_dir = args.out.expanduser().resolve()
+    RequirementAPIHandler.package_root = args.out.expanduser().resolve()
+    RequirementAPIHandler.output_dir = resolve_analysis_root(RequirementAPIHandler.package_root)
     RequirementAPIHandler.allowed_origins = build_allowed_origins(args.host, args.port, args.allow_origin)
     RequirementAPIHandler.local_token = args.token
     if (RequirementAPIHandler.output_dir / "claim_generation.meta.json").is_file():
@@ -2237,6 +2263,7 @@ def main(argv: list[str] | None = None) -> int:
                 "host": args.host,
                 "port": args.port,
                 "output_dir": str(RequirementAPIHandler.output_dir),
+                "package_root": str(RequirementAPIHandler.package_root),
                 "allowed_origins": sorted(RequirementAPIHandler.allowed_origins),
                 "token_required": bool(RequirementAPIHandler.local_token),
             },

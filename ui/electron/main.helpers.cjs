@@ -370,31 +370,116 @@ function appendBackendLog(logsDir, label, chunk, deps = {}) {
 // 每次成功连接审查会话（含复用）都登记；重启时主进程自动恢复最近一个仍然存在的输出目录，
 // 渲染进程的 loadInitialApiSession 轮询 getApiSession 自然接上——查看历史结果不必重跑管线。
 const OUTPUT_DIR_MARKERS = ["manifest.json", "blocks.jsonl", "ai_requirements.jsonl"];
+const RESULT_PACKAGE_SCHEMA = "ratomizer-result-package/v1";
+const OUTPUT_LAYOUT_VERSION = "result-layout-v1";
 const RECENT_SESSIONS_LIMIT = 8;
 const RECENT_SESSIONS_VERSION = 1;
 
-function isLikelyOutputDir(dirPath, deps = {}) {
+function containedPackagePath(dir, relativePath) {
+  if (typeof relativePath !== "string" || !relativePath.trim() || path.isAbsolute(relativePath)) {
+    return null;
+  }
+  const root = path.resolve(dir);
+  const target = path.resolve(root, relativePath);
+  const relative = path.relative(root, target);
+  if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+    return null;
+  }
+  return target;
+}
+
+function classifyOutputDir(dirPath, deps = {}) {
   const fsImpl = deps.fs || fs;
   const dir = String(dirPath || "").trim();
-  if (!dir) return false;
+  if (!dir) return { kind: "not_output", analysisStatus: "invalid", reason: "empty_path" };
   try {
-    if (!fsImpl.statSync(dir).isDirectory()) return false;
+    if (!fsImpl.statSync(dir).isDirectory()) {
+      return { kind: "not_output", analysisStatus: "invalid", reason: "not_directory" };
+    }
   } catch {
-    return false;
+    return { kind: "not_output", analysisStatus: "invalid", reason: "missing_directory" };
+  }
+  const packagePath = path.join(dir, "result-package.json");
+  if (fsImpl.existsSync(packagePath)) {
+    try {
+      if (!fsImpl.statSync(packagePath).isFile()) {
+        return { kind: "invalid", analysisStatus: "invalid", reason: "marker_not_file" };
+      }
+      const marker = JSON.parse(fsImpl.readFileSync(packagePath, "utf8"));
+      if (marker?.schema !== RESULT_PACKAGE_SCHEMA || marker?.layout_version !== OUTPUT_LAYOUT_VERSION) {
+        return { kind: "invalid", analysisStatus: "invalid", reason: "unsupported_marker" };
+      }
+      if (!["running", "incomplete", "completed"].includes(marker?.analysis_status)) {
+        return { kind: "invalid", analysisStatus: "invalid", reason: "invalid_status" };
+      }
+      if (marker?.workspace !== ".ratomizer" || !marker?.input?.display_name) {
+        return { kind: "invalid", analysisStatus: "invalid", reason: "invalid_contract" };
+      }
+      const workspacePath = containedPackagePath(dir, marker.workspace);
+      if (!workspacePath || !fsImpl.statSync(workspacePath).isDirectory()) {
+        return { kind: "invalid", analysisStatus: "invalid", reason: "missing_workspace" };
+      }
+      const publicationJournal = path.join(
+        workspacePath, "stages", ".result-package-publication.json",
+      );
+      if (fsImpl.existsSync(publicationJournal)) {
+        return {
+          kind: "invalid",
+          analysisStatus: "invalid",
+          reason: "interrupted_publication",
+        };
+      }
+      if (!Array.isArray(marker?.deliverables)) {
+        return { kind: "invalid", analysisStatus: "invalid", reason: "invalid_deliverables" };
+      }
+      for (const deliverable of marker.deliverables) {
+        const deliverablePath = containedPackagePath(dir, deliverable?.path);
+        if (!deliverablePath || !fsImpl.existsSync(deliverablePath)) {
+          return { kind: "invalid", analysisStatus: "invalid", reason: "missing_deliverable" };
+        }
+      }
+      if (marker.analysis_status === "completed") {
+        const evidence = marker?.analysis?.completion_evidence;
+        if (!Array.isArray(evidence) || evidence.length === 0) {
+          return { kind: "invalid", analysisStatus: "invalid", reason: "missing_completion_evidence" };
+        }
+        for (const item of evidence) {
+          const evidencePath = containedPackagePath(dir, item?.path);
+          if (!evidencePath || !fsImpl.statSync(evidencePath).isFile()) {
+            return { kind: "invalid", analysisStatus: "invalid", reason: "missing_completion_evidence" };
+          }
+        }
+      }
+      const effectiveStatus = marker?.active_attempt?.status === "running"
+        ? "running"
+        : marker.analysis_status;
+      return {
+        kind: "package_v1",
+        analysisStatus: effectiveStatus,
+        reason: "",
+        displayName: String(marker.input.display_name),
+      };
+    } catch {
+      return { kind: "invalid", analysisStatus: "invalid", reason: "corrupt_marker" };
+    }
   }
   // manifest 一旦存在就必须可解析；否则即使还有 blocks/AI 文件，也不能把半截目录
   // 选成自动恢复目标。没有 manifest 的旧 B 轨目录仍可由其他阶段产物恢复。
   const manifestPath = path.join(dir, "manifest.json");
   if (fsImpl.existsSync(manifestPath)) {
     try {
-      if (!fsImpl.statSync(manifestPath).isFile()) return false;
+      if (!fsImpl.statSync(manifestPath).isFile()) {
+        return { kind: "invalid", analysisStatus: "invalid", reason: "legacy_manifest_not_file" };
+      }
       const manifest = JSON.parse(fsImpl.readFileSync(manifestPath, "utf8"));
-      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return false;
+      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+        return { kind: "invalid", analysisStatus: "invalid", reason: "legacy_manifest_invalid" };
+      }
     } catch {
-      return false;
+      return { kind: "invalid", analysisStatus: "invalid", reason: "legacy_manifest_corrupt" };
     }
   }
-  return OUTPUT_DIR_MARKERS
+  const legacy = OUTPUT_DIR_MARKERS
     .filter((marker) => marker !== "manifest.json")
     .some((marker) => {
       try {
@@ -403,6 +488,13 @@ function isLikelyOutputDir(dirPath, deps = {}) {
         return false;
       }
     }) || fsImpl.existsSync(manifestPath);
+  return legacy
+    ? { kind: "legacy", analysisStatus: "legacy", reason: "" }
+    : { kind: "not_output", analysisStatus: "invalid", reason: "no_output_markers" };
+}
+
+function isLikelyOutputDir(dirPath, deps = {}) {
+  return ["package_v1", "legacy"].includes(classifyOutputDir(dirPath, deps).kind);
 }
 
 function loadRecentSessions(filePath, deps = {}) {
@@ -447,6 +539,10 @@ function recordRecentSession(filePath, outputDir, deps = {}) {
 
 function recentSessionLabel(outputDir, deps = {}) {
   const fsImpl = deps.fs || fs;
+  const classification = classifyOutputDir(outputDir, deps);
+  if (classification.kind === "package_v1" && classification.displayName) {
+    return classification.displayName;
+  }
   // 优先用 manifest 里的源文档名作展示标签（"哪份标准的结果"一眼可辨）；
   // 无 manifest（如纯 B 轨目录）或损坏时退回目录名
   try {
@@ -468,6 +564,7 @@ function listRecentSessions(filePath, deps = {}) {
     label: recentSessionLabel(entry.outputDir, deps),
     exists: fsImpl.existsSync(entry.outputDir),
     isOutput: isLikelyOutputDir(entry.outputDir, deps),
+    classification: classifyOutputDir(entry.outputDir, deps),
   }));
 }
 
@@ -493,6 +590,7 @@ module.exports = {
   buildChainArgs,
   buildExportAnnotationArgs,
   buildRunPipelineArgs,
+  classifyOutputDir,
   drainProgressLines,
   isLikelyOutputDir,
   listRecentSessions,

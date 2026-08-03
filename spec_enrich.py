@@ -21,6 +21,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
+
+from result_package import governed_artifact_path
 from typing import Any
 
 import blue_book_lookup
@@ -490,7 +492,7 @@ def enrich_requirement_lists(
     config, concurrency, abort = config_for_route(route, pipeline_path)
     if config is None:
         return {"enriched": 0, "rejected": 0, "failed": 0, "route": "stub"}
-    cache_path = out_dir.expanduser().resolve() / ENRICH_CACHE
+    cache_path = governed_artifact_path(out_dir, ENRICH_CACHE, category="cache")
     flat = [req for lst in requirement_lists for req in lst]
     LOGGER.info("描述富化：%s 条候选（模型 %s）", len(flat), config.model)
     enriched, rejected, failed = enrich_descriptions(

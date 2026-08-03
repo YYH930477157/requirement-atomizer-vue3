@@ -24,6 +24,7 @@ from typing import Any, Iterator
 
 from requirements_analysis_schema import normalize_ownership
 from process_file_lock import process_file_lock
+from result_package import governed_artifact_path
 
 AI_REVIEW_STATES = "ai_review_states.jsonl"
 AI_TARGET_AUTHORITY_WRITE_REVISION_VERSION = "ai-target-authority-write-revision-v1"
@@ -231,7 +232,7 @@ def _authority_snapshot_from_scan(scan: dict[str, Any]) -> dict[str, Any]:
 def read_ai_review_authority_snapshot(out_dir: Path) -> dict[str, Any]:
     """Return current authority plus every ordered source row and visible audit gap."""
     root = Path(out_dir).expanduser().resolve()
-    path = root / AI_REVIEW_STATES
+    path = governed_artifact_path(root, AI_REVIEW_STATES, category="state")
     with _ai_review_state_lock(root):
         if not path.exists():
             return _empty_ai_review_authority_snapshot()
@@ -241,7 +242,7 @@ def read_ai_review_authority_snapshot(out_dir: Path) -> dict[str, Any]:
 def read_ai_review_authority_snapshot_readonly(out_dir: Path) -> dict[str, Any]:
     """Read a stable authority snapshot without locks or torn-tail recovery."""
     root = Path(out_dir).expanduser().resolve()
-    path = root / AI_REVIEW_STATES
+    path = governed_artifact_path(root, AI_REVIEW_STATES, category="state")
     before = path.read_bytes() if path.is_file() else None
     snapshot = (
         _empty_ai_review_authority_snapshot()
@@ -426,7 +427,7 @@ def _ai_review_state_lock(
     root = Path(out_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     with _ai_process_lock_for(root):
-        lock_path = root / "ai_review_states.lock"
+        lock_path = governed_artifact_path(root, "ai_review_states.lock", category="state")
         # Kept as a compatibility argument for callers; OS ownership, not mtime,
         # determines whether a lock is live.
         del stale_after_s
@@ -485,7 +486,7 @@ def apply_ai_review_action(
     out_dir = Path(out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     with _ai_review_state_lock(out_dir):
-        states_path = out_dir / AI_REVIEW_STATES
+        states_path = governed_artifact_path(out_dir, AI_REVIEW_STATES, category="state")
         if states_path.is_file():
             authority_snapshot = _authority_snapshot_from_scan(
                 _scan_ai_review_rows_unlocked(states_path)
@@ -505,7 +506,9 @@ def apply_ai_review_action(
                 "AI review authority changed; refresh before adjudicating",
                 current_revision=current_write_revision,
             )
-        with (out_dir / AI_REVIEW_STATES).open("a", encoding="utf-8", newline="\n") as f:
+        with governed_artifact_path(
+            out_dir, AI_REVIEW_STATES, category="state"
+        ).open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(state, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())

@@ -25,6 +25,7 @@ from cosem_object_model import (
     source_fields,
     status_of,
 )
+from result_package import governed_artifact_path
 from text_normalize import normalize_numeric
 
 
@@ -94,7 +95,9 @@ def build_access_security(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
     index = build_source_index(read_jsonl(out_dir / "table_items.jsonl"))
-    status_by_id = review_status_by_id(read_jsonl(out_dir / "review_states.jsonl"))
+    status_by_id = review_status_by_id(read_jsonl(
+        governed_artifact_path(out_dir, "review_states.jsonl", category="state")
+    ))
 
     association_security = pivot_matrix(
         requirements, index, "association_security_matrix",

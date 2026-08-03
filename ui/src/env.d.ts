@@ -16,6 +16,12 @@ declare global {
     openedAt: string
     exists: boolean
     isOutput: boolean
+    classification?: {
+      kind: "package_v1" | "legacy" | "invalid" | "not_output"
+      analysisStatus: "completed" | "incomplete" | "running" | "legacy" | "invalid"
+      reason: string
+      displayName?: string
+    }
   }
 
   type RequirementAtomizerTaskPayload = {
@@ -49,6 +55,9 @@ declare global {
     analysis?: unknown
     template?: unknown
     api_warning?: string
+    analysis_root?: string
+    package?: unknown
+    layout?: string
   }
 
   interface Window {
@@ -126,6 +135,10 @@ declare global {
         kbPaths?: string[]
         domainPackDir?: string
       }) => Promise<RequirementAtomizerTaskPayload>
+      startResultPackage: (input: { outDir: string; inputPath: string; stages: string[] }) => Promise<RequirementAtomizerTaskPayload>
+      completeResultPackage: (input: { outDir: string; runId: string; completedStages: string[] }) => Promise<RequirementAtomizerTaskPayload>
+      failResultPackage: (input: { outDir: string; runId: string; error: string }) => Promise<RequirementAtomizerTaskPayload>
+      getResultPackageStatus: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       getOutputSummary: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       aiExtract: (input: { outDir: string; llmRoute?: string; limitSections?: number; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
       exportAnnotationHtml: (input: { outDir: string; route?: string; layoutMode?: "optimized" | "pdf_original" }) => Promise<RequirementAtomizerTaskPayload>

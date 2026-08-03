@@ -9,12 +9,24 @@ if ($Python -ne "python" -and -not (Test-Path $Python)) {
     Write-Host "Python '$Python' not found; falling back to 'python' on PATH"
     $Python = "python"
 }
+if ($Python -eq "python") {
+    $Python = (Get-Command python -ErrorAction Stop).Source
+} else {
+    $Python = (Resolve-Path -LiteralPath $Python).Path
+}
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $DistBackend = Join-Path $RepoRoot "dist-backend"
 $BuildDir = Join-Path $RepoRoot "build-electron-backend"
 $Entry = Join-Path $RepoRoot "desktop_backend.py"
 $Exe = Join-Path $DistBackend "ratomizer-desktop.exe"
+
+# Word/Excel 影印的首选路径依赖 pywin32。它已经是 Windows 运行时依赖，
+# 打包环境缺失时必须在 PyInstaller 前大声失败，不能产出一个静默丢失 COM 支路的工具。
+& $Python -c "import pythoncom, win32com.client"
+if (-not $?) {
+    throw "Office COM packaging dependencies are missing; install the project Windows dependencies before packaging"
+}
 
 Remove-Item -LiteralPath $DistBackend -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $BuildDir -Recurse -Force -ErrorAction SilentlyContinue
