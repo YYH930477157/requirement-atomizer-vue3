@@ -34,6 +34,7 @@ from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
 from requirement_kb.matching import clean_text as normalize_text
 from result_package import (
+    ResultPackageError,
     detect_result_layout,
     governed_artifact_path,
     load_result_package,
@@ -158,8 +159,17 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "unauthorized"}, status=401)
             return
         if parsed.path == "/result-package":
-            layout = detect_result_layout(self.package_root)
-            package = load_result_package(self.package_root) if layout == "package_v1" else None
+            try:
+                layout = detect_result_layout(self.package_root)
+                package = load_result_package(self.package_root) if layout == "package_v1" else None
+            except ResultPackageError as exc:
+                # marker 损坏/残留发布 journal：结构化 503，不掐断连接（2026-08-03 审查 S1）
+                self.send_json({
+                    "error": "result_package_unavailable",
+                    "detail": str(exc),
+                    "retryable": True,
+                }, status=503)
+                return
             self.send_json({
                 "layout": layout,
                 "package_root": str(self.package_root),
@@ -2194,10 +2204,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _claim_generation_present(root: Path) -> bool:
+    """package_v1 / legacy 两布局统一的 claim generation 存在性闸门（纯读）。
+
+    package_v1 下该文件落在 .ratomizer/state/（governed_artifact_path 寻址）；
+    裸拼接 root / 文件名在 package_v1 下永远为 False，会把启动维护整体静默跳过
+    （2026-08-03 审查 B1）。
+    """
+    return governed_artifact_path(
+        root, "claim_generation.meta.json", category="state"
+    ).is_file()
+
+
 def run_claim_startup_maintenance(out_dir: Path) -> dict:
     """Recover or refresh claim state before listening, with a read-only fast path."""
     root = Path(out_dir).expanduser().resolve()
-    if not (root / "claim_generation.meta.json").is_file():
+    if not _claim_generation_present(root):
         return {
             "ok": True,
             "publication_skipped": True,
@@ -2246,7 +2268,7 @@ def main(argv: list[str] | None = None) -> int:
     RequirementAPIHandler.output_dir = resolve_analysis_root(RequirementAPIHandler.package_root)
     RequirementAPIHandler.allowed_origins = build_allowed_origins(args.host, args.port, args.allow_origin)
     RequirementAPIHandler.local_token = args.token
-    if (RequirementAPIHandler.output_dir / "claim_generation.meta.json").is_file():
+    if _claim_generation_present(RequirementAPIHandler.output_dir):
         try:
             run_claim_startup_maintenance(RequirementAPIHandler.output_dir)
         except Exception as exc:

@@ -80,6 +80,28 @@ def _package_api(package_root: Path):
         thread.join(timeout=5)
 
 
+@contextmanager
+def _broken_package_api(package_root: Path):
+    """marker/journal 损坏时布局探测本身会抛，这里直接钉住分析根来测端点错误面。"""
+    class TestHandler(api_server.RequirementAPIHandler):
+        pass
+
+    TestHandler.package_root = package_root.resolve()
+    TestHandler.output_dir = package_root.resolve()
+    TestHandler.allowed_origins = set(api_server.DEFAULT_ALLOWED_ORIGINS)
+    TestHandler.local_token = ""
+    server = api_server.ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 class ResultPackageEndpointTests(unittest.TestCase):
     def test_exposes_package_root_and_internal_analysis_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -96,6 +118,34 @@ class ResultPackageEndpointTests(unittest.TestCase):
             self.assertEqual(payload["package_root"], str(root.resolve()))
             self.assertEqual(payload["analysis_root"], str(resolve_analysis_root(root)))
             self.assertEqual(payload["package"]["analysis_status"], "running")
+
+    def test_corrupt_marker_returns_structured_503(self) -> None:
+        # S1 回归：marker 损坏时 /result-package 返回结构化 503，不掐断连接。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "result-package.json").write_text("{broken", encoding="utf-8")
+
+            with _broken_package_api(root) as base_url:
+                status, payload = _http_json(base_url, "/result-package")
+
+            self.assertEqual(status, 503)
+            self.assertEqual(payload["error"], "result_package_unavailable")
+            self.assertTrue(payload["retryable"])
+
+    def test_interrupted_publication_journal_returns_structured_503(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.docx"
+            source.write_bytes(b"fixture")
+            initialize_result_package(root, input_path=source, requested_stages=["atomize"])
+            journal = root / ".ratomizer" / "stages" / ".result-package-publication.json"
+            journal.write_text("{}", encoding="utf-8")
+
+            with _broken_package_api(root) as base_url:
+                status, payload = _http_json(base_url, "/result-package")
+
+            self.assertEqual(status, 503)
+            self.assertEqual(payload["error"], "result_package_unavailable")
 
 
 def _http_post_json(
@@ -1691,6 +1741,30 @@ class ClaimStartupMaintenanceTests(unittest.TestCase):
         self.assertTrue(result["publication_skipped"])
         self.assertEqual(result["reason"], "already_fresh")
         self.assertEqual(after, before)
+
+    def test_startup_maintenance_gate_reads_hidden_state_for_package_v1(self) -> None:
+        # B1 回归（2026-08-03 审查）：package_v1 下 claim_generation.meta.json 落在
+        # .ratomizer/state/，裸路径闸门曾把 package_v1 目录的启动维护整体静默跳过。
+        from result_package import initialize_result_package, resolve_analysis_root
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "standard.docx"
+            source.write_bytes(b"docx-fixture")
+            initialize_result_package(
+                root, input_path=source, requested_stages=["atomize"],
+            )
+            analysis_root = resolve_analysis_root(root)
+            _publish(analysis_root, _catalog())
+            self.assertFalse((analysis_root / "claim_generation.meta.json").exists())
+            self.assertTrue(
+                (root / ".ratomizer" / "state" / "claim_generation.meta.json").is_file()
+            )
+
+            result = api_server.run_claim_startup_maintenance(analysis_root)
+
+        self.assertTrue(result["ok"])
+        self.assertNotEqual(result.get("reason"), "claim_generation_unavailable")
 
 if __name__ == "__main__":
     unittest.main()

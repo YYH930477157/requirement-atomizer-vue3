@@ -521,7 +521,10 @@ def apply_ai_review_action(
             ai_req_id_value,
             updated_snapshot,
         )
-    if (out_dir / "claim_generation.meta.json").is_file():
+    # package_v1 下该文件在 .ratomizer/state/，裸路径闸门会静默吞掉 fold 钩子（审查 B1 同族）
+    if governed_artifact_path(
+        out_dir, "claim_generation.meta.json", category="state"
+    ).is_file():
         try:
             from claim_review_actions import fold_effective_ledger
 

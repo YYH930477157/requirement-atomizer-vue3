@@ -34,6 +34,8 @@ _PUBLICATION_TRANSACTIONS_DIR = "result-package-publications"
 _PACKAGE_LOCK_DEPTH: ContextVar[int] = ContextVar("result_package_lock_depth", default=0)
 _MARKER_CONTRACT_CACHE: dict[Path, tuple[int, int, int, dict[str, Any]]] = {}
 _MARKER_CONTRACT_CACHE_LOCK = RLock()
+# marker warnings[] 只追加不膨胀：保留最近 N 条，完整细节始终落在 run.log。
+_PACKAGE_WARNING_LIMIT = 50
 
 
 class ResultPackageError(RuntimeError):
@@ -1069,3 +1071,21 @@ def record_analysis_failure(
             run_id=run_id,
             error=error,
         )
+
+
+def record_package_warning(root: Path | str, message: str) -> dict[str, Any]:
+    """Append a human-readable warning to the marker（spec §11 降级留痕写入点）。
+
+    用于"阶段已成功但交付物发布失败"这类不得改写阶段结果的降级场景；
+    只追加不膨胀（保留最近 _PACKAGE_WARNING_LIMIT 条），完整细节落 run.log。
+    """
+    result_root = Path(root).expanduser().resolve()
+    with _package_write_lock(result_root):
+        _recover_publication_unlocked(result_root)
+        package = load_result_package(result_root)
+        warnings = list(package.get("warnings") or [])
+        warnings.append(f"{_utc_now()} {str(message)[:500]}")
+        package["warnings"] = warnings[-_PACKAGE_WARNING_LIMIT:]
+        _validate_package(package)
+        _atomic_write_json(result_root / RESULT_PACKAGE_FILE, package)
+        return package
