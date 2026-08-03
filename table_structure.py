@@ -24,7 +24,7 @@ v6（候选闭环）：已知元数据冒号规格继续作为确定性 context�
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 TABLE_STRUCTURE_VERSION = "table-structure-v6"
 TABLE_CELL_ITEM_SCHEMA = "table-cell-item/v1"
@@ -476,6 +476,33 @@ def is_group_header_row(
     if not merge_ranges or full_width_merge_row(row_index, width, merge_ranges) is None:
         return False
     return not is_normative_text(non_empty[0])
+
+
+def physical_data_row_indexes(block: Mapping[str, Any]) -> list[int]:
+    """表格块第 N 个数据行对应的物理行号（1-based）列表（S12 单一口径）。
+
+    权威推导：全部物理行（1..rows）− title_row_indexes − header_row_indexes，
+    与 analyze_table 的 data_row_indexes 同定义——标题/表头不连续时
+    "header_row_count + 标题数 + 数据区偏移"的连续假设必然错位（2026-08-03
+    清单 S12：spot/补抽两处各按连续公式猜物理行，分组标题穿插即错行）。
+    结构索引或行总数缺失（旧产物无证据）时退回该历史公式，逐字节等价。"""
+    data_rows = block.get("data_rows") or []
+    title_indexes = block.get("title_row_indexes")
+    header_indexes = block.get("header_row_indexes")
+    total_rows = int(block.get("rows") or 0)
+    if title_indexes is not None and header_indexes is not None and total_rows:
+        return sorted(
+            set(range(1, total_rows + 1))
+            - {int(value) for value in title_indexes}
+            - {int(value) for value in header_indexes}
+        )
+    header_row_count = int(
+        block.get("header_row_count")
+        if block.get("header_row_count") is not None
+        else (1 if block.get("headers") else 0)
+    )
+    offset = header_row_count + len(title_indexes or [])
+    return [offset + position for position in range(1, len(data_rows) + 1)]
 
 
 # --- 结构识别 ---------------------------------------------------------------------

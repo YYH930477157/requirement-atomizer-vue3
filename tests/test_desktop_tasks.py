@@ -1156,7 +1156,7 @@ class ChainAndManifestTests(unittest.TestCase):
             # 结构角色/信号规则变化时旧抽取产物不得假装仍然新鲜
             "ai-extract": (
                 "ai-requirements-producer-lineage-v3"
-                "+ai-extract-v23+guards-v20+ai-verify-v4+ai-normative-framing-v2"
+                "+ai-extract-v23+guards-v21+ai-verify-v4+ai-normative-framing-v2"
                 "+merged-consistency/v3-noise-tolerant-window"
                 f"+compliance-requirements/v2+{TABLE_STRUCTURE_VERSION}"
                 "+ai-supplement-v3-identity-preconditions+impl-v6"

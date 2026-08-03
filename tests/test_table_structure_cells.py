@@ -38,6 +38,7 @@ from table_structure import (
     TABLE_CELL_ITEM_SCHEMA,
     TABLE_STRUCTURE_VERSION,
     cell_context_text,
+    physical_data_row_indexes,
 )
 
 
@@ -1380,6 +1381,103 @@ class ReviewCounterexampleTests(unittest.TestCase):
         self.assertTrue(
             any(value in str(claim["text"]) for claim in result["catalog"])
         )
+
+
+class MixedFactColumnConservationTests(unittest.TestCase):
+    """I4 复审反例（2026-08-03 清单）：mixed 表的事实列必须按实际 (row,column)
+    cell-leaf 坐标剔除——非 marker 文本格（"optional"）保留在 row claim，
+    有且仅有一个 owner；消费审计不得靠坐标假通过。"""
+
+    _MATRIX = [
+        ["Attribute", "Value", "Read", "Write"],
+        ["Voltage", "230 V", "required", "optional"],
+        ["Current", "5 A", "mandatory", "x"],
+    ]
+
+    def test_non_marker_fact_cell_owned_by_row_claim_exactly_once(self) -> None:
+        block, items, cells = _artifacts(self._MATRIX)
+        self.assertEqual(block["table_kind"], "parameter")
+        self.assertEqual(block["leaf_mode"], "mixed")
+        # Read/Write 是受控操作轴名的正向维度证据列（0-based 2/3）
+        self.assertEqual(block["matrix_fact_columns"], [2, 3])
+        result = _catalog(block, items, cells)
+        self.assertEqual(result["meta"]["accounting_status"], "complete")
+        self.assertTrue(all(count == 0 for count in _cell_audit(result).values()))
+        row_claims = [
+            claim for claim in result["catalog"] if claim["source_kind"] == "table_row"
+        ]
+        cell_claims = [
+            claim for claim in result["catalog"] if claim["source_kind"] == "table_cell"
+        ]
+        self.assertEqual(len(row_claims), 2)
+        # marker 格 required/mandatory/x 各自由 cell claim 闭环
+        self.assertEqual(len(cell_claims), 3)
+        voltage_row = next(
+            claim for claim in row_claims if claim["locator"]["row_index"] == 2
+        )
+        # marker 格按坐标剔除出行文本；非 marker 的 optional 不得株连剔除——
+        # 它由 row claim 承载（唯一的 owner），整列剔除时代码会把它静默丢掉
+        self.assertNotIn("required", voltage_row["text"])
+        self.assertIn("Write=optional", voltage_row["text"])
+        # optional 非 marker：不成 cell claim，也不被任何第二条 claim 重复承载
+        self.assertFalse(any("optional" in claim["text"] for claim in cell_claims))
+        current_row = next(
+            claim for claim in row_claims if claim["locator"]["row_index"] == 3
+        )
+        self.assertNotIn("mandatory", current_row["text"])
+        self.assertNotIn("Write=x", current_row["text"])
+
+    def test_audit_fails_closed_when_excluded_cell_loses_owner(self) -> None:
+        # 审计不得靠坐标假通过：leaf plan 把格排除出行文本（multi_duty 逐格排除），
+        # 但该格没有任何 owner（非 cell leaf/候选/context）→ unconsumed 硬失败。
+        # 旧口径只查"行在 row_leaf_indexes"即计消费——本用例在修复前应假通过。
+        block, items, cells = _artifacts(self._MATRIX)
+        block["leaf_plan"]["multi_duty_cells"] = ["TBL-000001-R000002-C000004"]
+        result = _catalog(block, items, cells)
+        audit = _cell_audit(result)
+        self.assertGreater(audit["unconsumed_table_cell_count"], 0)
+        self.assertNotEqual(result["meta"]["accounting_status"], "complete")
+
+
+class PhysicalDataRowIndexTests(unittest.TestCase):
+    """S12：表格块第 N 个数据行 → 物理行号（1-based）的统一推导。"""
+
+    def test_structure_indexes_derivation(self) -> None:
+        block = {
+            "rows": 5,
+            "title_row_indexes": [1],
+            "header_row_indexes": [2],
+            "data_rows": [["a"], ["b"], ["c"]],
+        }
+        self.assertEqual(physical_data_row_indexes(block), [3, 4, 5])
+
+    def test_non_contiguous_title_header_indexes(self) -> None:
+        # 标题/表头不连续（标题 1、表头 2 与 4）时连续偏移公式必然错位
+        block = {
+            "rows": 6,
+            "title_row_indexes": [1],
+            "header_row_indexes": [2, 4],
+            "data_rows": [["a"], ["b"], ["c"]],
+        }
+        self.assertEqual(physical_data_row_indexes(block), [3, 5, 6])
+
+    def test_legacy_block_falls_back_to_contiguous_formula(self) -> None:
+        # 旧产物无结构索引：退回 header_row_count + 数据区偏移的历史口径
+        block = {
+            "headers": ["H1", "H2"],
+            "header_row_count": 1,
+            "data_rows": [["a", "b"], ["c", "d"]],
+        }
+        self.assertEqual(physical_data_row_indexes(block), [2, 3])
+
+    def test_legacy_block_with_title_indexes_uses_legacy_formula(self) -> None:
+        block = {
+            "headers": ["H1"],
+            "header_row_count": 1,
+            "title_row_indexes": [1],
+            "data_rows": [["a"], ["b"]],
+        }
+        self.assertEqual(physical_data_row_indexes(block), [3, 4])
 
 
 class BlockSequenceStabilityTests(unittest.TestCase):

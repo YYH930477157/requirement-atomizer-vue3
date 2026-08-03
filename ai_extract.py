@@ -1129,18 +1129,18 @@ def _supplement_parameter_table_rows(
         covered_text = covered_by_block.get(block_id, "")
         section_path = [str(s) for s in (block.get("section_path") or []) if str(s).strip()]
         table_id = str(block.get("table_id") or block_id)
-        # 权威行号 = 表头数 + 标题数 + 数据区偏移（与 table_items.jsonl 的 item_id 对齐；
-        # 缺 header_row_count 的旧夹具按"有表头即 1"回退，与 catalog 遗留口径一致）
-        header_row_count = int(
-            block.get("header_row_count")
-            if block.get("header_row_count") is not None
-            else (1 if block.get("headers") else 0)
-        )
-        header_offset = header_row_count + len(block.get("title_row_indexes") or [])
+        # 权威行号由统一 helper 推导（S12：全部物理行 − 标题 − 表头；
+        # 旧产物缺结构索引时 helper 内部退回"表头数 + 标题数 + 数据区偏移"历史公式，
+        # 与 table_items.jsonl 的 item_id 对齐口径不变）
+        physical_rows = table_structure.physical_data_row_indexes(block)
         merge_ranges = table_structure.normalize_merge_ranges(block.get("merge_ranges") or [])
         width = int(block.get("columns") or 0)
         for row_index, row in enumerate(data_rows, start=1):
-            physical_row = header_offset + row_index
+            physical_row = (
+                physical_rows[row_index - 1]
+                if row_index - 1 < len(physical_rows)
+                else row_index
+            )
             cells = [str(cell or "").strip() for cell in row]
             non_empty = [cell for cell in cells if cell]
             if not non_empty:
@@ -1615,7 +1615,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v20"  # v20:section cache 骨架绑定 cell 语义（rows 哈希 item_id+text、cells 哈希 cell_id+row+column+text，bbox 等几何不进指纹——语义变化 miss、几何变化 hit，P1-2）;v19:table-structure-v2 接入(删参数表≥3行硬门/merge anchor分组标题/权威row/cell ID去重键/cell级assemble输入+TABLE_STRUCTURE_VERSION与leaf plan结构hash进section指纹);v18:section cache 与完整 producer lineage 分层纳入 compliance_schema,堵死 v17 漏钉且避免缓存后处理版本触发付费重抽;v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v21"  # v21:S12/S15 修复——参数表行展开物理行号改从 title/header 结构索引统一推导(标题/表头不连续时连续偏移公式错行),extract_units 同值分组标题启发式只在 merge_ranges 缺失(旧产物无证据)时启用、已知无合并([])不再误判;v20:section cache 骨架绑定 cell 语义（rows 哈希 item_id+text、cells 哈希 cell_id+row+column+text，bbox 等几何不进指纹——语义变化 miss、几何变化 hit，P1-2）;v19:table-structure-v2 接入(删参数表≥3行硬门/merge anchor分组标题/权威row/cell ID去重键/cell级assemble输入+TABLE_STRUCTURE_VERSION与leaf plan结构hash进section指纹);v18:section cache 与完整 producer lineage 分层纳入 compliance_schema,堵死 v17 漏钉且避免缓存后处理版本触发付费重抽;v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:

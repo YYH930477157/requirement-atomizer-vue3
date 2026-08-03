@@ -274,7 +274,7 @@ images are never faked. The in-app payload (`/document/pdf`) reuses the exported
 read-only and never converts on the request path. `pywin32` is a Windows-only dependency
 (`pywin32; sys_platform=="win32"`); other platforms degrade gracefully.
 
-Spot extract (`spot-extract-v1`, 2026-07-28): the review API endpoint `POST /spot-extract`
+Spot extract (`spot-extract-v2`, row-entry structure gate 2026-08-03): the review API endpoint `POST /spot-extract`
 (frozen-spec alias `/api/spot-extract`, same handler) runs a targeted analysis of one
 annotation block or table row (`{block_id, row_index?}`). A requirement-shaped parameter
 table row reuses the deterministic guards-v16 single-row expansion; any other row or

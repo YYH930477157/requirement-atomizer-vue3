@@ -169,6 +169,47 @@ class RowExpansionTests(unittest.TestCase):
         self.assertIn(line, block["text"])
 
 
+class GroupHeaderEvidenceTests(unittest.TestCase):
+    """S15（2026-08-03 清单）：merge_ranges=[] 是"已知无合并"的确切证据，
+    不得触发历史同值启发式；只有 merge_ranges 缺失（None，旧产物无证据）
+    才退回同值口径。"""
+
+    def test_known_no_merge_does_not_use_legacy_heuristic(self) -> None:
+        from extract_units import _is_group_header_evidence
+
+        block = {"columns": 3, "merge_ranges": []}
+        item = {"row_index": 2}
+        self.assertFalse(_is_group_header_evidence(block, item, ["2. PARAMETERS"]))
+
+    def test_missing_merge_evidence_uses_legacy_heuristic(self) -> None:
+        from extract_units import _is_group_header_evidence
+
+        block = {"columns": 3}
+        item = {"row_index": 2}
+        self.assertTrue(_is_group_header_evidence(block, item, ["2. PARAMETERS"]))
+
+    def test_explicit_none_merge_evidence_uses_legacy_heuristic(self) -> None:
+        from extract_units import _is_group_header_evidence
+
+        block = {"columns": 3, "merge_ranges": None}
+        item = {"row_index": 2}
+        self.assertTrue(_is_group_header_evidence(block, item, ["2. PARAMETERS"]))
+
+    def test_full_width_merge_anchor_is_group_header(self) -> None:
+        from extract_units import _is_group_header_evidence
+
+        block = {"columns": 3, "merge_ranges": [[2, 1, 2, 3]]}
+        item = {"row_index": 2}
+        self.assertTrue(_is_group_header_evidence(block, item, ["2. PARAMETERS"]))
+
+    def test_partial_merge_anchor_is_not_group_header(self) -> None:
+        from extract_units import _is_group_header_evidence
+
+        block = {"columns": 3, "merge_ranges": [[2, 1, 2, 2]]}
+        item = {"row_index": 2}
+        self.assertFalse(_is_group_header_evidence(block, item, ["2. PARAMETERS"]))
+
+
 def _value_spec_block() -> dict:
     """英文表头参数表（Value/Unit）——扩展前 _PARAM_REQ_CELL_RE 漏判,扩展后命中。"""
     headers = ["No.", "Parameter", "Value", "Unit"]
