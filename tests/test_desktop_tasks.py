@@ -109,6 +109,35 @@ class RunLoggingTests(unittest.TestCase):
             log_text = (out / "run.log").read_text(encoding="utf-8")
         self.assertIn("desktop task 开始：summary", log_text)
 
+    def test_summary_preview_of_empty_dir_leaves_no_files(self) -> None:
+        """只读探测不在空目录留痕（回归 2026-08-03：遗留 run.log 曾毒化 legacy 哨兵判定）。"""
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "o"  # 目录尚不存在，模拟用户在界面里新选的空目录
+            with redirect_stdout(io.StringIO()):
+                exit_code = desktop_tasks.main(["summary", "--out", str(out)])
+            self.assertEqual(exit_code, 0)
+            self.assertFalse((out / "run.log").exists())
+            self.assertFalse((out / "llm_trace.jsonl").exists())
+
+    def test_summary_preview_then_result_package_start_succeeds(self) -> None:
+        """用户真实链路回归：界面先 summary 预览、再 result-package-start，必须能开工。"""
+        import desktop_tasks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "o"
+            input_path = Path(tmp) / "in.docx"
+            input_path.write_bytes(b"docx-fixture")
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(desktop_tasks.main(["summary", "--out", str(out)]), 0)
+            with redirect_stdout(io.StringIO()):
+                exit_code = desktop_tasks.main([
+                    "result-package-start", "--out", str(out),
+                    "--input", str(input_path), "--stages", "atomize",
+                ])
+            self.assertEqual(exit_code, 0)
+
 
 class DesktopTaskEncodingTests(unittest.TestCase):
     def test_main_writes_json_payload_on_gbk_stdout(self) -> None:

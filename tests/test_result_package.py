@@ -431,6 +431,19 @@ class ResultPackageTests(unittest.TestCase):
 
             self.assertEqual(detect_result_layout(root), "legacy_flat")
 
+    def test_incidental_log_files_do_not_mark_directory_as_legacy(self) -> None:
+        # 回归（2026-08-03）：桌面端只读探测曾在被预览目录根留 run.log，
+        # 导致新目录被误判 legacy_flat、result-package-start 永远拒绝开工。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "run.log").write_text("stale log\n", encoding="utf-8")
+            (root / "run_manifest.lock").write_text("", encoding="utf-8")
+            (root / "llm_trace.jsonl").write_text("", encoding="utf-8")
+
+            self.assertEqual(detect_result_layout(root), "empty")
+            package = self._initialize(root)
+            self.assertEqual(package["analysis_status"], "running")
+
     def test_marker_relative_path_escape_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

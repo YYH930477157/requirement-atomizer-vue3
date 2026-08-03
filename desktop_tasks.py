@@ -1859,12 +1859,15 @@ def _manifest_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return context
 
 
-def setup_run_logging(out_dir: Path | None) -> None:
+def setup_run_logging(out_dir: Path | None, *, allow_root_files: bool = True) -> None:
     """后端任务日志：stderr（Electron 收集持久化）+ <输出目录>/run.log（跟着交付物走）。
 
     此前 GUI 路径全链路零日志：LOGGER.info（LLM 调用时长/自检轮次/富化被拒原因/降级）被
     Python 兜底 handler 丢弃，Electron 只在任务失败时把 stderr 拼进弹窗。排查"为什么慢/
     为什么产物长这样"无从下手——本函数让每次运行在输出目录留下完整可追溯日志。幂等可重入。
+
+    allow_root_files=False 时（只读探测，如 summary 预览空目录）不在非 package 目录的
+    根创建 run.log/llm_trace.jsonl：根目录偶发文件只是垃圾，不产生任何价值。
     """
     logger = logging.getLogger("requirement_atomizer")
     logger.setLevel(logging.INFO)
@@ -1881,13 +1884,17 @@ def setup_run_logging(out_dir: Path | None) -> None:
             package_root = package_root_for_analysis_root(out_dir)
             if package_root is None and detect_result_layout(out_dir) == "package_v1":
                 package_root = out_dir
-            log_path = (package_artifact_path(package_root, "run_log", for_write=True)
-                        if package_root is not None else out_dir / "run.log")
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(log_path, encoding="utf-8")
-            file_handler.setFormatter(fmt)
-            file_handler._ratomizer_tag = "runlog"  # type: ignore[attr-defined]
-            logger.addHandler(file_handler)
+            log_path: Path | None = None
+            if package_root is not None:
+                log_path = package_artifact_path(package_root, "run_log", for_write=True)
+            elif allow_root_files:
+                log_path = out_dir / "run.log"
+            if log_path is not None:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                file_handler = logging.FileHandler(log_path, encoding="utf-8")
+                file_handler.setFormatter(fmt)
+                file_handler._ratomizer_tag = "runlog"  # type: ignore[attr-defined]
+                logger.addHandler(file_handler)
         except OSError:  # 日志落盘失败不阻断任务
             pass
     # LLM 消息级追踪：完整收发落 <out>/llm_trace.jsonl（含 prompt/响应全文/token 用量）。
@@ -1898,9 +1905,13 @@ def setup_run_logging(out_dir: Path | None) -> None:
         package_root = package_root_for_analysis_root(resolved)
         if package_root is None and detect_result_layout(resolved) == "package_v1":
             package_root = resolved
-        trace_path = (package_artifact_path(package_root, "llm_trace", for_write=True)
-                      if package_root is not None else resolved / "llm_trace.jsonl")
-        llm_client.set_trace_path(trace_path)
+        trace_path: Path | None = None
+        if package_root is not None:
+            trace_path = package_artifact_path(package_root, "llm_trace", for_write=True)
+        elif allow_root_files:
+            trace_path = resolved / "llm_trace.jsonl"
+        if trace_path is not None:
+            llm_client.set_trace_path(trace_path)
 
 
 def teardown_run_logging() -> None:
@@ -1992,12 +2003,19 @@ def main(argv: list[str] | None = None) -> int:
         ])
     package_root: Path | None = None
     original_out = getattr(args, "out", None)
+    out_layout: str | None = None
     if original_out is not None:
         original_out = Path(original_out).expanduser().resolve()
-        if detect_result_layout(original_out) == "package_v1":
+        out_layout = detect_result_layout(original_out)
+        if out_layout == "package_v1":
             package_root = original_out
             args.out = resolve_analysis_root(original_out)
-    setup_run_logging(getattr(args, "out", None))
+    setup_run_logging(
+        getattr(args, "out", None),
+        # 只读 summary 预览空目录时不在其根留 run.log/llm_trace.jsonl——那是纯垃圾文件
+        # （哨兵判定已不再被它们干扰，但也没必要往用户新目录里写东西）。
+        allow_root_files=not (args.command == "summary" and out_layout == "empty"),
+    )
     logging.getLogger("requirement_atomizer").info("desktop task 开始：%s", args.command)
     try:
         if args.command == "run":

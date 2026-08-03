@@ -20,6 +20,13 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 > 2026-06-27：**GUI 正式以 Vue3+Electron（`ui/`）为准，PySide6（`gui/`）冻结**；终点交付物（`assemble`/`compose` 实现规格）数据完整性修复由 Claude 直接实现并自查（同上轨道纪律）。
 > 换机继续：项目上下文靠本文件 + `~/.claude/.../memory/` 自动加载；完整聊天 transcript 在 HOME `~/.claude/projects/<proj>/`，**不进代码仓**（含客户文档/业务细节，公开仓会泄密），如需带走走私有同步。
 
+## 热修复（2026-08-03）——结果包 legacy 哨兵自伤（main 工作区，未提交）
+
+- **症状**：打包实测"新建空文件夹也无法开始分析"，报 `legacy flat output requires explicit migration`。
+- **根因**：桌面端选目录时只读 `summary` 探测经 `setup_run_logging` 在目录根留 `run.log`；`run.log` 在 `_LEGACY_SENTINELS` 中，后续 `result-package-start` 据此误判目录为旧版扁平产物并 fail-closed。任何被界面预览过的目录都会被自己毒化。
+- **修复**：① `result_package.py` 哨兵清单剔除偶发文件（`run.log`/`run_manifest.lock`/`llm_trace.jsonl`），实质产物哨兵不变；② `desktop_tasks.setup_run_logging(..., allow_root_files=False)` 用于 `summary` 预览空目录，不在其根留痕（产物目录写 run.log 的既有行为保留）。
+- **验证**：新增 3 个回归测试（含 summary→start 真实链路）；`test_result_package`+`test_result_package_e2e`+`test_desktop_tasks`+`test_api_server` 共 191 例 OK。审查问题清单见 `docs/review-2026-08-03-pull-issue-list.md`（含 1 个未修阻断项 B1：API 启动 claim 恢复闸在 package_v1 下静默失效）。
+
 ## 重大更新（2026-08-02）——结果包完成标志与输出目录整理（分支 `codex/result-package-layout`，未提交）
 
 - **新版结果包**：桌面新任务生成 `result-package.json`（`ratomizer-result-package/v1`、`result-layout-v1`）和 `.ratomizer/{pipeline,state,cache,logs,stages}`；根目录只发布注册表内的人读交付物、marker 和用户未知文件。旧扁平目录继续兼容读取，不自动迁移、不在拒绝时创建 `.ratomizer`。

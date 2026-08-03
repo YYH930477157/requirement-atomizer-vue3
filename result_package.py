@@ -179,6 +179,12 @@ _LEGACY_SENTINELS = {
     if registration.deliverable_path is None
 }
 _LEGACY_SENTINELS.add("manifest.json")
+# 日志/锁类偶发文件不能单独把目录定性为旧版扁平产物：桌面端每次任务都会初始化
+# run.log/llm_trace.jsonl，历史上只读探测（summary）也会在被预览目录的根留下
+# run.log——若计入哨兵，任何被界面"看过一眼"的新目录都会被 initialize_result_package
+# 误判为 legacy_flat 而拒绝开工（2026-08-03 实测复现：选新目录 → summary 留 run.log
+# → result-package-start 抛 "legacy flat output requires explicit migration"）。
+_LEGACY_SENTINELS -= {"run.log", "run_manifest.lock", "llm_trace.jsonl"}
 
 _STATE_FILENAMES = {
     "review_states.jsonl", "review_state_events.jsonl", "review_states.lock",
