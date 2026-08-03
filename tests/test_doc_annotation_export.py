@@ -17,8 +17,9 @@ import claim_ledger
 import claim_review_actions
 from parsers.pdf_parser import extract_pdf
 from result_package import (
+    commit_analysis_completion,
     initialize_result_package,
-    publish_registered_deliverables,
+    package_artifact_path,
     resolve_analysis_root,
 )
 from tests.test_claim_artifacts import _catalog, _publish
@@ -592,7 +593,7 @@ class DocAnnotationExportTests(unittest.TestCase):
             root = Path(tmp) / "result"
             source_pdf = Path(tmp) / "source.pdf"
             source_pdf.write_bytes(b"%PDF-1.7\noriginal-pdf-bytes\n%%EOF")
-            initialize_result_package(
+            started = initialize_result_package(
                 root,
                 input_path=source_pdf,
                 requested_stages=["export-annotation-html"],
@@ -620,7 +621,23 @@ class DocAnnotationExportTests(unittest.TestCase):
                 ),
             ):
                 dae.export_annotation_bundle(out, layout_mode="pdf_original")
-            publish_registered_deliverables(root)
+            # R1（2026-08-03 复审）后活动 attempt 期间直接发布被拒——
+            # 走真实完成提交流程（run_manifest 阶段台账 + commit 一次性发布）
+            run_id = started["active_attempt"]["run_id"]
+            package_artifact_path(root, "run_manifest", for_write=True).write_text(
+                json.dumps({
+                    "stages": {
+                        "export-annotation-html": {
+                            "status": "ok",
+                            "attempt_run_id": run_id,
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+            commit_analysis_completion(
+                root, run_id=run_id, completed_stages=["export-annotation-html"],
+            )
 
             rendered = (root / dae.ANNOTATION_HTML).read_text(encoding="utf-8")
             self.assertIn(

@@ -22,6 +22,7 @@ from result_package import (
     RESULT_PACKAGE_FILE,
     RESULT_PACKAGE_SCHEMA,
     ResultPackageCorrupt,
+    ResultPackageError,
     commit_analysis_completion,
     detect_result_layout,
     governed_artifact_path,
@@ -851,7 +852,7 @@ class ResultPackagePublicationTimingTests(unittest.TestCase):
     def test_partial_completion_returns_stable_error_code(self) -> None:
         # I6：请求阶段未全部成功 → exit 2 + envelope error.type=requested_stage_partial
         # （桌面端据此显示"分析未完成（部分阶段降级）"而非"运行失败"）；
-        # 语义 fail-closed：active_attempt 保持 running，不冒充 completed。
+        # 语义 fail-closed：不冒充 completed；R2 起 attempt 锁内终止为 partial。
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             started = self._start(root, stages="ai-extract,requirements-analysis")
@@ -873,7 +874,11 @@ class ResultPackagePublicationTimingTests(unittest.TestCase):
             self.assertIn("requirements-analysis", envelope["error"]["message"])
             # stderr 落同一 JSON 行（Electron 非零退出以 stderr 为错误消息）
             self.assertIn("requested_stage_partial", stderr.getvalue())
-            self.assertEqual(load_result_package(root)["analysis_status"], "running")
+            # R2：partial 拒绝即锁内持久化终止——不再停留 running/running
+            package = load_result_package(root)
+            self.assertEqual(package["analysis_status"], "incomplete")
+            self.assertIsNone(package["active_attempt"])
+            self.assertEqual(package["last_attempt"]["status"], "partial")
 
     def test_result_package_start_on_legacy_returns_json_envelope(self) -> None:
         # S1/I2：legacy 硬拒走结构化 envelope（exit 2），不再裸 traceback。
@@ -976,6 +981,159 @@ class ResultPackagePublicationTimingTests(unittest.TestCase):
 
             manifest = package_artifact_path(root, "run_manifest")
             self.assertTrue(manifest.is_file())
+
+
+class PublishRaceAndPartialPersistenceTests(unittest.TestCase):
+    """2026-08-03 复审残余项回归：R1 发布并发窗口、R2 partial 状态持久化。"""
+
+    def _source(self, root: Path) -> Path:
+        source = root / "standard.docx"
+        source.write_bytes(b"docx-fixture")
+        return source
+
+    def _start(self, root: Path, stages: str = "ai-extract") -> dict:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            exit_code = desktop_tasks.main([
+                "result-package-start", "--out", str(root),
+                "--input", str(self._source(root)), "--stages", stages,
+            ])
+        self.assertEqual(exit_code, 0)
+        return json.loads(stdout.getvalue())["package"]
+
+    def _run_ai_extract_stub(self, root: Path, summary_text: str) -> dict:
+        def fake_task(out_dir: Path, **kwargs: object) -> dict:
+            target = package_artifact_path(root, "summary_md", for_write=True)
+            target.write_text(summary_text, encoding="utf-8")
+            return {"kind": "ai_extract", "written": [str(target)]}
+
+        stdout = StringIO()
+        with (
+            patch.object(desktop_tasks, "ai_extract_task", side_effect=fake_task),
+            redirect_stdout(stdout),
+        ):
+            exit_code = desktop_tasks.main(["ai-extract", "--out", str(root)])
+        self.assertEqual(exit_code, 0)
+        return json.loads(stdout.getvalue())
+
+    def test_locked_publish_refuses_during_active_attempt(self) -> None:
+        # R1：publish_registered_deliverables 必须在写锁临界区内复查
+        # active_attempt——锁外检查与锁内发布之间另一进程可启动新 attempt，
+        # 此时发布会把新 attempt 的 pipeline 内容复制到根交付物。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._start(root)
+            package_artifact_path(root, "summary_md", for_write=True).write_text(
+                "NEW-ACTIVE-ATTEMPT", encoding="utf-8",
+            )
+
+            with self.assertRaises(ResultPackageError):
+                publish_registered_deliverables(root)
+
+            self.assertFalse((root / "summary.md").exists())
+
+    def test_stale_check_snapshot_cannot_publish_new_attempt_pipeline(self) -> None:
+        # R1 确定性复现（审核实测：published=True、marker 仍有活动 attempt、
+        # 根 summary.md 变成 NEW-ACTIVE-ATTEMPT）：本进程持"无活动 attempt"的
+        # 锁外旧快照，另一进程已启动新 attempt——发布必须被拒。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = self._start(root)
+            self._run_ai_extract_stub(root, "committed summary")
+            commit_analysis_completion(
+                root,
+                run_id=first["active_attempt"]["run_id"],
+                completed_stages=["ai-extract"],
+            )
+            committed_root_bytes = (root / "summary.md").read_bytes()
+            stale_snapshot = load_result_package(root)
+
+            self._start(root)  # 另一"进程"启动新 attempt
+            package_artifact_path(root, "summary_md", for_write=True).write_text(
+                "NEW-ACTIVE-ATTEMPT", encoding="utf-8",
+            )
+
+            payload: dict = {"kind": "export", "written": []}
+            with patch.object(
+                desktop_tasks, "load_result_package", return_value=stale_snapshot,
+            ):
+                published = desktop_tasks._maybe_publish_after_command(
+                    "export", root, payload,
+                )
+
+            self.assertIsNone(published)
+            self.assertEqual((root / "summary.md").read_bytes(), committed_root_bytes)
+            self.assertTrue(payload.get("warnings"))
+            load_result_package(root, verify=True)
+
+    def test_partial_completion_persists_terminated_partial_attempt(self) -> None:
+        # R2（审核实测：完成命令返回 requested_stage_partial 后磁盘 marker 仍是
+        # running/running，重开结果再次显示"运行中"）：partial 拒绝即锁内终止
+        # attempt 并持久化——重开显示"未完成"；attempt 已终止，重跑走新 attempt。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = self._start(root, stages="ai-extract,requirements-analysis")
+            self._run_ai_extract_stub(root, "partial summary")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = desktop_tasks.main([
+                    "result-package-complete", "--out", str(root),
+                    "--run-id", started["active_attempt"]["run_id"],
+                    "--completed-stages", "ai-extract,requirements-analysis",
+                ])
+
+            self.assertEqual(exit_code, 2)
+            envelope = json.loads(stdout.getvalue())
+            self.assertEqual(envelope["error"]["type"], "requested_stage_partial")
+            package = load_result_package(root)
+            self.assertEqual(package["analysis_status"], "incomplete")
+            self.assertIsNone(package["active_attempt"])
+            self.assertEqual(
+                package["last_attempt"]["run_id"],
+                started["active_attempt"]["run_id"],
+            )
+            self.assertEqual(package["last_attempt"]["status"], "partial")
+            # 重跑（新 attempt）不受终止影响
+            rerun = self._start(root, stages="ai-extract,requirements-analysis")
+            self.assertEqual(rerun["analysis_status"], "running")
+
+    def test_partial_completion_preserves_previous_completed_generation(self) -> None:
+        # R2：已有完成代时的 partial 重跑只更新 last_attempt——analysis/input/
+        # deliverables 与根交付物保持上一完成代字节一致，verify 仍通过。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = self._start(root)
+            self._run_ai_extract_stub(root, "committed summary")
+            commit_analysis_completion(
+                root,
+                run_id=first["active_attempt"]["run_id"],
+                completed_stages=["ai-extract"],
+            )
+            committed_root_bytes = (root / "summary.md").read_bytes()
+            committed = load_result_package(root)
+
+            rerun = self._start(root, stages="ai-extract,requirements-analysis")
+            self._run_ai_extract_stub(root, "partial rerun summary")
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = desktop_tasks.main([
+                    "result-package-complete", "--out", str(root),
+                    "--run-id", rerun["active_attempt"]["run_id"],
+                    "--completed-stages", "ai-extract,requirements-analysis",
+                ])
+
+            self.assertEqual(exit_code, 2)
+            package = load_result_package(root)
+            self.assertEqual(package["analysis_status"], "completed")
+            self.assertEqual(package["analysis"], committed["analysis"])
+            self.assertEqual(package["input"], committed["input"])
+            self.assertEqual(package["deliverables"], committed["deliverables"])
+            self.assertEqual(package["last_attempt"]["status"], "partial")
+            self.assertEqual((root / "summary.md").read_bytes(), committed_root_bytes)
+            load_result_package(root, verify=True)
 
 
 class ClaimGenerationGatePackageLayoutTests(unittest.TestCase):

@@ -969,6 +969,13 @@ def _publish_registered_deliverables_unlocked(
             "transactional deliverable publication requires an atomic marker update"
         )
     package = load_result_package(result_root)
+    if isinstance(package.get("active_attempt"), dict):
+        # R1（2026-08-03 复审）：检查+发布必须在同一写锁临界区——调用方的锁外
+        # active_attempt 快查与这里的发布之间，另一进程可启动新 attempt；锁内
+        # 复查 fail-closed，绝不把新 attempt 的 pipeline 内容发布到根交付物。
+        raise ResultPackageError(
+            "active analysis attempt in progress; deliverable publication refused"
+        )
     return list(_publish_package_unlocked(result_root, package)["deliverables"])
 
 
@@ -1140,6 +1147,53 @@ def record_analysis_failure(
             run_id=run_id,
             error=error,
         )
+
+
+def record_analysis_partial(
+    root: Path | str,
+    *,
+    run_id: str,
+    error: str,
+) -> dict[str, Any]:
+    """R2（2026-08-03 复审）：partial 完成被拒后锁内持久化终止 attempt。
+
+    此前 requested_stage_partial 只存在于返回 envelope——marker 停留
+    running/running，重开结果误显"运行中"。语义与 record_analysis_failure
+    对齐：attempt 显式终止（last_attempt=partial），不可续跑；重跑走新
+    attempt。既有完成代的 analysis/input/deliverables 逐字节保留。"""
+    result_root = Path(root).expanduser().resolve()
+    with _package_write_lock(result_root):
+        _recover_publication_unlocked(result_root)
+        return _record_analysis_partial_unlocked(
+            result_root,
+            run_id=run_id,
+            error=error,
+        )
+
+
+def _record_analysis_partial_unlocked(
+    root: Path | str,
+    *,
+    run_id: str,
+    error: str,
+) -> dict[str, Any]:
+    result_root = Path(root).expanduser().resolve()
+    package = load_result_package(result_root)
+    active = package.get("active_attempt")
+    if not isinstance(active, dict) or active.get("run_id") != run_id:
+        raise ResultPackageError("partial run_id does not match the active attempt")
+    package["active_attempt"] = None
+    package["last_attempt"] = {
+        "run_id": run_id,
+        "status": "partial",
+        "finished_at": _utc_now(),
+        "error": str(error)[:2000],
+    }
+    if package.get("analysis") is None:
+        package["analysis_status"] = "incomplete"
+    _validate_package(package)
+    _atomic_write_json(result_root / RESULT_PACKAGE_FILE, package)
+    return package
 
 
 def record_package_warning(root: Path | str, message: str) -> dict[str, Any]:

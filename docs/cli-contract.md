@@ -33,7 +33,10 @@ write exactly one JSON envelope to stdout, including failures:
 `error.type` one of `input_error` (exit 2 — e.g. `legacy flat output requires explicit
 migration` for a legacy flat output directory), `requested_stage_partial` (exit 2 — a
 requested stage ended degraded/failed, so `result-package-complete` refuses the completion
-commit; the active attempt stays `running` and the last completed generation is untouched),
+commit; the attempt is terminated under the package write lock — `active_attempt` is cleared,
+`last_attempt.status` becomes `partial`, `analysis_status` becomes `incomplete` when no
+completed generation exists, and any previous completed generation (`analysis`/`input`/
+deliverables) is preserved byte-for-byte. A re-run starts a new attempt),
 `result_package_corrupt` (exit 3 — damaged
 marker or interrupted publication journal), `result_package_modified` (exit 3 — only with
 `result-package-status --verify`: a deliverable or completion-evidence hash no longer matches

@@ -57,7 +57,7 @@
       "required": ["run_id", "status", "finished_at"],
       "properties": {
         "run_id": {"type": "string"},
-        "status": {"enum": ["completed", "failed"]},
+        "status": {"enum": ["completed", "failed", "partial"]},
         "finished_at": {"type": "string", "format": "date-time"},
         "error": {"type": "string"}
       },
