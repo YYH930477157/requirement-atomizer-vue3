@@ -16,6 +16,11 @@ import claim_catalog
 import claim_ledger
 import claim_review_actions
 from parsers.pdf_parser import extract_pdf
+from result_package import (
+    initialize_result_package,
+    publish_registered_deliverables,
+    resolve_analysis_root,
+)
 from tests.test_claim_artifacts import _catalog, _publish
 from tests.test_claim_catalog import _block
 
@@ -574,13 +579,57 @@ class DocAnnotationExportTests(unittest.TestCase):
             self.assertIn('class="reader-shell pdf-original"', rendered)
             self.assertIn('id="pdf-frame"', rendered)
             self.assertIn('const PDF_MODE = true;', rendered)
-            self.assertIn('const PDF_HREF = "document_source.pdf";', rendered)
+            self.assertIn('const PDF_HREF = "document_facsimile.pdf";', rendered)
             self.assertIn('"source_page": 2', rendered)
             self.assertIn('"annotation_number": 1', rendered)
             self.assertIn('item.onclick = () => select(r.ai_req_id);', rendered)
             self.assertIn('if (PDF_MODE) showPdfPage(r.source_page);', rendered)
             self.assertIn('"#page=" + pageNumber + "&view=FitH"', rendered)
             self.assertNotIn('class="doc-block', rendered)
+
+    def test_result_package_html_uses_hidden_page_assets_and_published_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "result"
+            source_pdf = Path(tmp) / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.7\noriginal-pdf-bytes\n%%EOF")
+            initialize_result_package(
+                root,
+                input_path=source_pdf,
+                requested_stages=["export-annotation-html"],
+            )
+            out = resolve_analysis_root(root)
+            _seed(out)
+            (out / "manifest.json").write_text(
+                json.dumps({"input": str(source_pdf), "input_format": "pdf"}),
+                encoding="utf-8",
+            )
+            pages = [{
+                "page_number": 1,
+                "file": "page-0001.png",
+                "href": "document_pages/page-0001.png",
+                "width": 595,
+                "height": 842,
+            }]
+
+            with (
+                patch.object(dae, "_resolve_pdf_geometry", return_value={}),
+                patch.object(
+                    dae,
+                    "_ensure_pdf_page_images",
+                    return_value=(pages, [str(out / "document_pages" / "page-0001.png")]),
+                ),
+            ):
+                dae.export_annotation_bundle(out, layout_mode="pdf_original")
+            publish_registered_deliverables(root)
+
+            rendered = (root / dae.ANNOTATION_HTML).read_text(encoding="utf-8")
+            self.assertIn(
+                '.ratomizer/pipeline/document_pages/page-0001.png', rendered
+            )
+            self.assertIn('const PDF_HREF = "document_facsimile.pdf";', rendered)
+            self.assertEqual(
+                (root / "document_facsimile.pdf").read_bytes(), source_pdf.read_bytes()
+            )
 
     def test_pdf_original_layout_falls_back_for_non_pdf_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -595,7 +644,14 @@ class DocAnnotationExportTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            target, summary = dae.export_annotation_bundle(out, layout_mode="pdf_original")
+            with patch.object(
+                dae,
+                "_facsimile_source_pdf",
+                return_value=(None, "unavailable:test-fixture"),
+            ):
+                target, summary = dae.export_annotation_bundle(
+                    out, layout_mode="pdf_original"
+                )
             rendered = target.read_text(encoding="utf-8")
 
             self.assertEqual(summary["layout_mode_requested"], "pdf_original")
@@ -622,8 +678,12 @@ class DocAnnotationExportTests(unittest.TestCase):
             def chat(_system: str, _user: str) -> dict:
                 return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
 
-            with patch("functional_synthesis._resolve_catalog_chat",
-                       return_value=(chat, "llm:test-model")):
+            with patch.object(
+                dae,
+                "_facsimile_source_pdf",
+                return_value=(None, "unavailable:test-fixture"),
+            ), patch("functional_synthesis._resolve_catalog_chat",
+                     return_value=(chat, "llm:test-model")):
                 target, summary = dae.export_annotation_bundle(
                     out, route="openai_compatible")
 

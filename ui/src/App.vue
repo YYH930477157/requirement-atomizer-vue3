@@ -67,6 +67,7 @@
           <div class="app-actions">
             <button class="button" type="button" data-testid="action-open-document" @click="handleOpenDocument"><FolderOpen :size="15" aria-hidden="true" /><span class="button-label">导入文档</span></button>
             <button class="button" type="button" data-testid="action-select-output-dir" @click="handleOpenOutput"><FolderOutput :size="15" aria-hidden="true" /><span class="button-label">选择输出目录</span></button>
+            <button class="button" type="button" data-testid="action-open-existing-output" :disabled="isRunning" @click="handleOpenExistingOutput"><History :size="15" aria-hidden="true" /><span class="button-label">打开已有结果</span></button>
             <span class="action-divider" aria-hidden="true"></span>
             <label class="llm-toggle">
               <input v-model="llmMode" type="checkbox" data-testid="llm-mode-toggle" />
@@ -128,6 +129,7 @@
               <span>run_manifest 台账 · 中断可续跑
                 <em class="path-hint" data-testid="selected-input-path" :title="currentInputPath || undefined">{{ currentInputPath || "尚未选择文档" }}</em>
               </span>
+              <strong class="pchip plain" data-testid="result-package-status">{{ resultPackageStatusLabel }}</strong>
             </div>
             <div class="run-meter" data-testid="run-progress">
               <div class="run-meter-head">
@@ -249,6 +251,8 @@
                   <span class="recent-path">{{ tailPath(entry.outputDir) }}</span>
                   <span class="recent-time">{{ formatRecentTime(entry.openedAt) }}</span>
                   <span v-if="isCurrentOutputSession(entry.outputDir)" class="recent-current">当前会话</span>
+                  <span v-else-if="entry.classification?.kind === 'package_v1'" class="recent-current">{{ entry.classification.analysisStatus === "completed" ? "分析已完成" : entry.classification.analysisStatus === "running" ? "上次运行中断" : "分析未完成" }}</span>
+                  <span v-else-if="entry.classification?.kind === 'legacy'" class="recent-current">旧版结果</span>
                   <span v-else-if="!entry.exists || !entry.isOutput" class="recent-missing">目录已移动或删除</span>
                 </button>
               </li>
@@ -715,6 +719,15 @@ const llmMode = ref(false)
 const apiClient = ref<RequirementApiClient | null>(null)
 const reviewSessionKey = ref("")
 const recentSessions = ref<RequirementAtomizerRecentSession[]>([])
+type ResultPackageStatus = "unknown" | "legacy" | "running" | "incomplete" | "completed"
+const resultPackageStatus = ref<ResultPackageStatus>("unknown")
+const resultPackageStatusLabel = computed(() => ({
+  unknown: "自动分析：尚未运行",
+  legacy: "自动分析：旧版结果",
+  running: "自动分析：运行中",
+  incomplete: "自动分析：未完成",
+  completed: "自动分析：已完成",
+})[resultPackageStatus.value])
 const documentRefreshToken = ref(0)
 let apiSessionLoadGeneration = 0
 let stopApiSessionReady: (() => void) | undefined
@@ -1509,6 +1522,59 @@ async function handleOpenOutput() {
   }
 }
 
+async function handleOpenExistingOutput() {
+  if (!window.ratomizerDesktop?.openOutput) {
+    apiMessage.value = "当前环境不支持打开已有结果"
+    return
+  }
+  try {
+    const session = await window.ratomizerDesktop.openOutput()
+    if (!session) return
+    await loadFromSession(session, { restoreContext: true })
+  } catch (error) {
+    disconnectReviewSession()
+    const reason = error instanceof Error ? error.message : "本地 API 启动失败"
+    apiMessage.value = `无法打开已有结果：${reason}`
+  }
+}
+
+function plannedAutomaticStages(options: { llmReviewLimit?: number }): string[] {
+  const stages = ["atomize"]
+  if (runStages.value.llmReview) stages.push("llm-review")
+  if (options.llmReviewLimit) return stages
+  const useLlm = llmMode.value
+  if (runStages.value.aiExtract) {
+    stages.push("ai-extract")
+    if (useLlm) stages.push("functional-synthesis")
+  }
+  if (runStages.value.assemble) stages.push("assemble")
+  if (runStages.value.analyze && useLlm) {
+    stages.push("requirements-analysis")
+    if (templatePath.value) stages.push("template-write")
+    stages.push("clarification-report")
+  }
+  if (runStages.value.compose) stages.push("compose")
+  if (runStages.value.annotationHtml) stages.push("export-annotation-html")
+  return [...new Set(stages)]
+}
+
+function applyResultPackageState(payload: unknown) {
+  const record = objectValue(payload)
+  const packageState = objectValue(record?.package)
+  const activeAttempt = objectValue(packageState?.active_attempt)
+  if (activeAttempt?.status === "running") {
+    resultPackageStatus.value = "running"
+    return
+  }
+  const status = stringOr(packageState?.analysis_status, "")
+  if (["running", "incomplete", "completed"].includes(status)) {
+    resultPackageStatus.value = status as ResultPackageStatus
+    return
+  }
+  const layout = stringOr(record?.layout, "")
+  if (layout === "legacy" || layout === "legacy_flat") resultPackageStatus.value = "legacy"
+}
+
 async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
   if (progressDemoTimer !== undefined) {
     stopProgressDemo()
@@ -1516,6 +1582,9 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
   }
   if (isRunning.value) return
   let stopProgress: (() => void) | undefined
+  let packageRunId = ""
+  let packageOutDir = ""
+  let requestedPackageStages: string[] = []
   try {
     if (!currentInputPath.value) {
       apiMessage.value = "请先导入文档"
@@ -1529,6 +1598,20 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     const outDir = currentOutputDir.value || defaultOutputDir(currentInputPath.value)
     currentOutputDir.value = outDir
     isRunning.value = true
+    packageOutDir = outDir
+    requestedPackageStages = plannedAutomaticStages(options)
+    if (window.ratomizerDesktop.startResultPackage) {
+      const started = await window.ratomizerDesktop.startResultPackage({
+        outDir,
+        inputPath: currentInputPath.value,
+        stages: requestedPackageStages,
+      })
+      applyResultPackageState(started)
+      const packageState = objectValue(started.package)
+      const activeAttempt = objectValue(packageState?.active_attempt)
+      packageRunId = stringOr(activeAttempt?.run_id, "")
+      if (!packageRunId) throw new Error("结果包启动未返回运行标识")
+    }
     resetRunStageBoard()
     runProgress.value = 8
     runStage.value = "准备运行"
@@ -1689,6 +1772,14 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       }
     }
 
+    if (packageRunId && window.ratomizerDesktop.completeResultPackage) {
+      const completedPackage = await window.ratomizerDesktop.completeResultPackage({
+        outDir: packageOutDir,
+        runId: packageRunId,
+        completedStages: requestedPackageStages,
+      })
+      applyResultPackageState(completedPackage)
+    }
     runProgress.value = 100
     runStage.value = "运行完成"
     if (options.llmReviewLimit) {
@@ -1711,6 +1802,18 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : "抽取与审查失败"
+    if (packageRunId && packageOutDir && window.ratomizerDesktop?.failResultPackage) {
+      try {
+        const failedPackage = await window.ratomizerDesktop.failResultPackage({
+          outDir: packageOutDir,
+          runId: packageRunId,
+          error: detail,
+        })
+        applyResultPackageState(failedPackage)
+      } catch {
+        // Preserve the original failure; a running marker remains fail-closed.
+      }
+    }
     failRunningStages(detail)
     runStage.value = "运行失败"
     runProgressDetail.value = "请查看错误信息"
@@ -1906,6 +2009,12 @@ async function loadFromSession(
       ? insights.suggestions.map((s) => String(s)) : []
   } catch {
     if (generation === apiSessionLoadGeneration) reviewInsights.value = []
+  }
+  try {
+    const packageState = await client.loadResultPackage()
+    if (generation === apiSessionLoadGeneration) applyResultPackageState(packageState)
+  } catch {
+    // Older API builds have no package endpoint; keep the session usable.
   }
 }
 

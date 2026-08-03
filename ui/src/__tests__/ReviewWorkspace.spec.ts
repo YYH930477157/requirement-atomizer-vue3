@@ -375,7 +375,7 @@ describe("review workspace shell", () => {
       expect(wrapper.find('[data-testid="detail-status"]').text()).toContain("已接受")
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(3)   // requirements + review-insights + action
+    expect(fetchMock).toHaveBeenCalledTimes(4)   // requirements + review-insights + result-package + action
   })
 
   it("refreshes A-track evidence after a 409 and retains the review draft", async () => {
@@ -663,6 +663,51 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="detail-title"]').text()).toContain("未选择需求")
   })
 
+  it("opens a user-selected existing output without rerunning analysis", async () => {
+    const openOutput = vi.fn().mockResolvedValue({
+      baseUrl: "http://127.0.0.1:8770",
+      token: "existing-token",
+      outputDir: "E:\\out\\existing",
+    })
+    const runPipeline = vi.fn()
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue(null),
+        getRecentSessions: vi.fn().mockResolvedValue([]),
+        openOutput,
+        runPipeline,
+        getOutputSummary: vi.fn().mockResolvedValue({
+          kind: "summary", out_dir: "E:\\out\\existing", summary: { run_manifest: {} },
+        }),
+      },
+    })
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith("/requirements?limit=5000")) {
+        return { ok: true, json: async () => [{
+          stable_req_id: "SREQ-EXISTING", requirement_type: "functional",
+          object_name: "Existing meter", description: "Existing output requirement",
+          review_state: { status: "candidate" },
+        }] } as Response
+      }
+      if (url.endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
+      if (url.endsWith("/manifest")) {
+        return { ok: true, json: async () => ({ input: "C:\\input\\existing.docx" }) } as Response
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    const wrapper = mount(App)
+    await wrapper.find('[data-testid="action-open-existing-output"]').trigger("click")
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-EXISTING"]').exists()).toBe(true))
+
+    expect(openOutput).toHaveBeenCalledOnce()
+    expect(runPipeline).not.toHaveBeenCalled()
+  })
+
   it("tries the empty selected directory session without reusing the old review session", async () => {
     const startApiSession = vi.fn().mockResolvedValue(null)
     Object.defineProperty(window, "ratomizerDesktop", {
@@ -792,6 +837,17 @@ describe("review workspace shell", () => {
     // 开启 AI 抽取阶段：点一次「运行」应先跑 runPipeline 再自动接 aiExtract
     localStorage.setItem("ratomizer.runStages.v2",
       JSON.stringify({ aiExtract: true, assemble: false, analyze: false, compose: false, annotationHtml: false }))
+    const startResultPackage = vi.fn().mockResolvedValue({
+      kind: "result_package_start",
+      package: {
+        analysis_status: "completed",
+        active_attempt: { run_id: "RUN-ui-lifecycle", status: "running" },
+      },
+    })
+    const completeResultPackage = vi.fn().mockResolvedValue({
+      kind: "result_package_complete",
+      package: { analysis_status: "completed", active_attempt: null },
+    })
     Object.defineProperty(window, "ratomizerDesktop", {
       configurable: true,
       value: {
@@ -805,6 +861,9 @@ describe("review workspace shell", () => {
           token: "local-token",
           outputDir: "E:\\out\\abnt",
         }),
+        startResultPackage,
+        completeResultPackage,
+        failResultPackage: vi.fn(),
         runPipeline: vi.fn().mockResolvedValue({
           kind: "pipeline",
           out_dir: "E:\\out\\abnt",
@@ -864,6 +923,17 @@ describe("review workspace shell", () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="run-progress"]').text()).toContain("100%")
     })
+    expect(startResultPackage).toHaveBeenCalledWith({
+      outDir: "E:\\out\\abnt",
+      inputPath: "C:\\input\\Appendix 9.docx",
+      stages: ["atomize", "llm-review", "ai-extract"],
+    })
+    expect(completeResultPackage).toHaveBeenCalledWith({
+      outDir: "E:\\out\\abnt",
+      runId: "RUN-ui-lifecycle",
+      completedStages: ["atomize", "llm-review", "ai-extract"],
+    })
+    expect(wrapper.find('[data-testid="result-package-status"]').text()).toContain("已完成")
     expect(wrapper.find('[data-testid="api-message"]').text()).toContain("AI 抽取")
     await openReview(wrapper)
     await vi.waitFor(() => {

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from io_utils import read_jsonl
+from result_package import governed_artifact_path
 from text_normalize import formula_safe, normalize_numeric
 
 
@@ -221,7 +222,9 @@ def build_object_model(out_dir: Path) -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     requirements = read_jsonl(out_dir / "atomic_requirements.jsonl")
     index = build_source_index(read_jsonl(out_dir / "table_items.jsonl"))
-    status_by_id = review_status_by_id(read_jsonl(out_dir / "review_states.jsonl"))
+    status_by_id = review_status_by_id(read_jsonl(
+        governed_artifact_path(out_dir, "review_states.jsonl", category="state")
+    ))
 
     objects: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     object_keys_by_name: dict[str, list[tuple[str, str, str, str]]] = defaultdict(list)

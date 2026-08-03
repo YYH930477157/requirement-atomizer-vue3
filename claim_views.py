@@ -7,6 +7,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+from result_package import governed_artifact_path
+
 from claim_artifacts import (
     CLAIM_CATALOG,
     CLAIM_CATALOG_META,
@@ -114,7 +116,7 @@ def _unavailable(view: str) -> dict[str, Any]:
 
 
 def _has_no_generation(root: Path) -> bool:
-    return not any((root / name).exists() for name in _BASE_FILES)
+    return not any(governed_artifact_path(root, name).exists() for name in _BASE_FILES)
 
 
 # Read-only snapshot cache. The six GETs share one committed snapshot per
@@ -166,7 +168,7 @@ def _context_revision_key(root: Path) -> tuple:
 
     parts: list[tuple] = []
     for name in _CONTEXT_STAT_FILES:
-        path = root / name
+        path = governed_artifact_path(root, name)
         try:
             stat = path.stat() if path.is_file() else None
         except OSError:
@@ -185,7 +187,7 @@ def _context_revision_key(root: Path) -> tuple:
     # Hash their bytes so deletion or same-size replacement cannot leave a
     # previously validated view resident in the snapshot cache.
     for name in _CONTEXT_CONTENT_DIRECTORIES:
-        directory = root / name
+        directory = governed_artifact_path(root, name)
         entries: list[tuple] | None = []
         try:
             if directory.is_dir():
@@ -204,7 +206,7 @@ def _context_revision_key(root: Path) -> tuple:
     # closes same-size/timestamp replacement holes without hashing every large
     # JSONL payload on every GET.
     for name in (CLAIM_GENERATION_META, CLAIM_EFFECTIVE_META):
-        path = root / name
+        path = governed_artifact_path(root, name)
         try:
             digest = (
                 hashlib.sha256(path.read_bytes()).hexdigest()
@@ -220,7 +222,7 @@ def _context_revision_key(root: Path) -> tuple:
         CLAIM_VERIFIER_ATTEMPT_CHECKPOINT,
         CLAIM_BUDGET_CHECKPOINT_OUTBOX,
     ):
-        parts.append((name, (root / name).is_file()))
+        parts.append((name, governed_artifact_path(root, name).is_file()))
     return tuple(parts)
 
 

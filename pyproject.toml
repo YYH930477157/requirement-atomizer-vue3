@@ -107,6 +107,7 @@ py-modules = [
   "review_actions",
   "review_state",
   "review_tools",
+  "result_package",
   "requirements_analysis",
   "review_insights",
   "semantic_quality",

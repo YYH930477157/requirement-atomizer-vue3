@@ -32,6 +32,15 @@ def _build_wheel(target: Path) -> Path:
 
 
 class WheelPackagingSmokeTests(unittest.TestCase):
+    def test_electron_backend_build_requires_office_com_runtime(self) -> None:
+        script = (ROOT / "packaging" / "build-electron-backend.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("import pythoncom, win32com.client", script)
+        self.assertIn("Office COM packaging dependencies are missing", script)
+        self.assertIn("Resolve-Path -LiteralPath $Python", script)
+
     def test_wheel_contents_and_installed_imports(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             dist = Path(td) / "dist"
@@ -43,7 +52,7 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "agent_eval.py", "agent_loop.py", "agent_state.py", "agent_tools.py",
                 "agent_compare.py", "agent_decider.py", "decide_trace.py",
                 "functional_catalog.py", "functional_synthesis.py", "review_tools.py",
-                "desktop_tasks.py", "semantic_quality.py",
+                "desktop_tasks.py", "result_package.py", "semantic_quality.py",
                 "claim_artifacts.py", "claim_acceptance.py", "claim_catalog.py", "claim_focus.py",
                 "claim_queue_execution.py",
                 "claim_held_out.py", "claim_ledger.py", "claim_reextract_attempts.py",
@@ -72,6 +81,7 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "schemas/claim_structural_override.schema.json",
                 "schemas/claim_structural_candidate_decision.schema.json",
                 "schemas/claim_structural_candidate_decision_v2.schema.json",
+                "schemas/result_package.schema.json",
                 "golden_sets/claim_ledger_v1/manifest.json",
                 "golden_sets/claim_ledger_v1/history/programmable-equivalent-001-v2-rejection.json",
                 "llm_agents/review_pipeline.yaml", "domain_packs/dlms_cosem/pack.yaml",
@@ -95,7 +105,7 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "import claim_artifacts, claim_acceptance, claim_catalog, claim_focus, claim_held_out;"
                 "import claim_queue_execution;"
                 "import claim_ledger, claim_reextract_attempts, claim_structural_confirmation, claim_structural_operations, claim_structural_overrides, claim_review_packet, normative_framing, source_spans;"
-                "import claim_review_import, claim_review_actions, claim_views, process_file_lock;"
+                "import claim_review_import, claim_review_actions, claim_views, process_file_lock, result_package;"
                 "import json;from pathlib import Path;from jsonschema import Draft202012Validator;"
                 "schema_root=Path(claim_artifacts.__file__).parent/'schemas';"
                 "phase1_schemas=['claim_effective_health.schema.json',"
@@ -109,7 +119,8 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "'claim_structural_operation.schema.json',"
                 "'claim_structural_override.schema.json',"
                 "'claim_structural_candidate_decision.schema.json',"
-                "'claim_structural_candidate_decision_v2.schema.json'];"
+                "'claim_structural_candidate_decision_v2.schema.json',"
+                "'result_package.schema.json'];"
                 "[Draft202012Validator.check_schema(json.loads((schema_root/name).read_text(encoding='utf-8')))"
                 " for name in phase1_schemas];"
                 "claim_held_out.load_golden_held_out();"

@@ -15,6 +15,7 @@ from claim_artifacts import (
     _atomic_write_bytes,
     _validate_schema,
     canonical_json_value_bytes,
+    claim_artifact_path,
     claim_publication_lock,
     digest_hex,
     hash_json,
@@ -248,7 +249,7 @@ def read_structural_overrides(
     out_dir: Path | str,
 ) -> StructuralOverrideSnapshot:
     root = Path(out_dir).expanduser().resolve()
-    path = root / CLAIM_STRUCTURAL_OVERRIDES
+    path = claim_artifact_path(root, CLAIM_STRUCTURAL_OVERRIDES)
     try:
         raw = path.read_bytes() if path.is_file() else b""
     except OSError as exc:
@@ -421,7 +422,7 @@ def read_structural_candidate_decisions(
     out_dir: Path | str,
 ) -> StructuralCandidateDecisionSnapshot:
     root = Path(out_dir).expanduser().resolve()
-    path = root / CLAIM_STRUCTURAL_CANDIDATE_DECISIONS
+    path = claim_artifact_path(root, CLAIM_STRUCTURAL_CANDIDATE_DECISIONS)
     try:
         raw = path.read_bytes() if path.is_file() else b""
     except OSError as exc:
@@ -617,7 +618,7 @@ def append_structural_override(
     root.mkdir(parents=True, exist_ok=True)
     with _process_lock(root):
         with process_file_lock(
-            root / _LOCK_NAME,
+            claim_artifact_path(root, _LOCK_NAME),
             timeout_s=_LOCK_TIMEOUT_S,
             label="claim structural override lock",
         ):
@@ -668,7 +669,7 @@ def append_structural_override(
                 label="claim structural override",
             )
             payload = snapshot.prefix_bytes + canonical_json_value_bytes(row) + b"\n"
-            _atomic_write_bytes(root / CLAIM_STRUCTURAL_OVERRIDES, payload)
+            _atomic_write_bytes(claim_artifact_path(root, CLAIM_STRUCTURAL_OVERRIDES), payload)
             committed = read_structural_overrides(root)
             return {
                 "override": dict(row),
@@ -882,7 +883,7 @@ def confirm_structural_exclusion(
         )
         with _process_lock(root):
             with process_file_lock(
-                root / _CANDIDATE_DECISION_LOCK_NAME,
+                claim_artifact_path(root, _CANDIDATE_DECISION_LOCK_NAME),
                 timeout_s=_LOCK_TIMEOUT_S,
                 label="claim structural candidate decision lock",
             ):
@@ -958,7 +959,7 @@ def confirm_structural_exclusion(
                     + b"\n"
                 )
                 _atomic_write_bytes(
-                    root / CLAIM_STRUCTURAL_CANDIDATE_DECISIONS,
+                    claim_artifact_path(root, CLAIM_STRUCTURAL_CANDIDATE_DECISIONS),
                     payload,
                 )
                 committed = read_structural_candidate_decisions(root)
@@ -1290,7 +1291,7 @@ def _effective_binding(
         "claim_effective_revision": str(
             effective_row.get("claim_effective_revision") or ""
         ),
-        "effective_meta_sha256": file_sha256(root / CLAIM_EFFECTIVE_META),
+        "effective_meta_sha256": file_sha256(claim_artifact_path(root, CLAIM_EFFECTIVE_META)),
     }
 
 
@@ -1697,7 +1698,7 @@ def _load_decision_sidecar(
             "structural verifier checkpoint has an invalid content address"
         )
     path = (root / Path(relative_path)).resolve()
-    decision_root = (root / CLAIM_STRUCTURAL_DECISIONS_DIR).resolve()
+    decision_root = (claim_artifact_path(root, CLAIM_STRUCTURAL_DECISIONS_DIR)).resolve()
     if path.parent != decision_root or not path.is_file():
         raise ClaimStructuralOverrideError(
             "structural verifier decision sidecar is unavailable"

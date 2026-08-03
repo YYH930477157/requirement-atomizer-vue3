@@ -106,7 +106,7 @@
 
 | 目录 | 典型内容 |
 |---|---|
-| `.ratomizer/pipeline/` | `blocks.jsonl`、`chunks.jsonl`、表格单元格、AI 需求、质量报告、分析 JSON、内部 Markdown |
+| `.ratomizer/pipeline/` | `blocks.jsonl`、`chunks.jsonl`、表格单元格、AI 需求、质量报告、分析 JSON、内部 Markdown、`document_pages/` 批注页图 |
 | `.ratomizer/state/` | `review_states`、`ai_review_states`、Claim 账本、队列、裁决事件、结构覆写、检查点及相关锁 |
 | `.ratomizer/cache/` | 抽取缓存、审查缓存、规格富化缓存及其他可重建缓存 |
 | `.ratomizer/logs/` | `run.log`、LLM trace、诊断日志 |
@@ -181,8 +181,8 @@ load_result_package(root, *, verify=False) -> ResultPackage
     "completed_stages": ["atomize", "ai-extract", "requirements-analysis"],
     "completion_evidence": [
       {
-        "artifact_id": "stage_manifest",
-        "path": ".ratomizer/stages/run_manifest.json",
+        "artifact_id": "run_manifest_snapshot",
+        "path": ".ratomizer/stages/completions/RUN-.../run_manifest.json",
         "sha256": "sha256:..."
       }
     ]
@@ -213,6 +213,8 @@ load_result_package(root, *, verify=False) -> ResultPackage
 - `deliverables` 只登记已经原子发布成功的文件。
 - `analysis_status` 仅表示自动分析状态，不表示人工审核状态。
 - `active_attempt` 只描述当前更新尝试；目录已有已提交完成结果时，新尝试不会提前抹掉该结果。
+- 新尝试的输入身份写入 `active_attempt.input`；顶层 `input` 始终指向最后一次已提交完成结果，只有新尝试成功提交后才切换。
+- 完成证据必须按 `run_id` 冻结到 `.ratomizer/stages/completions/<run_id>/run_manifest.json`，不能引用会被后续运行覆盖的活动 manifest。
 
 ## 8. 完成状态机
 
@@ -220,8 +222,8 @@ load_result_package(root, *, verify=False) -> ResultPackage
 
 1. 桌面任务在任何分析写入前初始化结果包，状态为 `running`。
 2. 内部产物写入 `.ratomizer/`。
-3. 最终交付物逐项原子发布到根目录。
-4. 自动分析任务成功且完成证据可校验后，原子提交 `completed`。
+3. 最终交付物先完整暂存并备份旧版，随后在发布事务内替换根目录文件。
+4. 自动分析任务成功且完成证据可校验后，原子提交 `completed`；marker 提交失败时整批回滚交付物。
 5. 捕获到失败或取消时，记录 `incomplete` 和失败摘要。
 6. 进程崩溃导致标志停在 `running` 时，下次打开显示“上次运行中断”，不得视为已完成。
 
@@ -284,16 +286,16 @@ load_result_package(root, *, verify=False) -> ResultPackage
 发布流程：
 
 1. 生产阶段先在内部目录生成完整文件。
-2. 在根目录创建同卷临时文件。
-3. 校验文件可读、大小和必要 schema。
-4. 使用 `os.replace` 原子发布，按既有 Windows `PermissionError` 重试纪律处理。
-5. 计算 SHA-256。
-6. 最后更新 `result-package.json` 的交付物清单。
+2. 在 `.ratomizer/stages/result-package-publications/<transaction_id>/` 同卷暂存全部新版交付物，并备份即将替换的旧版根文件。
+3. 校验暂存文件可读，计算大小和 SHA-256，并写入 `.result-package-publication.json` 事务日志。
+4. 使用 `os.replace` 把暂存文件发布到根目录，按既有 Windows `PermissionError` 重试纪律处理。
+5. 最后原子更新 `result-package.json` 的交付物清单和完成记录。
+6. marker 提交成功后删除事务日志和备份；若清理被中断，下一次写操作按 target marker 哈希幂等收尾。
 
 若发布失败：
 
-- 不登记该交付物。
-- 保留上一版已提交交付物。
+- marker 尚未提交时，按事务日志恢复全部上一版根交付物，不允许留下半新半旧目录。
+- 不登记本次交付物。
 - 在内部日志和标志警告中记录失败。
 
 ## 12. 桌面端识别与交互
@@ -349,8 +351,10 @@ load_result_package(root, *, verify=False) -> ResultPackage
 ## 15. 并发、锁与崩溃恢复
 
 - `result-package.json` 使用跨进程锁、临时文件和 `os.replace`。
+- 多交付物发布使用同一事务日志、同卷暂存和旧版备份；普通异常立即回滚，进程硬中断由下一次写操作在同一锁内恢复。
 - Windows 读者阻塞替换时使用既有短重试策略。
 - GET 和只读打开操作不得恢复或提交未完成写入。
+- 只读识别发现未完成发布事务时必须 fail-closed，不能把部分发布目录显示成正常完成结果。
 - 恢复只能由桌面任务、启动维护或显式维护 API 在写锁下执行。
 - 审核状态锁移动到 `.ratomizer/state/` 后仍保持原有锁序。
 - 完成标志更新必须在最终交付物发布之后，避免标志先于文件出现。
@@ -365,6 +369,8 @@ load_result_package(root, *, verify=False) -> ResultPackage
 - 崩溃留下的 `running` 标志被识别为中断。
 - 人工裁决不改变自动分析完成状态。
 - 重新导出交付物只更新交付物哈希。
+- 多交付物发布中途失败、marker 提交失败均恢复旧文件与旧 marker。
+- 硬中断留下事务日志时，下一次写操作恢复旧交付物后再开始新尝试。
 - 损坏标志 fail-closed，不降级为旧版。
 - 路径穿越和绝对路径被拒绝。
 - 未登记的工具产物不得写入根目录。

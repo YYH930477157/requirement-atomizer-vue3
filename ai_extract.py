@@ -34,6 +34,8 @@ from collections import OrderedDict
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
+
+from result_package import governed_artifact_path
 from threading import Lock
 from typing import Any, Callable
 
@@ -4037,13 +4039,17 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     claim_catalog_build: dict[str, Any] | None = None
     claim_shadow_error = ""
     try:
-        from claim_artifacts import CLAIM_GENERATION_META, publish_catalog_probe
+        from claim_artifacts import (
+            CLAIM_GENERATION_META,
+            claim_artifact_path,
+            publish_catalog_probe,
+        )
         from claim_catalog import build_catalog_from_directory
 
         claim_catalog_build = build_catalog_from_directory(out_dir, scope=catalog_scope)
         if (
             previous_claim_snapshot is None
-            and not (out_dir / CLAIM_GENERATION_META).is_file()
+            and not (claim_artifact_path(out_dir, CLAIM_GENERATION_META)).is_file()
         ):
             publish_catalog_probe(out_dir, claim_catalog_build)
     except Exception as exc:  # Shadow probe must not change extraction success semantics.
@@ -4252,7 +4258,9 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
             LOGGER.warning("裁决样本库加载失败（抽取零注入）：%s", exc)
             bank_exemplars = ""
         requirements = extract_all(sections, chat, model=config.model,
-                                   cache_path=out_dir / AI_EXTRACT_CACHE,
+                                   cache_path=governed_artifact_path(
+                                       out_dir, AI_EXTRACT_CACHE, category="cache"
+                                   ),
                                    concurrency=resolved_concurrency,
                                    progress_callback=progress_callback,
                                    stats=extract_stats,

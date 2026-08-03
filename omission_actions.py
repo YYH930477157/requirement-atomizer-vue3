@@ -18,6 +18,7 @@ from threading import RLock
 from typing import Any, Iterator
 
 from io_utils import read_jsonl, read_jsonl_recover_torn_tail
+from result_package import governed_artifact_path
 from table_structure import is_positive_marker
 
 
@@ -159,7 +160,7 @@ def _file_lock(
     root = Path(out_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     with _process_lock_for(root, name):
-        lock_path = root / name
+        lock_path = governed_artifact_path(root, name, category="state")
         deadline = time.monotonic() + timeout_s
         fd: int | None = None
         while fd is None:
@@ -190,7 +191,7 @@ def extraction_operation_lock(out_dir: Path, *, operation: str) -> Iterator[None
     process_lock = _process_lock_for(root, _EXTRACTION_OPERATION_LOCK)
     if not process_lock.acquire(blocking=False):
         raise OmissionConflictError("another full or targeted AI extraction is running")
-    lock_path = root / _EXTRACTION_OPERATION_LOCK
+    lock_path = governed_artifact_path(root, _EXTRACTION_OPERATION_LOCK, category="state")
     fd: int | None = None
     try:
         try:
@@ -268,7 +269,9 @@ def read_omission_states(out_dir: Path) -> dict[str, dict[str, Any]]:
     root = Path(out_dir).expanduser().resolve()
     latest: dict[str, dict[str, Any]] = {}
     with _file_lock(root, "omission_states.lock"):
-        for row in _read_append_log(root / OMISSION_STATES):
+        for row in _read_append_log(governed_artifact_path(
+            root, OMISSION_STATES, category="state"
+        )):
             omission_id = str(row.get("omission_id") or "")
             if omission_id:
                 latest[omission_id] = row
@@ -320,7 +323,7 @@ def _read_jsonl_bytes_readonly(
 def read_current_omission_states_readonly(out_dir: Path) -> dict[str, dict[str, Any]]:
     """Read compatibility omissions without a lock, recovery, or sidecar writes."""
     root = Path(out_dir).expanduser().resolve()
-    states_path = root / OMISSION_STATES
+    states_path = governed_artifact_path(root, OMISSION_STATES, category="state")
     blocks_path = root / "blocks.jsonl"
     states_before = states_path.read_bytes() if states_path.is_file() else None
     blocks_before = blocks_path.read_bytes() if blocks_path.is_file() else None
@@ -445,14 +448,18 @@ def apply_omission_action(
             "actor": actor,
             "recorded_at": _utc_now(),
         }
-        _append_fsynced(root / OMISSION_STATES, state)
+        _append_fsynced(governed_artifact_path(
+            root, OMISSION_STATES, category="state"
+        ), state)
     return state
 
 
 def read_supplement_patches(out_dir: Path) -> list[dict[str, Any]]:
     root = Path(out_dir).expanduser().resolve()
     with _file_lock(root, "ai_supplements.lock"):
-        return _read_append_log(root / AI_SUPPLEMENTS)
+        return _read_append_log(governed_artifact_path(
+            root, AI_SUPPLEMENTS, category="state"
+        ))
 
 
 def supplement_strategy_fingerprint(model: str) -> str:
@@ -711,11 +718,15 @@ def _validated_focus_lines(section: dict[str, Any], requested: list[str], fallba
 def _append_patch_once(out_dir: Path, patch: dict[str, Any]) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     with _file_lock(root, "ai_supplements.lock"):
-        existing = _read_append_log(root / AI_SUPPLEMENTS)
+        existing = _read_append_log(governed_artifact_path(
+            root, AI_SUPPLEMENTS, category="state"
+        ))
         for row in existing:
             if row.get("supplement_id") == patch.get("supplement_id"):
                 return row
-        _append_fsynced(root / AI_SUPPLEMENTS, patch)
+        _append_fsynced(governed_artifact_path(
+            root, AI_SUPPLEMENTS, category="state"
+        ), patch)
     return patch
 
 

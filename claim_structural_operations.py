@@ -15,6 +15,7 @@ from claim_artifacts import (
     _atomic_write_bytes,
     _validate_schema,
     canonical_json_value_bytes,
+    claim_artifact_path,
     digest_hex,
     hash_json,
     sha256_bytes,
@@ -116,7 +117,7 @@ def structural_execution_lease(
     root.mkdir(parents=True, exist_ok=True)
     with _execution_process_lock(root):
         with process_file_lock(
-            root / _EXECUTION_LOCK_NAME,
+            claim_artifact_path(root, _EXECUTION_LOCK_NAME),
             timeout_s=timeout_s,
             label="claim structural operation execution lease",
         ):
@@ -546,7 +547,7 @@ def _scan_bytes(raw: bytes) -> StructuralOperationSnapshot:
 
 def read_operation_log(out_dir: Path | str) -> StructuralOperationSnapshot:
     root = Path(out_dir).expanduser().resolve()
-    path = root / CLAIM_STRUCTURAL_OPERATIONS
+    path = claim_artifact_path(root, CLAIM_STRUCTURAL_OPERATIONS)
     if not path.is_file():
         return StructuralOperationSnapshot([], _EMPTY_SHA256, 0)
     return _scan_bytes(path.read_bytes())
@@ -564,7 +565,7 @@ def _draft_matches_event(draft: dict[str, Any], event: dict[str, Any]) -> bool:
 
 
 def _append_unlocked(root: Path, drafts: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    path = root / CLAIM_STRUCTURAL_OPERATIONS
+    path = claim_artifact_path(root, CLAIM_STRUCTURAL_OPERATIONS)
     raw = path.read_bytes() if path.is_file() else b""
     snapshot = _scan_bytes(raw)
     rows = list(snapshot.rows)
@@ -624,7 +625,7 @@ def append_operation_events(
     root.mkdir(parents=True, exist_ok=True)
     with _process_lock(root):
         with process_file_lock(
-            root / _LOCK_NAME,
+            claim_artifact_path(root, _LOCK_NAME),
             timeout_s=_LOCK_TIMEOUT_S,
             label="claim structural operation log",
         ):
@@ -654,7 +655,7 @@ def get_or_create_operation(
     )
     with _process_lock(root):
         with process_file_lock(
-            root / _LOCK_NAME,
+            claim_artifact_path(root, _LOCK_NAME),
             timeout_s=_LOCK_TIMEOUT_S,
             label="claim structural operation log",
         ):

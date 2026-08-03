@@ -19,6 +19,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Iterable
 
+from result_package import governed_artifact_path
+
 
 CLAIM_CATALOG = "claim_catalog.jsonl"
 CLAIM_CATALOG_META = "claim_catalog.meta.json"
@@ -106,6 +108,14 @@ class ClaimAttemptLogTornTail(ClaimArtifactError):
     whose hash/chain/schema is forged is a different failure: ``_validate_attempt_rows``
     rejects it immediately, never retried.
     """
+
+
+def claim_artifact_path(root: Path | str, filename: str) -> Path:
+    return governed_artifact_path(root, filename, category="state")
+
+
+def _claim_state_root(root: Path | str) -> Path:
+    return claim_artifact_path(root, ".claim-state-anchor").parent
 
 
 def _publication_process_lock(root: Path) -> RLock:
@@ -310,7 +320,7 @@ def claim_publication_lock(out_dir: Path | str):
                 active["depth"] = int(active["depth"]) - 1
             return
 
-        lock_path = root / _PUBLICATION_LOCK_NAME
+        lock_path = claim_artifact_path(root, _PUBLICATION_LOCK_NAME)
         deadline = time.monotonic() + _PUBLICATION_LOCK_TIMEOUT_S
         handle = _open_publication_lock_file(lock_path)
         nonce = uuid.uuid4().hex
@@ -591,7 +601,7 @@ def _restore_claim_snapshot(
     ]
     for name in ordered_names:
         payload = snapshot[name]
-        path = root / name
+        path = claim_artifact_path(root, name)
         if payload is None:
             _unlink_with_retry(path)
         else:
@@ -599,11 +609,11 @@ def _restore_claim_snapshot(
 
 
 def _publication_backup_dir(root: Path, transaction_id: str) -> Path:
-    return root / f".claim-publication-backup-{transaction_id}"
+    return _claim_state_root(root) / f".claim-publication-backup-{transaction_id}"
 
 
 def _effective_publication_backup_dir(root: Path, transaction_id: str) -> Path:
-    return root / f".claim-effective-publication-backup-{transaction_id}"
+    return _claim_state_root(root) / f".claim-effective-publication-backup-{transaction_id}"
 
 
 def _cleanup_publication_backup(
@@ -625,7 +635,7 @@ def _cleanup_publication_backup(
 
 def _cleanup_orphan_publication_backups_unlocked(root: Path) -> None:
     prefix = ".claim-publication-backup-"
-    for backup_dir in root.glob(f"{prefix}*"):
+    for backup_dir in _claim_state_root(root).glob(f"{prefix}*"):
         transaction_id = backup_dir.name[len(prefix):]
         if (
             not backup_dir.is_dir()
@@ -656,7 +666,7 @@ def _cleanup_orphan_publication_backups_unlocked(root: Path) -> None:
 
 def _cleanup_orphan_effective_backups_unlocked(root: Path) -> None:
     prefix = ".claim-effective-publication-backup-"
-    for backup_dir in root.glob(f"{prefix}*"):
+    for backup_dir in _claim_state_root(root).glob(f"{prefix}*"):
         transaction_id = backup_dir.name[len(prefix):]
         if (
             not backup_dir.is_dir()
@@ -783,7 +793,7 @@ def _validate_effective_publication_journal(
         label="effective publication journal",
     )
     _require_canonical_json_value(
-        root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
+        claim_artifact_path(root, CLAIM_EFFECTIVE_PUBLICATION_JOURNAL),
         journal,
         label="effective publication journal",
     )
@@ -878,7 +888,7 @@ def _restore_effective_snapshot(
 ) -> None:
     for name in (CLAIM_EFFECTIVE_LEDGER, CLAIM_QUEUE_PROPOSALS, CLAIM_EFFECTIVE_META):
         payload = snapshot[name]
-        path = root / name
+        path = claim_artifact_path(root, name)
         if payload is None:
             _unlink_with_retry(path)
         else:
@@ -891,7 +901,7 @@ def _verify_restored_effective_snapshot(
 ) -> None:
     for name in (CLAIM_EFFECTIVE_LEDGER, CLAIM_QUEUE_PROPOSALS, CLAIM_EFFECTIVE_META):
         expected = snapshot[name]
-        path = root / name
+        path = claim_artifact_path(root, name)
         if expected is None:
             if path.exists():
                 raise ClaimArtifactError(f"effective recovery did not remove {name}")
@@ -1032,7 +1042,7 @@ def _write_verifier_attempt_checkpoint_unlocked(
 ) -> None:
     payload = _checkpoint_without_hash(checkpoint)
     payload["checkpoint_sha256"] = _sha256_payload(payload)
-    atomic_write_json(root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT, payload)
+    atomic_write_json(claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPT_CHECKPOINT), payload)
 
 
 def _begin_verifier_attempt_checkpoint_unlocked(
@@ -1041,7 +1051,7 @@ def _begin_verifier_attempt_checkpoint_unlocked(
     run_id: str,
     attempt_recovery: dict[str, Any],
 ) -> dict[str, Any]:
-    path = root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT
+    path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPT_CHECKPOINT)
     if path.exists():
         raise ClaimArtifactError("unfinished verifier attempt checkpoint was not recovered")
     nonce = uuid.uuid4().hex
@@ -1065,7 +1075,7 @@ def _begin_verifier_attempt_checkpoint_unlocked(
 
 def _read_verifier_attempt_checkpoint_unlocked(root: Path) -> dict[str, Any]:
     checkpoint = _read_json(
-        root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT,
+        claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPT_CHECKPOINT),
         label="verifier attempt checkpoint",
     )
     return _validate_verifier_attempt_checkpoint(checkpoint)
@@ -1303,7 +1313,7 @@ def _write_budget_checkpoint_outbox_unlocked(
     budget_snapshot: dict[str, Any],
     queue_event: dict[str, Any],
 ) -> None:
-    path = root / CLAIM_BUDGET_CHECKPOINT_OUTBOX
+    path = claim_artifact_path(root, CLAIM_BUDGET_CHECKPOINT_OUTBOX)
     if path.exists():
         raise ClaimArtifactError("unfinished budget checkpoint outbox was not recovered")
     outbox = {
@@ -1322,7 +1332,7 @@ def _recover_budget_checkpoint_outbox_unlocked(
     root: Path,
 ) -> dict[str, Any] | None:
     """Idempotently project one budget transition to both durable sinks."""
-    path = root / CLAIM_BUDGET_CHECKPOINT_OUTBOX
+    path = claim_artifact_path(root, CLAIM_BUDGET_CHECKPOINT_OUTBOX)
     if not path.is_file():
         return None
     outbox = _validate_budget_checkpoint_outbox(
@@ -1380,7 +1390,7 @@ def _discard_matching_verifier_checkpoint_unlocked(
     root: Path,
     recovery: dict[str, Any],
 ) -> None:
-    path = root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT
+    path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPT_CHECKPOINT)
     if not path.is_file():
         return
     checkpoint = _read_verifier_attempt_checkpoint_unlocked(root)
@@ -1397,7 +1407,7 @@ def _finalize_verifier_attempt_checkpoint_unlocked(
     nonce: str | None,
     error: str,
 ) -> dict[str, Any] | None:
-    path = root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT
+    path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPT_CHECKPOINT)
     if not path.is_file():
         return None
     checkpoint = _read_verifier_attempt_checkpoint_unlocked(root)
@@ -1440,7 +1450,7 @@ def _recover_abandoned_verifier_checkpoint_unlocked(
     *,
     allow_live_nonce: str | None = None,
 ) -> dict[str, Any] | None:
-    path = root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT
+    path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPT_CHECKPOINT)
     if not path.is_file():
         return None
     checkpoint = _read_verifier_attempt_checkpoint_unlocked(root)
@@ -1462,7 +1472,7 @@ def _begin_claim_publication_unlocked(
     run_id: str,
     attempt_recovery: dict[str, Any],
 ) -> dict[str, Any]:
-    journal_path = root / CLAIM_PUBLICATION_JOURNAL
+    journal_path = claim_artifact_path(root, CLAIM_PUBLICATION_JOURNAL)
     if journal_path.exists():
         raise ClaimArtifactError("unfinished claim publication was not recovered")
     transaction_id = uuid.uuid4().hex
@@ -1471,7 +1481,7 @@ def _begin_claim_publication_unlocked(
     entries: list[dict[str, Any]] = []
     try:
         for name in CLAIM_SNAPSHOT_FILES:
-            source = root / name
+            source = claim_artifact_path(root, name)
             if source.is_file():
                 payload = source.read_bytes()
                 _atomic_write_bytes(backup_dir / name, payload)
@@ -1512,7 +1522,7 @@ def _begin_claim_publication_unlocked(
 
 
 def _finish_claim_publication_unlocked(root: Path, journal: dict[str, Any]) -> None:
-    _unlink_with_retry(root / CLAIM_PUBLICATION_JOURNAL)
+    _unlink_with_retry(claim_artifact_path(root, CLAIM_PUBLICATION_JOURNAL))
     try:
         _cleanup_publication_backup(root, journal)
     except OSError:
@@ -1528,7 +1538,7 @@ def _begin_effective_publication_unlocked(
     base_ledger_sha256: str,
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
-    journal_path = root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
+    journal_path = claim_artifact_path(root, CLAIM_EFFECTIVE_PUBLICATION_JOURNAL)
     if journal_path.exists():
         raise ClaimArtifactError("unfinished effective publication was not recovered")
     transaction_id = uuid.uuid4().hex
@@ -1537,7 +1547,7 @@ def _begin_effective_publication_unlocked(
     entries: list[dict[str, Any]] = []
     try:
         for name in CLAIM_EFFECTIVE_SNAPSHOT_FILES:
-            source = root / name
+            source = claim_artifact_path(root, name)
             if source.is_file():
                 payload = source.read_bytes()
                 _atomic_write_bytes(backup_dir / name, payload)
@@ -1594,7 +1604,7 @@ def _finish_effective_publication_unlocked(
     root: Path,
     journal: dict[str, Any],
 ) -> None:
-    _unlink_with_retry(root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL)
+    _unlink_with_retry(claim_artifact_path(root, CLAIM_EFFECTIVE_PUBLICATION_JOURNAL))
     try:
         _cleanup_effective_publication_backup(root, journal)
     except OSError:
@@ -1603,24 +1613,24 @@ def _finish_effective_publication_unlocked(
 
 
 def _recover_interrupted_effective_publication_unlocked(root: Path) -> bool:
-    journal_path = root / CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
+    journal_path = claim_artifact_path(root, CLAIM_EFFECTIVE_PUBLICATION_JOURNAL)
     if not journal_path.is_file():
         _cleanup_orphan_effective_backups_unlocked(root)
         return False
     journal = _read_json(journal_path, label="effective publication journal")
     snapshot = _validate_effective_publication_journal(root, journal)
     _require_hash(
-        root / CLAIM_GENERATION_META,
+        claim_artifact_path(root, CLAIM_GENERATION_META),
         journal.get("generation_meta_sha256"),
         label="effective publication base generation meta",
     )
     _require_hash(
-        root / CLAIM_LEDGER,
+        claim_artifact_path(root, CLAIM_LEDGER),
         journal.get("base_ledger_sha256"),
         label="effective publication base ledger",
     )
     generation = _read_json(
-        root / CLAIM_GENERATION_META,
+        claim_artifact_path(root, CLAIM_GENERATION_META),
         label="effective publication base generation meta",
     )
     if journal.get("base_generation_id") != claim_base_generation_id(generation):
@@ -1634,7 +1644,7 @@ def _recover_interrupted_effective_publication_unlocked(root: Path) -> bool:
 def _recover_interrupted_publication_unlocked(
     root: Path,
 ) -> dict[str, Any] | None:
-    journal_path = root / CLAIM_PUBLICATION_JOURNAL
+    journal_path = claim_artifact_path(root, CLAIM_PUBLICATION_JOURNAL)
     if not journal_path.is_file():
         _cleanup_orphan_publication_backups_unlocked(root)
         return None
@@ -1686,7 +1696,7 @@ def _recover_claim_state_unlocked(
     *,
     allow_live_checkpoint_nonce: str | None = None,
 ) -> dict[str, Any] | None:
-    if (root / CLAIM_BUDGET_CHECKPOINT_OUTBOX).is_file():
+    if (claim_artifact_path(root, CLAIM_BUDGET_CHECKPOINT_OUTBOX)).is_file():
         # Queue events are protected by the extraction-operation lock.  Claim
         # GETs hold only the publication lock and must remain byte-invariant, so
         # they fail closed until the write-side maintenance path replays this
@@ -1743,7 +1753,7 @@ def record_verifier_attempt_progress(
     failure["candidate_group_count"] = candidates
     failure["reused_group_count"] = reused
     with claim_publication_lock(root):
-        if not (root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT).is_file():
+        if not (claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPT_CHECKPOINT)).is_file():
             raise ClaimArtifactError("verifier attempt progress checkpoint is missing")
         _update_verifier_attempt_checkpoint_unlocked(
             root,
@@ -2197,7 +2207,7 @@ def _read_claim_verifier_attempts_unlocked(
     *,
     allow_missing: bool,
 ) -> list[dict[str, Any]]:
-    path = root / CLAIM_VERIFIER_ATTEMPTS
+    path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS)
     if not path.is_file():
         if allow_missing:
             return []
@@ -2344,7 +2354,7 @@ def _append_claim_verifier_attempt_unlocked(
     event["event_hash"] = _sha256_payload(event)
     updated = [*rows, event]
     _validate_attempt_rows(updated)
-    atomic_write_jsonl(root / CLAIM_VERIFIER_ATTEMPTS, updated)
+    atomic_write_jsonl(claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS), updated)
     return _attempt_binding(updated, event)
 
 
@@ -2391,7 +2401,7 @@ def _correct_claim_verifier_attempt_unlocked(
     event["event_hash"] = _sha256_payload(event)
     updated = [*rows, event]
     _validate_attempt_rows(updated)
-    atomic_write_jsonl(root / CLAIM_VERIFIER_ATTEMPTS, updated)
+    atomic_write_jsonl(claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPTS), updated)
     return _attempt_binding(updated, event)
 
 
@@ -2746,7 +2756,7 @@ def _record_failed_attempt_from_scope(
         if recovered is not None:
             context["recorded_attempt_id"] = recovered["attempt_id"]
             return
-        checkpoint_path = root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT
+        checkpoint_path = claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPT_CHECKPOINT)
         if checkpoint_path.is_file():
             budget = dict(context["failure_context"]).get("verifier_budget")
             budget_snapshot = recovered_budget_snapshot
@@ -2869,7 +2879,7 @@ def claim_verifier_attempt_scope(
                                 transaction_id,
                             )
                             if queue_event is not None:
-                                outbox_path = root / CLAIM_BUDGET_CHECKPOINT_OUTBOX
+                                outbox_path = claim_artifact_path(root, CLAIM_BUDGET_CHECKPOINT_OUTBOX)
                                 outbox_preexisted = outbox_path.exists()
                                 try:
                                     _write_budget_checkpoint_outbox_unlocked(
@@ -2911,7 +2921,7 @@ def claim_verifier_attempt_scope(
         yield
         if (
             context["failure_context"]
-            and (root / CLAIM_VERIFIER_ATTEMPT_CHECKPOINT).is_file()
+            and (claim_artifact_path(root, CLAIM_VERIFIER_ATTEMPT_CHECKPOINT)).is_file()
         ):
             raise ClaimArtifactError(
                 "verifier attempt scope exited without publishing its checkpoint"
@@ -2956,7 +2966,7 @@ def publish_catalog_probe(out_dir: Path | str, build: dict[str, Any]) -> dict[st
     root = Path(out_dir).expanduser().resolve()
     with claim_publication_lock(root):
         _recover_claim_state_unlocked(root)
-        if (root / CLAIM_GENERATION_META).is_file():
+        if (claim_artifact_path(root, CLAIM_GENERATION_META)).is_file():
             raise ClaimArtifactError(
                 "catalog probe cannot replace an existing claim generation"
             )
@@ -2969,8 +2979,8 @@ def _publish_catalog_probe_unlocked(out_dir: Path | str, build: dict[str, Any]) 
     catalog = list(build.get("catalog") or [])
     units = list(build.get("units") or [])
     build_meta = dict(build.get("meta") or {})
-    atomic_write_jsonl(root / CLAIM_CATALOG, catalog)
-    catalog_hash = file_sha256(root / CLAIM_CATALOG)
+    atomic_write_jsonl(claim_artifact_path(root, CLAIM_CATALOG), catalog)
+    catalog_hash = file_sha256(claim_artifact_path(root, CLAIM_CATALOG))
     meta = {
         "schema": "claim-catalog-probe-meta/v1",
         "artifact_protocol_version": CLAIM_ARTIFACT_PROTOCOL_VERSION,
@@ -2982,7 +2992,7 @@ def _publish_catalog_probe_unlocked(out_dir: Path | str, build: dict[str, Any]) 
         "units": units,
         "catalog_meta": build_meta,
     }
-    atomic_write_json(root / CLAIM_CATALOG_META, meta)
+    atomic_write_json(claim_artifact_path(root, CLAIM_CATALOG_META), meta)
     return meta
 
 
@@ -2994,17 +3004,17 @@ def load_catalog_probe(out_dir: Path | str) -> dict[str, Any]:
 
 
 def _load_catalog_probe_unlocked(root: Path) -> dict[str, Any]:
-    committed = _read_json(root / CLAIM_CATALOG_META, label="catalog commit meta")
+    committed = _read_json(claim_artifact_path(root, CLAIM_CATALOG_META), label="catalog commit meta")
     if committed.get("schema") != "claim-catalog-probe-meta/v1":
         raise ClaimArtifactError("unsupported catalog commit meta schema")
     if committed.get("artifact_protocol_version") != CLAIM_ARTIFACT_PROTOCOL_VERSION:
         raise ClaimArtifactError("stale catalog artifact protocol")
     _require_hash(
-        root / CLAIM_CATALOG,
+        claim_artifact_path(root, CLAIM_CATALOG),
         committed.get("catalog_sha256"),
         label=CLAIM_CATALOG,
     )
-    catalog = _read_jsonl(root / CLAIM_CATALOG, label="claim catalog")
+    catalog = _read_jsonl(claim_artifact_path(root, CLAIM_CATALOG), label="claim catalog")
     if len(catalog) != int(committed.get("catalog_count", -1)):
         raise ClaimArtifactError("claim catalog count does not match committed meta")
     meta = dict(committed.get("catalog_meta") or {})
@@ -3328,9 +3338,9 @@ def _publish_shadow_generation_unlocked(
     )
 
     catalog_commit = _publish_catalog_probe_unlocked(root, catalog_build)
-    atomic_write_jsonl(root / CLAIM_COVERAGE_GROUPS, groups)
-    atomic_write_jsonl(root / CLAIM_LEDGER, ledger)
-    atomic_write_json(root / CLAIM_SHADOW_METRICS, metrics)
+    atomic_write_jsonl(claim_artifact_path(root, CLAIM_COVERAGE_GROUPS), groups)
+    atomic_write_jsonl(claim_artifact_path(root, CLAIM_LEDGER), ledger)
+    atomic_write_json(claim_artifact_path(root, CLAIM_SHADOW_METRICS), metrics)
     attempt_binding = _append_shadow_verifier_attempt_unlocked(
         root,
         recovery=attempt_recovery,
@@ -3402,21 +3412,21 @@ def _publish_shadow_generation_unlocked(
             else ""
         ),
         "catalog_sha256": str(catalog_commit["catalog_sha256"]),
-        "catalog_meta_sha256": file_sha256(root / CLAIM_CATALOG_META),
-        "coverage_groups_sha256": file_sha256(root / CLAIM_COVERAGE_GROUPS),
-        "ledger_sha256": file_sha256(root / CLAIM_LEDGER),
-        "shadow_metrics_sha256": file_sha256(root / CLAIM_SHADOW_METRICS),
+        "catalog_meta_sha256": file_sha256(claim_artifact_path(root, CLAIM_CATALOG_META)),
+        "coverage_groups_sha256": file_sha256(claim_artifact_path(root, CLAIM_COVERAGE_GROUPS)),
+        "ledger_sha256": file_sha256(claim_artifact_path(root, CLAIM_LEDGER)),
+        "shadow_metrics_sha256": file_sha256(claim_artifact_path(root, CLAIM_SHADOW_METRICS)),
         "catalog_count": len(catalog),
         "coverage_group_count": len(groups),
         "ledger_count": len(ledger),
         "attempt_chain": attempt_binding,
         "shadow_meta": shadow_meta,
     }
-    atomic_write_json(root / CLAIM_GENERATION_META, generation_meta)
-    generation_meta_hash = file_sha256(root / CLAIM_GENERATION_META)
+    atomic_write_json(claim_artifact_path(root, CLAIM_GENERATION_META), generation_meta)
+    generation_meta_hash = file_sha256(claim_artifact_path(root, CLAIM_GENERATION_META))
 
     # Claim review events are deliberately disabled in Phase 0, so effective == base.
-    atomic_write_jsonl(root / CLAIM_EFFECTIVE_LEDGER, ledger)
+    atomic_write_jsonl(claim_artifact_path(root, CLAIM_EFFECTIVE_LEDGER), ledger)
     effective_meta = {
         "schema": "claim-effective-meta/v1",
         "artifact_protocol_version": CLAIM_ARTIFACT_PROTOCOL_VERSION,
@@ -3430,12 +3440,12 @@ def _publish_shadow_generation_unlocked(
         ),
         "generation_meta_sha256": generation_meta_hash,
         "base_ledger_sha256": str(generation_meta["ledger_sha256"]),
-        "effective_ledger_sha256": file_sha256(root / CLAIM_EFFECTIVE_LEDGER),
+        "effective_ledger_sha256": file_sha256(claim_artifact_path(root, CLAIM_EFFECTIVE_LEDGER)),
         "claim_event_prefix_sha256": "sha256:" + hashlib.sha256(b"").hexdigest(),
         "claim_events_enabled": False,
         "ledger_count": len(ledger),
     }
-    atomic_write_json(root / CLAIM_EFFECTIVE_META, effective_meta)
+    atomic_write_json(claim_artifact_path(root, CLAIM_EFFECTIVE_META), effective_meta)
     _load_committed_shadow_unlocked(root)
     _finish_claim_publication_unlocked(root, publication)
     return generation_meta
@@ -3548,7 +3558,7 @@ def load_committed_attempt_lineage(out_dir: Path | str) -> dict[str, Any]:
 
 
 def _load_committed_attempt_lineage_unlocked(root: Path) -> dict[str, Any]:
-    generation = _read_json(root / CLAIM_GENERATION_META, label="claim generation meta")
+    generation = _read_json(claim_artifact_path(root, CLAIM_GENERATION_META), label="claim generation meta")
     if (
         generation.get("schema") != "claim-generation-meta/v1"
         or generation.get("artifact_protocol_version")
@@ -3562,11 +3572,11 @@ def _load_committed_attempt_lineage_unlocked(root: Path) -> dict[str, Any]:
     if not _shadow_meta_has_attempt_lineage(shadow_meta):
         raise ClaimArtifactError("invalid committed shadow result meta")
     _require_hash(
-        root / CLAIM_SHADOW_METRICS,
+        claim_artifact_path(root, CLAIM_SHADOW_METRICS),
         generation.get("shadow_metrics_sha256"),
         label=CLAIM_SHADOW_METRICS,
     )
-    metrics = _read_json(root / CLAIM_SHADOW_METRICS, label="shadow metrics")
+    metrics = _read_json(claim_artifact_path(root, CLAIM_SHADOW_METRICS), label="shadow metrics")
     if (
         not _shadow_cost_metrics_are_well_formed(metrics)
         or not _shadow_budget_matches_metrics(shadow_meta, metrics)
@@ -3604,7 +3614,7 @@ def bootstrap_legacy_attempt_lineage(out_dir: Path | str) -> dict[str, Any]:
     with claim_publication_lock(root):
         _recover_claim_state_unlocked(root)
         generation = _read_json(
-            root / CLAIM_GENERATION_META,
+            claim_artifact_path(root, CLAIM_GENERATION_META),
             label="legacy claim generation meta",
         )
         if (
@@ -3636,10 +3646,10 @@ def bootstrap_legacy_attempt_lineage(out_dir: Path | str) -> dict[str, Any]:
             CLAIM_SHADOW_METRICS: generation.get("shadow_metrics_sha256"),
         }
         for name, expected in committed_files.items():
-            _require_hash(root / name, expected, label=f"legacy {name}")
+            _require_hash(governed_artifact_path(root, name), expected, label=f"legacy {name}")
 
         catalog_meta = _read_json(
-            root / CLAIM_CATALOG_META,
+            claim_artifact_path(root, CLAIM_CATALOG_META),
             label="legacy catalog commit meta",
         )
         if (
@@ -3651,16 +3661,16 @@ def bootstrap_legacy_attempt_lineage(out_dir: Path | str) -> dict[str, Any]:
         ):
             raise ClaimArtifactError("invalid legacy catalog commit")
         _require_hash(
-            root / CLAIM_CATALOG,
+            claim_artifact_path(root, CLAIM_CATALOG),
             catalog_meta.get("catalog_sha256"),
             label="legacy claim catalog",
         )
-        catalog = _read_jsonl(root / CLAIM_CATALOG, label="legacy claim catalog")
+        catalog = _read_jsonl(claim_artifact_path(root, CLAIM_CATALOG), label="legacy claim catalog")
         groups = _read_jsonl(
-            root / CLAIM_COVERAGE_GROUPS,
+            claim_artifact_path(root, CLAIM_COVERAGE_GROUPS),
             label="legacy coverage groups",
         )
-        ledger = _read_jsonl(root / CLAIM_LEDGER, label="legacy claim ledger")
+        ledger = _read_jsonl(claim_artifact_path(root, CLAIM_LEDGER), label="legacy claim ledger")
         if (
             len(catalog) != int(generation.get("catalog_count", -1))
             or len(catalog) != int(catalog_meta.get("catalog_count", -1))
@@ -3690,7 +3700,7 @@ def bootstrap_legacy_attempt_lineage(out_dir: Path | str) -> dict[str, Any]:
             raise ClaimArtifactError("legacy requirements request identity is missing")
 
         metrics = _read_json(
-            root / CLAIM_SHADOW_METRICS,
+            claim_artifact_path(root, CLAIM_SHADOW_METRICS),
             label="legacy shadow metrics",
         )
         if (
@@ -3801,7 +3811,7 @@ def load_committed_effective_refold_seed(
     with claim_publication_lock(root):
         _recover_claim_state_unlocked(root)
         base = _load_committed_claim_base_unlocked(root)
-        preview = _read_json(root / CLAIM_EFFECTIVE_META, label="effective claim meta")
+        preview = _read_json(claim_artifact_path(root, CLAIM_EFFECTIVE_META), label="effective claim meta")
         effective_version = str(preview.get("effective_snapshot_version") or "")
         trusted: dict[str, Any] | None = None
         if effective_version == CLAIM_EFFECTIVE_SNAPSHOT_VERSION:
@@ -4506,7 +4516,7 @@ def publish_effective_snapshot(
             "base_generation_id": claim_base_generation_id(generation),
             "document_generation_id": str(generation.get("document_generation_id") or ""),
             "catalog_generation_id": str(generation.get("catalog_generation_id") or ""),
-            "generation_meta_sha256": file_sha256(root / CLAIM_GENERATION_META),
+            "generation_meta_sha256": file_sha256(claim_artifact_path(root, CLAIM_GENERATION_META)),
             "base_ledger_sha256": str(generation.get("ledger_sha256") or ""),
             "effective_ledger_sha256": _sha256_bytes(ledger_bytes),
             "queue_sha256": _sha256_bytes(queue_bytes),
@@ -4539,7 +4549,7 @@ def publish_effective_snapshot(
             label="effective claim meta",
         )
         effective_meta_bytes = canonical_json_value_bytes(effective_meta)
-        generation_meta_sha256 = file_sha256(root / CLAIM_GENERATION_META)
+        generation_meta_sha256 = file_sha256(claim_artifact_path(root, CLAIM_GENERATION_META))
         base_ledger_sha256 = str(generation.get("ledger_sha256") or "")
         journal = _begin_effective_publication_unlocked(
             root,
@@ -4559,9 +4569,9 @@ def publish_effective_snapshot(
                 ),
             },
         )
-        _atomic_write_bytes(root / CLAIM_EFFECTIVE_LEDGER, ledger_bytes)
-        _atomic_write_bytes(root / CLAIM_QUEUE_PROPOSALS, queue_bytes)
-        _atomic_write_bytes(root / CLAIM_EFFECTIVE_META, effective_meta_bytes)
+        _atomic_write_bytes(claim_artifact_path(root, CLAIM_EFFECTIVE_LEDGER), ledger_bytes)
+        _atomic_write_bytes(claim_artifact_path(root, CLAIM_QUEUE_PROPOSALS), queue_bytes)
+        _atomic_write_bytes(claim_artifact_path(root, CLAIM_EFFECTIVE_META), effective_meta_bytes)
         loaded = _load_committed_effective_unlocked(root, base, require_v2=True)
         if loaded["effective_meta"] != effective_meta:
             raise ClaimArtifactError("effective publication did not reload byte-equivalent meta")
@@ -4611,7 +4621,7 @@ def load_committed_effective_snapshot_readonly(
                 CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
                 CLAIM_BUDGET_CHECKPOINT_OUTBOX,
             )
-            if (root / name).is_file()
+            if governed_artifact_path(root, name).is_file()
         ]
 
     pending = pending_journals()
@@ -4620,8 +4630,8 @@ def load_committed_effective_snapshot_readonly(
             "claim effective recovery pending: " + ", ".join(pending)
         )
     anchors_before = (
-        (root / CLAIM_GENERATION_META).read_bytes(),
-        (root / CLAIM_EFFECTIVE_META).read_bytes(),
+        (claim_artifact_path(root, CLAIM_GENERATION_META)).read_bytes(),
+        (claim_artifact_path(root, CLAIM_EFFECTIVE_META)).read_bytes(),
     )
     base = _load_committed_claim_base_unlocked(root)
     effective = _load_committed_effective_unlocked(
@@ -4635,8 +4645,8 @@ def load_committed_effective_snapshot_readonly(
             "claim effective recovery pending: " + ", ".join(pending)
         )
     anchors_after = (
-        (root / CLAIM_GENERATION_META).read_bytes(),
-        (root / CLAIM_EFFECTIVE_META).read_bytes(),
+        (claim_artifact_path(root, CLAIM_GENERATION_META)).read_bytes(),
+        (claim_artifact_path(root, CLAIM_EFFECTIVE_META)).read_bytes(),
     )
     if anchors_after != anchors_before:
         raise ClaimArtifactError("claim snapshot changed during read-only load")
@@ -4644,7 +4654,7 @@ def load_committed_effective_snapshot_readonly(
 
 
 def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
-    generation = _read_json(root / CLAIM_GENERATION_META, label="claim generation meta")
+    generation = _read_json(claim_artifact_path(root, CLAIM_GENERATION_META), label="claim generation meta")
     if generation.get("schema") != "claim-generation-meta/v1":
         raise ClaimArtifactError("unsupported claim generation meta schema")
     if generation.get("artifact_protocol_version") != CLAIM_ARTIFACT_PROTOCOL_VERSION:
@@ -4660,7 +4670,7 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
         CLAIM_SHADOW_METRICS: generation.get("shadow_metrics_sha256"),
     }
     for name, expected in committed_files.items():
-        _require_hash(root / name, expected, label=name)
+        _require_hash(governed_artifact_path(root, name), expected, label=name)
 
     for name, meta_key in (
         ("blocks.jsonl", "blocks_file_sha256"),
@@ -4669,7 +4679,7 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
     ):
         expected = str(generation.get(meta_key) or "")
         if expected:
-            _require_hash(root / name, expected, label=name)
+            _require_hash(governed_artifact_path(root, name), expected, label=name)
 
     catalog_build = _load_catalog_probe_unlocked(root)
     catalog_meta = dict(catalog_build["meta"])
@@ -4698,9 +4708,9 @@ def _load_committed_claim_base_unlocked(root: Path) -> dict[str, Any]:
 
     live_structural_overrides = current_structural_override_identity(root)
     catalog = catalog_build["catalog"]
-    groups = _read_jsonl(root / CLAIM_COVERAGE_GROUPS, label="coverage groups")
-    ledger = _read_jsonl(root / CLAIM_LEDGER, label="base claim ledger")
-    metrics = _read_json(root / CLAIM_SHADOW_METRICS, label="shadow metrics")
+    groups = _read_jsonl(claim_artifact_path(root, CLAIM_COVERAGE_GROUPS), label="coverage groups")
+    ledger = _read_jsonl(claim_artifact_path(root, CLAIM_LEDGER), label="base claim ledger")
+    metrics = _read_json(claim_artifact_path(root, CLAIM_SHADOW_METRICS), label="shadow metrics")
     if not _shadow_cost_metrics_are_well_formed(metrics):
         raise ClaimArtifactError("invalid committed shadow verifier cost metrics")
     if not _shadow_budget_matches_metrics(
@@ -4812,7 +4822,7 @@ def _load_committed_effective_unlocked(
     generation = dict(base["generation_meta"])
     ledger = list(base["ledger"])
 
-    effective = _read_json(root / CLAIM_EFFECTIVE_META, label="effective claim meta")
+    effective = _read_json(claim_artifact_path(root, CLAIM_EFFECTIVE_META), label="effective claim meta")
     if effective.get("schema") != "claim-effective-meta/v1":
         raise ClaimArtifactError("unsupported effective claim meta schema")
     effective_version = str(effective.get("effective_snapshot_version") or "")
@@ -4857,19 +4867,19 @@ def _load_committed_effective_unlocked(
     ):
         raise ClaimArtifactError("effective snapshot refers to a different base generation")
     _require_hash(
-        root / CLAIM_GENERATION_META,
+        claim_artifact_path(root, CLAIM_GENERATION_META),
         effective.get("generation_meta_sha256"),
         label=CLAIM_GENERATION_META,
     )
     if str(effective.get("base_ledger_sha256") or "") != str(generation.get("ledger_sha256") or ""):
         raise ClaimArtifactError("effective snapshot refers to a different base ledger")
     _require_hash(
-        root / CLAIM_EFFECTIVE_LEDGER,
+        claim_artifact_path(root, CLAIM_EFFECTIVE_LEDGER),
         effective.get("effective_ledger_sha256"),
         label=CLAIM_EFFECTIVE_LEDGER,
     )
     effective_ledger = _read_jsonl(
-        root / CLAIM_EFFECTIVE_LEDGER,
+        claim_artifact_path(root, CLAIM_EFFECTIVE_LEDGER),
         label="effective claim ledger",
     )
     if len(effective_ledger) != int(effective.get("ledger_count", -1)):
@@ -4892,16 +4902,16 @@ def _load_committed_effective_unlocked(
             label="effective claim meta",
         )
         _require_canonical_json_value(
-            root / CLAIM_EFFECTIVE_META,
+            claim_artifact_path(root, CLAIM_EFFECTIVE_META),
             effective,
             label="effective claim meta",
         )
         _require_hash(
-            root / CLAIM_QUEUE_PROPOSALS,
+            claim_artifact_path(root, CLAIM_QUEUE_PROPOSALS),
             effective.get("queue_sha256"),
             label=CLAIM_QUEUE_PROPOSALS,
         )
-        queue = _read_jsonl(root / CLAIM_QUEUE_PROPOSALS, label="claim queue proposals")
+        queue = _read_jsonl(claim_artifact_path(root, CLAIM_QUEUE_PROPOSALS), label="claim queue proposals")
         if len(queue) != int(effective.get("queue_count", -1)):
             raise ClaimArtifactError("claim queue count does not match committed meta")
         if effective.get("effective_artifact_version") != CLAIM_EFFECTIVE_ARTIFACT_PROTOCOL_VERSION:
@@ -4936,12 +4946,12 @@ def _load_committed_effective_unlocked(
                 "claim queue proposal schema does not match effective queue version"
             )
         _require_canonical_jsonl(
-            root / CLAIM_EFFECTIVE_LEDGER,
+            claim_artifact_path(root, CLAIM_EFFECTIVE_LEDGER),
             effective_ledger,
             label="effective claim ledger",
         )
         _require_canonical_jsonl(
-            root / CLAIM_QUEUE_PROPOSALS,
+            claim_artifact_path(root, CLAIM_QUEUE_PROPOSALS),
             queue,
             label="claim queue proposals",
         )
