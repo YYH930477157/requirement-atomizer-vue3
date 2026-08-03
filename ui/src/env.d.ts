@@ -67,6 +67,7 @@ declare global {
       openOutput: () => Promise<RequirementAtomizerApiSession | null>
       openPath: (targetPath: string) => Promise<void>
       getApiSession: () => Promise<RequirementAtomizerApiSession | null>
+      getDefaultOutputRoot: () => Promise<string>
       startApiSession: (outDir: string) => Promise<RequirementAtomizerApiSession | null>
       getRecentSessions: () => Promise<RequirementAtomizerRecentSession[]>
       onApiSessionReady?: (handler: (session: RequirementAtomizerApiSession) => void) => () => void
@@ -138,7 +139,6 @@ declare global {
       startResultPackage: (input: { outDir: string; inputPath: string; stages: string[] }) => Promise<RequirementAtomizerTaskPayload>
       completeResultPackage: (input: { outDir: string; runId: string; completedStages: string[] }) => Promise<RequirementAtomizerTaskPayload>
       failResultPackage: (input: { outDir: string; runId: string; error: string }) => Promise<RequirementAtomizerTaskPayload>
-      getResultPackageStatus: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       getOutputSummary: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       aiExtract: (input: { outDir: string; llmRoute?: string; limitSections?: number; sampleRatio?: number }) => Promise<RequirementAtomizerTaskPayload>
       exportAnnotationHtml: (input: { outDir: string; route?: string; layoutMode?: "optimized" | "pdf_original" }) => Promise<RequirementAtomizerTaskPayload>

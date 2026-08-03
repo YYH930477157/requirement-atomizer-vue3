@@ -388,6 +388,11 @@ function containedPackagePath(dir, relativePath) {
   return target;
 }
 
+// S16（review-2026-08-03）：本函数在 JS 侧重实现 result-package marker 契约的
+// 一个子集（schema/layout_version/analysis_status/workspace/deliverables/
+// completion_evidence 存在性）。权威校验在 Python result_package._validate_package
+// （与 schemas/result_package.schema.json 对齐）——此处只做打开前的快速分类，
+// 绝不替代权威校验；任何一侧契约改动必须同步检查另一侧。
 function classifyOutputDir(dirPath, deps = {}) {
   const fsImpl = deps.fs || fs;
   const dir = String(dirPath || "").trim();
@@ -497,6 +502,74 @@ function isLikelyOutputDir(dirPath, deps = {}) {
   return ["package_v1", "legacy"].includes(classifyOutputDir(dirPath, deps).kind);
 }
 
+// I5（2026-08-03 清单）：legacy 扁平目录重跑直接按 legacy pipeline 运行——
+// Electron 在调用 result-package-start 前先分类，legacy 目录不创建
+// marker/.ratomizer（Python initialize_result_package 保持 fail-closed 不放宽）。
+// 返回 null 表示走正常 package 启动路径（空目录初始化 / package_v1 续跑）。
+function planResultPackageStart(outDir, deps = {}) {
+  const classification = classifyOutputDir(outDir, deps);
+  if (classification.kind !== "legacy") {
+    return null;
+  }
+  return {
+    kind: "result_package_start",
+    ok: true,
+    out_dir: String(outDir),
+    layout: "legacy",
+    package: null,
+  };
+}
+
+// S7：单实例锁——双开桌面端会让两个 API 进程对同一输出目录互相抢锁/写
+// recent-sessions read-modify-write 也丢更新。锁拿不到即退出并让既有实例聚焦，
+// 不再为 recent-sessions 另加跨进程文件锁。注入 appLike 便于测试（无锁 API 的
+// 运行环境视为已持有，行为与旧版多实例一致）。
+function acquireSingleInstanceLock(appLike, onSecondInstance) {
+  if (!appLike || typeof appLike.requestSingleInstanceLock !== "function") {
+    return true;
+  }
+  const acquired = appLike.requestSingleInstanceLock();
+  if (!acquired) {
+    if (typeof appLike.quit === "function") {
+      appLike.quit();
+    }
+    return false;
+  }
+  if (typeof appLike.on === "function") {
+    appLike.on("second-instance", () => {
+      if (typeof onSecondInstance === "function") {
+        onSecondInstance();
+      }
+    });
+  }
+  return true;
+}
+
+// I6：后端失败 envelope 同时落 stdout 与 stderr（desktop_tasks._fail_with_envelope），
+// runDesktopTaskProcess 非零退出时以 stderr 文本为 Error.message——从中解析回
+// 结构化 envelope，让稳定错误码（如 requested_stage_partial）能透传到渲染层。
+function parseTaskErrorEnvelope(error) {
+  const text = String(error?.message || error || "");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const envelopeError = parsed.error;
+    if (!envelopeError || typeof envelopeError !== "object" || !envelopeError.type) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function loadRecentSessions(filePath, deps = {}) {
   const fsImpl = deps.fs || fs;
   try {
@@ -580,6 +653,7 @@ function resolveAutoRestoreDir(filePath, deps = {}) {
 
 module.exports = {
   DEFAULT_LLM_SETTINGS,
+  acquireSingleInstanceLock,
   OUTPUT_DIR_MARKERS,
   PROGRESS_PREFIX,
   RECENT_SESSIONS_LIMIT,
@@ -598,6 +672,8 @@ module.exports = {
   loadRecentSessions,
   normalizeLlmEndpoint,
   normalizeLlmSettings,
+  parseTaskErrorEnvelope,
+  planResultPackageStart,
   recordRecentSession,
   recentSessionLabel,
   resolveAutoRestoreCandidates,

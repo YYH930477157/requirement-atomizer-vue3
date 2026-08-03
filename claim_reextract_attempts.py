@@ -229,6 +229,14 @@ def read_attempt_log_stable(
 
 
 def _append_unlocked(root: Path, drafts: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    # S10（review-2026-08-03）已知取舍：每次追加在锁内整文件原子重写（_scan + 全量
+    # JSONL 替换 + 提交后再 _scan 一次），N 次追加总量 O(N²)。正确性无虞——读者只见到
+    # 完整前缀代际；但长历史下 I/O 放大可观。基准（tests/test_claim_reextract_attempts.py
+    # ::AttemptLogScaleBenchmarkTests）：2026-08-03 本机（CPython 3.14 / Windows 10）
+    # 实测逐条追加 N=300 共 366.8s（尾部单次 ~2.4s，含逐行 jsonschema 校验）、N=50 共
+    # 11.2s，与 O(N²) 吻合。当前规模（大文档多轮补抽，事件数十条级）可接受；单日志事件
+    # 数接近千级前不改实现，届时按"追加写 + 启动时 compaction"重设计并保持哈希链前缀
+    # 逐字节不变。
     snapshot = _scan(root)
     rows = list(snapshot.rows)
     keys = set(snapshot.idempotency_keys)

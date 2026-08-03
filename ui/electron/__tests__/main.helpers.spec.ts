@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { describe, expect, it } from "vitest"
 import path from "node:path"
@@ -6,6 +6,7 @@ import path from "node:path"
 import {
   PROGRESS_PREFIX,
   RECENT_SESSIONS_LIMIT,
+  acquireSingleInstanceLock,
   bindAmbientLlmCredential,
   buildChainArgs,
   buildExportAnnotationArgs,
@@ -19,6 +20,8 @@ import {
   loadRecentSessions,
   normalizeLlmEndpoint,
   normalizeLlmSettings,
+  parseTaskErrorEnvelope,
+  planResultPackageStart,
   recordRecentSession,
   resolveAutoRestoreCandidates,
   resolveAutoRestoreDir,
@@ -680,5 +683,114 @@ describe("recent sessions helpers", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("planResultPackageStart (I5 legacy 目录按旧管线运行)", () => {
+  it("returns a legacy plan for legacy flat outputs without creating any marker", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-legacy-"))
+    try {
+      // 旧版扁平产物：有 manifest/blocks，没有 result-package.json
+      writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ input: "a.docx" }), "utf8")
+      writeFileSync(path.join(dir, "blocks.jsonl"), "", "utf8")
+      const plan = planResultPackageStart(dir)
+      expect(plan).toMatchObject({
+        kind: "result_package_start",
+        ok: true,
+        layout: "legacy",
+        package: null,
+      })
+      expect(plan.out_dir).toBe(dir)
+      // 绝不创建 marker 或 .ratomizer（Python 端 initialize 保持 fail-closed）
+      expect(existsSync(path.join(dir, "result-package.json"))).toBe(false)
+      expect(existsSync(path.join(dir, ".ratomizer"))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns null for empty dirs so the desktop task initializes a new package", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-empty-"))
+    try {
+      expect(planResultPackageStart(dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns null for package_v1 dirs (normal package start path)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratomizer-pkg-"))
+    try {
+      mkdirSync(path.join(dir, ".ratomizer", "stages", "completions", "RUN-1"), { recursive: true })
+      writeFileSync(path.join(dir, ".ratomizer", "stages", "completions", "RUN-1", "run_manifest.json"), "{}", "utf8")
+      writeFileSync(path.join(dir, "summary.md"), "done", "utf8")
+      writeFileSync(path.join(dir, "result-package.json"), JSON.stringify({
+        schema: "ratomizer-result-package/v1",
+        layout_version: "result-layout-v1",
+        analysis_status: "completed",
+        workspace: ".ratomizer",
+        input: { display_name: "meter.docx" },
+        analysis: {
+          completion_evidence: [{ path: ".ratomizer/stages/completions/RUN-1/run_manifest.json" }],
+        },
+        deliverables: [{ path: "summary.md" }],
+      }), "utf8")
+      expect(planResultPackageStart(dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("parseTaskErrorEnvelope (I6 稳定错误码透传)", () => {
+  it("extracts the JSON envelope embedded in a stderr rejection", () => {
+    const envelope = {
+      kind: "result_package_complete",
+      ok: false,
+      error: { type: "requested_stage_partial", message: "requested stage is not complete: ai-extract (failed)" },
+    }
+    const error = new Error(`${JSON.stringify(envelope)}\n`)
+    expect(parseTaskErrorEnvelope(error)).toMatchObject({
+      ok: false,
+      error: { type: "requested_stage_partial" },
+    })
+  })
+
+  it("returns null for non-envelope failures", () => {
+    expect(parseTaskErrorEnvelope(new Error("desktop task exited with code 2"))).toBeNull()
+    expect(parseTaskErrorEnvelope(new Error("{not json}"))).toBeNull()
+    expect(parseTaskErrorEnvelope(null)).toBeNull()
+  })
+})
+
+describe("acquireSingleInstanceLock (S7)", () => {
+  it("quits the second instance instead of racing shared session state", () => {
+    const calls = []
+    const appLike = {
+      requestSingleInstanceLock: () => false,
+      quit: () => calls.push("quit"),
+      on: (event, handler) => calls.push([event, handler]),
+    }
+    expect(acquireSingleInstanceLock(appLike, () => calls.push("focus"))).toBe(false)
+    expect(calls).toEqual(["quit"])
+  })
+
+  it("registers a second-instance focus handler when the lock is acquired", () => {
+    const calls = []
+    const appLike = {
+      requestSingleInstanceLock: () => true,
+      quit: () => calls.push("quit"),
+      on: (event, handler) => calls.push([event, handler]),
+    }
+    let focused = 0
+    expect(acquireSingleInstanceLock(appLike, () => { focused += 1 })).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe("second-instance")
+    calls[0][1]()
+    expect(focused).toBe(1)
+  })
+
+  it("treats runtimes without the lock API as acquired", () => {
+    expect(acquireSingleInstanceLock({}, () => undefined)).toBe(true)
   })
 })

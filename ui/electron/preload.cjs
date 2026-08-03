@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("ratomizerDesktop", {
   openOutput: () => ipcRenderer.invoke("dialog:open-output"),
   openPath: (targetPath) => ipcRenderer.invoke("shell:open-path", targetPath),
   getApiSession: () => ipcRenderer.invoke("api:get-session"),
+  getDefaultOutputRoot: () => ipcRenderer.invoke("app:get-default-output-root"),
   startApiSession: (outDir) => ipcRenderer.invoke("api:start-session", outDir),
   getRecentSessions: () => ipcRenderer.invoke("session:get-recent"),
   onApiSessionReady: (handler) => {
@@ -25,7 +26,6 @@ contextBridge.exposeInMainWorld("ratomizerDesktop", {
   startResultPackage: (input) => ipcRenderer.invoke("task:result-package-start", input),
   completeResultPackage: (input) => ipcRenderer.invoke("task:result-package-complete", input),
   failResultPackage: (input) => ipcRenderer.invoke("task:result-package-fail", input),
-  getResultPackageStatus: (input) => ipcRenderer.invoke("task:result-package-status", input),
   getOutputSummary: (input) => ipcRenderer.invoke("task:summary", input),
   aiExtract: (input) => ipcRenderer.invoke("task:ai-extract", input),
   exportAnnotationHtml: (input) => ipcRenderer.invoke("task:export-annotation-html", input),

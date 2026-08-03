@@ -22,6 +22,19 @@ from spot_extract import (
     _assign_spot_ids,
     spot_extract,
 )
+from table_structure import TABLE_STRUCTURE_VERSION
+
+
+def _structure_fields(rows: int, columns: int) -> dict:
+    """当前 table-structure 证据：row 入口的结构版本门只接受当前版本块。"""
+    return {
+        "rows": rows,
+        "columns": columns,
+        "header_row_count": 1,
+        "title_row_indexes": [],
+        "header_row_indexes": [1],
+        "table_structure_version": TABLE_STRUCTURE_VERSION,
+    }
 
 
 def _param_block() -> dict:
@@ -41,6 +54,7 @@ def _param_block() -> dict:
         "section_path": ["5. General Technical Requirements", "5.1. Single-phase IPUE"],
         "requirement_like": True,
         "noise": False,
+        **_structure_fields(rows=4, columns=3),
     }
 
 
@@ -61,6 +75,7 @@ def _terms_block() -> dict:
         "section_path": ["3. Terms and Definitions"],
         "requirement_like": True,
         "noise": False,
+        **_structure_fields(rows=4, columns=3),
     }
 
 
@@ -218,6 +233,39 @@ class DeterministicParamRowTests(unittest.TestCase):
             _seed_out(out, [_param_block()])
             with self.assertRaises(ValueError):
                 spot_extract(out, block_id="BLK-NOPE")
+
+    def test_row_entry_on_legacy_block_requires_base_migration(self) -> None:
+        """S12：row 入口与 cell 入口统一 fail-closed——旧产物（无当前
+        table_structure 证据）的行点解析返回 base_migration_required，
+        不得按连续偏移假设猜物理行号。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            block = _param_block()
+            for key in (
+                "table_structure_version",
+                "title_row_indexes",
+                "header_row_indexes",
+                "header_row_count",
+            ):
+                block.pop(key, None)
+            _seed_out(out, [block])
+            before = (out / ai_extract.AI_REQUIREMENTS).read_text(encoding="utf-8")
+            with self.assertRaises(ValueError) as raised:
+                spot_extract(out, block_id="BLK-000098", row_index=1)
+            self.assertIn("base_migration_required", str(raised.exception))
+            self.assertEqual(
+                (out / ai_extract.AI_REQUIREMENTS).read_text(encoding="utf-8"), before
+            )
+
+    def test_row_entry_on_stale_structure_version_requires_base_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            block = _param_block()
+            block["table_structure_version"] = "table-structure-v5"
+            _seed_out(out, [block])
+            with self.assertRaises(ValueError) as raised:
+                spot_extract(out, block_id="BLK-000098", row_index=1)
+            self.assertIn("base_migration_required", str(raised.exception))
 
 
 class LlmSpotPathTests(unittest.TestCase):

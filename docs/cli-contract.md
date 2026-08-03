@@ -20,7 +20,35 @@ python agent_loop.py --out-dir DIR [--max-iterations N]
 claim-shadow-acceptance --input RUN_SET.json [--output REPORT.json]
 claim-shadow-review-packet --input RUN_SET.json --output-dir DIR
 claim-shadow-review-import --input RUN_SET.json --decisions DECISIONS.json --output REVIEWED_RUN_SET.json --golden-manifest GOLDEN_MANIFEST.json
+python -m desktop_tasks result-package-start --out DIR --input FILE --stages a,b,c
+python -m desktop_tasks result-package-complete --out DIR --run-id RUN-ID --completed-stages a,b,c
+python -m desktop_tasks result-package-fail --out DIR --run-id RUN-ID --error MESSAGE
+python -m desktop_tasks result-package-status --out DIR [--verify]
 ```
+
+The four `result-package-*` desktop-bridge commands manage the `result-package.json`
+lifecycle marker (schema `ratomizer-result-package/v1`, layout `result-layout-v1`). They always
+write exactly one JSON envelope to stdout, including failures:
+`{"kind": "result_package_*", "ok": false, "error": {"type": ..., "message": ...}}` with
+`error.type` one of `input_error` (exit 2 — e.g. `legacy flat output requires explicit
+migration` for a legacy flat output directory), `requested_stage_partial` (exit 2 — a
+requested stage ended degraded/failed, so `result-package-complete` refuses the completion
+commit; the active attempt stays `running` and the last completed generation is untouched),
+`result_package_corrupt` (exit 3 — damaged
+marker or interrupted publication journal), `result_package_modified` (exit 3 — only with
+`result-package-status --verify`: a deliverable or completion-evidence hash no longer matches
+the marker, message prefixed with `结果文件已被修改`), or `internal_error` (exit 1, traceback on stderr).
+`--verify` recomputes every deliverable and completion-evidence SHA-256 against the marker;
+without it the status command performs existence checks only. The same explicit verification
+is exposed over HTTP as `GET /result-package?verify=1` (503 `result_package_modified`,
+`retryable: false` on mismatch) and is what the desktop 「打开已有结果」 flow runs before
+attaching a review session.
+While an attempt is active, stage commands write only inside `.ratomizer/`; root deliverables
+stay at the last completed generation and are published transactionally by
+`result-package-complete`. Read-only commands (`summary`, `result-package-status`) never
+publish or recover writes. If a post-completion write command's deliverable publication fails,
+the stage result still stands: the failure is recorded in run.log, the marker `warnings[]`,
+and the payload `warnings[]` instead of crashing the command.
 
 `claim-shadow-acceptance` validates immutable Phase 0 claim snapshots and emits a sanitized
 transition report. The input manifest assigns safe `run_id`/`document_id` labels to local output
@@ -256,7 +284,7 @@ images are never faked. The in-app payload (`/document/pdf`) reuses the exported
 read-only and never converts on the request path. `pywin32` is a Windows-only dependency
 (`pywin32; sys_platform=="win32"`); other platforms degrade gracefully.
 
-Spot extract (`spot-extract-v1`, 2026-07-28): the review API endpoint `POST /spot-extract`
+Spot extract (`spot-extract-v2`, row-entry structure gate 2026-08-03): the review API endpoint `POST /spot-extract`
 (frozen-spec alias `/api/spot-extract`, same handler) runs a targeted analysis of one
 annotation block or table row (`{block_id, row_index?}`). A requirement-shaped parameter
 table row reuses the deterministic guards-v16 single-row expansion; any other row or

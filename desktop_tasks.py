@@ -28,6 +28,9 @@ from requirement_kb.cli import default_kb_paths, package_root
 from requirements_analysis import requirements_analysis_enrichment_enabled, run_requirements_analysis
 from requirements_analysis_schema import normalize_ownership
 from result_package import (
+    ResultPackageCorrupt,
+    ResultPackageError,
+    ResultPackagePartialError,
     commit_analysis_completion,
     detect_result_layout,
     initialize_result_package,
@@ -37,6 +40,7 @@ from result_package import (
     package_root_for_analysis_root,
     publish_registered_deliverables,
     record_analysis_failure,
+    record_package_warning,
     resolve_analysis_root,
 )
 from spec_export import export_spec
@@ -462,6 +466,21 @@ _REPLACE_RETRY_DELAY_S = 0.02
 # 阶段名 == 子命令名（manifest 键与 CLI 一致，GUI 单步按钮与 chain 写同一本账）
 CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
                "clarification-report", "compose", "export-annotation-html"]
+
+# 结果包发布纪律（2026-08-03 审查 I1/I3，spec §8.2/§15）：
+# - 只有这些会改动已注册根交付物的写命令才允许触发发布；
+#   只读命令（summary 等）永不发布——发布会做恢复写 + 全量复制 + marker 重写。
+# - 活动 attempt 期间即使白名单命令也不发布：根交付物保持上一完成代，
+#   由 result-package-complete 在全部阶段验证后一次性发布（失败重跑不污染旧完成结果）。
+PUBLISHING_COMMANDS = frozenset({
+    "run", "chain", "ai-extract", "clarification-report", "requirements-analysis",
+    "template-write", "assemble", "compose", "export",
+    "export-annotation-html", "import-ai-decisions", "import-clarification-answers",
+})
+_RESULT_PACKAGE_COMMANDS = frozenset({
+    "result-package-start", "result-package-complete",
+    "result-package-fail", "result-package-status",
+})
 STAGE_INPUTS: dict[str, list[str]] = {
     "atomize": [],
     "llm-review": ["atomic_requirements.jsonl", "llm_tasks.jsonl"],
@@ -732,7 +751,7 @@ def _outputs_exist(out_dir: Path, outputs: list[str]) -> bool:
         return False
     root = Path(out_dir).expanduser().resolve()
     for name in outputs:
-        path = governed_artifact_path(root, name)
+        path = governed_artifact_path(root, name, for_write=False)
         if not path.exists() or path.is_dir():
             return False
         try:
@@ -790,7 +809,7 @@ def stage_input_files_fingerprint(out_dir: Path, stage: str) -> str:
     for name in STAGE_INPUTS.get(stage, []):
         if name in ignored:
             continue
-        path = governed_artifact_path(root, name)
+        path = governed_artifact_path(root, name, for_write=False)
         payload.append({
             "path": name,
             "sha256": _hash_file(path) if path.is_file() else None,
@@ -827,7 +846,7 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
     root = Path(out_dir).expanduser().resolve()
     inputs: list[dict[str, Any]] = []
     for name in STAGE_INPUTS.get(stage, []):
-        path = governed_artifact_path(root, name)
+        path = governed_artifact_path(root, name, for_write=False)
         inputs.append({
             "path": name,
             "sha256": _hash_file(path) if path.exists() and path.is_file() else None,
@@ -1240,18 +1259,28 @@ def update_run_manifest(out_dir: Path, stage: str, status: str, *,
     """run_manifest.json：out_dir 的显式状态账本（阶段/状态/版本/时间）。写失败不阻断任务。"""
     import datetime as _dt
     root = Path(out_dir).expanduser().resolve()
-    package_root = package_root_for_analysis_root(root)
-    path = (package_artifact_path(package_root, "run_manifest", for_write=True)
-            if package_root is not None else root / RUN_MANIFEST)
+    try:
+        package_root = package_root_for_analysis_root(root)
+        path = (package_artifact_path(package_root, "run_manifest", for_write=True)
+                if package_root is not None else root / RUN_MANIFEST)
+    except ResultPackageError as exc:
+        # marker/journal 损坏不阻断阶段记账（"写失败不阻断"契约，2026-08-03 审查 I2）
+        LOGGER.warning("run_manifest 记账：结果包布局不可读，退回分析根直写：%s", exc)
+        package_root = None
+        path = root / RUN_MANIFEST
     attempt_run_id: str | None = None
     if package_root is not None:
-        package = load_result_package(package_root)
-        active_attempt = package.get("active_attempt")
-        if (
-            isinstance(active_attempt, dict)
-            and stage in (active_attempt.get("requested_stages") or [])
-        ):
-            attempt_run_id = str(active_attempt.get("run_id") or "") or None
+        try:
+            package = load_result_package(package_root)
+        except ResultPackageError as exc:
+            LOGGER.warning("run_manifest 记账：结果包 marker 不可读，跳过 attempt 绑定：%s", exc)
+        else:
+            active_attempt = package.get("active_attempt")
+            if (
+                isinstance(active_attempt, dict)
+                and stage in (active_attempt.get("requested_stages") or [])
+            ):
+                attempt_run_id = str(active_attempt.get("run_id") or "") or None
     now = _dt.datetime.now().isoformat(timespec="seconds")
     try:
         with _run_manifest_lock(root):
@@ -1836,6 +1865,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     package_status_parser = subparsers.add_parser("result-package-status")
     package_status_parser.add_argument("--out", type=Path, required=True)
+    package_status_parser.add_argument(
+        "--verify",
+        action="store_true",
+        # S5：显式完整校验（「打开已有结果」）——重算交付物/完成证据 SHA
+        help="recompute deliverable and completion-evidence hashes (fail on mismatch)",
+    )
     return parser.parse_args(argv)
 
 
@@ -1925,62 +1960,94 @@ def teardown_run_logging() -> None:
     llm_client.set_trace_path(None)
 
 
+def _fail_with_envelope(kind: str, error_type: str, exc: BaseException, code: int) -> int:
+    """结构化失败面：stdout 落 JSON envelope（CLI 契约），stderr 落同一 JSON 行
+    （Electron runDesktopTaskProcess 非零退出时以 stderr 为错误消息）。"""
+    envelope = {
+        "kind": kind,
+        "ok": False,
+        "error": {"type": error_type, "message": str(exc)},
+    }
+    print_json_payload(envelope)
+    print(json.dumps(envelope, ensure_ascii=True), file=sys.stderr)
+    return code
+
+
+def _result_package_main(args: argparse.Namespace) -> int:
+    """result-package-* 子命令：成功/失败都输出单个 JSON envelope，exit code 结构化——
+    0 成功；2 输入/布局拒绝（如 legacy 目录需显式迁移）；3 marker/journal 损坏等校验失败；
+    1 未分类异常（traceback 落 stderr）。2026-08-03 审查 S1/I2：此前异常直接裸 traceback。
+    """
+    kind = args.command.replace("-", "_")
+    try:
+        package_root = args.out.expanduser().resolve()
+        if args.command == "result-package-start":
+            package = initialize_result_package(
+                package_root,
+                input_path=args.input,
+                requested_stages=split_formats(args.stages),
+            )
+        elif args.command == "result-package-complete":
+            package = commit_analysis_completion(
+                package_root,
+                run_id=args.run_id,
+                completed_stages=split_formats(args.completed_stages),
+            )
+        elif args.command == "result-package-fail":
+            package = record_analysis_failure(
+                package_root,
+                run_id=args.run_id,
+                error=args.error,
+            )
+        else:  # result-package-status
+            layout = detect_result_layout(package_root)
+            package = (
+                load_result_package(package_root, verify=bool(getattr(args, "verify", False)))
+                if layout == "package_v1"
+                else None
+            )
+            print_json_payload({
+                "kind": kind,
+                "ok": True,
+                "out_dir": str(package_root),
+                "analysis_root": str(resolve_analysis_root(package_root)),
+                "layout": layout,
+                "package": package,
+            })
+            return 0
+        print_json_payload({
+            "kind": kind,
+            "ok": True,
+            "out_dir": str(package_root),
+            "analysis_root": str(resolve_analysis_root(package_root)),
+            "package": package,
+        })
+        return 0
+    except ResultPackageCorrupt as exc:
+        # S5：verify 发现交付物/完成证据哈希不一致是独立稳定错误面——
+        # 桌面端据此显示"结果文件已被修改"
+        if "changed" in str(exc):
+            return _fail_with_envelope(
+                kind, "result_package_modified",
+                ResultPackageCorrupt(f"结果文件已被修改：{exc}"), 3,
+            )
+        return _fail_with_envelope(kind, "result_package_corrupt", exc, 3)
+    except ResultPackagePartialError as exc:
+        # I6：部分阶段降级是稳定错误码——桌面端据此显示"分析未完成（部分阶段
+        # 降级）"而非"运行失败"；语义仍 fail-closed（exit 2，不冒充完成）
+        return _fail_with_envelope(kind, "requested_stage_partial", exc, 2)
+    except ResultPackageError as exc:
+        # 含 "legacy flat output requires explicit migration" 等布局拒绝
+        return _fail_with_envelope(kind, "input_error", exc, 2)
+    except Exception as exc:
+        logging.getLogger("requirement_atomizer").exception("%s 失败", args.command)
+        return _fail_with_envelope(kind, "internal_error", exc, 1)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.command == "result-package-start":
-        package_root = args.out.expanduser().resolve()
-        package = initialize_result_package(
-            package_root,
-            input_path=args.input,
-            requested_stages=split_formats(args.stages),
-        )
-        print_json_payload({
-            "kind": "result_package_start",
-            "out_dir": str(package_root),
-            "analysis_root": str(resolve_analysis_root(package_root)),
-            "package": package,
-        })
-        return 0
-    if args.command == "result-package-complete":
-        package_root = args.out.expanduser().resolve()
-        package = commit_analysis_completion(
-            package_root,
-            run_id=args.run_id,
-            completed_stages=split_formats(args.completed_stages),
-        )
-        print_json_payload({
-            "kind": "result_package_complete",
-            "out_dir": str(package_root),
-            "analysis_root": str(resolve_analysis_root(package_root)),
-            "package": package,
-        })
-        return 0
-    if args.command == "result-package-fail":
-        package_root = args.out.expanduser().resolve()
-        package = record_analysis_failure(
-            package_root,
-            run_id=args.run_id,
-            error=args.error,
-        )
-        print_json_payload({
-            "kind": "result_package_fail",
-            "out_dir": str(package_root),
-            "analysis_root": str(resolve_analysis_root(package_root)),
-            "package": package,
-        })
-        return 0
-    if args.command == "result-package-status":
-        package_root = args.out.expanduser().resolve()
-        layout = detect_result_layout(package_root)
-        package = load_result_package(package_root) if layout == "package_v1" else None
-        print_json_payload({
-            "kind": "result_package_status",
-            "out_dir": str(package_root),
-            "analysis_root": str(resolve_analysis_root(package_root)),
-            "layout": layout,
-            "package": package,
-        })
-        return 0
+    if args.command in _RESULT_PACKAGE_COMMANDS:
+        return _result_package_main(args)
     if args.command == "claim-shadow-acceptance":
         from claim_acceptance import main as claim_acceptance_main
         forwarded = ["--input", str(args.input)]
@@ -2006,7 +2073,14 @@ def main(argv: list[str] | None = None) -> int:
     out_layout: str | None = None
     if original_out is not None:
         original_out = Path(original_out).expanduser().resolve()
-        out_layout = detect_result_layout(original_out)
+        try:
+            out_layout = detect_result_layout(original_out)
+        except ResultPackageError as exc:
+            # 残留发布 journal / 损坏 marker：结构化失败，不再对所有桌面命令裸 traceback
+            # （2026-08-03 审查 I2）。
+            if isinstance(exc, ResultPackageCorrupt):
+                return _fail_with_envelope(args.command, "result_package_corrupt", exc, 3)
+            return _fail_with_envelope(args.command, "input_error", exc, 2)
         if out_layout == "package_v1":
             package_root = original_out
             args.out = resolve_analysis_root(original_out)
@@ -2112,8 +2186,9 @@ def main(argv: list[str] | None = None) -> int:
             **manifest_context,
         )
     if package_root is not None and isinstance(payload, dict):
-        published = publish_registered_deliverables(package_root)
+        # out_dir 永远还原为 package root，不把 .ratomizer/pipeline 泄漏给 Electron 最近会话。
         payload["out_dir"] = str(package_root)
+        published = _maybe_publish_after_command(args.command, package_root, payload)
         if published:
             published_by_id = {item["artifact_id"]: item for item in published}
             normalized_written: list[str] = []
@@ -2133,6 +2208,43 @@ def main(argv: list[str] | None = None) -> int:
                 payload["written"] = normalized_written
     print_json_payload(payload)
     return 0
+
+
+def _maybe_publish_after_command(
+    command: str,
+    package_root: Path,
+    payload: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """已完成结果上的写命令结束后发布根交付物；返回发布清单（未发布为 None）。
+
+    失败降级（2026-08-03 审查 I2，spec §11）：发布异常（锁超时/磁盘/journal 损坏）
+    不掩盖已成功的阶段——记 run.log + marker warnings[] + payload warnings，
+    run_manifest 里的阶段结果保持原样。
+    """
+    if command not in PUBLISHING_COMMANDS:
+        return None
+    try:
+        package = load_result_package(package_root)
+    except ResultPackageError as exc:
+        LOGGER.warning("结果包不可读，跳过交付物发布：%s", exc)
+        payload.setdefault("warnings", []).append(
+            f"deliverable publication skipped: {exc}"
+        )
+        return None
+    if isinstance(package.get("active_attempt"), dict):
+        # 活动 attempt：根交付物保持上一完成代，由 result-package-complete 一次性发布。
+        return None
+    try:
+        return publish_registered_deliverables(package_root)
+    except Exception as exc:  # 锁超时/磁盘错误/journal 损坏等
+        LOGGER.exception("交付物发布失败（阶段本身已成功）：%s", exc)
+        warning = f"deliverable publication failed: {exc}"
+        payload.setdefault("warnings", []).append(warning)
+        try:
+            record_package_warning(package_root, warning)
+        except Exception:  # marker 本身不可写时只留日志
+            LOGGER.warning("marker warnings 记录失败", exc_info=True)
+        return None
 
 
 def split_formats(value: str) -> list[str]:

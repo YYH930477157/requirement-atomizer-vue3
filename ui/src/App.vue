@@ -650,7 +650,7 @@ import {
   UserRound,
   X,
 } from "@lucide/vue"
-import { isNeedsReconfirmationError, RequirementApiClient } from "./api-client"
+import { isNeedsReconfirmationError, RequirementApiClient, RequirementApiError } from "./api-client"
 import ClaimLedger from "./ClaimLedger.vue"
 import DocumentReview from "./DocumentReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
@@ -1203,6 +1203,7 @@ onMounted(() => {
   })
   loadInitialApiSession()
   void loadRecentSessions()
+  void loadDefaultOutputRoot()
   // 恢复已保存的 LLM 开关/端点：此前只在打开设置面板时才加载——重启后 llmMode 恒 false，
   // 整条 AI 交付物轨静默降级 stub（2026-07-08 审计 A2）
   void loadLlmSettings()
@@ -1532,7 +1533,8 @@ async function handleOpenExistingOutput() {
     if (!session) return
     await loadFromSession(session, { restoreContext: true })
   } catch (error) {
-    disconnectReviewSession()
+    // S8：打开失败保留当前审查会话——只有新 API 成功接管（loadFromSession 走完）
+    // 才允许断开旧会话，选错目录/分类失败不应清空用户正在审的内容
     const reason = error instanceof Error ? error.message : "本地 API 启动失败"
     apiMessage.value = `无法打开已有结果：${reason}`
   }
@@ -1607,10 +1609,15 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         stages: requestedPackageStages,
       })
       applyResultPackageState(started)
-      const packageState = objectValue(started.package)
-      const activeAttempt = objectValue(packageState?.active_attempt)
-      packageRunId = stringOr(activeAttempt?.run_id, "")
-      if (!packageRunId) throw new Error("结果包启动未返回运行标识")
+      // I5：legacy 目录由主进程分类后直接按旧管线运行（不创建 marker/.ratomizer），
+      // 不返回 run_id，也不需要 complete/fail 跟踪
+      const startedLayout = stringOr(objectValue(started)?.layout, "")
+      if (startedLayout !== "legacy") {
+        const packageState = objectValue(started.package)
+        const activeAttempt = objectValue(packageState?.active_attempt)
+        packageRunId = stringOr(activeAttempt?.run_id, "")
+        if (!packageRunId) throw new Error("结果包启动未返回运行标识")
+      }
     }
     resetRunStageBoard()
     runProgress.value = 8
@@ -1772,6 +1779,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
       }
     }
 
+    let packageNote = ""
     if (packageRunId && window.ratomizerDesktop.completeResultPackage) {
       const completedPackage = await window.ratomizerDesktop.completeResultPackage({
         outDir: packageOutDir,
@@ -1779,12 +1787,20 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         completedStages: requestedPackageStages,
       })
       applyResultPackageState(completedPackage)
+      // I6：请求阶段未全部成功（降级/缺失）时后端拒绝完成提交并返回稳定错误码——
+      // 如实显示「分析未完成（部分阶段降级）」，不把运行记为失败，也不走 failResultPackage
+      const completionRecord = objectValue(completedPackage)
+      if (completionRecord?.ok === false && stringOr(completionRecord.code, "") === "requested_stage_partial") {
+        resultPackageStatus.value = "incomplete"
+        const partialDetail = stringOr(completionRecord.message, "")
+        packageNote = `；分析未完成（部分阶段降级）${partialDetail ? `：${partialDetail}` : ""}`
+      }
     }
     runProgress.value = 100
     runStage.value = "运行完成"
     if (options.llmReviewLimit) {
       runProgressDetail.value = `测试运行完成：最多 AI 审查 ${options.llmReviewLimit} 条${sampleNote}`
-      apiMessage.value = `测试运行完成${sampleNote}`
+      apiMessage.value = `测试运行完成${sampleNote}${packageNote}`
     } else {
       const tail = ranStages.length ? `，随后 ${ranStages.join(" → ")}` : ""
       // 一致性闭环：跨章重复/OBIS 待核/覆盖缺口直接进跑完消息（详情看批注视图标记）
@@ -1798,7 +1814,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
         ? `；${apiReconnectWarning}`
         : ""
       runProgressDetail.value = `全部阶段完成：抽取与审查${tail}`
-      apiMessage.value = `运行完成：抽取与审查${tail}${warn}${readinessNote}${apiWarn}`
+      apiMessage.value = `运行完成：抽取与审查${tail}${warn}${readinessNote}${apiWarn}${packageNote}`
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : "抽取与审查失败"
@@ -2011,10 +2027,21 @@ async function loadFromSession(
     if (generation === apiSessionLoadGeneration) reviewInsights.value = []
   }
   try {
-    const packageState = await client.loadResultPackage()
+    const packageState = await client.loadResultPackage({
+      // S5：显式打开/恢复会话时做完整校验（哈希重算）；轮询式刷新保持纯存在性检查
+      verify: options.restoreContext === true,
+    })
     if (generation === apiSessionLoadGeneration) applyResultPackageState(packageState)
-  } catch {
-    // Older API builds have no package endpoint; keep the session usable.
+  } catch (error) {
+    // S5：完整校验发现交付物/完成证据哈希不一致——如实显示「结果文件已被修改」，
+    // 不静默吞掉；其余失败（老 API 无端点等）保持既有宽容
+    if (
+      generation === apiSessionLoadGeneration
+      && error instanceof RequirementApiError
+      && error.details?.error === "result_package_modified"
+    ) {
+      apiMessage.value = String(error.details.detail || "结果文件已被修改")
+    }
   }
 }
 
@@ -2122,9 +2149,26 @@ function formatApiReconnectWarning(outDir: string, reason: string) {
   return `结果已生成在输出目录：${outDir}；但本地 API 暂时未连接（${text}）。无需重跑 AI，稍后重新选择该输出目录即可继续查看/批注`
 }
 
+// S16：默认输出根经 Electron 派生（app:get-default-output-root，documents/失败退回
+// userData），禁止硬编码开发机路径；bridge 不可用（浏览器调试）时退回输入文件同级目录。
+const defaultOutputRoot = ref("")
+
+async function loadDefaultOutputRoot() {
+  if (!window.ratomizerDesktop?.getDefaultOutputRoot) return
+  try {
+    defaultOutputRoot.value = await window.ratomizerDesktop.getDefaultOutputRoot()
+  } catch {
+    defaultOutputRoot.value = ""
+  }
+}
+
 function defaultOutputDir(inputPath: string) {
   const stem = inputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") || "run"
-  return `E:\\Codex\\requirement-atomizer-runs\\${stem}`
+  if (defaultOutputRoot.value) {
+    return `${defaultOutputRoot.value.replace(/[\\/]+$/, "")}\\${stem}`
+  }
+  const parent = inputPath.replace(/[\\/][^\\/]*$/, "")
+  return parent && parent !== inputPath ? `${parent}\\${stem}-run` : stem
 }
 
 function countStatus(status: ReviewStatus) {

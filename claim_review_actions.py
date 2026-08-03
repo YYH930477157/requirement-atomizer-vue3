@@ -18,6 +18,7 @@ from claim_artifacts import (
     CLAIM_REVIEW_EVENTS,
     LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
     ClaimArtifactError,
+    ClaimBaseMigrationRequired,
     _atomic_write_bytes,
     _validate_schema,
     canonical_target_fingerprint,
@@ -2903,7 +2904,20 @@ def fold_effective_ledger(
                 interrupted_effective_publication = (
                     claim_artifact_path(root, CLAIM_EFFECTIVE_PUBLICATION_JOURNAL)
                 ).is_file()
-                base = load_committed_claim_base(root)
+                try:
+                    base = load_committed_claim_base(root)
+                except ClaimBaseMigrationRequired:
+                    # S11：陈旧产物协议与版本闸同口径——结构化 base_migration_required，
+                    # 不抛裸协议错误（唯一恢复路径是重跑 atomize）
+                    return {
+                        "ok": False,
+                        "error": "base_migration_required",
+                        "reason": "base_migration_required",
+                        "publication_skipped": True,
+                        "actor_trigger": actor_trigger,
+                        "attempt": attempt,
+                        "event_append_count": 0,
+                    }
                 from claim_artifacts import committed_base_versions_are_current
 
                 if not committed_base_versions_are_current(

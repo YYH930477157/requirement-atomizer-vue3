@@ -33,11 +33,10 @@ from table_structure import (
     TABLE_STRUCTURE_VERSION,
     is_normative_text,
     is_positive_marker,
-    matrix_fact_columns,
     row_bears_normative_sentence,
 )
 
-CLAIM_CATALOG_VERSION = "claim-catalog-v10"
+CLAIM_CATALOG_VERSION = "claim-catalog-v11"
 CLAIM_UNIT_PACKING_VERSION = "claim-unit-packing-v1"
 CLAIM_CATALOG_SCHEMA = "claim-catalog/v2"
 CLAIM_CATALOG_META_SCHEMA = "claim-catalog-meta/v1"
@@ -959,22 +958,26 @@ def _enumerate_leaves(
             if table_rows:
                 table_item_consumers[block_id] += 1
             headers = [str(value) for value in (block.get("headers") or [])]
-            # 组合表（mixed）：事实列字段不进 row claim 文本——marker 格由 cell claim
-            # 闭环，同一物理内容只有一个 owner
-            fact_header_names: set[str] = set()
+            # 组合表（mixed）：只有真正成为 cell leaf 的事实格才按 (row, column)
+            # 坐标从行文本剔除——marker 格由 cell claim 闭环，同一物理内容只有一个
+            # owner。事实列中的非 marker 文本格（"optional"/"see note"）不是 cell
+            # leaf，必须保留在 row claim；按整列剔除会让该格零 owner 消失，而旧
+            # 消费审计只查"行在 row_leaf_indexes"坐标即计消费（2026-08-03 清单 I4：
+            # `Voltage|230 V|required|optional` 的 optional 无 owner 且审计全零
+            # 假通过）。stored matrix_fact_columns 缺失时不再重推导事实列——
+            # 坐标剔除只消费 leaf plan 的真实 cell leaf，重推导只会重新引入整列口径。
+            fact_leaf_fields: dict[int, set[str]] = {}
             if row_leaf_indexes and cell_leaf_id_set:
-                stored_fact_columns = block.get("matrix_fact_columns")
-                if stored_fact_columns is not None:
-                    fact_column_indexes = {int(value) for value in stored_fact_columns}
-                else:
-                    fact_column_indexes = matrix_fact_columns(
-                        headers, list(block.get("data_rows") or [])
-                    )
-                fact_header_names = {
-                    headers[column]
-                    for column in fact_column_indexes
-                    if column < len(headers)
-                }
+                for cell_id in cell_leaf_id_set:
+                    fact_cell = block_cells.get(cell_id)
+                    if fact_cell is None:
+                        continue
+                    fact_row = int(fact_cell.get("row_index") or 0)
+                    fact_column = int(fact_cell.get("column_index") or 0)
+                    if fact_row in row_leaf_indexes and 1 <= fact_column <= len(headers):
+                        fact_leaf_fields.setdefault(fact_row, set()).add(
+                            headers[fact_column - 1]
+                        )
             # 多义务格（同格 ≥2 条独立规范性句）按 (行, 列) 逐格排除出行文本——
             # 该格由按句 cell claim 闭环，行仍 own 其余字段（不株连整列）
             multi_duty_fields: dict[int, set[str]] = {}
@@ -1006,7 +1009,7 @@ def _enumerate_leaves(
                 if item_row_index not in row_leaf_indexes:
                     continue  # cell/mixed 模式中的行仅作容器，不生成重复父 claim
                 excluded_names = (
-                    fact_header_names
+                    fact_leaf_fields.get(item_row_index, set())
                     | multi_duty_fields.get(item_row_index, set())
                     | review_candidate_fields.get(item_row_index, set())
                 )
@@ -1134,11 +1137,24 @@ def _enumerate_leaves(
                     consumed += 1
                 elif cell_id in context_cell_id_set:
                     consumed += 1
-                elif (
-                    int(cell.get("row_index") or 0) in row_leaf_indexes
-                    and cell_id not in cell_leaf_id_set
-                ):
-                    consumed += 1
+                elif int(cell.get("row_index") or 0) in row_leaf_indexes:
+                    # 坐标落在 row leaf 内 ≠ 文本确实进入 row claim：被逐格剔除
+                    # （cell leaf/多义务格/审查候选）的格必须另有 owner，否则是零
+                    # owner 静默丢失——审计不得靠坐标假通过（I4 封堵）
+                    cell_row = int(cell.get("row_index") or 0)
+                    cell_column = int(cell.get("column_index") or 0)
+                    header_name = (
+                        headers[cell_column - 1]
+                        if 1 <= cell_column <= len(headers)
+                        else None
+                    )
+                    row_excluded_names = (
+                        fact_leaf_fields.get(cell_row, set())
+                        | multi_duty_fields.get(cell_row, set())
+                        | review_candidate_fields.get(cell_row, set())
+                    )
+                    if header_name is not None and header_name not in row_excluded_names:
+                        consumed += 1
                 if consumed == 0:
                     audit["unconsumed_table_cell_count"] += 1
                 elif consumed > 1:

@@ -20,7 +20,7 @@ from typing import Any
 from io_utils import read_jsonl
 from omission_actions import OmissionConflictError, extraction_operation_lock
 
-SPOT_EXTRACT_VERSION = "spot-extract-v1"
+SPOT_EXTRACT_VERSION = "spot-extract-v2"
 SPOT_SOURCE_MAPPING = "spot_extract"
 SPOT_SUSPICION = "用户定点解析"
 # critique_section 会给补入条目打自检标签——点解析不是自检补充，发布前如实摘除
@@ -81,7 +81,12 @@ def _deterministic_row_requirement(block: dict[str, Any], row_index: int,
         _row_render_line,
     )
     from merged_consistency import compact_source_text
-    from table_structure import is_group_header_row, is_normative_text, normalize_merge_ranges
+    from table_structure import (
+        is_group_header_row,
+        is_normative_text,
+        normalize_merge_ranges,
+        physical_data_row_indexes,
+    )
 
     if not _is_parameter_table(block):
         return None
@@ -89,14 +94,12 @@ def _deterministic_row_requirement(block: dict[str, Any], row_index: int,
     row = data_rows[row_index - 1]   # row_index 界内由 _row_text 先行校验
     cells = [str(cell or "").strip() for cell in row]
     non_empty = [cell for cell in cells if cell]
-    header_row_count = int(
-        block.get("header_row_count")
-        if block.get("header_row_count") is not None
-        else (1 if block.get("headers") else 0)
+    # S12：物理行号从 title/header 结构索引推导（统一 helper），不再按
+    # "表头数 + 标题数 + 数据区偏移"连续假设猜——标题/表头不连续即错行
+    physical_rows = physical_data_row_indexes(block)
+    physical_row = (
+        physical_rows[row_index - 1] if row_index - 1 < len(physical_rows) else row_index
     )
-    physical_row = header_row_count + len(
-        block.get("title_row_indexes") or []
-    ) + row_index
     if is_group_header_row(
         cells,
         physical_row,
@@ -291,6 +294,16 @@ def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
                     rows = [deterministic]
                     strategy = "deterministic_param_row"
         elif cell is None and is_table and row_index is not None:
+            # S12：row 入口与 cell 入口统一 fail-closed——结构证据缺失/陈旧的
+            # 旧产物不得按连续偏移假设猜物理行，必须重跑 atomize 迁移
+            from table_structure import TABLE_STRUCTURE_VERSION
+
+            if str(block.get("table_structure_version") or "") != TABLE_STRUCTURE_VERSION:
+                raise ValueError(
+                    "base_migration_required：表格结构证据缺失或陈旧（"
+                    f"{block.get('table_structure_version') or '无'} ≠ "
+                    f"{TABLE_STRUCTURE_VERSION}），请重跑 atomize"
+                )
             deterministic = _deterministic_row_requirement(
                 block, row_index, _covered_text_for_block(current, block_id))
             if deterministic is not None and deterministic.get("covered"):

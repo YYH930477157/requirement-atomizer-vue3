@@ -809,8 +809,10 @@ export class RequirementApiClient {
     return this.request<Record<string, unknown>>("/manifest")
   }
 
-  async loadResultPackage(): Promise<ResultPackagePayload> {
-    return this.request<ResultPackagePayload>("/result-package")
+  async loadResultPackage(options: { verify?: boolean } = {}): Promise<ResultPackagePayload> {
+    // S5：verify=1 触发后端显式完整校验（重算交付物/完成证据 SHA）——
+    // 「打开已有结果」时由调用方传入；校验失败返回 503 result_package_modified
+    return this.request<ResultPackagePayload>(`/result-package${options.verify ? "?verify=1" : ""}`)
   }
 
   async applyReviewAction(input: ReviewActionInput): Promise<ReviewStatePayload> {

@@ -34,6 +34,16 @@ _PUBLICATION_TRANSACTIONS_DIR = "result-package-publications"
 _PACKAGE_LOCK_DEPTH: ContextVar[int] = ContextVar("result_package_lock_depth", default=0)
 _MARKER_CONTRACT_CACHE: dict[Path, tuple[int, int, int, dict[str, Any]]] = {}
 _MARKER_CONTRACT_CACHE_LOCK = RLock()
+# marker warnings[] 只追加不膨胀：保留最近 N 条，完整细节始终落在 run.log。
+_PACKAGE_WARNING_LIMIT = 50
+
+# schemas/result_package.schema.json additionalProperties=false 的代码侧镜像；
+# 两处必须同步演进（S4）
+_MARKER_TOP_LEVEL_KEYS = frozenset({
+    "schema", "layout_version", "package_id", "analysis_status",
+    "active_attempt", "last_attempt", "input", "analysis", "workspace",
+    "deliverables", "tool", "warnings",
+})
 
 
 class ResultPackageError(RuntimeError):
@@ -46,6 +56,14 @@ class ResultPackageCorrupt(ResultPackageError):
 
 class ResultPackageVersionUnsupported(ResultPackageError):
     pass
+
+
+class ResultPackagePartialError(ResultPackageError):
+    """请求阶段未全部成功（降级/缺失）——完成提交被拒绝的稳定错误面。
+
+    CLI 映射为 envelope ``error.type == "requested_stage_partial"``（exit 2），
+    桌面端据此显示"分析未完成（部分阶段降级）"而非"运行失败"；语义仍是
+    fail-closed（active_attempt 保持 running，不冒充 completed）。"""
 
 
 @contextmanager
@@ -219,7 +237,14 @@ def governed_artifact_path(
     filename: str,
     *,
     category: str | None = None,
+    for_write: bool = True,
 ) -> Path:
+    """Resolve the governed location of a state/cache/log/pipeline artifact.
+
+    S6（2026-08-03 清单）：for_write=False 时纯解析不落盘——只读 GET/快照
+    读取不得自称"无副作用"却在盘上创建 .ratomizer/<category> 空目录；
+    只有显式 for_write=True（默认，兼容既有写路径）才创建父目录。
+    """
     base = Path(root).expanduser().resolve()
     package_root = package_root_for_analysis_root(base)
     if package_root is None:
@@ -243,7 +268,8 @@ def governed_artifact_path(
     if selected not in {"pipeline", "state", "cache", "logs", "stages"}:
         raise ResultPackageError(f"invalid internal artifact category: {selected}")
     target = package_root / INTERNAL_ROOT / selected / filename
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if for_write:
+        target.parent.mkdir(parents=True, exist_ok=True)
     return target
 
 
@@ -331,7 +357,16 @@ def _safe_relative_path(value: Any, *, label: str) -> str:
         raise ResultPackageCorrupt(f"invalid {label}")
     normalized = value.replace("\\", "/")
     candidate = PurePosixPath(normalized)
-    if candidate.is_absolute() or ".." in candidate.parts or candidate.parts[0].endswith(":"):
+    parts = candidate.parts
+    # S3（2026-08-03 清单）："." / "./" 的 parts 为空——此前 parts[0] 抛裸
+    # IndexError 绕过 ResultPackageCorrupt；首段任何含 ":" 的形态（含 "C:foo"
+    # 盘符相对路径）一律拒绝，这是路径穿越防线的唯一关口
+    if (
+        not parts
+        or candidate.is_absolute()
+        or ".." in parts
+        or ":" in parts[0]
+    ):
         raise ResultPackageCorrupt(f"unsafe {label}: {value}")
     return candidate.as_posix()
 
@@ -356,6 +391,11 @@ def _resolve_registered_path(root: Path, relative: str) -> Path:
 
 
 def _validate_package(package: Any) -> dict[str, Any]:
+    """marker 权威校验（与 schemas/result_package.schema.json 对齐）。
+
+    S16：Electron 端 classifyOutputDir（ui/electron/main.helpers.cjs）重实现了
+    本契约的一个只读子集用于打开前快速分类——任何一侧契约改动必须同步检查另一侧。"""
+
     if not isinstance(package, dict):
         raise ResultPackageCorrupt("result package marker must be a JSON object")
     schema = package.get("schema")
@@ -367,6 +407,36 @@ def _validate_package(package: Any) -> dict[str, Any]:
         raise ResultPackageVersionUnsupported(
             f"unsupported output layout: {package.get('layout_version')!r}"
         )
+    # S4（2026-08-03 清单）：与 schemas/result_package.schema.json 对齐——
+    # 顶层白名单（additionalProperties: false）、package_id 模式、tool 记录、
+    # warnings 全字符串。代码写出的 marker 永远合规，这里拒的是手工/外来 marker。
+    unknown_fields = sorted(set(package) - _MARKER_TOP_LEVEL_KEYS)
+    if unknown_fields:
+        raise ResultPackageCorrupt(
+            f"unknown result package fields: {', '.join(unknown_fields)}"
+        )
+    package_id = package.get("package_id")
+    if (
+        not isinstance(package_id, str)
+        or not package_id.startswith("RPK-")
+        or len(package_id) <= 4
+        or any(character not in "0123456789abcdef" for character in package_id[4:])
+    ):
+        raise ResultPackageCorrupt("invalid result package id")
+    tool = package.get("tool")
+    if (
+        not isinstance(tool, dict)
+        or not isinstance(tool.get("version"), str)
+        or not tool["version"]
+    ):
+        raise ResultPackageCorrupt("invalid result package tool record")
+    if tool.get("output_layout_version") != OUTPUT_LAYOUT_VERSION:
+        raise ResultPackageCorrupt("invalid tool output layout version")
+    warnings = package.get("warnings")
+    if not isinstance(warnings, list) or not all(
+        isinstance(item, str) for item in warnings
+    ):
+        raise ResultPackageCorrupt("invalid result package warnings")
     if package.get("analysis_status") not in {"running", "incomplete", "completed"}:
         raise ResultPackageCorrupt("invalid analysis_status")
     if package.get("workspace") != INTERNAL_ROOT:
@@ -629,7 +699,7 @@ def package_artifact_path(
     *,
     for_write: bool = False,
 ) -> Path:
-    del for_write  # Reserved for future read-through publication semantics.
+    # S6：for_write 不再是死参——默认纯解析，只有写路径显式 for_write=True 才建父目录
     result_root = Path(root).expanduser().resolve()
     registration = _ARTIFACTS.get(artifact_id)
     if registration is None:
@@ -639,7 +709,8 @@ def package_artifact_path(
         target = result_root / INTERNAL_ROOT / registration.package_path
     else:
         target = result_root / registration.legacy_path
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if for_write:
+        target.parent.mkdir(parents=True, exist_ok=True)
     return target
 
 
@@ -923,7 +994,7 @@ def _completion_evidence(
         entry = stages.get(stage)
         if not isinstance(entry, dict) or entry.get("status") != "ok":
             actual = entry.get("status") if isinstance(entry, dict) else "missing"
-            raise ResultPackageError(
+            raise ResultPackagePartialError(
                 f"requested stage is not complete: {stage} ({actual})"
             )
         if entry.get("attempt_run_id") != run_id:
@@ -955,7 +1026,7 @@ def _commit_analysis_completion_unlocked(
     completed = list(completed_stages)
     requested = list(active.get("requested_stages", []))
     if any(stage not in completed for stage in requested):
-        raise ResultPackageError("not all requested stages completed")
+        raise ResultPackagePartialError("not all requested stages completed")
     evidence = _completion_evidence(result_root, requested, run_id=run_id)
     finished_at = _utc_now()
     package["analysis_status"] = "completed"
@@ -1069,3 +1140,21 @@ def record_analysis_failure(
             run_id=run_id,
             error=error,
         )
+
+
+def record_package_warning(root: Path | str, message: str) -> dict[str, Any]:
+    """Append a human-readable warning to the marker（spec §11 降级留痕写入点）。
+
+    用于"阶段已成功但交付物发布失败"这类不得改写阶段结果的降级场景；
+    只追加不膨胀（保留最近 _PACKAGE_WARNING_LIMIT 条），完整细节落 run.log。
+    """
+    result_root = Path(root).expanduser().resolve()
+    with _package_write_lock(result_root):
+        _recover_publication_unlocked(result_root)
+        package = load_result_package(result_root)
+        warnings = list(package.get("warnings") or [])
+        warnings.append(f"{_utc_now()} {str(message)[:500]}")
+        package["warnings"] = warnings[-_PACKAGE_WARNING_LIMIT:]
+        _validate_package(package)
+        _atomic_write_json(result_root / RESULT_PACKAGE_FILE, package)
+        return package

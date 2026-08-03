@@ -196,7 +196,10 @@ def apply_expert_decision(
                     "裁决状态已保存，但事件日志追加失败：%s", exc)
                 result = dict(result)
                 result["audit_warning"] = "裁决已保存，但独立事件日志写入失败；完整历史仍保存在状态文件中"
-    if (out_dir / "claim_generation.meta.json").is_file():
+    # package_v1 下该文件在 .ratomizer/state/，裸路径闸门会静默吞掉 fold 钩子（审查 B1 同族）
+    if governed_artifact_path(
+        out_dir, "claim_generation.meta.json", category="state"
+    ).is_file():
         try:
             from claim_review_actions import fold_effective_ledger
 

@@ -103,12 +103,12 @@ def assemble_sections(
                 real_items = items_by_block.get(str(block.get("block_id") or ""))
                 if real_items is not None:
                     # 权威 item_id/row_index（物理行号,含表头/标题偏移）——不再自行拼 ID
+                    # S12：物理行推导统一走 table_structure.physical_data_row_indexes
+                    # （标题/表头不连续时连续偏移公式必然错位）
+                    from table_structure import physical_data_row_indexes
+
                     data_rows = list(block.get("data_rows") or [])
-                    physical_rows = sorted(
-                        set(range(1, int(block.get("rows") or len(data_rows)) + 1))
-                        - set(block.get("title_row_indexes") or [])
-                        - set(block.get("header_row_indexes") or [])
-                    )
+                    physical_rows = physical_data_row_indexes(block)
                     data_position = {row_index: pos for pos, row_index in enumerate(physical_rows, start=1)}
                     for item in sorted(real_items, key=lambda row: int(row.get("row_index") or 0)):
                         if str(item.get("leaf_role") or "row") != "row":
@@ -131,13 +131,11 @@ def assemble_sections(
                                 "text": line,
                             })
                 else:
-                    # 兼容路径（无真实 items）：行号 = 表头数 + 标题数 + 数据区偏移
-                    header_row_count = int(
-                        block.get("header_row_count")
-                        if block.get("header_row_count") is not None
-                        else (1 if block.get("headers") else 0)
-                    )
-                    header_offset = header_row_count + len(block.get("title_row_indexes") or [])
+                    # 兼容路径（无真实 items）：行号同样走统一推导（旧产物缺结构
+                    # 索引时 helper 内部退回"表头数 + 标题数 + 数据区偏移"历史公式）
+                    from table_structure import physical_data_row_indexes
+
+                    physical_rows = physical_data_row_indexes(block)
                     for offset, row in enumerate(block.get("data_rows") or [], start=1):
                         cells = [str(c or "").strip() for c in row]
                         non_empty = [c for c in cells if c]
@@ -145,7 +143,11 @@ def assemble_sections(
                             continue
                         line = _row_render_line(headers, row)
                         if line.strip():
-                            row_index = header_offset + offset
+                            row_index = (
+                                physical_rows[offset - 1]
+                                if offset - 1 < len(physical_rows)
+                                else offset
+                            )
                             row_entries.append({
                                 "row_index": row_index,
                                 "item_id": f"{table_id}-R{row_index:06d}",
@@ -199,9 +201,12 @@ def _is_group_header_evidence(
 
     if is_normative_text(non_empty[0]):
         return False
-    merge_ranges = normalize_merge_ranges(block.get("merge_ranges") or [])
-    if not merge_ranges:
+    # S15（2026-08-03 清单）：merge_ranges=[] 是"已知无合并"的确切证据——
+    # 同值行必须经全宽 merge anchor 判定（结果：不是分组标题）；只有键缺失
+    # 或显式 None（旧产物无证据）才退回历史同值启发式
+    if block.get("merge_ranges") is None:
         return True  # 旧产物无合并证据：历史同值口径
+    merge_ranges = normalize_merge_ranges(block.get("merge_ranges"))
     width = int(block.get("columns") or 0)
     return full_width_merge_row(int(item.get("row_index") or 0), width, merge_ranges) is not None
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -658,6 +658,540 @@ class ResultPackageTests(unittest.TestCase):
 
             self.assertEqual(translations, {key: "中文译文"})
             self.assertEqual(notes, {})
+
+
+class ResultPackagePublicationTimingTests(unittest.TestCase):
+    """2026-08-03 审查 I1/I2/I3 回归：发布时机、只读纪律与结构化错误面。"""
+
+    def _source(self, root: Path) -> Path:
+        source = root / "standard.docx"
+        source.write_bytes(b"docx-fixture")
+        return source
+
+    def _start(self, root: Path, stages: str = "ai-extract") -> dict:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            exit_code = desktop_tasks.main([
+                "result-package-start", "--out", str(root),
+                "--input", str(self._source(root)), "--stages", stages,
+            ])
+        self.assertEqual(exit_code, 0)
+        return json.loads(stdout.getvalue())["package"]
+
+    def _run_ai_extract_stub(self, root: Path, summary_text: str) -> dict:
+        analysis_root = resolve_analysis_root(root)
+
+        def fake_task(out_dir: Path, **kwargs: object) -> dict:
+            target = package_artifact_path(root, "summary_md", for_write=True)
+            target.write_text(summary_text, encoding="utf-8")
+            return {"kind": "ai_extract", "written": [str(target)]}
+
+        stdout = StringIO()
+        with (
+            patch.object(desktop_tasks, "ai_extract_task", side_effect=fake_task),
+            redirect_stdout(stdout),
+        ):
+            exit_code = desktop_tasks.main(["ai-extract", "--out", str(root)])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(analysis_root, root / ".ratomizer" / "pipeline")
+        return json.loads(stdout.getvalue())
+
+    def test_summary_on_package_v1_never_publishes(self) -> None:
+        # I1：只读 summary 不得触发恢复/发布写（spec §15）。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize_package(root)
+
+            with patch.object(
+                desktop_tasks,
+                "publish_registered_deliverables",
+                side_effect=AssertionError("readonly summary triggered publication"),
+            ):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = desktop_tasks.main(["summary", "--out", str(root)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["out_dir"], str(root.resolve()))
+
+    def _initialize_package(self, root: Path) -> dict:
+        return initialize_result_package(
+            root,
+            input_path=self._source(root),
+            requested_stages=["ai-extract"],
+        )
+
+    def test_active_attempt_stage_command_defers_root_publication(self) -> None:
+        # I3：活动 attempt 期间阶段命令只写 .ratomizer/pipeline，根交付物保持上一完成代。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = self._start(root)
+
+            self._run_ai_extract_stub(root, "mid-attempt summary")
+
+            self.assertFalse(
+                (root / "summary.md").exists(),
+                "mid-attempt publication replaced a root deliverable",
+            )
+            package = load_result_package(root)
+            self.assertEqual(package["deliverables"], [])
+            self.assertEqual(package["analysis_status"], "running")
+
+            completed = commit_analysis_completion(
+                root,
+                run_id=started["active_attempt"]["run_id"],
+                completed_stages=["ai-extract"],
+            )
+            self.assertEqual(
+                (root / "summary.md").read_text(encoding="utf-8"),
+                "mid-attempt summary",
+            )
+            self.assertTrue(completed["deliverables"])
+
+    def test_failed_attempt_after_stage_writes_preserves_committed_deliverables(self) -> None:
+        # I3 + spec §8.2：失败重跑后旧完成代的根交付物与 marker 清单保持字节一致。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = self._start(root)
+            self._run_ai_extract_stub(root, "committed summary")
+            commit_analysis_completion(
+                root,
+                run_id=first["active_attempt"]["run_id"],
+                completed_stages=["ai-extract"],
+            )
+            committed_root_bytes = (root / "summary.md").read_bytes()
+            committed = load_result_package(root)
+
+            rerun = self._start(root)
+            self._run_ai_extract_stub(root, "failed rerun summary")
+            failed = record_analysis_failure(
+                root,
+                run_id=rerun["active_attempt"]["run_id"],
+                error="endpoint unavailable",
+            )
+
+            # 根交付物与 marker 的完成代字段保持上一完成代；只有 last_attempt 记 failed。
+            self.assertEqual((root / "summary.md").read_bytes(), committed_root_bytes)
+            self.assertEqual(failed["analysis"], committed["analysis"])
+            self.assertEqual(failed["input"], committed["input"])
+            self.assertEqual(failed["deliverables"], committed["deliverables"])
+            self.assertEqual(failed["analysis_status"], "completed")
+            self.assertEqual(failed["last_attempt"]["status"], "failed")
+            load_result_package(root, verify=True)
+
+    def test_write_command_on_completed_package_publishes(self) -> None:
+        # 白名单：已完成结果上的写命令结束后发布（维持既有"重导出即更新根交付物"行为）。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = self._start(root)
+            self._run_ai_extract_stub(root, "committed summary")
+            commit_analysis_completion(
+                root,
+                run_id=first["active_attempt"]["run_id"],
+                completed_stages=["ai-extract"],
+            )
+
+            def fake_export(out_dir: Path, formats: list[str]) -> dict:
+                target = package_artifact_path(root, "summary_md", for_write=True)
+                target.write_text("re-exported summary", encoding="utf-8")
+                return {"kind": "export", "written": [str(target)]}
+
+            with patch.object(desktop_tasks, "export_task", side_effect=fake_export):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = desktop_tasks.main([
+                        "export", "--out", str(root), "--formats", "md",
+                    ])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                (root / "summary.md").read_text(encoding="utf-8"),
+                "re-exported summary",
+            )
+            load_result_package(root, verify=True)
+
+    def test_publication_failure_degrades_to_warning_not_crash(self) -> None:
+        # I2：发布失败（锁超时/磁盘/journal）不得把已成功阶段呈现为崩溃；
+        # 降级为 payload warning + marker warnings[]，run_manifest 仍记 ok。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = self._start(root)
+            self._run_ai_extract_stub(root, "committed summary")
+            commit_analysis_completion(
+                root,
+                run_id=first["active_attempt"]["run_id"],
+                completed_stages=["ai-extract"],
+            )
+
+            def fake_export(out_dir: Path, formats: list[str]) -> dict:
+                return {"kind": "export", "written": []}
+
+            with (
+                patch.object(desktop_tasks, "export_task", side_effect=fake_export),
+                patch.object(
+                    desktop_tasks,
+                    "publish_registered_deliverables",
+                    side_effect=OSError("simulated publication lock timeout"),
+                ),
+            ):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = desktop_tasks.main([
+                        "export", "--out", str(root), "--formats", "md",
+                    ])
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertTrue(payload.get("warnings"))
+            self.assertIn("publication", payload["warnings"][0])
+            marker = load_result_package(root)
+            self.assertTrue(marker["warnings"])
+            self.assertIn("publication", marker["warnings"][-1])
+
+    def test_partial_completion_returns_stable_error_code(self) -> None:
+        # I6：请求阶段未全部成功 → exit 2 + envelope error.type=requested_stage_partial
+        # （桌面端据此显示"分析未完成（部分阶段降级）"而非"运行失败"）；
+        # 语义 fail-closed：active_attempt 保持 running，不冒充 completed。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = self._start(root, stages="ai-extract,requirements-analysis")
+            self._run_ai_extract_stub(root, "partial summary")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = desktop_tasks.main([
+                    "result-package-complete", "--out", str(root),
+                    "--run-id", started["active_attempt"]["run_id"],
+                    "--completed-stages", "ai-extract,requirements-analysis",
+                ])
+
+            self.assertEqual(exit_code, 2)
+            envelope = json.loads(stdout.getvalue())
+            self.assertFalse(envelope["ok"])
+            self.assertEqual(envelope["error"]["type"], "requested_stage_partial")
+            self.assertIn("requirements-analysis", envelope["error"]["message"])
+            # stderr 落同一 JSON 行（Electron 非零退出以 stderr 为错误消息）
+            self.assertIn("requested_stage_partial", stderr.getvalue())
+            self.assertEqual(load_result_package(root)["analysis_status"], "running")
+
+    def test_result_package_start_on_legacy_returns_json_envelope(self) -> None:
+        # S1/I2：legacy 硬拒走结构化 envelope（exit 2），不再裸 traceback。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "blocks.jsonl").write_text("legacy\n", encoding="utf-8")
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = desktop_tasks.main([
+                    "result-package-start", "--out", str(root),
+                    "--input", str(self._source(root)), "--stages", "atomize",
+                ])
+
+            self.assertEqual(exit_code, 2)
+            envelope = json.loads(stdout.getvalue())
+            self.assertFalse(envelope["ok"])
+            self.assertIn("legacy", envelope["error"]["message"])
+
+    def test_result_package_status_verify_detects_modified_deliverable(self) -> None:
+        # S5：桌面桥显式完整校验——篡改交付物后 status --verify 返回
+        # result_package_modified（exit 3）；默认不带 --verify 保持纯存在性检查。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = self._start(root)
+            self._run_ai_extract_stub(root, "committed summary")
+            commit_analysis_completion(
+                root,
+                run_id=started["active_attempt"]["run_id"],
+                completed_stages=["ai-extract"],
+            )
+            (root / "summary.md").write_text("tampered\n", encoding="utf-8")
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                plain_exit = desktop_tasks.main([
+                    "result-package-status", "--out", str(root),
+                ])
+            self.assertEqual(plain_exit, 0)
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = desktop_tasks.main([
+                    "result-package-status", "--out", str(root), "--verify",
+                ])
+
+            self.assertEqual(exit_code, 3)
+            envelope = json.loads(stdout.getvalue())
+            self.assertFalse(envelope["ok"])
+            self.assertEqual(envelope["error"]["type"], "result_package_modified")
+            self.assertIn("结果文件已被修改", envelope["error"]["message"])
+
+    def test_result_package_status_with_corrupt_marker_returns_exit_3(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / RESULT_PACKAGE_FILE).write_text("{broken", encoding="utf-8")
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = desktop_tasks.main([
+                    "result-package-status", "--out", str(root),
+                ])
+
+            self.assertEqual(exit_code, 3)
+            envelope = json.loads(stdout.getvalue())
+            self.assertFalse(envelope["ok"])
+            self.assertEqual(envelope["error"]["type"], "result_package_corrupt")
+
+    def test_command_with_interrupted_journal_returns_structured_error(self) -> None:
+        # I2：前置布局探测遇残留发布 journal 不得裸 traceback。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize_package(root)
+            journal = root / ".ratomizer" / "stages" / ".result-package-publication.json"
+            journal.write_text("{}", encoding="utf-8")
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = desktop_tasks.main(["summary", "--out", str(root)])
+
+            self.assertEqual(exit_code, 3)
+            envelope = json.loads(stdout.getvalue())
+            self.assertFalse(envelope["ok"])
+            self.assertEqual(envelope["error"]["type"], "result_package_corrupt")
+
+    def test_update_run_manifest_tolerates_corrupt_marker(self) -> None:
+        # I2：marker 损坏时阶段记账退化为警告，不戳破"写失败不阻断"契约。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize_package(root)
+            analysis_root = resolve_analysis_root(root)
+
+            with patch.object(
+                desktop_tasks,
+                "load_result_package",
+                side_effect=ResultPackageCorrupt("simulated corrupt marker"),
+            ):
+                desktop_tasks.update_run_manifest(analysis_root, "ai-extract", "ok")
+
+            manifest = package_artifact_path(root, "run_manifest")
+            self.assertTrue(manifest.is_file())
+
+
+class ClaimGenerationGatePackageLayoutTests(unittest.TestCase):
+    """B1 回归（2026-08-03）：claim_generation.meta.json 在 package_v1 下落
+    .ratomizer/state/，裸路径闸门会把启动维护与裁决后 fold 钩子静默跳过。"""
+
+    def _package_v1_analysis_root(self, root: Path) -> Path:
+        source = root / "standard.docx"
+        source.write_bytes(b"docx-fixture")
+        initialize_result_package(
+            root, input_path=source, requested_stages=["atomize"],
+        )
+        analysis_root = resolve_analysis_root(root)
+        governed_artifact_path(
+            analysis_root, "claim_generation.meta.json", category="state",
+        ).write_text("{}", encoding="utf-8")
+        return analysis_root
+
+    def test_expert_decision_fold_hook_fires_for_package_v1(self) -> None:
+        import review_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis_root = self._package_v1_analysis_root(Path(tmp))
+
+            with patch(
+                "claim_review_actions.fold_effective_ledger"
+            ) as fold:
+                review_state.apply_expert_decision(
+                    analysis_root, "REQ-1", "accepted", actor="tester",
+                )
+
+            fold.assert_called_once()
+
+    def test_ai_review_action_fold_hook_fires_for_package_v1(self) -> None:
+        import ai_review_actions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis_root = self._package_v1_analysis_root(Path(tmp))
+
+            with patch(
+                "claim_review_actions.fold_effective_ledger"
+            ) as fold:
+                ai_review_actions.apply_ai_review_action(
+                    analysis_root, "AIR-1", "accepted", actor="tester",
+                )
+
+            fold.assert_called_once()
+
+    def test_legacy_layout_fold_hook_still_fires(self) -> None:
+        import review_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "claim_generation.meta.json").write_text("{}", encoding="utf-8")
+
+            with patch(
+                "claim_review_actions.fold_effective_ledger"
+            ) as fold:
+                review_state.apply_expert_decision(
+                    root, "REQ-1", "accepted", actor="tester",
+                )
+
+            fold.assert_called_once()
+
+
+class MarkerContractHardeningTests(unittest.TestCase):
+    """PR4（2026-08-03 清单 S3/S4/S6）：路径安全边角、marker 校验与 schema 对齐、
+    只读路径不建目录。"""
+
+    def _initialize(self, root: Path) -> dict:
+        source = root / "standard.docx"
+        source.write_bytes(b"docx-fixture")
+        return initialize_result_package(
+            root, input_path=source, requested_stages=["atomize"],
+        )
+
+    def _rewrite_marker(self, root: Path, mutate) -> None:
+        marker_path = root / RESULT_PACKAGE_FILE
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        mutate(marker)
+        marker_path.write_text(
+            json.dumps(marker, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
+
+    def test_safe_relative_path_rejects_dot_segments(self) -> None:
+        # S3：PurePosixPath(".").parts 为空，此前 parts[0] 抛裸 IndexError 绕过
+        # ResultPackageCorrupt——路径穿越防线的唯一关口必须 fail-closed 成结构化错误
+        import result_package
+
+        for value in (".", "./"):
+            with self.assertRaises(ResultPackageCorrupt, msg=value):
+                result_package._safe_relative_path(value, label="deliverable path")
+
+    def test_safe_relative_path_rejects_drive_relative_first_segment(self) -> None:
+        # S3："C:foo" 是盘符相对路径，首段含 ":" 但不以 ":" 结尾，此前漏检
+        import result_package
+
+        for value in ("C:foo", "C:foo/bar"):
+            with self.assertRaises(ResultPackageCorrupt, msg=value):
+                result_package._safe_relative_path(value, label="deliverable path")
+
+    def test_validate_package_requires_package_id(self) -> None:
+        # S4：schemas/result_package.schema.json 要求 package_id 且 ^RPK-[0-9a-f]+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(root, lambda marker: marker.pop("package_id"))
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_rejects_malformed_package_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(
+                root, lambda marker: marker.update(package_id="PKG-123"),
+            )
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_requires_tool_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(root, lambda marker: marker.pop("tool"))
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_requires_matching_tool_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(
+                root,
+                lambda marker: marker["tool"].update(output_layout_version="other-layout"),
+            )
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_requires_string_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(
+                root, lambda marker: marker.update(warnings=["ok", 1]),
+            )
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_rejects_unknown_top_level_keys(self) -> None:
+        # S4：schema additionalProperties=false——外来/手工 marker 不得带病通过
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(root, lambda marker: marker.update(surprise={}))
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_readonly_governed_path_does_not_create_directories(self) -> None:
+        # S6：只读解析不得落盘——for_write=False 纯解析，for_write=True 才建父目录
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            shutil.rmtree(root / ".ratomizer" / "state")
+
+            resolved = governed_artifact_path(
+                root, "review_states.jsonl", category="state", for_write=False,
+            )
+            self.assertEqual(
+                resolved, (root / ".ratomizer" / "state" / "review_states.jsonl").resolve(),
+            )
+            self.assertFalse((root / ".ratomizer" / "state").exists())
+
+            governed_artifact_path(root, "review_states.jsonl", category="state")
+            self.assertTrue((root / ".ratomizer" / "state").is_dir())
+
+    def test_package_artifact_path_readonly_does_not_create_directories(self) -> None:
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            shutil.rmtree(root / ".ratomizer" / "stages")
+
+            resolved = package_artifact_path(root, "run_manifest")
+            self.assertFalse((root / ".ratomizer" / "stages").exists())
+            self.assertEqual(
+                resolved,
+                (root / ".ratomizer" / "stages" / "run_manifest.json").resolve(),
+            )
+
+            package_artifact_path(root, "run_manifest", for_write=True)
+            self.assertTrue((root / ".ratomizer" / "stages").is_dir())
+
+    def test_claim_view_read_does_not_create_internal_directories(self) -> None:
+        # S6 消费方回归：claim 只读视图不得自称"无副作用"却在盘上建空目录
+        import shutil
+
+        import claim_views
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+            analysis_root = resolve_analysis_root(root)
+            shutil.rmtree(root / ".ratomizer" / "state")
+
+            self.assertTrue(claim_views._has_no_generation(analysis_root))
+            self.assertFalse((root / ".ratomizer" / "state").exists())
 
 
 if __name__ == "__main__":
