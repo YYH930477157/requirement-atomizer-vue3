@@ -1,4 +1,4 @@
-"""表格结构与单元格级需求闭环底座（table-structure-v6）。
+"""表格结构与单元格级需求闭环底座（table-structure-v7）。
 
 集中管理此前散落在 atomize.py / ai_extract.py / spot_extract.py / extract_units.py 的
 表格角色识别（标题/表头/行头/数据/分组标题）与粒度规划（row/cell/mixed leaf plan）。
@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, Mapping
 
-TABLE_STRUCTURE_VERSION = "table-structure-v6"
+TABLE_STRUCTURE_VERSION = "table-structure-v7"
 TABLE_CELL_ITEM_SCHEMA = "table-cell-item/v1"
 
 STRUCTURAL_ROLES = ("title", "header", "row_header", "data", "group_header")
@@ -1282,6 +1282,7 @@ def build_cell_items(
     cell_bboxes: dict[tuple[int, int], Any] | None = None,
     geometry_kind: str | None = None,
     fact_columns: set[int] | None = None,
+    cell_metadata: Mapping[tuple[int, int], Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """每个非空物理单元格/合并区域一个 canonical cell（schema table-cell-item/v1）。"""
     normalized_merges = normalize_merge_ranges(merge_ranges)
@@ -1393,6 +1394,9 @@ def build_cell_items(
                 cell["geometry_kind"] = geometry_kind or "pdfplumber_cell"
             elif geometry_kind is not None:
                 cell["geometry_kind"] = geometry_kind
+            metadata = dict((cell_metadata or {}).get((row_index, column_index)) or {})
+            if metadata:
+                cell.update(metadata)
             cells.append(cell)
     return cells
 

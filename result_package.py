@@ -125,6 +125,11 @@ _ARTIFACTS = {
         _artifact("chunks", "pipeline/chunks.jsonl", legacy_path="chunks.jsonl"),
         _artifact("table_items", "pipeline/table_items.jsonl", legacy_path="table_items.jsonl"),
         _artifact("table_cell_items", "pipeline/table_cell_items.jsonl", legacy_path="table_cell_items.jsonl"),
+        _artifact(
+            "table_cell_dispositions",
+            "pipeline/table_cell_dispositions.jsonl",
+            legacy_path="table_cell_dispositions.jsonl",
+        ),
         _artifact("atomic_requirements", "pipeline/atomic_requirements.jsonl", legacy_path="atomic_requirements.jsonl"),
         _artifact("ai_requirements", "pipeline/ai_requirements.jsonl", legacy_path="ai_requirements.jsonl"),
         _artifact("requirements_analysis", "pipeline/requirements_analysis.json", legacy_path="requirements_analysis.json"),
@@ -211,6 +216,7 @@ _LEGACY_SENTINELS -= {"run.log", "run_manifest.lock", "llm_trace.jsonl"}
 
 _STATE_FILENAMES = {
     "review_states.jsonl", "review_state_events.jsonl", "review_states.lock",
+    "table_review_states.jsonl", "table_review_events.jsonl", "table_review_states.lock",
     "ai_review_states.jsonl", "ai_review_states.lock", "ai_supplements.jsonl",
     "clarification_answers.jsonl", "clarification_answers.lock",
     "clarification_check_states.jsonl", "clarification_check_states.lock",

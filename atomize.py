@@ -21,11 +21,17 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from atomic_requirement_schema import validate_atomic_requirements
+from docx_table_parser import DOCX_TABLE_PHYSICAL_VERSION, ParsedDocxTable, parse_docx_table
 from domain_pack import load_domain_pack
 from output_writer import build_quality_report, write_json, write_jsonl, write_summary
 from requirement_kb import KnowledgeRepository
 from requirement_kb.matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
 from source_spans import source_alignment_fields
+from result_package import governed_artifact_path
+from table_dispositions import (
+    TABLE_DISPOSITION_RULE_VERSION,
+    build_table_cell_dispositions,
+)
 from table_pattern_engine import load_table_patterns, match_table_pattern
 from table_structure import (
     TABLE_STRUCTURE_VERSION,
@@ -450,6 +456,7 @@ def build_table_artifacts(
     page_number: int | None = None,
     cell_bboxes: dict[tuple[int, int], Any] | None = None,
     geometry_kind: str | None = None,
+    cell_metadata: dict[tuple[int, int], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """表格三件套：block + table_items（行容器）+ table_cell_items（canonical cells）。
 
@@ -744,6 +751,7 @@ def build_table_artifacts(
         cell_bboxes=cell_bboxes,
         geometry_kind=geometry_kind,
         fact_columns=fact_columns,
+        cell_metadata=cell_metadata,
     )
 
     return block, table_items, table_cell_items
@@ -1106,31 +1114,23 @@ def extract_docx(
                     last_caption = None
 
         elif isinstance(item, Table):
-            raw_matrix = [[str(cell.text or "") for cell in row.cells] for row in item.rows]
-            matrix = [[clean_text(value) for value in row] for row in raw_matrix]
-            if not matrix:
+            parsed = parse_docx_table(item)
+            if not parsed.matrix:
                 continue
             table_count += 1
             table_id = f"TBL-{table_count:06d}"
             table_title = infer_table_title(last_caption, table_count)
             section_path = sections.path()
-            merge_ranges, explicit_header_rows, merge_conflict = docx_table_grid_evidence(item)
-
             order += 1
             block_id = f"BLK-{order:06d}"
-            table_block, new_table_items, new_cell_items = build_table_artifacts(
-                matrix,
-                raw_matrix=raw_matrix,
+            table_block, new_table_items, new_cell_items = _build_docx_table_tree(
+                parsed,
                 table_id=table_id,
                 block_id=block_id,
                 order=order,
                 table_title=table_title,
                 section_path=section_path,
                 knowledge_bases=knowledge_bases,
-                merge_ranges=merge_ranges,
-                merge_evidence_conflict=merge_conflict,
-                explicit_header_rows=explicit_header_rows or None,
-                source_format="docx",
             )
             blocks.append(table_block)
             table_items.extend(new_table_items)
@@ -1138,6 +1138,105 @@ def extract_docx(
             last_caption = None
 
     return blocks, table_items, table_cell_items
+
+
+def _docx_cell_metadata(
+    parsed: ParsedDocxTable,
+    *,
+    table_id: str,
+) -> dict[tuple[int, int], dict[str, Any]]:
+    nested_by_coordinate: dict[tuple[int, int], list[str]] = defaultdict(list)
+    for ref in parsed.nested_tables:
+        nested_by_coordinate[ref.parent_coordinate].append(
+            f"{table_id}-N{ref.ordinal:03d}"
+        )
+    metadata: dict[tuple[int, int], dict[str, Any]] = {}
+    for coordinate, cell in parsed.cells.items():
+        metadata[coordinate] = {
+            "content_paragraphs": [
+                {
+                    "text": paragraph.text,
+                    "style_name": paragraph.style_name,
+                    "list_level": paragraph.list_level,
+                    "manual_break_count": paragraph.manual_break_count,
+                }
+                for paragraph in cell.content.paragraphs
+            ],
+            "style_evidence": dict(cell.style_evidence),
+            "nested_table_ids": nested_by_coordinate.get(coordinate, []),
+            "docx_table_physical_version": DOCX_TABLE_PHYSICAL_VERSION,
+        }
+    return metadata
+
+
+def _build_docx_table_tree(
+    parsed: ParsedDocxTable,
+    *,
+    table_id: str,
+    block_id: str,
+    order: int,
+    table_title: str,
+    section_path: list[str],
+    knowledge_bases: KnowledgeRepository,
+    parent_table_id: str | None = None,
+    parent_cell_id: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build one top-level block plus recursively governed nested table sources.
+
+    Nested tables receive independent table IDs but deliberately share the parent
+    top-level block ID. This preserves the stable ``BLK-*`` sequence while keeping
+    every nested row/cell independently addressable.
+    """
+    block, items, cells = build_table_artifacts(
+        parsed.matrix,
+        raw_matrix=parsed.raw_matrix,
+        table_id=table_id,
+        block_id=block_id,
+        order=order,
+        table_title=table_title,
+        section_path=section_path,
+        knowledge_bases=knowledge_bases,
+        parse_incomplete=parsed.parse_incomplete,
+        parse_incomplete_reason=parsed.parse_incomplete_reason or None,
+        merge_ranges=parsed.merge_ranges,
+        explicit_header_rows=parsed.explicit_header_rows or None,
+        source_format="docx",
+        cell_metadata=_docx_cell_metadata(parsed, table_id=table_id),
+    )
+    block["docx_table_physical_version"] = DOCX_TABLE_PHYSICAL_VERSION
+    block["nested_tables"] = []
+    if parent_table_id:
+        block["parent_table_id"] = parent_table_id
+    if parent_cell_id:
+        block["parent_cell_id"] = parent_cell_id
+    for row in [*items, *cells]:
+        row["docx_table_physical_version"] = DOCX_TABLE_PHYSICAL_VERSION
+        if parent_table_id:
+            row["parent_table_id"] = parent_table_id
+        if parent_cell_id:
+            row["parent_cell_id"] = parent_cell_id
+
+    for ref in parsed.nested_tables:
+        nested_id = f"{table_id}-N{ref.ordinal:03d}"
+        owner_cell_id = (
+            f"{table_id}-R{ref.parent_coordinate[0]:06d}"
+            f"-C{ref.parent_coordinate[1]:06d}"
+        )
+        nested_block, nested_items, nested_cells = _build_docx_table_tree(
+            ref.table,
+            table_id=nested_id,
+            block_id=block_id,
+            order=order,
+            table_title=f"{table_title} / nested table {ref.ordinal}",
+            section_path=section_path,
+            knowledge_bases=knowledge_bases,
+            parent_table_id=table_id,
+            parent_cell_id=owner_cell_id,
+        )
+        block["nested_tables"].append(nested_block)
+        items.extend(nested_items)
+        cells.extend(nested_cells)
+    return block, items, cells
 
 
 def merge_tags(*tag_lists: Iterable[str]) -> list[str]:
@@ -2455,6 +2554,7 @@ def run_atomizer_pipeline(
     if domain_pack_dir is not None:
         pattern_shadow = apply_table_pattern_shadow(blocks, table_items, domain_pack_dir)
     mark_doc_regions(blocks, table_items, document_profile=document_profile, table_cell_items=table_cell_items)
+    table_cell_dispositions = build_table_cell_dispositions(blocks, table_cell_items)
     LOGGER.info("building chunks")
     chunks = build_chunks(blocks, target_chars=chunk_chars, include_regions={"body"})
     body_table_items = [item for item in table_items if item.get("doc_region") == "body"]
@@ -2478,6 +2578,10 @@ def run_atomizer_pipeline(
     chunk_count = write_jsonl(out_dir / "chunks.jsonl", chunks)
     table_count = write_jsonl(out_dir / "table_items.jsonl", table_items)
     table_cell_count = write_jsonl(out_dir / "table_cell_items.jsonl", table_cell_items)
+    disposition_count = write_jsonl(
+        governed_artifact_path(out_dir, "table_cell_dispositions.jsonl"),
+        table_cell_dispositions,
+    )
     atomic_count = write_jsonl(out_dir / "atomic_requirements.jsonl", atomic_candidates)
     task_count = write_jsonl(out_dir / "llm_tasks.jsonl", llm_tasks)
     write_json(out_dir / "quality_report.json", quality_report)
@@ -2495,6 +2599,7 @@ def run_atomizer_pipeline(
         "tool": "requirement-atomizer",
         "version": __version__,
         "table_structure_version": TABLE_STRUCTURE_VERSION,
+        "table_disposition_rule_version": TABLE_DISPOSITION_RULE_VERSION,
         "input": str(input_path),
         "input_format": input_format.lstrip("."),
         "output_dir": str(out_dir),
@@ -2514,6 +2619,7 @@ def run_atomizer_pipeline(
             "chunks": chunk_count,
             "table_items": table_count,
             "table_cell_items": table_cell_count,
+            "table_cell_dispositions": disposition_count,
             "body_table_items": len(body_table_items),
             "atomic_requirements": atomic_count,
             "llm_tasks": task_count,
@@ -2523,6 +2629,7 @@ def run_atomizer_pipeline(
             "chunks": "chunks.jsonl",
             "table_items": "table_items.jsonl",
             "table_cell_items": "table_cell_items.jsonl",
+            "table_cell_dispositions": "table_cell_dispositions.jsonl",
             "atomic_requirements": "atomic_requirements.jsonl",
             "llm_tasks": "llm_tasks.jsonl",
             "quality_report": "quality_report.json",

@@ -2543,7 +2543,7 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("产品义务主体", ai_extract.SYSTEM_PROMPT)
         self.assertIn("产品应支持/允许 Y 配置 X", ai_extract.SYSTEM_PROMPT)
         self.assertIn("每个 description 句子和 sub_items 叶子", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v23")
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v24")
         self.assertEqual(ai_extract.AI_VERIFY_PROMPT_VERSION, "ai-verify-v4")
 
     def test_normative_framing_guard_wraps_weak_capability_leaves(self) -> None:

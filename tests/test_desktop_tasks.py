@@ -1148,7 +1148,7 @@ class ChainAndManifestTests(unittest.TestCase):
                 f"+{SOURCE_ALIGNMENT_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"
-                f"+{TABLE_STRUCTURE_VERSION}+impl-v12"
+                f"+{TABLE_STRUCTURE_VERSION}+impl-v13"
             ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
@@ -1156,10 +1156,10 @@ class ChainAndManifestTests(unittest.TestCase):
             # 结构角色/信号规则变化时旧抽取产物不得假装仍然新鲜
             "ai-extract": (
                 "ai-requirements-producer-lineage-v3"
-                "+ai-extract-v23+guards-v21+ai-verify-v4+ai-normative-framing-v2"
+                "+ai-extract-v24+guards-v22+ai-verify-v4+ai-normative-framing-v2"
                 "+merged-consistency/v3-noise-tolerant-window"
                 f"+compliance-requirements/v2+{TABLE_STRUCTURE_VERSION}"
-                "+ai-supplement-v3-identity-preconditions+impl-v6"
+                "+ai-supplement-v3-identity-preconditions+impl-v7"
             ),
             "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v8+ai-supplement-v3-identity-preconditions+impl-v4",
@@ -2264,6 +2264,7 @@ class ChainAndManifestTests(unittest.TestCase):
                 "chunks.jsonl",
                 "table_items.jsonl",
                 "table_cell_items.jsonl",
+                "table_cell_dispositions.jsonl",
                 "atomic_requirements.jsonl",
                 "llm_tasks.jsonl",
                 "quality_report.json",

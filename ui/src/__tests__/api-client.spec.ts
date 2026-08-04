@@ -100,6 +100,68 @@ describe("RequirementApiClient", () => {
     })
   })
 
+  it("loads table reviews and posts one table-scoped role decision", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          schema: "table-review-view/v1",
+          tables: [{ table_id: "TBL-1", structure_review_status: "pending" }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          table_id: "TBL-1",
+          structure_review_status: "ready",
+        }),
+      })
+    const client = new RequirementApiClient({
+      baseUrl: "http://127.0.0.1:8770/",
+      token: "local-token",
+      fetchImpl: fetchMock,
+    })
+
+    await expect(client.loadTableReviews()).resolves.toMatchObject({
+      schema: "table-review-view/v1",
+    })
+    await client.applyTableReviewAction({
+      tableId: "TBL-1",
+      expectedEvidenceFingerprint: "sha256:evidence-v1",
+      roleMapping: {
+        "TBL-1-R000001-C000001": {
+          role: "row_header",
+          disposition: "context",
+        },
+      },
+      actor: "reviewer",
+      reason: "Confirmed table regions",
+    })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://127.0.0.1:8770/table-reviews", {
+      headers: { "X-Requirement-Atomizer-Token": "local-token" },
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:8770/table-review-actions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requirement-Atomizer-Token": "local-token",
+      },
+      body: JSON.stringify({
+        table_id: "TBL-1",
+        expected_evidence_fingerprint: "sha256:evidence-v1",
+        role_mapping: {
+          "TBL-1-R000001-C000001": {
+            role: "row_header",
+            disposition: "context",
+          },
+        },
+        actor: "reviewer",
+        reason: "Confirmed table regions",
+      }),
+    })
+  })
+
   it("posts requirement text for translation", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

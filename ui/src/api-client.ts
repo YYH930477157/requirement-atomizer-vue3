@@ -30,6 +30,75 @@ export type ReviewActionInput = {
   expectedTargetAuthorityWriteRevision?: string
 }
 
+export type TableCellRole =
+  | "title"
+  | "header"
+  | "row_header"
+  | "group_header"
+  | "data"
+  | "note"
+  | "unknown"
+
+export type TableCellDisposition =
+  | "target"
+  | "context"
+  | "composite"
+  | "excluded"
+  | "review"
+
+export type TableReviewCell = Record<string, unknown> & {
+  cell_id: string
+  text?: string
+  row_index?: number
+  column_index?: number
+  role?: TableCellRole
+  disposition?: TableCellDisposition
+  confidence?: string
+  decision_source?: string
+}
+
+export type TableReviewTable = {
+  table_id: string
+  table_block_id?: string
+  title?: string
+  section_path?: string[]
+  structure_review_status: "pending" | "ready"
+  review_mode?: "pending" | "automatic" | "llm_assisted" | "human"
+  cell_count: number
+  review_count: number
+  target_count?: number
+  context_count?: number
+  composite_count?: number
+  excluded_count?: number
+  evidence_fingerprint: string
+  cells: TableReviewCell[]
+}
+
+export type TableReviewPayload = {
+  schema: "table-review-view/v1"
+  tables: TableReviewTable[]
+}
+
+export type TableReviewRoleMapping = Record<
+  string,
+  { role: TableCellRole; disposition: TableCellDisposition }
+>
+
+export type TableReviewActionInput = {
+  tableId: string
+  expectedEvidenceFingerprint: string
+  roleMapping: TableReviewRoleMapping
+  actor?: string
+  reason?: string
+}
+
+export type TableReviewActionPayload = {
+  table_id: string
+  structure_review_status: "pending" | "ready"
+  evidence_fingerprint?: string
+  recomputed_artifacts?: string[]
+}
+
 export type TranslationInput = {
   requirementId: string
   text: string
@@ -839,6 +908,26 @@ export class RequirementApiClient {
                 input.expectedTargetAuthorityWriteRevision,
             }
           : {}),
+      }),
+    })
+  }
+
+  async loadTableReviews(): Promise<TableReviewPayload> {
+    return this.request<TableReviewPayload>("/table-reviews")
+  }
+
+  async applyTableReviewAction(
+    input: TableReviewActionInput,
+  ): Promise<TableReviewActionPayload> {
+    return this.request<TableReviewActionPayload>("/table-review-actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        table_id: input.tableId,
+        expected_evidence_fingerprint: input.expectedEvidenceFingerprint,
+        role_mapping: input.roleMapping,
+        actor: input.actor || "",
+        reason: input.reason || "",
       }),
     })
   }

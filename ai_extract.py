@@ -88,7 +88,7 @@ from extract_guards import (  # noqa: F401
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
-AI_EXTRACT_PROMPT_VERSION = "ai-extract-v23"  # v23：正式 target 叶子强制自包含产品义务成文
+AI_EXTRACT_PROMPT_VERSION = "ai-extract-v24"  # v24：表格只消费结构化 row/cell 叶子，禁止整表 blob 与结构事实发明
 # v3：table_cell 的表标题作为独立 prompt_context 下发，可用于消解正文/marker
 # 省略的产品或接口范围，但仍禁止充当 source_quote/独立事实；v2（P0-3 复审）：
 # focus evidence 结构化——prompt_context（仅定位、禁引用）与
@@ -265,12 +265,17 @@ def extraction_input_fingerprint(out_dir: Path) -> str:
     from table_structure import TABLE_STRUCTURE_VERSION
 
     root = Path(out_dir).expanduser().resolve()
-    if not (root / "blocks.jsonl").is_file():
+    if not governed_artifact_path(root, "blocks.jsonl", for_write=False).is_file():
         return ""
     digest = hashlib.sha256()
     digest.update(f"<table_structure:{TABLE_STRUCTURE_VERSION}>".encode("utf-8"))
-    for name in ("blocks.jsonl", "table_items.jsonl", "table_cell_items.jsonl"):
-        path = root / name
+    for name in (
+        "blocks.jsonl",
+        "table_items.jsonl",
+        "table_cell_items.jsonl",
+        "table_cell_dispositions.jsonl",
+    ):
+        path = governed_artifact_path(root, name, for_write=False)
         if not path.is_file():
             digest.update(f"<missing:{name}>".encode("utf-8"))
             continue
@@ -1215,10 +1220,14 @@ def _assert_source_references(
         and str(req.get("source_item_id")) not in item_ids
     })
     dangling_cells = sorted({
-        str(req.get("source_cell_id"))
+        str(cell_id)
         for req in requirements
-        if str(req.get("source_cell_id") or "").startswith("TBL-")
-        and str(req.get("source_cell_id")) not in cell_ids
+        for cell_id in [
+            *(req.get("source_cell_ids") or []),
+            *([req.get("source_cell_id")] if req.get("source_cell_id") else []),
+        ]
+        if str(cell_id or "").startswith("TBL-")
+        and str(cell_id) not in cell_ids
     })
     if dangling_items or dangling_cells:
         raise ValueError(
@@ -1526,7 +1535,10 @@ VALID_PRIORITIES = {"P0", "P1", "P2"}
 
 SYSTEM_PROMPT = (
     "你是表计行业（电表/水表/气表）需求分析师。读给定的标准/规范文本，抽取其中的需求条目。"
-    "把同一功能的零散语句**合并成一条功能需求**，不要逐句拆；表格类规范化为一条带说明的需求。"
+    "把同一功能的零散语句合并为可验收需求；不同动作若可独立验收必须拆开。"
+    "表格输入以 [TABLE_CONTEXT]/[TABLE_LEAF] 结构化叶子提供：每个叶子只代表标注的行、格或句，"
+    "不得把整张表压成一条需求。不得新增或修改数值、单位、型号、代码、访问权限、表头、"
+    "合并关系或适用范围；这些结构化事实只能逐字沿用叶子内容。"
     "每条需求输出：title（不超过 80 字）、"
     "functional_key（跨章节合并的连接键——构造规则：「对象/主题＋动作」的受控中文名词短语，"
     "2-6 个词，不含数值/编码/章节号/标点；跨章节属同一研发功能时必须**逐字相同**。"
@@ -1615,7 +1627,7 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v21"  # v21:S12/S15 修复——参数表行展开物理行号改从 title/header 结构索引统一推导(标题/表头不连续时连续偏移公式错行),extract_units 同值分组标题启发式只在 merge_ranges 缺失(旧产物无证据)时启用、已知无合并([])不再误判;v20:section cache 骨架绑定 cell 语义（rows 哈希 item_id+text、cells 哈希 cell_id+row+column+text，bbox 等几何不进指纹——语义变化 miss、几何变化 hit，P1-2）;v19:table-structure-v2 接入(删参数表≥3行硬门/merge anchor分组标题/权威row/cell ID去重键/cell级assemble输入+TABLE_STRUCTURE_VERSION与leaf plan结构hash进section指纹);v18:section cache 与完整 producer lineage 分层纳入 compliance_schema,堵死 v17 漏钉且避免缓存后处理版本触发付费重抽;v17:表型分类器 classify_table_kind + 参数表英文表头扩展(value/spec/min/max/limit/rating/nominal/tolerance/range/unit 等),进 section_fingerprint;v16:参数表行确定性展开(用户裁定:参数表每行皆需求,LLM 未覆盖行确定性补 draft 行);v15:噪声贯通抽取路径;v14:匹配各路径噪声块不成来源;v13:fallback 裸节号前缀;v12:引句多段窗口跳过噪声块;v11:section_fallback 按所属小节收窄;v10:引用三层分流;v9:合规 umbrella/instrument 只认确定性证据
+EXTRACT_GUARDS_VERSION = "guards-v22"  # v22:结构化表格叶子取代整表 blob，并确定性回填多 cell 来源、适用型号、约束强度与结构化事实
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -1697,8 +1709,20 @@ def render_extract_exemplars(bank: dict[str, Any]) -> str:
 
 
 def build_section_prompt(section: dict[str, Any]) -> str:
-    payload = {"heading": section.get("heading"), "text": section.get("text", "")}
+    payload = {
+        "heading": section.get("heading"),
+        "text": section.get("text", ""),
+        "table_input_mode": section.get("table_input_mode", "plain_text"),
+    }
     base = json.dumps(payload, ensure_ascii=False, indent=2)
+    if section.get("table_input_mode") == "structured_leaves":
+        base += (
+            "\n\n【结构化表格硬约束】\n"
+            "- 仅 [TABLE_LEAF] 是表格抽取目标；[TABLE_CONTEXT] 只提供标题/表头上下文。\n"
+            "- 不得新增或修改数值、单位、型号、代码、访问权限、适用范围或约束强度。\n"
+            "- 不同 cell_id/item_id 不得无依据合并；完全等价时才可合并并保留全部来源。\n"
+            "- Not Applicable 仅表示适用范围排除，不得生成反向禁止需求。"
+        )
     refs = section.get("ref_texts") or []
     terms = section.get("term_defs") or []
     term_block = ""
@@ -1711,6 +1735,96 @@ def build_section_prompt(section: dict[str, Any]) -> str:
         f"【被引用条款 {r['clause']}——本章节文字引用了它。请把其中的具体数值/限值整合进需求描述，"
         f"引用这些数值视为有据】\n{r['text']}" for r in refs)
     return f"{base}{term_block}\n\n{ref_block}"
+
+
+_NON_MODEL_HEADER_RE = re.compile(
+    r"^\s*(?:column_\d+|no\.?|number|index|item|parameter|name|value|unit|"
+    r"requirement|requirements|note|remark|description|参数|参数值|名称|值|单位|要求|备注|说明)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _constraint_strength(text: str) -> str:
+    low = str(text or "").lower()
+    if re.search(r"\bshall\s+not\b|不得", low):
+        return "shall_not"
+    if re.search(r"\bmust\s+not\b", low):
+        return "must_not"
+    if re.search(r"\bshall\b|应当|应满足|应支持", low):
+        return "shall"
+    if re.search(r"\bmust\b|必须|须符合", low):
+        return "must"
+    if re.search(r"\bshould\b|宜|建议", low):
+        return "should"
+    return "implicit_table"
+
+
+def _apply_table_requirement_metadata(
+    requirements: list[dict[str, Any]],
+    table_cell_items: list[dict[str, Any]],
+    table_cell_dispositions: list[dict[str, Any]],
+) -> None:
+    """Attach deterministic table provenance and facts to published B-track rows."""
+    cells_by_id = {
+        str(cell.get("cell_id") or ""): cell
+        for cell in table_cell_items
+        if str(cell.get("cell_id") or "")
+    }
+    dispositions_by_id = {
+        str(row.get("cell_id") or ""): row
+        for row in table_cell_dispositions
+        if str(row.get("cell_id") or "")
+    }
+    cells_by_item: dict[str, list[dict[str, Any]]] = {}
+    for cell in table_cell_items:
+        item_id = (
+            f"{cell.get('table_id')}-R{int(cell.get('row_index') or 0):06d}"
+        )
+        cells_by_item.setdefault(item_id, []).append(cell)
+
+    for requirement in requirements:
+        source_ids = [
+            str(value) for value in (requirement.get("source_cell_ids") or []) if str(value)
+        ]
+        singular = str(requirement.get("source_cell_id") or "")
+        if singular:
+            source_ids.append(singular)
+        item_id = str(requirement.get("source_item_id") or "")
+        if item_id and not source_ids:
+            for cell in cells_by_item.get(item_id, []):
+                disposition = dispositions_by_id.get(str(cell.get("cell_id") or ""), {})
+                if str(disposition.get("disposition") or "") in {"target", "composite"}:
+                    source_ids.append(str(cell.get("cell_id") or ""))
+        source_ids = list(dict.fromkeys(value for value in source_ids if value in cells_by_id))
+        if not source_ids:
+            continue
+        requirement["source_cell_ids"] = source_ids
+        requirement["source_cell_id"] = source_ids[0]
+        facts: list[dict[str, Any]] = []
+        models: list[str] = []
+        for cell_id in source_ids:
+            cell = cells_by_id[cell_id]
+            disposition = dispositions_by_id.get(cell_id, {})
+            header_path = [str(value) for value in (cell.get("header_path") or []) if str(value)]
+            facts.append({
+                "cell_id": cell_id,
+                "text": str(cell.get("text") or ""),
+                "header_path": header_path,
+                "row_header_context": list(cell.get("row_header_context") or []),
+                "applicability": str(disposition.get("applicability") or "included"),
+            })
+            if (
+                str(cell.get("structural_role") or "") == "data"
+                and header_path
+                and not _NON_MODEL_HEADER_RE.fullmatch(header_path[-1])
+            ):
+                models.append(header_path[-1])
+        requirement["structured_facts"] = facts
+        requirement["applicable_models"] = list(dict.fromkeys(models))
+        requirement["constraint_strength"] = _constraint_strength(
+            f"{requirement.get('source_quote') or ''} {requirement.get('description') or ''}"
+        )
+        requirement.setdefault("clarification_ids", [])
 
 
 # --- 跨章节引用解析 -------------------------------------------------------
@@ -2323,6 +2437,8 @@ def _annotate_row_source(
     quote = compact_source_text(req.get("source_quote"))
     if not quote:
         return
+    matched_cell_ids: list[str] = []
+    first_cell: dict[str, Any] | None = None
     for sb in source_blocks:
         if str(sb.get("block_id") or "") not in matched_block_ids:
             continue
@@ -2337,6 +2453,10 @@ def _annotate_row_source(
                     continue
                 if row.get("item_id"):
                     req["source_item_id"] = str(row["item_id"])
+                row_cell_ids = [str(value) for value in (row.get("cell_ids") or []) if str(value)]
+                if row_cell_ids:
+                    req["source_cell_ids"] = list(dict.fromkeys(row_cell_ids))
+                    req["source_cell_id"] = req["source_cell_ids"][0]
                 return
         # cell 级溯源（table-structure-v2）：引句命中 cell 上下文文本落 source_cell_id
         for cell in sb.get("cells") or []:
@@ -2345,13 +2465,18 @@ def _annotate_row_source(
                 continue
             if cell_text in quote or quote in cell_text:
                 if cell.get("cell_id"):
-                    req["source_cell_id"] = str(cell["cell_id"])
-                try:
-                    req["source_row_index"] = int(cell.get("row_index"))
-                    req["source_column_index"] = int(cell.get("column_index"))
-                except (TypeError, ValueError):
-                    pass
-                return
+                    matched_cell_ids.append(str(cell["cell_id"]))
+                    if first_cell is None:
+                        first_cell = cell
+    if matched_cell_ids:
+        req["source_cell_ids"] = list(dict.fromkeys(matched_cell_ids))
+        req["source_cell_id"] = req["source_cell_ids"][0]
+        if first_cell is not None:
+            try:
+                req["source_row_index"] = int(first_cell.get("row_index"))
+                req["source_column_index"] = int(first_cell.get("column_index"))
+            except (TypeError, ValueError):
+                pass
 
 
 _SECTION_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)*$")
@@ -3853,7 +3978,9 @@ def _write_merged_outputs(out_dir: Path, merged: dict[str, Any]) -> list[str]:
 def _write_consistency_report(out_dir: Path, merged: dict[str, Any]) -> Path:
     """P1 全局一致性 critic：跨章去重 + OBIS 共引 + 覆盖缺口（确定性，非破坏，只标记）。"""
     import merged_consistency
-    blocks = read_jsonl(out_dir / "blocks.jsonl")
+    blocks = read_jsonl(
+        governed_artifact_path(out_dir, "blocks.jsonl", for_write=False)
+    )
     # 覆盖分母统一口径（E3b）：剔除标题/引用书目/非正文假阳性,详见 is_coverage_candidate
     req_like = ([b for b in merged_consistency.coverage_denominator_blocks(blocks) if clean_block_text(b)]
                 if blocks else None)
@@ -4060,18 +4187,40 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     blocks = body_blocks(blocks)   # 封面/目录区不进抽取（EN 16314：目录条目被抽成 11 条空壳需求）
     # table-structure-v2：权威 row/cell 身份进章节装配（无文件时保持旧行为）
     try:
-        table_items = read_jsonl(out_dir / "table_items.jsonl")
+        table_items = read_jsonl(
+            governed_artifact_path(out_dir, "table_items.jsonl", for_write=False)
+        )
     except (OSError, ValueError):
         table_items = []
     try:
-        table_cell_items = read_jsonl(out_dir / "table_cell_items.jsonl")
+        table_cell_items = read_jsonl(
+            governed_artifact_path(out_dir, "table_cell_items.jsonl", for_write=False)
+        )
     except (OSError, ValueError):
         table_cell_items = []
+    try:
+        table_cell_dispositions = read_jsonl(
+            governed_artifact_path(
+                out_dir, "table_cell_dispositions.jsonl", for_write=False
+            )
+        )
+    except (OSError, ValueError):
+        if table_cell_items:
+            raise ValueError(
+                "base_migration_required: missing table_cell_dispositions.jsonl; "
+                "rerun atomize before ai-extract"
+            )
+        table_cell_dispositions = []
     resolved_mode = (unit_mode or os.environ.get(UNIT_MODE_ENV) or "clause").strip().lower()
     if resolved_mode not in ("clause", "chapter"):
         resolved_mode = "clause"
     all_sections = merge_sections(
-        assemble_sections(blocks, table_items=table_items, table_cell_items=table_cell_items),
+        assemble_sections(
+            blocks,
+            table_items=table_items,
+            table_cell_items=table_cell_items,
+            table_cell_dispositions=table_cell_dispositions,
+        ),
         target_chars=merge_chars,
         unit_mode=resolved_mode,
     )
@@ -4339,6 +4488,9 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
     requirements = _supplement_uncovered_compliance(requirements, blocks)   # 合规漏抽兜底,进 jsonl+澄清
     requirements = _supplement_parameter_table_rows(requirements, blocks)   # 参数表逐行确定性展开,LLM 未覆盖行进澄清
     requirements = _merge_llm_into_deterministic_rows(requirements)   # 封堵二:同行 LLM 叙述并入确定性展开行,免双份
+    _apply_table_requirement_metadata(
+        requirements, table_cell_items, table_cell_dispositions
+    )
     _assert_source_references(requirements, table_items, table_cell_items)   # 发布前断言:row/cell 引用真实存在
     target = out_dir / AI_REQUIREMENTS
     atomic_write_jsonl(target, requirements)

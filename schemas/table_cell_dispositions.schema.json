@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/table_cell_dispositions.schema.json",
+  "title": "Table cell disposition v1",
+  "type": "object",
+  "required": [
+    "schema", "cell_id", "table_id", "table_block_id", "text", "role",
+    "disposition", "confidence", "evidence", "decision_source",
+    "decision_version", "table_structure_version", "linked_leaf_ids",
+    "linked_requirement_ids", "clarification_ids", "structure_review_status"
+  ],
+  "properties": {
+    "schema": {"const": "table-cell-disposition/v1"},
+    "cell_id": {"type": "string", "minLength": 1},
+    "table_id": {"type": "string", "minLength": 1},
+    "table_block_id": {"type": "string", "minLength": 1},
+    "text": {"type": "string"},
+    "role": {"enum": ["title", "header", "row_header", "data", "group_header"]},
+    "disposition": {"enum": ["target", "context", "composite", "excluded", "review"]},
+    "confidence": {"enum": ["high", "medium", "low"]},
+    "evidence": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "decision_source": {"enum": ["deterministic", "llm_assisted", "human"]},
+    "decision_version": {"type": "string", "minLength": 1},
+    "table_structure_version": {"type": "string", "minLength": 1},
+    "linked_leaf_ids": {"type": "array", "items": {"type": "string"}},
+    "linked_requirement_ids": {"type": "array", "items": {"type": "string"}},
+    "clarification_ids": {"type": "array", "items": {"type": "string"}},
+    "structure_review_status": {"enum": ["ready", "pending"]},
+    "exclusion_reason": {"type": "string"},
+    "applicability": {"enum": ["included", "excluded"]}
+  },
+  "additionalProperties": false
+}

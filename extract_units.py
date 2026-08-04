@@ -45,6 +45,7 @@ def assemble_sections(
     blocks: list[dict[str, Any]],
     table_items: list[dict[str, Any]] | None = None,
     table_cell_items: list[dict[str, Any]] | None = None,
+    table_cell_dispositions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """把已解析 blocks 按 section_path 聚合成章节单元（章节文本 + 溯源 block）。
 
@@ -62,6 +63,11 @@ def assemble_sections(
     cells_by_block: dict[str, list[dict[str, Any]]] = {}
     for cell in table_cell_items or []:
         cells_by_block.setdefault(str(cell.get("table_block_id") or ""), []).append(cell)
+    dispositions_by_cell = {
+        str(row.get("cell_id") or ""): row
+        for row in table_cell_dispositions or []
+        if str(row.get("cell_id") or "")
+    }
     groups: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
     for block in blocks:
         section_path = [str(s) for s in (block.get("section_path") or [])]
@@ -73,105 +79,43 @@ def assemble_sections(
                     "texts": [], "block_ids": []}
             groups[key] = unit
         text = clean_block_text(block)
-        if text:
+        is_table = str(block.get("type") or "") == "table"
+        if text and not is_table:
             unit["texts"].append(text)
         if block.get("block_id"):
             unit["block_ids"].append(block["block_id"])
             # section_path/noise 必须随行（guards-v12/v15）：fallback 收窄按需求所属小节
             # 过滤 span、匹配器按噪声排除——缺字段时两条规则都静默失效
-            sb_entry = {
-                "block_id": block["block_id"], "text": text,
-                "section_path": list(block.get("section_path") or []),
-                "noise": bool(block.get("noise")),
-            }
-            is_table = str(block.get("type") or "") == "table"
-            table_kind = (
-                classify_table_kind(block)
-                if (classify_table_kind is not None and is_table)
-                else ""
-            )
-            is_parameter = table_kind == "parameter"
-            if is_table and is_parameter and _row_render_line is not None:
-                headers = [str(h or "") for h in (block.get("headers") or [])]
-                # 封堵一-A:表头渲染行(超大切分多 chunk 时每个 chunk 首行注入)
-                if headers:
-                    unit.setdefault("_table_header_lines", []).append(" | ".join(headers))
-                # 封堵一-B:行级明细 rows(供 _map_requirement_source 落 source_row_index)。
-                # 不改整块 text(match 行为不变);表头/分组标题/稀疏行不进 rows(同逐行展开口径)
-                table_id = str(block.get("table_id") or block.get("block_id") or "")
-                row_entries: list[dict[str, Any]] = []
-                real_items = items_by_block.get(str(block.get("block_id") or ""))
-                if real_items is not None:
-                    # 权威 item_id/row_index（物理行号,含表头/标题偏移）——不再自行拼 ID
-                    # S12：物理行推导统一走 table_structure.physical_data_row_indexes
-                    # （标题/表头不连续时连续偏移公式必然错位）
-                    from table_structure import physical_data_row_indexes
-
-                    data_rows = list(block.get("data_rows") or [])
-                    physical_rows = physical_data_row_indexes(block)
-                    data_position = {row_index: pos for pos, row_index in enumerate(physical_rows, start=1)}
-                    for item in sorted(real_items, key=lambda row: int(row.get("row_index") or 0)):
-                        if str(item.get("leaf_role") or "row") != "row":
-                            continue
-                        position = data_position.get(int(item.get("row_index") or 0))
-                        row = data_rows[position - 1] if position and position - 1 < len(data_rows) else []
-                        cells = [str(c or "").strip() for c in row]
-                        non_empty = [c for c in cells if c]
-                        if len(non_empty) < _PARAM_ROW_MIN_CELLS and not any(
-                            _is_normative_cell(c) for c in non_empty
-                        ):
-                            continue
-                        if _is_group_header_evidence(block, item, non_empty):
-                            continue
-                        line = _row_render_line(headers, row)
-                        if line.strip():
-                            row_entries.append({
-                                "row_index": int(item.get("row_index") or 0),
-                                "item_id": str(item.get("item_id") or ""),
-                                "text": line,
-                            })
-                else:
-                    # 兼容路径（无真实 items）：行号同样走统一推导（旧产物缺结构
-                    # 索引时 helper 内部退回"表头数 + 标题数 + 数据区偏移"历史公式）
-                    from table_structure import physical_data_row_indexes
-
-                    physical_rows = physical_data_row_indexes(block)
-                    for offset, row in enumerate(block.get("data_rows") or [], start=1):
-                        cells = [str(c or "").strip() for c in row]
-                        non_empty = [c for c in cells if c]
-                        if len(non_empty) < _PARAM_ROW_MIN_CELLS or len(set(non_empty)) == 1:
-                            continue
-                        line = _row_render_line(headers, row)
-                        if line.strip():
-                            row_index = (
-                                physical_rows[offset - 1]
-                                if offset - 1 < len(physical_rows)
-                                else offset
-                            )
-                            row_entries.append({
-                                "row_index": row_index,
-                                "item_id": f"{table_id}-R{row_index:06d}",
-                                "text": line,
-                            })
-                if row_entries:
-                    sb_entry["rows"] = row_entries
-            if is_table and table_cell_items is not None:
-                # cell 输入必须带"表标题 + 行头 + 列头 + 单元格正文"（禁止裸格）
-                from table_structure import cell_context_text
-
-                cell_entries = []
-                for cell in cells_by_block.get(str(block.get("block_id") or ""), []):
-                    if str(cell.get("leaf_kind") or "") != "cell":
+            if is_table:
+                table_sources = []
+                for table_block in _iter_table_blocks(block):
+                    source = _structured_table_source(
+                        table_block,
+                        block_id=str(block["block_id"]),
+                        block_items=items_by_block.get(str(block["block_id"]), []),
+                        block_cells=cells_by_block.get(str(block["block_id"]), []),
+                        dispositions_by_cell=dispositions_by_cell,
+                        classify_table_kind=classify_table_kind,
+                        row_render_line=_row_render_line,
+                        param_row_min_cells=_PARAM_ROW_MIN_CELLS,
+                    )
+                    if source is None:
                         continue
-                    cell_entries.append({
-                        "cell_id": str(cell.get("cell_id") or ""),
-                        "row_index": int(cell.get("row_index") or 0),
-                        "column_index": int(cell.get("column_index") or 0),
-                        "text": cell_context_text(cell),
-                    })
-                if cell_entries:
-                    sb_entry["cells"] = cell_entries
-            unit.setdefault("source_blocks", []).append(sb_entry)
+                    table_sources.append(source)
+                    if source["text"]:
+                        unit["texts"].append(source["text"])
+                    if source.get("header_line"):
+                        unit.setdefault("_table_header_lines", []).append(source["header_line"])
+                    unit.setdefault("source_blocks", []).append(source["source_block"])
+                if table_sources:
+                    unit["table_input_mode"] = "structured_leaves"
+            else:
+                unit.setdefault("source_blocks", []).append({
+                    "block_id": block["block_id"],
+                    "text": text,
+                    "section_path": list(block.get("section_path") or []),
+                    "noise": bool(block.get("noise")),
+                })
 
     sections: list[dict[str, Any]] = []
     for unit in groups.values():
@@ -181,8 +125,185 @@ def assemble_sections(
         sections.append({"section_id": unit["section_id"], "section_path": unit["section_path"],
                          "heading": unit["heading"], "text": body, "block_ids": unit["block_ids"],
                          "source_blocks": unit.get("source_blocks", []),
-                         "_table_header_lines": unit.get("_table_header_lines", [])})
+                         "_table_header_lines": unit.get("_table_header_lines", []),
+                         "table_input_mode": unit.get("table_input_mode", "plain_text")})
     return sections
+
+
+def _iter_table_blocks(block: dict[str, Any]):
+    yield block
+    for nested in block.get("nested_tables") or []:
+        if isinstance(nested, dict):
+            yield from _iter_table_blocks(nested)
+
+
+def _structured_table_source(
+    block: dict[str, Any],
+    *,
+    block_id: str,
+    block_items: list[dict[str, Any]],
+    block_cells: list[dict[str, Any]],
+    dispositions_by_cell: dict[str, dict[str, Any]],
+    classify_table_kind,
+    row_render_line,
+    param_row_min_cells: int,
+) -> dict[str, Any] | None:
+    """Build addressable table leaves; flattened ``block.text`` is audit-only."""
+    from table_structure import cell_context_text, physical_data_row_indexes
+
+    table_id = str(block.get("table_id") or block_id)
+    table_kind = classify_table_kind(block) if classify_table_kind is not None else ""
+    headers = [str(value or "") for value in (block.get("headers") or [])]
+    title = str(block.get("table_title") or table_id)
+    context_header_line = (
+        f"[TABLE_CONTEXT table_id={table_id} kind={table_kind or 'other'} "
+        f"title={title}] headers={' | '.join(headers)}"
+    )
+    repeat_header_line = " | ".join(headers) if table_kind == "parameter" else ""
+    table_items = [
+        row for row in block_items if str(row.get("table_id") or "") == table_id
+    ]
+    table_cells = [
+        row for row in block_cells if str(row.get("table_id") or "") == table_id
+    ]
+    cells_by_row: dict[int, list[dict[str, Any]]] = {}
+    for cell in table_cells:
+        cells_by_row.setdefault(int(cell.get("row_index") or 0), []).append(cell)
+
+    row_entries: list[dict[str, Any]] = []
+    data_rows = list(block.get("data_rows") or [])
+    physical_rows = physical_data_row_indexes(block)
+    data_position = {row_index: pos for pos, row_index in enumerate(physical_rows, start=1)}
+    if table_items:
+        for item in sorted(table_items, key=lambda row: int(row.get("row_index") or 0)):
+            if str(item.get("leaf_role") or "row") != "row":
+                continue
+            row_index = int(item.get("row_index") or 0)
+            position = data_position.get(row_index)
+            row = data_rows[position - 1] if position and position - 1 < len(data_rows) else []
+            values = [str(value or "").strip() for value in row]
+            non_empty = [value for value in values if value]
+            if len(non_empty) < param_row_min_cells and not any(
+                _is_normative_cell(value) for value in non_empty
+            ):
+                continue
+            if _is_group_header_evidence(block, item, non_empty):
+                continue
+            source_text = row_render_line(headers, row) if row_render_line else str(item.get("text") or "")
+            owned_cells = [
+                cell for cell in cells_by_row.get(row_index, [])
+                if _cell_is_extractable(cell, dispositions_by_cell)
+                and str(cell.get("leaf_kind") or "") == "row"
+            ]
+            cell_ids = [str(cell.get("cell_id") or "") for cell in owned_cells]
+            extraction_text = (
+                f"[TABLE_LEAF kind=row table_id={table_id} item_id={item.get('item_id') or ''} "
+                f"cell_ids={','.join(cell_ids)}] {title} | {' | '.join(headers)} | {source_text}"
+            )
+            row_entries.append({
+                "row_index": row_index,
+                "item_id": str(item.get("item_id") or ""),
+                "cell_ids": cell_ids,
+                "text": extraction_text,
+                "source_text": source_text,
+                "extraction_text": extraction_text,
+            })
+    elif table_kind == "parameter" and row_render_line is not None:
+        for offset, row in enumerate(data_rows, start=1):
+            values = [str(value or "").strip() for value in row]
+            non_empty = [value for value in values if value]
+            if len(non_empty) < param_row_min_cells or len(set(non_empty)) == 1:
+                continue
+            row_index = physical_rows[offset - 1] if offset - 1 < len(physical_rows) else offset
+            item_id = f"{table_id}-R{row_index:06d}"
+            source_text = row_render_line(headers, row)
+            extraction_text = (
+                f"[TABLE_LEAF kind=row table_id={table_id} item_id={item_id} cell_ids=] "
+                f"{title} | {' | '.join(headers)} | {source_text}"
+            )
+            row_entries.append({
+                "row_index": row_index,
+                "item_id": item_id,
+                "cell_ids": [],
+                "text": extraction_text,
+                "source_text": source_text,
+                "extraction_text": extraction_text,
+            })
+
+    cell_entries: list[dict[str, Any]] = []
+    for cell in sorted(
+        table_cells,
+        key=lambda row: (int(row.get("row_index") or 0), int(row.get("column_index") or 0)),
+    ):
+        if str(cell.get("leaf_kind") or "") != "cell":
+            continue
+        if not _cell_is_extractable(cell, dispositions_by_cell):
+            continue
+        context_text = cell_context_text(cell)
+        cell_id = str(cell.get("cell_id") or "")
+        disposition = dispositions_by_cell.get(cell_id) or {}
+        extraction_text = (
+            f"[TABLE_LEAF kind=cell table_id={table_id} cell_id={cell_id} "
+            f"disposition={disposition.get('disposition') or 'target'}] {context_text}"
+        )
+        cell_entries.append({
+            "cell_id": cell_id,
+            "row_index": int(cell.get("row_index") or 0),
+            "column_index": int(cell.get("column_index") or 0),
+            "text": extraction_text,
+            "source_text": str(cell.get("text") or ""),
+            "extraction_text": extraction_text,
+        })
+
+    leaf_lines = [entry["extraction_text"] for entry in row_entries]
+    leaf_lines.extend(entry["extraction_text"] for entry in cell_entries)
+    pending_review = any(
+        str(row.get("table_id") or "") == table_id
+        and str(row.get("disposition") or "") == "review"
+        for row in dispositions_by_cell.values()
+    )
+    if not leaf_lines and pending_review:
+        leaf_lines.append(
+            f"[TABLE_REVIEW_REQUIRED table_id={table_id}] {title}"
+        )
+    if not leaf_lines and data_rows:
+        for offset, row in enumerate(data_rows, start=1):
+            source_text = (
+                row_render_line(headers, row)
+                if row_render_line is not None
+                else " | ".join(str(value or "") for value in row)
+            )
+            if source_text.strip():
+                leaf_lines.append(
+                    f"[TABLE_CONTEXT_ROW table_id={table_id} row={offset}] {source_text}"
+                )
+    if not leaf_lines:
+        return None
+    text = "\n".join([context_header_line, *leaf_lines])
+    source_block = {
+        "block_id": block_id,
+        "table_id": table_id,
+        "text": text,
+        "section_path": list(block.get("section_path") or []),
+        "noise": bool(block.get("noise")),
+        "rows": row_entries,
+        "cells": cell_entries,
+        "table_input_mode": "structured_leaves",
+    }
+    return {
+        "text": text,
+        "header_line": repeat_header_line,
+        "source_block": source_block,
+    }
+
+
+def _cell_is_extractable(
+    cell: dict[str, Any], dispositions_by_cell: dict[str, dict[str, Any]]
+) -> bool:
+    disposition = dispositions_by_cell.get(str(cell.get("cell_id") or ""))
+    if disposition is None:
+        return str(cell.get("leaf_kind") or "") in {"row", "cell"}
+    return str(disposition.get("disposition") or "") in {"target", "composite"}
 
 
 def _is_normative_cell(text: str) -> bool:

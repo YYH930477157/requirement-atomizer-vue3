@@ -304,6 +304,69 @@
           <input v-model="searchText" class="search-input" type="search" placeholder="搜索需求、对象或编号" />
         </section>
 
+        <section
+          v-if="visibleTableReviews.length"
+          class="table-review-band"
+          data-testid="table-review-band"
+          aria-label="表格结构复核"
+        >
+          <header class="table-review-band-head">
+            <span class="table-review-band-title">
+              <AlertTriangle :size="16" aria-hidden="true" />
+              表格结构复核
+            </span>
+            <span>{{ pendingTableReviewCount }} 张待确认</span>
+          </header>
+          <div
+            v-for="table in visibleTableReviews"
+            :key="table.table_id"
+            class="table-review-row"
+            :data-testid="`table-review-${table.table_id}`"
+          >
+            <div class="table-review-summary">
+              <strong>{{ table.title || table.table_id }}</strong>
+              <span>{{ table.table_id }} · {{ table.cell_count }} 格</span>
+              <span v-if="table.review_mode === 'llm_assisted'" class="table-review-audit">LLM 辅助，审计只读</span>
+              <span v-else>{{ table.review_count }} 格待定</span>
+            </div>
+            <div v-if="table.structure_review_status === 'pending'" class="table-review-decisions">
+              <label
+                v-for="cell in table.cells.filter((item) => item.disposition === 'review')"
+                :key="cell.cell_id"
+                class="table-review-cell"
+              >
+                <span class="table-review-cell-source">
+                  R{{ cell.row_index || 0 }}C{{ cell.column_index || 0 }}
+                  <b>{{ cell.text || '空白单元格' }}</b>
+                </span>
+                <select
+                  v-model="tableReviewDrafts[table.table_id][cell.cell_id].role"
+                  :aria-label="`${cell.cell_id} 角色`"
+                >
+                  <option v-for="option in tableRoleOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+                <select
+                  v-model="tableReviewDrafts[table.table_id][cell.cell_id].disposition"
+                  :aria-label="`${cell.cell_id} 处置`"
+                >
+                  <option v-for="option in tableDispositionOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+              </label>
+            </div>
+            <button
+              v-if="table.structure_review_status === 'pending'"
+              class="button table-review-confirm"
+              type="button"
+              :disabled="submittingTableReviewId === table.table_id"
+              :data-testid="`confirm-table-${table.table_id}`"
+              @click="confirmTableReview(table)"
+            >
+              <Check :size="15" aria-hidden="true" />
+              {{ submittingTableReviewId === table.table_id ? '保存中' : '确认整表结构' }}
+            </button>
+          </div>
+        </section>
+
         <section class="workspace right-detail-workspace" data-testid="workspace">
           <section class="table-panel">
             <div class="panel-head">
@@ -621,6 +684,7 @@ import { computed, onMounted, onUnmounted, ref, watch, type Component } from "vu
 import { NConfigProvider } from "naive-ui"
 import {
   Ban,
+  AlertTriangle,
   Braces,
   Check,
   ChevronRight,
@@ -651,6 +715,12 @@ import {
   X,
 } from "@lucide/vue"
 import { isNeedsReconfirmationError, RequirementApiClient, RequirementApiError } from "./api-client"
+import type {
+  TableCellDisposition,
+  TableCellRole,
+  TableReviewRoleMapping,
+  TableReviewTable,
+} from "./api-client"
 import ClaimLedger from "./ClaimLedger.vue"
 import DocumentReview from "./DocumentReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
@@ -690,6 +760,30 @@ const runOverview = ref<{ atoms: number | null; aiReqs: number | null; selfCheck
 const lastStageNotes = ref<string[]>([])
 // 裁决复盘建议（E5）：专家改判模式 ≥3 次提炼的规则改进建议——此前产物零消费者
 const reviewInsights = ref<string[]>([])
+const tableReviews = ref<TableReviewTable[]>([])
+const tableReviewDrafts = ref<Record<string, TableReviewRoleMapping>>({})
+const submittingTableReviewId = ref("")
+const visibleTableReviews = computed(() => tableReviews.value.filter((table) =>
+  table.structure_review_status === "pending" || table.review_mode === "llm_assisted",
+))
+const pendingTableReviewCount = computed(() => tableReviews.value.filter(
+  (table) => table.structure_review_status === "pending",
+).length)
+const tableRoleOptions: Array<{ value: TableCellRole; label: string }> = [
+  { value: "title", label: "标题" },
+  { value: "header", label: "表头" },
+  { value: "row_header", label: "行头" },
+  { value: "group_header", label: "分组标题" },
+  { value: "data", label: "数据" },
+  { value: "note", label: "备注" },
+  { value: "unknown", label: "未知" },
+]
+const tableDispositionOptions: Array<{ value: TableCellDisposition; label: string }> = [
+  { value: "target", label: "独立目标" },
+  { value: "context", label: "上下文" },
+  { value: "composite", label: "组合事实" },
+  { value: "excluded", label: "排除" },
+]
 const reviewPreviewRows = computed(() => requirementRows.value.slice(0, 4))
 const DELIVERABLE_FILES = [
   { key: "software", icon: FileSpreadsheet, tone: "xls", name: "软件需求列表-成文.xlsx", hint: "V2.3.x 模板成文（B 轨主交付物）" },
@@ -1340,6 +1434,76 @@ function applyStatFilter(filter: StatFilter) {
   } else {
     statusFilter.value = filter
     ambiguousOnly.value = false
+  }
+}
+
+function normalizeTableCellRole(value: unknown): TableCellRole {
+  const role = String(value || "") as TableCellRole
+  return tableRoleOptions.some((option) => option.value === role) ? role : "unknown"
+}
+
+function defaultTableDisposition(role: TableCellRole): TableCellDisposition {
+  return ["title", "header", "row_header", "group_header", "note"].includes(role)
+    ? "context"
+    : "composite"
+}
+
+function installTableReviews(tables: TableReviewTable[]) {
+  tableReviews.value = tables
+  const drafts: Record<string, TableReviewRoleMapping> = {}
+  for (const table of tables) {
+    const mapping: TableReviewRoleMapping = {}
+    for (const cell of table.cells || []) {
+      if (cell.disposition !== "review") continue
+      const role = normalizeTableCellRole(cell.role)
+      mapping[cell.cell_id] = {
+        role,
+        disposition: defaultTableDisposition(role),
+      }
+    }
+    drafts[table.table_id] = mapping
+  }
+  tableReviewDrafts.value = drafts
+}
+
+async function confirmTableReview(table: TableReviewTable) {
+  const client = apiClient.value
+  if (!client || submittingTableReviewId.value) return
+  submittingTableReviewId.value = table.table_id
+  apiMessage.value = ""
+  try {
+    const result = await client.applyTableReviewAction({
+      tableId: table.table_id,
+      expectedEvidenceFingerprint: table.evidence_fingerprint,
+      roleMapping: tableReviewDrafts.value[table.table_id] || {},
+      actor: "vue3-ui",
+      reason: "Confirmed table structure in Vue3 UI",
+    })
+    tableReviews.value = tableReviews.value.map((item) =>
+      item.table_id === table.table_id
+        ? { ...item, structure_review_status: result.structure_review_status, review_mode: "human" }
+        : item,
+    )
+    apiMessage.value = result.structure_review_status === "ready"
+      ? `表格 ${table.table_id} 的结构已确认`
+      : `表格 ${table.table_id} 仍有待确认单元格`
+  } catch (error) {
+    if (isNeedsReconfirmationError(error) && client === apiClient.value) {
+      try {
+        const refreshed = await client.loadTableReviews()
+        if (client !== apiClient.value) return
+        installTableReviews(refreshed.tables || [])
+        apiMessage.value = "表格证据已变化，已刷新，请核对后重新确认"
+      } catch (refreshError) {
+        apiMessage.value = refreshError instanceof Error
+          ? `表格复核冲突且刷新失败：${refreshError.message}`
+          : "表格复核冲突且刷新失败"
+      }
+    } else {
+      apiMessage.value = error instanceof Error ? error.message : "表格结构复核写入失败"
+    }
+  } finally {
+    submittingTableReviewId.value = ""
   }
 }
 
@@ -2018,6 +2182,13 @@ async function loadFromSession(
     throw error
   }
   try {
+    const tableReviewPayload = await client.loadTableReviews()
+    if (generation !== apiSessionLoadGeneration) return
+    installTableReviews(tableReviewPayload.tables || [])
+  } catch {
+    if (generation === apiSessionLoadGeneration) installTableReviews([])
+  }
+  try {
     // 复盘建议为附属信息：加载失败/老目录缺文件不影响连接流程
     const insights = await client.loadReviewInsights()
     if (generation !== apiSessionLoadGeneration) return
@@ -2075,6 +2246,8 @@ function clearReviewSessionState() {
   requirementRows.value = []
   selectedRequirementId.value = ""
   reviewInsights.value = []
+  installTableReviews([])
+  submittingTableReviewId.value = ""
 }
 
 // 最近结果列表（主进程持久化于 userData/recent-sessions.json）：重启自动恢复最近一次，
@@ -4007,6 +4180,112 @@ tbody tr.selected {
 .search-input {
   flex: 1 1 auto;
   min-width: 280px;
+}
+
+.table-review-band {
+  flex: none;
+  max-height: 220px;
+  overflow: auto;
+  background: #fffaf0;
+  border-bottom: 1px solid #ead7ad;
+}
+
+.table-review-band-head,
+.table-review-row {
+  min-height: 42px;
+  padding: 8px 26px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.table-review-band-head {
+  justify-content: space-between;
+  color: #72510d;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.table-review-band-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.table-review-row {
+  border-top: 1px solid #f0dfba;
+  background: #ffffff;
+}
+
+.table-review-summary {
+  width: 230px;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  color: #6e5a31;
+  font-size: 11px;
+}
+
+.table-review-summary strong {
+  overflow: hidden;
+  color: #2f3542;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-review-audit {
+  color: #1e41c9;
+  font-weight: 700;
+}
+
+.table-review-decisions {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.table-review-cell {
+  min-width: 310px;
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) 88px 96px;
+  gap: 6px;
+  align-items: center;
+}
+
+.table-review-cell-source {
+  min-width: 0;
+  color: #7a8496;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-review-cell-source b {
+  margin-left: 5px;
+  color: #333d52;
+  font-size: 12px;
+}
+
+.table-review-cell select {
+  width: 100%;
+  height: 30px;
+  border: 1px solid #d5dae4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #333d52;
+  font-size: 12px;
+}
+
+.table-review-confirm {
+  flex: none;
+  min-width: 118px;
+  justify-content: center;
 }
 
 .workspace {

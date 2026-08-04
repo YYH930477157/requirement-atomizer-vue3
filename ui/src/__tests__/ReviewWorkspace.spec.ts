@@ -1,6 +1,8 @@
-import { flushPromises, mount } from "@vue/test-utils"
+import { enableAutoUnmount, flushPromises, mount } from "@vue/test-utils"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import App from "../App.vue"
+
+enableAutoUnmount(afterEach)
 
 const ALL_STAGES_OFF = JSON.stringify({ aiExtract: false, assemble: false, analyze: false, compose: false, annotationHtml: false })
 
@@ -375,7 +377,104 @@ describe("review workspace shell", () => {
       expect(wrapper.find('[data-testid="detail-status"]').text()).toContain("已接受")
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(4)   // requirements + review-insights + result-package + action
+    expect(fetchMock).toHaveBeenCalledTimes(5)   // requirements + table reviews + review-insights + result-package + action
+  })
+
+  it("shows only pending table structure reviews and confirms one table in a single action", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\Codex\\out\\run",
+        }),
+      },
+    })
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith("/requirements?limit=5000")) {
+        return { ok: true, json: async () => [] } as Response
+      }
+      if (url.endsWith("/table-reviews")) {
+        return {
+          ok: true,
+          json: async () => ({
+            schema: "table-review-view/v1",
+            tables: [
+              {
+                table_id: "TBL-PENDING",
+                title: "Auxiliary output",
+                structure_review_status: "pending",
+                review_mode: "pending",
+                cell_count: 3,
+                review_count: 1,
+                evidence_fingerprint: "sha256:table-v1",
+                cells: [
+                  {
+                    cell_id: "CELL-1",
+                    text: "Mode",
+                    row_index: 2,
+                    column_index: 1,
+                    role: "row_header",
+                    disposition: "review",
+                  },
+                ],
+              },
+              {
+                table_id: "TBL-READY",
+                title: "Automatic table",
+                structure_review_status: "ready",
+                review_mode: "automatic",
+                cell_count: 4,
+                review_count: 0,
+                evidence_fingerprint: "sha256:ready",
+                cells: [],
+              },
+            ],
+          }),
+        } as Response
+      }
+      if (url.endsWith("/table-review-actions")) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          table_id: "TBL-PENDING",
+          expected_evidence_fingerprint: "sha256:table-v1",
+          role_mapping: {
+            "CELL-1": { role: "row_header", disposition: "context" },
+          },
+          actor: "vue3-ui",
+          reason: "Confirmed table structure in Vue3 UI",
+        })
+        return {
+          ok: true,
+          json: async () => ({
+            table_id: "TBL-PENDING",
+            structure_review_status: "ready",
+          }),
+        } as Response
+      }
+      if (url.endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
+      if (url.endsWith("/result-package")) {
+        return { ok: true, json: async () => ({ layout: "package_v1", package: null }) } as Response
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    const wrapper = mount(App)
+    await openReview(wrapper)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="table-review-band"]').exists()).toBe(true)
+    })
+
+    expect(wrapper.find('[data-testid="table-review-TBL-PENDING"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="table-review-TBL-READY"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="confirm-table-TBL-PENDING"]').trigger("click")
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="table-review-band"]').exists()).toBe(false)
+    })
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/table-review-actions"))).toHaveLength(1)
   })
 
   it("refreshes A-track evidence after a 409 and retains the review draft", async () => {

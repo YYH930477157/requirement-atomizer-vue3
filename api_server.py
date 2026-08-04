@@ -42,6 +42,11 @@ from result_package import (
     load_result_package,
     resolve_analysis_root,
 )
+from table_review_state import (
+    TableReviewConflict,
+    apply_table_review_decision,
+    build_table_review_payload,
+)
 
 
 DEFAULT_OUTPUT = Path("out/abnt_nbr_16968_atomizer_v5")
@@ -288,6 +293,12 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/review-summary":
             self.send_json(build_review_summary(self.output_dir))
             return
+        if parsed.path == "/table-reviews":
+            try:
+                self.send_json(build_table_review_payload(self.output_dir))
+            except (OSError, TimeoutError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
         if parsed.path == "/document":
             try:
                 self.send_json(build_document_blocks(self.output_dir))
@@ -440,6 +451,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/ai-review-actions":
             self.handle_ai_review_action()
             return
+        if parsed.path == "/table-review-actions":
+            self.handle_table_review_action()
+            return
         if parsed.path == "/omission-actions":
             self.handle_omission_action()
             return
@@ -580,6 +594,46 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
         self.send_json(state)
+
+    def handle_table_review_action(self) -> None:
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        table_id = str(payload.get("table_id") or "").strip()
+        expected_fingerprint = str(
+            payload.get("expected_evidence_fingerprint") or ""
+        ).strip()
+        role_mapping = payload.get("role_mapping")
+        if not table_id or not expected_fingerprint or not isinstance(role_mapping, dict):
+            self.send_json({
+                "error": (
+                    "table_id, expected_evidence_fingerprint, and role_mapping are required"
+                )
+            }, status=400)
+            return
+        try:
+            result = apply_table_review_decision(
+                self.output_dir,
+                table_id=table_id,
+                expected_evidence_fingerprint=expected_fingerprint,
+                role_mapping=role_mapping,
+                actor=str(payload.get("actor") or "").strip() or None,
+                reason=str(payload.get("reason") or "").strip(),
+            )
+        except TableReviewConflict as exc:
+            self.send_json({
+                "error": str(exc),
+                "needs_reconfirmation": True,
+                "evidence_fingerprint": exc.current_fingerprint,
+            }, status=409)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (OSError, TimeoutError) as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        self.send_json(result)
 
     def handle_translation(self) -> None:
         payload = self.read_json_body()
