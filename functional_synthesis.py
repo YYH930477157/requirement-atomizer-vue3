@@ -7,10 +7,10 @@ from typing import Any
 
 from ai_review_actions import read_ai_review_states, source_ai_requirement_id
 from compliance import is_compliance_requirement
-from functional_catalog import CatalogChat, build_function_catalog
+from functional_catalog import FUNCTIONAL_CATALOG_VERSION, CatalogChat, build_function_catalog
 from llm_pipeline import read_jsonl
 
-FUNCTIONAL_SYNTHESIS_VERSION = "functional-synthesis-v7"  # v7:聚类两规则——period_variant 周期档位不同分家(15min×24h 不并)、legacy_concept 标题共享对象词组合并(误拆修复)
+FUNCTIONAL_SYNTHESIS_VERSION = "functional-synthesis-v8"
 FUNCTIONAL_REQUIREMENTS = "functional_requirements.json"
 
 
@@ -39,7 +39,7 @@ def _resolve_catalog_chat(route: str | None, chat: CatalogChat | None) -> tuple[
         return None, "stub"
 
     def invoke(system: str, user: str) -> dict[str, Any]:
-        return chat_json(config, system, user)
+        return chat_json(config, system, user, max_truncation_escalations=1)
 
     return invoke, f"llm:{config.model}"
 
@@ -98,6 +98,7 @@ def run_functional_synthesis(out_dir: Path, *, route: str | None = "stub",
     payload = {
         "schema_version": 1,
         "producer": FUNCTIONAL_SYNTHESIS_VERSION,
+        "catalog_producer": FUNCTIONAL_CATALOG_VERSION,
         # C4（0710 评审）：标准 provenance 块（§43：producer/version/generated_at），消费端校验
         "provenance": provenance("functional_synthesis", FUNCTIONAL_SYNTHESIS_VERSION),
         "route_requested": route or "stub",

@@ -77,6 +77,36 @@ class MockOpenAIService:
 
 
 class LLMClientTests(unittest.TestCase):
+    def test_truncation_escalation_limit_raises_after_one_retry(self) -> None:
+        truncated = {
+            "choices": [{
+                "message": {"content": '{"partial"'},
+                "finish_reason": "length",
+            }]
+        }
+        final = {
+            "choices": [{
+                "message": {"content": '{"ok": true}'},
+                "finish_reason": "stop",
+            }]
+        }
+        with MockOpenAIService([{"body": truncated}, {"body": truncated}, {"body": final}]) as service:
+            config = LLMClientConfig(
+                base_url=service.base_url,
+                model="mock-model",
+                api_key_env="",
+                timeout_s=2,
+                max_retries=0,
+            )
+            with self.assertRaises(LLMResponseError):
+                chat_json(
+                    config,
+                    "system",
+                    "user",
+                    max_truncation_escalations=1,
+                )
+            self.assertEqual(len(service.requests), 2)
+
     def test_restore_settled_checkpoint_preserves_cumulative_budget(self) -> None:
         budget = LLMRequestBudget(max_calls=2, max_tokens=100_000)
         reservation = budget.reserve({"messages": [], "max_tokens": 32})

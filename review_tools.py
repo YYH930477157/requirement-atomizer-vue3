@@ -20,15 +20,16 @@ from blue_book_lookup import condensed_text, load_index, lookup_class, lookup_cl
 from io_utils import read_jsonl
 
 # 工具定义/裁剪契约版本——TOOLS schema、返回字段、裁剪上限任何变更必须 bump
+# v4：source_read 返回裁剪上限 2000→800，降低逐需求工具回灌成本
 # v3：coverage_check 共引/重复/引句命中改走 A 轨适配层（v2 在 atomic 真实形状上三处恒空）
 # v2：蓝皮书索引缺失优雅降级（v1 崩溃致 tool-loop 两连错中止）
-REVIEW_TOOLS_VERSION = "review-tools-v3"
+REVIEW_TOOLS_VERSION = "review-tools-v4"
 
 # 返回裁剪上限（冻结契约的一部分，见规格 §2 表格）
 KB_SEARCH_MAX_RESULTS = 5
 KB_DEFINITION_MAX_CHARS = 300
 BLUE_BOOK_CONDENSED_MAX_CHARS = 1500
-SOURCE_BLOCK_MAX_CHARS = 2000
+SOURCE_BLOCK_MAX_CHARS = 800
 _COVERAGE_GROUP_MAX = 5
 
 # 蓝皮书索引自动探测顺序与 desktop_tasks.resolve_blue_book_index 一致（显式注入 > env >
@@ -102,7 +103,7 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "source_read",
             "description": (
-                "Read one source document block by block_id. Returns block text (<=2000 chars) "
+                "Read one source document block by block_id. Returns block text (<=800 chars) "
                 "and its section path; returns an error when the block_id is unknown."
             ),
             "parameters": {

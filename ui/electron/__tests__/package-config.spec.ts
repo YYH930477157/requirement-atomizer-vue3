@@ -46,6 +46,17 @@ describe("Electron packaging config", () => {
     expect(mainProcess).toContain("app.quit()")
   })
 
+  it("locks before bootstrap and cleans backend resources across quit events", () => {
+    const mainProcess = readFileSync(resolve(__dirname, "../main.cjs"), "utf-8")
+    const lockIndex = mainProcess.indexOf("acquireSingleInstanceLock(app, focusMainWindow)")
+    const bootstrapIndex = mainProcess.indexOf("app.whenReady()")
+    expect(lockIndex).toBeGreaterThan(-1)
+    expect(lockIndex).toBeLessThan(bootstrapIndex)
+    expect(mainProcess).toContain('app.on("before-quit", cleanupApplicationResources)')
+    expect(mainProcess).toContain('app.on("will-quit", cleanupApplicationResources)')
+    expect(mainProcess).toContain("if (applicationResourcesCleanedUp) return")
+  })
+
   it("retries local API startup and keeps completed pipeline output non-fatal", () => {
     const mainProcess = readFileSync(resolve(__dirname, "../main.cjs"), "utf-8")
     expect(mainProcess).toContain("API_STARTUP_ATTEMPTS = 3")

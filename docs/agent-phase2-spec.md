@@ -62,7 +62,7 @@ Phase 2 把审查从"单次 prompt"升级为**有边界的工具调用审查**�
 | `kb_search(query, limit?)` | `KnowledgeRepository.search`（默认 KB 集） | top≤5：entry_id/name/definition≤300 字/score |
 | `kb_get(entry_id)` | `KnowledgeRepository.get` | 单条 compact_metadata 白名单字段 |
 | `blue_book_class(class_id?, name?)` | `blue_book_lookup.lookup_class(_by_name)` + `condensed_text` | section/name/condensed≤1500 字；未命中如实 null |
-| `source_read(block_id)` | `blocks.jsonl` 查块 | block 原文≤2000 字 + section 路径；未知 id 如实 error |
+| `source_read(block_id)` | `blocks.jsonl` 查块 | block 原文≤800 字 + section 路径；未知 id 如实 error |
 | `coverage_check(requirement_id)` | `merged_consistency.match_source_quote_blocks` + `find_obis_coreference` / `find_cross_section_duplicates` 按该需求过滤 | 引句命中块、共引 OBIS 清单、跨章重复候选 |
 
 - 工具输出全部确定性可复现（同输入同输出）；工具调用本身零 token。
@@ -166,7 +166,7 @@ Phase 2 把审查从"单次 prompt"升级为**有边界的工具调用审查**�
    缓建）；
 2. 工具面 5 件套与只读纪律（`kb_search/kb_get/blue_book_class/source_read/
    coverage_check`）；
-3. 预算口径：max_rounds=8、每需求 tokens 上限 20000、超限进 stub 记数；
+3. 预算口径（2026-08-04 成本复核后收紧）：max_rounds=5、每需求 tokens 上限 20000、超限进 stub 记数；
 4. WP2 触发面：仅富化叙述字段，确定性 join 字段永不标待澄清；
 5. 开工第一任务：有 key 环境对 deepseek-v4-flash 做 tools 支持探针（不支持则
   WP1 暂停换端点，不得伪造）。

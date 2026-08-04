@@ -34,6 +34,7 @@ from llm_pipeline import (
 )
 from output_writer import build_quality_report
 from requirement_kb.schema import validate_kb_file, validate_kb_payload
+from result_package import initialize_result_package, resolve_analysis_root
 from review_state import RequirementReviewState, apply_expert_decision
 from table_pattern_engine import load_table_patterns, match_table_pattern
 
@@ -77,6 +78,16 @@ class TestAPIServer:
         finally:
             connection.close()
 
+    def get_json(self, path: str, headers: dict[str, str] | None = None) -> tuple[int, dict]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.server_port, timeout=5)
+        try:
+            connection.request("GET", path, headers=headers or {})
+            response = connection.getresponse()
+            raw = response.read()
+            return response.status, json.loads(raw.decode("utf-8")) if raw else {}
+        finally:
+            connection.close()
+
 
 class PlatformScaffoldTests(unittest.TestCase):
     def test_package_root_prefers_pyinstaller_meipass_resources(self) -> None:
@@ -116,12 +127,36 @@ class PlatformScaffoldTests(unittest.TestCase):
             pass
 
         TestHandler.output_dir = out_dir.resolve()
+        TestHandler.package_root = out_dir.resolve()
         TestHandler.allowed_origins = {"http://127.0.0.1:5173", "http://127.0.0.1:8770", "null"}
         TestHandler.local_token = token
         server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return TestAPIServer(server, thread)
+
+    def test_api_resolves_analysis_root_after_package_is_created(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = self.start_api_server(root)
+            try:
+                status, before = server.get_json("/result-package")
+                self.assertEqual(status, 200)
+                self.assertEqual(before["analysis_root"], str(root.resolve()))
+
+                source = root / "standard.pdf"
+                source.write_bytes(b"pdf")
+                initialize_result_package(root, input_path=source, requested_stages=["atomize"])
+                analysis_root = resolve_analysis_root(root)
+                (analysis_root / "atomic_requirements.jsonl").write_text(
+                    json.dumps({"req_id": "REQ-1"}) + "\n", encoding="utf-8",
+                )
+
+                status, after = server.get_json("/result-package")
+                self.assertEqual(status, 200)
+                self.assertEqual(after["analysis_root"], str(analysis_root))
+            finally:
+                server.shutdown()
 
     def test_blocks_to_doc_ir_preserves_table_rows(self) -> None:
         blocks = [

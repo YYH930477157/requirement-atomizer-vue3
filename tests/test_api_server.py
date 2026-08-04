@@ -132,6 +132,18 @@ class ResultPackageEndpointTests(unittest.TestCase):
             self.assertEqual(payload["error"], "result_package_unavailable")
             self.assertTrue(payload["retryable"])
 
+    def test_corrupt_marker_returns_structured_503_from_other_get_endpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "result-package.json").write_text("{broken", encoding="utf-8")
+
+            with _broken_package_api(root) as base_url:
+                status, payload = _http_json(base_url, "/review-states")
+
+            self.assertEqual(status, 503)
+            self.assertEqual(payload["error"], "result_package_unavailable")
+            self.assertTrue(payload["retryable"])
+
     def test_interrupted_publication_journal_returns_structured_503(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1416,6 +1428,7 @@ class AiRequirementsEndpointTests(unittest.TestCase):
             handler.allowed_origins = set()
             handler.local_token = ""
             handler.output_dir = out
+            handler.package_root = out
             responses: list[tuple[int, dict]] = []
             handler.send_json = lambda body, status=200: responses.append((status, body))
 
@@ -1653,6 +1666,7 @@ class ClarificationBatchEndpointTests(unittest.TestCase):
             handler.allowed_origins = set()
             handler.local_token = ""
             handler.output_dir = out
+            handler.package_root = out
             responses: list[tuple[int, dict]] = []
             handler.send_json = lambda body, status=200: responses.append((status, body))
 

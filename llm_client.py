@@ -533,6 +533,7 @@ def chat_json(
     _usage_sink: list[dict[str, Any]] | None = None,
     _request_budget: LLMRequestBudget | None = None,
     _request_stats: dict[str, int] | None = None,
+    max_truncation_escalations: int | None = None,
 ) -> dict[str, Any]:
     messages = [
         {"role": "system", "content": system_prompt},
@@ -544,6 +545,7 @@ def chat_json(
         _usage_sink=_usage_sink,
         _request_budget=_request_budget,
         _request_stats=_request_stats,
+        max_truncation_escalations=max_truncation_escalations,
     )
 
 
@@ -581,13 +583,19 @@ def chat_json_messages(
     _usage_sink: list[dict[str, Any]] | None = None,
     _request_budget: LLMRequestBudget | None = None,
     _request_stats: dict[str, int] | None = None,
+    max_truncation_escalations: int | None = None,
 ) -> dict[str, Any]:
+    if max_truncation_escalations is not None and max_truncation_escalations < 0:
+        raise ValueError("max_truncation_escalations must be non-negative")
+    truncation_state = {"escalations": 0}
     content = _chat_content(
         config,
         messages,
         _usage_sink=_usage_sink,
         _request_budget=_request_budget,
         _request_stats=_request_stats,
+        max_truncation_escalations=max_truncation_escalations,
+        _truncation_state=truncation_state,
     )
     try:
         return _loads_json_content(content)
@@ -609,6 +617,8 @@ def chat_json_messages(
             _usage_sink=_usage_sink,
             _request_budget=_request_budget,
             _request_stats=_request_stats,
+            max_truncation_escalations=max_truncation_escalations,
+            _truncation_state=truncation_state,
         )
         try:
             return _loads_json_content(repaired_content)
@@ -865,11 +875,14 @@ def _chat_content(
     _usage_sink: list[dict[str, Any]] | None = None,
     _request_budget: LLMRequestBudget | None = None,
     _request_stats: dict[str, int] | None = None,
+    max_truncation_escalations: int | None = None,
+    _truncation_state: dict[str, int] | None = None,
 ) -> str:
     endpoint_key = f"{config.base_url}|{config.model}"
     with _JSON_MODE_LOCK:
         endpoint_supported = endpoint_key not in _JSON_MODE_UNSUPPORTED
     max_tokens = int(config.max_tokens)
+    truncation_state = _truncation_state if _truncation_state is not None else {"escalations": 0}
     while True:
         json_mode = _json_mode_enabled() and endpoint_supported
         payload = build_chat_json_request_payload(
@@ -929,13 +942,25 @@ def _chat_content(
         truncated = finish_reason == "length" or not content.strip()
         if not truncated:
             return content
+        if max_truncation_escalations is not None:
+            if truncation_state["escalations"] >= max_truncation_escalations:
+                raise LLMResponseError(
+                    "LLM output remained truncated or empty after "
+                    f"{truncation_state['escalations']} max_tokens escalation(s)"
+                )
         if max_tokens >= MAX_TOKENS_ESCALATION_CAP:
+            if max_truncation_escalations is not None:
+                raise LLMResponseError(
+                    "LLM output was truncated or empty at the max_tokens escalation cap"
+                )
             LOGGER.warning("LLM 输出截断/空响应且 max_tokens 已到升级上限 %d（finish=%s）,按原样返回交下游修复",
                            MAX_TOKENS_ESCALATION_CAP, finish_reason)
             return content
         escalated = min(max_tokens * 2, MAX_TOKENS_ESCALATION_CAP)
         LOGGER.warning("LLM 输出截断/空响应（finish=%s bytes=%d）——max_tokens %d→%d 自动升级重试 model=%s",
                        finish_reason, len(content), max_tokens, escalated, config.model)
+        if max_truncation_escalations is not None:
+            truncation_state["escalations"] += 1
         max_tokens = escalated
 
 

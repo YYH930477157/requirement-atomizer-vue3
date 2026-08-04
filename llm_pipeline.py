@@ -22,7 +22,6 @@ from llm_client import (
     LLMConnectionError,
     LLMError,
     LLMResponseError,
-    TOOL_LOOP_DEFAULT_MAX_ROUNDS,
     _aggregate_usage,
     chat_json,
     chat_json_messages,
@@ -47,9 +46,10 @@ LOGGER = logging.getLogger("requirement_atomizer")
 _PACKAGE_ROOT = package_root()
 DEFAULT_PIPELINE_PATH = _PACKAGE_ROOT / "llm_agents" / "review_pipeline.yaml"
 DEFAULT_DOMAIN_PACK_PATH = _PACKAGE_ROOT / "domain_packs" / "dlms_cosem" / "pack.yaml"
-# m2-review-v2：Agent Phase 2 工具化融合审查（tool-loop 调用 review_tools 只读工具取证）；
+# m2-review-v3：首轮 KB 证据固定 top-3×300 字，review tool-loop 成本上限收紧；
+# v2：Agent Phase 2 工具化融合审查（tool-loop 调用 review_tools 只读工具取证）；
 # v1：单次融合 prompt（无工具）
-PROMPT_VERSION = "m2-review-v2"
+PROMPT_VERSION = "m2-review-v3"
 # Cache rows contain policy-normalized output. Bump this whenever deterministic
 # review post-processing changes so an older normalized decision cannot leak through.
 # v5：schema 修复改为续接原 transcript 的 chat_with_tools（含 role=tool 取证上下文、
@@ -57,10 +57,11 @@ PROMPT_VERSION = "m2-review-v2"
 # v4：缓存 key 纳入工具证据内容指纹（review_tools.evidence_fingerprint——KB/blocks/
 # 原子需求/蓝皮书索引），改证据后旧审查不再静默复用；schema 修复纳入共享预算计量
 # v3：缓存 key 纳入 REVIEW_TOOLS_VERSION 与执行器模式（tool_loop/single_shot）
-LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v5"
+LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v6"
 # Agent Phase 2 冻结口径：每需求 tool-loop tokens 上限（yaml route.tool_loop_token_budget 可调）；
 # 超限的需求进 stub 并在 llm_failed 记数（全跑不设总顶——审查本质是批处理）
 TOOL_LOOP_DEFAULT_TOKEN_BUDGET = 20000
+REVIEW_TOOL_LOOP_MAX_ROUNDS = 5
 FAST_FAIL_SAMPLE_SIZE = 5
 PROGRESS_INTERVAL = 20
 SOURCE_TYPE_CONFIDENCE_THRESHOLD = 0.85
@@ -282,6 +283,9 @@ def review_requirements_with_openai(
     used_kb_paths: tuple[str, ...] = ()
     if tool_loop_enabled(pipeline):
         token_budget = int(route_payload.get("tool_loop_token_budget") or TOOL_LOOP_DEFAULT_TOKEN_BUDGET)
+        max_rounds = int(route_payload.get("tool_loop_max_rounds") or REVIEW_TOOL_LOOP_MAX_ROUNDS)
+        if max_rounds <= 0:
+            raise ValueError("tool_loop_max_rounds must be a positive integer")
         # 显式 kb_paths 透传（审计 P1-d：调用方 --kb 必须与 atomize 同轨，不得落回默认
         # KB 复核）；None 时按工具执行器同一回退解析为默认 KB——解析后的真实列表同时
         # 进工具执行器与证据指纹，两侧文件集合严格一致
@@ -291,7 +295,11 @@ def review_requirements_with_openai(
         else:
             resolved_kb = [Path(path) for path in kb_paths]
         used_kb_paths = tuple(str(path) for path in resolved_kb)
-        tool_loop = {"executor": make_tool_executor(out_dir, kb_paths=resolved_kb), "token_budget": token_budget}
+        tool_loop = {
+            "executor": make_tool_executor(out_dir, kb_paths=resolved_kb),
+            "token_budget": token_budget,
+            "max_rounds": max_rounds,
+        }
         # 证据指纹必须先于缓存查询——工具实际读取的证据（KB/blocks/原子需求/蓝皮书
         # 索引）变了，旧审查缓存不得命中
         evidence = evidence_fingerprint(out_dir, resolved_kb)
@@ -787,6 +795,7 @@ def dispatch_openai_review(
         config,
         tool_executor=tool_loop["executor"],
         token_budget=tool_loop["token_budget"],
+        max_rounds=tool_loop["max_rounds"],
     )
 
 
@@ -797,6 +806,7 @@ def build_openai_review_tool_loop(
     *,
     tool_executor: Any,
     token_budget: int = TOOL_LOOP_DEFAULT_TOKEN_BUDGET,
+    max_rounds: int = REVIEW_TOOL_LOOP_MAX_ROUNDS,
 ) -> dict[str, Any]:
     """工具化融合审查（Phase 2）：同一融合 prompt，模型可经 chat_with_tools 调用
     review_tools 的确定性只读工具（KB/蓝皮书/原文块/覆盖）取证后再裁决。
@@ -810,6 +820,21 @@ def build_openai_review_tool_loop(
     # tool-loop 首轮、JSON 解析修复、schema 修复共享同一 usage 汇聚（审计 P1-c）——
     # 此前 schema 修复走无 sink 的 chat_json_messages：首轮花满预算后修复仍放行且不计数
     usage_sink: list[dict[str, Any]] = []
+    kb_search_executed = False
+
+    def limited_tool_executor(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        nonlocal kb_search_executed
+        if name == "kb_search":
+            if kb_search_executed:
+                return {
+                    "error": (
+                        "kb_search may be executed at most once per requirement; "
+                        "use kb_get for an entry_id already returned"
+                    )
+                }
+            kb_search_executed = True
+        return tool_executor(name, arguments)
+
     payload, meta = chat_with_tools(
         config,
         [
@@ -817,7 +842,8 @@ def build_openai_review_tool_loop(
             {"role": "user", "content": user_prompt},
         ],
         REVIEW_TOOLS,
-        on_tool_call=tool_executor,
+        max_rounds=max_rounds,
+        on_tool_call=limited_tool_executor,
         token_budget=token_budget,
         _usage_sink=usage_sink,
     )
@@ -840,12 +866,15 @@ def build_openai_review_tool_loop(
         repair_messages = list(meta.get("history") or [])
         repair_messages.append({"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)})
         repair_messages.append({"role": "user", "content": repair_prompt})
+        remaining_rounds = max_rounds - int(meta.get("rounds") or 0)
+        if remaining_rounds <= 0:
+            raise LLMResponseError("tool loop round budget exhausted before schema repair")
         payload, repair_meta = chat_with_tools(
             config,
             repair_messages,
             REVIEW_TOOLS,
-            max_rounds=max(1, TOOL_LOOP_DEFAULT_MAX_ROUNDS - int(meta.get("rounds") or 0)),
-            on_tool_call=tool_executor,
+            max_rounds=remaining_rounds,
+            on_tool_call=limited_tool_executor,
             token_budget=token_budget,
             _usage_sink=usage_sink,
         )
@@ -896,12 +925,12 @@ def review_with_validation_errors(
 
 def build_user_prompt(requirement: dict[str, Any]) -> str:
     kb_matches = []
-    for item in requirement.get("kb_matches", [])[:5]:
+    for item in requirement.get("kb_matches", [])[:3]:
         if isinstance(item, dict):
             kb_matches.append(
                 {
                     "name": item.get("name"),
-                    "definition": item.get("definition"),
+                    "definition": str(item.get("definition") or "")[:300],
                 }
             )
     prompt_payload = {

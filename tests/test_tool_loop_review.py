@@ -104,6 +104,64 @@ class OperationExecutorMapTests(unittest.TestCase):
 
 
 class ToolLoopReviewEndToEndTests(unittest.TestCase):
+    def test_user_prompt_injects_only_top_three_trimmed_kb_definitions(self) -> None:
+        from llm_pipeline import build_user_prompt
+
+        row = {
+            "stable_req_id": "SREQ-KB",
+            "requirement": "Review KB evidence.",
+            "kb_matches": [
+                {"name": f"entry-{index}", "definition": str(index) * 500}
+                for index in range(5)
+            ],
+        }
+
+        payload = json.loads(build_user_prompt(row))
+
+        self.assertEqual(len(payload["kb_matches"]), 3)
+        self.assertEqual([item["name"] for item in payload["kb_matches"]], ["entry-0", "entry-1", "entry-2"])
+        self.assertTrue(all(len(item["definition"]) <= 300 for item in payload["kb_matches"]))
+
+    def test_kb_search_executes_at_most_once_per_requirement(self) -> None:
+        from llm_pipeline import build_openai_review_tool_loop
+        from test_chat_with_tools import config_for
+
+        pipeline = load_review_pipeline(ROOT / "llm_agents" / "review_pipeline.yaml")
+        calls: list[tuple[str, dict]] = []
+
+        def executor(name: str, arguments: dict) -> dict:
+            calls.append((name, arguments))
+            return {"results": []}
+
+        responses = [
+            {"body": tool_call_response([("c1", "kb_search", {"query": "Register"})])},
+            {"body": tool_call_response([("c2", "kb_search", {"query": "Tariff"})])},
+            {"body": final_json_response({
+                "decision": "accept", "risk": "low_risk", "confidence": 0.9,
+                "revised_requirement": "The meter shall store data.",
+                "review_notes": [], "expert_questions": [],
+            })},
+        ]
+        from test_llm_client import MockOpenAIService
+        with MockOpenAIService(responses) as service:
+            build_openai_review_tool_loop(
+                {"stable_req_id": "SREQ-1", "req_id": "AREQ-1", "requirement": "The meter shall store data.",
+                 "requirement_type": "data_definition", "confidence": 0.9},
+                pipeline,
+                config_for(service),
+                tool_executor=executor,
+            )
+
+        self.assertEqual([name for name, _args in calls], ["kb_search"])
+
+    def test_default_review_tool_loop_is_capped_at_five_rounds(self) -> None:
+        from llm_pipeline import REVIEW_TOOL_LOOP_MAX_ROUNDS
+
+        pipeline = load_review_pipeline(ROOT / "llm_agents" / "review_pipeline.yaml")
+        route = pipeline.model_routes["openai_compatible"]
+        self.assertEqual(REVIEW_TOOL_LOOP_MAX_ROUNDS, 5)
+        self.assertEqual(route["tool_loop_max_rounds"], 5)
+
     def test_tool_loop_review_passes_schema_and_keeps_contract(self) -> None:
         """工具化融合审查：模型取证后裁决——输出契约/decision/状态机映射不变，
         结果行附 tool_calls 摘要（审计可解释性锚）。"""
@@ -174,7 +232,7 @@ class ToolLoopReviewEndToEndTests(unittest.TestCase):
         """轮顶耗尽 → 该需求进 stub 并记数；stub 绝不冒充 tool-using 审查（provenance）。"""
         responses = [
             {"body": tool_call_response([("c1", "source_read", {"block_id": "B1"})])},
-        ] * 8   # 模型 8 轮都只要工具（默认轮顶 8）
+        ] * 5   # 模型 5 轮都只要工具（审查轮顶 5）
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             out_dir = tmp_path / "out"
@@ -194,7 +252,7 @@ class ToolLoopReviewEndToEndTests(unittest.TestCase):
         self.assertEqual(review["generated_by"], "rule_stub")
         self.assertNotIn("tool_calls", review)   # stub 行无 tool-loop 痕迹（不冒充）
         self.assertTrue(any("llm_unavailable" in note for note in review["review_notes"]))
-        self.assertEqual(len(service.requests), 8)   # 恰打满默认轮顶
+        self.assertEqual(len(service.requests), 5)   # 恰打满审查轮顶
 
     def test_token_budget_exceeded_falls_to_stub(self) -> None:
         """每需求 tokens 上限（默认 20000）：超限进 stub 并记数。"""

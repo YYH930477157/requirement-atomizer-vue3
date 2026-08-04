@@ -2433,6 +2433,33 @@ class PdfOriginalShareNoteTests(unittest.TestCase):
 
 
 class PdfAnnotationPayloadTests(unittest.TestCase):
+    def test_missing_native_pdf_uses_packaged_copy_only_when_sha_chain_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.pdf"
+            source.write_bytes(b"%PDF-native-source")
+            initialize_result_package(root, input_path=source, requested_stages=["atomize"])
+            out = resolve_analysis_root(root)
+            packaged = package_artifact_path(root, "document_facsimile", for_write=True)
+            packaged.write_bytes(source.read_bytes())
+            source_sha = dae._file_sha256(source)
+            (out / "manifest.json").write_text(json.dumps({
+                "input": str(source), "input_format": "pdf",
+            }), encoding="utf-8")
+            pages = out / "document_pages"
+            pages.mkdir()
+            (pages / "manifest.json").write_text(json.dumps({
+                "version": 1, "source_sha256": source_sha,
+            }), encoding="utf-8")
+            source.unlink()
+
+            self.assertEqual(dae._source_pdf_path(out), packaged)
+
+            (pages / "manifest.json").write_text(json.dumps({
+                "version": 1, "source_sha256": "0" * 64,
+            }), encoding="utf-8")
+            self.assertIsNone(dae._source_pdf_path(out))
+
     """0714:应用内原版影印数据与分享 HTML 同源(几何/换算共用实现)。"""
 
     def _seed(self, out: Path, *, with_pages: bool = True) -> None:

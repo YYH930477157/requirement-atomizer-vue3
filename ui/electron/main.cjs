@@ -34,6 +34,7 @@ let apiSession = null;
 let llmSettings = null;
 let sessionApiKey = "";
 let startupAmbientCredential = null;
+let applicationResourcesCleanedUp = false;
 const API_STARTUP_ATTEMPTS = 3;
 const API_STARTUP_TIMEOUT_MS = 30000;
 const API_STARTUP_RETRY_DELAY_MS = 750;
@@ -112,6 +113,9 @@ if (acquireSingleInstanceLock(app, focusMainWindow)) {
       createWindow();
     }
   });
+
+  app.on("before-quit", cleanupApplicationResources);
+  app.on("will-quit", cleanupApplicationResources);
 }
 
 ipcMain.handle("dialog:open-document", async () => {
@@ -197,17 +201,20 @@ ipcMain.handle("task:result-package-start", async (_event, input) => {
 });
 ipcMain.handle("task:result-package-complete", async (_event, input) => {
   try {
-    return await runAndRememberOutput([
+    const payload = await runAndRememberOutput([
       "result-package-complete",
       "--out", input.outDir,
       "--run-id", input.runId,
       "--completed-stages", (input.completedStages || []).join(","),
     ], input.outDir);
+    await startApiServer(input.outDir, { forceRestart: true });
+    return payload;
   } catch (error) {
     // I6：部分阶段降级不是运行失败——透传稳定错误码，渲染层显示
     // "分析未完成（部分阶段降级）"；其余错误维持 reject
     const envelope = parseTaskErrorEnvelope(error);
     if (envelope?.error?.type === "requested_stage_partial") {
+      await startApiServer(input.outDir, { forceRestart: true });
       return {
         kind: "result_package_complete",
         ok: false,
@@ -231,7 +238,7 @@ ipcMain.handle("task:run-pipeline", async (_event, input) => {
   // 结果已经生成就先登记，API 启动失败也不能让重启后的历史入口丢失。
   rememberRecentSession(outDir);
   try {
-    await startApiServer(outDir);
+    await startApiServer(outDir, { forceRestart: true });
   } catch (error) {
     const message = `本地 API 连接失败，输出目录成果已保留，可稍后重新连接输出目录：${error.message}`;
     appendBackendLog(logsDirPath(), "api", message);
@@ -340,10 +347,15 @@ function startApiServer(outputDir, options = {}) {
 }
 
 async function startApiServerExclusive(outputDir, options = {}) {
-  if (shouldReuseApiSession(apiSession, apiProcess, outputDir)) {
-    rememberRecentSession(outputDir);
-    notifyApiSessionReady(apiSession, options);
-    return apiSession;
+  if (shouldReuseApiSession(apiSession, apiProcess, outputDir, options)) {
+    try {
+      await probeApiSessionContent(apiSession);
+      rememberRecentSession(outputDir);
+      notifyApiSessionReady(apiSession, options);
+      return apiSession;
+    } catch (error) {
+      appendBackendLog(logsDirPath(), "api", `existing session probe failed; restarting: ${error.message}`);
+    }
   }
   let lastError = null;
   for (let attempt = 1; attempt <= API_STARTUP_ATTEMPTS; attempt += 1) {
@@ -458,6 +470,12 @@ function stopApiServer() {
     apiProcess = null;
   }
   apiSession = null;
+}
+
+function cleanupApplicationResources() {
+  if (applicationResourcesCleanedUp) return;
+  applicationResourcesCleanedUp = true;
+  stopApiServer();
 }
 
 function waitForApiReady(child, port, token, outputDir, timeoutMs = API_STARTUP_TIMEOUT_MS) {

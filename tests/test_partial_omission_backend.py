@@ -119,6 +119,7 @@ class PartialSnapshotTests(unittest.TestCase):
             handler.allowed_origins = set()
             handler.local_token = ""
             handler.output_dir = out
+            handler.package_root = out
             responses: list[tuple[int, dict]] = []
             handler.send_json = lambda body, status=200: responses.append((status, body))
 
@@ -1006,6 +1007,42 @@ class OmissionActionTests(unittest.TestCase):
             self.assertTrue(omission_actions.extraction_in_progress(out))
             with omission_actions._targeted_operation_lock(out):
                 pass
+
+    def test_package_manifest_running_status_uses_governed_read_path(self) -> None:
+        from result_package import initialize_result_package, package_artifact_path
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            source = out / "standard.docx"
+            source.write_bytes(b"fixture")
+            initialize_result_package(
+                out, input_path=source, requested_stages=["ai-extract"],
+            )
+            package_artifact_path(out, "run_manifest", for_write=True).write_text(
+                json.dumps({"stages": {"ai-extract": {"status": "running"}}}),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(omission_actions.extraction_in_progress(out))
+
+    def test_package_progress_read_does_not_create_missing_directories(self) -> None:
+        import shutil
+
+        from result_package import initialize_result_package
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            source = out / "standard.docx"
+            source.write_bytes(b"fixture")
+            initialize_result_package(
+                out, input_path=source, requested_stages=["ai-extract"],
+            )
+            shutil.rmtree(out / ".ratomizer" / "stages")
+            shutil.rmtree(out / ".ratomizer" / "pipeline")
+
+            self.assertFalse(omission_actions.extraction_in_progress(out))
+            self.assertFalse((out / ".ratomizer" / "stages").exists())
+            self.assertFalse((out / ".ratomizer" / "pipeline").exists())
 
     def test_failed_partial_is_terminal_not_running(self) -> None:
         with tempfile.TemporaryDirectory() as td:

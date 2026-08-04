@@ -3,6 +3,13 @@
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
 > 状态快照截至 2026-08-02，里程碑推进后请同步更新本文件。
 
+## 重大更新（2026-08-04）——实机修复清单三组集成（分支 `codex/repair-2026-08-04`，未提交）
+
+- **结果包 / 会话**：API 每个请求重新确认 package root 与 analysis root，空目录启动后创建 `package_v1` 不再锁死旧根；Electron 对复用会话先做内容探测，管线或 completion 后强制重启 API。首次 partial attempt 在同一结果包写锁内终止 attempt、如实标记 `incomplete/partial` 并事务发布已有注册交付物；已有 completed 代后的 partial rerun 保留旧根交付物和 analysis，仅记录本次 partial；failed 仍不发布。原生 PDF 源路径失效时，仅在 marker 输入媒体类型、pipeline 输入格式、marker SHA、包内 `document_facsimile.pdf` SHA 与页清单 SHA 全部一致时使用包内副本。
+- **成本控制**：`PROW-DET-*` 按来源表块走确定性目录分组，其他目录输入稳定按最多 30 条分批；functional catalog 截断只允许一次 token 升级，第二次截断/空响应回退确定性分组。审查仍逐 requirement 执行、`table_row` 仍强制审查；首轮 KB 证据收紧为 top-3、每条 300 字，`kb_search` 每 requirement 最多实际执行一次，`source_read` 上限 800 字，tool loop 上限 5 轮。版本面：`functional-catalog-v2`、`functional-synthesis-v8`、`m2-review-v3`、`llm-review-cache-v6`、`review-tools-v4`，旧缓存按指纹失效；本次明确修改 review prompt。
+- **契约 / 生命周期**：结果包 marker 改用 bundled Draft 2020-12 schema 完整校验（含嵌套 `additionalProperties:false` 与 completion evidence `minItems:1`），并保留注册交付物语义检查；`extraction_in_progress` 通过 governed 只读路径读取 package-v1 stages/pipeline，不创建目录；GET dispatch 统一捕获 `ResultPackageError` 返回结构化 503。Electron 在 bootstrap 前持有 single-instance lock，并在 `before-quit` / `will-quit` 幂等清理 API 子进程。
+- **验证**：后端全量 `2589 tests OK (skipped=26)`；前端 Vitest `204/204`；`npm run build` 通过；新分支代码读取主检出 frozen 输出的 golden `6/6`；实机结果包只读回放恢复 `available=true`、99 页、444 条批注需求、634 个块热区、2301 条 claim、1975 个 claim 区域。未修改 `golden_sets/` 或 frozen `out/`。
+
 ## 项目是什么
 
 把技术标准文档（DOCX/XLSX/PDF）原子化为可审查的需求条目，**终点是装配成给研发团队的 DLMS/COSEM 实现规格**：

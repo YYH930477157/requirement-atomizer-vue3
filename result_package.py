@@ -12,11 +12,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from threading import RLock
 from typing import Any, Iterable
 
+from jsonschema import Draft202012Validator, FormatChecker
+
 from process_file_lock import process_file_lock
+from resources import package_root
 from version import __version__
 
 
@@ -36,6 +40,7 @@ _MARKER_CONTRACT_CACHE: dict[Path, tuple[int, int, int, dict[str, Any]]] = {}
 _MARKER_CONTRACT_CACHE_LOCK = RLock()
 # marker warnings[] 只追加不膨胀：保留最近 N 条，完整细节始终落在 run.log。
 _PACKAGE_WARNING_LIMIT = 50
+_RESULT_PACKAGE_SCHEMA_FILE = "result_package.schema.json"
 
 # schemas/result_package.schema.json additionalProperties=false 的代码侧镜像；
 # 两处必须同步演进（S4）
@@ -406,6 +411,16 @@ def _validate_package(package: Any) -> dict[str, Any]:
     if package.get("layout_version") != OUTPUT_LAYOUT_VERSION:
         raise ResultPackageVersionUnsupported(
             f"unsupported output layout: {package.get('layout_version')!r}"
+        )
+    errors = sorted(
+        _result_package_validator().iter_errors(package),
+        key=lambda error: tuple(str(part) for part in error.absolute_path),
+    )
+    if errors:
+        error = errors[0]
+        location = ".".join(str(part) for part in error.absolute_path) or "<root>"
+        raise ResultPackageCorrupt(
+            f"result package marker violates schema at {location}: {error.message}"
         )
     # S4（2026-08-03 清单）：与 schemas/result_package.schema.json 对齐——
     # 顶层白名单（additionalProperties: false）、package_id 模式、tool 记录、
@@ -1189,11 +1204,26 @@ def _record_analysis_partial_unlocked(
         "finished_at": _utc_now(),
         "error": str(error)[:2000],
     }
-    if package.get("analysis") is None:
+    first_generation = package.get("analysis") is None
+    if first_generation:
         package["analysis_status"] = "incomplete"
+        return _publish_package_unlocked(result_root, package)
     _validate_package(package)
     _atomic_write_json(result_root / RESULT_PACKAGE_FILE, package)
     return package
+
+
+@lru_cache(maxsize=1)
+def _result_package_validator() -> Draft202012Validator:
+    schema_path = package_root() / "schemas" / _RESULT_PACKAGE_SCHEMA_FILE
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(schema)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ResultPackageError(
+            f"cannot load bundled result package schema: {schema_path}: {exc}"
+        ) from exc
+    return Draft202012Validator(schema, format_checker=FormatChecker())
 
 
 def record_package_warning(root: Path | str, message: str) -> dict[str, Any]:

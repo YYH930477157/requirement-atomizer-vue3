@@ -7,6 +7,10 @@ from collections import OrderedDict
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
+FUNCTIONAL_CATALOG_VERSION = "functional-catalog-v2"
+CATALOG_LLM_BATCH_SIZE = 30
+_PARAMETER_ROW_PREFIX = "PROW-DET-"
+
 _ACTION_TERMS = (
     "collect", "record", "store", "transmit", "report", "detect", "monitor", "support",
     "configure", "archive", "provide", "define", "manage", "synchronize", "sync",
@@ -710,16 +714,29 @@ def build_function_catalog(requirements: list[dict[str, Any]], *, chat: CatalogC
     groups: list[tuple[list[dict[str, Any]], str, dict[str, Any] | None]] = []
     if chat is not None:
         by_module: "OrderedDict[str, list[dict[str, Any]]]" = OrderedDict()
+        parameter_rows_by_block: "OrderedDict[tuple[str, ...], list[dict[str, Any]]]" = OrderedDict()
         for row in rows:
-            by_module.setdefault(str(row.get("module") or "未分类"), []).append(row)
+            if str(row.get("ai_req_id") or "").startswith(_PARAMETER_ROW_PREFIX):
+                block_ids = tuple(_unique_strings(_as_list(row.get("source_block_ids"))))
+                # Missing block provenance must not permit unrelated parameter rows to merge.
+                partition = block_ids or (f"row:{row.get('ai_req_id')}",)
+                parameter_rows_by_block.setdefault(partition, []).append(row)
+            else:
+                by_module.setdefault(str(row.get("module") or "未分类"), []).append(row)
         proposed: list[tuple[list[dict[str, Any]], str, dict[str, Any] | None]] = []
         for module_rows in by_module.values():
-            mapped = _llm_groups(module_rows, chat)
-            if mapped is None:
-                proposed.extend((group, method, None) for group, method in _catalog_groups(module_rows))
-            else:
-                proposed.extend((group, "llm_catalog", meta) for group, meta in mapped)
+            for offset in range(0, len(module_rows), CATALOG_LLM_BATCH_SIZE):
+                batch = module_rows[offset:offset + CATALOG_LLM_BATCH_SIZE]
+                mapped = _llm_groups(batch, chat)
+                if mapped is None:
+                    proposed.extend((group, method, None) for group, method in _catalog_groups(batch))
+                else:
+                    proposed.extend((group, "llm_catalog", meta) for group, meta in mapped)
         groups.extend(_consolidate_catalog_groups(proposed))
+        # Parameter rows are already deterministically structured. Keep each source table block
+        # as a hard partition so identical headings from different tables cannot be coalesced.
+        for block_rows in parameter_rows_by_block.values():
+            groups.extend((group, method, None) for group, method in _catalog_groups(block_rows))
     else:
         groups.extend(_consolidate_catalog_groups([(group, method, None) for group, method in _catalog_groups(rows)]))
 

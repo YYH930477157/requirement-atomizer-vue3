@@ -229,7 +229,10 @@ function saveLlmSettingsConfig(
   return { settings, apiKey };
 }
 
-function shouldReuseApiSession(session, apiProcess, outputDir) {
+function shouldReuseApiSession(session, apiProcess, outputDir, options = {}) {
+  if (options.forceRestart) {
+    return false;
+  }
   if (!session?.baseUrl || !session?.token || !session?.outputDir || !outputDir) {
     return false;
   }

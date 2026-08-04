@@ -1095,6 +1095,12 @@ class PublishRaceAndPartialPersistenceTests(unittest.TestCase):
                 started["active_attempt"]["run_id"],
             )
             self.assertEqual(package["last_attempt"]["status"], "partial")
+            self.assertEqual(
+                [item["artifact_id"] for item in package["deliverables"]],
+                ["summary_md"],
+            )
+            self.assertEqual((root / "summary.md").read_text(encoding="utf-8"), "partial summary")
+            load_result_package(root, verify=True)
             # 重跑（新 attempt）不受终止影响
             rerun = self._start(root, stages="ai-extract,requirements-analysis")
             self.assertEqual(rerun["analysis_status"], "running")
@@ -1295,6 +1301,44 @@ class MarkerContractHardeningTests(unittest.TestCase):
             self._initialize(root)
 
             self._rewrite_marker(root, lambda marker: marker.update(surprise={}))
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_rejects_unknown_nested_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._initialize(root)
+
+            self._rewrite_marker(
+                root, lambda marker: marker["input"].update(surprise={}),
+            )
+            with self.assertRaises(ResultPackageCorrupt):
+                load_result_package(root)
+
+    def test_validate_package_rejects_empty_completion_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = self._initialize(root)
+            active = package["active_attempt"]
+
+            def complete_without_evidence(marker: dict) -> None:
+                marker["analysis_status"] = "completed"
+                marker["active_attempt"] = None
+                marker["last_attempt"] = {
+                    "run_id": active["run_id"],
+                    "status": "completed",
+                    "finished_at": active["started_at"],
+                }
+                marker["analysis"] = {
+                    "run_id": active["run_id"],
+                    "started_at": active["started_at"],
+                    "completed_at": active["started_at"],
+                    "requested_stages": ["atomize"],
+                    "completed_stages": ["atomize"],
+                    "completion_evidence": [],
+                }
+
+            self._rewrite_marker(root, complete_without_evidence)
             with self.assertRaises(ResultPackageCorrupt):
                 load_result_package(root)
 

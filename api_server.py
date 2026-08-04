@@ -5,6 +5,7 @@ import hmac
 import json
 import math
 import re
+from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Mapping
@@ -131,11 +132,38 @@ def _rebuilder() -> DeliverableRebuilder:
     return _REBUILDER
 
 
+def _result_package_get_boundary(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except ResultPackageError as exc:
+            modified = isinstance(exc, ResultPackageCorrupt) and "changed" in str(exc)
+            self.send_json({
+                "error": "result_package_modified" if modified else "result_package_unavailable",
+                "detail": str(exc),
+                "retryable": not modified,
+            }, status=503)
+            return None
+
+    return wrapped
+
+
 class RequirementAPIHandler(BaseHTTPRequestHandler):
     output_dir: Path = DEFAULT_OUTPUT
     package_root: Path = DEFAULT_OUTPUT
     allowed_origins: set[str] = set(DEFAULT_ALLOWED_ORIGINS)
     local_token: str = ""
+
+    def _refresh_analysis_root(self) -> None:
+        current = Path(self.output_dir).expanduser().resolve()
+        configured = Path(self.package_root).expanduser().resolve()
+        try:
+            current.relative_to(configured)
+        except ValueError:
+            configured = current
+        self.package_root = configured
+        self.output_dir = resolve_analysis_root(configured)
 
     def do_OPTIONS(self) -> None:
         origin = self.headers.get("Origin", "")
@@ -146,6 +174,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         self.send_cors_headers()
         self.end_headers()
 
+    @_result_package_get_boundary
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
@@ -159,6 +188,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if not token_is_valid(self.local_token, self.headers, params):
             self.send_json({"error": "unauthorized"}, status=401)
             return
+        self._refresh_analysis_root()
         if parsed.path == "/result-package":
             try:
                 layout = detect_result_layout(self.package_root)
@@ -403,6 +433,7 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if not self.local_token or not token_is_valid(self.local_token, self.headers, params):
             self.send_json({"error": "unauthorized"}, status=401)
             return
+        self._refresh_analysis_root()
         if parsed.path == "/translations":
             self.handle_translation()
             return

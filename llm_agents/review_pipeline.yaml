@@ -17,6 +17,7 @@ model_routes:
     max_retries: 3
     concurrency: 8
     connection_failure_abort: 10
+    tool_loop_max_rounds: 5
 
 review_scope:
   mode: "targeted"
@@ -33,7 +34,7 @@ operations:
     input_type: "atomic_requirement"
     output_schema: "schemas/llm_review_result.schema.json"
     # Agent Phase 2：classify_risk 与 correct_errors 合并为每条需求一次 tool-loop 调用
-    # （有界 max_rounds=8；模型可调用 review_tools.py 的确定性只读工具取证）
+    # （有界 max_rounds=5；模型可调用 review_tools.py 的确定性只读工具取证）
     executor: "tool_loop"
   - operation_id: "correct_errors"
     description: "Correct terminology, identifiers, and scope while preserving source references."

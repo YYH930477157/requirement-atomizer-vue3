@@ -30,7 +30,7 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 LONG_DEFINITION = "寄存器接口类定义" * 100   # 700 字 > 300 裁剪帽
-LONG_BLOCK_TEXT = "原文块内容" * 600          # 3000 字 > 2000 裁剪帽
+LONG_BLOCK_TEXT = "原文块内容" * 600          # 3000 字 > source_read 裁剪帽
 LONG_BB_TEXT = "Blue Book class definition. " * 200   # > 1500 裁剪帽
 
 
@@ -220,6 +220,9 @@ class BlueBookClassToolTests(ToolExecutorFixture):
 
 
 class SourceReadToolTests(ToolExecutorFixture):
+    def test_source_read_cap_is_eight_hundred_chars(self) -> None:
+        self.assertEqual(SOURCE_BLOCK_MAX_CHARS, 800)
+
     def test_hit_returns_text_and_section_path(self) -> None:
         result = self.executor("source_read", {"block_id": "B1"})
         self.assertEqual(result["block_id"], "B1")
@@ -288,8 +291,8 @@ class ToolContractTests(unittest.TestCase):
 
     # review-tools-v1 的 TOOLS 规范指纹（canonical JSON sha256）；变更工具面时连同
     # REVIEW_TOOLS_VERSION 一起更新本指纹（缓存失效靠它,见 llm_pipeline.llm_cache_key）
-    _PINNED_TOOLS_FINGERPRINT = "529a90d7ac78c05543dd009811b73e710ad674e5e45305e1b2c50faba2084b02"
-    _PINNED_VERSION = "review-tools-v3"
+    _PINNED_TOOLS_FINGERPRINT = "cac9c497ab24b8e81b593aa8f9488937bac38ff13305f32d83b52f3471f70357"
+    _PINNED_VERSION = "review-tools-v4"
 
     def test_version_constant(self) -> None:
         self.assertEqual(REVIEW_TOOLS_VERSION, self._PINNED_VERSION)

@@ -165,6 +165,7 @@ describe("Electron main helpers", () => {
     expect(shouldReuseApiSession(session, liveProcess, "E:\\out\\other")).toBe(false)
     expect(shouldReuseApiSession(session, { killed: true, exitCode: null }, "E:\\out\\abnt")).toBe(false)
     expect(shouldReuseApiSession(session, { killed: false, exitCode: 1 }, "E:\\out\\abnt")).toBe(false)
+    expect(shouldReuseApiSession(session, liveProcess, "E:\\out\\abnt", { forceRestart: true })).toBe(false)
   })
 
   it("normalizes API settings and exposes them to Python child processes without persisting secrets", () => {

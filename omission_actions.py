@@ -655,7 +655,11 @@ def apply_supplement_patches(
 
 def extraction_in_progress(out_dir: Path) -> bool:
     root = Path(out_dir).expanduser().resolve()
-    manifest_path = root / "run_manifest.json"
+    from result_package import governed_artifact_path
+
+    manifest_path = governed_artifact_path(
+        root, "run_manifest.json", category="stages", for_write=False,
+    )
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
@@ -667,7 +671,9 @@ def extraction_in_progress(out_dir: Path) -> bool:
 
     from ai_extract import AI_REQUIREMENTS_PARTIAL, read_partial_snapshot
 
-    partial_path = root / AI_REQUIREMENTS_PARTIAL
+    partial_path = governed_artifact_path(
+        root, AI_REQUIREMENTS_PARTIAL, category="pipeline", for_write=False,
+    )
     partial = read_partial_snapshot(partial_path)
     if partial and not partial.get("complete") and not partial.get("failed"):
         try:

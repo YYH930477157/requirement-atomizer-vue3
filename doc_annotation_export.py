@@ -36,6 +36,8 @@ from requirement_kb.matching import clean_text as normalize_text
 from result_package import (
     INTERNAL_ROOT,
     governed_artifact_path,
+    load_result_package,
+    package_artifact_path,
     package_root_for_analysis_root,
 )
 
@@ -208,7 +210,45 @@ def _source_input_path(out_dir: Path) -> Path | None:
 
 def _source_pdf_path(out_dir: Path) -> Path | None:
     source = _source_input_path(out_dir)
-    return source if source and source.suffix.casefold() == ".pdf" and source.is_file() else None
+    if source and source.suffix.casefold() == ".pdf" and source.is_file():
+        return source
+    if source is None or source.suffix.casefold() != ".pdf":
+        return None
+
+    package_root = package_root_for_analysis_root(out_dir)
+    if package_root is None:
+        return None
+    try:
+        package = load_result_package(package_root)
+        pipeline_manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+        page_manifest = json.loads(
+            (out_dir / ANNOTATION_PAGES_DIR / ANNOTATION_PAGES_MANIFEST).read_text(encoding="utf-8")
+        )
+        candidate = package_artifact_path(package_root, "document_facsimile")
+        active_attempt = package.get("active_attempt")
+        marker_input = (
+            active_attempt.get("input")
+            if isinstance(active_attempt, dict)
+            else package.get("input")
+        ) or {}
+        marker_sha = str(marker_input.get("sha256") or "")
+        expected_sha = marker_sha.removeprefix("sha256:")
+        identities = {
+            expected_sha,
+            str(page_manifest.get("source_sha256") or "").removeprefix("sha256:"),
+            _file_sha256(candidate) if candidate.is_file() else "",
+        }
+        if (
+            marker_input.get("media_type") == "application/pdf"
+            and str(pipeline_manifest.get("input_format") or "").casefold() == "pdf"
+            and len(expected_sha) == 64
+            and len(identities) == 1
+            and "" not in identities
+        ):
+            return candidate
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return None
 
 
 def _facsimile_source_pdf(out_dir: Path, *, allow_convert: bool) -> tuple[Path | None, str | None]:

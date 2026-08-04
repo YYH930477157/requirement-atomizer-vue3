@@ -4,6 +4,93 @@ import unittest
 
 
 class FunctionalCatalogClusteringTests(unittest.TestCase):
+    def test_llm_catalog_batches_non_parameter_rows_at_thirty_in_stable_order(self) -> None:
+        from functional_catalog import build_function_catalog
+
+        rows = [
+            {
+                "ai_req_id": f"AI-{index:03d}",
+                "title": f"Independent function {index}",
+                "description": f"The system shall provide independent function {index}.",
+                "module": "general",
+            }
+            for index in range(35)
+        ]
+        calls: list[list[str]] = []
+
+        def chat(_system: str, user: str) -> dict:
+            import json
+
+            atom_ids = [atom["atom_id"] for atom in json.loads(user)["atoms"]]
+            calls.append(atom_ids)
+            return {
+                "catalog": [
+                    {
+                        "catalog_key": atom_id,
+                        "title": atom_id,
+                        "atom_ids": [atom_id],
+                        "reason": "single",
+                        "confidence": 1.0,
+                    }
+                    for atom_id in atom_ids
+                ]
+            }
+
+        catalog = build_function_catalog(rows, chat=chat)
+
+        self.assertEqual([len(call) for call in calls], [30, 5])
+        self.assertEqual([atom_id for call in calls for atom_id in call], [row["ai_req_id"] for row in rows])
+        self.assertEqual(len(catalog), 35)
+
+    def test_parameter_rows_bypass_llm_and_never_merge_across_source_blocks(self) -> None:
+        from functional_catalog import build_function_catalog
+
+        rows = [
+            {
+                "ai_req_id": "PROW-DET-BLK-1-R0001",
+                "functional_key": "voltage-setting",
+                "title": "Voltage setting",
+                "description": "Voltage setting is required.",
+                "module": "configuration",
+                "source_block_ids": ["BLK-1"],
+            },
+            {
+                "ai_req_id": "PROW-DET-BLK-2-R0001",
+                "functional_key": "voltage-setting",
+                "title": "Voltage setting",
+                "description": "Voltage setting is required.",
+                "module": "configuration",
+                "source_block_ids": ["BLK-2"],
+            },
+            {
+                "ai_req_id": "AI-OTHER",
+                "title": "Remote configuration",
+                "description": "The system shall support remote configuration.",
+                "module": "configuration",
+            },
+        ]
+        calls: list[list[str]] = []
+
+        def chat(_system: str, user: str) -> dict:
+            import json
+
+            atom_ids = [atom["atom_id"] for atom in json.loads(user)["atoms"]]
+            calls.append(atom_ids)
+            return {"catalog": [{
+                "catalog_key": "remote-configuration",
+                "title": "Remote configuration",
+                "atom_ids": atom_ids,
+                "reason": "single",
+                "confidence": 1.0,
+            }]}
+
+        catalog = build_function_catalog(rows, chat=chat)
+
+        self.assertEqual(calls, [["AI-OTHER"]])
+        self.assertEqual(
+            sorted(item["source_ai_requirement_ids"] for item in catalog),
+            [["AI-OTHER"], ["PROW-DET-BLK-1-R0001"], ["PROW-DET-BLK-2-R0001"]],
+        )
     def test_cross_section_significant_event_actions_merge(self) -> None:
         from functional_catalog import build_function_catalog
 
@@ -108,6 +195,32 @@ class FunctionalCatalogClusteringTests(unittest.TestCase):
         self.assertEqual(catalog[0]["merge_method"], "explicit_semantic")
 
 class FunctionalSynthesisIdentityTests(unittest.TestCase):
+    def test_catalog_route_caps_truncation_escalation_at_one(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from functional_synthesis import _resolve_catalog_chat
+
+        config = SimpleNamespace(
+            base_url="http://127.0.0.1:1234/v1",
+            model="catalog-model",
+            api_key_env="",
+        )
+        with patch("ai_extract.config_for_route", return_value=config), patch(
+            "llm_client.chat_json", return_value={"catalog": []}
+        ) as chat_json:
+            chat, route = _resolve_catalog_chat("openai_compatible", None)
+            self.assertIsNotNone(chat)
+            result = chat("system", "user")
+
+        self.assertEqual(route, "llm:catalog-model")
+        self.assertEqual(result, {"catalog": []})
+        chat_json.assert_called_once_with(
+            config,
+            "system",
+            "user",
+            max_truncation_escalations=1,
+        )
+
     def test_legacy_rows_receive_stable_source_ids_before_cataloging(self) -> None:
         import json
         import tempfile
@@ -132,6 +245,7 @@ class FunctionalSynthesisIdentityTests(unittest.TestCase):
         self.assertEqual(len(assigned), 2)
         self.assertEqual(len(set(assigned)), 2)
         self.assertTrue(all(rid.startswith("AIR-") for rid in assigned))
+        self.assertEqual(payload["catalog_producer"], "functional-catalog-v2")
 
     def test_compliance_requirements_do_not_enter_function_catalog(self) -> None:
         import json
