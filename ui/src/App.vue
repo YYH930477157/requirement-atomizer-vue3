@@ -1485,7 +1485,9 @@ async function confirmTableReview(table: TableReviewTable) {
         : item,
     )
     apiMessage.value = result.structure_review_status === "ready"
-      ? `表格 ${table.table_id} 的结构已确认`
+      ? (result.recompute_error
+        ? `表格 ${table.table_id} 结构已确认，但需求重算未完成（${result.recompute_error}）；已自动记录，刷新或重启 API 时会重试`
+        : `表格 ${table.table_id} 的结构已确认`)
       : `表格 ${table.table_id} 仍有待确认单元格`
   } catch (error) {
     if (isNeedsReconfirmationError(error) && client === apiClient.value) {

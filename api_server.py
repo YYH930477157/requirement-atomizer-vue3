@@ -46,6 +46,7 @@ from table_review_state import (
     TableReviewConflict,
     apply_table_review_decision,
     build_table_review_payload,
+    run_table_review_recompute_recovery,
 )
 
 
@@ -1276,6 +1277,15 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 "retryable": False,
             }, status=503)
             return
+        # Kimi #3 跟进：claim 维护成功后顺带重试 ready+recompute_error 的表（与启动同口径）。
+        try:
+            recovery = run_table_review_recompute_recovery(self.output_dir)
+        except Exception:
+            recovery = {"ok": False}
+        if result.get("ok") and recovery.get("ok") and (
+            recovery.get("recovered") or recovery.get("still_failing")
+        ):
+            result["table_recompute_recovery"] = recovery
         self.send_json(result)
 
     def handle_spot_extract(self) -> None:
@@ -2427,6 +2437,15 @@ def main(argv: list[str] | None = None) -> int:
                 "claim effective startup maintenance lagged: %s",
                 exc,
             )
+    # Kimi #3 跟进：重试此前 ready+recompute_error 的表（recompute 失败遗留），启动时自愈。
+    try:
+        run_table_review_recompute_recovery(RequirementAPIHandler.output_dir)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("requirement_atomizer").warning(
+            "table review recompute recovery lagged: %s", exc,
+        )
     server = ThreadingHTTPServer((args.host, args.port), RequirementAPIHandler)
     print(
         json.dumps(

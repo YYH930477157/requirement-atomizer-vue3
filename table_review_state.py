@@ -125,6 +125,19 @@ def build_table_review_payload(out_dir: Path) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     blocks = _artifact_rows(root, "blocks.jsonl")
     cells = _artifact_rows(root, "table_cell_items.jsonl")
+    dispositions_path = governed_artifact_path(
+        root, "table_cell_dispositions.jsonl", for_write=False
+    )
+    if cells and not dispositions_path.is_file():
+        # Kimi #4 遗留 / F1：有 cell_items 无 dispositions 文件 = 旧/未完成 base。与 #5 写侧门
+        # 同源——读视图不得用空 dispositions 把表显示成 ready 掩盖 stale。抛
+        # ClaimBaseMigrationRequired，由 GET handler（#4）映射结构化 503 提示重跑 atomize。
+        from claim_artifacts import ClaimBaseMigrationRequired
+
+        raise ClaimBaseMigrationRequired(
+            "base_migration_required: table_cell_dispositions.jsonl absent while "
+            "table_cell_items.jsonl is present; rerun atomize"
+        )
     dispositions = _artifact_rows(root, "table_cell_dispositions.jsonl")
     dispositions = project_table_dispositions(
         dispositions,
@@ -368,6 +381,127 @@ def _delegate_claim_cell_decision(
     )
 
 
+def _run_table_recompute(
+    root: Path,
+    *,
+    table_id: str,
+    cells: list[dict[str, Any]],
+    dispositions: list[dict[str, Any]],
+    changed_cell_ids: set[str],
+) -> tuple[list[str], str]:
+    """表级 recompute + effective fold，持 extraction_operation_lock（Kimi 高危 #3）。
+
+    返回 (recomputed_artifacts, recompute_error)；recompute_error == "" 即成功。抽出来供
+    apply_table_review_decision 与启动维护 run_table_review_recompute_recovery 复用——后者扫描
+    ready+recompute_error 的表自动重试，使 recompute_error 不再是无重试的死端。
+    extraction_operation_lock 撞上主抽取时抛 OmissionConflictError(ValueError)，记为可重试错误。
+    """
+    recomputed_artifacts = ["table_cell_dispositions.jsonl"]
+    recompute_error = ""
+    try:
+        from omission_actions import extraction_operation_lock
+        from table_recompute import recompute_confirmed_table_requirements
+
+        with extraction_operation_lock(root, operation="table-recompute"):
+            recomputed_artifacts.extend(recompute_confirmed_table_requirements(
+                root,
+                table_id=table_id,
+                changed_cell_ids=set(changed_cell_ids),
+                cells=cells,
+                dispositions=dispositions,
+            ))
+        claim_generation_path = governed_artifact_path(
+            root,
+            "claim_generation.meta.json",
+            category="state",
+        )
+        if (
+            "ai_requirements.jsonl" in recomputed_artifacts
+            and claim_generation_path.is_file()
+        ):
+            from claim_review_actions import fold_effective_ledger
+
+            fold = fold_effective_ledger(
+                root,
+                actor_trigger="table-review-recompute",
+                authority_hook_track="B",
+            )
+            if fold.get("ok") is not True:
+                raise ValueError(
+                    "claim effective fold failed after table recompute: "
+                    f"{fold.get('reason') or fold.get('error') or 'unknown'}"
+                )
+    except (OSError, TimeoutError, ValueError) as exc:
+        recompute_error = f"{type(exc).__name__}: {exc}"
+    return recomputed_artifacts, recompute_error
+
+
+def run_table_review_recompute_recovery(root: Path) -> dict[str, Any]:
+    """启动维护：扫描 ready+recompute_error 的表幂等重试 recompute（Kimi #3 跟进 #1b）。
+
+    recompute_confirmed_table_requirements 按 changed cell 替换需求、是幂等的，故失败留下的
+    ready+recompute_error 表可在启动 / claim-maintenance 时整体重试：成功则清除 recompute_error，
+    仍失败则保留（更新错误串）等下次。全程持 _table_review_lock。
+    """
+    root = Path(root).expanduser().resolve()
+    states_path = governed_artifact_path(root, TABLE_REVIEW_STATES, category="state")
+    if not states_path.is_file():
+        return {"ok": True, "attempted": 0, "recovered": 0, "still_failing": 0}
+    with _table_review_lock(root):
+        states = read_jsonl(states_path)
+        pending = [
+            (i, row) for i, row in enumerate(states)
+            if str(row.get("structure_review_status") or "") == "ready"
+            and row.get("recompute_error")
+        ]
+        if not pending:
+            return {"ok": True, "attempted": 0, "recovered": 0, "still_failing": 0}
+        cells = _artifact_rows(root, "table_cell_items.jsonl")
+        raw_dispositions = _artifact_rows(root, "table_cell_dispositions.jsonl")
+        projection = _current_claim_projection(root)
+        all_dispositions = project_table_dispositions(raw_dispositions, cells, projection)
+        recovered = 0
+        still_failing = 0
+        changed = False
+        for index, row in pending:
+            table_id = str(row.get("table_id") or "")
+            if not table_id:
+                continue
+            table_dispositions = [
+                disposition for disposition in all_dispositions
+                if str(disposition.get("table_id") or "") == table_id
+            ]
+            changed_cell_ids = {
+                str(disposition.get("cell_id") or "")
+                for disposition in table_dispositions
+                if str(disposition.get("disposition") or "") in {"target", "composite"}
+            }
+            _artifacts, recompute_error = _run_table_recompute(
+                root,
+                table_id=table_id,
+                cells=cells,
+                dispositions=table_dispositions,
+                changed_cell_ids=changed_cell_ids,
+            )
+            if recompute_error:
+                still_failing += 1
+                if states[index].get("recompute_error") != recompute_error:
+                    states[index]["recompute_error"] = recompute_error
+                    changed = True
+            else:
+                recovered += 1
+                states[index].pop("recompute_error", None)
+                changed = True
+        if changed:
+            _atomic_write_jsonl(states_path, states)
+    return {
+        "ok": True,
+        "attempted": len(pending),
+        "recovered": recovered,
+        "still_failing": still_failing,
+    }
+
+
 def apply_table_review_decision(
     out_dir: Path,
     *,
@@ -489,51 +623,20 @@ def apply_table_review_decision(
         )
         _atomic_write_jsonl(disposition_path, dispositions)
 
-        # 下游传播（recompute + fold）移入 _table_review_lock 临界区，并持
-        # extraction_operation_lock 保护 ai_requirements.jsonl 读-改-写（Kimi 高危 #3）：
-        # 原在锁外执行，ThreadingHTTPServer 下跨表并发会丢更新；且 state 先落 ready、
-        # recompute 失败只进 HTTP 响应、无重试路径。现 recompute 在持久化 state 前跑，
-        # 失败把 recompute_error 写入 state/events（持久化记录诚实），下次 ready 迁移
-        # 或 claim-maintenance 自然重试。extraction_operation_lock 撞上主抽取时抛
-        # OmissionConflictError(ValueError) → 记为可重试 recompute_error，不阻塞裁决本身。
-        recomputed_artifacts = ["table_cell_dispositions.jsonl"]
-        recompute_error = ""
+        # 下游传播（recompute + fold）持 _table_review_lock + extraction_operation_lock（Kimi 高危 #3）。
+        # recompute 在持久化 state 前跑、失败把 recompute_error 写入 state/events（持久化记录诚实）；
+        # 启动维护 run_table_review_recompute_recovery 会扫描 ready+recompute_error 的表自动重试。
         if status == "ready":
-            try:
-                from omission_actions import extraction_operation_lock
-                from table_recompute import recompute_confirmed_table_requirements
-
-                with extraction_operation_lock(root, operation="table-recompute"):
-                    recomputed_artifacts.extend(recompute_confirmed_table_requirements(
-                        root,
-                        table_id=table_id,
-                        changed_cell_ids=set(role_mapping),
-                        cells=cells,
-                        dispositions=dispositions,
-                    ))
-                claim_generation_path = governed_artifact_path(
-                    root,
-                    "claim_generation.meta.json",
-                    category="state",
-                )
-                if (
-                    "ai_requirements.jsonl" in recomputed_artifacts
-                    and claim_generation_path.is_file()
-                ):
-                    from claim_review_actions import fold_effective_ledger
-
-                    fold = fold_effective_ledger(
-                        root,
-                        actor_trigger="table-review-recompute",
-                        authority_hook_track="B",
-                    )
-                    if fold.get("ok") is not True:
-                        raise ValueError(
-                            "claim effective fold failed after table recompute: "
-                            f"{fold.get('reason') or fold.get('error') or 'unknown'}"
-                        )
-            except (OSError, TimeoutError, ValueError) as exc:
-                recompute_error = f"{type(exc).__name__}: {exc}"
+            recomputed_artifacts, recompute_error = _run_table_recompute(
+                root,
+                table_id=table_id,
+                cells=cells,
+                dispositions=dispositions,
+                changed_cell_ids=set(role_mapping),
+            )
+        else:
+            recomputed_artifacts = ["table_cell_dispositions.jsonl"]
+            recompute_error = ""
 
         next_fingerprint = table_evidence_fingerprint(table_id, dispositions)
         recorded_at = datetime.now(timezone.utc).isoformat(timespec="seconds")

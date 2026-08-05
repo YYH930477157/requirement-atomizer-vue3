@@ -537,5 +537,103 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertIn("recompute_error", states[-1])
 
 
+    def test_build_payload_raises_base_migration_required_for_stale_base(self) -> None:
+        """Kimi #4 遗留 / F1：有 cell_items、无 dispositions 文件的旧包，读视图不得显示 ready。"""
+        from claim_artifacts import ClaimBaseMigrationRequired
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            governed_artifact_path(
+                analysis, "table_cell_dispositions.jsonl", for_write=False
+            ).unlink()
+            with self.assertRaises(ClaimBaseMigrationRequired) as ctx:
+                build_table_review_payload(analysis)
+            self.assertIn("base_migration_required", str(ctx.exception))
+
+    def test_api_get_maps_stale_table_base_to_structured_503(self) -> None:
+        """F1 端到端：缺 dispositions 文件时 GET /table-reviews 返回结构化 base_migration_required 503。"""
+        from claim_artifacts import ClaimBaseMigrationRequired
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            governed_artifact_path(
+                analysis, "table_cell_dispositions.jsonl", for_write=False
+            ).unlink()
+            get_handler = object.__new__(api_server.RequirementAPIHandler)
+            get_handler.path = "/table-reviews"
+            get_handler.headers = {}
+            get_handler.allowed_origins = set()
+            get_handler.local_token = ""
+            get_handler.output_dir = analysis
+            get_handler.package_root = Path(tmp)
+            get_handler._refresh_analysis_root = lambda: None
+            responses = []
+            get_handler.send_json = lambda body, status=200: responses.append(
+                (status, body)
+            )
+            get_handler.do_GET()
+            self.assertEqual(responses[0][0], 503)
+            self.assertEqual(responses[0][1]["error"], "base_migration_required")
+
+    def test_recompute_recovery_clears_error_on_success(self) -> None:
+        """Kimi #3 跟进 #1b：启动维护重试 ready+recompute_error 的表，成功即清除错误。"""
+        from table_review_state import run_table_review_recompute_recovery
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            states_path = governed_artifact_path(
+                analysis, "table_review_states.jsonl", category="state"
+            )
+            write_jsonl(states_path, [{
+                "schema": "table-review-state/v1",
+                "table_id": "TBL-000001",
+                "structure_review_status": "ready",
+                "recompute_error": "OmissionConflictError: another extraction running",
+                "evidence_fingerprint": "x",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+            }])
+            with patch(
+                "table_review_state._run_table_recompute",
+                return_value=(
+                    ["table_cell_dispositions.jsonl", "ai_requirements.jsonl"],
+                    "",
+                ),
+            ):
+                result = run_table_review_recompute_recovery(analysis)
+            self.assertEqual(result["attempted"], 1)
+            self.assertEqual(result["recovered"], 1)
+            self.assertEqual(result["still_failing"], 0)
+            states = read_jsonl(states_path)
+            self.assertNotIn("recompute_error", states[-1])
+
+    def test_recompute_recovery_keeps_error_when_still_failing(self) -> None:
+        """Kimi #3 跟进 #1b：重试仍失败时保留 recompute_error（更新错误串），等下次启动再试。"""
+        from table_review_state import run_table_review_recompute_recovery
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            states_path = governed_artifact_path(
+                analysis, "table_review_states.jsonl", category="state"
+            )
+            write_jsonl(states_path, [{
+                "schema": "table-review-state/v1",
+                "table_id": "TBL-000001",
+                "structure_review_status": "ready",
+                "recompute_error": "old: prior failure",
+                "evidence_fingerprint": "x",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+            }])
+            with patch(
+                "table_review_state._run_table_recompute",
+                return_value=(
+                    ["table_cell_dispositions.jsonl"],
+                    "OmissionConflictError: still running",
+                ),
+            ):
+                result = run_table_review_recompute_recovery(analysis)
+            self.assertEqual(result["recovered"], 0)
+            self.assertEqual(result["still_failing"], 1)
+            states = read_jsonl(states_path)
+            self.assertEqual(
+                states[-1]["recompute_error"], "OmissionConflictError: still running"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

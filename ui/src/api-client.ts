@@ -105,6 +105,7 @@ export type TableReviewActionPayload = {
     message: string
     retryable: boolean
   }
+  recompute_error?: string
 }
 
 export type TranslationInput = {
