@@ -71,6 +71,8 @@ py-modules = [
   "process_file_lock",
   "functional_catalog",
   "functional_synthesis",
+  "functional_extract",
+  "functional_drilldown",
   "input_completeness",
   "api_server",
   "assemble_spec",

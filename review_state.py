@@ -39,6 +39,10 @@ _REPLACE_RETRY_DELAY_S = 0.02
 CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION = "claim-authority-write-v1"
 ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION = "atomic-target-authority-write-revision-v1"
 TARGET_PUBLICATION_REVISION_VERSION = "target-publication-revision-v1"
+# WS2 §4.3 review_state level 字段：评审对象的粒度（functional=功能需求级 / atomic=原子级）。
+# 旧文件无 level → 解释为 atomic（legacy 默认）；零迁移：缺字段不惊扰、不强制重写。
+REVIEW_LEVELS = ("functional", "atomic")
+DEFAULT_REVIEW_LEVEL = "atomic"
 
 
 class ReviewAuthorityConflict(ValueError):
@@ -47,6 +51,24 @@ class ReviewAuthorityConflict(ValueError):
     def __init__(self, message: str, *, current_revision: str) -> None:
         super().__init__(message)
         self.current_revision = str(current_revision)
+
+
+def review_level(state: dict[str, Any] | None) -> str:
+    """WS2 §4.3：解析评审状态行的粒度 level（functional/atomic）。
+
+    旧文件无 level 字段 → 解释为 atomic（legacy 评审对象即原子需求）。零迁移：不强制重写
+    旧文件，缺字段即默认值。非法值同样回退 atomic，绝不抛穿读路径。
+    """
+    if not isinstance(state, dict):
+        return DEFAULT_REVIEW_LEVEL
+    level = str(state.get("level") or "").strip().lower()
+    return level if level in REVIEW_LEVELS else DEFAULT_REVIEW_LEVEL
+
+
+def normalize_review_level(value: str | None) -> str:
+    """写路径用：把 level 规范化为合法枚举值（非法/空 → 默认 atomic）。"""
+    level = str(value or "").strip().lower()
+    return level if level in REVIEW_LEVELS else DEFAULT_REVIEW_LEVEL
 
 
 def target_publication_revision(path: Path) -> str:
@@ -81,6 +103,8 @@ class RequirementReviewState:
     status: str = "candidate"
     history: list[ReviewEvent] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # WS2 §4.3：评审对象粒度。旧文件读路径缺该字段时经 review_level() 解释为 atomic。
+    level: str = DEFAULT_REVIEW_LEVEL
 
     def transition(self, to_status: str, *, actor: str, reason: str) -> None:
         allowed = VALID_TRANSITIONS.get(self.status, set())
@@ -96,6 +120,7 @@ class RequirementReviewState:
             "status": self.status,
             "history": [event.__dict__ for event in self.history],
             "metadata": self.metadata,
+            "level": self.level,
         }
 
 
@@ -108,11 +133,14 @@ def apply_expert_decision(
     reason: str = "",
     expected_target_fingerprint: str | None = None,
     expected_target_authority_write_revision: str | None = None,
+    level: str | None = None,
 ) -> dict[str, Any]:
     """专家覆盖式裁决：决策状态间可自由改判（含 accepted→rejected、rejected→
     expert_pending 重审），这是有意语义——专家是权威裁决方，VALID_TRANSITIONS
     只约束自动化 LLM 路径。唯一禁止的跳转是从 frozen 改出（须显式解冻流程，
     不属于本入口）。每次改判都追加 history（actor/reason/timestamp），审计链完整。
+
+    WS2 §4.3 ``level``（functional/atomic）：显式标注评审对象粒度，缺省/旧文件 → atomic。
     """
     if status not in EXPERT_DECISION_STATUSES:
         raise ValueError(f"Unknown review status: {status}")
@@ -150,11 +178,17 @@ def apply_expert_decision(
                 )
         state_index = _find_state_index(states, requirement_id)
         if state_index is None:
-            state = RequirementReviewState(requirement_id)
+            state = RequirementReviewState(
+                requirement_id,
+                level=normalize_review_level(level),
+            )
             states.append(state.to_dict())
             state_index = len(states) - 1
         else:
             state = _state_from_dict(states[state_index])
+            # 显式传入 level 时覆盖（否则保留既有 row 的 level，旧文件即 atomic）
+            if level is not None:
+                state.level = normalize_review_level(level)
 
         if state.status == "frozen" and status != "frozen":
             raise ValueError("Cannot override frozen review state")
@@ -554,6 +588,7 @@ def _state_from_dict(payload: dict[str, Any]) -> RequirementReviewState:
         str(payload.get("requirement_id") or ""),
         status=str(payload.get("status") or "candidate"),
         metadata=dict(payload.get("metadata") or {}),
+        level=normalize_review_level(payload.get("level") if "level" in payload else None),
     )
     state.history = [
         ReviewEvent(

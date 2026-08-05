@@ -27,18 +27,51 @@
     "versions"
   ],
   "properties": {
-    "schema": {"const": "claim-shadow-result/v1"},
-    "ledger_schema_version": {"const": "claim-ledger-v3"},
-    "catalog_generation_id": {"$ref": "#/$defs/hash"},
-    "target_generation_id": {"$ref": "#/$defs/hash"},
-    "target_review_authority_revision": {"$ref": "#/$defs/hash"},
-    "delivery_track": {"enum": ["A", "B"]},
-    "target_kind": {"enum": ["ai_requirement", "atomic_requirement"]},
-    "route_mode": {"enum": ["llm", "stub"]},
-    "semantic_verifier_enabled": {"type": "boolean"},
-    "coverage_verifier_enabled": {"type": "boolean"},
-    "semantic_negative_proposer_enabled": {"type": "boolean"},
-    "semantic_negative_verifier_enabled": {"type": "boolean"},
+    "schema": {
+      "const": "claim-shadow-result/v1"
+    },
+    "ledger_schema_version": {
+      "const": "claim-ledger-v3"
+    },
+    "catalog_generation_id": {
+      "$ref": "#/$defs/hash"
+    },
+    "target_generation_id": {
+      "$ref": "#/$defs/hash"
+    },
+    "target_review_authority_revision": {
+      "$ref": "#/$defs/hash"
+    },
+    "delivery_track": {
+      "enum": [
+        "A",
+        "B"
+      ]
+    },
+    "target_kind": {
+      "enum": [
+        "ai_requirement",
+        "atomic_requirement"
+      ]
+    },
+    "route_mode": {
+      "enum": [
+        "llm",
+        "stub"
+      ]
+    },
+    "semantic_verifier_enabled": {
+      "type": "boolean"
+    },
+    "coverage_verifier_enabled": {
+      "type": "boolean"
+    },
+    "semantic_negative_proposer_enabled": {
+      "type": "boolean"
+    },
+    "semantic_negative_verifier_enabled": {
+      "type": "boolean"
+    },
     "verifier_runtime": {
       "type": "object",
       "required": [
@@ -64,26 +97,82 @@
         "fingerprint"
       ],
       "properties": {
-        "version": {"const": "claim-coverage-runtime-v11"},
-        "policy_source": {"enum": ["explicit", "environment"]},
-        "route_mode": {"enum": ["llm", "stub"]},
-        "enabled": {"type": "boolean"},
-        "rounds": {"type": "integer", "minimum": 0, "maximum": 3},
-        "model": {"type": "string"},
-        "base_url": {"type": "string"},
-        "temperature": {"type": "number"},
-        "max_tokens": {"type": "integer", "minimum": 0},
-        "credential_available": {"type": "boolean"},
-        "budget_policy_version": {"type": "string", "minLength": 1},
-        "max_calls": {"type": "integer", "minimum": 0},
-        "max_total_tokens": {"type": "integer", "minimum": 0},
-        "prompt_version": {"type": "string", "minLength": 1},
-        "validator_version": {"type": "string", "minLength": 1},
-        "negative_policy_version": {"type": "string", "minLength": 1},
-        "negative_validator_version": {"type": "string", "minLength": 1},
-        "batch_policy_version": {"const": "claim-verifier-batch-v3-full-http-body"},
-        "cost_policy_version": {"const": "claim-cost-policy-v3-user-approved"},
-        "fingerprint": {"$ref": "#/$defs/hash"}
+        "version": {
+          "const": "claim-coverage-runtime-v11"
+        },
+        "policy_source": {
+          "enum": [
+            "explicit",
+            "environment"
+          ]
+        },
+        "route_mode": {
+          "enum": [
+            "llm",
+            "stub"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "model": {
+          "type": "string"
+        },
+        "base_url": {
+          "type": "string"
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "credential_available": {
+          "type": "boolean"
+        },
+        "budget_policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_total_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "prompt_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "validator_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "negative_policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "negative_validator_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "batch_policy_version": {
+          "const": "claim-verifier-batch-v3-full-http-body"
+        },
+        "cost_policy_version": {
+          "const": "claim-cost-policy-v3-user-approved"
+        },
+        "fingerprint": {
+          "$ref": "#/$defs/hash"
+        }
       },
       "additionalProperties": false
     },
@@ -104,17 +193,47 @@
         "exhaustion_reason"
       ],
       "properties": {
-        "schema": {"const": "claim-verifier-budget-outcome/v1"},
-        "policy_version": {"type": "string", "minLength": 1},
-        "max_calls": {"type": "integer", "minimum": 0},
-        "max_total_tokens": {"type": "integer", "minimum": 0},
-        "attempted_calls": {"type": "integer", "minimum": 0},
-        "failed_calls": {"type": "integer", "minimum": 0},
-        "accounted_tokens": {"type": "integer", "minimum": 0},
-        "remaining_calls": {"type": "integer", "minimum": 0},
-        "remaining_tokens": {"type": "integer", "minimum": 0},
-        "usage_complete": {"type": "boolean"},
-        "denied": {"type": "boolean"},
+        "schema": {
+          "const": "claim-verifier-budget-outcome/v1"
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_total_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attempted_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "accounted_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remaining_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remaining_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "usage_complete": {
+          "type": "boolean"
+        },
+        "denied": {
+          "type": "boolean"
+        },
         "exhaustion_reason": {
           "enum": [
             "",
@@ -127,10 +246,31 @@
       },
       "additionalProperties": false
     },
-    "scope": {"enum": ["full", "sample"]},
-    "extraction_status": {"enum": ["success", "partial", "failed"]},
-    "accounting_status": {"enum": ["complete", "incomplete"]},
-    "resolution_status": {"enum": ["resolved", "open"]},
+    "scope": {
+      "enum": [
+        "full",
+        "sample"
+      ]
+    },
+    "extraction_status": {
+      "enum": [
+        "success",
+        "partial",
+        "failed"
+      ]
+    },
+    "accounting_status": {
+      "enum": [
+        "complete",
+        "incomplete"
+      ]
+    },
+    "resolution_status": {
+      "enum": [
+        "resolved",
+        "open"
+      ]
+    },
     "termination_reason": {
       "enum": [
         "converged",
@@ -142,7 +282,9 @@
         "cancelled"
       ]
     },
-    "document_ready": {"type": "boolean"},
+    "document_ready": {
+      "type": "boolean"
+    },
     "versions": {
       "type": "object",
       "required": [
@@ -161,44 +303,165 @@
         "audit"
       ],
       "properties": {
-        "ledger": {"type": "string", "minLength": 1},
-        "prompt": {"type": "string", "minLength": 1},
-        "candidate_policy": {"type": "string", "minLength": 1},
-        "prefilter": {"type": "string", "minLength": 1},
-        "coverage_validator": {"type": "string", "minLength": 1},
-        "batch_policy": {"const": "claim-verifier-batch-v3-full-http-body"},
-        "cost_policy": {"const": "claim-cost-policy-v3-user-approved"},
-        "negative_policy": {"type": "string", "minLength": 1},
-        "negative_validator": {"type": "string", "minLength": 1},
-        "review_adapter": {"type": "string", "minLength": 1},
-        "reducer": {"type": "string", "minLength": 1},
-        "validation_reuse": {"type": "string", "minLength": 1},
-        "audit": {"type": "string", "minLength": 1}
+        "ledger": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prefilter": {
+          "type": "string",
+          "minLength": 1
+        },
+        "coverage_validator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "batch_policy": {
+          "const": "claim-verifier-batch-v3-full-http-body"
+        },
+        "cost_policy": {
+          "const": "claim-cost-policy-v3-user-approved"
+        },
+        "negative_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "negative_validator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "review_adapter": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reducer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "validation_reuse": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audit": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
+    },
+    "claim_ledger_mode": {
+      "type": "string",
+      "enum": [
+        "full",
+        "sampling",
+        "baseline_gate"
+      ],
+      "description": "WS2 §4.2 claim ledger mode. Optional for backward compatibility with pre-WS2 metas."
+    },
+    "claim_ledger_mode_version": {
+      "type": "string",
+      "description": "Version stamp of the claim-ledger-mode feature (e.g. claim-ledger-mode-v1). Optional."
+    },
+    "sampling": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Verifier selection ledger when mode != full (None in full mode). Optional.",
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "eligible_count": {
+          "type": "integer"
+        },
+        "selected_count": {
+          "type": "integer"
+        },
+        "sampled_count": {
+          "type": "integer"
+        },
+        "high_risk_count": {
+          "type": "integer"
+        },
+        "deferred_count": {
+          "type": "integer"
+        },
+        "sampling_rate": {
+          "type": "number"
+        },
+        "selected_ratio": {
+          "type": "number"
+        },
+        "escalate": {
+          "type": "boolean"
+        },
+        "threshold_met": {
+          "type": "boolean"
+        },
+        "deferred_in_run": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   "allOf": [
     {
       "if": {
-        "properties": {"document_ready": {"const": true}},
-        "required": ["document_ready"]
+        "properties": {
+          "document_ready": {
+            "const": true
+          }
+        },
+        "required": [
+          "document_ready"
+        ]
       },
       "then": {
         "properties": {
-          "delivery_track": {"enum": ["A", "B"]},
-          "route_mode": {"const": "llm"},
-          "scope": {"const": "full"},
-          "extraction_status": {"const": "success"},
-          "accounting_status": {"const": "complete"},
-          "resolution_status": {"const": "resolved"},
-          "termination_reason": {"const": "converged"}
+          "delivery_track": {
+            "enum": [
+              "A",
+              "B"
+            ]
+          },
+          "route_mode": {
+            "const": "llm"
+          },
+          "scope": {
+            "const": "full"
+          },
+          "extraction_status": {
+            "const": "success"
+          },
+          "accounting_status": {
+            "const": "complete"
+          },
+          "resolution_status": {
+            "const": "resolved"
+          },
+          "termination_reason": {
+            "const": "converged"
+          }
         }
       }
     }
   ],
   "additionalProperties": false,
   "$defs": {
-    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
   }
 }

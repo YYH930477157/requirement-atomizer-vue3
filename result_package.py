@@ -133,6 +133,10 @@ _ARTIFACTS = {
         _artifact("atomic_requirements", "pipeline/atomic_requirements.jsonl", legacy_path="atomic_requirements.jsonl"),
         _artifact("ai_requirements", "pipeline/ai_requirements.jsonl", legacy_path="ai_requirements.jsonl"),
         _artifact("requirements_analysis", "pipeline/requirements_analysis.json", legacy_path="requirements_analysis.json"),
+        # WS2 功能需求直抽旁路产物（默认关闭；functional_synthesis 仍写同名裸根文件，两者是
+        # 互斥生产者，由 RATOMIZER_FUNCTIONAL_EXTRACT 入口开关决定哪一个运行）。登记后
+        # governed_artifact_path 可定位 package_v1 下的内部副本，与既有原子化产物同纪律。
+        _artifact("functional_requirements", "pipeline/functional_requirements.json", legacy_path="functional_requirements.json"),
         _artifact("run_manifest", "stages/run_manifest.json", legacy_path="run_manifest.json"),
         _artifact("run_manifest_lock", "stages/run_manifest.lock", legacy_path="run_manifest.lock"),
         _artifact("stage_state", "stages/_stages", legacy_path="_stages"),

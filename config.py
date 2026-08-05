@@ -52,6 +52,16 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # --- 表格双轨制（WS1）---
     EnvVar("RATOMIZER_TABLE_DUAL_TRACK", "0", "表格结构双轨入口开关（=1 启用「LLM 提议→几何校验签发」；默认 0=旧确定性几何单轨，签名失败/无预算/无假设时一律退回单轨）", False),
     EnvVar("RATOMIZER_PDF_MODERN_PARSER", "0", "PDF 现代解析器适配层开关（=1 优先走 pdf_modern_adapter；适配层 unavailable 时诚实回退手写 pdfplumber 路径并在产出标 parser_provenance；默认 0=旧手写路径，缓存指纹与 golden 基线字节不变）", False),
+    # --- WS2 粒度重构（功能需求直抽 + claim 账本抽检 + 原子级下钻）---
+    # 全部默认关闭/采样：直抽是旁路新入口（默认关=旧原子化路径），claim 账本 sampling 为默认档。
+    # WS0 功能需求级真值集尚是 pending-human，本切片只交付工程机制（默认关闭、旧路径始终合法）。
+    EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT", "0", "功能需求直抽入口开关（=1 启用 functional_extract 单次 LLM 直出功能需求级条目并写 functional_requirements.json；默认 0=旧 extract_units→atomize→functional_synthesis 原子化路径，行为面与缓存指纹不动）", False),
+    EnvVar("RATOMIZER_CLAIM_LEDGER_MODE", "sampling", "claim 账本闭合模式：full=全量 verifier 闭合（现状）/ sampling=分层抽样 10%+全部高风险 claim（默认）/ baseline_gate=发布门禁全量闭合+联动重型机制。仅 sampling/baseline_gate 收窄闭合面，full 与现状逐字节一致", False),
+    EnvVar("RATOMIZER_CLAIM_LEDGER_SAMPLING_RATE", "0.1", "sampling 模式分层抽样率（0..1，默认 0.1；抽检闭合率低于阈值时自动扩大，判定依据留账本）", False),
+    EnvVar("RATOMIZER_CLAIM_LEDGER_SAMPLING_FLOOR_RATE", "0.3", "sampling 模式抽检闭合率下限（低于此值自动扩大抽样或建议转全量，0..1，默认 0.3）", False),
+    EnvVar("RATOMIZER_FUNCTIONAL_DRILLDOWN_MULTI_BEHAVIOR", "2", "原子级下钻「多行为」信号阈值：同一主语下义务性模态动词支配不同动作数 ≥N 触发下钻（默认 2）", False),
+    EnvVar("RATOMIZER_FUNCTIONAL_DRILLDOWN_MULTI_CONDITION", "1", "原子级下钻「多条件」信号阈值：条件从句/互斥分支数 ≥N 触发下钻（默认 1，与 semantic_quality 互斥限定词判据同源）", False),
+    EnvVar("RATOMIZER_FUNCTIONAL_DRILLDOWN_MATRIX_ROWS", "2", "原子级下钻「参数矩阵」信号阈值：条款引用多行参数组合表行数 ≥N 触发下钻（默认 2）", False),
     # --- 知识/资产路径 ---
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),
     EnvVar("RATOMIZER_ADJUDICATION_BANK", "", "裁决样本库 JSON 路径（专家 accepted 需求作 few-shot 注入富化；缺省不注入）", False),
