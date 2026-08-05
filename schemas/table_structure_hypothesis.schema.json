@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/table_structure_hypothesis.schema.json",
+  "title": "LLM table structure hypothesis v1",
+  "description": "Output contract of the (future) llm_table_understanding proposer track. The geometry validator (table_geometry_validator.py) is the sole signing authority: an unsigned or rejected hypothesis has no downstream effect. Hard constraints encoded by this schema: (1) no free-text/prose fields exist anywhere — the proposer may only emit structured coordinates, role labels, header-level counts and confidence grades, so the format itself closes the hallucination injection channel; (2) every coordinate is a [row, column] pair that MUST reference a value already present in the input physical matrix (the validator enforces in-bounds + canonical-anchor membership). The role enum is identical to STRUCTURAL_ROLES in table_structure.py and to the existing review-panel schemas (table_cell_item.schema.json structural_role, table_cell_dispositions_v2.schema.json role), so disposition write-back stays isomorphic with auto-signed hypotheses. Per AGENTS.md 'code wins', the five-role panel enum is authoritative over the six-item conceptual list in the implementation plan.",
+  "type": "object",
+  "required": [
+    "schema",
+    "table_structure_version",
+    "header_level_count",
+    "cells",
+    "semantic_merges"
+  ],
+  "properties": {
+    "schema": {"const": "table-structure-hypothesis/v1"},
+    "table_structure_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Physical table-structure version that produced the input matrix (e.g. table-structure-v7). Metadata reference only; not free text."
+    },
+    "header_level_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of header levels the proposer asserts for this table. 0 means headerless."
+    },
+    "cells": {
+      "type": "array",
+      "description": "Per-cell role annotations. Coordinates reference existing matrix values only.",
+      "items": {
+        "type": "object",
+        "required": ["coordinate", "role", "confidence"],
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "prefixItems": [
+              {"type": "integer", "minimum": 1},
+              {"type": "integer", "minimum": 1}
+            ],
+            "items": false,
+            "description": "[row_index, column_index], 1-based, matching docx_table_parser.ParsedCell coordinates."
+          },
+          "role": {
+            "enum": ["title", "header", "row_header", "data", "group_header"],
+            "description": "Aligned verbatim with STRUCTURAL_ROLES / review-panel role enum."
+          },
+          "confidence": {
+            "enum": ["high", "medium", "low"],
+            "description": "Per-cell proposer confidence; aligned with table_cell_dispositions_v2 confidence grades."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "semantic_merges": {
+      "type": "array",
+      "description": "Declarations that a set of existing matrix cells should be treated as one logical unit downstream. The geometry validator verifies each group does not cross a vMerge physical boundary and that concatenating member cell text does not drift protected encodings.",
+      "items": {
+        "type": "object",
+        "required": ["coordinates"],
+        "properties": {
+          "coordinates": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "prefixItems": [
+                {"type": "integer", "minimum": 1},
+                {"type": "integer", "minimum": 1}
+              ],
+              "items": false
+            },
+            "description": "Member coordinates of one semantic-merge group. minItems 2: a single cell needs no merge declaration."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

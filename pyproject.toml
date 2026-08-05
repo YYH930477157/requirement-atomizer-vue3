@@ -137,6 +137,7 @@ py-modules = [
   "spot_extract",
   "table_pattern_engine",
   "table_dispositions",
+  "table_geometry_validator",
   "table_recompute",
   "table_review_state",
   "table_structure",
