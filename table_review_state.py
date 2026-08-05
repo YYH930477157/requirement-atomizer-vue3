@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,13 @@ TABLE_REVIEW_DECISION_VERSION = "table-review-decision-v1"
 TABLE_REVIEW_STATES = "table_review_states.jsonl"
 TABLE_REVIEW_EVENTS = "table_review_events.jsonl"
 TABLE_REVIEW_LOCK = "table_review_states.lock"
+# WS1 dual-track degradation exit (plan §3.2.2): when the geometry validator returns
+# partial_conflict / invalidated for a table, the conflict-cell set is recorded here and
+# surfaced in the review view so a human can adjudicate. The adjudication writeback reuses
+# the existing disposition channel (apply_table_review_decision) — same state/event format,
+# no new writeback shape — and clears the record once the table is resolved.
+TABLE_GEOMETRY_CONFLICTS = "table_geometry_conflicts.jsonl"
+TABLE_GEOMETRY_CONFLICT_SCHEMA = "table-geometry-conflict/v1"
 
 _VALID_ROLES = {
     "title",
@@ -120,6 +128,124 @@ def _current_claim_projection(root: Path) -> dict[str, dict[str, Any]]:
     return load_table_claim_authority_projection(root)
 
 
+# --- geometry-conflict degradation exit (WS1 dual-track) ----------------------
+
+
+def _normalize_conflict_cell(cell: Any) -> tuple[int, int] | None:
+    """Accept (row, col) pair, [row, col] list, or {'row_index','column_index'} dict."""
+    if isinstance(cell, Mapping):
+        row = cell.get("row_index")
+        column = cell.get("column_index")
+    elif isinstance(cell, (list, tuple)) and len(cell) == 2:
+        row, column = cell
+    else:
+        return None
+    if (
+        isinstance(row, int) and not isinstance(row, bool)
+        and isinstance(column, int) and not isinstance(column, bool)
+        and row >= 1 and column >= 1
+    ):
+        return (int(row), int(column))
+    return None
+
+
+def load_table_geometry_conflicts(root: Path) -> dict[str, dict[str, Any]]:
+    """Read the geometry-conflict registry as ``{table_id: record}``.
+
+    Absent file → empty dict (the proposer/validator simply produced no conflicts).
+    """
+    root = Path(root).expanduser().resolve()
+    path = governed_artifact_path(root, TABLE_GEOMETRY_CONFLICTS, category="state")
+    if not path.is_file():
+        return {}
+    records: dict[str, dict[str, Any]] = {}
+    for row in read_jsonl(path):
+        table_id = str(row.get("table_id") or "")
+        if table_id:
+            records[table_id] = row
+    return records
+
+
+def _write_geometry_conflicts(root: Path, records: dict[str, dict[str, Any]]) -> None:
+    path = governed_artifact_path(root, TABLE_GEOMETRY_CONFLICTS, category="state")
+    rows = [records[table_id] for table_id in sorted(records)]
+    _atomic_write_jsonl(path, rows)
+
+
+def record_table_geometry_conflicts(
+    out_dir: Path,
+    *,
+    table_id: str,
+    conflict_cells: list[Any],
+    validator_status: str,
+    reasons: list[dict[str, Any]] | str = "",
+    table_block_id: str = "",
+) -> dict[str, Any]:
+    """Record a validator-failed table's conflict-cell set for the human panel.
+
+    ``conflict_cells`` accepts coordinate pairs (``[r, c]`` / ``(r, c)``) or
+    ``{'row_index','column_index'}`` dicts — the shape ``analyze_table_dual_track``
+    attaches at ``structure["dual_track"]["conflict_cells"]``. ``validator_status`` is
+    ``partial_conflict`` or ``invalidated``. The read path (build_table_review_payload)
+    resolves these coordinates to cell_ids when surfacing them.
+
+    Idempotent upsert keyed by ``table_id`` under the table-review lock; the same table
+    recording twice (e.g. on a re-parse) overwrites the prior record. An empty
+    conflict-cell set clears the table's record (no-op degradation exit).
+    """
+    root = Path(out_dir).expanduser().resolve()
+    table_id = str(table_id or "").strip()
+    if not table_id:
+        raise ValueError("table_id is required")
+    coordinates: list[tuple[int, int]] = []
+    for cell in conflict_cells or []:
+        normalized = _normalize_conflict_cell(cell)
+        if normalized is not None and normalized not in coordinates:
+            coordinates.append(normalized)
+    coordinates.sort()
+    normalized_reasons: list[dict[str, Any]]
+    if isinstance(reasons, str):
+        normalized_reasons = [{"detail": reasons}] if reasons else []
+    else:
+        normalized_reasons = [dict(reason) for reason in reasons if isinstance(reason, Mapping)]
+    with _table_review_lock(root):
+        records = load_table_geometry_conflicts(root)
+        if not coordinates:
+            records.pop(table_id, None)
+            _write_geometry_conflicts(root, records)
+            return {"table_id": table_id, "cleared": True}
+        record = {
+            "schema": TABLE_GEOMETRY_CONFLICT_SCHEMA,
+            "table_id": table_id,
+            "table_block_id": str(table_block_id or ""),
+            "validator_status": str(validator_status or ""),
+            "conflict_cells": [
+                {"row_index": row, "column_index": column} for row, column in coordinates
+            ],
+            "reasons": normalized_reasons,
+            "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        records[table_id] = record
+        _write_geometry_conflicts(root, records)
+    return record
+
+
+def clear_table_geometry_conflicts(out_dir: Path, table_id: str) -> bool:
+    """Remove one table's geometry-conflict record. Returns whether a record existed."""
+    root = Path(out_dir).expanduser().resolve()
+    table_id = str(table_id or "").strip()
+    if not table_id:
+        return False
+    with _table_review_lock(root):
+        records = load_table_geometry_conflicts(root)
+        existed = table_id in records
+        if existed:
+            records.pop(table_id, None)
+            _write_geometry_conflicts(root, records)
+    return existed
+
+
+
 def build_table_review_payload(out_dir: Path) -> dict[str, Any]:
     """Build the read-only table review view from governed artifacts."""
     root = Path(out_dir).expanduser().resolve()
@@ -144,6 +270,7 @@ def build_table_review_payload(out_dir: Path) -> dict[str, Any]:
         cells,
         _current_claim_projection(root),
     )
+    geometry_conflicts = load_table_geometry_conflicts(root)
     cells_by_table: dict[str, list[dict[str, Any]]] = defaultdict(list)
     dispositions_by_table: dict[str, list[dict[str, Any]]] = defaultdict(list)
     blocks_by_table = {
@@ -157,13 +284,29 @@ def build_table_review_payload(out_dir: Path) -> dict[str, Any]:
         dispositions_by_table[str(row.get("table_id") or "")].append(row)
 
     tables: list[dict[str, Any]] = []
-    for table_id in sorted(set(cells_by_table) | set(dispositions_by_table)):
+    for table_id in sorted(
+        set(cells_by_table) | set(dispositions_by_table) | set(geometry_conflicts)
+    ):
         table_cells = cells_by_table.get(table_id, [])
         table_dispositions = dispositions_by_table.get(table_id, [])
         disposition_by_cell = {
             str(row.get("cell_id") or ""): row for row in table_dispositions
         }
+        # WS1 dual-track degradation exit: resolve the validator's conflict coordinates
+        # to cell_ids so the conflict-cell set can ride the existing review view. The
+        # overlay is read-side only — it does not mutate authority dispositions. A
+        # conflict cell that is not already terminal surfaces as disposition=review with
+        # a geometry_conflict highlight, so the existing panel machinery and the existing
+        # disposition writeback (apply_table_review_decision) handle it unchanged.
+        conflict_record = geometry_conflicts.get(table_id) or {}
+        conflict_coords: set[tuple[int, int]] = {
+            (int(entry.get("row_index") or 0), int(entry.get("column_index") or 0))
+            for entry in (conflict_record.get("conflict_cells") or [])
+            if int(entry.get("row_index") or 0) >= 1
+            and int(entry.get("column_index") or 0) >= 1
+        }
         rendered_cells = []
+        conflict_overlay_active = False
         for cell in sorted(
             table_cells,
             key=lambda row: (
@@ -174,14 +317,34 @@ def build_table_review_payload(out_dir: Path) -> dict[str, Any]:
         ):
             rendered = dict(cell)
             rendered.update(disposition_by_cell.get(str(cell.get("cell_id") or ""), {}))
+            coordinate = (
+                int(cell.get("row_index") or 0),
+                int(cell.get("column_index") or 0),
+            )
+            if coordinate in conflict_coords:
+                current_disposition = str(rendered.get("disposition") or "")
+                # Only escalate to review if the cell is not already terminal — a
+                # promoted/excluded cell keeps its authority disposition; the conflict
+                # just records the geometry evidence alongside it.
+                if current_disposition not in {"target", "composite", "excluded"}:
+                    if current_disposition != "review":
+                        rendered["disposition"] = "review"
+                    conflict_overlay_active = True
+                rendered["decision_source"] = (
+                    str(rendered.get("decision_source") or "") or "geometry_conflict"
+                )
+                rendered["geometry_conflict"] = True
             rendered_cells.append(rendered)
         counts = Counter(
-            str(row.get("disposition") or "") for row in table_dispositions
+            str(row.get("disposition") or "")
+            for row in (rendered_cells or table_dispositions)
         )
         block = blocks_by_table.get(table_id, {})
-        status = "pending" if counts["review"] else "ready"
+        status = "pending" if counts["review"] or conflict_overlay_active else "ready"
         sources = {str(row.get("decision_source") or "") for row in table_dispositions}
-        tables.append({
+        if conflict_overlay_active:
+            sources.add("geometry_conflict")
+        table_entry: dict[str, Any] = {
             "table_id": table_id,
             "table_block_id": str(block.get("block_id") or block.get("table_block_id") or ""),
             "title": str(block.get("table_title") or block.get("text") or ""),
@@ -189,6 +352,7 @@ def build_table_review_payload(out_dir: Path) -> dict[str, Any]:
             "structure_review_status": status,
             "review_mode": (
                 "human" if "human" in sources
+                else "geometry_conflict" if "geometry_conflict" in sources
                 else "llm_assisted" if "llm_assisted" in sources
                 else "automatic" if status == "ready"
                 else "pending"
@@ -203,7 +367,14 @@ def build_table_review_payload(out_dir: Path) -> dict[str, Any]:
                 table_id, table_dispositions
             ),
             "cells": rendered_cells,
-        })
+        }
+        if conflict_record:
+            table_entry["geometry_conflict"] = {
+                "validator_status": str(conflict_record.get("validator_status") or ""),
+                "reasons": list(conflict_record.get("reasons") or []),
+                "conflict_cell_count": len(conflict_coords),
+            }
+        tables.append(table_entry)
     return {"schema": TABLE_REVIEW_VIEW_SCHEMA, "tables": tables}
 
 
@@ -258,6 +429,8 @@ def _validate_role_mapping(
     table_id: str,
     table_rows: list[dict[str, Any]],
     role_mapping: dict[str, dict[str, Any]],
+    *,
+    resolvable_cell_ids: set[str] | None = None,
 ) -> None:
     if not isinstance(role_mapping, dict) or not role_mapping:
         raise ValueError("role_mapping must contain at least one cell decision")
@@ -267,6 +440,7 @@ def _validate_role_mapping(
         raise ValueError(
             f"role_mapping contains cells outside table {table_id}: {unknown[:5]}"
         )
+    extra_resolvable = resolvable_cell_ids or set()
     for cell_id, decision in role_mapping.items():
         if not isinstance(decision, dict):
             raise ValueError(f"role_mapping[{cell_id}] must be an object")
@@ -279,7 +453,13 @@ def _validate_role_mapping(
         current = next(
             row for row in table_rows if str(row.get("cell_id") or "") == cell_id
         )
-        if str(current.get("disposition") or "") != "review":
+        current_disposition = str(current.get("disposition") or "")
+        # A cell is resolvable when it is pending review in the authority projection,
+        # OR it carries an active geometry-conflict overlay (WS1 dual-track degradation
+        # exit) — the overlay surfaces such cells as review in the view, and resolving
+        # them through this same channel clears the conflict. The writeback format is
+        # unchanged; this only widens the set of cells the existing channel accepts.
+        if current_disposition != "review" and cell_id not in extra_resolvable:
             raise ValueError(
                 f"table review decisions may only resolve pending review cells: {cell_id}"
             )
@@ -533,13 +713,35 @@ def apply_table_review_decision(
         ]
         if not table_rows:
             raise ValueError(f"table not found: {table_id}")
+        # WS1 dual-track: resolve any geometry-conflict overlay to cell_ids so the
+        # existing writeback channel can resolve conflict cells too. Pure overlay cells
+        # (projected disposition != review) are cleared from the conflict registry
+        # instead of routed through claim delegation — the writeback FORMAT (state /
+        # events / dispositions) is unchanged; only the set of accepted cells widens.
+        conflict_record = load_table_geometry_conflicts(root).get(table_id) or {}
+        coord_to_cell_id: dict[tuple[int, int], str] = {
+            (int(cell.get("row_index") or 0), int(cell.get("column_index") or 0)):
+                str(cell.get("cell_id") or "")
+            for cell in cells
+            if str(cell.get("table_id") or "") == table_id
+        }
+        conflict_cell_ids: set[str] = set()
+        for entry in conflict_record.get("conflict_cells") or []:
+            coord = _normalize_conflict_cell(entry)
+            if coord is not None and coord in coord_to_cell_id:
+                conflict_cell_ids.add(coord_to_cell_id[coord])
         current = table_evidence_fingerprint(table_id, dispositions)
         if current != expected:
             raise TableReviewConflict(
                 "table evidence changed; refresh before confirming structure",
                 current_fingerprint=current,
             )
-        _validate_role_mapping(table_id, table_rows, role_mapping)
+        _validate_role_mapping(
+            table_id,
+            table_rows,
+            role_mapping,
+            resolvable_cell_ids=conflict_cell_ids,
+        )
 
         before_mapping = {
             str(row.get("cell_id") or ""): {
@@ -550,6 +752,7 @@ def apply_table_review_decision(
         }
         claim_results: list[dict[str, Any]] = []
         decision_error: Exception | None = None
+        cleared_conflict_cell_ids: set[str] = set()
         for cell_id in sorted(role_mapping):
             requested_disposition = str(
                 role_mapping[cell_id].get("disposition") or ""
@@ -566,6 +769,33 @@ def apply_table_review_decision(
                 ),
                 "actor": actor or "table-review",
             })
+            # Pure geometry-conflict overlay cell (not pending review in the authority):
+            # resolve by clearing the overlay, not by claim delegation (the cell may have
+            # no structural candidate). Same result record shape so the caller sees one
+            # uniform writeback channel.
+            projected_disposition = str(
+                next(
+                    (row.get("disposition") for row in table_rows
+                     if str(row.get("cell_id") or "") == cell_id),
+                    "",
+                )
+            )
+            if (
+                cell_id in conflict_cell_ids
+                and projected_disposition != "review"
+            ):
+                cleared_conflict_cell_ids.add(cell_id)
+                claim_results.append({
+                    "cell_id": cell_id,
+                    "requested_disposition": requested_disposition,
+                    "request_idempotency_key": request_key,
+                    "result": {
+                        "ok": True,
+                        "status": "geometry_conflict_cleared",
+                        "cell_id": cell_id,
+                    },
+                })
+                continue
             try:
                 claim_result = _delegate_claim_cell_decision(
                     root,
@@ -584,6 +814,8 @@ def apply_table_review_decision(
                 "request_idempotency_key": request_key,
                 "result": claim_result,
             })
+            if cell_id in conflict_cell_ids:
+                cleared_conflict_cell_ids.add(cell_id)
 
         dispositions = project_table_dispositions(
             raw_dispositions,
@@ -622,6 +854,35 @@ def apply_table_review_decision(
             root, "table_cell_dispositions.jsonl"
         )
         _atomic_write_jsonl(disposition_path, dispositions)
+
+        # WS1 dual-track: clear resolved geometry-conflict overlay cells from the
+        # registry. A coord leaves the registry when its cell was adjudicated in this
+        # batch OR is now terminal in the authority projection. Empty registry → drop
+        # the table's record so the panel stops showing it as a degradation exit.
+        if conflict_record:
+            terminal_now = {
+                str(row.get("cell_id") or "")
+                for row in selected
+                if str(row.get("disposition") or "") in {"target", "composite", "excluded"}
+            }
+            remaining_coords: list[dict[str, Any]] = []
+            for entry in conflict_record.get("conflict_cells") or []:
+                coord = _normalize_conflict_cell(entry)
+                if coord is None:
+                    continue
+                cell_id = coord_to_cell_id.get(coord, "")
+                if cell_id in cleared_conflict_cell_ids or cell_id in terminal_now:
+                    continue
+                remaining_coords.append({"row_index": coord[0], "column_index": coord[1]})
+            conflict_records = load_table_geometry_conflicts(root)
+            if remaining_coords:
+                conflict_records[table_id] = {
+                    **conflict_record,
+                    "conflict_cells": remaining_coords,
+                }
+            else:
+                conflict_records.pop(table_id, None)
+            _write_geometry_conflicts(root, conflict_records)
 
         # 下游传播（recompute + fold）持 _table_review_lock + extraction_operation_lock（Kimi 高危 #3）。
         # recompute 在持久化 state 前跑、失败把 recompute_error 写入 state/events（持久化记录诚实）；

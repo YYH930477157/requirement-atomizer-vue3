@@ -23,10 +23,18 @@ v6（候选闭环）：已知元数据冒号规格继续作为确定性 context�
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Iterable, Mapping
 
 TABLE_STRUCTURE_VERSION = "table-structure-v7"
+# Dual-track entry (WS1 wk3-5, plan §3.2.2): a separate identity stamp for the new
+# hypothesis-first entry. TABLE_STRUCTURE_VERSION is DELIBERATELY NOT bumped — the new
+# entry is gated behind a default-OFF switch (TABLE_DUAL_TRACK_SWITCH below), so the
+# deterministic path that the atomize cache fingerprint pins is byte-identical. A
+# default-off entry must never invalidate existing parsed bases or golden; the moment a
+# future slice flips the default, that slice owns the version bump and golden regen.
+TABLE_DUAL_TRACK_VERSION = "table-dual-track-v1"
 TABLE_CELL_ITEM_SCHEMA = "table-cell-item/v1"
 
 STRUCTURAL_ROLES = ("title", "header", "row_header", "data", "group_header")
@@ -1476,3 +1484,211 @@ def cell_context_text(cell: dict[str, Any]) -> str:
     prefix = " | ".join(part for part in parts if part)
     body = str(cell.get("text") or "").strip()
     return f"{prefix} = {body}" if prefix else body
+
+
+# =============================================================================
+# WS1 dual-track entry (plan §3.2.2 / §3.1.2): hypothesis-first, validator-signs.
+#
+# The deterministic role-detection path above (analyze_table + friends) is the
+# parsing mainline and is NOT modified or deleted — it stays the default and the
+# validated fallback. This section adds a NEW entry that, when its config switch is
+# ON, takes an LLM-proposed hypothesis (llm_table_understanding.py), hands it to the
+# geometry validator (table_geometry_validator.validate_table_geometry) for signing,
+# and only on a signed ("issued") result derives the structure from the hypothesis.
+# Anything else — switch off, no hypothesis, no geometry to validate against,
+# partial_conflict, invalidated — falls back to the deterministic analyze_table path.
+#
+# The LLM never signs a structure decision here: the validator's signature is the
+# sole authority (plan §3.1.2). On validation failure the structure falls back AND
+# the entry attaches a ``dual_track`` provenance/conflict block so the caller (atomize
+# wiring, a future slice) can route the conflict-cell set into the human review panel
+# via table_review_state.record_table_geometry_conflicts.
+# =============================================================================
+
+# Switch name + default. Default OFF ("0") → the new entry is a pure passthrough to
+# analyze_table; the atomize cache fingerprint and golden baselines are untouched.
+TABLE_DUAL_TRACK_SWITCH = "RATOMIZER_TABLE_DUAL_TRACK"
+_TABLE_DUAL_TRACK_TRUTHY = ("1", "true", "yes", "on")
+
+
+def dual_track_enabled() -> bool:
+    """Whether the hypothesis-first entry is active. Default OFF (old deterministic path)."""
+    return os.environ.get(TABLE_DUAL_TRACK_SWITCH, "0").strip().lower() in _TABLE_DUAL_TRACK_TRUTHY
+
+
+def structure_from_hypothesis(
+    matrix: list[list[str]],
+    hypothesis: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Roll a SIGNED hypothesis's per-cell roles up to the analyze_table() shape.
+
+    Only call this with a hypothesis the geometry validator has signed (``issued``).
+    The validator guarantees every referenced coordinate is in-bounds and canonical;
+    this function therefore trusts the coordinates and only translates per-cell roles
+    into the row-level structure dict the downstream consumers (plan_table_leaves /
+    build_cell_items / atomize) already read.
+
+    Row-level roll-up rule (deterministic, content-conservative):
+      * a row whose labelled cells are all ``title`` (and at least one is) → title row;
+      * else a row with at least one ``header`` cell and no ``title`` cell, where header
+        cells outnumber data cells, → header row (``group_header`` counts as header
+        context, ``row_header`` is a data-row column role);
+      * every other row (including rows the hypothesis did not label) → data row, so
+        unlabelled content defaults to producing clause candidates rather than being
+        silently dropped as a header ("宁漏勿错").
+
+    The returned dict is drop-in compatible with analyze_table(): width, height,
+    title_row_indexes, header_row_indexes, header_row_count, data_row_indexes,
+    header_detection_status ("explicit" — the hypothesis is an explicit claim),
+    header_detection_evidence, ambiguous_structure_rows (empty — a signed hypothesis
+    resolves ambiguity by construction).
+    """
+    width = max((len(row) for row in matrix), default=0)
+    height = len(matrix)
+    declared_levels = int(hypothesis.get("header_level_count") or 0)
+    labelled: dict[tuple[int, int], str] = {}
+    for entry in hypothesis.get("cells") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        coordinate = entry.get("coordinate")
+        if (
+            isinstance(coordinate, (list, tuple))
+            and len(coordinate) == 2
+            and all(isinstance(value, int) and not isinstance(value, bool) for value in coordinate)
+        ):
+            labelled[(int(coordinate[0]), int(coordinate[1]))] = str(entry.get("role") or "")
+
+    title_rows: list[int] = []
+    header_rows: list[int] = []
+    data_rows: list[int] = []
+    for row_index in range(1, height + 1):
+        roles = [
+            labelled[(row_index, column_index)]
+            for column_index in range(1, width + 1)
+            if (row_index, column_index) in labelled
+        ]
+        title_count = sum(1 for role in roles if role == "title")
+        header_count = sum(1 for role in roles if role in {"header", "group_header"})
+        data_count = sum(1 for role in roles if role in {"data", "row_header"})
+        if title_count and not data_count:
+            title_rows.append(row_index)
+        elif header_count and not title_count and header_count >= data_count:
+            header_rows.append(row_index)
+        else:
+            data_rows.append(row_index)
+
+    evidence = [
+        f"dual_track:hypothesis_signed:declared_header_levels={declared_levels}",
+        f"dual_track:title_rows={title_rows}",
+        f"dual_track:header_rows={header_rows}",
+    ]
+    return {
+        "width": width,
+        "height": height,
+        "title_row_indexes": title_rows,
+        "header_row_indexes": header_rows,
+        "header_row_count": len(header_rows),
+        "data_row_indexes": data_rows,
+        "header_detection_status": "explicit",
+        "header_detection_evidence": evidence,
+        "ambiguous_structure_rows": [],
+    }
+
+
+def analyze_table_dual_track(
+    matrix: list[list[str]],
+    *,
+    merge_ranges: Iterable[Iterable[int]] | None = None,
+    explicit_header_rows: list[int] | None = None,
+    parsed_table: Any = None,
+    hypothesis: Mapping[str, Any] | None = None,
+    validator_result: Any = None,
+) -> dict[str, Any]:
+    """Hypothesis-first, validator-signs entry — the WS1 dual-track parsing mainline hook.
+
+    Behaviour by configuration / inputs (default OFF everywhere):
+      * switch OFF (default) → returns ``analyze_table(...)`` unchanged (a ``dual_track``
+        provenance block marks mode ``off``). This is the production default; it leaves
+        the atomize cache fingerprint and golden baselines untouched.
+      * switch ON, no ``hypothesis`` → caller did not run the proposer (no budget /
+        offline). Falls back to ``analyze_table(...)`` (mode ``fallback_no_hypothesis``).
+        This is exactly the stub-route degradation the brief mandates.
+      * switch ON, ``hypothesis`` given but no ``parsed_table`` to validate against →
+        cannot sign; fall back to ``analyze_table(...)`` (mode ``fallback_no_geometry``).
+      * switch ON, ``hypothesis`` + ``parsed_table`` → ``validate_table_geometry`` signs:
+          - ``issued`` → derive the structure from the hypothesis (mode
+            ``hypothesis_signed``). Downstream consumes a hypothesis-derived structure.
+          - ``partial_conflict`` / ``invalidated`` → fall back to ``analyze_table(...)``
+            AND attach the validator's conflict-cell set + reasons (mode
+            ``fallback_validation_failed``). The caller routes the conflict set to the
+            human review panel via ``table_review_state.record_table_geometry_conflicts``.
+
+    A pre-computed ``validator_result`` may be passed to skip re-validation (e.g. when
+    the caller already ran the validator to decide routing). The original deterministic
+    path (``analyze_table``) is called verbatim on every fallback — one line of it is not
+    changed.
+    """
+    deterministic = analyze_table(
+        matrix,
+        merge_ranges=merge_ranges,
+        explicit_header_rows=explicit_header_rows,
+    )
+    if not dual_track_enabled():
+        deterministic["dual_track"] = {
+            "mode": "off",
+            "version": TABLE_DUAL_TRACK_VERSION,
+            "switch": TABLE_DUAL_TRACK_SWITCH,
+        }
+        return deterministic
+
+    if hypothesis is None:
+        deterministic["dual_track"] = {
+            "mode": "fallback_no_hypothesis",
+            "version": TABLE_DUAL_TRACK_VERSION,
+        }
+        return deterministic
+
+    result = validator_result
+    if result is None:
+        if parsed_table is None:
+            deterministic["dual_track"] = {
+                "mode": "fallback_no_geometry",
+                "version": TABLE_DUAL_TRACK_VERSION,
+            }
+            return deterministic
+        from table_geometry_validator import validate_table_geometry
+
+        result = validate_table_geometry(dict(hypothesis), parsed_table)
+
+    status = str(getattr(result, "status", "") or "")
+    if status == "issued":
+        structure = structure_from_hypothesis(matrix, hypothesis)
+        structure["dual_track"] = {
+            "mode": "hypothesis_signed",
+            "version": TABLE_DUAL_TRACK_VERSION,
+            "validator_status": status,
+            "declared_header_levels": int(hypothesis.get("header_level_count") or 0),
+        }
+        return structure
+
+    # partial_conflict / invalidated / unknown — fall back + surface conflict set.
+    conflict_cells = [
+        [row, column]
+        for row, column in (getattr(result, "conflict_cells", ()) or ())
+    ]
+    reasons = [
+        {
+            "code": str(getattr(reason, "code", "") or ""),
+            "cells": [[row, column] for row, column in (getattr(reason, "cells", ()) or ())],
+            "detail": str(getattr(reason, "detail", "") or ""),
+        }
+        for reason in (getattr(result, "reasons", ()) or ())
+    ]
+    deterministic["dual_track"] = {
+        "mode": "fallback_validation_failed",
+        "version": TABLE_DUAL_TRACK_VERSION,
+        "validator_status": status,
+        "conflict_cells": conflict_cells,
+        "reasons": reasons,
+    }
+    return deterministic
