@@ -730,4 +730,144 @@ describe("desktop bridge tasks", () => {
     expect(payload.kind).toBe("ai_extract")
     expect(bridge.aiExtract).toHaveBeenCalledWith({ outDir: "E:\\out\\run" })
   })
+
+  // ===== WS-F / WS4 =====
+  it("loads verification states over GET /verification-states (WS-F)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        schema: "verification-states/v1",
+        states: [{ requirement_id: "FRE-1", verification: {}, lifecycle_state: "draft", evidence_fingerprint: "fp-1" }],
+        total: 1,
+      }),
+    })
+    const client = new RequirementApiClient({ baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock })
+
+    const payload = await client.loadVerificationStates()
+
+    expect(payload.total).toBe(1)
+    expect(payload.states[0].requirement_id).toBe("FRE-1")
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8770/verification-states", expect.objectContaining({ headers: { "X-Requirement-Atomizer-Token": "t" } }))
+  })
+
+  it("posts verification override with CAS evidence fingerprint (WS-F)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ requirement_id: "FRE-1", verification: {}, lifecycle_state: "confirmed", written: ["verification_states.jsonl"] }),
+    })
+    const client = new RequirementApiClient({ baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock })
+
+    await client.applyVerificationAction({
+      requirementId: "FRE-1",
+      verification: {
+        project_manager_confirm: { confirmed: true, by: "pm", at: "2026-08-06T00:00:00Z" },
+        test_lead_confirm: { confirmed: false, by: "", at: "" },
+        dev_test_confirm: { confirmed: false, by: "", at: "" },
+        implemented: "done",
+        test_case_ids: ["TC-1"],
+        test_completed: true,
+      },
+      expectedEvidenceFingerprint: "fp-1",
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(init.body)
+    expect(body.requirement_id).toBe("FRE-1")
+    expect(body.verification.implemented).toBe("done")
+    expect(body.expected_evidence_fingerprint).toBe("fp-1")
+    expect(body.actor).toBe("vue3-ui")
+  })
+
+  it("omits expected_evidence_fingerprint on first verification write (CAS opt-in)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ requirement_id: "FRE-2", lifecycle_state: "draft", written: [] }) })
+    const client = new RequirementApiClient({ baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock })
+
+    await client.applyVerificationAction({
+      requirementId: "FRE-2",
+      verification: {
+        project_manager_confirm: { confirmed: false, by: "", at: "" },
+        test_lead_confirm: { confirmed: false, by: "", at: "" },
+        dev_test_confirm: { confirmed: false, by: "", at: "" },
+        implemented: "not_started",
+        test_case_ids: [],
+        test_completed: false,
+      },
+    })
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body).not.toHaveProperty("expected_evidence_fingerprint")
+  })
+
+  it("surfaces verification_conflict 409 as a reconfirmation error with the current fingerprint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: "verification_conflict",
+        detail: "CAS 失配",
+        requirement_id: "FRE-1",
+        current_evidence_fingerprint: "fp-v2",
+        needs_reconfirmation: true,
+      }),
+    })
+    const client = new RequirementApiClient({ baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock })
+
+    const error = await client.applyVerificationAction({
+      requirementId: "FRE-1",
+      verification: {
+        project_manager_confirm: { confirmed: true, by: "", at: "" },
+        test_lead_confirm: { confirmed: false, by: "", at: "" },
+        dev_test_confirm: { confirmed: false, by: "", at: "" },
+        implemented: "not_started",
+        test_case_ids: [],
+        test_completed: false,
+      },
+      expectedEvidenceFingerprint: "fp-v1",
+    }).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(RequirementApiError)
+    expect(isNeedsReconfirmationError(error)).toBe(true)
+    expect((error as RequirementApiError).details.current_evidence_fingerprint).toBe("fp-v2")
+  })
+
+  it("posts manual requirement with provenance fields (WS-F)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ functional_requirement_id: "FREQ-MANUAL-abc", written: ["manual_requirements.jsonl"] }),
+    })
+    const client = new RequirementApiClient({ baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock })
+
+    const payload = await client.createManualRequirement({ objective: "应记录事件", behaviors: ["记录掉电"], module: "事件记录", ownership: "software" })
+
+    expect(payload.functional_requirement_id).toBe("FREQ-MANUAL-abc")
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.objective).toBe("应记录事件")
+    expect(body.behaviors).toEqual(["记录掉电"])
+    expect(body.module).toBe("事件记录")
+    expect(body.ownership).toBe("software")
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:8770/manual-requirement")
+  })
+
+  it("posts a dependency decision (accept writes, reject does not)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ accepted: true, written: true, decision: {} }) })
+    const client = new RequirementApiClient({ baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock })
+
+    await client.decideDependency({ from: "FRE-1", to: "FRE-2", kind: "depend", accept: true })
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body).toEqual({ from: "FRE-1", to: "FRE-2", kind: "depend", accept: true, actor: "vue3-ui", reason: "" })
+  })
+
+  it("searches the requirement library via query string (WS-F)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ kind: "requirement_search", query: "load profile", matches: 1, results: [{ objective: "x", overlap_score: 0.5 }] }),
+    })
+    const client = new RequirementApiClient({ baseUrl: "http://127.0.0.1:8770", token: "t", fetchImpl: fetchMock })
+
+    const payload = await client.searchRequirementLibrary({ query: "load profile", limit: 5 })
+
+    expect(payload.results?.[0].overlap_score).toBe(0.5)
+    expect(fetchMock.mock.calls[0][0]).toContain("/requirement-library/search?q=load+profile&limit=5")
+  })
 })

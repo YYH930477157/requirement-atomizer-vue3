@@ -23,6 +23,7 @@ import {
   parseTaskErrorEnvelope,
   planResultPackageStart,
   probeApiSessionContent,
+  readGovernedArtifact,
   recordRecentSession,
   resolveAutoRestoreCandidates,
   resolveAutoRestoreDir,
@@ -842,5 +843,112 @@ describe("probeApiSessionContent (R3)", () => {
       { baseUrl: "http://127.0.0.1:9000", token: "" },
       { fetchImpl, timeoutMs: 20 },
     )).rejects.toThrow(/content probe/)
+  })
+})
+
+describe("readGovernedArtifact (WS-F)", () => {
+  it("reads a pipeline json file from the .ratomizer/pipeline subdir (package_v1 layout)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratom-gov-"))
+    try {
+      const pipelineDir = path.join(dir, ".ratomizer", "pipeline")
+      mkdirSync(pipelineDir, { recursive: true })
+      writeFileSync(path.join(pipelineDir, "functional_requirements.json"), JSON.stringify({
+        schema_version: 1,
+        items: [{ functional_requirement_id: "FRE-1", objective: "应记录事件" }],
+      }))
+
+      const result = readGovernedArtifact(dir, "pipeline", "functional_requirements.json")
+
+      expect(result.ok).toBe(true)
+      expect(result.format).toBe("json")
+      expect(result.missing).toBeFalsy()
+      expect((result.content as { items: Array<{ functional_requirement_id: string }> }).items[0].functional_requirement_id).toBe("FRE-1")
+      expect(String(result.path)).toContain(path.join(".ratomizer", "pipeline"))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("falls back to the legacy root when the governed subdir has no file (functional_synthesis writes root)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratom-gov-"))
+    try {
+      // 无 .ratomizer 目录——functional_synthesis.run_functional_synthesis 写在根
+      writeFileSync(path.join(dir, "functional_requirements.json"), JSON.stringify({ items: [{ functional_requirement_id: "FRE-2" }] }))
+
+      const result = readGovernedArtifact(dir, "pipeline", "functional_requirements.json")
+
+      expect(result.ok).toBe(true)
+      expect((result.content as { items: Array<{ functional_requirement_id: string }> }).items[0].functional_requirement_id).toBe("FRE-2")
+      expect(String(result.path)).toBe(path.join(dir, "functional_requirements.json"))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("parses jsonl state files tolerantly (bad lines skipped, not fatal)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratom-gov-"))
+    try {
+      const stateDir = path.join(dir, ".ratomizer", "state")
+      mkdirSync(stateDir, { recursive: true })
+      const lines = [
+        JSON.stringify({ requirement_id: "FRE-1", kind: "rollback", actor: "alice" }),
+        "{ not valid json",
+        "",
+        JSON.stringify({ requirement_id: "FRE-2", kind: "rollback", actor: "bob" }),
+      ]
+      writeFileSync(path.join(stateDir, "requirement_lifecycle_events.jsonl"), lines.join("\n"))
+
+      const result = readGovernedArtifact(dir, "state", "requirement_lifecycle_events.jsonl")
+
+      expect(result.ok).toBe(true)
+      expect(result.format).toBe("jsonl")
+      const rows = result.content as Array<{ requirement_id: string }>
+      expect(rows).toHaveLength(2)
+      expect(rows[0].requirement_id).toBe("FRE-1")
+      expect(rows[1].requirement_id).toBe("FRE-2")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("prefers the governed path over a same-named root file (no drift)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratom-gov-"))
+    try {
+      const pipelineDir = path.join(dir, ".ratomizer", "pipeline")
+      mkdirSync(pipelineDir, { recursive: true })
+      writeFileSync(path.join(pipelineDir, "functional_requirements.json"), JSON.stringify({ items: [{ functional_requirement_id: "GOVERNED" }] }))
+      writeFileSync(path.join(dir, "functional_requirements.json"), JSON.stringify({ items: [{ functional_requirement_id: "ROOT" }] }))
+
+      const result = readGovernedArtifact(dir, "pipeline", "functional_requirements.json")
+      const items = (result.content as { items: Array<{ functional_requirement_id: string }> }).items
+      expect(items[0].functional_requirement_id).toBe("GOVERNED")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("reports missing honestly instead of fabricating content", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratom-gov-"))
+    try {
+      const result = readGovernedArtifact(dir, "state", "manual_requirements.jsonl")
+      expect(result.ok).toBe(false)
+      expect(result.missing).toBe(true)
+      expect(result.reason).toBe("not_found")
+      expect(result.content).toBeFalsy()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects path traversal (filename must be a basename)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ratom-gov-"))
+    try {
+      const result = readGovernedArtifact(dir, "state", "../escape.json")
+      expect(result.ok).toBe(false)
+      expect(result.missing).toBe(true)
+      expect(result.reason).toBe("filename_must_be_basename")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

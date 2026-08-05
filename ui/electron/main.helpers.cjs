@@ -501,6 +501,83 @@ function classifyOutputDir(dirPath, deps = {}) {
     : { kind: "not_output", analysisStatus: "invalid", reason: "no_output_markers" };
 }
 
+// WS-F：governed 产物读取器。functional_requirements.json /
+// manual_requirements.jsonl / requirement_lifecycle_events.jsonl 等没有 HTTP 读取端点，
+// 由本函数在主进程读盘后回灌渲染进程。落盘位置由后端 result_package.governed_artifact_path
+// 决定：package_v1 下在 .ratomizer/<category>/，legacy 下在根目录。两类写入器并存
+// （functional_synthesis 写根、functional_extract 写 .ratomizer/pipeline），故两处都探测。
+// 读路径绝不创建目录（与 governed_artifact_path for_write=False 同语义）；坏 JSONL 行跳过
+// （与 review_state._read_jsonl_tolerant 同纪律）。filename 必须是 basename，禁止路径穿越。
+const GOVERNED_CATEGORY_SUBDIR = {
+  pipeline: "pipeline",
+  state: "state",
+  cache: "cache",
+  logs: "logs",
+  stages: "stages",
+};
+
+function readGovernedArtifact(outDir, category, filename, deps = {}) {
+  const fsImpl = deps.fs || fs;
+  const root = String(outDir || "").trim();
+  const name = typeof filename === "string" ? filename.trim() : "";
+  if (!root || !name) {
+    return { ok: false, missing: true, path: null, reason: "invalid_args" };
+  }
+  if (path.basename(name) !== name) {
+    return { ok: false, missing: true, path: null, reason: "filename_must_be_basename" };
+  }
+  const subdir = GOVERNED_CATEGORY_SUBDIR[category] || String(category || "").trim() || "pipeline";
+  const candidates = [
+    path.join(root, ".ratomizer", subdir, name),
+    path.join(root, name),
+  ];
+  let resolvedPath = null;
+  for (const candidate of candidates) {
+    try {
+      if (fsImpl.statSync(candidate).isFile()) {
+        resolvedPath = candidate;
+        break;
+      }
+    } catch {
+      // 候选路径不存在或不可访问——尝试下一个
+    }
+  }
+  if (!resolvedPath) {
+    return { ok: false, missing: true, path: null, reason: "not_found" };
+  }
+  let raw;
+  try {
+    raw = fsImpl.readFileSync(resolvedPath, "utf8");
+  } catch (err) {
+    return {
+      ok: false, missing: false, path: resolvedPath, reason: "read_error",
+      detail: String((err && err.message) || err),
+    };
+  }
+  if (name.endsWith(".jsonl")) {
+    const rows = [];
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        rows.push(JSON.parse(trimmed));
+      } catch {
+        // 坏行跳过——容错读，不因单行损坏丢弃整份账本
+      }
+    }
+    return { ok: true, path: resolvedPath, format: "jsonl", content: rows };
+  }
+  try {
+    const content = raw.trim() ? JSON.parse(raw) : null;
+    return { ok: true, path: resolvedPath, format: "json", content };
+  } catch (err) {
+    return {
+      ok: false, missing: false, path: resolvedPath, reason: "parse_error",
+      detail: String((err && err.message) || err),
+    };
+  }
+}
+
 function isLikelyOutputDir(dirPath, deps = {}) {
   return ["package_v1", "legacy"].includes(classifyOutputDir(dirPath, deps).kind);
 }
@@ -710,6 +787,7 @@ module.exports = {
   parseTaskErrorEnvelope,
   planResultPackageStart,
   probeApiSessionContent,
+  readGovernedArtifact,
   recordRecentSession,
   recentSessionLabel,
   resolveAutoRestoreCandidates,

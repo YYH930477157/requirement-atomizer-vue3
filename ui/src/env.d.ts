@@ -150,6 +150,19 @@ declare global {
       clarificationReport: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
       runChain: (input: { outDir: string; stages: string[]; llmRoute?: string; templatePath?: string; sampleRatio?: number; annotationLayoutMode?: "optimized" | "pdf_original" }) => Promise<RequirementAtomizerTaskPayload>
       importClarificationAnswers: (input: { outDir: string }) => Promise<RequirementAtomizerTaskPayload>
+      readArtifact: (input: {
+        outDir: string
+        category: "pipeline" | "state" | "cache" | "logs" | "stages"
+        filename: string
+      }) => Promise<{
+        ok: boolean
+        missing?: boolean
+        path?: string | null
+        format?: "json" | "jsonl"
+        content?: unknown
+        reason?: string
+        detail?: string
+      }>
       selectTemplate: () => Promise<string>
       openLogsDir: () => Promise<{ dir: string }>
     }

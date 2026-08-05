@@ -505,6 +505,9 @@
                         :active="activeNav === 'document'" :refresh-token="documentRefreshToken" />
         <ClaimLedger v-else-if="activeNav === 'claim'" :client="apiClient" :session-key="reviewSessionKey"
                      :active="activeNav === 'claim'" :refresh-token="documentRefreshToken" />
+        <FunctionalReview v-else-if="activeNav === 'functional'" :client="apiClient" :session-key="reviewSessionKey"
+                          :active="activeNav === 'functional'" :refresh-token="documentRefreshToken"
+                          :output-dir="currentOutputDir" @focus-block="focusBlockFromFunctional" />
 
         <footer class="status-bar">
           <span :title="currentOutputDir || undefined">输出目录：{{ currentOutputDir ? tailPath(currentOutputDir) : "尚未选择输出目录" }}</span>
@@ -692,6 +695,7 @@ import {
   FolderOpen,
   FolderOutput,
   History,
+  Layers,
   MessageSquareReply,
   MessagesSquare,
   ListChecks,
@@ -717,11 +721,12 @@ import type {
 } from "./api-client"
 import ClaimLedger from "./ClaimLedger.vue"
 import DocumentReview from "./DocumentReview.vue"
+import FunctionalReview from "./FunctionalReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
 import { applyReviewState, mapBackendRequirement, statusDisplay as displayStatus } from "./requirement-mapper"
 import type { Requirement, ReviewStatus } from "./types"
 
-type PhaseNavId = "run" | "review" | "document" | "claim" | "settings"
+type PhaseNavId = "run" | "review" | "document" | "claim" | "functional" | "settings"
 type StatFilter = "all" | "accepted" | "expert_pending" | "ambiguous"
 type LlmSettings = {
   enabled: boolean
@@ -740,6 +745,7 @@ type LlmSettings = {
 const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: Component }> = [
   { id: "run", label: "运行", icon: Play },
   { id: "review", label: "审查工作台", icon: ClipboardCheck },
+  { id: "functional", label: "功能需求", icon: Layers },
   { id: "document", label: "文档批注", icon: FileText },
   { id: "claim", label: "Claim 账本", icon: ListChecks },
   { id: "settings", label: "设置", icon: Settings },
@@ -1317,6 +1323,19 @@ function closeSettingsPanel() {
   if (activeNav.value === "settings") {
     activeNav.value = "review"
   }
+}
+
+// WS-F：功能需求评审的来源块跳转——切到文档批注视图并刷新（让评审者循 source_block_ids
+// 回到原文核证）。DocumentReview 当前不接受 focusBlockId 入参，故此处只做视图切换 + 刷新；
+// 块内自动高亮/滚动是后续增强（已记入遗留观察）。
+function focusBlockFromFunctional(_blockId: string) {
+  if (!currentOutputDir.value) {
+    apiMessage.value = "尚未选择输出目录，无法跳转文档批注"
+    return
+  }
+  activeNav.value = "document"
+  documentRefreshToken.value += 1
+  apiMessage.value = _blockId ? `已跳转文档批注（来源块 ${_blockId}）` : ""
 }
 
 async function loadLlmSettings() {

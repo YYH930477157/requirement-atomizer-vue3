@@ -19,6 +19,7 @@ const {
   parseTaskErrorEnvelope,
   planResultPackageStart,
   probeApiSessionContent,
+  readGovernedArtifact,
   recordRecentSession,
   resolveAutoRestoreCandidates,
   resolveBackendCommand,
@@ -332,6 +333,20 @@ ipcMain.handle("task:import-clarification-answers", async (_event, input) => {
     return { kind: "clarification_answers", imported: 0, canceled: true };
   }
   return runAndRememberOutput(["import-clarification-answers", "--out", input.outDir, "--file", result.filePaths[0]], input.outDir);
+});
+
+// WS-F：governed 产物读取（无 HTTP 读取端点的文件：functional_requirements.json /
+// manual_requirements.jsonl / requirement_lifecycle_events.jsonl）。主进程读盘回灌渲染进程，
+// 只读、不创建目录、不写盘——后端 result_package.governed_artifact_path 是路径权威。
+ipcMain.handle("task:read-artifact", async (_event, input) => {
+  try {
+    return readGovernedArtifact(input && input.outDir, input && input.category, input && input.filename);
+  } catch (err) {
+    return {
+      ok: false, missing: true, path: null, reason: "handler_error",
+      detail: String((err && err.message) || err),
+    };
+  }
 });
 
 // 会话启动串行化：所有 startApiServer 调用（自动恢复 / 用户选目录 / 管线完成回连 /
