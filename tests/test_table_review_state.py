@@ -366,5 +366,176 @@ class TableReviewStateTests(unittest.TestCase):
             self.assertEqual(post_responses[0][1]["structure_review_status"], "ready")
 
 
+    def test_api_post_maps_claim_artifact_errors_to_structured_503(self) -> None:
+        """Kimi 高危 #4：Claim 异常族继承 RuntimeError，旧 catch（ValueError/OSError/
+        TimeoutError）接不住 → 连接断、无 JSON 错误包。现 ClaimBaseMigrationRequired
+        映射结构化 503（提示重跑 atomize），其余 ClaimArtifactError 映射可重试 503。"""
+        from claim_artifacts import (
+            ClaimBaseMigrationRequired,
+            ClaimEffectiveRecoveryPending,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            post_handler = object.__new__(api_server.RequirementAPIHandler)
+            post_handler.output_dir = analysis
+            post_handler.read_json_body = lambda: {
+                "table_id": "TBL-000001",
+                "expected_evidence_fingerprint": "stale",
+                "role_mapping": {
+                    "TBL-000001-R000001-C000001": {
+                        "role": "row_header",
+                        "disposition": "context",
+                    }
+                },
+                "actor": "reviewer",
+                "reason": "x",
+            }
+            responses = []
+            post_handler.send_json = lambda body, status=200: responses.append(
+                (status, body)
+            )
+            with patch(
+                "api_server.apply_table_review_decision",
+                side_effect=ClaimBaseMigrationRequired("stale base"),
+            ):
+                post_handler.handle_table_review_action()
+            self.assertEqual(responses[0][0], 503)
+            self.assertEqual(responses[0][1]["error"], "base_migration_required")
+            self.assertFalse(responses[0][1]["retryable"])
+
+            responses.clear()
+            with patch(
+                "api_server.apply_table_review_decision",
+                side_effect=ClaimEffectiveRecoveryPending("wal unfinished"),
+            ):
+                post_handler.handle_table_review_action()
+            self.assertEqual(responses[0][0], 503)
+            self.assertTrue(responses[0][1]["retryable"])
+
+    def test_api_get_maps_claim_base_migration_required_to_structured_503(self) -> None:
+        from claim_artifacts import ClaimBaseMigrationRequired
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, _dispositions = _seed(Path(tmp))
+            get_handler = object.__new__(api_server.RequirementAPIHandler)
+            get_handler.path = "/table-reviews"
+            get_handler.headers = {}
+            get_handler.allowed_origins = set()
+            get_handler.local_token = ""
+            get_handler.output_dir = analysis
+            get_handler.package_root = Path(tmp)
+            get_handler._refresh_analysis_root = lambda: None
+            responses = []
+            get_handler.send_json = lambda body, status=200: responses.append(
+                (status, body)
+            )
+            with patch(
+                "api_server.build_table_review_payload",
+                side_effect=ClaimBaseMigrationRequired("stale base"),
+            ):
+                get_handler.do_GET()
+            self.assertEqual(responses[0][0], 503)
+            self.assertEqual(responses[0][1]["error"], "base_migration_required")
+
+
+    def test_ready_decision_acquires_extraction_operation_lock_for_recompute(self) -> None:
+        """Kimi 高危 #3：recompute 须持 extraction_operation_lock 保护 ai_requirements.jsonl
+        读-改-写（原在 _table_review_lock 外、不持任何锁 → ThreadingHTTPServer 跨表并发丢更新）。"""
+        from contextlib import contextmanager
+
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, dispositions = _seed(Path(tmp))
+            write_jsonl(analysis / "ai_requirements.jsonl", [])
+            fingerprint = table_evidence_fingerprint("TBL-000001", dispositions)
+            review_cell = next(row for row in dispositions if row["disposition"] == "review")
+            authority = {
+                review_cell["cell_id"]: {
+                    "status": "promoted",
+                    "claim_id": "CLM-0000000000000001",
+                    "override_id": "CSO-0000000000000001",
+                    "prior_structural_reason": "ambiguous_table_structure",
+                }
+            }
+            lock_operations: list[str] = []
+
+            @contextmanager
+            def recording_lock(out_dir, *, operation):
+                lock_operations.append(operation)
+                yield
+
+            with patch(
+                "table_review_state._delegate_claim_cell_decision",
+                return_value={"ok": True, "status": "rebuilt"},
+            ), patch(
+                "table_review_state._current_claim_projection",
+                side_effect=[{}, authority],
+            ), patch(
+                "omission_actions.extraction_operation_lock",
+                side_effect=recording_lock,
+            ):
+                result = apply_table_review_decision(
+                    analysis,
+                    table_id="TBL-000001",
+                    expected_evidence_fingerprint=fingerprint,
+                    role_mapping={
+                        review_cell["cell_id"]: {"role": "data", "disposition": "target"}
+                    },
+                    actor="reviewer",
+                    reason="Confirmed",
+                )
+            self.assertIn("table-recompute", lock_operations)
+            self.assertEqual(result["structure_review_status"], "ready")
+
+    def test_ready_decision_persists_recompute_error_when_extraction_lock_blocks(self) -> None:
+        """Kimi 高危 #3：recompute 失败须把 recompute_error 写入持久化 state/events——
+        原先 state 先落 ready、recompute 失败只进 HTTP 响应，留下'已 ready 但下游产物
+        不一致且无持久记录'的脏态。现 extraction 锁被主抽取占用时如实记录、可重试。"""
+        from omission_actions import OmissionConflictError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis, _cells, dispositions = _seed(Path(tmp))
+            write_jsonl(analysis / "ai_requirements.jsonl", [])
+            fingerprint = table_evidence_fingerprint("TBL-000001", dispositions)
+            review_cell = next(row for row in dispositions if row["disposition"] == "review")
+            authority = {
+                review_cell["cell_id"]: {
+                    "status": "promoted",
+                    "claim_id": "CLM-0000000000000001",
+                    "override_id": "CSO-0000000000000001",
+                    "prior_structural_reason": "ambiguous_table_structure",
+                }
+            }
+            with patch(
+                "table_review_state._delegate_claim_cell_decision",
+                return_value={"ok": True, "status": "rebuilt"},
+            ), patch(
+                "table_review_state._current_claim_projection",
+                side_effect=[{}, authority],
+            ), patch(
+                "omission_actions.extraction_operation_lock",
+                side_effect=OmissionConflictError("another extraction running"),
+            ):
+                result = apply_table_review_decision(
+                    analysis,
+                    table_id="TBL-000001",
+                    expected_evidence_fingerprint=fingerprint,
+                    role_mapping={
+                        review_cell["cell_id"]: {"role": "data", "disposition": "target"}
+                    },
+                    actor="reviewer",
+                    reason="Confirmed",
+                )
+            self.assertEqual(result["structure_review_status"], "ready")
+            self.assertIn("recompute_error", result)
+            self.assertIn("OmissionConflictError", result["recompute_error"])
+            # 持久化 state 同样诚实记录 recompute_error（不再只进 HTTP 响应）
+            states = read_jsonl(
+                governed_artifact_path(
+                    analysis, "table_review_states.jsonl", category="state"
+                )
+            )
+            self.assertTrue(states)
+            self.assertIn("recompute_error", states[-1])
+
+
 if __name__ == "__main__":
     unittest.main()

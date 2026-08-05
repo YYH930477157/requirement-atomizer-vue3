@@ -294,8 +294,19 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json(build_review_summary(self.output_dir))
             return
         if parsed.path == "/table-reviews":
+            from claim_artifacts import ClaimArtifactError, ClaimBaseMigrationRequired
             try:
                 self.send_json(build_table_review_payload(self.output_dir))
+            except ClaimBaseMigrationRequired as exc:
+                # Kimi 高危 #4：GET 同样要接住 Claim 异常族（project_table_dispositions
+                # 经 _current_claim_projection 读 claim 产物，stale/torn 会抛），否则断连。
+                self.send_json({
+                    "error": "base_migration_required",
+                    "detail": str(exc),
+                    "retryable": False,
+                }, status=503)
+            except ClaimArtifactError as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
             except (OSError, TimeoutError, ValueError) as exc:
                 self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
@@ -611,6 +622,8 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 )
             }, status=400)
             return
+        from claim_artifacts import ClaimArtifactError, ClaimBaseMigrationRequired
+
         try:
             result = apply_table_review_decision(
                 self.output_dir,
@@ -626,6 +639,19 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 "needs_reconfirmation": True,
                 "evidence_fingerprint": exc.current_fingerprint,
             }, status=409)
+            return
+        except ClaimBaseMigrationRequired as exc:
+            # Kimi 高危 #4：Claim 异常族继承 RuntimeError，旧 catch（ValueError/
+            # OSError/TimeoutError）接不住 → 连接断、无 JSON 错误包。与 /claim-maintenance
+            # 同口径映射结构化 503，提示重跑 atomize。
+            self.send_json({
+                "error": "base_migration_required",
+                "detail": str(exc),
+                "retryable": False,
+            }, status=503)
+            return
+        except ClaimArtifactError as exc:
+            self.send_json({"error": str(exc), "retryable": True}, status=503)
             return
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=400)

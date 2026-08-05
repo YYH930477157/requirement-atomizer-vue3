@@ -367,6 +367,14 @@ def parse_docx_table(table: Table) -> ParsedDocxTable:
     if issues:
         reason["issues"] = issues
         reason["version"] = DOCX_TABLE_PHYSICAL_VERSION
+    # 嵌套表序号按表级全局唯一分配（2026-08-05 Kimi 高危 #2）：原 ordinal 由各单元格
+    # enumerate(..., start=1) 产生——两个单元格各含一个嵌套表会都得 N001，atomize 据此
+    # 生成 {table_id}-N001 嵌套表 ID 与其 cell ID 全部碰撞，conservation 审计 hard-fail
+    # 致整次 atomize 失败。按文档序（行/列遍历顺序）统一重编号，确保 N001/N002/... 唯一。
+    nested_refs = [
+        NestedTableRef(ref.parent_coordinate, ordinal, ref.table)
+        for ordinal, ref in enumerate(nested_refs, start=1)
+    ]
     return ParsedDocxTable(
         width=width,
         matrix=matrix,

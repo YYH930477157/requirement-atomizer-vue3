@@ -1636,7 +1636,10 @@ SYSTEM_PROMPT = (
 # 确定性后处理层(护栏/桩过滤/折叠)版本——缓存存的是**终处理结果**,指纹若只含
 # prompt 版本,护栏升级会被旧缓存整体绕过(v5 实测:种子 v4 缓存 wall=0s 结果逐字节
 # 相同,新护栏零生效)。护栏行为变更必须 bump 此值。
-EXTRACT_GUARDS_VERSION = "guards-v22"  # v22:结构化表格叶子取代整表 blob，并确定性回填多 cell 来源、适用型号、约束强度与结构化事实
+EXTRACT_GUARDS_VERSION = "guards-v23"  # v23:修复 _pack_sections/_finalize_merged/_fold_tiny_units 重建 dict 时丢失
+# table_input_mode——结构化表段经 merge_sections 后模式回落 plain_text，build_section_prompt
+# 的「结构化表格硬约束」块生产上从不注入、且 prompt 谎报输入模式。本 bump 让旧付费缓存按
+# 指纹失效重抽（section_fingerprint 含 extract_guards_version）；golden 纯 A 轨无 ai_extract 产物，零漂移。
 
 
 def section_fingerprint(section: dict[str, Any], model: str, context_key: str = "") -> str:
@@ -4172,6 +4175,35 @@ def run_ai_extract(out_dir: Path, *, route: str | None, merge_chars: int = DEFAU
             raise
 
 
+def _load_table_cell_dispositions(
+    out_dir: Path, table_cell_items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """加载 table_cell_dispositions.jsonl，带诚实的 stale-base 门（Kimi 高危 #5）。
+
+    Scheme A 下 atomize 必写此文件；有 cell_items 却无 dispositions = 旧/未完成 base，
+    绝不静默按新逻辑继续抽取。文件损坏如实报 corrupt，不再谎报 missing。注意
+    io_utils.read_jsonl 对**缺失文件返回 []** 而非抛异常——旧"指望异常触发迁移门"的
+    写法对最常见的缺失场景静默失效，故改显式 is_file 判定。
+    """
+    path = governed_artifact_path(
+        out_dir, "table_cell_dispositions.jsonl", for_write=False
+    )
+    if path.is_file():
+        try:
+            return read_jsonl(path)
+        except ValueError as exc:
+            raise ValueError(
+                "base_migration_required: table_cell_dispositions.jsonl unreadable "
+                f"(corrupt: {exc}); rerun atomize before ai-extract"
+            ) from exc
+    if table_cell_items:
+        raise ValueError(
+            "base_migration_required: table_cell_dispositions.jsonl absent while "
+            "table_cell_items.jsonl is present; rerun atomize before ai-extract"
+        )
+    return []
+
+
 def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
                            merge_chars: int = DEFAULT_MERGE_CHARS,
                            write_doc: bool = False, merge_deterministic: bool = False,
@@ -4230,19 +4262,9 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
         )
     except (OSError, ValueError):
         table_cell_items = []
-    try:
-        table_cell_dispositions = read_jsonl(
-            governed_artifact_path(
-                out_dir, "table_cell_dispositions.jsonl", for_write=False
-            )
-        )
-    except (OSError, ValueError):
-        if table_cell_items:
-            raise ValueError(
-                "base_migration_required: missing table_cell_dispositions.jsonl; "
-                "rerun atomize before ai-extract"
-            )
-        table_cell_dispositions = []
+    table_cell_dispositions = _load_table_cell_dispositions(
+        out_dir, table_cell_items
+    )
     table_cell_dispositions = _claim_projected_table_dispositions(
         out_dir,
         table_cell_items,

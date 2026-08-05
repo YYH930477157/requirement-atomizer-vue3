@@ -489,6 +489,9 @@ def _fold_tiny_units(units: list[dict[str, Any]], target_chars: int) -> list[dic
             prev["source_blocks"] = list(prev.get("source_blocks") or []) + list(u.get("source_blocks") or [])
             prev["drift_source"] = (prev.get("drift_source") or prev["text"]) + "\n" + \
                 (u.get("drift_source") or u.get("text") or "")
+            prev["table_input_mode"] = _combine_table_input_mode(
+                prev.get("table_input_mode", "plain_text"),
+                u.get("table_input_mode", "plain_text"))
             continue
         folded.append(u)
     return folded
@@ -566,6 +569,16 @@ def merge_sections(sections: list[dict[str, Any]], *, target_chars: int = DEFAUL
     return units
 
 
+def _combine_table_input_mode(*modes: str) -> str:
+    """合并后单元的表格输入模式：只要含一个结构化表段即按 ``structured_leaves`` 对待。
+
+    结构化硬约束（build_section_prompt 的「不得新增/修改数值、单位、型号、代码」块）宁可
+    多覆盖——混入散文也安全，约束只对 [TABLE_LEAF] 段起作用；绝不可漏，否则纯表段经合并后
+    模式回落 plain_text，硬约束生产上从不注入（2026-08-05 Kimi 审核发现的高危 #1）。
+    """
+    return "structured_leaves" if any(m == "structured_leaves" for m in modes) else "plain_text"
+
+
 def _pack_sections(sections: list[dict[str, Any]], *, target_chars: int,
                    split_chars: int) -> list[dict[str, Any]]:
     """组内按字数规整（原贪心逻辑）：小节拼接 ≤target；超大单节按 split_chars 拆。"""
@@ -598,19 +611,25 @@ def _pack_sections(sections: list[dict[str, Any]], *, target_chars: int,
                 merged.append(_finalize_merged({
                     "section_id": sec["section_id"], "heading": sec.get("heading", ""),
                     "texts": [chunk], "block_ids": block_ids, "source_blocks": source_blocks,
-                    "drift_source": piece}))
+                    "drift_source": piece,
+                    "table_input_mode": sec.get("table_input_mode", "plain_text")}))
             continue
         if cur is None:
             cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": block_ids, "source_blocks": source_blocks, "len": len(piece)}
+                   "texts": [piece], "block_ids": block_ids, "source_blocks": source_blocks, "len": len(piece),
+                   "table_input_mode": sec.get("table_input_mode", "plain_text")}
         elif cur["len"] + len(piece) > target_chars and cur["texts"]:
             flush()
             cur = {"section_id": sec["section_id"], "heading": sec.get("heading", ""),
-                   "texts": [piece], "block_ids": block_ids, "source_blocks": source_blocks, "len": len(piece)}
+                   "texts": [piece], "block_ids": block_ids, "source_blocks": source_blocks, "len": len(piece),
+                   "table_input_mode": sec.get("table_input_mode", "plain_text")}
         else:
             cur["texts"].append(piece)
             cur["block_ids"].extend(block_ids)
             cur.setdefault("source_blocks", []).extend(source_blocks)
+            cur["table_input_mode"] = _combine_table_input_mode(
+                cur.get("table_input_mode", "plain_text"),
+                sec.get("table_input_mode", "plain_text"))
             cur["len"] += len(piece)
     flush()
     return merged
@@ -623,7 +642,8 @@ def _finalize_merged(cur: dict[str, Any]) -> dict[str, Any]:
     return {"section_id": cur["section_id"], "heading": cur["heading"],
             "section_path": [cur["heading"]] if cur["heading"] else [],
             "text": text, "block_ids": cur["block_ids"], "source_blocks": cur.get("source_blocks", []),
-            "drift_source": drift_source}
+            "drift_source": drift_source,
+            "table_input_mode": cur.get("table_input_mode", "plain_text")}
 
 
 def _split_text(text: str, target_chars: int) -> list[str]:

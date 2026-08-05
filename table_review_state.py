@@ -488,6 +488,53 @@ def apply_table_review_decision(
             root, "table_cell_dispositions.jsonl"
         )
         _atomic_write_jsonl(disposition_path, dispositions)
+
+        # 下游传播（recompute + fold）移入 _table_review_lock 临界区，并持
+        # extraction_operation_lock 保护 ai_requirements.jsonl 读-改-写（Kimi 高危 #3）：
+        # 原在锁外执行，ThreadingHTTPServer 下跨表并发会丢更新；且 state 先落 ready、
+        # recompute 失败只进 HTTP 响应、无重试路径。现 recompute 在持久化 state 前跑，
+        # 失败把 recompute_error 写入 state/events（持久化记录诚实），下次 ready 迁移
+        # 或 claim-maintenance 自然重试。extraction_operation_lock 撞上主抽取时抛
+        # OmissionConflictError(ValueError) → 记为可重试 recompute_error，不阻塞裁决本身。
+        recomputed_artifacts = ["table_cell_dispositions.jsonl"]
+        recompute_error = ""
+        if status == "ready":
+            try:
+                from omission_actions import extraction_operation_lock
+                from table_recompute import recompute_confirmed_table_requirements
+
+                with extraction_operation_lock(root, operation="table-recompute"):
+                    recomputed_artifacts.extend(recompute_confirmed_table_requirements(
+                        root,
+                        table_id=table_id,
+                        changed_cell_ids=set(role_mapping),
+                        cells=cells,
+                        dispositions=dispositions,
+                    ))
+                claim_generation_path = governed_artifact_path(
+                    root,
+                    "claim_generation.meta.json",
+                    category="state",
+                )
+                if (
+                    "ai_requirements.jsonl" in recomputed_artifacts
+                    and claim_generation_path.is_file()
+                ):
+                    from claim_review_actions import fold_effective_ledger
+
+                    fold = fold_effective_ledger(
+                        root,
+                        actor_trigger="table-review-recompute",
+                        authority_hook_track="B",
+                    )
+                    if fold.get("ok") is not True:
+                        raise ValueError(
+                            "claim effective fold failed after table recompute: "
+                            f"{fold.get('reason') or fold.get('error') or 'unknown'}"
+                        )
+            except (OSError, TimeoutError, ValueError) as exc:
+                recompute_error = f"{type(exc).__name__}: {exc}"
+
         next_fingerprint = table_evidence_fingerprint(table_id, dispositions)
         recorded_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         after_mapping = {
@@ -513,7 +560,10 @@ def apply_table_review_decision(
             "partial": partial,
             "completed_cell_ids": completed_cell_ids,
             "remaining_cell_ids": remaining_cell_ids,
+            "recomputed_artifacts": recomputed_artifacts,
         }
+        if recompute_error:
+            state["recompute_error"] = recompute_error
         if decision_error is not None:
             state["decision_error"] = {
                 "type": type(decision_error).__name__,
@@ -542,46 +592,4 @@ def apply_table_review_decision(
         })
         _atomic_write_jsonl(events_path, events)
 
-    recomputed_artifacts = ["table_cell_dispositions.jsonl"]
-    recompute_error = ""
-    if status == "ready":
-        try:
-            from table_recompute import recompute_confirmed_table_requirements
-
-            recomputed_artifacts.extend(recompute_confirmed_table_requirements(
-                root,
-                table_id=table_id,
-                changed_cell_ids=set(role_mapping),
-                cells=cells,
-                dispositions=dispositions,
-            ))
-            claim_generation_path = governed_artifact_path(
-                root,
-                "claim_generation.meta.json",
-                category="state",
-            )
-            if (
-                "ai_requirements.jsonl" in recomputed_artifacts
-                and claim_generation_path.is_file()
-            ):
-                from claim_review_actions import fold_effective_ledger
-
-                fold = fold_effective_ledger(
-                    root,
-                    actor_trigger="table-review-recompute",
-                    authority_hook_track="B",
-                )
-                if fold.get("ok") is not True:
-                    raise ValueError(
-                        "claim effective fold failed after table recompute: "
-                        f"{fold.get('reason') or fold.get('error') or 'unknown'}"
-                    )
-        except (OSError, TimeoutError, ValueError) as exc:
-            recompute_error = f"{type(exc).__name__}: {exc}"
-
-    return {
-        **state,
-        "claim_results": claim_results,
-        "recomputed_artifacts": recomputed_artifacts,
-        **({"recompute_error": recompute_error} if recompute_error else {}),
-    }
+    return {**state, "claim_results": claim_results}
