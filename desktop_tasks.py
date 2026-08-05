@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -404,6 +405,325 @@ def import_clarification_workbook_task(
             *(str(value) for value in (checks.get("written") or [])),
             *(str(value) for value in (report.get("written") or [])),
         ])),
+    }
+
+
+# ---------------------------------------------------------------------------
+# WS4 能力补齐：verification 回写-回灌、手工入口、状态机回退、需求库、依赖推荐
+# 全程零 LLM 调用；共享状态文件写走锁 + 原子替换（review_state）。
+# ---------------------------------------------------------------------------
+_WS4_TRACE_ID_RE = re.compile(r"需求追溯ID[：:]\s*([^\n\r]+)")
+
+
+def import_verification_workbook_task(
+    out_dir: Path,
+    workbook_path: Path,
+    *,
+    actor: str = "desktop-verification",
+) -> dict[str, Any]:
+    """回灌线下改过的 software_requirements.xlsx 六列 → verification_states.jsonl。
+
+    复用 import-clarification-answers 的解析模式：按需求追溯ID（notes 列）定位行，
+    读六列单元格 → verification 子对象，CAS 指纹失配（需求已重新生成）拒绝自动合入转人工。
+    """
+    from openpyxl import load_workbook
+    from requirement_schema import fingerprint_from_cells, parse_verification_columns
+    from requirements_analysis_rules import apply_verification_override, load_requirement_index
+
+    root = out_dir.expanduser().resolve()
+    index = load_requirement_index(root)
+    workbook_path = workbook_path.expanduser().resolve()
+    wb = load_workbook(workbook_path, read_only=True, data_only=True)
+    harvested: list[tuple[str, list[Any], tuple[Any, ...]]] = []
+    try:
+        for sheet in wb.worksheets:
+            header = [str(cell.value or "").strip() for cell in next(
+                sheet.iter_rows(min_row=1, max_row=1), [])]
+            if "项目负责人确认" not in header:
+                continue
+            col = {name: idx for idx, name in enumerate(header)}
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                if not row:
+                    continue
+                notes_idx = col.get("说明、示例、注意事项", 6)
+                notes = str(row[notes_idx] if len(row) > notes_idx else "")
+                match = _WS4_TRACE_ID_RE.search(notes)
+                if not match:
+                    continue
+                rid = match.group(1).strip()
+                six = [
+                    row[col.get(name, idx)] if len(row) > col.get(name, idx) else ""
+                    for name, idx in (
+                        ("项目负责人确认", 10), ("测试负责人确认", 11), ("研发测试确认", 12),
+                        ("功能是否实现", 13), ("测试用例号", 14), ("测试是否完成", 15),
+                    )
+                ]
+                content = (
+                    row[col.get("子模块", 2)] if len(row) > col.get("子模块", 2) else "",
+                    row[col.get("描述", 3)] if len(row) > col.get("描述", 3) else "",
+                    row[col.get("客户需求章节", 8)] if len(row) > col.get("客户需求章节", 8) else "",
+                )
+                harvested.append((rid, six, content))
+    finally:
+        wb.close()
+
+    imported = stale = missing = 0
+    for rid, six, content in harvested:
+        entry = index.get(rid)
+        if not entry:
+            missing += 1
+            continue
+        # CAS：行单元格内容指纹必须与当前需求一致（失配=需求已重新生成，转人工）
+        if fingerprint_from_cells(*content) != entry["fingerprint"]:
+            stale += 1
+            continue
+        verification = parse_verification_columns(six, actor_fallback=actor)
+        # 仅当六列至少有一项非默认值才写（避免空行覆盖既有状态）
+        if verification == default_verification_for_check():
+            continue
+        apply_verification_override(root, rid, verification, actor=actor,
+                                    evidence_fingerprint=entry["fingerprint"])
+        imported += 1
+    return {
+        "kind": "verification_import",
+        "out_dir": str(root),
+        "imported": imported,
+        "stale": stale,
+        "missing": missing,
+        "written": ["verification_states.jsonl"] if imported else [],
+    }
+
+
+def default_verification_for_check() -> Any:
+    """空 verification（用于回灌跳过全空行）。延迟导入避免顶层依赖。"""
+    from requirement_schema import default_verification
+    return default_verification()
+
+
+def set_verification_task(
+    out_dir: Path,
+    requirement_id: str,
+    *,
+    implemented: str | None = None,
+    test_completed: bool | None = None,
+    test_case_ids: str | None = None,
+    confirm_pm: bool | None = None,
+    confirm_tl: bool | None = None,
+    confirm_dt: bool | None = None,
+    actor: str = "desktop-verification",
+) -> dict[str, Any]:
+    """直接写入一条 verification 覆盖（CLI 数据入口；六列字段分散为 flag）。"""
+    from requirement_schema import IMPLEMENTED_VALUES, default_verification, normalize_verification
+    from requirements_analysis_rules import apply_verification_override
+
+    root = out_dir.expanduser().resolve()
+    patch = default_verification()
+    if implemented is not None:
+        if implemented not in IMPLEMENTED_VALUES:
+            raise ValueError(f"非法 implemented 值：{implemented}（可选 {IMPLEMENTED_VALUES}）")
+        patch["implemented"] = implemented
+    if test_completed is not None:
+        patch["test_completed"] = bool(test_completed)
+    if test_case_ids is not None:
+        patch["test_case_ids"] = [item.strip() for item in re.split(r"[;\n,、 ]+", test_case_ids) if item.strip()]
+    if confirm_pm is not None:
+        patch["project_manager_confirm"] = {"confirmed": bool(confirm_pm), "by": actor, "at": ""}
+    if confirm_tl is not None:
+        patch["test_lead_confirm"] = {"confirmed": bool(confirm_tl), "by": actor, "at": ""}
+    if confirm_dt is not None:
+        patch["dev_test_confirm"] = {"confirmed": bool(confirm_dt), "by": actor, "at": ""}
+    record = apply_verification_override(root, requirement_id, normalize_verification(patch), actor=actor)
+    return {
+        "kind": "verification_set",
+        "out_dir": str(root),
+        "requirement_id": requirement_id,
+        "verification": record.get("verification"),
+        "lifecycle_state": record.get("lifecycle_state"),
+        "written": ["verification_states.jsonl"],
+    }
+
+
+def rollback_requirement_task(
+    out_dir: Path,
+    requirement_id: str,
+    target_state: str,
+    *,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    """人工回退需求生命周期（唯一使状态下落的路径；回退事件 append-only 留痕）。"""
+    from requirements_analysis_rules import rollback_requirement_lifecycle
+
+    root = out_dir.expanduser().resolve()
+    record = rollback_requirement_lifecycle(root, requirement_id, target_state,
+                                            actor=actor, reason=reason)
+    return {
+        "kind": "requirement_rollback",
+        "out_dir": str(root),
+        "requirement_id": requirement_id,
+        "lifecycle_state": record.get("lifecycle_state"),
+        "written": ["verification_states.jsonl", "requirement_lifecycle_events.jsonl"],
+    }
+
+
+def add_manual_requirement_task(
+    out_dir: Path,
+    *,
+    objective: str,
+    behaviors: str | None = None,
+    module: str = "",
+    ownership: str = "",
+    priority: str = "P1",
+    notes: str = "",
+    actor: str = "desktop-manual",
+) -> dict[str, Any]:
+    """手工建需求入口（provenance=manual，追溯列留空不伪引）。走完全相同下游。"""
+    from requirements_analysis_rules import record_manual_requirement
+
+    root = out_dir.expanduser().resolve()
+    if isinstance(behaviors, (list, tuple)):
+        behavior_list = [str(item).strip() for item in behaviors if str(item).strip()]
+    elif behaviors:
+        behavior_list = [item.strip() for item in str(behaviors).split(",") if item.strip()]
+    else:
+        behavior_list = []
+    record = record_manual_requirement(
+        root, objective=objective, behaviors=behavior_list, module=module,
+        ownership=ownership, priority=priority, notes=notes, actor=actor,
+    )
+    return {
+        "kind": "manual_requirement",
+        "out_dir": str(root),
+        "functional_requirement_id": record.get("functional_requirement_id"),
+        "written": ["manual_requirements.jsonl"],
+    }
+
+
+def build_requirement_library_task(
+    project_dirs: list[Path],
+    output_path: Path,
+) -> dict[str, Any]:
+    """汇总各项目 functional_requirements 为带项目元数据的 JSONL 检索库（不引入数据库）。"""
+    import json as _json
+    from requirement_schema import library_entry_from_requirement
+
+    output_path = output_path.expanduser().resolve()
+    entries: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    for project_dir in project_dirs:
+        root = Path(project_dir).expanduser().resolve()
+        synth_path = root / "functional_requirements.json"
+        if not synth_path.exists():
+            sources.append({"project_dir": str(root), "imported": 0, "reason": "functional_requirements.json 缺失"})
+            continue
+        try:
+            payload = _json.loads(synth_path.read_text(encoding="utf-8"))
+        except (OSError, _json.JSONDecodeError):
+            payload = {}
+        items = payload.get("items") if isinstance(payload, dict) else None
+        project_name = str(payload.get("source") or root.name) if isinstance(payload, dict) else root.name
+        created_at = ""
+        prov = payload.get("provenance") if isinstance(payload, dict) else None
+        if isinstance(prov, dict):
+            created_at = str(prov.get("generated_at") or "")
+        count = 0
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            entries.append(library_entry_from_requirement(
+                item, project=project_name, doc_source=str(synth_path), created_at=created_at))
+            count += 1
+        sources.append({"project_dir": str(root), "project": project_name, "imported": count})
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output_path.with_suffix(output_path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+        for entry in entries:
+            handle.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+    os.replace(tmp, output_path)
+    return {
+        "kind": "requirement_library",
+        "library": str(output_path),
+        "entries": len(entries),
+        "sources": sources,
+    }
+
+
+def search_requirements_task(library_path: Path, query: str, *, limit: int = 20) -> dict[str, Any]:
+    """词面集合重叠度召回历史相似需求（明确不引入向量检索与 LLM 相似度）。"""
+    import json as _json
+    from requirement_schema import search_requirement_library
+
+    library_path = library_path.expanduser().resolve()
+    if not library_path.exists():
+        raise FileNotFoundError(f"需求库不存在：{library_path}（先 build-requirement-library）")
+    library: list[dict[str, Any]] = []
+    with library_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                library.append(_json.loads(line))
+            except _json.JSONDecodeError:
+                continue
+    results = search_requirement_library(query, library, limit=limit)
+    return {
+        "kind": "requirement_search",
+        "library": str(library_path),
+        "query": query,
+        "matches": len(results),
+        "results": results,
+    }
+
+
+def recommend_dependencies_task(out_dir: Path) -> dict[str, Any]:
+    """对当前项目跑确定性依赖/父子候选推荐（只生产值，不动 schema）。"""
+    from requirements_analysis_rules import dependency_candidates_for_project
+    from review_state import read_dependency_decisions
+
+    root = out_dir.expanduser().resolve()
+    candidates = dependency_candidates_for_project(root)
+    decided = {(d.get("from"), d.get("to"), d.get("kind")): d
+               for d in read_dependency_decisions(root)}
+    rendered = []
+    for candidate in candidates:
+        key = (candidate.get("from"), candidate.get("to"), candidate.get("kind"))
+        candidate = dict(candidate)
+        candidate["status"] = "accepted" if key in decided else "pending"
+        rendered.append(candidate)
+    return {
+        "kind": "dependency_candidates",
+        "out_dir": str(root),
+        "candidates": rendered,
+        "pending": sum(1 for c in rendered if c["status"] == "pending"),
+    }
+
+
+def decide_dependency_task(
+    out_dir: Path,
+    *,
+    frm: str,
+    to: str,
+    kind: str,
+    accepted: bool,
+    actor: str = "desktop-dependency",
+    reason: str = "",
+) -> dict[str, Any]:
+    """依赖候选裁决：接受才写库；拒绝不落库。"""
+    from requirement_schema import DEPENDENCY_KINDS
+    from requirements_analysis_rules import apply_dependency_decision
+
+    if kind not in DEPENDENCY_KINDS:
+        raise ValueError(f"非法依赖类型：{kind}（可选 {DEPENDENCY_KINDS}）")
+    root = out_dir.expanduser().resolve()
+    result = apply_dependency_decision(
+        root, {"from": frm, "to": to, "kind": kind}, accepted=accepted, actor=actor, reason=reason,
+    )
+    return {
+        "kind": "dependency_decision",
+        "out_dir": str(root),
+        **result,
+        "written": ["dependency_decisions.jsonl"] if result.get("written") else [],
     }
 
 
@@ -1948,6 +2268,72 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     import_parser.add_argument("--out", type=Path, required=True)
     import_parser.add_argument("--file", type=Path, required=True, help="HTML 导出的裁决 JSON")
 
+    # --- WS4 能力补齐子命令（全程零 LLM 调用）---
+    verify_import_parser = subparsers.add_parser(
+        "import-verification",
+        help="回灌线下改过的 software_requirements.xlsx 六列 → verification_states.jsonl")
+    verify_import_parser.add_argument("--out", type=Path, required=True)
+    verify_import_parser.add_argument("--file", type=Path, required=True)
+    verify_import_parser.add_argument("--actor", default="desktop-verification")
+
+    verify_set_parser = subparsers.add_parser(
+        "set-verification", help="直接写入一条需求 verification 覆盖（状态机前进迁移）")
+    verify_set_parser.add_argument("--out", type=Path, required=True)
+    verify_set_parser.add_argument("--requirement-id", required=True)
+    verify_set_parser.add_argument("--implemented", default=None,
+                                   choices=["not_started", "in_progress", "done"])
+    verify_set_parser.add_argument("--test-completed", default=None, choices=["true", "false"])
+    verify_set_parser.add_argument("--test-case-ids", default=None, help="分号/逗号分隔的测试用例号")
+    verify_set_parser.add_argument("--confirm-pm", default=None, choices=["true", "false"])
+    verify_set_parser.add_argument("--confirm-tl", default=None, choices=["true", "false"])
+    verify_set_parser.add_argument("--confirm-dt", default=None, choices=["true", "false"])
+    verify_set_parser.add_argument("--actor", default="desktop-verification")
+
+    rollback_parser = subparsers.add_parser(
+        "rollback-requirement", help="人工回退需求生命周期（回退事件 append-only 留痕）")
+    rollback_parser.add_argument("--out", type=Path, required=True)
+    rollback_parser.add_argument("--requirement-id", required=True)
+    rollback_parser.add_argument("--target", required=True,
+                                 choices=["draft", "confirmed", "implemented", "verified"])
+    rollback_parser.add_argument("--actor", required=True)
+    rollback_parser.add_argument("--reason", required=True)
+
+    manual_parser = subparsers.add_parser(
+        "add-manual-requirement", help="手工建需求（provenance=manual，追溯列留空不伪引）")
+    manual_parser.add_argument("--out", type=Path, required=True)
+    manual_parser.add_argument("--objective", required=True)
+    manual_parser.add_argument("--behaviors", default=None, help="逗号分隔的行为列表")
+    manual_parser.add_argument("--module", default="")
+    manual_parser.add_argument("--ownership", default="", choices=["", "software", "hardware", "co_design"])
+    manual_parser.add_argument("--priority", default="P1")
+    manual_parser.add_argument("--notes", default="")
+    manual_parser.add_argument("--actor", default="desktop-manual")
+
+    lib_build_parser = subparsers.add_parser(
+        "build-requirement-library", help="汇总各项目 functional_requirements 为 JSONL 检索库")
+    lib_build_parser.add_argument("--projects", type=Path, nargs="+", required=True)
+    lib_build_parser.add_argument("--library", type=Path, required=True, help="输出的检索库 JSONL 路径")
+
+    lib_search_parser = subparsers.add_parser(
+        "search-requirements", help="词面集合重叠度召回历史相似需求")
+    lib_search_parser.add_argument("--library", type=Path, required=True)
+    lib_search_parser.add_argument("--query", required=True)
+    lib_search_parser.add_argument("--limit", type=int, default=20)
+
+    dep_rec_parser = subparsers.add_parser(
+        "recommend-dependencies", help="确定性依赖/父子候选推荐（只生产值，不动 schema）")
+    dep_rec_parser.add_argument("--out", type=Path, required=True)
+
+    dep_dec_parser = subparsers.add_parser(
+        "decide-dependency", help="依赖候选裁决（接受才写库，拒绝不落库）")
+    dep_dec_parser.add_argument("--out", type=Path, required=True)
+    dep_dec_parser.add_argument("--from", dest="from_id", required=True)
+    dep_dec_parser.add_argument("--to", required=True)
+    dep_dec_parser.add_argument("--kind", required=True, choices=["depend", "exclude", "refine"])
+    dep_dec_parser.add_argument("--accept", choices=["true", "false"], default="true")
+    dep_dec_parser.add_argument("--actor", default="desktop-dependency")
+    dep_dec_parser.add_argument("--reason", default="")
+
     claim_acceptance_parser = subparsers.add_parser("claim-shadow-acceptance")
     claim_acceptance_parser.add_argument("--input", type=Path, required=True)
     claim_acceptance_parser.add_argument("--output", type=Path)
@@ -2316,6 +2702,36 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "import-ai-decisions":
             payload = import_ai_decisions_task(args.out, args.file)
+        elif args.command == "import-verification":
+            payload = import_verification_workbook_task(args.out, args.file, actor=args.actor)
+        elif args.command == "set-verification":
+            payload = set_verification_task(
+                args.out, args.requirement_id,
+                implemented=args.implemented,
+                test_completed=(None if args.test_completed is None else args.test_completed == "true"),
+                test_case_ids=args.test_case_ids,
+                confirm_pm=(None if args.confirm_pm is None else args.confirm_pm == "true"),
+                confirm_tl=(None if args.confirm_tl is None else args.confirm_tl == "true"),
+                confirm_dt=(None if args.confirm_dt is None else args.confirm_dt == "true"),
+                actor=args.actor,
+            )
+        elif args.command == "rollback-requirement":
+            payload = rollback_requirement_task(
+                args.out, args.requirement_id, args.target, actor=args.actor, reason=args.reason)
+        elif args.command == "add-manual-requirement":
+            payload = add_manual_requirement_task(
+                args.out, objective=args.objective, behaviors=args.behaviors, module=args.module,
+                ownership=args.ownership, priority=args.priority, notes=args.notes, actor=args.actor)
+        elif args.command == "build-requirement-library":
+            payload = build_requirement_library_task(args.projects, args.library)
+        elif args.command == "search-requirements":
+            payload = search_requirements_task(args.library, args.query, limit=args.limit)
+        elif args.command == "recommend-dependencies":
+            payload = recommend_dependencies_task(args.out)
+        elif args.command == "decide-dependency":
+            payload = decide_dependency_task(
+                args.out, frm=args.from_id, to=args.to, kind=args.kind,
+                accepted=args.accept == "true", actor=args.actor, reason=args.reason)
         elif args.command == "claim-ledger-fold":
             from claim_review_actions import fold_effective_ledger
 

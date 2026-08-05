@@ -4,6 +4,7 @@ import argparse
 import hmac
 import json
 import math
+import os
 import re
 from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -444,6 +445,15 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(payload)
             return
+        if parsed.path == "/verification-states":
+            self.handle_verification_states_get()
+            return
+        if parsed.path == "/dependency-candidates":
+            self.handle_dependency_candidates_get()
+            return
+        if parsed.path == "/requirement-library/search":
+            self.handle_requirement_library_search(params)
+            return
         self.send_error(404, "Unknown endpoint")
 
     def do_POST(self) -> None:
@@ -491,6 +501,18 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/clarification-check-actions/batch":
             self.handle_clarification_check_batch()
+            return
+        if parsed.path == "/verification-actions":
+            self.handle_verification_action()
+            return
+        if parsed.path == "/requirement-rollback":
+            self.handle_requirement_rollback()
+            return
+        if parsed.path == "/manual-requirement":
+            self.handle_manual_requirement()
+            return
+        if parsed.path == "/dependency-decisions":
+            self.handle_dependency_decision()
             return
         if parsed.path != "/review-actions":
             self.send_error(404, "Unknown endpoint")
@@ -1368,6 +1390,173 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         except (TimeoutError, OSError) as exc:
             self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        self.send_json(result)
+
+    def handle_verification_states_get(self) -> None:
+        """WS4：读全部 verification 覆盖记录（含四态生命周期）。只读，不发布。"""
+        from review_state import read_verification_states
+        try:
+            states = read_verification_states(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "verification_state_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"schema": "verification-states/v1", "states": list(states.values()),
+                        "total": len(states)})
+
+    def handle_dependency_candidates_get(self) -> None:
+        """WS4：确定性依赖/父子候选推荐（含已裁决状态）。只读。"""
+        try:
+            from desktop_tasks import recommend_dependencies_task
+            result = recommend_dependencies_task(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "dependency_candidates_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json(result)
+
+    def handle_requirement_library_search(self, params: dict) -> None:
+        """WS4：词面集合重叠度召回历史相似需求（零向量、零 LLM）。"""
+        query = (params.get("q") or params.get("query") or [""])[0]
+        limit_raw = (params.get("limit") or ["20"])[0]
+        try:
+            limit = max(1, min(100, int(limit_raw)))
+        except ValueError:
+            limit = 20
+        library_path = os.environ.get("RATOMIZER_REQUIREMENT_LIBRARY", "").strip()
+        if not library_path:
+            self.send_json({"schema": "requirement-search/v1", "query": query,
+                            "matches": 0, "results": [],
+                            "note": "未配置 RATOMIZER_REQUIREMENT_LIBRARY，检索库为空"})
+            return
+        try:
+            from desktop_tasks import search_requirements_task
+            result = search_requirements_task(Path(library_path), query, limit=limit)
+        except FileNotFoundError as exc:
+            self.send_json({"error": "requirement_library_missing", "detail": str(exc)}, status=404)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "requirement_search_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json(result)
+
+    def handle_verification_action(self) -> None:
+        """WS4：写入 verification 覆盖（reviewer_override 通道 + CAS + 状态机前进迁移）。"""
+        from requirement_schema import normalize_verification
+        from requirements_analysis_rules import apply_verification_override
+        from review_state import VerificationStateConflict
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        requirement_id = str(payload.get("requirement_id") or "").strip()
+        if not requirement_id:
+            self.send_json({"error": "requirement_id is required"}, status=400)
+            return
+        verification = normalize_verification(payload.get("verification") or payload)
+        actor = str(payload.get("actor") or "").strip() or "api-verification"
+        expected = payload.get("expected_evidence_fingerprint")
+        try:
+            record = apply_verification_override(
+                self.output_dir, requirement_id, verification, actor=actor,
+                expected_evidence_fingerprint=str(expected) if expected is not None else None)
+        except VerificationStateConflict as exc:
+            self.send_json({"error": "verification_conflict", "detail": str(exc),
+                            "requirement_id": exc.requirement_id,
+                            "current_evidence_fingerprint": exc.current_fingerprint,
+                            "needs_reconfirmation": True}, status=409)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "verification_state_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"requirement_id": requirement_id,
+                        "verification": record.get("verification"),
+                        "lifecycle_state": record.get("lifecycle_state"),
+                        "written": ["verification_states.jsonl"]})
+
+    def handle_requirement_rollback(self) -> None:
+        """WS4：人工回退需求生命周期（唯一使状态下落的路径；回退事件 append-only 留痕）。"""
+        from requirements_analysis_rules import rollback_requirement_lifecycle
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        requirement_id = str(payload.get("requirement_id") or "").strip()
+        target = str(payload.get("target") or payload.get("target_state") or "").strip()
+        actor = str(payload.get("actor") or "").strip()
+        reason = str(payload.get("reason") or "").strip()
+        if not requirement_id or not target or not actor or not reason:
+            self.send_json({"error": "requirement_id/target/actor/reason 均必填"}, status=400)
+            return
+        try:
+            record = rollback_requirement_lifecycle(self.output_dir, requirement_id, target,
+                                                    actor=actor, reason=reason)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "verification_state_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"requirement_id": requirement_id,
+                        "lifecycle_state": record.get("lifecycle_state"),
+                        "written": ["verification_states.jsonl", "requirement_lifecycle_events.jsonl"]})
+
+    def handle_manual_requirement(self) -> None:
+        """WS4：手工建需求入口（provenance=manual，追溯列留空不伪引）。"""
+        from requirements_analysis_rules import record_manual_requirement
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        objective = str(payload.get("objective") or "").strip()
+        if not objective:
+            self.send_json({"error": "objective is required"}, status=400)
+            return
+        behaviors = payload.get("behaviors") or []
+        if not isinstance(behaviors, list):
+            behaviors = [behaviors]
+        try:
+            record = record_manual_requirement(
+                self.output_dir, objective=objective,
+                behaviors=[str(b).strip() for b in behaviors if str(b).strip()],
+                module=str(payload.get("module") or "").strip(),
+                ownership=str(payload.get("ownership") or "").strip(),
+                priority=str(payload.get("priority") or "P1").strip(),
+                notes=str(payload.get("notes") or "").strip(),
+                actor=str(payload.get("actor") or "api-manual").strip())
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "manual_requirement_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"functional_requirement_id": record.get("functional_requirement_id"),
+                        "written": ["manual_requirements.jsonl"]})
+
+    def handle_dependency_decision(self) -> None:
+        """WS4：依赖候选裁决（接受才写库，拒绝不落库）。"""
+        from requirement_schema import DEPENDENCY_KINDS
+        from requirements_analysis_rules import apply_dependency_decision
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        frm = str(payload.get("from") or "").strip()
+        to = str(payload.get("to") or "").strip()
+        kind = str(payload.get("kind") or "").strip()
+        if not frm or not to or kind not in DEPENDENCY_KINDS:
+            self.send_json({"error": f"from/to 必填，kind 必须为 {DEPENDENCY_KINDS}"}, status=400)
+            return
+        accepted = bool(payload.get("accept", payload.get("accepted", True)))
+        try:
+            result = apply_dependency_decision(
+                self.output_dir, {"from": frm, "to": to, "kind": kind}, accepted=accepted,
+                actor=str(payload.get("actor") or "api-dependency").strip(),
+                reason=str(payload.get("reason") or "").strip())
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "dependency_decision_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
             return
         self.send_json(result)
 

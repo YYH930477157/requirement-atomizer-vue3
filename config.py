@@ -67,6 +67,10 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # 增量重跑默认关，stage_is_reusable 的 bool 契约不变。新机制只交付工程正确性，不切默认行为。
     EnvVar("RATOMIZER_LLM_BUDGET", "0", "文档级统一预算单开关（=1 启用 llm_budget.LLMBudgetLedger：每份文档一份预算单，总调用数/token 上限+各环节子预算+累计消耗，全部 LLM 调用从同一份扣减，耗尽即降级 stub 且 provenance 如实、功能直抽产出强制文档级 NEEDS WORK；默认 0=关闭，llm_client 钩子不激活，既有行为逐字节不变）", False),
     EnvVar("RATOMIZER_INCREMENTAL_RERUN", "0", "章节级增量重跑开关（=1 启用条款候选哈希比对：重解析后逐候选比内容哈希，仅变化候选及其映射功能需求进重跑队列，与全量重跑共用同一 hash_json 幂等键空间；默认 0=全量重跑，desktop_tasks.stage_is_reusable 行为不变）", False),
+    # --- WS4 能力补齐（verification 六列状态 + 四态状态机 + 弱词扫描 + 手工入口 + 需求库 + 依赖推荐）---
+    # 全部默认非侵入：弱词词典缺省走内置词表；需求库/弱词 YAML 路径未配置时不激活对应加载。
+    EnvVar("RATOMIZER_WEAK_WORDS_PATH", "", "弱词词典 YAML 路径（覆盖内置词表；未配置=用内置 适当/尽快/灵活/等 词表，与 domain_packs 词表惯例一致）", False),
+    EnvVar("RATOMIZER_REQUIREMENT_LIBRARY", "", "需求库 JSONL 路径（各项目功能需求汇总检索库；API 词面检索缺省读此；未配置=API 检索返回空）", False),
     # --- 知识/资产路径 ---
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),
     EnvVar("RATOMIZER_ADJUDICATION_BANK", "", "裁决样本库 JSON 路径（专家 accepted 需求作 few-shot 注入富化；缺省不注入）", False),

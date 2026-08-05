@@ -680,3 +680,160 @@ def review_event_key(event: dict[str, Any]) -> tuple[str, str, str, str, str]:
         str(event.get("actor") or ""),
         str(event.get("reason") or ""),
     )
+
+
+# ===========================================================================
+# WS4 共享状态 I/O：verification_states / requirement_lifecycle_events /
+# manual_requirements / dependency_decisions。
+# ---------------------------------------------------------------------------
+# 全部走 governed state 路径 + 跨进程锁（process_file_lock）+ 原子替换（带
+# PermissionError 重试），与既有 review_states.jsonl / clarification_answers 同纪律。
+# 读路径容错（坏行跳过），写路径锁内整文件原子替换或 append-only。
+# ===========================================================================
+VERIFICATION_STATES_FILE = "verification_states.jsonl"
+VERIFICATION_STATES_LOCK = "verification_states.lock"
+REQUIREMENT_LIFECYCLE_EVENTS_FILE = "requirement_lifecycle_events.jsonl"
+MANUAL_REQUIREMENTS_FILE = "manual_requirements.jsonl"
+DEPENDENCY_DECISIONS_FILE = "dependency_decisions.jsonl"
+
+
+class VerificationStateConflict(ValueError):
+    """verification 回写 CAS 失配：需求内容已变化，拒绝自动合入转人工。"""
+
+    def __init__(self, message: str, *, requirement_id: str, current_fingerprint: str) -> None:
+        super().__init__(message)
+        self.requirement_id = str(requirement_id)
+        self.current_fingerprint = str(current_fingerprint)
+
+
+@contextmanager
+def verification_state_lock(out_dir: Path, *, timeout_s: float = 10.0) -> Iterator[None]:
+    """verification/手工/依赖状态文件的跨进程锁（独立锁文件，避免与 review_states 抢锁）。"""
+    root = out_dir.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    process_lock = _process_lock_for(root)
+    with process_lock:
+        lock_path = governed_artifact_path(root, VERIFICATION_STATES_LOCK, category="state")
+        with process_file_lock(lock_path, timeout_s=timeout_s, label="verification state lock"):
+            yield
+
+
+def _read_jsonl_tolerant(path: Path) -> list[dict[str, Any]]:
+    """容错读 JSONL：坏行跳过而非整文件崩（与 clarification answers 同纪律）。"""
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def _verification_states_path(out_dir: Path) -> Path:
+    return governed_artifact_path(out_dir, VERIFICATION_STATES_FILE, category="state")
+
+
+def read_verification_states(out_dir: Path) -> dict[str, dict[str, Any]]:
+    """读全部 verification 覆盖记录，按 requirement_id 索引（只读路径，for_write=False）。"""
+    path = governed_artifact_path(Path(out_dir).expanduser().resolve(),
+                                  VERIFICATION_STATES_FILE, category="state", for_write=False)
+    states: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl_tolerant(path):
+        rid = str(row.get("requirement_id") or "").strip()
+        if rid:
+            states[rid] = row
+    return states
+
+
+def _write_verification_states_unlocked(path: Path, states: dict[str, dict[str, Any]]) -> None:
+    rows = sorted(states.values(), key=lambda row: str(row.get("requirement_id") or ""))
+    _atomic_write_jsonl(path, rows)
+
+
+def upsert_verification_state(
+    out_dir: Path,
+    requirement_id: str,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """锁内读-合并-原子写一条 verification 记录。返回落盘后的完整记录。"""
+    root = Path(out_dir).expanduser().resolve()
+    rid = str(requirement_id or "").strip()
+    if not rid:
+        raise ValueError("requirement_id is required for verification state")
+    with verification_state_lock(root):
+        path = _verification_states_path(root)
+        states = {row.get("requirement_id"): row for row in _read_jsonl_tolerant(path)}
+        merged = dict(states.get(rid) or {})
+        merged.update(record)
+        merged["requirement_id"] = rid
+        states[rid] = merged
+        _write_verification_states_unlocked(path, states)
+    return merged
+
+
+def read_lifecycle_events(out_dir: Path) -> list[dict[str, Any]]:
+    path = governed_artifact_path(Path(out_dir).expanduser().resolve(),
+                                  REQUIREMENT_LIFECYCLE_EVENTS_FILE, category="state", for_write=False)
+    return _read_jsonl_tolerant(path)
+
+
+def append_lifecycle_event(out_dir: Path, event: dict[str, Any]) -> None:
+    """append-only 生命周期事件（前进/回退均留痕）。锁内追加。"""
+    root = Path(out_dir).expanduser().resolve()
+    with verification_state_lock(root):
+        path = governed_artifact_path(root, REQUIREMENT_LIFECYCLE_EVENTS_FILE, category="state")
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def read_manual_requirements(out_dir: Path) -> list[dict[str, Any]]:
+    path = governed_artifact_path(Path(out_dir).expanduser().resolve(),
+                                  MANUAL_REQUIREMENTS_FILE, category="state", for_write=False)
+    return _read_jsonl_tolerant(path)
+
+
+def append_manual_requirement(out_dir: Path, record: dict[str, Any]) -> None:
+    """锁内追加一条手工需求记录（append-only，去重由调用方保证幂等键）。"""
+    root = Path(out_dir).expanduser().resolve()
+    with verification_state_lock(root):
+        path = governed_artifact_path(root, MANUAL_REQUIREMENTS_FILE, category="state")
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def read_dependency_decisions(out_dir: Path) -> list[dict[str, Any]]:
+    path = governed_artifact_path(Path(out_dir).expanduser().resolve(),
+                                  DEPENDENCY_DECISIONS_FILE, category="state", for_write=False)
+    return _read_jsonl_tolerant(path)
+
+
+def upsert_dependency_decision(out_dir: Path, decision: dict[str, Any]) -> dict[str, Any]:
+    """锁内读-合并-原子写一条依赖裁决（接受才写库，拒绝不落库由调用方控制）。"""
+    root = Path(out_dir).expanduser().resolve()
+    key_fields = (
+        str(decision.get("from") or ""),
+        str(decision.get("to") or ""),
+        str(decision.get("kind") or ""),
+    )
+    if not all(key_fields):
+        raise ValueError("dependency decision requires from/to/kind")
+    with verification_state_lock(root):
+        path = governed_artifact_path(root, DEPENDENCY_DECISIONS_FILE, category="state")
+        rows = _read_jsonl_tolerant(path)
+        index = {
+            (str(row.get("from") or ""), str(row.get("to") or ""), str(row.get("kind") or "")): row
+            for row in rows
+        }
+        existing = dict(index.get(key_fields) or {})
+        existing.update(decision)
+        index[key_fields] = existing
+        _atomic_write_jsonl(path, list(index.values()))
+    return index[key_fields]

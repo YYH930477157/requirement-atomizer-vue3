@@ -7,7 +7,19 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from requirements_analysis_schema import OWNERSHIP_CO_DESIGN, OWNERSHIP_SOFTWARE
+from requirement_schema import (
+    MANUAL_MODULE_DEFAULT,
+    PROVENANCE_MANUAL,
+    requirement_identity,
+    verification_excel_columns,
+)
+from requirements_analysis_rules import classify_ownership
+from requirements_analysis_schema import (
+    OWNERSHIP_CO_DESIGN,
+    OWNERSHIP_HARDWARE,
+    OWNERSHIP_SOFTWARE,
+)
+from review_state import read_manual_requirements, read_verification_states
 from text_normalize import formula_safe
 
 # WP2 兜底渲染（2026-07-23 用户裁定）：被标"待澄清"的字段若留有原始候选
@@ -77,13 +89,77 @@ def _safe_cell(value: Any) -> Any:
     return formula_safe(value)
 
 
+def _shape_manual_item(record: dict[str, Any]) -> dict[str, Any]:
+    """把手工需求记录塑形为分析项形态（与 _excel_row/_notes_text 字段对齐）。
+
+    归属走确定性 classify_ownership（按其 objective/behaviors 文本）；显式 ownership_override
+    走 reviewer_override 通道覆盖。source_quote/source_section 留空——追溯列以空明示无文档来源。
+    """
+    objective = str(record.get("objective") or record.get("title") or "").strip()
+    behaviors = [str(value).strip() for value in (record.get("behaviors") or []) if str(value).strip()]
+    classified = classify_ownership({
+        "title": record.get("title") or objective,
+        "description": record.get("description") or objective,
+        "requirement": objective,
+        "module": record.get("module") or MANUAL_MODULE_DEFAULT,
+        "source_quote": "",
+        "labels": record.get("labels") or [],
+    })
+    item: dict[str, Any] = dict(classified)
+    ownership_override = str(record.get("ownership_override") or "").strip()
+    if ownership_override in (OWNERSHIP_SOFTWARE, OWNERSHIP_CO_DESIGN, OWNERSHIP_HARDWARE):
+        item["ownership"] = ownership_override
+        item["ownership_source"] = "reviewer_override"
+    item.update({
+        "analysis_id": str(record.get("functional_requirement_id") or ""),
+        "functional_requirement_id": str(record.get("functional_requirement_id") or ""),
+        "module": str(record.get("module") or MANUAL_MODULE_DEFAULT),
+        "submodule": str(record.get("module") or MANUAL_MODULE_DEFAULT),
+        "description": objective or str(record.get("title") or ""),
+        "requirement": objective,
+        "software_requirement_text": objective or str(record.get("title") or ""),
+        "source_section": "",
+        "source_requirement_ids": [],
+        "source_quote": "",
+        "objective": objective,
+        "behaviors": behaviors,
+        "labels": list(record.get("labels") or []),
+        "notes": [],
+        "manual_actor": str(record.get("manual_actor") or ""),
+        "_manual": True,
+    })
+    return item
+
+
+def _enrich_items_for_export(items: list[dict[str, Any]], out_dir: Path) -> list[dict[str, Any]]:
+    """合并 verification 覆盖 + 手工需求，返回新列表（不修改调用方 items，避免污染 engineering_analysis.json）。
+
+    每条带 _trace_id（需求追溯ID，回灌按行定位用）与 verification 子对象。
+    """
+    root = Path(out_dir).expanduser().resolve()
+    verification_overlay = read_verification_states(root)
+    enriched: list[dict[str, Any]] = []
+    for item in items:
+        copy = dict(item)
+        trace_id = requirement_identity(item)
+        copy["_trace_id"] = trace_id
+        record = verification_overlay.get(trace_id)
+        copy["verification"] = record.get("verification") if isinstance(record, dict) else None
+        enriched.append(copy)
+    # 手工需求走完全相同下游：归属/澄清/导出/状态机
+    for manual in read_manual_requirements(root):
+        enriched.append(_shape_manual_item(manual))
+    return enriched
+
+
 def write_software_requirements_xlsx(items: list[dict[str, Any]], output_path: Path) -> Path:
     output_path = Path(output_path)
     wb = Workbook()
     wb.remove(wb.active)
 
+    enriched = _enrich_items_for_export(items, output_path.parent)
     grouped: dict[str, list[dict[str, Any]]] = {}
-    for item in items:
+    for item in enriched:
         if item.get("ownership") not in _SOFTWARE_OWNERSHIPS:
             continue
         module = str(item.get("module") or "unmapped")
@@ -111,6 +187,10 @@ def _excel_row(index: int, item: dict[str, Any]) -> list[Any]:
     if not source_chapter:
         source_chapter = ",".join(str(value) for value in item.get("source_requirement_ids") or [])
 
+    # 六列数据源从空字符串改读 verification 子对象（与导出 xlsx 六列一一对应、列位/样式不变）
+    pm, tl, dt, implemented, test_case_ids, test_completed = verification_excel_columns(
+        item.get("verification"))
+
     return [
         "",
         index,
@@ -119,15 +199,15 @@ def _excel_row(index: int, item: dict[str, Any]) -> list[Any]:
         "",
         clarify_display_text(item, "software_requirement_text") or item.get("requirement") or "",
         _notes_text(item),
-        "是",
+        "" if item.get("_manual") else "是",
         source_chapter,
         "是" if item.get("ownership") == OWNERSHIP_CO_DESIGN else "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
+        pm,
+        tl,
+        dt,
+        implemented,
+        test_case_ids,
+        test_completed,
     ]
 
 
@@ -208,6 +288,13 @@ def _notes_text(item: dict[str, Any]) -> str:
     if source_quote:
         notes.append(f"原文：{source_quote}")
     notes.extend(f"待确认：{value}" for value in item.get("open_questions") or [])
+    # WS4 追溯：需求追溯ID（回灌按行定位）+ 手工来源明示
+    trace_id = str(item.get("_trace_id") or item.get("functional_requirement_id")
+                   or item.get("analysis_id") or "").strip()
+    if trace_id:
+        notes.append(f"需求追溯ID：{trace_id}")
+    if item.get("_manual"):
+        notes.append("来源：手工录入（无文档来源）")
     return "\n".join(notes)
 
 
