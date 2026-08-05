@@ -371,6 +371,8 @@ _CELL_STRUCTURAL_REVIEW_REASONS = frozenset({
     "unsignaled_table_cell",
     "rejected_matrix_marker_cell",
     "untyped_colon_spec_cell",
+    "parse_incomplete_table_cell",
+    "normative_context_conflict",
 })
 
 

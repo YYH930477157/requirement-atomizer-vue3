@@ -16,6 +16,10 @@ from typing import Any, Iterator
 from io_utils import read_jsonl
 from process_file_lock import process_file_lock
 from result_package import governed_artifact_path
+from table_claim_authority import (
+    load_table_claim_authority_projection,
+    project_table_dispositions,
+)
 from table_dispositions import DISPOSITIONS, validate_disposition_conservation
 
 
@@ -108,12 +112,25 @@ def _artifact_rows(root: Path, filename: str) -> list[dict[str, Any]]:
     ))
 
 
+def _current_claim_projection(root: Path) -> dict[str, dict[str, Any]]:
+    from claim_artifacts import CLAIM_CATALOG, claim_artifact_path
+
+    if not claim_artifact_path(root, CLAIM_CATALOG).is_file():
+        return {}
+    return load_table_claim_authority_projection(root)
+
+
 def build_table_review_payload(out_dir: Path) -> dict[str, Any]:
     """Build the read-only table review view from governed artifacts."""
     root = Path(out_dir).expanduser().resolve()
     blocks = _artifact_rows(root, "blocks.jsonl")
     cells = _artifact_rows(root, "table_cell_items.jsonl")
     dispositions = _artifact_rows(root, "table_cell_dispositions.jsonl")
+    dispositions = project_table_dispositions(
+        dispositions,
+        cells,
+        _current_claim_projection(root),
+    )
     cells_by_table: dict[str, list[dict[str, Any]]] = defaultdict(list)
     dispositions_by_table: dict[str, list[dict[str, Any]]] = defaultdict(list)
     blocks_by_table = {
@@ -255,6 +272,102 @@ def _validate_role_mapping(
             )
 
 
+def _delegate_claim_cell_decision(
+    root: Path,
+    *,
+    cell_id: str,
+    requested_disposition: str,
+    actor: str,
+    reason: str,
+    request_idempotency_key: str,
+) -> dict[str, Any]:
+    """Commit one terminal table-cell decision through current claim authority."""
+    from claim_artifacts import load_committed_effective_snapshot_readonly
+    from claim_structural_overrides import (
+        CELL_REVIEW_STRUCTURAL_REASONS,
+        ClaimStructuralOverrideError,
+        confirm_structural_exclusion,
+        confirm_structural_override,
+    )
+
+    projection = load_table_claim_authority_projection(root)
+    existing = projection.get(cell_id)
+    terminal_class = (
+        "promote" if requested_disposition in {"target", "composite"} else "exclude"
+    )
+    if existing is not None:
+        status = str(existing.get("status") or "")
+        if (
+            terminal_class == "promote" and status == "promoted"
+        ) or (
+            terminal_class == "exclude" and status == "confirmed_excluded"
+        ):
+            return {"ok": True, "status": status, "replay": True, "authority": existing}
+        if status in {"promoted", "confirmed_excluded"}:
+            raise ClaimStructuralOverrideError(
+                f"table cell {cell_id} already has terminal claim decision {status}"
+            )
+
+    snapshot = load_committed_effective_snapshot_readonly(root, require_v2=False)
+    candidates = []
+    for claim in snapshot.get("catalog") or []:
+        locator = claim.get("locator")
+        exclusion = claim.get("exclusion")
+        reason_code = (
+            str(exclusion.get("reason") or "")
+            if isinstance(exclusion, dict)
+            else ""
+        )
+        if (
+            isinstance(locator, dict)
+            and str(locator.get("table_cell_id") or "") == cell_id
+            and claim.get("eligibility") == "excluded"
+            and reason_code in CELL_REVIEW_STRUCTURAL_REASONS
+        ):
+            candidates.append(claim)
+    if len(candidates) != 1:
+        raise ClaimStructuralOverrideError(
+            "base_migration_required: table review cell must bind exactly one current "
+            f"claim structural candidate ({cell_id}, found={len(candidates)})"
+        )
+    claim = candidates[0]
+    effective = next((
+        row for row in snapshot.get("effective_ledger") or []
+        if row.get("claim_id") == claim.get("claim_id")
+    ), None)
+    if effective is None:
+        raise ClaimStructuralOverrideError(
+            f"current effective claim row is missing for table cell {cell_id}"
+        )
+    generation = dict(snapshot.get("generation_meta") or {})
+    common = {
+        "claim_id": str(claim.get("claim_id") or ""),
+        "claim_hash": str(claim.get("claim_hash") or ""),
+        "expected_catalog_generation_id": str(
+            generation.get("catalog_generation_id") or ""
+        ),
+        "expected_claim_effective_revision": str(
+            effective.get("claim_effective_revision") or ""
+        ),
+        "prior_structural_reason": str(
+            dict(claim.get("exclusion") or {}).get("reason") or ""
+        ),
+        "actor": actor or "table-review",
+        "reason": reason or "Table-level structural review",
+        "request_idempotency_key": request_idempotency_key,
+    }
+    if terminal_class == "exclude":
+        return confirm_structural_exclusion(root, **common)
+    return confirm_structural_override(
+        root,
+        **common,
+        allow_llm=False,
+        route="openai_compatible",
+        verifier_max_calls=0,
+        verifier_max_total_tokens=0,
+    )
+
+
 def apply_table_review_decision(
     out_dir: Path,
     *,
@@ -264,7 +377,7 @@ def apply_table_review_decision(
     actor: str | None = None,
     reason: str = "",
 ) -> dict[str, Any]:
-    """Apply one table-scoped human role decision under a CAS fingerprint."""
+    """Delegate one table-scoped decision batch to Claim Ledger authority."""
     root = Path(out_dir).expanduser().resolve()
     table_id = str(table_id or "").strip()
     expected = str(expected_evidence_fingerprint or "").strip()
@@ -274,7 +387,12 @@ def apply_table_review_decision(
     with _table_review_lock(root):
         blocks = _artifact_rows(root, "blocks.jsonl")
         cells = _artifact_rows(root, "table_cell_items.jsonl")
-        dispositions = _artifact_rows(root, "table_cell_dispositions.jsonl")
+        raw_dispositions = _artifact_rows(root, "table_cell_dispositions.jsonl")
+        dispositions = project_table_dispositions(
+            raw_dispositions,
+            cells,
+            _current_claim_projection(root),
+        )
         table_rows = [
             row for row in dispositions
             if str(row.get("table_id") or "") == table_id
@@ -296,23 +414,48 @@ def apply_table_review_decision(
             }
             for row in table_rows
         }
-        for row in dispositions:
-            if str(row.get("table_id") or "") != table_id:
-                continue
-            cell_id = str(row.get("cell_id") or "")
-            decision = role_mapping.get(cell_id)
-            if decision is not None:
-                row["role"] = str(decision["role"])
-                row["disposition"] = str(decision["disposition"])
-                row["confidence"] = "high"
-                row["decision_source"] = "human"
-                row["decision_version"] = TABLE_REVIEW_DECISION_VERSION
-                evidence = [str(value) for value in (row.get("evidence") or [])]
-                row["evidence"] = list(dict.fromkeys([
-                    *evidence,
-                    "human_table_role_confirmation",
-                ]))
-            row["structure_review_status"] = "pending"
+        claim_results: list[dict[str, Any]] = []
+        decision_error: Exception | None = None
+        for cell_id in sorted(role_mapping):
+            requested_disposition = str(
+                role_mapping[cell_id].get("disposition") or ""
+            )
+            request_key = _fingerprint({
+                "version": TABLE_REVIEW_DECISION_VERSION,
+                "table_id": table_id,
+                "cell_id": cell_id,
+                "evidence_fingerprint": current,
+                "terminal_class": (
+                    "promote"
+                    if requested_disposition in {"target", "composite"}
+                    else "exclude"
+                ),
+                "actor": actor or "table-review",
+            })
+            try:
+                claim_result = _delegate_claim_cell_decision(
+                    root,
+                    cell_id=cell_id,
+                    requested_disposition=requested_disposition,
+                    actor=actor or "table-review",
+                    reason=str(reason or ""),
+                    request_idempotency_key=request_key,
+                )
+            except Exception as exc:
+                decision_error = exc
+                break
+            claim_results.append({
+                "cell_id": cell_id,
+                "requested_disposition": requested_disposition,
+                "request_idempotency_key": request_key,
+                "result": claim_result,
+            })
+
+        dispositions = project_table_dispositions(
+            raw_dispositions,
+            cells,
+            _current_claim_projection(root),
+        )
 
         selected = [
             row for row in dispositions
@@ -326,6 +469,20 @@ def apply_table_review_decision(
         for row in selected:
             row["structure_review_status"] = status
         validate_disposition_conservation(blocks, cells, dispositions)
+        completed_cell_ids = sorted(
+            str(row.get("cell_id") or "")
+            for row in selected
+            if str(row.get("cell_id") or "") in role_mapping
+            and str(row.get("disposition") or "") != "review"
+        )
+        remaining_cell_ids = sorted(
+            str(row.get("cell_id") or "")
+            for row in selected
+            if str(row.get("disposition") or "") == "review"
+        )
+        if decision_error is not None and not completed_cell_ids:
+            raise decision_error
+        partial = decision_error is not None
 
         disposition_path = governed_artifact_path(
             root, "table_cell_dispositions.jsonl"
@@ -352,7 +509,17 @@ def apply_table_review_decision(
             "reason": str(reason or ""),
             "recorded_at": recorded_at,
             "decision_version": TABLE_REVIEW_DECISION_VERSION,
+            "claim_results": claim_results,
+            "partial": partial,
+            "completed_cell_ids": completed_cell_ids,
+            "remaining_cell_ids": remaining_cell_ids,
         }
+        if decision_error is not None:
+            state["decision_error"] = {
+                "type": type(decision_error).__name__,
+                "message": str(decision_error),
+                "retryable": isinstance(decision_error, (OSError, TimeoutError)),
+            }
         states_path = governed_artifact_path(
             root, TABLE_REVIEW_STATES, category="state"
         )
@@ -388,11 +555,33 @@ def apply_table_review_decision(
                 cells=cells,
                 dispositions=dispositions,
             ))
+            claim_generation_path = governed_artifact_path(
+                root,
+                "claim_generation.meta.json",
+                category="state",
+            )
+            if (
+                "ai_requirements.jsonl" in recomputed_artifacts
+                and claim_generation_path.is_file()
+            ):
+                from claim_review_actions import fold_effective_ledger
+
+                fold = fold_effective_ledger(
+                    root,
+                    actor_trigger="table-review-recompute",
+                    authority_hook_track="B",
+                )
+                if fold.get("ok") is not True:
+                    raise ValueError(
+                        "claim effective fold failed after table recompute: "
+                        f"{fold.get('reason') or fold.get('error') or 'unknown'}"
+                    )
         except (OSError, TimeoutError, ValueError) as exc:
             recompute_error = f"{type(exc).__name__}: {exc}"
 
     return {
         **state,
+        "claim_results": claim_results,
         "recomputed_artifacts": recomputed_artifacts,
         **({"recompute_error": recompute_error} if recompute_error else {}),
     }

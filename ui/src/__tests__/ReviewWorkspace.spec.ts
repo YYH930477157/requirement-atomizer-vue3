@@ -440,7 +440,7 @@ describe("review workspace shell", () => {
           table_id: "TBL-PENDING",
           expected_evidence_fingerprint: "sha256:table-v1",
           role_mapping: {
-            "CELL-1": { role: "row_header", disposition: "context" },
+            "CELL-1": { role: "row_header", disposition: "excluded" },
           },
           actor: "vue3-ui",
           reason: "Confirmed table structure in Vue3 UI",
@@ -470,10 +470,104 @@ describe("review workspace shell", () => {
 
     expect(wrapper.find('[data-testid="table-review-TBL-PENDING"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="table-review-TBL-READY"]').exists()).toBe(false)
+    const decisionSelects = wrapper.findAll(
+      '[data-testid="table-review-TBL-PENDING"] .table-review-cell select',
+    )
+    expect(decisionSelects).toHaveLength(1)
+    expect(decisionSelects[0].findAll("option").map((option) => option.attributes("value")))
+      .toEqual(["target", "excluded"])
     await wrapper.find('[data-testid="confirm-table-TBL-PENDING"]').trigger("click")
     await vi.waitFor(() => {
       expect(wrapper.find('[data-testid="table-review-band"]').exists()).toBe(false)
     })
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/table-review-actions"))).toHaveLength(1)
+  })
+
+  it("refreshes a partial table action and keeps only the remaining claim cell", async () => {
+    Object.defineProperty(window, "ratomizerDesktop", {
+      configurable: true,
+      value: {
+        getApiSession: vi.fn().mockResolvedValue({
+          baseUrl: "http://127.0.0.1:8770",
+          token: "local-token",
+          outputDir: "E:\\Codex\\out\\run",
+        }),
+      },
+    })
+    let tableLoadCount = 0
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith("/requirements?limit=5000")) {
+        return { ok: true, json: async () => [] } as Response
+      }
+      if (url.endsWith("/table-reviews")) {
+        tableLoadCount += 1
+        const cells = tableLoadCount === 1
+          ? [
+              { cell_id: "CELL-1", text: "Mode", row_index: 2, column_index: 1, role: "row_header", disposition: "review" },
+              { cell_id: "CELL-2", text: "Enabled", row_index: 2, column_index: 2, role: "data", disposition: "review" },
+            ]
+          : [
+              { cell_id: "CELL-2", text: "Enabled", row_index: 2, column_index: 2, role: "data", disposition: "review" },
+            ]
+        return {
+          ok: true,
+          json: async () => ({
+            schema: "table-review-view/v1",
+            tables: [{
+              table_id: "TBL-PARTIAL",
+              title: "Auxiliary output",
+              structure_review_status: "pending",
+              review_mode: "pending",
+              cell_count: 2,
+              review_count: cells.length,
+              evidence_fingerprint: tableLoadCount === 1 ? "sha256:table-v1" : "sha256:table-v2",
+              cells,
+            }],
+          }),
+        } as Response
+      }
+      if (url.endsWith("/table-review-actions")) {
+        return {
+          ok: true,
+          json: async () => ({
+            table_id: "TBL-PARTIAL",
+            structure_review_status: "pending",
+            partial: true,
+            completed_cell_ids: ["CELL-1"],
+            remaining_cell_ids: ["CELL-2"],
+            decision_error: {
+              type: "TimeoutError",
+              message: "synthetic second-cell failure",
+              retryable: true,
+            },
+          }),
+        } as Response
+      }
+      if (url.endsWith("/review-insights")) {
+        return { ok: true, json: async () => ({ available: false, suggestions: [] }) } as Response
+      }
+      if (url.endsWith("/result-package")) {
+        return { ok: true, json: async () => ({ layout: "package_v1", package: null }) } as Response
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    const wrapper = mount(App)
+    await openReview(wrapper)
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-testid="table-review-TBL-PARTIAL"] .table-review-cell')).toHaveLength(2)
+    })
+
+    await wrapper.find('[data-testid="confirm-table-TBL-PARTIAL"]').trigger("click")
+    await vi.waitFor(() => {
+      const cells = wrapper.findAll('[data-testid="table-review-TBL-PARTIAL"] .table-review-cell')
+      expect(cells).toHaveLength(1)
+      expect(cells[0].text()).toContain("Enabled")
+      expect(cells[0].text()).not.toContain("Mode")
+    })
+    expect(tableLoadCount).toBe(2)
+    expect(wrapper.find('[data-testid="api-message"]').text()).toContain("已完成 1 个 Claim 裁决，仍有 1 个待确认")
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/table-review-actions"))).toHaveLength(1)
   })
 

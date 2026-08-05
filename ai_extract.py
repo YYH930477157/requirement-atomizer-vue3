@@ -1271,6 +1271,15 @@ def _merge_llm_into_deterministic_rows(
         if narrative:
             existing = str(target_prow.get("llm_narrative") or "")
             target_prow["llm_narrative"] = (existing + "\n" if existing else "") + narrative
+        for field in ("source_block_ids", "source_cell_ids"):
+            merged_ids = list(dict.fromkeys([
+                *(target_prow.get(field) or []),
+                *(req.get(field) or []),
+            ]))
+            if merged_ids:
+                target_prow[field] = merged_ids
+        if target_prow.get("source_cell_ids"):
+            target_prow["source_cell_id"] = target_prow["source_cell_ids"][0]
         target_prow.setdefault("merge_trace", []).append({
             "llm_requirement_id": str(req.get("ai_req_id") or ""),
             "merged_into": str(target_prow.get("ai_req_id") or ""),
@@ -1825,6 +1834,29 @@ def _apply_table_requirement_metadata(
             f"{requirement.get('source_quote') or ''} {requirement.get('description') or ''}"
         )
         requirement.setdefault("clarification_ids", [])
+
+
+def _claim_projected_table_dispositions(
+    out_dir: Path,
+    table_cell_items: list[dict[str, Any]],
+    table_cell_dispositions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Overlay current Claim Ledger decisions before constructing B-track leaves."""
+    from claim_artifacts import CLAIM_CATALOG, claim_artifact_path
+
+    root = Path(out_dir).expanduser().resolve()
+    if not claim_artifact_path(root, CLAIM_CATALOG).is_file():
+        return list(table_cell_dispositions)
+    from table_claim_authority import (
+        load_table_claim_authority_projection,
+        project_table_dispositions,
+    )
+
+    return project_table_dispositions(
+        table_cell_dispositions,
+        table_cell_items,
+        load_table_claim_authority_projection(root),
+    )
 
 
 # --- 跨章节引用解析 -------------------------------------------------------
@@ -4211,6 +4243,11 @@ def _run_ai_extract_locked(out_dir: Path, *, route: str | None,
                 "rerun atomize before ai-extract"
             )
         table_cell_dispositions = []
+    table_cell_dispositions = _claim_projected_table_dispositions(
+        out_dir,
+        table_cell_items,
+        table_cell_dispositions,
+    )
     resolved_mode = (unit_mode or os.environ.get(UNIT_MODE_ENV) or "clause").strip().lower()
     if resolved_mode not in ("clause", "chapter"):
         resolved_mode = "clause"

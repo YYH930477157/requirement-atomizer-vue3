@@ -8,8 +8,8 @@ from typing import Any, Iterable
 from table_structure import TABLE_STRUCTURE_VERSION, is_normative_text
 
 
-TABLE_CELL_DISPOSITION_SCHEMA = "table-cell-disposition/v1"
-TABLE_DISPOSITION_RULE_VERSION = "table-disposition-rules-v1"
+TABLE_CELL_DISPOSITION_SCHEMA = "table-cell-disposition/v2"
+TABLE_DISPOSITION_RULE_VERSION = "table-disposition-rules-v2"
 DISPOSITIONS = ("target", "context", "composite", "excluded", "review")
 
 _NOT_APPLICABLE_RE = re.compile(

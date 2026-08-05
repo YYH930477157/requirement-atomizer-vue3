@@ -97,6 +97,14 @@ export type TableReviewActionPayload = {
   structure_review_status: "pending" | "ready"
   evidence_fingerprint?: string
   recomputed_artifacts?: string[]
+  partial?: boolean
+  completed_cell_ids?: string[]
+  remaining_cell_ids?: string[]
+  decision_error?: {
+    type: string
+    message: string
+    retryable: boolean
+  }
 }
 
 export type TranslationInput = {

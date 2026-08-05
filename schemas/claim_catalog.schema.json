@@ -46,7 +46,8 @@
         "claim-catalog-v8",
         "claim-catalog-v9",
         "claim-catalog-v10",
-        "claim-catalog-v11"
+        "claim-catalog-v11",
+        "claim-catalog-v12"
       ]
     },
     "document_generation_id": {
@@ -1116,7 +1117,9 @@
             "weak_signal_table_cell",
             "unsignaled_table_cell",
             "rejected_matrix_marker_cell",
-            "untyped_colon_spec_cell"
+            "untyped_colon_spec_cell",
+            "parse_incomplete_table_cell",
+            "normative_context_conflict"
           ]
         },
         "rule_id": {

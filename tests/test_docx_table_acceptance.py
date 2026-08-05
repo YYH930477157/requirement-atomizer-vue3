@@ -8,6 +8,7 @@ from atomize import build_table_artifacts
 from io_utils import read_jsonl
 from output_writer import write_jsonl
 from requirement_kb import KnowledgeRepository
+from result_package import governed_artifact_path, initialize_result_package
 from table_dispositions import build_table_cell_dispositions
 from table_recompute import recompute_confirmed_table_requirements
 
@@ -47,6 +48,51 @@ def _recompute(cells, dispositions, changed_ids):
 
 
 class DocxTableAcceptanceTests(unittest.TestCase):
+    def test_recompute_accepts_package_root_and_writes_governed_pipeline_artifacts(self) -> None:
+        block, _items, cells = _artifacts([
+            ["Parameter", "Value"],
+            ["Rated voltage", "230 V"],
+        ], title="Package-root recompute")
+        dispositions = build_table_cell_dispositions([block], cells)
+        target = next(row for row in dispositions if row["disposition"] == "composite")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.docx"
+            source.write_bytes(b"synthetic")
+            initialize_result_package(root, input_path=source, requested_stages=["atomize"])
+            for filename, rows in (
+                ("blocks.jsonl", [block]),
+                ("table_items.jsonl", []),
+                ("table_cell_items.jsonl", cells),
+                ("table_cell_dispositions.jsonl", dispositions),
+                ("ai_requirements.jsonl", []),
+            ):
+                write_jsonl(governed_artifact_path(root, filename), rows)
+
+            recomputed = recompute_confirmed_table_requirements(
+                root,
+                table_id="TBL-ACCEPT",
+                changed_cell_ids={target["cell_id"]},
+                cells=cells,
+                dispositions=dispositions,
+            )
+
+            requirements_path = governed_artifact_path(
+                root, "ai_requirements.jsonl", for_write=False
+            )
+            metadata_path = governed_artifact_path(
+                root, "ai_requirements.meta.json", for_write=False
+            )
+            self.assertEqual(
+                recomputed,
+                ["ai_requirements.jsonl", "ai_requirements.meta.json"],
+            )
+            self.assertEqual(len(read_jsonl(requirements_path)), 1)
+            self.assertTrue(metadata_path.is_file())
+            self.assertFalse((root / "ai_requirements.jsonl").exists())
+            self.assertFalse((root / "ai_requirements.meta.json").exists())
+
     def test_multi_model_parameter_matrix_merges_only_exact_equivalents(self) -> None:
         block, _items, cells = _artifacts([
             ["Parameter", "Model A", "Model B", "Model C", "Unit"],

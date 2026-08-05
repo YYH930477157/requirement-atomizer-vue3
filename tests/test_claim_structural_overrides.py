@@ -822,15 +822,34 @@ class ClaimStructuralCandidateDecisionTests(unittest.TestCase):
                 current["schema"],
                 {key: value for key, value in current.items() if key != "decision_hash"},
             )
-            current_schema = json.loads(
+            v2_schema = json.loads(
                 (
                     schema_root
                     / "claim_structural_candidate_decision_v2.schema.json"
                 ).read_text(encoding="utf-8")
             )
+            previous = {
+                **current,
+                "schema": (
+                    claim_structural_overrides
+                    .PREVIOUS_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA
+                ),
+            }
+            previous["decision_hash"] = claim_artifacts.hash_json(
+                previous["schema"],
+                {key: value for key, value in previous.items() if key != "decision_hash"},
+            )
+            self.assertTrue(Draft202012Validator(v2_schema).is_valid(previous))
+
+            current_schema = json.loads(
+                (
+                    schema_root
+                    / "claim_structural_candidate_decision_v3.schema.json"
+                ).read_text(encoding="utf-8")
+            )
             self.assertTrue(Draft202012Validator(current_schema).is_valid(current))
 
-            unknown = {**current, "schema": "claim-structural-candidate-decision/v3"}
+            unknown = {**current, "schema": "claim-structural-candidate-decision/v4"}
             unknown["decision_hash"] = claim_artifacts.hash_json(
                 unknown["schema"],
                 {key: value for key, value in unknown.items() if key != "decision_hash"},

@@ -3,13 +3,21 @@
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
 > 状态快照截至 2026-08-04，里程碑推进后请同步更新本文件。
 
-## 重大更新（2026-08-04）——DOCX 表格单元格级抽取与表级复核（main 工作树，未提交）
+## 重大更新（2026-08-04）——Scheme A：Claim 权威表格裁决（main 工作树，未提交）
+
+- **单一权威**：`table_claim_authority.py`（`table-claim-authority-v1`）把 claim 结构裁决定为唯一终态；B 轨 `table_cell_dispositions`、表格复核状态和 Ledger Ready 均从 claim 投影，不再允许表级状态与 claim 各自形成真相源。投影状态覆盖 `pending_review`、`promotion_pending`、`promoted`、`confirmed_excluded`。
+- **覆盖与协议**：claim catalog 升 `claim-catalog-v12`，为 `parse_incomplete_table_cell`、`normative_context_conflict` 建候选，保证每个确定性 `review` cell 恰好对应一个 claim candidate。`claim_structural_candidate_decisions.jsonl` 当前 writer 升 v3，保留 v1/v2 冻结回放；disposition 升 `table-cell-disposition/v2` / `table-disposition-rules-v2`，新增正式 `table-cell-item/v1` schema。
+- **动作与恢复**：表格 UI 只暴露“提升为需求/确认排除”；前者复用 claim structural promotion，后者复用 claim exclusion confirmation。每格使用稳定幂等键，批量中途失败返回 `completed_cell_ids`、`remaining_cell_ids` 与 `decision_error`，刷新后只重试剩余格；claim promotion 后执行表级局部重算并重新 fold B 轨有效账本。
+- **LLM 边界**：本版本没有 LLM 整表结构分类器，`llm_assisted` 仅保留为未来审计契约；Scheme A 不新增独立结构复核调用，但提升动作可按既有 claim 执行链及用户配置使用其既有能力。结构化 leaf、参数行确定性补充与同行合并继续保留全部 `source_cell_ids`，fake-chat E2E 锁定不重复生成需求。
+- **验证状态**：后端全量 `2628 tests OK`（历史样本环境已设置）；前端 Vitest `207/207`；`npm run build`（vue-tsc + Vite）、Python compileall、`git diff --check` 均通过；`golden_sets/` 与 `out/` 无改动。Scheme A 代码仍未提交。
+
+## 重大更新（2026-08-04）——DOCX 表格单元格级抽取与表级复核（main @ `69f39c6`，已推送）
 
 - **物理保真**：新增 `docx_table_parser.py`（`docx-table-physical-v1`），解析 `gridSpan`、`vMerge`、`gridBefore/gridAfter`、横纵/矩形合并与嵌套表；保留段落、列表层级、编号属性、手动换行和样式证据，异常结构写真实 `parse_incomplete_reason`。顶层 `BLK-*` 顺序不变，嵌套表使用独立 `TBL-*-N*` 身份。
 - **单元格守恒与 B 轨输入**：`TABLE_STRUCTURE_VERSION` 升 `table-structure-v7`，新增 `table_cell_dispositions.jsonl`（`table-cell-disposition/v1`、`table-disposition-rules-v1`），每个非空 canonical cell 恰好进入 `target/context/composite/excluded/review`；`Not Applicable` 只记适用范围排除。`extract_units` 改为 `[TABLE_CONTEXT]/[TABLE_LEAF]` 结构叶输入，整表扁平 `block.text` 仅留审计/显示；`AI_EXTRACT_PROMPT_VERSION=ai-extract-v24`、`EXTRACT_GUARDS_VERSION=guards-v22`，正式需求保留 `source_cell_ids`、结构化事实、适用型号、约束强度和澄清绑定。
 - **表级复核闭环**：新增 `GET /table-reviews`、`POST /table-review-actions` 与 Vue 工作台紧凑复核带；高置信表不要求操作，`llm_assisted` 只读审计，pending 表一次确认全部待定格。写侧使用 governed state 路径、跨进程锁、证据指纹 CAS、原子替换及 Windows `PermissionError` 重试；状态/事件分别落 `table_review_states.jsonl`、`table_review_events.jsonl`。确认后只对所选表本次提升的格执行 `table-local-recompute-v1` 确定性 B 轨回填，不重跑整份文档；无既有 B 轨产物时不伪造已抽取。
 - **脱敏验收**：新增三类合成场景：六参数×三型号共 18 个值格按完全等价压为 10 条；三型号五义务先形成 15 个来源句再合并为 5 条并聚合 1 个澄清；两个 `Not Applicable` 只形成排除，三相格生成 2 条并聚合 1 个澄清。旧表结构产物继续经 `base_migration_required` 重建，claim catalog meta schema 已允许 v7；golden 基线未修改。
-- **验证**：设置 `RATOMIZER_HISTORICAL_SAMPLE=C:/Users/YYHwudi/Desktop/Canna-29/eval_assets/test18_functional_synthesis_sample.json` 后，后端全量 `2614 tests OK`；前端 Vitest `206/206`；`npm run build`（vue-tsc + Vite）、Python compileall、`git diff --check` 均通过。未提交、未推送。
+- **验证**：设置 `RATOMIZER_HISTORICAL_SAMPLE=C:/Users/YYHwudi/Desktop/Canna-29/eval_assets/test18_functional_synthesis_sample.json` 后，后端全量 `2614 tests OK`；前端 Vitest `206/206`；`npm run build`（vue-tsc + Vite）、Python compileall、`git diff --check` 均通过。基线已以 `69f39c6 feat: add DOCX table cell extraction` 合入并推送 `origin/main`。
 
 ## 重大更新（2026-08-04）——实机修复清单三组集成（分支 `codex/repair-2026-08-04`，未提交）
 

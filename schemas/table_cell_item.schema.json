@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/table_cell_item.schema.json",
+  "title": "Canonical table cell item v1",
+  "type": "object",
+  "required": [
+    "schema", "cell_id", "table_id", "table_block_id", "table_title",
+    "section_path", "row_index", "column_index", "data_row_index",
+    "row_span", "column_span", "covered_coordinates", "structural_role",
+    "text", "raw_text", "header_path", "row_header_context",
+    "row_header_entries", "source_format", "requirement_like", "leaf_kind",
+    "table_structure_version"
+  ],
+  "properties": {
+    "schema": {"const": "table-cell-item/v1"},
+    "cell_id": {"type": "string", "minLength": 1},
+    "table_id": {"type": "string", "minLength": 1},
+    "table_block_id": {"type": "string", "minLength": 1},
+    "table_title": {"type": "string"},
+    "section_path": {"type": "array", "items": {"type": "string"}},
+    "row_index": {"type": "integer", "minimum": 1},
+    "column_index": {"type": "integer", "minimum": 1},
+    "data_row_index": {
+      "oneOf": [
+        {"type": "integer", "minimum": 1},
+        {"type": "null"}
+      ]
+    },
+    "row_span": {"type": "integer", "minimum": 1},
+    "column_span": {"type": "integer", "minimum": 1},
+    "covered_coordinates": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {"type": "integer", "minimum": 1},
+          {"type": "integer", "minimum": 1}
+        ],
+        "items": false
+      }
+    },
+    "structural_role": {
+      "enum": ["title", "header", "row_header", "data", "group_header"]
+    },
+    "text": {"type": "string", "minLength": 1},
+    "raw_text": {"type": "string"},
+    "header_path": {"type": "array", "items": {"type": "string"}},
+    "row_header_context": {"type": "array", "items": {"type": "string"}},
+    "row_header_entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["header", "value"],
+        "properties": {
+          "header": {"type": "string"},
+          "value": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "source_format": {"enum": ["docx", "xlsx", "pdf"]},
+    "requirement_like": {"type": "boolean"},
+    "leaf_kind": {"enum": ["cell", "row", "context"]},
+    "table_structure_version": {"type": "string", "minLength": 1},
+    "sheet_name": {"type": "string"},
+    "a1_address": {"type": "string"},
+    "page_number": {"type": "integer", "minimum": 1},
+    "bbox": {
+      "type": "array",
+      "minItems": 4,
+      "items": {"type": "number"}
+    },
+    "geometry_kind": {"type": "string"}
+  },
+  "additionalProperties": true
+}

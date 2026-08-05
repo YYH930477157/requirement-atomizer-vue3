@@ -340,14 +340,8 @@
                   <b>{{ cell.text || '空白单元格' }}</b>
                 </span>
                 <select
-                  v-model="tableReviewDrafts[table.table_id][cell.cell_id].role"
-                  :aria-label="`${cell.cell_id} 角色`"
-                >
-                  <option v-for="option in tableRoleOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                </select>
-                <select
                   v-model="tableReviewDrafts[table.table_id][cell.cell_id].disposition"
-                  :aria-label="`${cell.cell_id} 处置`"
+                  :aria-label="`${cell.cell_id} Claim 裁决`"
                 >
                   <option v-for="option in tableDispositionOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
@@ -779,10 +773,8 @@ const tableRoleOptions: Array<{ value: TableCellRole; label: string }> = [
   { value: "unknown", label: "未知" },
 ]
 const tableDispositionOptions: Array<{ value: TableCellDisposition; label: string }> = [
-  { value: "target", label: "独立目标" },
-  { value: "context", label: "上下文" },
-  { value: "composite", label: "组合事实" },
-  { value: "excluded", label: "排除" },
+  { value: "target", label: "提升为需求" },
+  { value: "excluded", label: "确认排除" },
 ]
 const reviewPreviewRows = computed(() => requirementRows.value.slice(0, 4))
 const DELIVERABLE_FILES = [
@@ -1443,9 +1435,8 @@ function normalizeTableCellRole(value: unknown): TableCellRole {
 }
 
 function defaultTableDisposition(role: TableCellRole): TableCellDisposition {
-  return ["title", "header", "row_header", "group_header", "note"].includes(role)
-    ? "context"
-    : "composite"
+  void role
+  return "excluded"
 }
 
 function installTableReviews(tables: TableReviewTable[]) {
@@ -1479,6 +1470,15 @@ async function confirmTableReview(table: TableReviewTable) {
       actor: "vue3-ui",
       reason: "Confirmed table structure in Vue3 UI",
     })
+    if (result.partial) {
+      const refreshed = await client.loadTableReviews()
+      if (client !== apiClient.value) return
+      installTableReviews(refreshed.tables || [])
+      const completed = result.completed_cell_ids?.length || 0
+      const remaining = result.remaining_cell_ids?.length || 0
+      apiMessage.value = `已完成 ${completed} 个 Claim 裁决，仍有 ${remaining} 个待确认`
+      return
+    }
     tableReviews.value = tableReviews.value.map((item) =>
       item.table_id === table.table_id
         ? { ...item, structure_review_status: result.structure_review_status, review_mode: "human" }

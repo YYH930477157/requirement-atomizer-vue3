@@ -9,6 +9,7 @@ from typing import Any
 
 from ai_review_actions import ensure_requirement_identity
 from io_utils import read_jsonl
+from result_package import governed_artifact_path
 from table_structure import cell_context_text, is_normative_text, sentence_spans
 
 
@@ -147,7 +148,9 @@ def recompute_confirmed_table_requirements(
 ) -> list[str]:
     """Replace only requirements owned by changed cells; never rerun the document."""
     root = Path(out_dir).expanduser().resolve()
-    requirements_path = root / "ai_requirements.jsonl"
+    requirements_path = governed_artifact_path(
+        root, "ai_requirements.jsonl", for_write=False
+    )
     if not requirements_path.is_file():
         return []
 
@@ -211,13 +214,15 @@ def recompute_confirmed_table_requirements(
     atomic_write_jsonl(requirements_path, rows)
 
     old_meta: dict[str, Any] = {}
-    meta_path = root / "ai_requirements.meta.json"
+    meta_path = governed_artifact_path(
+        root, "ai_requirements.meta.json", for_write=False
+    )
     try:
         old_meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         pass
     write_ai_requirements_metadata(
-        root,
+        requirements_path.parent,
         input_fingerprint=extraction_input_fingerprint(root),
         run_id=f"table-review:{table_id}",
         failed_sections=int(old_meta.get("failed_sections") or 0),

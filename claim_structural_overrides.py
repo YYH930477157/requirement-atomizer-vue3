@@ -34,11 +34,14 @@ CLAIM_STRUCTURAL_CANDIDATE_DECISIONS = "claim_structural_candidate_decisions.jso
 LEGACY_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA = (
     "claim-structural-candidate-decision/v1"
 )
-CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA = (
+PREVIOUS_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA = (
     "claim-structural-candidate-decision/v2"
 )
+CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA = (
+    "claim-structural-candidate-decision/v3"
+)
 CLAIM_STRUCTURAL_CANDIDATE_DECISION_VERSION = (
-    "claim-structural-candidate-decision-v2"
+    "claim-structural-candidate-decision-v3"
 )
 _CANDIDATE_DECISION_ID_DOMAIN_V1 = (
     "claim-structural-candidate-decision-id/v1"
@@ -49,8 +52,13 @@ _CANDIDATE_DECISION_PROTOCOLS = {
         LEGACY_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
         _CANDIDATE_DECISION_ID_DOMAIN_V1,
     ),
-    CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA: (
+    PREVIOUS_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA: (
         "claim_structural_candidate_decision_v2.schema.json",
+        PREVIOUS_CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
+        _CANDIDATE_DECISION_ID_DOMAIN_V1,
+    ),
+    CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA: (
+        "claim_structural_candidate_decision_v3.schema.json",
         CLAIM_STRUCTURAL_CANDIDATE_DECISION_SCHEMA,
         _CANDIDATE_DECISION_ID_DOMAIN_V1,
     ),
@@ -61,6 +69,8 @@ CELL_REVIEW_STRUCTURAL_REASONS = frozenset({
     "unsignaled_table_cell",
     "rejected_matrix_marker_cell",
     "untyped_colon_spec_cell",
+    "parse_incomplete_table_cell",
+    "normative_context_conflict",
 })
 ALLOWED_STRUCTURAL_OVERRIDE_REASONS = frozenset({
     "repeated_page_furniture",
@@ -74,6 +84,8 @@ _STRUCTURAL_RULE_IDS = {
     "unsignaled_table_cell": "catalog-unsignaled-table-cell",
     "rejected_matrix_marker_cell": "catalog-rejected-matrix-marker-cell",
     "untyped_colon_spec_cell": "catalog-untyped-colon-spec-cell",
+    "parse_incomplete_table_cell": "catalog-parse-incomplete-table-cell",
+    "normative_context_conflict": "catalog-normative-context-conflict",
 }
 
 _LOCK_NAME = "claim_structural_overrides.lock"

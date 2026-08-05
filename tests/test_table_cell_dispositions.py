@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
+
 from atomize import build_table_artifacts
 from requirement_kb import KnowledgeRepository
 from result_package import initialize_result_package, package_artifact_path
+from table_claim_authority import project_table_dispositions
 from table_dispositions import (
     TABLE_CELL_DISPOSITION_SCHEMA,
     build_table_cell_dispositions,
@@ -125,6 +129,58 @@ class TableCellDispositionTests(unittest.TestCase):
                 path,
                 root / ".ratomizer" / "pipeline" / "table_cell_dispositions.jsonl",
             )
+
+    def test_claim_projected_disposition_validates_current_schema(self) -> None:
+        block, _items, cells = _artifacts([
+            ["Configurable auxiliary output", ""],
+            ["Mode", "Value"],
+            ["Pulse", "Enabled"],
+        ])
+        rows = build_table_cell_dispositions([block], cells)
+        review = next(row for row in rows if row["disposition"] == "review")
+        projected = project_table_dispositions(
+            rows,
+            cells,
+            {
+                review["cell_id"]: {
+                    "version": "table-claim-authority-v1",
+                    "status": "confirmed_excluded",
+                    "claim_id": "CLM-0000000000000001",
+                    "claim_hash": "sha256:" + "1" * 64,
+                    "document_generation_id": "sha256:" + "2" * 64,
+                    "catalog_generation_id": "sha256:" + "3" * 64,
+                    "decision_id": "CSCD-0000000000000001",
+                    "decision_hash": "sha256:" + "4" * 64,
+                    "prior_structural_reason": "ambiguous_table_structure",
+                }
+            },
+        )
+        schema = json.loads(
+            (Path(__file__).resolve().parents[1]
+             / "schemas" / "table_cell_dispositions_v2.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        validator = Draft202012Validator(schema)
+
+        for row in projected:
+            validator.validate(row)
+
+    def test_table_cell_item_v1_has_a_formal_schema(self) -> None:
+        _block, _items, cells = _artifacts(
+            [["Parameter", "Value"], ["Voltage", "230 V"]],
+            merges=[(1, 1, 1, 2)],
+        )
+        schema = json.loads(
+            (Path(__file__).resolve().parents[1]
+             / "schemas" / "table_cell_item.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        validator = Draft202012Validator(schema)
+
+        for cell in cells:
+            validator.validate(cell)
 
 
 if __name__ == "__main__":

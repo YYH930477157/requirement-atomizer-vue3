@@ -57,7 +57,7 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "claim_queue_execution.py",
                 "claim_held_out.py", "claim_ledger.py", "claim_reextract_attempts.py",
                 "claim_structural_confirmation.py", "claim_structural_operations.py",
-                "claim_structural_overrides.py",
+                "claim_structural_overrides.py", "table_claim_authority.py",
                 "claim_review_packet.py", "input_completeness.py",
                 "claim_review_import.py", "claim_review_actions.py", "claim_views.py",
                 "process_file_lock.py",
@@ -81,6 +81,9 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "schemas/claim_structural_override.schema.json",
                 "schemas/claim_structural_candidate_decision.schema.json",
                 "schemas/claim_structural_candidate_decision_v2.schema.json",
+                "schemas/claim_structural_candidate_decision_v3.schema.json",
+                "schemas/table_cell_dispositions_v2.schema.json",
+                "schemas/table_cell_item.schema.json",
                 "schemas/result_package.schema.json",
                 "golden_sets/claim_ledger_v1/manifest.json",
                 "golden_sets/claim_ledger_v1/history/programmable-equivalent-001-v2-rejection.json",
@@ -105,7 +108,7 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "import claim_artifacts, claim_acceptance, claim_catalog, claim_focus, claim_held_out;"
                 "import claim_queue_execution;"
                 "import claim_ledger, claim_reextract_attempts, claim_structural_confirmation, claim_structural_operations, claim_structural_overrides, claim_review_packet, normative_framing, source_spans;"
-                "import claim_review_import, claim_review_actions, claim_views, process_file_lock, result_package;"
+                "import claim_review_import, claim_review_actions, claim_views, process_file_lock, result_package, table_claim_authority;"
                 "import json;from pathlib import Path;from jsonschema import Draft202012Validator;"
                 "schema_root=Path(claim_artifacts.__file__).parent/'schemas';"
                 "phase1_schemas=['claim_effective_health.schema.json',"
@@ -120,6 +123,9 @@ class WheelPackagingSmokeTests(unittest.TestCase):
                 "'claim_structural_override.schema.json',"
                 "'claim_structural_candidate_decision.schema.json',"
                 "'claim_structural_candidate_decision_v2.schema.json',"
+                "'claim_structural_candidate_decision_v3.schema.json',"
+                "'table_cell_dispositions_v2.schema.json',"
+                "'table_cell_item.schema.json',"
                 "'result_package.schema.json'];"
                 "[Draft202012Validator.check_schema(json.loads((schema_root/name).read_text(encoding='utf-8')))"
                 " for name in phase1_schemas];"

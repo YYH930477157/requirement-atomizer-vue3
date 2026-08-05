@@ -82,7 +82,18 @@
         "claim_hash": {"$ref": "#/$defs/hash"},
         "expected_catalog_generation_id": {"$ref": "#/$defs/hash"},
         "expected_claim_effective_revision": {"$ref": "#/$defs/hash"},
-        "prior_structural_reason": {"const": "repeated_page_furniture"},
+        "prior_structural_reason": {
+          "enum": [
+            "repeated_page_furniture",
+            "ambiguous_table_structure",
+            "weak_signal_table_cell",
+            "unsignaled_table_cell",
+            "rejected_matrix_marker_cell",
+            "untyped_colon_spec_cell",
+            "parse_incomplete_table_cell",
+            "normative_context_conflict"
+          ]
+        },
         "actor": {"type": "string", "minLength": 1},
         "reason": {"type": "string", "minLength": 1},
         "request_idempotency_key": {"type": "string", "minLength": 1},

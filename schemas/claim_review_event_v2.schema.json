@@ -286,7 +286,18 @@
           "required": ["prior_structural_reason", "override_id", "override_hash", "route"],
           "properties": {
             "event_kind": {"const": "structural_falsification"},
-            "prior_structural_reason": {"const": "repeated_page_furniture"},
+            "prior_structural_reason": {
+              "enum": [
+                "repeated_page_furniture",
+                "ambiguous_table_structure",
+                "weak_signal_table_cell",
+                "unsignaled_table_cell",
+                "rejected_matrix_marker_cell",
+                "untyped_colon_spec_cell",
+                "parse_incomplete_table_cell",
+                "normative_context_conflict"
+              ]
+            },
             "override_id": {"type": "string", "pattern": "^CSO-[0-9a-f]{16}$"},
             "override_hash": {"$ref": "#/$defs/hash"},
             "route": {"const": "deterministic"}

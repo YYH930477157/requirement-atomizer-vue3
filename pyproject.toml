@@ -62,6 +62,7 @@ py-modules = [
   "claim_structural_confirmation",
   "claim_structural_overrides",
   "claim_views",
+  "table_claim_authority",
   "claim_held_out",
   "claim_review_import",
   "claim_review_packet",

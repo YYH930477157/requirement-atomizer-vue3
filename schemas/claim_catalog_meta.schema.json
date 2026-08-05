@@ -40,7 +40,8 @@
         "claim-catalog-v8",
         "claim-catalog-v9",
         "claim-catalog-v10",
-        "claim-catalog-v11"
+        "claim-catalog-v11",
+        "claim-catalog-v12"
       ]
     },
     "packing_version": {

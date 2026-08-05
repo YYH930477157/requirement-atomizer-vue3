@@ -36,7 +36,7 @@ from table_structure import (
     row_bears_normative_sentence,
 )
 
-CLAIM_CATALOG_VERSION = "claim-catalog-v11"
+CLAIM_CATALOG_VERSION = "claim-catalog-v12"
 CLAIM_UNIT_PACKING_VERSION = "claim-unit-packing-v1"
 CLAIM_CATALOG_SCHEMA = "claim-catalog/v2"
 CLAIM_CATALOG_META_SCHEMA = "claim-catalog-meta/v1"
@@ -848,6 +848,19 @@ def _enumerate_leaves(
             seen_cell_ids.add(cell_id)
         cells_by_block[str(cell.get("table_block_id") or "")][cell_id] = cell
     audit["duplicate_table_cell_id_count"] = duplicate_cell_ids
+    from table_dispositions import build_table_cell_dispositions
+
+    disposition_by_cell = (
+        {
+            str(row.get("cell_id") or ""): row
+            for row in build_table_cell_dispositions(
+                blocks, list(table_cell_items or [])
+            )
+            if str(row.get("cell_id") or "")
+        }
+        if table_cell_items
+        else {}
+    )
     table_item_consumers: dict[str, int] = defaultdict(int)
     block_types: dict[str, set[str]] = defaultdict(set)
     for block in blocks:
@@ -931,6 +944,33 @@ def _enumerate_leaves(
                     and is_positive_marker(str(cell.get("text") or ""))
                 )
             }
+            disposition_review_reasons: dict[str, str] = {}
+            for cell_id, row in disposition_by_cell.items():
+                if (
+                    str(row.get("table_id") or "")
+                    != str(block.get("table_id") or "")
+                    or str(row.get("disposition") or "") != "review"
+                ):
+                    continue
+                evidence = {str(value) for value in (row.get("evidence") or [])}
+                if any(value.startswith("parse_incomplete:") for value in evidence):
+                    disposition_review_reasons[cell_id] = (
+                        "parse_incomplete_table_cell"
+                    )
+                elif "normative_context_conflict" in evidence:
+                    disposition_review_reasons[cell_id] = (
+                        "normative_context_conflict"
+                    )
+                elif "ambiguous_structure_cell" in evidence:
+                    disposition_review_reasons[cell_id] = (
+                        "ambiguous_table_structure"
+                    )
+                elif "weak_sentence_signal" in evidence:
+                    disposition_review_reasons[cell_id] = "weak_signal_table_cell"
+                elif "unsignaled_data_cell" in evidence:
+                    disposition_review_reasons[cell_id] = "unsignaled_table_cell"
+                elif "untyped_colon_spec" in evidence:
+                    disposition_review_reasons[cell_id] = "untyped_colon_spec_cell"
             # A cell already admitted as a claim is directly reviewable and must
             # not gain a second, excluded catalog identity. The remaining weak
             # cells are materialized as default-excluded review candidates.
@@ -940,7 +980,15 @@ def _enumerate_leaves(
                 | unsignaled_candidate_ids
                 | untyped_colon_candidate_ids
                 | rejected_marker_candidate_ids
-            ) - cell_leaf_id_set
+                | set(disposition_review_reasons)
+            )
+            cell_leaf_id_set -= review_candidate_ids
+            cell_leaf_ids = [
+                cell_id for cell_id in cell_leaf_ids
+                if cell_id not in review_candidate_ids
+            ]
+            if disposition_review_reasons:
+                structure_status = "needs_review"
             block_cells = cells_by_block.get(block_id, {})
             table_rows = items_by_block.get(block_id, [])
             mapping = {"container_block_id": block_id, "kind": "table", "leaf_locator_keys": []}
@@ -1085,7 +1133,9 @@ def _enumerate_leaves(
                 if cell is None:
                     audit["dangling_table_cell_reference_count"] += 1
                     continue
-                if cell_id in untyped_colon_candidate_ids:
+                if cell_id in disposition_review_reasons:
+                    candidate_reason = disposition_review_reasons[cell_id]
+                elif cell_id in untyped_colon_candidate_ids:
                     candidate_reason = "untyped_colon_spec_cell"
                 elif cell_id in ambiguous_candidate_ids:
                     candidate_reason = "ambiguous_table_structure"
@@ -1555,6 +1605,8 @@ _TABLE_CELL_REVIEW_RULES = {
     "unsignaled_table_cell": "catalog-unsignaled-table-cell",
     "rejected_matrix_marker_cell": "catalog-rejected-matrix-marker-cell",
     "untyped_colon_spec_cell": "catalog-untyped-colon-spec-cell",
+    "parse_incomplete_table_cell": "catalog-parse-incomplete-table-cell",
+    "normative_context_conflict": "catalog-normative-context-conflict",
 }
 
 
