@@ -11,6 +11,14 @@ from openpyxl.utils import range_boundaries
 
 from atomize import DocumentProfile, build_table_artifacts, clean_text
 from requirement_kb import KnowledgeRepository
+from xlsx_region_detect import (
+    SheetTableFingerprint,
+    boundary_conflicts_to_audit,
+    extract_obis_keys_from_matrix,
+    link_multi_sheet_tables,
+    link_result_to_audit,
+    validate_region_boundaries,
+)
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
@@ -43,6 +51,8 @@ def extract_xlsx(
     table_cell_items: list[dict[str, Any]] = []
     order = 0
     table_count = 0
+    # WS1 wk7: 收集每表 OBIS 指纹，供跨 sheet 关联一致性门（link_multi_sheet_tables）
+    region_fingerprints: list[SheetTableFingerprint] = []
 
     try:
         for sheet in workbook.worksheets:
@@ -85,6 +95,19 @@ def extract_xlsx(
             if not regions:
                 continue
 
+            # WS1 wk7: 区域边界确定性校验门（不重叠 / 不切断原生合并格）。校验只读
+            # 既有 region + merge 模型，冲突如实进 parse_incomplete_reason 既有通道
+            # （作为 additional_reasons 附加，不覆盖既有 code、不新造格式）。
+            boundary_check = validate_region_boundaries(regions, sheet_merges)
+            boundary_audit = boundary_conflicts_to_audit(boundary_check, sheet_name=sheet.title)
+            if boundary_audit is not None:
+                parse_audit["parse_incomplete"] = True
+                existing_reason = parse_audit.get("parse_incomplete_reason")
+                if existing_reason:
+                    existing_reason.setdefault("additional_reasons", []).append(boundary_audit)
+                else:
+                    parse_audit["parse_incomplete_reason"] = boundary_audit
+
             order += 1
             section_path = [sheet.title]
             blocks.append(
@@ -110,11 +133,21 @@ def extract_xlsx(
                     continue
                 order += 1
                 table_count += 1
+                table_id = f"TBL-{table_count:06d}"
+                # WS1 wk7: 收集本表 OBIS 指纹（确定性 extract_codes 扫全矩阵），
+                # 供 return 前的跨 sheet 关联一致性门
+                region_fingerprints.append(
+                    SheetTableFingerprint(
+                        sheet_name=sheet.title,
+                        table_id=table_id,
+                        obis_keys=extract_obis_keys_from_matrix(matrix),
+                    )
+                )
                 # 标题识别交给 table_structure（全宽合并证据）；sheet 名作回退标题，
                 # 删除"首行一个非空格即标题"硬规则
                 table_block, new_table_items, new_cell_items = build_table_artifacts(
                     matrix,
-                    table_id=f"TBL-{table_count:06d}",
+                    table_id=table_id,
                     block_id=f"BLK-{order:06d}",
                     order=order,
                     table_title=sheet.title,
@@ -136,6 +169,28 @@ def extract_xlsx(
     finally:
         workbook.close()
         formula_workbook.close()
+
+    # WS1 wk7: 多 sheet OBIS 关联一致性门。extract_xlsx 本就不跨 sheet 合并
+    # table_items（每区域独立成表），故"不静默合并"在抽取层天然成立；此门是未来
+    # 跨 sheet 合并提交的确定性前置校验——键缺失/冲突时如实 LOGGER 报告，并把
+    # 阻塞信息回溯标进相关表块的 parse_incomplete_reason 既有通道（不新造格式）。
+    link_result = link_multi_sheet_tables(region_fingerprints)
+    link_audit = link_result_to_audit(link_result)
+    if link_audit is not None:
+        LOGGER.warning(
+            "multi-sheet OBIS link blocked: status=%s keyed_tables=%d conflicts=%d",
+            link_result.status, link_result.keyed_table_count, len(link_result.conflicts),
+        )
+        keyed_table_ids = {fp.table_id for fp in region_fingerprints if fp.has_keys}
+        for block in blocks:
+            if block.get("type") != "table" or block.get("table_id") not in keyed_table_ids:
+                continue
+            block["parse_incomplete"] = True
+            reason = block.get("parse_incomplete_reason")
+            if isinstance(reason, dict):
+                reason.setdefault("additional_reasons", []).append(link_audit)
+            else:
+                block["parse_incomplete_reason"] = link_audit
 
     return blocks, table_items, table_cell_items
 

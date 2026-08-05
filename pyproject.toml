@@ -143,6 +143,8 @@ py-modules = [
   "table_recompute",
   "table_review_state",
   "table_structure",
+  "pdf_modern_adapter",
+  "xlsx_region_detect",
   "text_normalize",
   "version",
 ]
