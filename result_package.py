@@ -236,6 +236,8 @@ _STATE_FILENAMES = {
     ".claim_verifier_attempt.checkpoint.json", ".claim_budget_checkpoint.outbox.json",
     ".claim_publication.journal.json", ".claim_effective_publication.journal.json",
     "claim_artifacts.lock",
+    # WS3 文档级统一预算单（governed state；默认关闭，仅 RATOMIZER_LLM_BUDGET=1 时生成）。
+    "llm_budget.json", "llm_budget.lock",
 }
 
 _CACHE_FILENAMES = {

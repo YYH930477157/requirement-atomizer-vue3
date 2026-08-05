@@ -62,6 +62,11 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_FUNCTIONAL_DRILLDOWN_MULTI_BEHAVIOR", "2", "原子级下钻「多行为」信号阈值：同一主语下义务性模态动词支配不同动作数 ≥N 触发下钻（默认 2）", False),
     EnvVar("RATOMIZER_FUNCTIONAL_DRILLDOWN_MULTI_CONDITION", "1", "原子级下钻「多条件」信号阈值：条件从句/互斥分支数 ≥N 触发下钻（默认 1，与 semantic_quality 互斥限定词判据同源）", False),
     EnvVar("RATOMIZER_FUNCTIONAL_DRILLDOWN_MATRIX_ROWS", "2", "原子级下钻「参数矩阵」信号阈值：条款引用多行参数组合表行数 ≥N 触发下钻（默认 2）", False),
+    # --- WS3 成本治理（统一预算单 + 三级模型路由 + 成本看板 + 增量重跑）---
+    # 全部默认关闭/非侵入：预算单关闭时 llm_client 文档预算钩子不激活（零行为改变）；
+    # 增量重跑默认关，stage_is_reusable 的 bool 契约不变。新机制只交付工程正确性，不切默认行为。
+    EnvVar("RATOMIZER_LLM_BUDGET", "0", "文档级统一预算单开关（=1 启用 llm_budget.LLMBudgetLedger：每份文档一份预算单，总调用数/token 上限+各环节子预算+累计消耗，全部 LLM 调用从同一份扣减，耗尽即降级 stub 且 provenance 如实、功能直抽产出强制文档级 NEEDS WORK；默认 0=关闭，llm_client 钩子不激活，既有行为逐字节不变）", False),
+    EnvVar("RATOMIZER_INCREMENTAL_RERUN", "0", "章节级增量重跑开关（=1 启用条款候选哈希比对：重解析后逐候选比内容哈希，仅变化候选及其映射功能需求进重跑队列，与全量重跑共用同一 hash_json 幂等键空间；默认 0=全量重跑，desktop_tasks.stage_is_reusable 行为不变）", False),
     # --- 知识/资产路径 ---
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),
     EnvVar("RATOMIZER_ADJUDICATION_BANK", "", "裁决样本库 JSON 路径（专家 accepted 需求作 few-shot 注入富化；缺省不注入）", False),

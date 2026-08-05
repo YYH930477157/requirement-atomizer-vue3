@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
 from threading import RLock
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 import ai_extract
 from agent_policy import AGENT_POLICY_VERSION
@@ -1122,6 +1122,125 @@ def stage_is_reusable(out_dir: Path, stage: str, *,
     )
 
 
+# ---------------------------------------------------------------------------
+# WS3 章节级增量重跑（条款候选粒度，默认关闭）
+# ---------------------------------------------------------------------------
+# 把 ``stage_is_reusable`` 的"整批指纹变化即全量重跑"思想细化到条款候选粒度：条款候选
+# 自带单元格坐标（block_ids）与内容哈希，重解析后逐候选比对哈希，仅哈希变化者及其映射
+# 的功能需求进重跑队列。默认 ``RATOMIZER_INCREMENTAL_RERUN=0``（关），``stage_is_reusable``
+# 的 bool 契约与全量重跑行为不变；本判定是独立函数，由调用方在增量模式开时使用。与全量
+# 重跑共用同一 ``claim_artifacts.hash_json`` 幂等键空间——重试 / 续跑不二次扣费。
+INCREMENTAL_RERUN_ENV = "RATOMIZER_INCREMENTAL_RERUN"
+_CLAUSE_CANDIDATE_HASH_DOMAIN = "clause-candidate-hash/v1"
+
+
+def incremental_rerun_enabled(value: str | None = None) -> bool:
+    """``RATOMIZER_INCREMENTAL_RERUN`` 是否开启（默认关）。"""
+    raw = os.environ.get(INCREMENTAL_RERUN_ENV) if value is None else value
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _clause_candidate_key(chunk: dict[str, Any]) -> tuple[str, ...]:
+    ids = tuple(str(b) for b in (chunk.get("block_ids") or []) if str(b))
+    if ids:
+        return ids
+    # 无 block_ids 的候选回退到 section + heading 作为稳定身份键。
+    return (str(chunk.get("section_id") or ""), str(chunk.get("heading") or ""))
+
+
+def clause_candidate_fingerprint(chunk: dict[str, Any]) -> str:
+    """单条款候选的内容哈希（section_path + heading + text + block_ids）。
+
+    复用 ``claim_artifacts.hash_json``——与全量重跑的整批指纹、claim / llm_budget 幂等键
+    同一命名空间。WS1 坐标证据（block_ids）天然就是增量检测键。
+    """
+    from claim_artifacts import hash_json
+
+    payload = {
+        "section_path": [str(s) for s in (chunk.get("section_path") or [])],
+        "heading": str(chunk.get("heading") or ""),
+        "text": str(chunk.get("text") or ""),
+        "block_ids": [str(b) for b in (chunk.get("block_ids") or [])],
+    }
+    return hash_json(_CLAUSE_CANDIDATE_HASH_DOMAIN, payload)
+
+
+def diff_clause_candidates(
+    old_chunks: Sequence[dict[str, Any]],
+    new_chunks: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    """逐候选比对内容哈希，返回变化的候选身份键（block_ids 元组）。
+
+    返回 ``{changed, added, removed, unchanged_count, old_count, new_count}``。
+    ``changed ∪ added`` 即需重跑的候选范围。
+    """
+    old_by_key: dict[tuple[str, ...], str] = {}
+    for chunk in old_chunks:
+        old_by_key.setdefault(_clause_candidate_key(chunk), clause_candidate_fingerprint(chunk))
+    new_by_key: dict[tuple[str, ...], str] = {}
+    for chunk in new_chunks:
+        new_by_key.setdefault(_clause_candidate_key(chunk), clause_candidate_fingerprint(chunk))
+
+    changed: list[tuple[str, ...]] = []
+    added: list[tuple[str, ...]] = []
+    removed: list[tuple[str, ...]] = []
+    unchanged = 0
+    for key, fp in new_by_key.items():
+        if key not in old_by_key:
+            added.append(key)
+        elif old_by_key[key] != fp:
+            changed.append(key)
+        else:
+            unchanged += 1
+    for key in old_by_key:
+        if key not in new_by_key:
+            removed.append(key)
+    return {
+        "changed": sorted(changed),
+        "added": sorted(added),
+        "removed": sorted(removed),
+        "unchanged_count": unchanged,
+        "old_count": len(old_by_key),
+        "new_count": len(new_by_key),
+    }
+
+
+def incremental_rerun_plan(
+    old_chunks: Sequence[dict[str, Any]],
+    new_chunks: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    """变化候选 → 重跑队列（block_ids 并集）+ 内容寻址幂等键。
+
+    重跑队列 = ``(changed ∪ added)`` 候选的 block_ids 并集。``rerun_idempotency_key`` 绑定
+    变化候选集合的内容哈希——与全量重跑共用同一 ``hash_json`` 幂等键空间。其映射的功能需求
+    （经 ``source_block_ids`` 交集）进重跑队列由调用方在增量模式开时执行（本切片只交付判定
+    机制，不改 functional_extract 等消费者）。
+    """
+    from claim_artifacts import hash_json
+
+    diff = diff_clause_candidates(old_chunks, new_chunks)
+    rerun_block_ids: list[str] = []
+    for key in [*diff["changed"], *diff["added"]]:
+        for block_id in key:
+            if block_id and block_id not in rerun_block_ids:
+                rerun_block_ids.append(block_id)
+    total_new_blocks = sum(len(_clause_candidate_key(c)) for c in new_chunks if _clause_candidate_key(c))
+    plan_key = hash_json("incremental-rerun-plan/v1", {
+        "changed": diff["changed"],
+        "added": diff["added"],
+        "removed": diff["removed"],
+    })
+    return {
+        "schema": "incremental-rerun-plan/v1",
+        "enabled": incremental_rerun_enabled(),
+        "rerun_block_ids": rerun_block_ids,
+        "rerun_block_count": len(rerun_block_ids),
+        "rerun_ratio": round(len(rerun_block_ids) / max(1, total_new_blocks), 4),
+        "diff": diff,
+        "rerun_idempotency_key": plan_key,
+    }
+
+
 def ai_requirements_are_reusable(
     out_dir: Path,
     *,
@@ -1852,6 +1971,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
     )
 
+    # WS3 成本看板：数据全部来自文档级预算单记账流水（无新增埋点）。
+    cost_report_parser = subparsers.add_parser("cost-report")
+    cost_report_parser.add_argument(
+        "--out-dir", "--out", dest="out", type=Path, required=True,
+        help="结果目录（读 governed state/llm_budget.json）",
+    )
+
     package_start_parser = subparsers.add_parser("result-package-start")
     package_start_parser.add_argument("--out", type=Path, required=True)
     package_start_parser.add_argument("--input", type=Path, required=True)
@@ -2057,6 +2183,35 @@ def _result_package_main(args: argparse.Namespace) -> int:
         return _fail_with_envelope(kind, "internal_error", exc, 1)
 
 
+def _cost_report_main(args: argparse.Namespace) -> int:
+    """WS3 成本看板：读文档级预算单记账流水，输出分环节消耗 / 缓存命中 / 路由分布。
+
+    数据全部来自预算单记账流水（无新增埋点）。无预算单（未启用 ``RATOMIZER_LLM_BUDGET``）
+    时如实返回 ``available=false``，绝不伪造数据。
+    """
+    from llm_budget import LLMBudgetLedger, cost_report
+
+    out_dir = Path(args.out).expanduser().resolve()
+    try:
+        ledger = LLMBudgetLedger.load(out_dir)
+    except (OSError, ValueError) as exc:
+        return _fail_with_envelope("cost-report", "input_error", exc, 2)
+    if ledger is None:
+        payload = {
+            "ok": True,
+            "kind": "cost-report",
+            "available": False,
+            "reason": "no document budget ledger (RATOMIZER_LLM_BUDGET disabled)",
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+    report = cost_report(ledger)
+    print(json.dumps({
+        "ok": True, "kind": "cost-report", "available": True, "report": report,
+    }, ensure_ascii=False))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.command in _RESULT_PACKAGE_COMMANDS:
@@ -2081,6 +2236,8 @@ def main(argv: list[str] | None = None) -> int:
             "--output", str(args.output),
             "--golden-manifest", str(args.golden_manifest),
         ])
+    if args.command == "cost-report":
+        return _cost_report_main(args)
     package_root: Path | None = None
     original_out = getattr(args, "out", None)
     out_layout: str | None = None

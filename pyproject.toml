@@ -73,6 +73,7 @@ py-modules = [
   "functional_synthesis",
   "functional_extract",
   "functional_drilldown",
+  "llm_budget",
   "input_completeness",
   "api_server",
   "assemble_spec",
