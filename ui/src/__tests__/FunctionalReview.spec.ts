@@ -263,6 +263,59 @@ describe("FunctionalReview (WS-F)", () => {
     expect(text).toContain("已实现")
   })
 
+  it("syncs evidence_fingerprint from the save response so three consecutive saves never 409 (S1-6)", async () => {
+    // S1-6 复现条件：首次保存（无既有 verification state）。修复前保存成功后本地行指纹留空，
+    // 第二次保存携空串当 expected → 假 409。这里 mock 后端按真实 CAS 语义判 409。
+    const responseFingerprint = "fp-real-stable"
+    const apply = vi.fn((input: { requirementId: string; expectedEvidenceFingerprint?: string }) => {
+      if (input.expectedEvidenceFingerprint !== undefined
+        && input.expectedEvidenceFingerprint !== responseFingerprint) {
+        return Promise.reject(new RequirementApiError(409, {
+          error: "verification_conflict",
+          needs_reconfirmation: true,
+          current_evidence_fingerprint: responseFingerprint,
+          detail: "CAS 失配",
+        }))
+      }
+      return Promise.resolve({
+        requirement_id: input.requirementId,
+        verification: {},
+        lifecycle_state: "confirmed",
+        evidence_fingerprint: responseFingerprint,
+        written: ["verification_states.jsonl"],
+      })
+    })
+    const client = makeClient({
+      // 无既有 state：首次保存场景（本地行指纹起初缺失）
+      loadVerificationStates: vi.fn().mockResolvedValue({ schema: "verification-states/v1", states: [], total: 0 }),
+      applyVerificationAction: apply as unknown as ReturnType<typeof vi.fn>,
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    // 第一次保存：无既有指纹 → expectedEvidenceFingerprint 缺省（不发送 expected_evidence_fingerprint）
+    await wrapper.find('[data-testid="save-verification"]').trigger("click")
+    await flushPromises()
+    const first = (apply.mock.calls[0][0] as { expectedEvidenceFingerprint?: string }).expectedEvidenceFingerprint
+    expect(first).toBeUndefined()
+    expect(wrapper.find('[data-testid="fr-message"]').text()).not.toContain("证据指纹失配")
+
+    // 第二次保存：本地行指纹已同步为响应值 → 携正确指纹，无 409
+    await wrapper.find('[data-testid="save-verification"]').trigger("click")
+    await flushPromises()
+    const second = (apply.mock.calls[1][0] as { expectedEvidenceFingerprint?: string }).expectedEvidenceFingerprint
+    expect(second).toBe(responseFingerprint)
+
+    // 第三次保存：仍携同步后的指纹 → 无 409（三连保存通过）
+    await wrapper.find('[data-testid="save-verification"]').trigger("click")
+    await flushPromises()
+    const third = (apply.mock.calls[2][0] as { expectedEvidenceFingerprint?: string }).expectedEvidenceFingerprint
+    expect(third).toBe(responseFingerprint)
+    // 三次保存全部成功（无 409 刷新提示）
+    expect(wrapper.find('[data-testid="fr-message"]').text()).not.toContain("证据指纹失配")
+    expect(apply).toHaveBeenCalledTimes(3)
+  })
+
   it("saves verification via POST with the CAS evidence_fingerprint and refreshes on 409 (Cap2)", async () => {
     const client = makeClient({
       applyVerificationAction: vi.fn()

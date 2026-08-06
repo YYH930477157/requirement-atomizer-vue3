@@ -1529,6 +1529,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         self.send_json({"requirement_id": requirement_id,
                         "verification": record.get("verification"),
                         "lifecycle_state": record.get("lifecycle_state"),
+                        # S1-6：回传最新 evidence_fingerprint（与 GET /verification-states 行内字段同名），
+                        # 让前端保存成功后同步本地行指纹——否则第二次保存必携旧（空）指纹→假 409。
+                        "evidence_fingerprint": record.get("evidence_fingerprint"),
                         "written": ["verification_states.jsonl"]})
 
     def handle_requirement_rollback(self) -> None:

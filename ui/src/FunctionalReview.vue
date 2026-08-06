@@ -573,6 +573,11 @@ async function saveVerification() {
         requirement_id: item.functional_requirement_id,
         verification: payload.verification,
         lifecycle_state: payload.lifecycle_state,
+        // S1-6：用响应回传的最新指纹同步本地行——否则下次保存必携旧（空）指纹触发假 409。
+        // 后端回传指纹时直接采用；旧后端不回传（undefined）时保留本地既有指纹，不回退已持有的真实值。
+        evidence_fingerprint: payload.evidence_fingerprint
+          ?? verificationStates.value[item.functional_requirement_id]?.evidence_fingerprint
+          ?? "",
       },
     }
     syncVerificationEdit()

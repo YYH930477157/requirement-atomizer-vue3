@@ -161,6 +161,9 @@ export type VerificationActionPayload = {
   requirement_id: string
   verification: VerificationSubobject
   lifecycle_state: LifecycleState
+  // S1-6：后端回传的最新证据指纹；前端保存成功后据此同步本地行指纹，
+  // 否则第二次保存必携旧（空）指纹→假 409。旧后端不回传时为 undefined。
+  evidence_fingerprint?: string
   written: string[]
 }
 
@@ -1427,7 +1430,9 @@ export class RequirementApiClient {
     }
     // CAS 是 opt-in：首次回写（无既有 evidence_fingerprint）省略 expected，后端跳过校验
     // （apply_verification_override 仅在 expected != current 时抛 VerificationStateConflict）。
-    if (input.expectedEvidenceFingerprint !== undefined) {
+    // S1-6：空串视同无指纹（指纹恒为 sha256 hex，空串只来自前端占位回退，不构成有效 CAS
+    // token）——空串当 expected 发出会被后端当作"失配的旧指纹"判 409。空串一并省略。
+    if (input.expectedEvidenceFingerprint !== undefined && input.expectedEvidenceFingerprint !== "") {
       body.expected_evidence_fingerprint = input.expectedEvidenceFingerprint
     }
     return this.request<VerificationActionPayload>("/verification-actions", {

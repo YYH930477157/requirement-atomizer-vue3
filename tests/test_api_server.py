@@ -228,6 +228,78 @@ def _file_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+class VerificationActionFingerprintHttpTests(unittest.TestCase):
+    """S1-6：POST /verification-actions 必须回传最新 ``evidence_fingerprint``。
+
+    修复前响应只回 ``verification``/``lifecycle_state``，前端保存成功后无法同步本地行
+    指纹，第二次保存必携旧（空）指纹→假 409（高频缺陷，实测复现）。验收：响应回传
+    指纹 + 三连保存无 409；携过时指纹仍被拒（CAS 真实生效，不是放行一切）。
+    """
+
+    TOKEN = "verification-http-test-token"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.out = Path(self._tmp.name)
+        self.rid = "FRE-save0001"
+        self.item = {
+            "functional_requirement_id": self.rid,
+            "objective": "表具应记录掉电事件",
+            "behaviors": ["掉电时写日志"],
+            "description": "表具应记录掉电事件",
+            "source_section": "4.2.1",
+            "source_quote": "The meter shall log power failure events.",
+            "source_block_ids": ["BLK-001"],
+        }
+        (self.out / "functional_requirements.json").write_text(
+            json.dumps({"producer": "functional-extract-v1", "items": [self.item]},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def test_response_returns_evidence_fingerprint_and_three_saves_do_not_409(self) -> None:
+        from requirement_schema import requirement_content_fingerprint
+        expected_fp = requirement_content_fingerprint(self.item)
+        with _claim_api(self.out, local_token=self.TOKEN) as base:
+            # 第一次：首次回写不携 expected → 通过，响应必须回传 evidence_fingerprint
+            s1, p1 = _http_post_json(base, "/verification-actions", {
+                "requirement_id": self.rid,
+                "verification": {"implemented": "done"},
+                "actor": "tester",
+            }, token=self.TOKEN)
+            self.assertEqual(s1, 200, p1)
+            self.assertEqual(p1.get("evidence_fingerprint"), expected_fp)
+            # 第二次：携响应回传的指纹 → 通过（无 409）
+            s2, p2 = _http_post_json(base, "/verification-actions", {
+                "requirement_id": self.rid,
+                "verification": {"implemented": "done"},
+                "actor": "tester",
+                "expected_evidence_fingerprint": p1["evidence_fingerprint"],
+            }, token=self.TOKEN)
+            self.assertEqual(s2, 200, p2)
+            # 第三次：再携最新指纹 → 通过（三连保存无 409）
+            s3, p3 = _http_post_json(base, "/verification-actions", {
+                "requirement_id": self.rid,
+                "verification": {"implemented": "done"},
+                "actor": "tester",
+                "expected_evidence_fingerprint": p2["evidence_fingerprint"],
+            }, token=self.TOKEN)
+            self.assertEqual(s3, 200, p3)
+
+    def test_repeated_save_with_genuinely_stale_fingerprint_still_409(self) -> None:
+        # 对照：携【过时/不匹配】指纹仍应被拒——CAS 真实生效，修复不是放行一切。
+        with _claim_api(self.out, local_token=self.TOKEN) as base:
+            s_bad, p_bad = _http_post_json(base, "/verification-actions", {
+                "requirement_id": self.rid,
+                "verification": {"implemented": "done"},
+                "actor": "tester",
+                "expected_evidence_fingerprint": "stale-not-matching",
+            }, token=self.TOKEN)
+            self.assertEqual(s_bad, 409)
+            self.assertTrue(p_bad.get("needs_reconfirmation"))
+
+
 class TokenIsValidTests(unittest.TestCase):
     def test_no_expected_token_allows_through(self) -> None:
         # 未配置 token（本地无鉴权场景）→ 任意请求放行

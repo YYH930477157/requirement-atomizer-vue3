@@ -49,7 +49,10 @@ from requirement_record import provenance
 
 FUNCTIONAL_EXTRACT_VERSION = "functional-extract-v1"
 FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v1"
-FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v1"
+# S1-8：bump v1→v2。``_reject_drifted_codes`` 清洗范围从仅 objective 扩到全部叙述字段
+# （behaviors/data_constraints/variants/exceptions/preconditions/description），缓存产物内容
+# 变化——指纹含 guards 版本，bump 后旧 stub/LLM 缓存（behaviors 里残留幻觉编码）自然失效。
+FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v2"
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
 
@@ -112,12 +115,24 @@ def clause_fingerprint(section: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def extraction_fingerprint(sections: Sequence[dict[str, Any]]) -> str:
-    """整批条款的指纹，叠加版本/prompt/护栏版本进缓存键。"""
+def extraction_fingerprint(
+    sections: Sequence[dict[str, Any]],
+    *,
+    route_key: str = "",
+) -> str:
+    """整批条款的指纹，叠加版本/prompt/护栏/route 维度进缓存键。
+
+    S1-7：``route_key`` 必须进指纹——历史 stub 产物（route_key='stub'）不得被后续真实 LLM
+    请求（route_key='llm:<model>'/'injected'）静默复用（重构结论 §1.3 实证缺陷）。route 或
+    模型变化即指纹失配，旧 stub 缓存自然失效——这是**预期行为**（它们本就不该被复用），不是
+    回归。``run_functional_extract`` 在算指纹前先用 ``_resolve_route_label`` 把 route 解析成
+    稳定身份标签再传入。
+    """
     canonical = {
         "version": FUNCTIONAL_EXTRACT_VERSION,
         "prompt": FUNCTIONAL_EXTRACT_PROMPT_VERSION,
         "guards": FUNCTIONAL_EXTRACT_GUARDS_VERSION,
+        "route_key": str(route_key or ""),
         "clauses": [clause_fingerprint(section) for section in sections],
     }
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -222,14 +237,30 @@ def _coerce_item(
     exceptions = _as_str_list(raw.get("exceptions"))
     related = _as_str_list(raw.get("related_dlms_objects"))
 
-    # 受保护编码硬拦：叙述字段合集 vs 来源条款原文
+    # 受保护编码硬拦：叙述字段合集 vs 来源条款原文（数字软标用原始合集）
     narrative = "\n".join([objective, *behaviors, *data_constraints, *related])
-    cleaned_narrative, rejected_codes = _reject_drifted_codes(narrative, source_text)
-    if rejected_codes:
-        # 把剔除反映回 objective/description（behaviors 留原句以便审计，但 rejected_codes 留痕）
-        objective = _reject_drifted_codes(objective, source_text)[0] or objective
-    # 普通数字软标
     numeric_drifted, numeric_drift = _flag_numeric_drift(narrative, source_text)
+
+    # S1-8：``_reject_drifted_codes`` 的 docstring 承诺"剔除 LLM 产出但来源条款没有的
+    # OBIS/hex/class_id/标准号"——清洗范围必须覆盖**全部叙述字段**（objective/behaviors/
+    # data_constraints/variants/exceptions/preconditions），而非只清 objective。旧实现只把剔除
+    # 反映回 objective，幻觉编码在 behaviors/data_constraints 里原样保留到产物。这里逐字段清洗，
+    # 聚合 rejected_codes 留痕（related 在下方按编码归属单独过滤）。docstring 怎么写就怎么实现，
+    # 不许反过来改 docstring 迁就实现。
+    rejected: set[str] = set()
+
+    def _clean_field(value: str) -> str:
+        cleaned, drifted = _reject_drifted_codes(value, source_text)
+        rejected.update(drifted)
+        return cleaned
+
+    objective = _clean_field(objective) or objective
+    behaviors = [_clean_field(b) or b for b in behaviors]
+    data_constraints = [_clean_field(c) or c for c in data_constraints]
+    variants = [_clean_field(v) or v for v in variants]
+    exceptions = [_clean_field(e) or e for e in exceptions]
+    preconditions = [_clean_field(p) or p for p in preconditions]
+    rejected_codes = sorted(rejected)
 
     related_filtered = [
         value for value in related
@@ -238,6 +269,9 @@ def _coerce_item(
     ]
 
     description = str(raw.get("description") or "").strip()
+    if description:
+        # S1-8：description 同属 LLM 叙述字段，幻觉编码一并清洗（与 objective/behaviors 同口径）
+        description = _clean_field(description) or description
     if not description:
         description = _render_description(objective, behaviors, data_constraints)
 
@@ -322,6 +356,44 @@ def _stub_item(section: dict[str, Any], index: int) -> dict[str, Any]:
 # LLM 路由解析（复用 ai_extract.config_for_route 同款纪律）
 # ---------------------------------------------------------------------------
 
+def _route_config(route: str | None):
+    """解析 route 到 ``LLMClientConfig``，校验 key 可用；不可用返回 None（→ stub）。
+
+    S1-7：抽出为单一真相源，``_resolve_route_label``（缓存键）与 ``_resolve_extract_chat``
+    （执行）共用，避免两处分别判定 route 能力导致缓存键与实际执行路径漂移。
+    """
+    if not route or route == "stub":
+        return None
+    try:
+        from ai_extract import DEFAULT_PIPELINE_PATH, config_for_route
+        config = config_for_route(route, DEFAULT_PIPELINE_PATH)
+    except Exception:
+        return None
+    if config is None:
+        return None
+    local_endpoint = any(
+        host in config.base_url.casefold() for host in ("127.0.0.1", "localhost", "::1")
+    )
+    if not local_endpoint and not os.environ.get(config.api_key_env):
+        return None
+    return config
+
+
+def _resolve_route_label(route: str | None, chat: ExtractChat | None) -> str:
+    """缓存键用的路由身份标签（与 ``_resolve_extract_chat`` 的执行标签同源，无副作用）。
+
+    S1-7：stub 与 openai_compatible 产物从此不共键。``chat`` 注入 → 'injected'；route 解析
+    出可用 config → 'llm:<model>'；否则 'stub'。标签必须与 ``_resolve_extract_chat`` 返回的
+    执行标签一致——两者都经 ``_route_config`` 派生，唯一差异是执行路径还构造 invoke 回调。
+    """
+    if chat is not None:
+        return "injected"
+    config = _route_config(route)
+    if config is None:
+        return "stub"
+    return f"llm:{config.model}"
+
+
 def _resolve_extract_chat(
     route: str | None,
     chat: ExtractChat | None,
@@ -329,24 +401,15 @@ def _resolve_extract_chat(
     """返回 (回调, 执行路由标签)。标签如实反映实际能力，绝不夸大。
 
     stub / 无 route / 无 key → (None, 'stub')，调用方走确定性退化。injected chat → 'injected'。
+    执行标签与 ``_resolve_route_label`` 同源（都从 ``_route_config`` 派生），保证缓存键与实际
+    执行路径不漂移。
     """
     if chat is not None:
         return chat, "injected"
-    if not route or route == "stub":
-        return None, "stub"
-    try:
-        from ai_extract import DEFAULT_PIPELINE_PATH, config_for_route
-        from llm_client import chat_json
-        config = config_for_route(route, DEFAULT_PIPELINE_PATH)
-    except Exception:
-        return None, "stub"
+    config = _route_config(route)
     if config is None:
         return None, "stub"
-    local_endpoint = any(
-        host in config.base_url.casefold() for host in ("127.0.0.1", "localhost", "::1")
-    )
-    if not local_endpoint and not os.environ.get(config.api_key_env):
-        return None, "stub"
+    from llm_client import chat_json
     # 温度 0 可复现（config 层默认已是 0，此处显式断言不放松）
     try:
         temperature = float(getattr(config, "temperature", 0.0) or 0.0)
@@ -674,14 +737,16 @@ def run_functional_extract(
     if sections is None:
         sections = load_clauses(out_dir)
     sections = list(sections)
-    fingerprint = extraction_fingerprint(sections)
+    # S1-7：指纹并入 route 维度——算指纹前先把 route 解析成稳定身份标签（与执行路径同源）。
+    route_label = _resolve_route_label(route, chat)
+    fingerprint = extraction_fingerprint(sections, route_key=route_label)
 
-    # 缓存命中放行（指纹含版本/prompt/护栏）
+    # 缓存命中放行（指纹含版本/prompt/护栏/route）
     cache = _read_cache(out_dir)
     cached = cache.get(fingerprint)
     if cached is not None and isinstance(cached.get("payload"), dict):
         payload = dict(cached["payload"])
-        # 缓存里的 route 如实保留；调用方 route 变化不读旧缓存（指纹不含 route，但版本变化自然失效）
+        # 缓存里的 route 如实保留；route 变化已并入指纹，旧产物自然失效（S1-7：stub/openai_compatible 不共键）
         return _finalize_payload(payload, out_dir, route)
 
     if blocks is None:
