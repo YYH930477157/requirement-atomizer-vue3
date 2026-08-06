@@ -403,6 +403,46 @@ class SynthesizedConsumerValidationTests(unittest.TestCase):
         # producer 异常 → 回退逐原子输入（2 条),而非采信异源 1 条
         self.assertEqual(int(result.get("analysis_count") or 0), 2)
 
+    def test_functional_extract_producer_is_consumed(self) -> None:
+        """S1-3：functional-extract-v1 直抽产物被主分析流正常消费（家族白名单接纳）。"""
+        from requirements_analysis import run_requirements_analysis
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            rows = [{"ai_req_id": f"AIR-{i}", "title": f"t{i}", "module": "计量",
+                     "description": "The meter shall measure.", "source_quote": "The meter shall measure.",
+                     "status": "draft"} for i in range(2)]
+            (out / "ai_requirements.jsonl").write_text(
+                "\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+            (out / "functional_requirements.json").write_text(json.dumps({
+                "producer": "functional-extract-v1",
+                "items": [{"ai_req_id": "X-1", "title": "直抽需求", "module": "计量",
+                           "description": "d", "source_quote": "q"}],
+            }, ensure_ascii=False), encoding="utf-8")
+            result = run_requirements_analysis(out, route="stub")
+        # functional-extract-v1 被接纳 → 消费直抽 1 条，而非回退逐原子 2 条
+        self.assertEqual(int(result.get("analysis_count") or 0), 1)
+
+    def test_unconserved_functional_extract_product_blocks_analysis(self) -> None:
+        """S1-2：functional-extract 直抽产物守恒未闭合 → 阻断成文上游（raise，非仅标志位）。"""
+        from functional_extract import FunctionalConservationError
+        from requirements_analysis import run_requirements_analysis
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            rows = [{"ai_req_id": f"AIR-{i}", "title": f"t{i}", "module": "计量",
+                     "description": "The meter shall measure.", "source_quote": "The meter shall measure.",
+                     "status": "draft"} for i in range(2)]
+            (out / "ai_requirements.jsonl").write_text(
+                "\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+            (out / "functional_requirements.json").write_text(json.dumps({
+                "producer": "functional-extract-v1",
+                "conservation": {"ok": False, "missing_block_ids": ["BLK-9"],
+                                 "block_export": True},
+                "items": [{"ai_req_id": "X-1", "title": "直抽需求", "module": "计量",
+                           "description": "d", "source_quote": "q"}],
+            }, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaises(FunctionalConservationError):
+                run_requirements_analysis(out, route="stub")
+
 
 class SemanticGateDenominatorTests(unittest.TestCase):
     """C6（0710 评审）：语义门用例缺 functional_count 必须响亮失败（自引分母恒真）。"""

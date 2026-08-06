@@ -113,6 +113,113 @@ def resolve_kb_paths(kb_paths: list[Path] | None) -> list[Path]:
     return [resolve_bundled_path(path) for path in kb_paths]
 
 
+def _budget_document_id(input_path: Path | None, out_dir: Path) -> str:
+    """文档预算单稳定 document_id：输入文件名优先，其次输出目录名。"""
+    if input_path is not None:
+        stem = Path(input_path).stem.strip()
+        if stem:
+            return stem
+    return (out_dir.name or "document").strip() or "document"
+
+
+def _attach_budget_ledger_for_run(out_dir: Path, input_path: Path | None = None):
+    """S1-1：``RATOMIZER_LLM_BUDGET=1`` 时创建文档预算单并 ``attach()`` 到 llm_client 钩子。
+
+    开关未开返回 None（既有行为逐字节不变）。开启后所有 LLM HTTP 调用经钩子扣减，超额在
+    ``intercept`` 事前拦截（调用方既有 stub catch 接管），落盘 ``llm_budget.json`` 供 cost-report。
+    """
+    try:
+        from llm_budget import LLMBudgetLedger, budget_enabled
+    except Exception:  # noqa: BLE001 — 预算模块不可用不得阻断主流程
+        return None
+    if not budget_enabled():
+        return None
+    try:
+        ledger = LLMBudgetLedger.for_document(
+            _budget_document_id(input_path, out_dir), out_dir=out_dir
+        )
+        ledger.attach()
+        return ledger
+    except Exception as exc:  # noqa: BLE001 — 预算单创建/挂载失败不得阻断主流程
+        logging.getLogger("requirement_atomizer").warning("文档预算单 attach 失败：%s", exc)
+        return None
+
+
+def _detach_budget_ledger(ledger) -> None:
+    """S1-1：退出时 save（落盘 cost-report 数据源）+ detach（llm_client 回到无预算行为）。"""
+    if ledger is None:
+        return
+    try:
+        ledger.save()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("requirement_atomizer").warning("文档预算单 save 失败：%s", exc)
+    try:
+        ledger.detach()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@contextmanager
+def _budget_stage(ledger, stage: str):
+    """把一个流水线环节包进预算单的 stage 上下文（无活动预算单则空操作）。"""
+    if ledger is None:
+        yield
+        return
+    with ledger.enter_stage(stage):
+        yield
+
+
+def _attach_dual_track_proposer(route: str | None) -> bool:
+    """S1-4：``RATOMIZER_TABLE_DUAL_TRACK=1`` 且有 openai_compatible route 时，挂双轨提议器。
+
+    atomize 自身只做几何校验 + 假设派生 + 落盘（零 LLM）；提议器闭包捕获 config 调
+    ``llm_table_understanding.propose_table_structure``。无 route（stub）/ 开关关 /
+    config 解析失败 → 不挂，atomize 走确定性 ``analyze_table``（OFF 字节不变）。
+    """
+    try:
+        from table_structure import dual_track_enabled
+    except Exception:  # noqa: BLE001
+        return False
+    if not dual_track_enabled() or not route or route == "stub":
+        return False
+    try:
+        from ai_extract import DEFAULT_PIPELINE_PATH, config_for_route
+        from atomize import set_table_dual_track_proposer
+        from llm_table_understanding import propose_table_structure
+
+        config = config_for_route(route, DEFAULT_PIPELINE_PATH)
+    except Exception:  # noqa: BLE001
+        return False
+    if config is None:
+        return False
+
+    def proposer(parsed_table, *, table_id="", block_id="", section_path=None):
+        return propose_table_structure(parsed_table, config=config)
+
+    try:
+        set_table_dual_track_proposer(proposer)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _detach_dual_track_proposer() -> None:
+    try:
+        from atomize import clear_table_dual_track_proposer
+
+        clear_table_dual_track_proposer()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# 链内阶段名 → 预算单环节（仅 LLM 承载环节映射，确定性环节不进账本分摊）
+_CHAIN_BUDGET_STAGES = {
+    "ai-extract": "functional_extract",
+    "assemble": "spec_enrich",
+    "requirements-analysis": "analyze_enrich",
+}
+
+
 def run_pipeline_task(
     input_path: Path,
     out_dir: Path,
@@ -128,88 +235,99 @@ def run_pipeline_task(
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    atomize_config = {
-        "chunk_chars": chunk_chars,
-        "kb_paths": [str(path) for path in resolve_kb_paths(kb_paths)],
-        "domain_pack_dir": str(resolve_bundled_path(domain_pack_dir) or ""),
-    }
-    atomize_reused = stage_is_reusable(
-        out_dir, "atomize", input_path=input_path, config=atomize_config)
-    if atomize_reused:
-        manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
-        manifest["resume_action"] = "skipped"
-        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
-                            action="skipped", input_path=input_path, config=atomize_config)
-        emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "skipped", "percent": 100})
-    else:
-        update_run_manifest(out_dir, "atomize", "running")
-        emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "running", "percent": 10})
-        try:
-            manifest = run_atomizer_pipeline(
-                input_path,
-                out_dir,
-                chunk_chars=chunk_chars,
-                kb_paths=resolve_kb_paths(kb_paths),
-                domain_pack_dir=resolve_bundled_path(domain_pack_dir),
-            )
-        except Exception as exc:
-            update_run_manifest(out_dir, "atomize", "failed", error=str(exc))
-            raise
-        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
-                            action="ran", input_path=input_path, config=atomize_config)
-        emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "ok", "percent": 100})
+    # S1-1：开启 RATOMIZER_LLM_BUDGET 时挂文档预算单（attach 后所有 LLM 调用经钩子扣减 +
+    # 超额事前拦截；save 落盘 cost-report 数据源）。开关未开返回 None，行为逐字节不变。
+    budget = _attach_budget_ledger_for_run(out_dir, input_path)
+    _attach_dual_track_proposer(llm_route)  # S1-4：双轨开且有 route 时挂提议器（atomize 用）
+    try:
+        atomize_config = {
+            "chunk_chars": chunk_chars,
+            "kb_paths": [str(path) for path in resolve_kb_paths(kb_paths)],
+            "domain_pack_dir": str(resolve_bundled_path(domain_pack_dir) or ""),
+        }
+        atomize_reused = stage_is_reusable(
+            out_dir, "atomize", input_path=input_path, config=atomize_config)
+        if atomize_reused:
+            manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+            manifest["resume_action"] = "skipped"
+            update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
+                                action="skipped", input_path=input_path, config=atomize_config)
+            emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "skipped", "percent": 100})
+        else:
+            update_run_manifest(out_dir, "atomize", "running")
+            emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "running", "percent": 10})
+            try:
+                # 预算单环节：structure_hypothesis（atomize 的 LLM 仅在 WS1 双轨开时出现）
+                with _budget_stage(budget, "structure_hypothesis"):
+                    manifest = run_atomizer_pipeline(
+                        input_path,
+                        out_dir,
+                        chunk_chars=chunk_chars,
+                        kb_paths=resolve_kb_paths(kb_paths),
+                        domain_pack_dir=resolve_bundled_path(domain_pack_dir),
+                    )
+            except Exception as exc:
+                update_run_manifest(out_dir, "atomize", "failed", error=str(exc))
+                raise
+            update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
+                                action="ran", input_path=input_path, config=atomize_config)
+            emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "ok", "percent": 100})
 
-    # 审计 P1-d：用户 --kb 必须贯通到审查阶段——此前 atomize 按客户 KB 匹配、审查工具
-    # 却落回默认 KB 复核（KB 双轨错配）。None（未显式传 kb）保持旧默认行为；显式传入时
-    # 同一份解析结果进 run_review_pipeline 与阶段指纹，两侧文件集合严格一致。
-    review_kb_paths = resolve_kb_paths(kb_paths) if kb_paths is not None else None
-    review_config: dict[str, Any] = {
-        # 审计 R2-H2：scope/limit 改变审查覆盖面，必须进阶段指纹——否则先 targeted 后
-        # all、或先限量后全量时指纹不变，阶段被整体跳过。
-        "review_scope": review_scope,
-        "llm_review_limit": llm_review_limit,
-    }
-    if review_kb_paths is not None:
-        review_config["kb_paths"] = [str(path) for path in review_kb_paths]
-    # 审计 R2-H2/H3：--domain-pack 同时喂审查（review_policy 合并）与阶段指纹，与
-    # atomize 同轨取解析后的包目录；未传时保持 review 默认捆绑包行为不变（显式 None
-    # 会关掉 merge_review_policy 的默认包合并）。
-    review_domain_pack_path: Path | None = None
-    resolved_domain_pack_dir = resolve_bundled_path(domain_pack_dir)
-    if resolved_domain_pack_dir is not None:
-        review_config["domain_pack_dir"] = str(resolved_domain_pack_dir)
-        review_domain_pack_path = resolved_domain_pack_dir / "pack.yaml"
-    if skip_review:
-        review = None
-    elif atomize_reused and stage_is_reusable(out_dir, "llm-review", route=llm_route, config=review_config):
-        review = skipped_stage_payload(out_dir, "llm-review")
-        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="skipped", config=review_config)
-        emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "skipped", "percent": 100})
-    else:
-        update_run_manifest(out_dir, "llm-review", "running", config=review_config)
-        emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "running", "percent": 0})
-        try:
-            review = run_review_pipeline(
-                out_dir,
-                route=llm_route,
-                scope=review_scope,
-                llm_review_limit=llm_review_limit,
-                progress_callback=emit_progress,
-                kb_paths=review_kb_paths,
-                domain_pack_path=review_domain_pack_path or DEFAULT_DOMAIN_PACK_PATH,
-            )
-        except Exception as exc:
-            update_run_manifest(out_dir, "llm-review", "failed", error=str(exc), config=review_config)
-            raise
-        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="ran", config=review_config)
-    return {
-        "kind": "pipeline",
-        "out_dir": str(out_dir),
-        "input": str(input_path),
-        "manifest": manifest,
-        "review": review,
-        "summary": _stage_summary(out_dir),
-    }
+        # 审计 P1-d：用户 --kb 必须贯通到审查阶段——此前 atomize 按客户 KB 匹配、审查工具
+        # 却落回默认 KB 复核（KB 双轨错配）。None（未显式传 kb）保持旧默认行为；显式传入时
+        # 同一份解析结果进 run_review_pipeline 与阶段指纹，两侧文件集合严格一致。
+        review_kb_paths = resolve_kb_paths(kb_paths) if kb_paths is not None else None
+        review_config: dict[str, Any] = {
+            # 审计 R2-H2：scope/limit 改变审查覆盖面，必须进阶段指纹——否则先 targeted 后
+            # all、或先限量后全量时指纹不变，阶段被整体跳过。
+            "review_scope": review_scope,
+            "llm_review_limit": llm_review_limit,
+        }
+        if review_kb_paths is not None:
+            review_config["kb_paths"] = [str(path) for path in review_kb_paths]
+        # 审计 R2-H2/H3：--domain-pack 同时喂审查（review_policy 合并）与阶段指纹，与
+        # atomize 同轨取解析后的包目录；未传时保持 review 默认捆绑包行为不变（显式 None
+        # 会关掉 merge_review_policy 的默认包合并）。
+        review_domain_pack_path: Path | None = None
+        resolved_domain_pack_dir = resolve_bundled_path(domain_pack_dir)
+        if resolved_domain_pack_dir is not None:
+            review_config["domain_pack_dir"] = str(resolved_domain_pack_dir)
+            review_domain_pack_path = resolved_domain_pack_dir / "pack.yaml"
+        if skip_review:
+            review = None
+        elif atomize_reused and stage_is_reusable(out_dir, "llm-review", route=llm_route, config=review_config):
+            review = skipped_stage_payload(out_dir, "llm-review")
+            update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="skipped", config=review_config)
+            emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "skipped", "percent": 100})
+        else:
+            update_run_manifest(out_dir, "llm-review", "running", config=review_config)
+            emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "running", "percent": 0})
+            try:
+                with _budget_stage(budget, "llm_review"):  # 预算单环节：llm_review
+                    review = run_review_pipeline(
+                        out_dir,
+                        route=llm_route,
+                        scope=review_scope,
+                        llm_review_limit=llm_review_limit,
+                        progress_callback=emit_progress,
+                        kb_paths=review_kb_paths,
+                        domain_pack_path=review_domain_pack_path or DEFAULT_DOMAIN_PACK_PATH,
+                    )
+            except Exception as exc:
+                update_run_manifest(out_dir, "llm-review", "failed", error=str(exc), config=review_config)
+                raise
+            update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="ran", config=review_config)
+        return {
+            "kind": "pipeline",
+            "out_dir": str(out_dir),
+            "input": str(input_path),
+            "manifest": manifest,
+            "review": review,
+            "summary": _stage_summary(out_dir),
+        }
+    finally:
+        _detach_budget_ledger(budget)
+        _detach_dual_track_proposer()
 
 
 def export_task(out_dir: Path, formats: list[str]) -> dict[str, Any]:
@@ -1837,6 +1955,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
     global _CHAIN_ACTIVE
     _CHAIN_ACTIVE = True   # 链内各阶段跳过 summary;finally 复位,失败路径不污染后续任务
+    chain_budget = _attach_budget_ledger_for_run(out_dir)  # S1-1：开启预算单时挂账本
     try:
         llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis",
                       "export-annotation-html"}
@@ -1930,7 +2049,10 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             else:
                 update_run_manifest(out_dir, stage, "running")
                 try:
-                    stage_payload = runners[stage]()
+                    # S1-1：LLM 承载环节进预算单 stage 上下文（按 _CHAIN_BUDGET_STAGES 映射；
+                    # 无活动预算单时空操作，确定性环节不进账本分摊）
+                    with _budget_stage(chain_budget, _CHAIN_BUDGET_STAGES.get(stage, "default")):
+                        stage_payload = runners[stage]()
                 except Exception as exc:
                     update_run_manifest(out_dir, stage, "failed", error=str(exc))
                     raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc
@@ -1983,6 +2105,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         payload["skipped_stages"] = skipped_stages
     finally:
         _CHAIN_ACTIVE = False
+        _detach_budget_ledger(chain_budget)  # S1-1：落盘 cost-report 数据源 + 卸载钩子
     payload["summary"] = build_output_summary(out_dir)
     return payload
 

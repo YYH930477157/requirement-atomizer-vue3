@@ -508,6 +508,29 @@ def raise_if_unconserved(report: dict[str, Any]) -> None:
         )
 
 
+def _notify_budget_degraded(reason: str) -> None:
+    """S1-1：通知活动文档预算单 functional_extract 降级（mark_degraded）。
+
+    ``llm_client`` 的文档预算钩子（``LLMBudgetLedger`` 经 ``attach()`` 挂载）由 desktop_tasks
+    在开启 ``RATOMIZER_LLM_BUDGET`` 时安装。``mark_degraded(STAGE_FUNCTIONAL_EXTRACT, reason)``
+    会把 ``document_needs_work`` 置真（核心交付物降级强制文档级 NEEDS WORK）。无活动预算单
+    （开关未开 / 非桌面入口）时空操作——本模块不依赖预算单存在，行为面不动。
+    """
+    try:
+        import llm_client
+        from llm_budget import STAGE_FUNCTIONAL_EXTRACT
+
+        hook = llm_client.get_document_budget_hook()
+    except Exception:  # noqa: BLE001 — 预算通知失败不得影响抽取主流程
+        return
+    if hook is None:
+        return
+    try:
+        hook.mark_degraded(STAGE_FUNCTIONAL_EXTRACT, str(reason))
+    except Exception:  # noqa: BLE001 — 同上
+        pass
+
+
 # ---------------------------------------------------------------------------
 # 缓存（按仓库既有 ai_extract_cache 模式：指纹命中放行，否则写新条目）
 # ---------------------------------------------------------------------------
@@ -617,13 +640,20 @@ def extract_functional_requirements(
         except Exception as exc:
             LOGGER.warning("functional_extract LLM 调用失败，退回 stub 路由：%s", exc)
             items = None
+    degraded_to_stub = False
     if items is None:
         # stub 路由：确定性退化，每条款一条占位功能需求，provenance 如实标 stub
         items = [_stub_item(section, idx + 1) for idx, section in enumerate(sections)]
         executed_route = "stub"
+        # 仅当 LLM 被实际尝试过却退化（route 非 stub）才算降级；route=stub 是请求的本意，不算
+        degraded_to_stub = active_chat is not None
     # 事后校正路由标签：route 声称 llm 但产出非法全部退回 stub 时，不得夸大
     if executed_route.startswith("llm:") and not items:
         executed_route = "stub"
+    if degraded_to_stub:
+        # S1-1：功能需求直抽是核心交付物——降级 stub 时在文档预算单上记 mark_degraded，
+        # 强制 document_needs_work=True（不允许仅 provenance 标注静默通过；无活动预算单则空操作）。
+        _notify_budget_degraded("functional_extract_degraded_to_stub")
     return items, executed_route
 
 

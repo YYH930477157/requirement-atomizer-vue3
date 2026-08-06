@@ -189,6 +189,28 @@ def _section_context(req: dict[str, Any], blocks_by_id: dict[str, dict[str, Any]
     return joined[:SECTION_CONTEXT_MAX_CHARS]
 
 
+# S1-3：functional_requirements.json 的合法 producer 家族白名单。functional-synthesis
+# （旧原子化→合成路径）与 functional-extract（WS2 直抽）同为功能需求级产物来源；只校验
+# 家族前缀不校验版本号（版本演进由指纹层负责失效）。
+_FUNCTIONAL_PRODUCER_FAMILIES = ("functional-synthesis", "functional-extract")
+
+
+def _raise_if_functional_extract_unconserved(synthesized_payload: dict[str, Any]) -> None:
+    """S1-2 成文导出闸门：functional-extract 直抽产物守恒未闭合即 raise，阻断成文上游。
+
+    functional_extract 的 ``conservation_report`` 投影在 ``functional_requirements.json``
+    的 ``conservation`` 块（``ok`` / missing/duplicate/extra/evidence_mismatches）。守恒未
+    闭合即调 ``functional_extract.raise_if_unconserved`` 抛 ``FunctionalConservationError``，
+    不让不守恒的功能需求级产物静默进归属分类 / 软件 LLM / 研发模板成文（仅 payload 标志位
+    不够——验收要求「导出被阻断」）。functional-synthesis 无守恒块，缺块时按现状放行。
+    """
+    conservation = synthesized_payload.get("conservation")
+    if not isinstance(conservation, dict):
+        return
+    from functional_extract import raise_if_unconserved
+    raise_if_unconserved(conservation)
+
+
 def run_requirements_analysis(
     out_dir: Path,
     *,
@@ -216,11 +238,15 @@ def run_requirements_analysis(
         # C4（0710 评审）：消费端血统校验（§43）——陈旧/异源 functional_requirements.json
         # 会被静默采信（链内指纹只管要不要重跑，不做产物互一致校验）。producer 家族不符
         # 即告警并回退逐原子输入；只校验家族名不校验版本号（版本演进由指纹层负责失效）。
+        # S1-3：白名单接纳 functional-extract 直抽家族（与 functional-synthesis 同为合法来源）。
+        # S1-2：functional-extract 产物携带 conservation 守恒报告——未闭合即 raise 阻断成文上游。
         if isinstance(requirements, list) and isinstance(synthesized_payload, dict):
             producer = str(synthesized_payload.get("producer") or "")
-            if not producer.startswith("functional-synthesis"):
+            if not any(producer.startswith(family) for family in _FUNCTIONAL_PRODUCER_FAMILIES):
                 LOGGER.warning("functional_requirements.json producer 异常（%s），回退逐原子输入", producer or "缺失")
                 requirements = None
+            elif producer.startswith("functional-extract"):
+                _raise_if_functional_extract_unconserved(synthesized_payload)
         if not isinstance(requirements, list):
             requirements = raw_requirements
     else:
