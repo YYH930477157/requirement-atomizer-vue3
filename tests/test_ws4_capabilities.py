@@ -205,9 +205,9 @@ class VerificationStateMachineIOTests(unittest.TestCase):
                                         expected_evidence_fingerprint="stale-fingerprint")
 
     def test_cas_accepts_when_fingerprint_matches(self) -> None:
-        from requirement_schema import requirement_content_fingerprint
+        from requirement_schema import requirement_structural_fingerprint
         from requirements_analysis_rules import apply_verification_override
-        fp = requirement_content_fingerprint(self.item)
+        fp = requirement_structural_fingerprint(self.item)
         rec = apply_verification_override(self.out, self.item["functional_requirement_id"],
                                           {"implemented": "done"}, actor="t",
                                           expected_evidence_fingerprint=fp)
@@ -318,38 +318,69 @@ class FunctionalRequirementIndexCasTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_fre_item_cas_rejects_stale_fingerprint_after_content_drift(self) -> None:
-        """FRE-* 条目回写后再改内容 → 二次回写携旧指纹被拒（CAS 真实生效）。"""
-        from requirement_schema import requirement_content_fingerprint
+    def test_fre_narrative_drift_keeps_confirmation_with_review_hint(self) -> None:
+        """T3-2：纯叙述字段变化（objective/behaviors/description）→ 确认保留 + 复核提示，
+        不吊销。结构指纹不变，故 CAS 闸放行；叙述指纹变化 → ``narrative_drift_hint=True``。"""
+        from requirement_schema import (
+            requirement_narrative_fingerprint, requirement_structural_fingerprint,
+        )
+        from requirements_analysis_rules import apply_verification_override
+
+        item = _write_functional_item(self.out)
+        rid = item["functional_requirement_id"]
+        struct_fp = requirement_structural_fingerprint(item)
+
+        # 首次回写：结构指纹一致 → 通过，建立叙述基线
+        rec = apply_verification_override(self.out, rid, {"implemented": "done"},
+                                          actor="tester",
+                                          expected_evidence_fingerprint=struct_fp)
+        self.assertEqual(rec["evidence_fingerprint"], struct_fp)
+        self.assertFalse(rec["narrative_drift_hint"])
+
+        # 需求重新生成：只改叙述（objective/behaviors/description）——结构指纹不变
+        narr_mutated = _write_functional_item(
+            self.out, objective="表具应支持全新不同的掉电记录能力",
+            behaviors=["全新行为"], description="全新的掉电记录能力描述")
+        self.assertEqual(requirement_structural_fingerprint(narr_mutated), struct_fp)
+        self.assertNotEqual(
+            requirement_narrative_fingerprint(narr_mutated),
+            requirement_narrative_fingerprint(item),
+        )
+
+        # 二次回写携结构指纹（客户端 round-trip 它）→ 通过（不吊销），且带复核提示
+        rec2 = apply_verification_override(self.out, rid, {"implemented": "done"},
+                                           actor="tester",
+                                           expected_evidence_fingerprint=struct_fp)
+        self.assertEqual(rec2["evidence_fingerprint"], struct_fp)
+        self.assertTrue(rec2["narrative_drift_hint"])
+
+    def test_fre_structural_drift_revokes_confirmation(self) -> None:
+        """T3-2：结构字段变化（模块/归属/OBIS/来源 block_ids）→ 结构指纹漂移 → CAS 吊销。"""
+        from requirement_schema import requirement_structural_fingerprint
         from requirements_analysis_rules import apply_verification_override
         from review_state import VerificationStateConflict
 
-        # 仅 functional_requirements.json（无 engineering_analysis.json）——这是 F1 的核心场景
         item = _write_functional_item(self.out)
         rid = item["functional_requirement_id"]
-        fp_before = requirement_content_fingerprint(item)
+        struct_fp = requirement_structural_fingerprint(item)
+        apply_verification_override(self.out, rid, {"implemented": "done"}, actor="tester",
+                                    expected_evidence_fingerprint=struct_fp)
 
-        # 首次回写：expected 与当前内容指纹一致 → 通过，落盘 evidence_fingerprint=fp_before
-        rec = apply_verification_override(self.out, rid, {"implemented": "done"},
-                                          actor="tester",
-                                          expected_evidence_fingerprint=fp_before)
-        self.assertEqual(rec["evidence_fingerprint"], fp_before)
+        # 结构漂移：改模块 + 来源 block_ids（物质性变化）
+        struct_mutated = _write_functional_item(
+            self.out, module="事件记录", source_block_ids=["BLK-999"],
+            source_quote="The meter shall log events. OBIS 1-1:1.1.1",
+            related_dlms_objects=["1-1:1.1.1"],
+        )
+        self.assertNotEqual(requirement_structural_fingerprint(struct_mutated), struct_fp)
 
-        # 需求重新生成：改 description（内容指纹的稳定识别字段）→ 指纹漂移
-        mutated = _write_functional_item(
-            self.out, objective="表具应支持全新不同的掉电记录能力",
-            behaviors=["全新行为"], description="全新的掉电记录能力描述")
-        fp_after = requirement_content_fingerprint(mutated)
-        self.assertNotEqual(fp_after, fp_before)
-
-        # 二次回写携【旧】指纹（前端持有的是首次回写后的 evidence_fingerprint）→ 必须被拒
+        # 携旧结构指纹回写 → 必须被拒（吊销转人工）
         with self.assertRaises(VerificationStateConflict) as ctx:
-            apply_verification_override(self.out, rid, {"implemented": "done"},
-                                        actor="tester",
-                                        expected_evidence_fingerprint=fp_before)
+            apply_verification_override(self.out, rid, {"implemented": "done"}, actor="tester",
+                                        expected_evidence_fingerprint=struct_fp)
         self.assertEqual(ctx.exception.requirement_id, rid)
-        # 当前指纹已是漂移后的值（不是旧 F1 缺陷里的空串）
-        self.assertEqual(ctx.exception.current_fingerprint, fp_after)
+        self.assertEqual(ctx.exception.current_fingerprint,
+                         requirement_structural_fingerprint(struct_mutated))
         self.assertNotEqual(ctx.exception.current_fingerprint, "")
 
     def test_fre_item_indexed_from_governed_pipeline_path(self) -> None:
@@ -462,8 +493,9 @@ class ExcelWritebackTests(unittest.TestCase):
         self.assertEqual(record["verification"]["test_case_ids"], ["TC-1", "TC-2"])
         self.assertTrue(record["verification"]["test_completed"])
 
-    def test_backfill_cas_rejects_regenerated_content(self) -> None:
-        """需求重新生成后内容漂移→回灌 CAS 失配→转人工（不自动合入）。"""
+    def test_backfill_narrative_drift_tolerated_with_review_hint(self) -> None:
+        """T3-2：纯叙述变化（description）不再拒回灌——结构列（子模块+客户需求章节）匹配即
+        合入，描述变化进 ``narrative_review`` 复核提示（状态不吊销）。"""
         from openpyxl import load_workbook
         from desktop_tasks import import_verification_workbook_task
         path = self._export()
@@ -474,10 +506,32 @@ class ExcelWritebackTests(unittest.TestCase):
         ws.cell(row=2, column=col["功能是否实现"] + 1, value="已完成")
         wb.save(path)
         wb.close()
-        # 模拟需求重新生成：改 description（内容指纹漂移）
+        # 模拟需求重新生成：只改 description/requirement/soft_text（叙述）——结构列不变
         _write_analysis_item(self.out, description="表具应支持全新不同的固件升级能力",
                              requirement="表具应支持全新不同的固件升级能力",
                              software_requirement_text="表具应支持全新不同的固件升级能力")
+        result = import_verification_workbook_task(self.out, path, actor="x")
+        self.assertEqual(result["imported"], 1)   # 结构匹配 → 回灌（状态保留）
+        self.assertEqual(result["stale"], 0)      # 叙述变化不再拒
+        narrative_review = result.get("narrative_review") or []
+        self.assertEqual(len(narrative_review), 1)
+        self.assertEqual(narrative_review[0]["requirement_id"], "FREQ-test0001")
+
+    def test_backfill_structural_drift_rejects_regenerated_content(self) -> None:
+        """T3-2：结构列（子模块/客户需求章节）漂移→回灌 CAS 失配→转人工（不自动合入）。"""
+        from openpyxl import load_workbook
+        from desktop_tasks import import_verification_workbook_task
+        path = self._export()
+        wb = load_workbook(path)
+        ws = wb.active
+        header = [c.value for c in ws[1]]
+        col = {name: idx for idx, name in enumerate(header)}
+        ws.cell(row=2, column=col["功能是否实现"] + 1, value="已完成")
+        wb.save(path)
+        wb.close()
+        # 模拟需求重新生成：改 module/submodule + source_section（结构漂移）
+        _write_analysis_item(self.out, module="事件记录", submodule="事件记录",
+                             source_section="9.9.9")
         result = import_verification_workbook_task(self.out, path, actor="x")
         self.assertEqual(result["imported"], 0)
         self.assertGreater(result["stale"], 0)
@@ -504,8 +558,9 @@ class ExcelWritebackTests(unittest.TestCase):
     def test_backfill_rejection_list_names_drifting_rows(self) -> None:
         """S1-10b：CAS 拒绝清单精确到 requirement_id + xlsx 行号 + 原因。
 
-        构造两行内容漂移（需求已重新生成）回灌：报告 rejected 列表含两条，各自带 rid、
-        行号、原因；imported==0、stale==2。行号与 rid 一一对应可定位到具体物理行。
+        T3-2：构造两行**结构**漂移（子模块/客户需求章节已变化）回灌：报告 rejected 列表含
+        两条，各自带 rid、行号、原因；imported==0、stale==2。行号与 rid 一一对应可定位到
+        具体物理行。（叙述漂移不再拒——见 test_backfill_narrative_drift_tolerated_with_review_hint。）
         """
         from openpyxl import load_workbook
         from desktop_tasks import import_verification_workbook_task
@@ -552,15 +607,13 @@ class ExcelWritebackTests(unittest.TestCase):
         wb.save(path)
         wb.close()
 
-        # 模拟需求重新生成：两条都漂移 description（内容指纹漂移）
-        _write_analysis_item(self.out, description="全新不同的固件升级能力A",
-                             requirement="全新不同的固件升级能力A",
-                             software_requirement_text="全新不同的固件升级能力A")
+        # 模拟需求重新生成：两条都漂移**结构列**（子模块 + 客户需求章节）
+        _write_analysis_item(self.out, module="升级V2", submodule="升级V2",
+                             source_section="4.1.1X")
         _write_analysis_item(self.out, analysis_id="AN-002",
                              functional_requirement_id="FREQ-test0002",
-                             description="全新不同的掉电记录能力B",
-                             requirement="全新不同的掉电记录能力B",
-                             software_requirement_text="全新不同的掉电记录能力B")
+                             module="事件记录V2", submodule="事件记录V2",
+                             source_section="4.2.1X")
 
         result = import_verification_workbook_task(self.out, path, actor="x")
         # 两行均被 CAS 拒绝
@@ -826,20 +879,59 @@ class DependencyRecommendTests(unittest.TestCase):
         self.assertIn(DEPENDENCY_EXCLUDE, kinds)
         self.assertIn(DEPENDENCY_REFINE, kinds)
 
-    def test_accept_writes_reject_does_not(self) -> None:
+    def test_accept_lands_edge_reject_keeps_record(self) -> None:
+        """T3-1 RTM 边：accept 落边（物化库 + 事件流）；reject 留记录（只事件流，不落物化库）。
+
+        旧「拒绝不落库=拒绝无声消失」升格为「拒绝进 append-only 事件流」，回放可重建裁决史。
+        """
         from desktop_tasks import decide_dependency_task
-        from review_state import read_dependency_decisions
+        from review_state import (
+            read_dependency_decisions, read_rtm_edge_events, replay_rtm_edges,
+        )
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             accepted = decide_dependency_task(out, frm="F1", to="F2", kind="depend",
                                               accepted=True, actor="专家", reason="升级依赖校验")
-            self.assertTrue(accepted["written"])
+            # accept：物化库 + 事件流都写
+            self.assertIn("dependency_decisions.jsonl", accepted["written"])
+            self.assertIn("requirement_rtm_edges.jsonl", accepted["written"])
             self.assertEqual(len(read_dependency_decisions(out)), 1)
+
             rejected = decide_dependency_task(out, frm="F1", to="F2", kind="exclude",
                                               accepted=False, actor="专家", reason="非互斥")
-            self.assertFalse(rejected["written"])
-            # 拒绝不落库：仍只有一条
-            self.assertEqual(len(read_dependency_decisions(out)), 1)
+            # reject：只写事件流（留记录），不落物化库
+            self.assertIn("requirement_rtm_edges.jsonl", rejected["written"])
+            self.assertNotIn("dependency_decisions.jsonl", rejected["written"])
+            self.assertEqual(len(read_dependency_decisions(out)), 1)  # 物化库仍只 accept 那条
+
+            # 事件流含 accept + reject 两条；回放重建 accepted=1 / rejected=1
+            events = read_rtm_edge_events(out)
+            self.assertEqual(len(events), 2)
+            replay = replay_rtm_edges(events)
+            self.assertEqual(replay["accepted_count"], 1)
+            self.assertEqual(replay["rejected_count"], 1)
+            # 边带 kind/from/to/decision/actor/recorded_at
+            edge = next(e for e in replay["edges"].values() if e["decision"] == "reject")
+            self.assertEqual(edge["kind"], "exclude")
+            self.assertEqual(edge["actor"], "专家")
+
+    def test_rtm_edge_replay_last_decision_wins_and_is_idempotent(self) -> None:
+        """T3-1：同一 edge accept→reject→accept 序列回放取末尾；两次回放逐字节一致。"""
+        from review_state import replay_rtm_edges
+        events = [
+            {"edge_id": "E1", "kind": "depend", "from": "F1", "to": "F2",
+             "decision": "accept", "actor": "a", "reason": "", "recorded_at": "t1"},
+            {"edge_id": "E1", "kind": "depend", "from": "F1", "to": "F2",
+             "decision": "reject", "actor": "a", "reason": "重审", "recorded_at": "t2"},
+            {"edge_id": "E1", "kind": "depend", "from": "F1", "to": "F2",
+             "decision": "accept", "actor": "a", "reason": "再确认", "recorded_at": "t3"},
+        ]
+        replay1 = replay_rtm_edges(events)
+        replay2 = replay_rtm_edges(events)
+        self.assertEqual(replay1, replay2)  # 幂等
+        self.assertEqual(replay1["accepted_count"], 1)
+        self.assertEqual(replay1["rejected_count"], 0)
+        self.assertEqual(replay1["edges"]["E1"]["reason"], "再确认")  # 末尾胜出
 
     def test_project_candidates_read_functional_requirements(self) -> None:
         from requirements_analysis_rules import dependency_candidates_for_project

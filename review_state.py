@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 from process_file_lock import process_file_lock
 from result_package import governed_artifact_path
@@ -350,14 +350,16 @@ def _dedupe_history(events: list[Any]) -> list[dict[str, Any]]:
 
 def requirement_identity_keys(row: dict[str, Any]) -> list[str]:
     keys: list[str] = []
-    for name in ("requirement_id", "stable_req_id", "req_id"):
+    # T3-1：``requirement_uid`` 是跨再生成稳定 ID（功能需求级），纳入身份键解析——RTM 边/
+    # 生命周期事件可用它寻址；旧 content-hash（functional_requirement_id/stable_req_id）仍为别名。
+    for name in ("requirement_id", "requirement_uid", "stable_req_id", "req_id"):
         value = row.get(name)
         if value:
             text = str(value)
             if text not in keys:
                 keys.append(text)
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-    for name in ("stable_req_id", "req_id"):
+    for name in ("requirement_uid", "stable_req_id", "req_id"):
         value = metadata.get(name)
         if value:
             text = str(value)
@@ -837,3 +839,102 @@ def upsert_dependency_decision(out_dir: Path, decision: dict[str, Any]) -> dict[
         index[key_fields] = existing
         _atomic_write_jsonl(path, list(index.values()))
     return index[key_fields]
+
+
+# ===========================================================================
+# T3-1 RTM 边持久化：append-only 事件流（与生命周期事件同构）
+# ---------------------------------------------------------------------------
+# ``dependencies/parent/children`` 从候选推荐升格为持久化 RTM 边。事件流与
+# ``append_lifecycle_event`` 同型（append-only + 跨进程锁 + governed state 路径）。每条事件
+# 带 ``edge_id/kind/from/to/decision/actor/reason/recorded_at``。**accept 落边**（materialized
+# 进 ``dependency_decisions.jsonl``，保留既有物化视图），**reject 留记录**（只在事件流，不落库）。
+# ``replay_rtm_edges`` 确定性回放事件流重建当前边态——同一 edge 的 accept→reject→accept
+# 序列按「最后决策胜出」回放。
+# ===========================================================================
+RTM_EDGE_EVENTS_FILE = "requirement_rtm_edges.jsonl"
+RTM_EDGE_SCHEMA = "requirement-rtm-edge/v1"
+
+
+def rtm_edge_id(frm: Any, to: Any, kind: Any) -> str:
+    """确定性边身份：``(from, to, kind)`` 的稳定哈希。同一边的多次裁决（accept/reject）共 ID。"""
+    basis = "\x1f".join(str(x or "") for x in (frm, to, kind))
+    return "RTM-" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def read_rtm_edge_events(out_dir: Path) -> list[dict[str, Any]]:
+    """只读 RTM 边事件流（tolerant：坏行跳过）。"""
+    path = governed_artifact_path(
+        Path(out_dir).expanduser().resolve(),
+        RTM_EDGE_EVENTS_FILE, category="state", for_write=False,
+    )
+    return _read_jsonl_tolerant(path)
+
+
+def append_rtm_edge_event(out_dir: Path, event: dict[str, Any]) -> None:
+    """append-only RTM 边事件（与 ``append_lifecycle_event`` 同锁同流纪律）。
+
+    ``event`` 至少含 ``kind/from/to/decision``；本函数补全 ``edge_id/recorded_at/schema``。
+    accept 与 reject 都追加（reject 也留记录），由 ``replay_rtm_edges`` 重建终态。
+    """
+    root = Path(out_dir).expanduser().resolve()
+    frm = str(event.get("from") or "")
+    to = str(event.get("to") or "")
+    kind = str(event.get("kind") or "")
+    if not frm or not to or not kind:
+        raise ValueError("rtm edge event requires from/to/kind")
+    row = dict(event)
+    row.update({
+        "edge_id": rtm_edge_id(frm, to, kind),
+        "from": frm,
+        "to": to,
+        "kind": kind,
+        "decision": str(event.get("decision") or ""),
+        "actor": str(event.get("actor") or ""),
+        "reason": str(event.get("reason") or ""),
+        "recorded_at": str(event.get("recorded_at") or datetime.now(timezone.utc).isoformat(timespec="seconds")),
+        "schema": RTM_EDGE_SCHEMA,
+    })
+    with verification_state_lock(root):
+        path = governed_artifact_path(root, RTM_EDGE_EVENTS_FILE, category="state")
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def replay_rtm_edges(events: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """确定性回放 RTM 边事件流 → ``{edges, accepted_count, rejected_count, event_count, skipped}``。
+
+    * ``edges``：``{edge_id: {...decision...}}``，最后决策胜出（accept→reject→accept 取末尾）。
+    * accept 的边即「落边」；reject 的边留在 ``edges`` 但 ``decision="reject"``（不进物化库）。
+    回放幂等：同事件流两次回放结果逐字节一致。坏事件（缺 decision/edge_id）跳过并计入 ``skipped``。
+    """
+    edges: dict[str, dict[str, Any]] = {}
+    skipped = 0
+    for event in events:
+        if not isinstance(event, dict):
+            skipped += 1
+            continue
+        edge_id = str(event.get("edge_id") or "")
+        decision = str(event.get("decision") or "").strip().lower()
+        if not edge_id or decision not in {"accept", "reject"}:
+            skipped += 1
+            continue
+        edges[edge_id] = {
+            "edge_id": edge_id,
+            "kind": str(event.get("kind") or ""),
+            "from": str(event.get("from") or ""),
+            "to": str(event.get("to") or ""),
+            "decision": decision,
+            "actor": str(event.get("actor") or ""),
+            "reason": str(event.get("reason") or ""),
+            "recorded_at": str(event.get("recorded_at") or ""),
+        }
+    accepted = sum(1 for e in edges.values() if e["decision"] == "accept")
+    rejected = sum(1 for e in edges.values() if e["decision"] == "reject")
+    return {
+        "schema": RTM_EDGE_SCHEMA,
+        "edges": edges,
+        "accepted_count": accepted,
+        "rejected_count": rejected,
+        "event_count": len(events),
+        "skipped": skipped,
+    }

@@ -12,8 +12,10 @@ source_quote 恒非空、type/priority/status 不为 pending —— 满足公司
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
-from typing import Any
+from typing import Any, Protocol
 
 
 # 公司 21 域（labels 合法取值，保持兼容）
@@ -540,6 +542,97 @@ def fingerprint_from_cells(
     })
 
 
+# --- T3-2 CAS 分桶：结构指纹（吊销闸）+ 叙述指纹（复核提示）------------------
+# 旧 CAS 绑整条内容指纹（``requirement_content_fingerprint``，含 description/objective 等
+# 叙述字段）——LLM/译者一改措辞，全部确认位被吊销，人在环疲劳。分桶后：
+# * ``requirement_structural_fingerprint``——OBIS/编码、归属、模块、来源章节、来源 block_ids
+#   漂移才吊销确认（物质性变化）。
+# * ``requirement_narrative_fingerprint``——objective/behaviors/description/title 等纯叙述变化
+#   **不吊销**，降级为「复核提示」（``narrative_drift_hint``），UI 各归各类报告。
+# 旧 ``requirement_content_fingerprint`` 保留为组合指纹（向后兼容/通用），不再是 CAS 闸。
+STRUCTURAL_FINGERPRINT_VERSION = "requirement-structural-fp-v1"
+NARRATIVE_FINGERPRINT_VERSION = "requirement-narrative-fp-v1"
+
+
+def requirement_structural_fingerprint(item: dict[str, Any]) -> str:
+    """结构指纹（CAS 吊销闸）：OBIS/编码 + 归属 + 模块 + 来源章节 + 来源 block_ids。
+
+    这些字段漂移 = 需求物质性变化（错一位 OBIS 即严重缺陷、归属/模块变了 = 不是同一条研发
+    任务），故吊销确认位转人工重核。叙述措辞变化不进本指纹。
+    """
+    # OBIS 码集合（确定性，与依赖推荐同源提取器；上方模块级 ``_related_obis_codes``）
+    codes: set[str] = set()
+    for value in (item.get("related_dlms_objects") or []):
+        codes.update(_OBIS_PATTERN.findall(str(value)))
+    for field in ("source_quote", "description", "requirement", "title", "objective"):
+        codes.update(_OBIS_PATTERN.findall(str(item.get(field) or "")))
+    payload = {
+        "v": STRUCTURAL_FINGERPRINT_VERSION,
+        "obis": sorted(codes),
+        "ownership": _fingerprint_normalize(
+            str(item.get("ownership_override") or item.get("ownership") or "")
+        ),
+        "module": _fingerprint_normalize(item.get("module")),
+        "source_section": _fingerprint_normalize(item.get("source_section")),
+        "source_block_ids": sorted(
+            str(b) for b in (item.get("source_block_ids") or []) if str(b)
+        ),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
+
+
+def requirement_narrative_fingerprint(item: dict[str, Any]) -> str:
+    """叙述指纹（复核提示用）：objective/behaviors/description/title/requirement/soft_text。
+
+    纯叙述变化不吊销确认位，只置 ``narrative_drift_hint`` 让专家复核措辞是否仍准确。
+    """
+    payload = {
+        "v": NARRATIVE_FINGERPRINT_VERSION,
+        "objective": _fingerprint_normalize(item.get("objective")),
+        "behaviors": _fingerprint_normalize(item.get("behaviors")),
+        "description": _fingerprint_normalize(item.get("description")),
+        "title": _fingerprint_normalize(item.get("title")),
+        "requirement": _fingerprint_normalize(item.get("requirement")),
+        "software_requirement_text": _fingerprint_normalize(
+            item.get("software_requirement_text")
+        ),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
+
+
+def _source_chapter_for_fingerprint(item: dict[str, Any]) -> str:
+    """与 ``requirements_analysis_excel._excel_row`` 的「客户需求章节」列同口径：
+    source_section 缺失时退 source_requirement_ids 拼接——保证 item 侧与 xlsx 单元格侧
+    产出同一结构指纹。"""
+    chapter = str(item.get("source_section") or "").strip()
+    if chapter:
+        return chapter
+    return ",".join(str(v) for v in (item.get("source_requirement_ids") or []))
+
+
+def structural_fingerprint_from_cells(submodule: Any, source_section: Any) -> str:
+    """xlsx 回灌侧结构指纹（与 ``requirement_structural_fingerprint`` 同版本/归一，但只用
+    xlsx 可见结构列：子模块 + 客户需求章节）。描述列（叙述）不进闸——叙述抖动不再误拒回灌。
+
+    item 侧由 ``load_requirement_index`` 经同一函数（``item.submodule``,
+    ``_source_chapter_for_fingerprint(item)``）算 ``cell_fingerprint``，两侧归一一致。
+    OBIS/归属在 xlsx 列里不可靠（驱动/硬件相关仅是 co_design 布尔标记），故回灌闸比 live
+    CAS 粗，但仍是「结构漂移才拒、叙述漂移容忍」。
+    """
+    payload = {
+        "v": STRUCTURAL_FINGERPRINT_VERSION,
+        "obis": [],
+        "ownership": "",
+        "module": _fingerprint_normalize(submodule),
+        "source_section": _fingerprint_normalize(source_section),
+        "source_block_ids": [],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
+
+
 def requirement_identity(item: dict[str, Any]) -> str:
     """需求的稳定主键：优先 functional_requirement_id（内容哈希稳定），回退 analysis_id。"""
     for key in ("functional_requirement_id", "analysis_id", "id"):
@@ -725,6 +818,83 @@ def search_requirement_library(
         rendered["overlap_score"] = round(score, 4)
         results.append(rendered)
     return results
+
+
+# --- T3-4 retriever 插件点（预研，仅预留）-------------------------------------
+# 需求库/依赖推荐默认词面检索（``search_requirement_library``，零向量零 LLM）。本插件点把检索
+# 抽象为 ``RequirementRetriever`` Protocol，词面实现为默认注册；**向量实现为可关开关**（env
+# ``RATOMIZER_REQUIREMENT_RETRIEVER=vector`` 预留），但本切片**不引入任何向量依赖**——选 vector
+# 时如实回退词面并标记 ``retriever_kind="literal(fallback:vector-unavailable)"``，绝不伪造向量
+# 召回。任何 retriever 产出仍是同一 entry 形态，**下游确定性校验（overlap_score/ownership 等）照
+# 常适用**，不因检索来源放松护栏。这是「检索可换、信任前提不动」的隔离层。
+REQUIREMENT_RETRIEVER_ENV = "RATOMIZER_REQUIREMENT_RETRIEVER"
+REQUIREMENT_RETRIEVER_LITERAL = "literal"
+REQUIREMENT_RETRIEVER_VECTOR = "vector"  # 预留：选它时如实回退词面（无向量依赖）
+
+
+class RequirementRetriever(Protocol):
+    """需求检索插件点：``search(query, limit) -> entries``。
+
+    默认注册 ``LiteralRequirementRetriever``（词面 Jaccard）。向量实现可在子类/外部模块提供，
+    经 ``build_requirement_retriever(retriever=...)`` 注入；产出仍是 entry 列表，下游确定性校验
+    不放松。本 Protocol 是结构性预留——不强制向量，不改默认词面行为。
+    """
+
+    def search(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        ...
+
+
+class LiteralRequirementRetriever:
+    """词面集合重叠度（Jaccard）检索器——默认实现，零向量零 LLM。
+
+    包装既有 ``search_requirement_library``：召回率低但精确率可控、零幻觉风险（与既有需求库
+    检索同源纪律）。``retriever_kind`` 恒为 ``literal``，供下游/审计区分检索来源。
+    """
+
+    retriever_kind = REQUIREMENT_RETRIEVER_LITERAL
+
+    def __init__(self, library: list[dict[str, Any]], *, min_overlap: int = 1) -> None:
+        self.library = list(library)
+        self.min_overlap = max(1, int(min_overlap))
+
+    def search(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        return search_requirement_library(
+            query, self.library, limit=limit, min_overlap=self.min_overlap
+        )
+
+
+def resolve_retriever_kind(value: str | None = None) -> str:
+    """解析 ``RATOMIZER_REQUIREMENT_RETRIEVER``（默认 literal）。
+
+    vector 为预留可关开关：当前无向量依赖，选 vector 如实回退 literal（见
+    ``build_requirement_retriever``），不伪造。
+    """
+    raw = str((value if value is not None else os.environ.get(REQUIREMENT_RETRIEVER_ENV)) or "").strip().lower()
+    if raw == REQUIREMENT_RETRIEVER_VECTOR:
+        return REQUIREMENT_RETRIEVER_VECTOR
+    return REQUIREMENT_RETRIEVER_LITERAL
+
+
+def build_requirement_retriever(
+    library: list[dict[str, Any]] | None = None,
+    *,
+    retriever: RequirementRetriever | None = None,
+    kind: str | None = None,
+) -> RequirementRetriever:
+    """构造检索器：``retriever`` 注入优先（测试/外部向量插件），否则按 ``kind`` 建词面默认。
+
+    ``kind="vector"``（env 或显式）当前如实回退词面（``LiteralRequirementRetriever``，
+    ``retriever_kind`` 标注 fallback）——不引入向量依赖。返回对象始终满足 ``RequirementRetriever``。
+    """
+    if retriever is not None:
+        return retriever
+    resolved = resolve_retriever_kind(kind)
+    lib = list(library or [])
+    retriever_obj = LiteralRequirementRetriever(lib)
+    if resolved == REQUIREMENT_RETRIEVER_VECTOR:
+        # 预留开关：无向量依赖时如实回退词面，并标注（审计可区分「请求向量但回退」与「请求词面」）
+        retriever_obj.retriever_kind = "literal(fallback:vector-unavailable)"  # type: ignore[misc]
+    return retriever_obj
 
 
 # --- dependencies/parent/children 半自动推荐（Cap6）------------------------

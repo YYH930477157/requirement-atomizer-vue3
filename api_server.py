@@ -460,6 +460,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/dependency-candidates":
             self.handle_dependency_candidates_get()
             return
+        if parsed.path == "/rtm-edges":
+            self.handle_rtm_edges_get()
+            return
         if parsed.path == "/requirement-library/search":
             self.handle_requirement_library_search(params)
             return
@@ -1406,7 +1409,13 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         self.send_json(result)
 
     def handle_verification_states_get(self) -> None:
-        """WS4：读全部 verification 覆盖记录（含四态生命周期）。只读，不发布。"""
+        """WS4：读全部 verification 覆盖记录（含四态生命周期）。只读，不发布。
+
+        T3-2 CAS 分桶：每条 state 经当前需求索引重绑 ``evidence_fingerprint`` 为**结构指纹**
+        （客户端 round-trip 它，避免旧记录残留的组合指纹造成首次保存假 409），并附
+        ``narrative_drift_hint``（叙述变化、状态未吊销的复核提示）——UI 各归各类报告。
+        """
+        from requirements_analysis_rules import load_requirement_index
         from review_state import read_verification_states
         try:
             states = read_verification_states(self.output_dir)
@@ -1414,8 +1423,28 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "verification_state_unavailable", "detail": str(exc),
                             "retryable": True}, status=503)
             return
-        self.send_json({"schema": "verification-states/v1", "states": list(states.values()),
-                        "total": len(states)})
+        try:
+            index = load_requirement_index(self.output_dir)
+        except (TimeoutError, OSError):
+            index = {}
+        served = []
+        for rid, record in states.items():
+            entry = index.get(rid)
+            view = dict(record)
+            if entry is not None:
+                # 重绑为当前结构指纹（CAS 闸 token）；保留落盘值于 evidence_fingerprint_stored 供审计
+                view["evidence_fingerprint_stored"] = view.get("evidence_fingerprint")
+                view["evidence_fingerprint"] = str(entry.get("fingerprint") or view.get("evidence_fingerprint") or "")
+                current_narrative = str(entry.get("narrative_fingerprint") or "")
+                prior_narrative = str(record.get("narrative_fingerprint") or "")
+                view["narrative_drift_hint"] = bool(
+                    current_narrative and prior_narrative and current_narrative != prior_narrative
+                )
+            else:
+                view["narrative_drift_hint"] = bool(view.get("narrative_drift_hint"))
+            served.append(view)
+        self.send_json({"schema": "verification-states/v1", "states": served,
+                        "total": len(served)})
 
     def handle_functional_requirements_get(self) -> None:
         """WS-F：读 functional_requirements.json items（governed 双路径探测）。只读。
@@ -1467,6 +1496,17 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                             "retryable": True}, status=503)
             return
         self.send_json(result)
+
+    def handle_rtm_edges_get(self) -> None:
+        """T3-1：回放 RTM 边事件流 → 当前边态（accept 落边 / reject 留记录）。只读。"""
+        from review_state import read_rtm_edge_events, replay_rtm_edges
+        try:
+            replay = replay_rtm_edges(read_rtm_edge_events(self.output_dir))
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "rtm_edges_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json(replay)
 
     def handle_requirement_library_search(self, params: dict) -> None:
         """WS4：词面集合重叠度召回历史相似需求（零向量、零 LLM）。"""

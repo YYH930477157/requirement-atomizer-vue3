@@ -322,6 +322,74 @@ def _normalize_key(value: str) -> str:
     return re.sub(r"[^0-9a-z一-鿿]+", "", str(value or "").casefold())
 
 
+# ---------------------------------------------------------------------------
+# T3-1 跨再生成稳定 ID（与内容哈希解耦）
+# ---------------------------------------------------------------------------
+# 旧 ``functional_requirement_id``（``_stable_requirement_id``）含 heading/block_ids/output
+# index 等内容派生输入——LLM 输出顺序/数量一变或重解析改 block_ids 即漂移，做不了长期 RTM
+# 主键。``requirement_uid`` 改为**条款序号定位**：条款在确定性 sections 列表里的位置（来自
+# chunks.jsonl，parser-deterministic）——同一源文件再生成，条款序号稳定 → UID 稳定，与 LLM
+# 叙述抖动/输出顺序解耦。旧 id **保留为别名映射字段**（``functional_requirement_id`` 不动），
+# 不做原地替换；下游可逐步改用 uid 作长期主键。
+STABLE_UID_VERSION = "functional-stable-uid-v1"
+
+
+def assign_stable_uids(
+    items: Sequence[dict[str, Any]],
+    sections: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """给每条功能需求盖 ``requirement_uid``——按其来源条款在 sections 里的序号定位。
+
+    稳定性来源：条款序号取自确定性 sections 列表顺序（parser 决定，不依赖 LLM 输出顺序/数量
+    或叙述内容）。同一源文件再生成（即使 LLM 改了措辞、换了输出顺序）→ 同一条款 → 同一序号 →
+    同一 UID。多条落在同一条款时按其既有别名 id（``functional_requirement_id``）稳定排序后缀
+    ``.2``/``.3``，使子序在再生成间确定（前提：两条内容不同，别名 id 可区分——成立）。
+
+    每条 item 同时盖 ``stable_uid_version`` 与 ``stable_uid_basis``（条款序号，审计可解释）。
+    """
+    block_to_ordinal: dict[str, int] = {}
+    section_id_to_ordinal: dict[str, int] = {}
+    for ordinal, section in enumerate(sections):
+        for block in (section.get("block_ids") or []):
+            block_to_ordinal.setdefault(str(block), ordinal)
+        sid = str(section.get("section_id") or "").strip()
+        if sid:
+            section_id_to_ordinal.setdefault(sid, ordinal)
+
+    def _ordinal_for(item: dict[str, Any], fallback: int) -> int:
+        for block in (item.get("source_block_ids") or []):
+            key = str(block)
+            if key in block_to_ordinal:
+                return block_to_ordinal[key]
+        # 兜底：按 source_section 文本匹配 section_id（不应触发——每条 item 都挂回条款）
+        label = " / ".join(str(s) for s in (item.get("source_section") or "").split(" / "))
+        for sid, ordinal in section_id_to_ordinal.items():
+            if sid and sid == label:
+                return ordinal
+        return fallback
+
+    by_ordinal: dict[int, list[dict[str, Any]]] = {}
+    fallback_ordinal = len(sections)
+    for item in items:
+        ordinal = _ordinal_for(item, fallback_ordinal)
+        # fallback 仅对挂不回条款的孤儿 item 生效；多个孤儿各占一格避免撞 UID
+        if ordinal >= len(sections):
+            fallback_ordinal += 1
+        by_ordinal.setdefault(ordinal, []).append(item)
+
+    for ordinal in sorted(by_ordinal):
+        group = sorted(
+            by_ordinal[ordinal],
+            key=lambda it: str(it.get("functional_requirement_id") or ""),
+        )
+        for sub, item in enumerate(group, start=1):
+            uid = f"FR-{ordinal + 1:04d}" if sub == 1 else f"FR-{ordinal + 1:04d}.{sub}"
+            item["requirement_uid"] = uid
+            item["stable_uid_version"] = STABLE_UID_VERSION
+            item["stable_uid_basis"] = {"clause_ordinal": ordinal, "sub": sub}
+    return list(items)
+
+
 def _render_description(objective: str, behaviors: list[str], constraints: list[str]) -> str:
     parts = [f"目标：{objective}"]
     if behaviors:
@@ -717,6 +785,9 @@ def extract_functional_requirements(
         # S1-1：功能需求直抽是核心交付物——降级 stub 时在文档预算单上记 mark_degraded，
         # 强制 document_needs_work=True（不允许仅 provenance 标注静默通过；无活动预算单则空操作）。
         _notify_budget_degraded("functional_extract_degraded_to_stub")
+    # T3-1：盖跨再生成稳定 UID（条款序号定位，与内容哈希解耦）。旧 functional_requirement_id
+    # 保留为别名映射字段不动。
+    assign_stable_uids(items, sections)
     return items, executed_route
 
 

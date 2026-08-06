@@ -258,14 +258,34 @@ def read_functional_requirements(out_dir: Path) -> list[dict[str, Any]]:
 
 
 def load_requirement_index(out_dir: Path) -> dict[str, dict[str, Any]]:
-    """构建 {requirement_id: {item, fingerprint}} 索引（分析项 + 功能需求 + 手工需求）。
+    """构建 {requirement_id: {item, fingerprint, ...}} 索引（分析项 + 功能需求 + 手工需求）。
 
-    供 verification CAS、xlsx 回灌按行定位使用——需求重新生成后内容指纹漂移即失配。
+    供 verification CAS、xlsx 回灌按行定位使用。T3-2 CAS 分桶后每个条目带三种指纹：
+    * ``fingerprint``——结构指纹（live verification CAS 吊销闸，OBIS/归属/模块/来源/block_ids）；
+    * ``cell_fingerprint``——xlsx 可见结构列指纹（回灌 CAS 闸，子模块+客户需求章节）；
+    * ``narrative_fingerprint``——叙述指纹（复核提示用，不吊销）。
     functional_requirements.json 必须纳入：FRE-* 功能抽取条目只在此文件，旧实现漏读导致
     其 CAS 形同虚设（current_fingerprint 恒 ""，任何 expected 都“匹配”）。
     """
-    from requirement_schema import requirement_content_fingerprint, requirement_identity
+    from requirement_schema import (
+        _source_chapter_for_fingerprint,
+        requirement_identity,
+        requirement_narrative_fingerprint,
+        requirement_structural_fingerprint,
+        structural_fingerprint_from_cells,
+    )
     from review_state import read_manual_requirements
+
+    def _entry(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "item": item,
+            "fingerprint": requirement_structural_fingerprint(item),
+            "cell_fingerprint": structural_fingerprint_from_cells(
+                item.get("submodule") or item.get("module"),
+                _source_chapter_for_fingerprint(item),
+            ),
+            "narrative_fingerprint": requirement_narrative_fingerprint(item),
+        }
 
     root = Path(out_dir).expanduser().resolve()
     index: dict[str, dict[str, Any]] = {}
@@ -278,18 +298,15 @@ def load_requirement_index(out_dir: Path) -> dict[str, dict[str, Any]]:
         items = payload.get("items") if isinstance(payload, dict) else None
         for item in items or []:
             if isinstance(item, dict):
-                rid = requirement_identity(item)
-                index[rid] = {"item": item, "fingerprint": requirement_content_fingerprint(item)}
+                index[requirement_identity(item)] = _entry(item)
     # FRE-* 功能抽取条目（functional_extract 直抽）：只落 functional_requirements.json，
     # 不纳入索引则 verification CAS 对它们恒放行（F1 修复）。
     functional_items = _read_functional_requirements_payload(root).get("items")
     for item in functional_items or []:
         if isinstance(item, dict):
-            rid = requirement_identity(item)
-            index[rid] = {"item": item, "fingerprint": requirement_content_fingerprint(item)}
+            index[requirement_identity(item)] = _entry(item)
     for item in read_manual_requirements(root):
-        rid = requirement_identity(item)
-        index[rid] = {"item": item, "fingerprint": requirement_content_fingerprint(item)}
+        index[requirement_identity(item)] = _entry(item)
     return index
 
 
@@ -306,14 +323,20 @@ def apply_verification_override(
     """CAS 校验后写入 verification 覆盖（reviewer_override 来源），并前进迁移生命周期。
 
     前进迁移全部由 verification 字段驱动（advance_lifecycle 取当前态与派生态较高者）；
-    自动降级不存在——派生值低于当前态时保留当前态。CAS 失配抛 VerificationStateConflict
-    （evidence fingerprint 失配拒绝自动合入转人工）。
+    自动降级不存在——派生值低于当前态时保留当前态。
+
+    T3-2 CAS 分桶：CAS 闸只比对**结构指纹**（``requirement_structural_fingerprint``：OBIS/
+    归属/模块/来源/block_ids）——结构漂移才吊销确认（``VerificationStateConflict``）。
+    纯叙述变化（``requirement_narrative_fingerprint`` 漂移）**不吊销**，仅在记录上置
+    ``narrative_drift_hint=True`` 作为复核提示，UI 各归各类报告。``evidence_fingerprint``
+    回传/落盘值为结构指纹（客户端 round-trip 它）；旧记录缺结构指纹时首次如实落当前结构指纹。
     """
     from requirement_schema import (
         VERIFICATION_SOURCE,
         advance_lifecycle,
         lifecycle_rank,
         normalize_verification,
+        requirement_narrative_fingerprint,
     )
     from review_state import (
         VerificationStateConflict,
@@ -333,12 +356,18 @@ def apply_verification_override(
     if expected_evidence_fingerprint is not None and \
             str(expected_evidence_fingerprint) != current_fingerprint:
         raise VerificationStateConflict(
-            f"需求 {rid} 内容已变化（CAS 失配），verification 拒绝自动合入，转人工核对",
+            f"需求 {rid} 结构字段已变化（CAS 失配），verification 拒绝自动合入，转人工核对",
             requirement_id=rid, current_fingerprint=current_fingerprint)
     existing = read_verification_states(root).get(rid, {})
     current_state = str(existing.get("lifecycle_state") or "draft")
     new_state = advance_lifecycle(current_state, normalized)
     when = str(timestamp or _now_iso())
+    # 叙述复核提示：当前叙述指纹 vs 上次落盘时的叙述指纹；旧记录无基线则不提示（首次建基线）
+    current_narrative = str(entry["narrative_fingerprint"]) if entry else ""
+    prior_narrative = str(existing.get("narrative_fingerprint") or "")
+    narrative_drift_hint = bool(
+        current_narrative and prior_narrative and current_narrative != prior_narrative
+    )
     record = {
         "requirement_id": rid,
         "verification": normalized,
@@ -348,6 +377,8 @@ def apply_verification_override(
             lifecycle_rank(new_state),
         ),
         "evidence_fingerprint": current_fingerprint or str(evidence_fingerprint or ""),
+        "narrative_fingerprint": current_narrative or str(existing.get("narrative_fingerprint") or ""),
+        "narrative_drift_hint": narrative_drift_hint,
         "source": VERIFICATION_SOURCE,
         "actor": str(actor or ""),
         "timestamp": when,
@@ -514,20 +545,52 @@ def apply_dependency_decision(
     reason: str = "",
     timestamp: str | None = None,
 ) -> dict[str, Any]:
-    """依赖/父子候选裁决：接受才写库；拒绝不落库（返回 written=False）。"""
-    from review_state import upsert_dependency_decision
+    """依赖/父子候选裁决 → 持久化 RTM 边（T3-1）。
+
+    **accept 落边**：物化进 ``dependency_decisions.jsonl``（既有视图，下游消费不变）**且**追加
+    一条 accept 事件到 append-only ``requirement_rtm_edges.jsonl``。**reject 留记录**：只在事件流
+    追加一条 reject 事件（不进物化库）——拒绝不再无声消失，回放可重建完整裁决史。
+
+    事件流与生命周期事件同构（``append_rtm_edge_event`` 同锁同流）；边带
+    ``kind/from/to/decision/actor/reason/recorded_at``。返回值含 ``edge_id`` 供调用方引用。
+    """
+    from review_state import append_rtm_edge_event, upsert_dependency_decision
+
+    root = Path(out_dir).expanduser().resolve()
+    when = str(timestamp or _now_iso())
+    frm = str(candidate.get("from") or "")
+    to = str(candidate.get("to") or "")
+    kind = str(candidate.get("kind") or "")
+    decision_label = "accept" if accepted else "reject"
 
     if not accepted:
-        return {"accepted": False, "written": False, "candidate": candidate}
+        # reject：只在事件流留记录（不落物化库）
+        append_rtm_edge_event(root, {
+            "from": frm, "to": to, "kind": kind, "decision": "reject",
+            "actor": str(actor or ""), "reason": str(reason or ""), "recorded_at": when,
+        })
+        return {"accepted": False, "written": False, "candidate": candidate,
+                "decision": "reject", "edge_id": _rtm_edge_id_pub(frm, to, kind)}
+
     decision = dict(candidate)
     decision.update({
         "status": "accepted",
         "actor": str(actor or ""),
         "reason": str(reason or ""),
-        "timestamp": str(timestamp or _now_iso()),
+        "timestamp": when,
     })
-    record = upsert_dependency_decision(Path(out_dir).expanduser().resolve(), decision)
-    return {"accepted": True, "written": True, "decision": record}
+    record = upsert_dependency_decision(root, decision)
+    append_rtm_edge_event(root, {
+        "from": frm, "to": to, "kind": kind, "decision": "accept",
+        "actor": str(actor or ""), "reason": str(reason or ""), "recorded_at": when,
+    })
+    return {"accepted": True, "written": True, "decision": record,
+            "edge_id": _rtm_edge_id_pub(frm, to, kind)}
+
+
+def _rtm_edge_id_pub(frm: str, to: str, kind: str) -> str:
+    from review_state import rtm_edge_id
+    return rtm_edge_id(frm, to, kind)
 
 
 def dependency_candidates_for_project(out_dir: Path) -> list[dict[str, Any]]:

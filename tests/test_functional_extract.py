@@ -307,5 +307,76 @@ class RouteFingerprintTests(unittest.TestCase):
             self.assertEqual(second["functional_requirements"], 1)
 
 
+class StableUidTests(unittest.TestCase):
+    """T3-1 跨再生成稳定 ID：``requirement_uid`` 按条款序号定位，与内容哈希解耦。"""
+
+    def test_stub_items_get_positional_uids_in_clause_order(self) -> None:
+        sections = [
+            _clause("4.1", ["B1"], "The meter shall log events."),
+            _clause("4.2", ["B2"], "The meter shall collect voltage."),
+        ]
+        items, _ = fe.extract_functional_requirements(sections, route="stub")
+        self.assertEqual([i["requirement_uid"] for i in items], ["FR-0001", "FR-0002"])
+        # 旧 content-hash 别名仍存在（不做原地替换）
+        self.assertTrue(all(i["functional_requirement_id"].startswith("FRE-") for i in items))
+
+    def test_uid_stable_across_regen_with_narrative_and_order_drift(self) -> None:
+        """核心验收：再生成（叙述变 + LLM 输出顺序交换）后，同一条款的 ``requirement_uid`` 不变。
+
+        旧 ``functional_requirement_id`` 含 output index → 顺序交换即漂移；新 uid 按条款序号
+        定位 → 稳定。证明 uid 可作长期 RTM 主键。
+        """
+        sections = [
+            _clause("4.1", ["B1"], "The meter shall log events."),
+            _clause("4.2", ["B2"], "The meter shall collect voltage at 230 V."),
+        ]
+
+        def chat_v1(system: str, user: str) -> dict:
+            # 顺序：先 B1 条款，后 B2 条款
+            return {"items": [
+                {"objective": "记录事件A", "behaviors": ["写日志A"], "source_block_ids": ["B1"]},
+                {"objective": "采集电压B", "behaviors": ["采 230V"], "source_block_ids": ["B2"]},
+            ]}
+
+        def chat_v2(system: str, user: str) -> dict:
+            # 再生成：叙述全变 + 输出顺序交换（B2 先、B1 后）
+            return {"items": [
+                {"objective": "完全不同的电压采集措辞", "behaviors": ["全新采压行为"], "source_block_ids": ["B2"]},
+                {"objective": "完全不同的事件记录措辞", "behaviors": ["全新日志行为"], "source_block_ids": ["B1"]},
+            ]}
+
+        items_v1, _ = fe.extract_functional_requirements(sections, chat=chat_v1, route="openai_compatible")
+        items_v2, _ = fe.extract_functional_requirements(sections, chat=chat_v2, route="openai_compatible")
+
+        # UID 按条款稳定：B1 条款恒为 FR-0001，B2 条款恒为 FR-0002（与 LLM 输出顺序无关）
+        def by_block(items, block):
+            return next(i for i in items if block in i["source_block_ids"])
+
+        self.assertEqual(by_block(items_v1, "B1")["requirement_uid"], "FR-0001")
+        self.assertEqual(by_block(items_v2, "B1")["requirement_uid"], "FR-0001")
+        self.assertEqual(by_block(items_v1, "B2")["requirement_uid"], "FR-0002")
+        self.assertEqual(by_block(items_v2, "B2")["requirement_uid"], "FR-0002")
+        # 叙述确实变了（再生成生效）
+        self.assertNotEqual(by_block(items_v1, "B1")["objective"], by_block(items_v2, "B1")["objective"])
+
+    def test_multi_item_per_clause_gets_stable_subindex(self) -> None:
+        """同一条款产出多条 → ``.2``/``.3`` 子序，按别名 id 稳定排序（再生成间确定）。"""
+        sections = [_clause("4.1", ["B1"], "The meter shall log events and raise alarms.")]
+        items_payload = {"items": [
+            {"objective": "记录事件", "behaviors": ["写日志"], "source_block_ids": ["B1"]},
+            {"objective": "告警", "behaviors": ["发告警"], "source_block_ids": ["B1"]},
+        ]}
+
+        def chat(system, user):
+            return items_payload
+
+        out = fe.extract_functional_requirements(sections, chat=chat, route="openai_compatible")[0]
+        uids = sorted(i["requirement_uid"] for i in out)
+        self.assertEqual(uids, ["FR-0001", "FR-0001.2"])
+
+    def test_assign_stable_uids_empty(self) -> None:
+        self.assertEqual(fe.assign_stable_uids([], []), [])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

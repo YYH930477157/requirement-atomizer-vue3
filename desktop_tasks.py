@@ -542,21 +542,23 @@ def import_verification_workbook_task(
     """回灌线下改过的 software_requirements.xlsx 六列 → verification_states.jsonl。
 
     复用 import-clarification-answers 的解析模式：按需求追溯ID（notes 列）定位行，
-    读六列单元格 → verification 子对象，CAS 指纹失配（需求已重新生成）拒绝自动合入转人工。
+    读六列单元格 → verification 子对象，CAS 指纹失配（结构字段漂移）拒绝自动合入转人工。
 
-    S1-10b：被 CAS 拒绝的行（内容漂移/rid 不在索引）进 ``rejected`` 清单，每条含
-    requirement_id + xlsx 物理行号 + sheet + 原因——精确到行可定位回线下表格人工核对。
+    T3-2 CAS 分桶：回灌闸只比对**结构列**（子模块 + 客户需求章节）——``description``（叙述）
+    不再进闸，叙述措辞变化不再误拒回灌。结构漂移行进 ``rejected``；叙述漂移（结构匹配、
+    描述变化）进 ``narrative_review`` 清单——状态仍回灌（不吊销），仅提示专家复核措辞。
+    S1-10b：``rejected`` 每条含 requirement_id + xlsx 物理行号 + sheet + 原因。
     """
     from openpyxl import load_workbook
-    from requirement_schema import fingerprint_from_cells, parse_verification_columns
+    from requirement_schema import parse_verification_columns, structural_fingerprint_from_cells
     from requirements_analysis_rules import apply_verification_override, load_requirement_index
 
     root = out_dir.expanduser().resolve()
     index = load_requirement_index(root)
     workbook_path = workbook_path.expanduser().resolve()
     wb = load_workbook(workbook_path, read_only=True, data_only=True)
-    # (rid, six, content, row_number, sheet_title)——多 sheet 时行号+sheet 才能唯一定位
-    harvested: list[tuple[str, list[Any], tuple[Any, ...], int, str]] = []
+    # (rid, six, structural_cells, description_cell, row_number, sheet_title)
+    harvested: list[tuple[str, list[Any], tuple[Any, ...], Any, int, str]] = []
     try:
         for sheet in wb.worksheets:
             header = [str(cell.value or "").strip() for cell in next(
@@ -581,18 +583,20 @@ def import_verification_workbook_task(
                         ("功能是否实现", 13), ("测试用例号", 14), ("测试是否完成", 15),
                     )
                 ]
-                content = (
+                # T3-2：结构闸只用子模块 + 客户需求章节（描述=叙述，降级为复核提示）
+                structural_cells = (
                     row[col.get("子模块", 2)] if len(row) > col.get("子模块", 2) else "",
-                    row[col.get("描述", 3)] if len(row) > col.get("描述", 3) else "",
                     row[col.get("客户需求章节", 8)] if len(row) > col.get("客户需求章节", 8) else "",
                 )
-                harvested.append((rid, six, content, row_number, sheet.title))
+                description_cell = row[col.get("描述", 3)] if len(row) > col.get("描述", 3) else ""
+                harvested.append((rid, six, structural_cells, description_cell, row_number, sheet.title))
     finally:
         wb.close()
 
     imported = stale = missing = 0
     rejected: list[dict[str, Any]] = []
-    for rid, six, content, row_number, sheet_title in harvested:
+    narrative_review: list[dict[str, Any]] = []
+    for rid, six, structural_cells, description_cell, row_number, sheet_title in harvested:
         entry = index.get(rid)
         if not entry:
             missing += 1
@@ -601,14 +605,22 @@ def import_verification_workbook_task(
                 "reason": "需求追溯ID不在当前索引（需求可能已删除或尚未生成）",
             })
             continue
-        # CAS：行单元格内容指纹必须与当前需求一致（失配=需求已重新生成，转人工）
-        if fingerprint_from_cells(*content) != entry["fingerprint"]:
+        # CAS 结构闸：子模块 + 客户需求章节 指纹必须与当前需求一致（结构漂移=转人工）
+        if structural_fingerprint_from_cells(*structural_cells) != entry["cell_fingerprint"]:
             stale += 1
             rejected.append({
                 "requirement_id": rid, "row": row_number, "sheet": sheet_title,
-                "reason": "内容指纹失配（需求已重新生成，请人工核对后再回灌）",
+                "reason": "结构字段失配（子模块/客户需求章节已变化，请人工核对后再回灌）",
             })
             continue
+        # 叙述复核提示：结构匹配但描述变化 → 不吊销，进 narrative_review 提示专家复核
+        item_description = str((entry.get("item") or {}).get("description") or "")
+        if str(description_cell or "").strip() and item_description and \
+                _backfill_description_drifted(description_cell, item_description):
+            narrative_review.append({
+                "requirement_id": rid, "row": row_number, "sheet": sheet_title,
+                "reason": "描述（叙述）变化——状态已回灌，请复核措辞是否仍准确",
+            })
         verification = parse_verification_columns(six, actor_fallback=actor)
         # 仅当六列至少有一项非默认值才写（避免空行覆盖既有状态）
         if verification == default_verification_for_check():
@@ -624,8 +636,21 @@ def import_verification_workbook_task(
         "missing": missing,
         # S1-10b：拒绝清单精确到 requirement_id + xlsx 行号 + sheet + 原因
         "rejected": rejected,
+        # T3-2：叙述复核清单（状态已回灌不吊销，仅提示）
+        "narrative_review": narrative_review,
         "written": ["verification_states.jsonl"] if imported else [],
     }
+
+
+def _backfill_description_drifted(cell_description: Any, item_description: str) -> bool:
+    """回灌描述（叙述）漂移判定：折叠空白 + 去控制字符后逐字不等即视为叙述变化。
+
+    仅用于 ``narrative_review`` 复核提示，不参与 CAS 吊销；宽松归一避免无害空白差异误报。
+    """
+    import re as _re
+    norm_cell = _re.sub(r"\s+", " ", str(cell_description or "")).strip()
+    norm_item = _re.sub(r"\s+", " ", str(item_description or "")).strip()
+    return bool(norm_cell) and bool(norm_item) and norm_cell != norm_item
 
 
 def default_verification_for_check() -> Any:
@@ -811,10 +836,21 @@ def build_requirement_library_task(
     }
 
 
-def search_requirements_task(library_path: Path, query: str, *, limit: int = 20) -> dict[str, Any]:
-    """词面集合重叠度召回历史相似需求（明确不引入向量检索与 LLM 相似度）。"""
+def search_requirements_task(
+    library_path: Path,
+    query: str,
+    *,
+    limit: int = 20,
+    retriever: Any = None,
+) -> dict[str, Any]:
+    """召回历史相似需求（T3-4：经 ``RequirementRetriever`` 插件点，默认词面，可注入）。
+
+    ``retriever`` 注入优先（测试/外部向量插件）；否则按需求库建词面默认检索器。明确不引入
+    向量依赖——``RATOMIZER_REQUIREMENT_RETRIEVER=vector`` 当前如实回退词面并标 ``retriever_kind``。
+    任何检索器产出仍是同一 entry 形态，下游确定性校验不放松。
+    """
     import json as _json
-    from requirement_schema import search_requirement_library
+    from requirement_schema import build_requirement_retriever
 
     library_path = library_path.expanduser().resolve()
     if not library_path.exists():
@@ -829,36 +865,50 @@ def search_requirements_task(library_path: Path, query: str, *, limit: int = 20)
                 library.append(_json.loads(line))
             except _json.JSONDecodeError:
                 continue
-    results = search_requirement_library(query, library, limit=limit)
+    retriever_obj = build_requirement_retriever(library, retriever=retriever)
+    results = retriever_obj.search(query, limit=limit)
     return {
         "kind": "requirement_search",
         "library": str(library_path),
         "query": query,
         "matches": len(results),
         "results": results,
+        "retriever_kind": getattr(retriever_obj, "retriever_kind", "literal"),
     }
 
 
 def recommend_dependencies_task(out_dir: Path) -> dict[str, Any]:
-    """对当前项目跑确定性依赖/父子候选推荐（只生产值，不动 schema）。"""
+    """对当前项目跑确定性依赖/父子候选推荐（只生产值，不动 schema）。
+
+    T3-1：候选状态反映 RTM 边事件流的最新裁决——accept→``accepted``、reject→``rejected``、
+    未裁决→``pending``。物化库（``dependency_decisions.jsonl``）只含 accept；事件流含全部，
+    故以事件流回放为准（最后决策胜出）。
+    """
     from requirements_analysis_rules import dependency_candidates_for_project
-    from review_state import read_dependency_decisions
+    from review_state import read_rtm_edge_events, replay_rtm_edges
 
     root = out_dir.expanduser().resolve()
     candidates = dependency_candidates_for_project(root)
-    decided = {(d.get("from"), d.get("to"), d.get("kind")): d
-               for d in read_dependency_decisions(root)}
+    replay = replay_rtm_edges(read_rtm_edge_events(root))
+    edges = replay.get("edges") or {}
+    decided_by_tuple = {
+        (e.get("from"), e.get("to"), e.get("kind")): e["decision"]
+        for e in edges.values()
+    }
     rendered = []
     for candidate in candidates:
         key = (candidate.get("from"), candidate.get("to"), candidate.get("kind"))
         candidate = dict(candidate)
-        candidate["status"] = "accepted" if key in decided else "pending"
+        decision = decided_by_tuple.get(key)
+        candidate["status"] = {"accept": "accepted", "reject": "rejected"}.get(decision, "pending")
         rendered.append(candidate)
     return {
         "kind": "dependency_candidates",
         "out_dir": str(root),
         "candidates": rendered,
         "pending": sum(1 for c in rendered if c["status"] == "pending"),
+        "accepted": sum(1 for c in rendered if c["status"] == "accepted"),
+        "rejected": sum(1 for c in rendered if c["status"] == "rejected"),
     }
 
 
@@ -882,11 +932,15 @@ def decide_dependency_task(
     result = apply_dependency_decision(
         root, {"from": frm, "to": to, "kind": kind}, accepted=accepted, actor=actor, reason=reason,
     )
+    # T3-1：accept 与 reject 都追加 RTM 边事件流；accept 另落物化库
+    written = ["requirement_rtm_edges.jsonl"]
+    if result.get("written"):
+        written.append("dependency_decisions.jsonl")
     return {
         "kind": "dependency_decision",
         "out_dir": str(root),
         **result,
-        "written": ["dependency_decisions.jsonl"] if result.get("written") else [],
+        "written": written,
     }
 
 

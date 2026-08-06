@@ -259,8 +259,8 @@ class VerificationActionFingerprintHttpTests(unittest.TestCase):
         )
 
     def test_response_returns_evidence_fingerprint_and_three_saves_do_not_409(self) -> None:
-        from requirement_schema import requirement_content_fingerprint
-        expected_fp = requirement_content_fingerprint(self.item)
+        from requirement_schema import requirement_structural_fingerprint
+        expected_fp = requirement_structural_fingerprint(self.item)
         with _claim_api(self.out, local_token=self.TOKEN) as base:
             # 第一次：首次回写不携 expected → 通过，响应必须回传 evidence_fingerprint
             s1, p1 = _http_post_json(base, "/verification-actions", {
