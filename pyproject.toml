@@ -104,6 +104,8 @@ py-modules = [
   "desktop_backend",
   "desktop_tasks",
   "decide_trace",
+  "orchestration_gaps",
+  "orchestration_loop",
   "ai_review_actions",
   "doc_annotation_export",
   "docx_table_parser",

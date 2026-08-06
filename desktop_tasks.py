@@ -2352,6 +2352,43 @@ def build_output_summary(out_dir: Path) -> dict[str, Any]:
     }
 
 
+def orchestrate_task(
+    out_dir: Path,
+    *,
+    max_rounds: int | None = None,
+    allow_llm: bool = False,
+    actor: str = "orchestration-loop",
+) -> dict[str, Any]:
+    """T2 编排环入口（CHAIN_ORDER 之外的 sidecar，同 agent-loop 纪律）。
+
+    读四类缺口 → 经既有 allow_llm 授权通道发起 spot_extract/targeted_reextract → 写
+    orchestration_trace.jsonl，直到收敛或达上限。裁决仍在专家面板；编排环只决定"该看哪里"。
+    默认 allow_llm=False（只读缺口 + extract 缺口转人工），显式授权才发起 LLM 补抽。
+    """
+    from orchestration_loop import (
+        resolve_allow_llm,
+        resolve_max_rounds,
+        run_orchestration_loop,
+    )
+
+    root = out_dir.expanduser().resolve()
+    # CLI 显式值优先；缺省时 ENV（RATOMIZER_ORCHESTRATION_MAX_ROUNDS）覆盖，再缺省回 8。
+    rounds = resolve_max_rounds(max_rounds)
+    authorized = resolve_allow_llm(bool(allow_llm))
+    summary = run_orchestration_loop(
+        root, max_rounds=rounds, allow_llm=authorized, actor=actor
+    )
+    return {
+        "kind": "orchestrate",
+        "out_dir": str(root),
+        "summary": summary,
+        "written": [
+            summary.get("trace_file") or "orchestration_trace.jsonl",
+            "orchestration_summary.json",
+        ],
+    }
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Requirement Atomizer desktop tasks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2527,6 +2564,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         required=True,
     )
+
+    # T2 编排环（agent_loop 升格）：缺口驱动的再规划，裁决仍在专家面板。
+    orchestrate_parser = subparsers.add_parser(
+        "orchestrate",
+        help="编排环：读缺口→授权补抽→写 trace，直到收敛或达上限（NEEDS WORK 交人）")
+    orchestrate_parser.add_argument("--out-dir", "--out", dest="out", type=Path, required=True)
+    orchestrate_parser.add_argument(
+        "--max-rounds", type=int, default=None,
+        help=f"每文档最大编排轮次（默认 8，上限 50；env RATOMIZER_ORCHESTRATION_MAX_ROUNDS）")
+    orchestrate_parser.add_argument(
+        "--allow-llm", action="store_true",
+        help="授权编排环发起 spot_extract/targeted_reextract（默认关闭=只读缺口转人工；"
+             "env RATOMIZER_ORCHESTRATION_ALLOW_LLM=1 等效）")
+    orchestrate_parser.add_argument("--actor", default="orchestration-loop")
 
     # WS3 成本看板：数据全部来自文档级预算单记账流水（无新增埋点）。
     cost_report_parser = subparsers.add_parser("cost-report")
@@ -2914,6 +2965,13 @@ def main(argv: list[str] | None = None) -> int:
                     actor_trigger="desktop-claim-ledger-fold",
                 ),
             }
+        elif args.command == "orchestrate":
+            payload = orchestrate_task(
+                args.out,
+                max_rounds=args.max_rounds,
+                allow_llm=args.allow_llm,
+                actor=args.actor,
+            )
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:

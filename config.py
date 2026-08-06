@@ -71,6 +71,10 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # 全部默认非侵入：弱词词典缺省走内置词表；需求库/弱词 YAML 路径未配置时不激活对应加载。
     EnvVar("RATOMIZER_WEAK_WORDS_PATH", "", "弱词词典 YAML 路径（覆盖内置词表；未配置=用内置 适当/尽快/灵活/等 词表，与 domain_packs 词表惯例一致）", False),
     EnvVar("RATOMIZER_REQUIREMENT_LIBRARY", "", "需求库 JSONL 路径（各项目功能需求汇总检索库；API 词面检索缺省读此；未配置=API 检索返回空）", False),
+    # --- T2 编排环（agent_loop 升格：缺口驱动的再规划，裁决仍在专家面板）---
+    # 默认非侵入：allow_llm 关闭时编排环只读缺口并把 extract 缺口转人工，不发起任何 LLM 补抽。
+    EnvVar("RATOMIZER_ORCHESTRATION_MAX_ROUNDS", "8", "编排环每文档最大轮次上限（1..50，默认 8；达上限未收敛→文档 NEEDS WORK 交人）", False),
+    EnvVar("RATOMIZER_ORCHESTRATION_ALLOW_LLM", "0", "编排环经 openai_compatible 路由自动发起 spot_extract/targeted_reextract 的授权开关（=1 启用；默认 0=只读缺口，extract 缺口转人工）", False),
     # --- 知识/资产路径 ---
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),
     EnvVar("RATOMIZER_ADJUDICATION_BANK", "", "裁决样本库 JSON 路径（专家 accepted 需求作 few-shot 注入富化；缺省不注入）", False),

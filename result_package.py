@@ -238,6 +238,9 @@ _STATE_FILENAMES = {
     "claim_artifacts.lock",
     # WS3 文档级统一预算单（governed state；默认关闭，仅 RATOMIZER_LLM_BUDGET=1 时生成）。
     "llm_budget.json", "llm_budget.lock",
+    # T2 编排环产物（governed state；orchestration_loop 写、专家面板/CLI 只读）。
+    "orchestration_trace.jsonl", "orchestration_summary.json",
+    "orchestration_revision_candidates.jsonl",
 }
 
 _CACHE_FILENAMES = {
