@@ -117,6 +117,48 @@ function makeClient(over: Record<string, unknown> = {}) {
       kind: "requirement_search", query: "应记录掉电事件", matches: 1,
       results: [{ objective: "历史掉电记录需求", overlap_score: 0.42, ownership: "software", ownership_corrected: true, project: "项目A" }],
     }),
+    adoptRequirementLibrary: vi.fn().mockResolvedValue({
+      requirement_id: "FRE-1", ownership_override: "software", module_override: "事件记录",
+      written: ["verification_states.jsonl"],
+    }),
+    // F2：HTTP 优先端点——默认返回与 IPC seed 同源的数据，让既有用例走 HTTP 路径
+    loadFunctionalRequirements: vi.fn().mockResolvedValue({
+      schema: "functional-requirements/v1",
+      items: [
+        {
+          functional_requirement_id: "FRE-1",
+          objective: "应记录掉电事件",
+          behaviors: ["检测到掉电时写日志"],
+          preconditions: ["表计上电"],
+          data_constraints: ["保留至少 10 条"],
+          source_quote: "The meter shall log power failure events.",
+          source_section: "4.1 / 事件记录",
+          source_block_ids: ["BLK-001", "BLK-002"],
+          drilled_subatoms: [
+            { text: "shall log power failure events.", source_quote: "shall log power failure events.", source_block_ids: ["BLK-001"] },
+          ],
+          drilldown_signals: ["multi_behavior"],
+          source_kind: "functional_extract",
+        },
+        {
+          functional_requirement_id: "FREQ-MANUAL-xyz",
+          objective: "手工录入需求",
+          source_kind: "manual",
+          source_quote: "",
+          source_section: "",
+          source_block_ids: [],
+        },
+      ],
+      total: 2,
+    }),
+    loadManualRequirements: vi.fn().mockResolvedValue({ schema: "manual-requirements/v1", items: [], total: 0 }),
+    loadLifecycleEvents: vi.fn().mockResolvedValue({
+      schema: "requirement-lifecycle-events/v1",
+      events: [
+        { requirement_id: "FRE-1", kind: "rollback", from_state: "verified", to_state: "implemented", actor: "alice", reason: "回归测试发现缺陷", timestamp: "2026-08-06T10:00:00Z" },
+      ],
+      total: 1,
+    }),
     loadRequirements: vi.fn().mockResolvedValue([
       { stable_req_id: "SREQ-1", module: "事件记录", chinese_text: "记录掉电", status: "accepted" },
     ]),
@@ -335,10 +377,25 @@ describe("FunctionalReview (WS-F)", () => {
     expect(panel.text()).toContain("归属已修正")
     expect(panel.text()).toContain("历史掉电记录需求")
 
-    // 采纳——本地套用归属（无写端点，提示需经既有通道保存）
+    // 采纳——打开确认对话框（actor/reason 必填，经 reviewer_override 通道留痕）
     await wrapper.find('[data-testid="adopt-library-0"]').trigger("click")
     await flushPromises()
-    expect(wrapper.find('[data-testid="fr-message"]').text()).toContain("套用")
+    expect(wrapper.find('[data-testid="adopt-form"]').exists()).toBe(true)
+    // 缺操作者/原因时不应提交
+    await wrapper.find('[data-testid="adopt-submit"]').trigger("click")
+    await flushPromises()
+    expect((client.adoptRequirementLibrary as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="fr-message"]').text()).toContain("操作者与原因")
+    // 填齐后提交 → 调端点 + 落库提示
+    await wrapper.find('[data-testid="adopt-actor"]').setValue("专家A")
+    await wrapper.find('[data-testid="adopt-reason"]').setValue("采纳历史归属")
+    await wrapper.find('[data-testid="adopt-submit"]').trigger("click")
+    await flushPromises()
+    expect((client.adoptRequirementLibrary as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+      expect.objectContaining({ functionalRequirementId: "FRE-1", ownership: "software", actor: "专家A", reason: "采纳历史归属" }),
+    )
+    expect(wrapper.find('[data-testid="adopt-form"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="fr-message"]').text()).toContain("reviewer_override")
 
     // 忽略——本地移除该参考项
     await wrapper.find('[data-testid="ignore-library-0"]').trigger("click")
@@ -357,6 +414,34 @@ describe("FunctionalReview (WS-F)", () => {
     expect(wrapper.find('[data-testid="atomic-view"]').exists()).toBe(true)
     expect((client.loadRequirements as ReturnType<typeof vi.fn>)).toHaveBeenCalled()
     expect(wrapper.find('[data-testid="atomic-view"]').text()).toContain("记录掉电")
+  })
+
+  it("falls back to Electron IPC when GET endpoints are missing on old backend (404)", async () => {
+    // F2 降级演示：mock 旧后端——三个 GET 端点返回 404（端点不存在），前端经 IPC 兜底仍渲染
+    const client = makeClient({
+      loadFunctionalRequirements: vi.fn().mockRejectedValue(new RequirementApiError(404, { error: "Not found" })),
+      loadManualRequirements: vi.fn().mockRejectedValue(new RequirementApiError(404, { error: "Not found" })),
+      loadLifecycleEvents: vi.fn().mockRejectedValue(new RequirementApiError(404, { error: "Not found" })),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    // IPC seed 的 FRE-1 经兜底仍渲染（界面不崩）
+    expect(wrapper.find('[data-testid="functional-card-FRE-1"]').exists()).toBe(true)
+    // 生命周期时间线来自 IPC（requirement_lifecycle_events.jsonl seed）
+    expect(wrapper.find('[data-testid="lifecycle-timeline"]').text()).toContain("alice")
+    // 无错误消息——404 是端点缺失的预期降级，不当作故障透出
+    expect(wrapper.find('[data-testid="fr-message"]').exists()).toBe(false)
+  })
+
+  it("surfaces real HTTP errors instead of silently masking them as empty", async () => {
+    // 非 404 的 HTTP 错误（如 503）不降级——如实透出，避免把真实故障伪装成“无数据”
+    const client = makeClient({
+      loadFunctionalRequirements: vi.fn().mockRejectedValue(new RequirementApiError(503, { error: "functional_requirements_unavailable", retryable: true })),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="fr-message"]').text()).toContain("功能需求读取失败")
   })
 
   it("shows the backend note when the requirement library is unconfigured (honest 200, not an error)", async () => {

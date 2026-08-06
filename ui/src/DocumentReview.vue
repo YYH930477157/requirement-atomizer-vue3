@@ -40,7 +40,8 @@ const props = withDefaults(defineProps<{
   active: boolean
   refreshToken?: number
   sessionKey?: string
-}>(), { refreshToken: 0, sessionKey: "" })
+  focusBlockId?: string
+}>(), { refreshToken: 0, sessionKey: "", focusBlockId: "" })
 
 const blocks = ref<DocumentBlock[]>([])
 const requirements = ref<AiRequirement[]>([])
@@ -146,6 +147,12 @@ async function load() {
     if (!requirements.value.length) {
       message.value = "暂无 AI 抽取需求——请先开 LLM 跑「AI 抽取」"
     }
+    // F4：blocks 就绪后兑现挂起的来源块定位（functional 评审跳转先于 load 到达）
+    if (pendingFocusBlockId) {
+      const target = pendingFocusBlockId
+      pendingFocusBlockId = ""
+      void applyFocusBlock(target)
+    }
   } catch (error) {
     if (client === props.client && generation === contentLoadGeneration) {
       message.value = error instanceof Error ? error.message : "加载失败"
@@ -242,6 +249,10 @@ const selectedRowKey = ref("")
 // 单元格选中态（v14 cell 级闭环，"<block_id>#<cell_id>"，与后端 cell_context 键同源）
 const selectedCellKey = ref("")
 const selectedClaimId = ref("")
+// F4：来源块定位（functional 评审跳转传入）——瞬时高亮环 + 滚动；blocks 未就绪时挂起等 load 完成
+const focusedBlockId = ref("")
+let pendingFocusBlockId = ""
+let focusRingTimer: ReturnType<typeof setTimeout> | undefined
 const selectedBlock = computed(() => blocks.value.find((b) => b.block_id === selectedBlockId.value) || null)
 const selectedBlockKind = computed(() => {
   if (!selectedBlock.value) return "context"
@@ -492,6 +503,7 @@ watch(() => props.refreshToken, (token, previous) => {
 onUnmounted(() => {
   window.removeEventListener("keydown", handleReviewShortcut)
   if (incrementalRefreshTimer !== undefined) clearTimeout(incrementalRefreshTimer)
+  if (focusRingTimer !== undefined) clearTimeout(focusRingTimer)
   pdfPageLoadsDisposed = true
   workspaceLoadGeneration += 1
   contentLoadGeneration += 1
@@ -1166,6 +1178,33 @@ async function jumpToNextOmission() {
   message.value = `疑似遗漏 ${omissionJumpIndex.value + 1}/${list.length}`
 }
 
+// F4：来源块定位（functional 评审 emit focus-block → App 传入 focusBlockId）。
+// 选中 + 滚动 + 瞬时高亮环；blocks 未就绪时挂起，load() 完成后兑现。不改裁决逻辑。
+async function applyFocusBlock(blockId: string) {
+  const target = String(blockId || "").trim()
+  if (!target) return
+  const block = blocks.value.find((b) => b.block_id === target)
+  if (!block) {
+    // blocks 尚未加载——挂起等 load() 兑现
+    pendingFocusBlockId = target
+    return
+  }
+  pendingFocusBlockId = ""
+  selectBlockCard(block)
+  await nextTick()
+  const el = rootEl.value?.querySelector(`[data-block-id="${target}"]`)
+    || rootEl.value?.querySelector(`[data-testid="pdf-zone-${target}"]`)
+  el?.scrollIntoView({ behavior: "smooth", block: "center" })
+  // 瞬时高亮环（与选中态区分：选中是用户点击的持续态，focus 环是外部跳转的短暂强调）
+  focusedBlockId.value = target
+  if (focusRingTimer !== undefined) clearTimeout(focusRingTimer)
+  focusRingTimer = setTimeout(() => { focusedBlockId.value = "" }, 2600)
+}
+
+watch(() => props.focusBlockId, (id) => {
+  if (id) void applyFocusBlock(id)
+}, { immediate: true })
+
 const OMISSION_STATUS_LABELS: Record<OmissionActionStatus, string> = {
   non_requirement: "已判定非需求",
   needs_extraction: "等待补抽",
@@ -1627,7 +1666,8 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
                        'extraction-failed': b.extraction_failed,
                        anchored: anchorByBlock.get(b.block_id)?.length,
                        'in-span': selectedSpan.has(b.block_id) || b.block_id === selectedBlockId,
-                       evidence: evidenceBlocks.has(b.block_id) || b.block_id === selectedBlockId }]"
+                       evidence: evidenceBlocks.has(b.block_id) || b.block_id === selectedBlockId,
+                       'block-focused': focusedBlockId === b.block_id }]"
             :data-block-id="b.block_id"
             :data-testid="isOmission(b) ? 'omission-block' : undefined"
             @click="onBlockClick(b)"
@@ -2166,6 +2206,13 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
 .doc-block:not(.heading) .doc-text { text-align: justify; hyphens: none; }
 .doc-text.list-item { padding-left: 1.6em; text-indent: -1.6em; text-align: left; }
 .doc-block.note .doc-text { padding-left: 3.4em; text-indent: -3.4em; }
+/* F4：来源块定位的瞬时高亮环（functional 评审跳转传入；与选中态区分，外部跳转的短暂强调） */
+.doc-block.block-focused { animation: fr-focus-ring 2.6s ease-out 1; border-radius: 8px; }
+@keyframes fr-focus-ring {
+  0% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0.55); background: #eef2ff; }
+  35% { box-shadow: 0 0 0 5px rgba(29, 78, 216, 0.30); background: #eef2ff; }
+  100% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0); background: transparent; }
+}
 .doc-table { margin: 10px 0 12px; }
 .doc-table figcaption { font-size: 12px; font-weight: 600; color: #7a8496; margin-bottom: 6px; letter-spacing: .02em; }
 .doc-table .table-badge { font-size: 10px; font-weight: 500; color: #b06f12; background: #fdf3e3;

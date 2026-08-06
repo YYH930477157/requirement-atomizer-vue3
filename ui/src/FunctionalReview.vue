@@ -27,8 +27,12 @@ import {
   type DependencyCandidate,
   type DependencyCandidatesPayload,
   type DependencyDecisionPayload,
+  type FunctionalRequirementsPayload,
+  type LifecycleEventsPayload,
   type LifecycleState,
   type ManualRequirementPayload,
+  type ManualRequirementsPayload,
+  type RequirementLibraryAdoptPayload,
   type RequirementLibraryEntry,
   type RequirementLibrarySearchPayload,
   type VerificationActionPayload,
@@ -47,6 +51,10 @@ type FunctionalClient = Pick<RequirementApiClient,
   | "loadDependencyCandidates"
   | "decideDependency"
   | "searchRequirementLibrary"
+  | "adoptRequirementLibrary"
+  | "loadFunctionalRequirements"
+  | "loadManualRequirements"
+  | "loadLifecycleEvents"
   | "loadRequirements">
 
 const props = defineProps<{
@@ -167,6 +175,13 @@ const rollbackSubmitting = ref(false)
 const libraryResults = ref<RequirementLibraryEntry[]>([])
 const libraryNote = ref("")
 const libraryLoading = ref(false)
+
+// 需求库「采纳」对话框（actor/reason 必填——经 reviewer_override 通道留痕）
+const adoptOpen = ref(false)
+const adoptTarget = ref<RequirementLibraryEntry | null>(null)
+const adoptActor = ref("")
+const adoptReason = ref("")
+const adoptSubmitting = ref(false)
 
 // generation guard（loadInitialApiSession 测试隔离教训）
 let loadGeneration = 0
@@ -332,6 +347,70 @@ function describeError(err: unknown, fallback: string): string {
   return err instanceof Error ? `${fallback}：${err.message}` : fallback
 }
 
+// HTTP 优先、IPC 兜底：旧后端无对应 GET 端点（404）或无后端进程（网络错误）时降级到
+// Electron readArtifact 直读 governed 产物文件，界面不崩。其他 HTTP 错误（400/409/5xx）
+// 不降级——如实透出，避免把真实故障伪装成“无数据”。
+function shouldFallBackToIpc(err: unknown): boolean {
+  if (err instanceof RequirementApiError) return err.status === 404
+  // 非 RequirementApiError = fetch 层抛出（TypeError 网络错误 / 后端未起）
+  return err instanceof Error
+}
+
+// 功能需求条目：HTTP /functional-requirements 优先，降级 readArtifact(pipeline)
+async function loadFunctionalItems(client: FunctionalClient): Promise<{ items: FunctionalItem[]; error?: string }> {
+  try {
+    const payload: FunctionalRequirementsPayload = await client.loadFunctionalRequirements()
+    return { items: coerceItems(payload.items || [], "functional") }
+  } catch (err) {
+    if (!shouldFallBackToIpc(err)) return { items: [], error: describeError(err, "功能需求读取失败") }
+    const read = await readArtifact("pipeline", "functional_requirements.json")
+    if (read.ok && read.content) {
+      const payload = read.content as { items?: unknown[] }
+      return { items: coerceItems(Array.isArray(payload.items) ? payload.items : [], "functional") }
+    }
+    return { items: [], error: undefined }  // 文件确实不存在≠错误（如实空列表）
+  }
+}
+
+// 手工需求条目：HTTP /manual-requirements 优先，降级 readArtifact(state)
+async function loadManualItems(client: FunctionalClient): Promise<{ items: FunctionalItem[]; error?: string }> {
+  try {
+    const payload: ManualRequirementsPayload = await client.loadManualRequirements()
+    return { items: coerceItems(payload.items || [], "manual") }
+  } catch (err) {
+    if (!shouldFallBackToIpc(err)) return { items: [], error: describeError(err, "手工需求读取失败") }
+    const read = await readArtifact("state", "manual_requirements.jsonl")
+    if (read.ok && Array.isArray(read.content)) {
+      return { items: coerceItems(read.content, "manual") }
+    }
+    return { items: [], error: undefined }
+  }
+}
+
+// 生命周期事件：HTTP /lifecycle-events 优先，降级 readArtifact(state)
+async function loadLifecycleEventList(client: FunctionalClient): Promise<{ events: LifecycleEvent[]; error?: string }> {
+  try {
+    const payload: LifecycleEventsPayload = await client.loadLifecycleEvents()
+    return { events: (payload.events || []) as LifecycleEvent[] }
+  } catch (err) {
+    if (!shouldFallBackToIpc(err)) return { events: [], error: describeError(err, "生命周期事件读取失败") }
+    const read = await readArtifact("state", "requirement_lifecycle_events.jsonl")
+    if (read.ok && Array.isArray(read.content)) {
+      return { events: read.content as LifecycleEvent[] }
+    }
+    return { events: [], error: undefined }
+  }
+}
+
+function coerceItems(raws: unknown[], origin: "functional" | "manual"): FunctionalItem[] {
+  const items: FunctionalItem[] = []
+  for (const raw of raws) {
+    const item = coerceFunctionalItem(raw, origin)
+    if (item) items.push(item)
+  }
+  return items
+}
+
 async function loadAll() {
   const generation = ++loadGeneration
   apiMessage.value = ""
@@ -343,30 +422,16 @@ async function loadAll() {
   }
   loading.value = true
   try {
-    const [functionalRead, manualRead, statesResult, candidatesResult, eventsRead] = await Promise.all([
-      readArtifact("pipeline", "functional_requirements.json"),
-      readArtifact("state", "manual_requirements.jsonl"),
+    const [functionalResult, manualResult, statesResult, candidatesResult, eventsResult] = await Promise.all([
+      loadFunctionalItems(client),
+      loadManualItems(client),
       client.loadVerificationStates().catch((err: unknown) => err),
       client.loadDependencyCandidates().catch((err: unknown) => err),
-      readArtifact("state", "requirement_lifecycle_events.jsonl"),
+      loadLifecycleEventList(client),
     ])
     if (generation !== loadGeneration) return
 
-    const items: FunctionalItem[] = []
-    if (functionalRead.ok && functionalRead.content) {
-      const payload = functionalRead.content as { items?: unknown[] }
-      for (const raw of Array.isArray(payload.items) ? payload.items : []) {
-        const item = coerceFunctionalItem(raw, "functional")
-        if (item) items.push(item)
-      }
-    }
-    if (manualRead.ok && Array.isArray(manualRead.content)) {
-      for (const raw of manualRead.content) {
-        const item = coerceFunctionalItem(raw, "manual")
-        if (item) items.push(item)
-      }
-    }
-    functionalItems.value = items
+    const items: FunctionalItem[] = [...functionalResult.items, ...manualResult.items]
 
     if (statesResult instanceof Error) {
       apiMessage.value = describeError(statesResult, "验证状态读取失败")
@@ -374,6 +439,20 @@ async function loadAll() {
     } else {
       verificationStates.value = indexVerificationStates(statesResult as VerificationStatesPayload | null)
     }
+
+    // verification_states（reviewer_override 通道）可能携带需求库采纳留痕的 ownership/module
+    // override——回叠到条目，使采纳后的归属/模块在重载后仍可见。
+    for (const item of items) {
+      const state = verificationStates.value[item.functional_requirement_id]
+      if (!state) continue
+      const ownership = String(state.ownership_override || "").trim()
+      if (ownership) item.ownership_override = ownership
+    }
+
+    functionalItems.value = items
+
+    if (functionalResult.error) apiMessage.value = functionalResult.error
+    if (manualResult.error && !apiMessage.value) apiMessage.value = manualResult.error
 
     if (candidatesResult instanceof Error) {
       dependencyCandidates.value = []
@@ -385,9 +464,8 @@ async function loadAll() {
         : []
     }
 
-    lifecycleEvents.value = eventsRead.ok && Array.isArray(eventsRead.content)
-      ? (eventsRead.content as LifecycleEvent[])
-      : []
+    lifecycleEvents.value = eventsResult.events
+    if (eventsResult.error && !apiMessage.value) apiMessage.value = eventsResult.error
 
     if (items.length && !items.some((item) => item.functional_requirement_id === selectedId.value)) {
       selectedId.value = items[0].functional_requirement_id
@@ -562,8 +640,10 @@ async function submitRollback() {
 }
 
 async function loadLifecycleEvents() {
-  const read = await readArtifact("state", "requirement_lifecycle_events.jsonl")
-  lifecycleEvents.value = read.ok && Array.isArray(read.content) ? (read.content as LifecycleEvent[]) : []
+  const client = props.client
+  if (!client) return
+  const result = await loadLifecycleEventList(client)
+  lifecycleEvents.value = result.events
 }
 
 function openManual() {
@@ -608,14 +688,12 @@ async function submitManual() {
 }
 
 async function loadManualRequirements() {
-  const read = await readArtifact("state", "manual_requirements.jsonl")
-  if (!read.ok || !Array.isArray(read.content)) return
-  const manualItems = (read.content as unknown[])
-    .map((raw) => coerceFunctionalItem(raw, "manual"))
-    .filter((item): item is FunctionalItem => item !== null)
+  const client = props.client
+  if (!client) return
+  const result = await loadManualItems(client)
   const byId = new Map<string, FunctionalItem>()
   for (const item of functionalItems.value) byId.set(item.functional_requirement_id, item)
-  for (const item of manualItems) byId.set(item.functional_requirement_id, item)
+  for (const item of result.items) byId.set(item.functional_requirement_id, item)
   functionalItems.value = Array.from(byId.values())
 }
 
@@ -650,12 +728,50 @@ async function runLibrarySearch() {
 function adoptLibraryEntry(entry: RequirementLibraryEntry) {
   const item = selectedItem.value
   if (!item) return
-  // 后端无「套用历史条目」写端点——采纳只在本地把历史归属/模块作为初值，专家随后经既有通道
-  // （verification 回写 / 手工建需求）持久化。如实标注，不伪造已落库。
-  const ownership = String(entry.ownership || "").trim()
-  const module = String(entry.module || "").trim()
-  if (ownership) item.ownership_override = ownership
-  apiMessage.value = `已套用历史条目作为初值${ownership ? `（归属：${ownership}）` : ""}${module ? `（模块：${module}）` : ""}——需通过验证回写或手工建需求保存后方可落库`
+  // 打开确认对话框：actor/reason 必填——后端经既有 reviewer_override 通道（verification_states）
+  // 留痕，不新造写路径。历史归属/模块作为初值预览，提交后才落库。
+  adoptTarget.value = entry
+  adoptActor.value = ""
+  adoptReason.value = ""
+  adoptOpen.value = true
+}
+
+async function submitAdopt() {
+  const client = props.client
+  const item = selectedItem.value
+  const entry = adoptTarget.value
+  if (!client || !item || !entry || adoptSubmitting.value) return
+  if (!adoptActor.value.trim() || !adoptReason.value.trim()) {
+    apiMessage.value = "采纳需填写操作者与原因（经 reviewer_override 通道留痕）"
+    return
+  }
+  const generation = ++opGeneration
+  adoptSubmitting.value = true
+  apiMessage.value = ""
+  try {
+    const ownership = String(entry.ownership || "").trim()
+    const moduleText = String(entry.module || "").trim()
+    const payload: RequirementLibraryAdoptPayload = await client.adoptRequirementLibrary({
+      functionalRequirementId: item.functional_requirement_id,
+      ownership,
+      module: moduleText,
+      actor: adoptActor.value.trim(),
+      reason: adoptReason.value.trim(),
+    })
+    if (generation !== opGeneration) return
+    // 回叠到当前条目（与 loadAll 的回叠口径一致）
+    const persistedOwnership = String(payload.ownership_override || "").trim()
+    if (persistedOwnership) item.ownership_override = persistedOwnership
+    adoptOpen.value = false
+    apiMessage.value = `已采纳历史条目${persistedOwnership ? `（归属：${persistedOwnership}）` : ""}${payload.module_override ? `（模块：${payload.module_override}）` : ""}——已写入 reviewer_override 通道（verification_states）`
+    // 刷新验证状态，使留痕字段在状态行同步可见
+    await refreshVerificationStates()
+  } catch (err) {
+    if (generation !== opGeneration) return
+    apiMessage.value = describeError(err, "采纳失败")
+  } finally {
+    if (generation === opGeneration) adoptSubmitting.value = false
+  }
 }
 
 function ignoreLibraryEntry(entry: RequirementLibraryEntry) {
@@ -1111,6 +1227,45 @@ function toggleChildren(itemId: string) {
             <button class="fr-button" type="button" :disabled="rollbackSubmitting" @click="rollbackOpen = false">取消</button>
             <button class="fr-button warn" type="button" :disabled="rollbackSubmitting" data-testid="rollback-submit" @click="submitRollback">
               {{ rollbackSubmitting ? "提交中…" : "确认回退" }}
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Transition>
+
+    <!-- 需求库「采纳」确认对话框（actor/reason 必填——经 reviewer_override 通道留痕） -->
+    <Transition name="sheet">
+      <div v-if="adoptOpen" class="manual-overlay" data-testid="adopt-form" role="dialog" aria-modal="true" aria-label="采纳历史条目" @click.self="adoptOpen = false">
+        <section class="manual-dialog">
+          <header class="manual-head">
+            <div>
+              <div class="manual-title">采纳历史条目</div>
+              <div class="manual-subtitle">把历史条目的归属/模块套用到当前功能需求。经既有 reviewer_override 通道（verification_states）留痕，不新造写路径。</div>
+            </div>
+            <button class="icon-button" type="button" aria-label="关闭" @click="adoptOpen = false"><X :size="18" aria-hidden="true" /></button>
+          </header>
+          <div class="manual-body">
+            <div v-if="adoptTarget" class="field" data-testid="adopt-preview">
+              <span class="field-label">将套用</span>
+              <div class="library-objective">{{ adoptTarget.objective || adoptTarget.title }}</div>
+              <div class="candidate-meta">
+                <span v-if="adoptTarget.ownership" class="meta-chip">归属：{{ adoptTarget.ownership }}</span>
+                <span v-if="adoptTarget.module" class="meta-chip">模块：{{ adoptTarget.module }}</span>
+              </div>
+            </div>
+            <label class="form-field wide">
+              <span class="field-label">操作者<em class="req">*</em></span>
+              <input v-model="adoptActor" type="text" data-testid="adopt-actor" placeholder="必填——记入 reviewer_override 留痕" />
+            </label>
+            <label class="form-field wide">
+              <span class="field-label">原因<em class="req">*</em></span>
+              <textarea v-model="adoptReason" rows="2" data-testid="adopt-reason" placeholder="必填——为什么采纳该历史条目的归属/模块" />
+            </label>
+          </div>
+          <footer class="manual-foot">
+            <button class="fr-button" type="button" :disabled="adoptSubmitting" @click="adoptOpen = false">取消</button>
+            <button class="fr-button primary" type="button" :disabled="adoptSubmitting" data-testid="adopt-submit" @click="submitAdopt">
+              {{ adoptSubmitting ? "提交中…" : "确认采纳" }}
             </button>
           </footer>
         </section>

@@ -55,6 +55,29 @@ def _write_analysis_item(out_dir: Path, **overrides) -> dict:
     return item
 
 
+def _write_functional_item(out_dir: Path, **overrides) -> dict:
+    """写一条 functional_requirements.json item（functional_extract 直抽形态，FRE-* 前缀）。
+
+    与 _write_analysis_item 不同——该产物只落 functional_requirements.json，不进
+    engineering_analysis.json。F1 修复前 load_requirement_index 漏读此文件，FRE-* 条目
+    的 verification CAS 形同虚设（current_fingerprint 恒 ""）。
+    """
+    item = {
+        "functional_requirement_id": "FRE-direct0001",
+        "objective": "表具应支持掉电事件记录",
+        "behaviors": ["检测到掉电时写日志"],
+        "description": "表具应支持掉电事件记录",
+        "source_section": "4.2.1",
+        "source_quote": "The meter shall log power failure events.",
+        "source_block_ids": ["BLK-001"],
+    }
+    item.update(overrides)
+    target = out_dir / "functional_requirements.json"
+    payload = {"producer": "functional-extract-v1", "items": [item]}
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return item
+
+
 # ===========================================================================
 # Cap1/2 纯契约：verification 子对象 + 四态生命周期
 # ===========================================================================
@@ -226,6 +249,77 @@ class VerificationStateMachineIOTests(unittest.TestCase):
         record = states[self.item["functional_requirement_id"]]
         self.assertEqual(record["source"], "reviewer_override")
         self.assertEqual(normalize_verification(record["verification"])["implemented"], "done")
+
+
+# ===========================================================================
+# F1：functional_requirements.json 纳入 requirement 索引——FRE-* 直抽条目 CAS 真实生效
+# ---------------------------------------------------------------------------
+# 旧 load_requirement_index 只读 engineering_analysis.json + manual_requirements.jsonl，
+# functional_extract 直抽的 FRE-* 条目只落 functional_requirements.json，索引漏读使其
+# current_fingerprint 恒 ""，任何 expected_evidence_fingerprint 都“匹配”→ CAS 形同虚设。
+# ===========================================================================
+class FunctionalRequirementIndexCasTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_fre_item_cas_rejects_stale_fingerprint_after_content_drift(self) -> None:
+        """FRE-* 条目回写后再改内容 → 二次回写携旧指纹被拒（CAS 真实生效）。"""
+        from requirement_schema import requirement_content_fingerprint
+        from requirements_analysis_rules import apply_verification_override
+        from review_state import VerificationStateConflict
+
+        # 仅 functional_requirements.json（无 engineering_analysis.json）——这是 F1 的核心场景
+        item = _write_functional_item(self.out)
+        rid = item["functional_requirement_id"]
+        fp_before = requirement_content_fingerprint(item)
+
+        # 首次回写：expected 与当前内容指纹一致 → 通过，落盘 evidence_fingerprint=fp_before
+        rec = apply_verification_override(self.out, rid, {"implemented": "done"},
+                                          actor="tester",
+                                          expected_evidence_fingerprint=fp_before)
+        self.assertEqual(rec["evidence_fingerprint"], fp_before)
+
+        # 需求重新生成：改 description（内容指纹的稳定识别字段）→ 指纹漂移
+        mutated = _write_functional_item(
+            self.out, objective="表具应支持全新不同的掉电记录能力",
+            behaviors=["全新行为"], description="全新的掉电记录能力描述")
+        fp_after = requirement_content_fingerprint(mutated)
+        self.assertNotEqual(fp_after, fp_before)
+
+        # 二次回写携【旧】指纹（前端持有的是首次回写后的 evidence_fingerprint）→ 必须被拒
+        with self.assertRaises(VerificationStateConflict) as ctx:
+            apply_verification_override(self.out, rid, {"implemented": "done"},
+                                        actor="tester",
+                                        expected_evidence_fingerprint=fp_before)
+        self.assertEqual(ctx.exception.requirement_id, rid)
+        # 当前指纹已是漂移后的值（不是旧 F1 缺陷里的空串）
+        self.assertEqual(ctx.exception.current_fingerprint, fp_after)
+        self.assertNotEqual(ctx.exception.current_fingerprint, "")
+
+    def test_fre_item_indexed_from_governed_pipeline_path(self) -> None:
+        """package_v1 下 functional_requirements.json 在 .ratomizer/pipeline/ 也能索引到。"""
+        from result_package import governed_artifact_path, initialize_result_package
+        from requirements_analysis_rules import load_requirement_index
+
+        # 真实 package_v1 marker：governed_artifact_path 此时解析到 .ratomizer/pipeline/
+        source = self.out / "input.docx"
+        source.write_bytes(b"fixture")
+        initialize_result_package(self.out, input_path=source, requested_stages=["atomize"])
+        governed = governed_artifact_path(self.out, "functional_requirements.json",
+                                          category="pipeline", for_write=True)
+        self.assertEqual(governed, self.out / ".ratomizer" / "pipeline" / "functional_requirements.json")
+        governed.write_text(json.dumps({
+            "producer": "functional-extract-v1",
+            "items": [{"functional_requirement_id": "FRE-pkg0001",
+                       "objective": "应支持时钟同步", "behaviors": ["周期校时"]}],
+        }, ensure_ascii=False), encoding="utf-8")
+        index = load_requirement_index(self.out)
+        self.assertIn("FRE-pkg0001", index)
+        self.assertTrue(index["FRE-pkg0001"]["fingerprint"])
 
 
 # ===========================================================================
@@ -676,6 +770,76 @@ class ApiHandlerTests(unittest.TestCase):
             handler.handle_requirement_library_search({"q": ["test"]})
         self.assertEqual(responses[0][0], 200)
         self.assertEqual(responses[0][1]["matches"], 0)
+
+    def test_functional_requirements_get(self) -> None:
+        _write_functional_item(self.out)
+        handler, responses = self._handler(None)
+        handler.handle_functional_requirements_get()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["schema"], "functional-requirements/v1")
+        self.assertEqual(responses[0][1]["total"], 1)
+        self.assertEqual(responses[0][1]["items"][0]["functional_requirement_id"], "FRE-direct0001")
+
+    def test_functional_requirements_get_empty_when_missing(self) -> None:
+        handler, responses = self._handler(None)
+        handler.handle_functional_requirements_get()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["total"], 0)
+        self.assertEqual(responses[0][1]["items"], [])
+
+    def test_manual_requirements_get(self) -> None:
+        from desktop_tasks import add_manual_requirement_task
+        add_manual_requirement_task(self.out, objective="应支持事件上报", module="事件记录",
+                                    actor="工程师")
+        handler, responses = self._handler(None)
+        handler.handle_manual_requirements_get()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["schema"], "manual-requirements/v1")
+        self.assertEqual(responses[0][1]["total"], 1)
+
+    def test_lifecycle_events_get(self) -> None:
+        from requirements_analysis_rules import apply_verification_override, rollback_requirement_lifecycle
+        item = _write_analysis_item(self.out)
+        rid = item["functional_requirement_id"]
+        apply_verification_override(self.out, rid, {
+            "project_manager_confirm": True, "test_lead_confirm": True, "dev_test_confirm": True,
+            "implemented": "done", "test_completed": True}, actor="t")
+        rollback_requirement_lifecycle(self.out, rid, "implemented", actor="专家", reason="返工")
+        handler, responses = self._handler(None)
+        handler.handle_lifecycle_events_get()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["schema"], "requirement-lifecycle-events/v1")
+        self.assertEqual(responses[0][1]["total"], 1)
+        self.assertEqual(responses[0][1]["events"][0]["kind"], "rollback")
+
+    def test_requirement_library_adopt_writes_via_reviewer_override(self) -> None:
+        from review_state import read_verification_states
+        item = _write_functional_item(self.out)
+        rid = item["functional_requirement_id"]
+        handler, responses = self._handler({
+            "requirement_id": rid, "ownership": "software", "module": "事件记录",
+            "actor": "专家A", "reason": "采纳历史条目归属",
+        })
+        handler.handle_requirement_library_adopt()
+        self.assertEqual(responses[0][0], 200)
+        self.assertEqual(responses[0][1]["written"], ["verification_states.jsonl"])
+        # 留痕落在既有 reviewer_override 通道（verification_states.jsonl）
+        record = read_verification_states(self.out)[rid]
+        self.assertEqual(record["ownership_override"], "software")
+        self.assertEqual(record["module_override"], "事件记录")
+        self.assertEqual(record["adopt_source"], "requirement_library")
+        self.assertEqual(record["adopt_actor"], "专家A")
+        self.assertEqual(record["adopt_reason"], "采纳历史条目归属")
+
+    def test_requirement_library_adopt_requires_actor_and_reason(self) -> None:
+        item = _write_functional_item(self.out)
+        handler, responses = self._handler({
+            "requirement_id": item["functional_requirement_id"],
+            "ownership": "software", "actor": "", "reason": "",
+        })
+        handler.handle_requirement_library_adopt()
+        self.assertEqual(responses[0][0], 400)
+        self.assertIn("actor and reason", responses[0][1]["error"])
 
 
 if __name__ == "__main__":

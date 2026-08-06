@@ -136,6 +136,12 @@ export type VerificationStateRow = {
   actor?: string
   timestamp?: string
   schema?: string
+  // 需求库「采纳」经 reviewer_override 通道留痕的覆盖（adopt_source=requirement_library）
+  ownership_override?: string
+  module_override?: string
+  adopt_source?: string
+  adopt_actor?: string
+  adopt_reason?: string
 }
 
 export type VerificationStatesPayload = {
@@ -243,6 +249,41 @@ export type RequirementLibrarySearchPayload = {
   matches?: number
   results?: RequirementLibraryEntry[]
   note?: string
+}
+
+// WS-F：功能需求 / 手工需求 / 生命周期事件只读 GET（HTTP 优先，旧后端无端点时前端走 IPC 兜底）
+export type FunctionalRequirementsPayload = {
+  schema: "functional-requirements/v1"
+  items: Record<string, unknown>[]
+  total: number
+}
+
+export type ManualRequirementsPayload = {
+  schema: "manual-requirements/v1"
+  items: Record<string, unknown>[]
+  total: number
+}
+
+export type LifecycleEventsPayload = {
+  schema: "requirement-lifecycle-events/v1"
+  events: Record<string, unknown>[]
+  total: number
+}
+
+// 需求库「采纳」：历史条目归属/模块套用到目标功能需求（经 reviewer_override 通道留痕）
+export type RequirementLibraryAdoptInput = {
+  functionalRequirementId: string
+  ownership?: string
+  module?: string
+  actor: string
+  reason: string
+}
+
+export type RequirementLibraryAdoptPayload = {
+  requirement_id: string
+  ownership_override?: string
+  module_override?: string
+  written: string[]
 }
 
 export type TranslationInput = {
@@ -1459,6 +1500,36 @@ export class RequirementApiClient {
     return this.request<RequirementLibrarySearchPayload>(
       `/requirement-library/search?${params.toString()}`,
     )
+  }
+
+  // WS-F 契约缺口修复：三个只读 GET 端点（旧后端可能无此端点 → 前端 HTTP 优先、IPC 兜底）
+  async loadFunctionalRequirements(): Promise<FunctionalRequirementsPayload> {
+    return this.request<FunctionalRequirementsPayload>("/functional-requirements")
+  }
+
+  async loadManualRequirements(): Promise<ManualRequirementsPayload> {
+    return this.request<ManualRequirementsPayload>("/manual-requirements")
+  }
+
+  async loadLifecycleEvents(): Promise<LifecycleEventsPayload> {
+    return this.request<LifecycleEventsPayload>("/lifecycle-events")
+  }
+
+  // 需求库「采纳」：actor/reason 必填（reviewer_override 留痕），后端经既有 verification_states 通道持久化
+  async adoptRequirementLibrary(
+    input: RequirementLibraryAdoptInput,
+  ): Promise<RequirementLibraryAdoptPayload> {
+    return this.request<RequirementLibraryAdoptPayload>("/requirement-library/adopt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requirement_id: input.functionalRequirementId,
+        ownership: input.ownership || "",
+        module: input.module || "",
+        actor: input.actor,
+        reason: input.reason,
+      }),
+    })
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

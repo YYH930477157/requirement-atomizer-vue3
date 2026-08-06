@@ -217,10 +217,52 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _read_functional_requirements_payload(root: Path) -> dict[str, Any]:
+    """读 functional_requirements.json——双路径探测（governed 优先、根目录兜底）。
+
+    functional_synthesis 走裸根写、functional_extract 走 governed 写，两个写入器并存是
+    现状（见 result_package._ARTIFACTS 的 functional_requirements 登记 + legacy_path）。
+    package_v1 下 governed 解析到 .ratomizer/pipeline/，但裸根写入仍可能落根目录，
+    故逐候选 stat 命中即读，与桌面端 readGovernedArtifact 同口径（for_write=False 不建目录）。
+    """
+    from result_package import governed_artifact_path
+
+    candidates = [
+        governed_artifact_path(root, "functional_requirements.json",
+                               category="pipeline", for_write=False),
+        root / "functional_requirements.json",
+    ]
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def read_functional_requirements(out_dir: Path) -> list[dict[str, Any]]:
+    """读 functional_requirements.json 的 items 列表（governed 双路径探测）。
+
+    供 GET /functional-requirements 只读端点：缺失/坏 JSON → 空列表（如实，不伪造）。
+    """
+    root = Path(out_dir).expanduser().resolve()
+    items = _read_functional_requirements_payload(root).get("items")
+    return [item for item in (items or []) if isinstance(item, dict)]
+
+
 def load_requirement_index(out_dir: Path) -> dict[str, dict[str, Any]]:
-    """构建 {requirement_id: {item, fingerprint}} 索引（分析项 + 手工需求）。
+    """构建 {requirement_id: {item, fingerprint}} 索引（分析项 + 功能需求 + 手工需求）。
 
     供 verification CAS、xlsx 回灌按行定位使用——需求重新生成后内容指纹漂移即失配。
+    functional_requirements.json 必须纳入：FRE-* 功能抽取条目只在此文件，旧实现漏读导致
+    其 CAS 形同虚设（current_fingerprint 恒 ""，任何 expected 都“匹配”）。
     """
     from requirement_schema import requirement_content_fingerprint, requirement_identity
     from review_state import read_manual_requirements
@@ -238,6 +280,13 @@ def load_requirement_index(out_dir: Path) -> dict[str, dict[str, Any]]:
             if isinstance(item, dict):
                 rid = requirement_identity(item)
                 index[rid] = {"item": item, "fingerprint": requirement_content_fingerprint(item)}
+    # FRE-* 功能抽取条目（functional_extract 直抽）：只落 functional_requirements.json，
+    # 不纳入索引则 verification CAS 对它们恒放行（F1 修复）。
+    functional_items = _read_functional_requirements_payload(root).get("items")
+    for item in functional_items or []:
+        if isinstance(item, dict):
+            rid = requirement_identity(item)
+            index[rid] = {"item": item, "fingerprint": requirement_content_fingerprint(item)}
     for item in read_manual_requirements(root):
         rid = requirement_identity(item)
         index[rid] = {"item": item, "fingerprint": requirement_content_fingerprint(item)}
@@ -300,6 +349,50 @@ def apply_verification_override(
         "timestamp": str(timestamp or _now_iso()),
         "schema": "verification-state/v1",
     }
+    return upsert_verification_state(root, rid, record)
+
+
+def apply_requirement_library_adoption(
+    out_dir: Path,
+    requirement_id: str,
+    *,
+    ownership: str = "",
+    module: str = "",
+    actor: str = "",
+    reason: str = "",
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """把需求库历史条目的归属/模块初值套用到目标功能需求。
+
+    经既有 reviewer_override 通道（verification_states.jsonl，source=reviewer_override）留痕——
+    复用 upsert_verification_state 的锁 + 原子替换写路径，不新造写文件。actor/reason 必填
+    （审计可追溯：谁采纳了哪个历史条目、为什么）。ownership/module 任一为空则跳过该字段，
+    不清空既有覆盖。
+    """
+    from review_state import upsert_verification_state
+
+    root = Path(out_dir).expanduser().resolve()
+    rid = str(requirement_id or "").strip()
+    actor_s = str(actor or "").strip()
+    reason_s = str(reason or "").strip()
+    if not rid:
+        raise ValueError("requirement_id is required for library adoption")
+    if not actor_s or not reason_s:
+        raise ValueError("actor and reason are required for library adoption (reviewer_override 留痕)")
+    ownership_s = str(ownership or "").strip()
+    module_s = str(module or "").strip()
+    record: dict[str, Any] = {
+        "requirement_id": rid,
+        "schema": "verification-state/v1",
+        "adopt_source": "requirement_library",
+        "adopt_actor": actor_s,
+        "adopt_reason": reason_s,
+        "adopt_timestamp": str(timestamp or _now_iso()),
+    }
+    if ownership_s:
+        record["ownership_override"] = ownership_s
+    if module_s:
+        record["module_override"] = module_s
     return upsert_verification_state(root, rid, record)
 
 

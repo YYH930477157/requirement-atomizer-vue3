@@ -519,6 +519,19 @@ describe("DocumentReview", () => {
     expect(wrapper.find('[data-testid="pdf-unavailable"]').text()).toContain("影印页尚未生成")
   })
 
+  it("selects + highlights the focusBlockId after load (functional review traceability jump, F4)", async () => {
+    const client = makeClient()
+    // focusBlockId 作为初始 prop 传入（App 从 functional 评审跳转时先设 id 再切视图）。
+    // blocks 未就绪时挂起，load 完成后兑现：选中 + 瞬时高亮环。
+    const wrapper = mount(DocumentReview, { props: { client, active: true, focusBlockId: "B2" } })
+    await flushPromises()
+
+    const block = wrapper.find('.doc-block[data-block-id="B2"]')
+    expect(block.exists()).toBe(true)
+    expect(block.classes()).toContain("block-focused")  // 瞬时高亮环
+    expect(block.classes()).toContain("in-span")        // 选中态（selectedBlockId === B2）
+  })
+
   it("refreshes stale PDF data and returns to original pages when they become available", async () => {
     const loadPdfAnnotation = vi.fn()
       .mockResolvedValueOnce({ available: false, reason: "影印页尚未生成" })

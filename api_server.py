@@ -448,6 +448,15 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/verification-states":
             self.handle_verification_states_get()
             return
+        if parsed.path == "/functional-requirements":
+            self.handle_functional_requirements_get()
+            return
+        if parsed.path == "/manual-requirements":
+            self.handle_manual_requirements_get()
+            return
+        if parsed.path == "/lifecycle-events":
+            self.handle_lifecycle_events_get()
+            return
         if parsed.path == "/dependency-candidates":
             self.handle_dependency_candidates_get()
             return
@@ -513,6 +522,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/dependency-decisions":
             self.handle_dependency_decision()
+            return
+        if parsed.path == "/requirement-library/adopt":
+            self.handle_requirement_library_adopt()
             return
         if parsed.path != "/review-actions":
             self.send_error(404, "Unknown endpoint")
@@ -1405,6 +1417,46 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         self.send_json({"schema": "verification-states/v1", "states": list(states.values()),
                         "total": len(states)})
 
+    def handle_functional_requirements_get(self) -> None:
+        """WS-F：读 functional_requirements.json items（governed 双路径探测）。只读。
+
+        envelope 与既有 GET 端点同构（schema/数据/total/错误面）。前端 HTTP 优先、
+        无此端点的旧后端经 Electron readArtifact IPC 降级兜底。
+        """
+        from requirements_analysis_rules import read_functional_requirements
+        try:
+            items = read_functional_requirements(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "functional_requirements_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"schema": "functional-requirements/v1", "items": items,
+                        "total": len(items)})
+
+    def handle_manual_requirements_get(self) -> None:
+        """WS-F：读 manual_requirements.jsonl（手工建需求记录）。只读。"""
+        from review_state import read_manual_requirements
+        try:
+            items = read_manual_requirements(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "manual_requirements_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"schema": "manual-requirements/v1", "items": items,
+                        "total": len(items)})
+
+    def handle_lifecycle_events_get(self) -> None:
+        """WS-F：读 requirement_lifecycle_events.jsonl（append-only 生命周期事件流）。只读。"""
+        from review_state import read_lifecycle_events
+        try:
+            events = read_lifecycle_events(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "lifecycle_events_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"schema": "requirement-lifecycle-events/v1", "events": events,
+                        "total": len(events)})
+
     def handle_dependency_candidates_get(self) -> None:
         """WS4：确定性依赖/父子候选推荐（含已裁决状态）。只读。"""
         try:
@@ -1559,6 +1611,48 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                             "retryable": True}, status=503)
             return
         self.send_json(result)
+
+    def handle_requirement_library_adopt(self) -> None:
+        """WS-F：需求库「采纳」——历史条目归属/模块套用到目标功能需求。
+
+        经既有 reviewer_override 通道（verification_states.jsonl）留痕，actor/reason 必填。
+        不新造写路径（复用 apply_requirement_library_adoption → upsert_verification_state）。
+        """
+        from requirements_analysis_rules import apply_requirement_library_adoption
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        requirement_id = str(
+            payload.get("requirement_id") or payload.get("functional_requirement_id") or ""
+        ).strip()
+        actor = str(payload.get("actor") or "").strip()
+        reason = str(payload.get("reason") or "").strip()
+        if not requirement_id:
+            self.send_json({"error": "requirement_id is required"}, status=400)
+            return
+        if not actor or not reason:
+            self.send_json({"error": "actor and reason are required (reviewer_override 留痕)"},
+                           status=400)
+            return
+        try:
+            record = apply_requirement_library_adoption(
+                self.output_dir, requirement_id,
+                ownership=str(payload.get("ownership") or "").strip(),
+                module=str(payload.get("module") or "").strip(),
+                actor=actor, reason=reason)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "requirement_library_adopt_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({
+            "requirement_id": requirement_id,
+            "ownership_override": record.get("ownership_override", ""),
+            "module_override": record.get("module_override", ""),
+            "written": ["verification_states.jsonl"],
+        })
 
     def read_json_body(self) -> dict | None:
         try:
