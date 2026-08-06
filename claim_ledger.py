@@ -36,6 +36,16 @@ CLAIM_LEDGER_SCHEMA = "claim-ledger/v3"
 CLAIM_SEMANTIC_NEGATIVE_SCHEMA = "claim-semantic-negative/v3"
 CLAIM_COVERAGE_GROUP_SCHEMA = "claim-coverage-group/v3"
 CLAIM_LEDGER_PROMPT_VERSION = "claim-ledger-shadow-prompt-v4"
+# WS2 §4.2 claim 账本抽检模式（full/sampling/baseline_gate）。mode 只是配置开关——
+# build_shadow_ledger 默认 mode='full' 与现状逐字节一致；sampling/baseline_gate 收窄 verifier
+# 闭合面（sampling=分层抽样+全部高风险 claim，baseline_gate=发布门禁全量闭合）。高风险判定
+# 是确定性正则（is_high_risk_claim），不引入新 LLM 调用。claim_ledger.py 与 4.1 万行测试
+# 资产不动行为面——只有显式传 mode!=full 才进入抽样分支。
+CLAIM_LEDGER_MODE_VERSION = "claim-ledger-mode-v1"
+CLAIM_LEDGER_MODES = ("full", "sampling", "baseline_gate")
+DEFAULT_CLAIM_LEDGER_MODE = "sampling"
+DEFAULT_CLAIM_LEDGER_SAMPLING_RATE = 0.10
+DEFAULT_CLAIM_LEDGER_SAMPLING_FLOOR_RATE = 0.30
 # v5: table_cell claim 的 source_quote 与格全文逐字相等时授予 source_quote_span
 # （marker 格 "X" 仅 1 alnum，此前永落在 shared_block_locator 而被候选闸拒绝，
 #  marker claim 在生产上永远无法到达独立 verifier——P1-4 复审实测）。豁免只
@@ -3087,6 +3097,148 @@ def _metrics(
     }
 
 
+# ---------------------------------------------------------------------------
+# WS2 §4.2 claim 账本抽检模式（full / sampling / baseline_gate）
+# ---------------------------------------------------------------------------
+
+def resolve_claim_ledger_mode(value: str | None = None) -> str:
+    """解析 mode 配置（env ``RATOMIZER_CLAIM_LEDGER_MODE``，默认 sampling）。
+
+    非法值回退默认档并告警——mode 是配置开关，非法配置不得让流水线裸崩。
+    """
+    raw = os.environ.get("RATOMIZER_CLAIM_LEDGER_MODE") if value is None else value
+    mode = str(raw or "").strip().lower() or DEFAULT_CLAIM_LEDGER_MODE
+    if mode not in CLAIM_LEDGER_MODES:
+        logging.getLogger("requirement_atomizer").warning(
+            "非法 claim ledger mode %r，回退默认 %s", raw, DEFAULT_CLAIM_LEDGER_MODE,
+        )
+        return DEFAULT_CLAIM_LEDGER_MODE
+    return mode
+
+
+def _resolve_sampling_rate(value: float | None = None) -> float:
+    raw = os.environ.get("RATOMIZER_CLAIM_LEDGER_SAMPLING_RATE") if value is None else value
+    try:
+        rate = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_CLAIM_LEDGER_SAMPLING_RATE
+    if not 0.0 <= rate <= 1.0:
+        return DEFAULT_CLAIM_LEDGER_SAMPLING_RATE
+    return rate
+
+
+def _resolve_sampling_floor_rate(value: float | None = None) -> float:
+    raw = os.environ.get("RATOMIZER_CLAIM_LEDGER_SAMPLING_FLOOR_RATE") if value is None else value
+    try:
+        rate = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_CLAIM_LEDGER_SAMPLING_FLOOR_RATE
+    if not 0.0 <= rate <= 1.0:
+        return DEFAULT_CLAIM_LEDGER_SAMPLING_FLOOR_RATE
+    return rate
+
+
+def is_high_risk_claim(claim: dict[str, Any]) -> bool:
+    """确定性高风险 claim 识别（零 LLM）。
+
+    与既有"受保护编码漂移硬拦、普通数字漂移软标"的风险分级同源：claim 文本含受保护编码
+    （OBIS / hex / 外标准号，经 extract_codes）或数值命题（经 extract_protected_facts 的
+    unit_value / number）即为高风险，sampling 模式下必经 verifier 闭合。
+    """
+    content, _, _ = _claim_content(claim)
+    if not str(content or "").strip():
+        return False
+    if extract_codes(content):
+        return True
+    facts = extract_protected_facts(content)
+    for fact in facts:
+        kind = str(fact.get("kind") or "")
+        if kind in {"unit_value", "number"}:
+            return True
+    return False
+
+
+def select_verifier_claim_ids(
+    catalog: list[dict[str, Any]],
+    *,
+    mode: str = DEFAULT_CLAIM_LEDGER_MODE,
+    sampling_rate: float | None = None,
+    floor_rate: float | None = None,
+) -> dict[str, Any]:
+    """按 mode 选出 sampling 模式下需 verifier 闭合的 claim_id 集合（确定性，零 LLM）。
+
+    * ``full`` / ``baseline_gate``：全部 eligible claim（baseline_gate 的重型机制联动由
+      caller 在发布门禁触发，这里只负责"闭合面=全量"）。
+    * ``sampling``（默认）：分层抽样 ``sampling_rate``（默认 10%）+ 全部高风险 claim。
+      抽样用稳定 stride（按 claim_id 排序后等距取样），无随机数——同输入同输出、可复算。
+      抽检闭合率低于 ``floor_rate`` 时 ``escalate=True``（建议扩大抽样或转全量），判定依据
+      留账本。
+
+    返回 ``{mode, selected_ids, sampled_ids, high_risk_ids, deferred_ids, sampling_rate,
+    escalate, threshold_met}``。selected_ids = sampled ∪ high_risk。
+    """
+    eligible = [
+        claim for claim in catalog
+        if isinstance(claim, dict) and claim.get("eligibility") == "claim"
+    ]
+    eligible_ids = [str(claim.get("claim_id") or "") for claim in eligible]
+    eligible_by_id = {
+        str(claim.get("claim_id") or ""): claim for claim in eligible
+    }
+
+    if mode in {"full", "baseline_gate"}:
+        return {
+            "mode": mode,
+            "selected_ids": set(eligible_ids),
+            "sampled_ids": [],
+            "high_risk_ids": [],
+            "deferred_ids": [],
+            "eligible_count": len(eligible_ids),
+            "sampling_rate": 1.0,
+            "floor_rate": _resolve_sampling_floor_rate(floor_rate),
+            "escalate": False,
+            "threshold_met": True,
+        }
+
+    # sampling
+    rate = _resolve_sampling_rate(sampling_rate)
+    floor = _resolve_sampling_floor_rate(floor_rate)
+    ordered = sorted(eligible_ids)
+    high_risk_ids = sorted(
+        cid for cid in ordered if is_high_risk_claim(eligible_by_id.get(cid, {}))
+    )
+    # 分层抽样：在全部 eligible 上等距取样（非高风险也参与，保证覆盖率估计无偏）
+    sample_target = max(1, int(round(len(ordered) * rate))) if ordered else 0
+    if ordered and sample_target >= len(ordered):
+        sampled_ids = list(ordered)
+    else:
+        stride = len(ordered) / sample_target if sample_target else 0
+        sampled_ids = [
+            ordered[int(i * stride)]
+            for i in range(sample_target)
+            if 0 <= int(i * stride) < len(ordered)
+        ] if stride else []
+        sampled_ids = sorted(set(sampled_ids))
+    selected = set(sampled_ids) | set(high_risk_ids)
+    deferred = sorted(set(ordered) - selected)
+    # 抽检闭合率估计：实际选中比例低于 floor → escalate=True（建议扩大抽样或转全量）。
+    selected_ratio = (len(selected) / len(ordered)) if ordered else 1.0
+    threshold_met = selected_ratio >= floor
+    return {
+        "mode": mode,
+        "selected_ids": selected,
+        "sampled_ids": sampled_ids,
+        "high_risk_ids": high_risk_ids,
+        "deferred_ids": deferred,
+        "eligible_count": len(ordered),
+        "sampling_rate": rate,
+        "floor_rate": floor,
+        "selected_ratio": selected_ratio,
+        "escalate": not threshold_met,
+        "threshold_met": threshold_met,
+    }
+
+
 def build_shadow_ledger(
     catalog_build: dict[str, Any],
     requirements: list[dict[str, Any]],
@@ -3110,8 +3262,19 @@ def build_shadow_ledger(
     verifier_budget: LLMRequestBudget | None = None,
     verifier_attempt_progress: VerifierAttemptProgress | None = None,
     validation_generation_run_id: str = "unpublished",
+    mode: str = "full",
 ) -> dict[str, Any]:
-    """Build a B-track ledger beside final requirements without changing readiness."""
+    """Build a B-track ledger beside final requirements without changing readiness.
+
+    WS2 §4.2 ``mode``（默认 ``full``，与现状逐字节一致）：
+
+    * ``full``：全量闭合（现状）。
+    * ``sampling``：verifier 闭合只覆盖分层抽样 + 全部高风险 claim（确定性正则识别，零 LLM）；
+      未抽中的 claim 标 ``sampling_deferred`` 保持 uncertain，闭合面收窄、调用数下降。
+    * ``baseline_gate``：全量闭合（=full 的闭合面），发布门禁重型机制联动由 caller 触发。
+
+    只有显式 ``mode != "full"`` 才进入抽样分支，默认调用方（含 4.1 万行测试）行为不动。
+    """
     catalog = list(catalog_build.get("catalog") or [])
     units = list(catalog_build.get("units") or [])
     # 负向验证上下文补父容器映射（规格 §2.3：兄弟 claim + 父容器映射）——
@@ -3201,6 +3364,14 @@ def build_shadow_ledger(
     groups_by_claim: dict[str, list[dict[str, Any]]] = defaultdict(list)
     shared_block_only_hints = 0
 
+    # WS2 §4.2 抽检模式：mode != full 时计算 verifier 闭合选择集，gate 语义候选创建。
+    # 默认 mode='full' → verifier_selection=None → 全量闭合，与现状逐字节一致。
+    mode_resolved = resolve_claim_ledger_mode(mode) if mode else "full"
+    verifier_selection: dict[str, Any] | None = None
+    sampling_deferred_claim_ids: list[str] = []
+    if mode_resolved != "full":
+        verifier_selection = select_verifier_claim_ids(catalog, mode=mode_resolved)
+
     for claim in catalog:
         if claim.get("eligibility") != "claim":
             continue
@@ -3281,32 +3452,41 @@ def build_shadow_ledger(
             for target in inactive_formal_exact
         )
         if not active_formal_exact and candidates:
-            active = [target for target in candidates
-                      if target[0]["review"]["eligibility"] == "active"]
-            inactive = [target for target in candidates
-                        if target[0]["review"]["eligibility"] != "active"]
-            if active:
-                claim_groups.append(_group(
-                    claim,
-                    target_generation_id=target_generation,
-                    targets=active,
-                    validation_method="independent_semantic",
-                    verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
-                    validation_generation_run_id=validation_generation_run_id,
-                    controlled_term_aliases=controlled_term_aliases,
-                ))
-            claim_groups.extend(
-                _group(
-                    claim,
-                    target_generation_id=target_generation,
-                    targets=[target],
-                    validation_method="independent_semantic",
-                    verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
-                    validation_generation_run_id=validation_generation_run_id,
-                    controlled_term_aliases=controlled_term_aliases,
+            # WS2 §4.2 sampling/baseline_gate：未选入闭合面的 claim 不创建语义候选组，
+            # 保持 uncertain 并记 sampling_deferred（确定性 verbatim 组仍照常，零 LLM）。
+            claim_id_text = str(claim.get("claim_id") or "")
+            if (
+                verifier_selection is not None
+                and claim_id_text not in verifier_selection["selected_ids"]
+            ):
+                sampling_deferred_claim_ids.append(claim_id_text)
+            else:
+                active = [target for target in candidates
+                          if target[0]["review"]["eligibility"] == "active"]
+                inactive = [target for target in candidates
+                            if target[0]["review"]["eligibility"] != "active"]
+                if active:
+                    claim_groups.append(_group(
+                        claim,
+                        target_generation_id=target_generation,
+                        targets=active,
+                        validation_method="independent_semantic",
+                        verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
+                        validation_generation_run_id=validation_generation_run_id,
+                        controlled_term_aliases=controlled_term_aliases,
+                    ))
+                claim_groups.extend(
+                    _group(
+                        claim,
+                        target_generation_id=target_generation,
+                        targets=[target],
+                        validation_method="independent_semantic",
+                        verifier_runtime_fingerprint=str(runtime.get("fingerprint") or ""),
+                        validation_generation_run_id=validation_generation_run_id,
+                        controlled_term_aliases=controlled_term_aliases,
+                    )
+                    for target in inactive
                 )
-                for target in inactive
-            )
         groups.extend(claim_groups)
         groups_by_claim[str(claim["claim_id"])].extend(claim_groups)
 
@@ -3502,6 +3682,12 @@ def build_shadow_ledger(
             if claim.get("eligibility") != "claim":
                 continue
             claim_id = str(claim.get("claim_id") or "")
+            # WS2 §4.2 sampling：未选入闭合面的 claim 也跳过负向验证（闭合面一致收窄）。
+            if (
+                verifier_selection is not None
+                and claim_id not in verifier_selection["selected_ids"]
+            ):
+                continue
             if any(group.get("status") == "validated"
                    for group in groups_by_claim.get(claim_id, [])):
                 continue
@@ -3852,6 +4038,25 @@ def build_shadow_ledger(
             "termination_reason": termination_reason,
             "document_ready": False,
             "versions": current_base_versions(),
+            # WS2 §4.2 抽检模式留痕（mode='full' 时 sampling=None，与现状 meta 同形）
+            "claim_ledger_mode": mode_resolved,
+            "claim_ledger_mode_version": CLAIM_LEDGER_MODE_VERSION,
+            "sampling": (
+                None if verifier_selection is None
+                else {
+                    "mode": verifier_selection.get("mode"),
+                    "eligible_count": verifier_selection.get("eligible_count"),
+                    "selected_count": len(verifier_selection.get("selected_ids") or set()),
+                    "sampled_count": len(verifier_selection.get("sampled_ids") or []),
+                    "high_risk_count": len(verifier_selection.get("high_risk_ids") or []),
+                    "deferred_count": len(verifier_selection.get("deferred_ids") or []),
+                    "sampling_rate": verifier_selection.get("sampling_rate"),
+                    "selected_ratio": verifier_selection.get("selected_ratio", 1.0),
+                    "escalate": verifier_selection.get("escalate"),
+                    "threshold_met": verifier_selection.get("threshold_met"),
+                    "deferred_in_run": sampling_deferred_claim_ids,
+                }
+            ),
         },
     }
 

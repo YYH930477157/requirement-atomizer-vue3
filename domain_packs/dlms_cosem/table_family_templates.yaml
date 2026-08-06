@@ -1,0 +1,132 @@
+schema_version: "table-family-templates/v1"
+domain_pack_id: "dlms_cosem"
+description: |
+  Three table-family few-shot templates for the WS1 dual-track table parser. These
+  entries are DATA, not prompt text: the LLM proposer (llm_table_understanding.py)
+  reads them to assemble structured few-shot context, and the geometry validator may
+  later read them to tune decision parameters (protected-code columns, header-level
+  expectations). Each family declares the expected header-level range, which columns
+  carry protected encodings (OBIS / event codes / hex — compared verbatim, never
+  rewritten), and semantic-merge priors. Detection hints are deterministic signals
+  used to match a parsed table to a family; they are not role labels and never bypass
+  the geometry validator's signing authority.
+
+  The three families intentionally overlap with the existing dlms_cosem table_patterns
+  registry but are organized by table FAMILY (shape + protected-code locus) rather than
+  by individual pattern_id, because the proposer needs shape-level priors (how many
+  header levels, where the protected code lives) rather than the per-pattern match
+  rules already owned by table_pattern_engine.py.
+
+families:
+  - family_id: "parameter_matrix"
+    description: |
+      Parameter / measurement tables: one object per row, attributes in columns
+      (e.g. measurement quantity & unit, rated voltage, accuracy class). No protected
+      encodings live in a single column — numeric values are diffuse across the body.
+    header_level_range:
+      min: 1
+      max: 2
+    protected_code_columns: []
+    semantic_merge_priors:
+      - prior_id: "vertical_object_name_inheritance"
+        description: |
+          A vertically-merged first-column cell carries the object name down over its
+          data rows; members inherit it as row-header context. A proposer's
+          semantic_merges must not collapse these rows into one logical unit.
+      - prior_id: "group_title_full_width_row"
+        description: |
+          A full-width merged row inside the body is a group title separating parameter
+          sub-groups, not a data row. It carries one role across the whole row.
+    detection_hints:
+      header_indicators:
+        - "requirement"
+        - "value"
+        - "unit"
+        - "min"
+        - "max"
+        - "nominal"
+        - "tolerance"
+        - "参数"
+        - "单位"
+        - "额定"
+      exclude_header_indicators:
+        - "term"
+        - "definition"
+        - "术语"
+        - "定义"
+
+  - family_id: "obis_object"
+    description: |
+      COSEM object / attribute tables: rows enumerate OBIS-object attributes, columns
+      carry class_id (CL), OBIS code, access rights, and meaning. OBIS and class_id are
+      protected encodings — drift by one digit is a severe defect, so the proposer must
+      reference these columns verbatim and the validator compares them byte-for-byte.
+    header_level_range:
+      min: 1
+      max: 3
+    protected_code_columns:
+      - column_kind: "obis"
+        header_indicators: ["Value", "OBIS", "Logical Name", "obis"]
+        encoding_format: "G-SG-E or N-N:N.N.N"
+        verbatim: true
+      - column_kind: "class_id"
+        header_indicators: ["CL", "class_id", "Class", "class"]
+        encoding_format: "integer"
+        verbatim: true
+    semantic_merge_priors:
+      - prior_id: "inherited_object_context"
+        description: |
+          A parent object row (with a CL + OBIS) is inherited by its child attribute
+          rows (# column). Downstream consumption joins on the object name; the
+          proposer's semantic_merges must not merge an object row with its attribute
+          rows (they are distinct obligations).
+      - prior_id: "access_rights_compact_code"
+        description: |
+          An access-rights cell encodes RC/PC/SC/LC in one compact string. It is a
+          single canonical cell, not a merge of four — the delimiter is semantic, not
+          geometric, so it never appears as a physical merge_range.
+    detection_hints:
+      required_headers_any:
+        - ["Object/attribute name", "CL", "Value"]
+        - ["Class", "OBIS", "Attribute"]
+      header_indicators:
+        - "Object/attribute name"
+        - "CL"
+        - "Access rights"
+
+  - family_id: "event_code"
+    description: |
+      Event / status code tables: rows enumerate events keyed by a multi-part code
+      (group number, subgroup number, event number). The code columns are protected
+      encodings; the description column carries the prose obligation. A composite code
+      must never be split or reordered by a semantic merge.
+    header_level_range:
+      min: 1
+      max: 2
+    protected_code_columns:
+      - column_kind: "event_code"
+        header_indicators: ["Event number", "event number", "Code", "code"]
+        encoding_format: "integer"
+        verbatim: true
+      - column_kind: "group_code"
+        header_indicators: ["Group number", "Subgroup number", "group", "subgroup"]
+        encoding_format: "integer"
+        verbatim: true
+    semantic_merge_priors:
+      - prior_id: "code_columns_distinct"
+        description: |
+          Group / subgroup / event-number columns are distinct protected coordinates;
+          a proposer must never declare a semantic merge that collapses two code
+          columns into one logical unit (it would destroy the encoding).
+      - prior_id: "description_single_obligation"
+        description: |
+          The description cell is one obligation; if it spans multiple physical cells
+          via gridSpan, the merge is geometric (a real merge_range), and the proposer
+          references only the anchor.
+    detection_hints:
+      required_headers_any:
+        - ["Group number", "Subgroup number", "Event number", "Description of the event"]
+      header_indicators:
+        - "Event number"
+        - "Group number"
+        - "Description of the event"

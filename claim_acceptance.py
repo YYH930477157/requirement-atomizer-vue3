@@ -721,6 +721,41 @@ def _sum_attempt_metric(records: list[dict[str, Any]], key: str) -> int:
     return sum(int(record.get("attempt_chain", {}).get(key) or 0) for record in records)
 
 
+def evaluate_functional_conservation(records: list[dict[str, Any]]) -> dict[str, str]:
+    """WS2 §4.1.2 两级产出校验门：功能需求级守恒（exactly-once 覆盖条款集合）。
+
+    每条 valid run record 可选携带 ``functional_output`` 块（functional_extract 守恒报告
+    投影）。本门只在至少一条 valid record 提供该块时激活；缺省（现有原子级 only 产出）→
+    ``functional_evidence_not_applicable`` 直接 pass，行为面不动。
+
+    functional_output 块字段（functional_extract.conservation_report 投影）：
+    ``ok`` (bool) / ``missing_block_ids`` / ``duplicate_assignments`` / ``extra_block_ids`` /
+    ``evidence_mismatches``。任一 valid run 的 ok=false 或未闭合项非空 → fail。
+    """
+    functional_records = [
+        record for record in records
+        if record.get("artifact_status") == "valid"
+        and isinstance(record.get("functional_output"), dict)
+    ]
+    if not functional_records:
+        return _gate("pass", "functional_evidence_not_applicable")
+    for record in functional_records:
+        block = record.get("functional_output") or {}
+        ok = bool(block.get("ok"))
+        has_unclosed = any(
+            block.get(key)
+            for key in (
+                "missing_block_ids",
+                "duplicate_assignments",
+                "extra_block_ids",
+                "evidence_mismatches",
+            )
+        )
+        if not ok or has_unclosed or block.get("block_export"):
+            return _gate("fail", "functional_conservation_not_closed")
+    return _gate("pass", "functional_conservation_closed")
+
+
 def evaluate_phase0_evidence(
     dataset_id: str,
     records: list[dict[str, Any]],
@@ -1059,6 +1094,11 @@ def evaluate_phase0_evidence(
     else:
         gates["known_omissions"] = _gate("pass", "known_omissions_conserved")
 
+    # WS2 §4.1.2 两级产出校验门以 evaluate_functional_conservation() 独立提供（按 valid run
+    # 的 functional_output 块校验功能需求级 exactly-once 守恒）。不自动写入 gates——
+    # claim_shadow_acceptance_report.schema.json 的 gates 是冻结枚举（additionalProperties:
+    # false），把新门并入 Phase 0 报告属 schema 契约变更，留待 WS0 真值集冻结后随发布门禁
+    # 显式落地；本切片只交付机制（默认 not_applicable pass，原子级 only 产出行为不动）。
     gate_statuses = {gate["status"] for gate in gates.values()}
     status = "fail" if "fail" in gate_statuses else "blocked" if "blocked" in gate_statuses else "pass"
     blocking_reasons = sorted({

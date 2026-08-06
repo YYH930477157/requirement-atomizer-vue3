@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ratomizer.local/schemas/llm_budget.schema.json",
+  "title": "Document-level LLM budget ledger v1 (WS3)",
+  "type": "object",
+  "required": [
+    "schema", "version", "document_id", "created_at", "updated_at",
+    "warn_threshold", "stage_routes", "sub_budgets", "consumed",
+    "route_distribution", "warnings", "exhausted_stages", "degraded_stages",
+    "document_needs_work", "last_event_seq", "idempotency_key"
+  ],
+  "properties": {
+    "schema": {"const": "llm-budget/v1"},
+    "version": {"const": "llm-budget-v1"},
+    "document_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "minLength": 1},
+    "warn_threshold": {"type": "number", "minimum": 0, "maximum": 1},
+    "stage_routes": {
+      "type": "object",
+      "additionalProperties": {"enum": ["stub", "small", "large"]}
+    },
+    "sub_budgets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["max_calls", "max_tokens"],
+        "properties": {
+          "max_calls": {"type": "integer", "minimum": 0},
+          "max_tokens": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": false
+      }
+    },
+    "consumed": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "calls", "tokens", "reserved_tokens", "failed_calls",
+          "cache_hits", "usage_complete", "max_calls", "max_tokens"
+        ],
+        "properties": {
+          "calls": {"type": "integer", "minimum": 0},
+          "tokens": {"type": "integer", "minimum": 0},
+          "reserved_tokens": {"type": "integer", "minimum": 0},
+          "failed_calls": {"type": "integer", "minimum": 0},
+          "cache_hits": {"type": "integer", "minimum": 0},
+          "usage_complete": {"type": "boolean"},
+          "max_calls": {"type": "integer", "minimum": 0},
+          "max_tokens": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": false
+      }
+    },
+    "route_distribution": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["key", "stage", "metric", "spent", "limit", "ratio", "level", "at"],
+        "properties": {
+          "key": {"type": "string", "minLength": 1},
+          "stage": {"type": "string", "minLength": 1},
+          "metric": {"enum": ["calls", "tokens"]},
+          "spent": {"type": "integer", "minimum": 0},
+          "limit": {"type": "integer", "minimum": 0},
+          "ratio": {"type": "number", "minimum": 0},
+          "level": {"enum": ["warn"]},
+          "at": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "exhausted_stages": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "degraded_stages": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "document_needs_work": {"type": "boolean"},
+    "last_event_seq": {"type": "integer", "minimum": 0},
+    "idempotency_key": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": false
+}

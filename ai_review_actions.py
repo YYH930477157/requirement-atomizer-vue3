@@ -457,8 +457,14 @@ def apply_ai_review_action(
     review_subject_fingerprint_value: str | None = None,
     review_anchor_fingerprint_value: str | None = None,
     expected_target_authority_write_revision: str | None = None,
+    level: str | None = None,
 ) -> dict[str, Any]:
-    """追加一条 AI 需求裁决，返回写入的 state。"""
+    """追加一条 AI 需求裁决，返回写入的 state。
+
+    WS2 §4.3 ``level``（functional/atomic）：显式标注评审对象粒度。缺省时不写该键——
+    旧 ai_review_states 文件无 level，读路径经 review_state.review_level() 解释为 atomic，
+    零迁移打开。
+    """
     ai_req_id_value = str(ai_req_id_value or "").strip()
     if not ai_req_id_value:
         raise ValueError("ai_req_id is required")
@@ -477,6 +483,9 @@ def apply_ai_review_action(
         "actor": actor,
         "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if level is not None:
+        from review_state import normalize_review_level
+        state["level"] = normalize_review_level(level)
     if source_fingerprint_value:
         state["source_fingerprint"] = str(source_fingerprint_value)
     if review_subject_fingerprint_value:

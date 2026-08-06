@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import logging
 import math
+import os
 import re
 from collections import Counter
 from functools import lru_cache
@@ -828,7 +829,177 @@ def _detect_text_tables(
     return tables, remaining
 
 
+# =============================================================================
+# WS1 wk6 — modern-parser degradation switch (plan §3.2.3)
+#
+# extract_pdf is now a router. Default OFF (RATOMIZER_PDF_MODERN_PARSER=0) →
+# the handwritten pdfplumber path runs verbatim (renamed _extract_pdf_handwritten
+# below; not one line of it is changed). Switch ON → try the modern adapter
+# (pdf_modern_adapter.parse_pdf_modern) first; if it is unavailable (no
+# candidate parser installed — the default on every stock checkout, including
+# this one — or a runtime error / zero tables), fall back HONESTLY to the
+# handwritten path and stamp ``parser_provenance`` on every emitted block so
+# an audit can tell a fallback run from a real modern-parser run.
+#
+# Provenance is never falsified (red line): the handwritten path is labelled
+# ``pdfplumber-handwritten-fallback:<reason>`` when reached via fallback, a
+# successful modern run ``modern:<parser>``. The switch is OFF by default, so
+# the atomize cache fingerprint and golden baselines are byte-identical in
+# production — no behaviour version is bumped by this addition.
+# =============================================================================
+
+PDF_MODERN_PARSER_SWITCH = "RATOMIZER_PDF_MODERN_PARSER"
+_PDF_MODERN_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _pdf_modern_switch_on() -> bool:
+    return os.environ.get(PDF_MODERN_PARSER_SWITCH, "0").strip().lower() in _PDF_MODERN_TRUTHY
+
+
+def _stamp_parser_provenance(
+    blocks: list[dict[str, Any]],
+    *,
+    route: str,
+    table_items: list[dict[str, Any]],
+    table_cell_items: list[dict[str, Any]],
+) -> None:
+    """Tag every emitted artifact with ``parser_provenance`` (audit only).
+
+    Adds an optional field; downstream readers that do not know the field are
+    unaffected. Applied ONLY on the switched-on path so the default path is
+    byte-identical to the pre-switch behaviour (provenance is absent, not a
+    new default value).
+    """
+    for block in blocks:
+        block["parser_provenance"] = route
+    for item in table_items:
+        item["parser_provenance"] = route
+    for item in table_cell_items:
+        item["parser_provenance"] = route
+
+
+def _materialize_modern_pdf(
+    modern: Any,
+    input_path: Path,
+    knowledge_bases: KnowledgeRepository | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build (blocks, table_items, table_cell_items) from a modern-parser result.
+
+    Each normalized ``ParsedDocxTable`` page becomes one table block via the
+    SAME ``build_table_artifacts`` helper the docx/xlsx parsers use, so the
+    modern-parser table structure flows into the identical dual-track signing
+    rail as a docx-sourced table — no parallel path.
+
+    Scope this slice: the modern parser contributes TABLE STRUCTURE ONLY.
+    Prose paragraphs remain the handwritten pdfplumber path's responsibility
+    until the week-8 A/B gate (plan §3.2.4) decides full mainline replacement.
+    This path is unreachable on a stock checkout (no parser dependency is
+    installed), so it cannot drop prose in production today; the boundary is
+    declared honestly here and in docs/pdf-modern-parser-eval.md.
+    """
+    knowledge_bases = knowledge_bases or KnowledgeRepository.from_paths([])
+    blocks: list[dict[str, Any]] = []
+    table_items: list[dict[str, Any]] = []
+    table_cell_items: list[dict[str, Any]] = []
+    order = 0
+    table_count = 0
+    parser_name = str(modern.provenance.get("parser", "") or "modern")
+    for page in modern.pages:
+        parsed = page.parsed_table
+        order += 1
+        section_path = [f"pdf-modern:{parser_name}:p{page.page_number}"]
+        blocks.append(
+            {
+                "block_id": f"BLK-{order:06d}",
+                "order": order,
+                "type": "heading",
+                "source_format": "pdf",
+                "heading_level": 1,
+                "text": f"modern-parser page {page.page_number}",
+                "section_path": section_path,
+                "domain_tags": [],
+                "kb_matches": [],
+                "requirement_like": False,
+                "noise": False,
+            }
+        )
+        order += 1
+        table_count += 1
+        table_block, new_table_items, new_cell_items = build_table_artifacts(
+            parsed.matrix,
+            raw_matrix=parsed.raw_matrix,
+            table_id=f"TBL-{table_count:06d}",
+            block_id=f"BLK-{order:06d}",
+            order=order,
+            table_title=f"modern-parser page {page.page_number}",
+            section_path=section_path,
+            knowledge_bases=knowledge_bases,
+            parse_incomplete=bool(parsed.parse_incomplete),
+            parse_incomplete_reason=parsed.parse_incomplete_reason or None,
+            merge_ranges=parsed.merge_ranges,
+            explicit_header_rows=parsed.explicit_header_rows or None,
+            source_format="pdf",
+            page_number=page.page_number,
+        )
+        for item in new_table_items:
+            item["source_format"] = "pdf"
+        blocks.append(table_block)
+        table_items.extend(new_table_items)
+        table_cell_items.extend(new_cell_items)
+    return blocks, table_items, table_cell_items
+
+
 def extract_pdf(
+    input_path: Path,
+    knowledge_bases: KnowledgeRepository | None = None,
+    document_profile: DocumentProfile | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """PDF extraction router (WS1 wk6 degradation switch).
+
+    Default OFF (``RATOMIZER_PDF_MODERN_PARSER=0``) → the handwritten
+    pdfplumber path runs verbatim. Switch ON → modern adapter first; on any
+    ``unavailable`` (no candidate parser installed / runtime error / zero
+    tables) it falls back HONESTLY to the handwritten path and stamps
+    ``parser_provenance`` on every emitted artifact for audit. See the block
+    comment above for the full provenance contract.
+    """
+    if not _pdf_modern_switch_on():
+        return _extract_pdf_handwritten(input_path, knowledge_bases, document_profile)
+
+    from pdf_modern_adapter import parse_pdf_modern
+
+    modern = parse_pdf_modern(input_path)
+    if modern.is_ok:
+        route = f"modern:{modern.provenance.get('parser', 'unknown')}"
+        blocks, table_items, table_cell_items = _materialize_modern_pdf(
+            modern, input_path, knowledge_bases
+        )
+        _stamp_parser_provenance(
+            blocks,
+            route=route,
+            table_items=table_items,
+            table_cell_items=table_cell_items,
+        )
+        return blocks, table_items, table_cell_items
+
+    route = f"pdfplumber-handwritten-fallback:{modern.reason or 'unavailable'}"
+    LOGGER.info(
+        "PDF modern parser unavailable (%s); falling back to handwritten pdfplumber path",
+        modern.reason,
+    )
+    blocks, table_items, table_cell_items = _extract_pdf_handwritten(
+        input_path, knowledge_bases, document_profile
+    )
+    _stamp_parser_provenance(
+        blocks,
+        route=route,
+        table_items=table_items,
+        table_cell_items=table_cell_items,
+    )
+    return blocks, table_items, table_cell_items
+
+
+def _extract_pdf_handwritten(
     input_path: Path,
     knowledge_bases: KnowledgeRepository | None = None,
     document_profile: DocumentProfile | None = None,

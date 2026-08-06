@@ -108,6 +108,184 @@ export type TableReviewActionPayload = {
   recompute_error?: string
 }
 
+// ===== WS-F / WS4 payload 类型（与 requirement_schema.py / requirements_analysis_rules.py 对齐）=====
+export type VerificationTriple = {
+  confirmed: boolean
+  by: string
+  at: string
+}
+
+export type VerificationSubobject = {
+  project_manager_confirm: VerificationTriple
+  test_lead_confirm: VerificationTriple
+  dev_test_confirm: VerificationTriple
+  implemented: "not_started" | "in_progress" | "done"
+  test_case_ids: string[]
+  test_completed: boolean
+}
+
+export type LifecycleState = "draft" | "confirmed" | "implemented" | "verified"
+
+export type VerificationStateRow = {
+  requirement_id: string
+  verification: VerificationSubobject
+  lifecycle_state: LifecycleState
+  lifecycle_max?: number
+  evidence_fingerprint: string
+  source?: string
+  actor?: string
+  timestamp?: string
+  schema?: string
+  // 需求库「采纳」经 reviewer_override 通道留痕的覆盖（adopt_source=requirement_library）
+  ownership_override?: string
+  module_override?: string
+  adopt_source?: string
+  adopt_actor?: string
+  adopt_reason?: string
+}
+
+export type VerificationStatesPayload = {
+  schema: string
+  states: VerificationStateRow[]
+  total: number
+}
+
+export type VerificationActionInput = {
+  requirementId: string
+  verification: VerificationSubobject
+  actor?: string
+  expectedEvidenceFingerprint?: string
+}
+
+export type VerificationActionPayload = {
+  requirement_id: string
+  verification: VerificationSubobject
+  lifecycle_state: LifecycleState
+  written: string[]
+}
+
+export type RequirementRollbackInput = {
+  requirementId: string
+  target: LifecycleState
+  actor: string
+  reason: string
+}
+
+export type RequirementRollbackPayload = {
+  requirement_id: string
+  lifecycle_state: LifecycleState
+  written: string[]
+}
+
+export type ManualRequirementInput = {
+  objective: string
+  behaviors?: string[]
+  module?: string
+  ownership?: string
+  priority?: string
+  notes?: string
+  actor?: string
+}
+
+export type ManualRequirementPayload = {
+  functional_requirement_id: string
+  written: string[]
+}
+
+export type DependencyKind = "depend" | "exclude" | "refine"
+
+export type DependencyCandidate = {
+  from: string
+  to: string
+  kind: DependencyKind
+  signal: string
+  evidence?: string[]
+  status?: "accepted" | "pending"
+}
+
+export type DependencyCandidatesPayload = {
+  kind: string
+  out_dir?: string
+  candidates: DependencyCandidate[]
+  pending: number
+}
+
+export type DependencyDecisionInput = {
+  from: string
+  to: string
+  kind: DependencyKind
+  accept: boolean
+  actor?: string
+  reason?: string
+}
+
+export type DependencyDecisionPayload = {
+  accepted: boolean
+  written?: boolean
+  decision?: Record<string, unknown>
+  candidate?: { from: string; to: string; kind: string }
+}
+
+export type RequirementLibraryEntry = {
+  schema?: string
+  project?: string
+  doc_source?: string
+  created_at?: string
+  functional_requirement_id?: string
+  objective?: string
+  behaviors?: string[]
+  module?: string
+  ownership?: string
+  ownership_corrected?: boolean
+  source_kind?: string
+  title?: string
+  overlap_score?: number
+}
+
+export type RequirementLibrarySearchPayload = {
+  kind?: string
+  library?: string
+  query?: string
+  matches?: number
+  results?: RequirementLibraryEntry[]
+  note?: string
+}
+
+// WS-F：功能需求 / 手工需求 / 生命周期事件只读 GET（HTTP 优先，旧后端无端点时前端走 IPC 兜底）
+export type FunctionalRequirementsPayload = {
+  schema: "functional-requirements/v1"
+  items: Record<string, unknown>[]
+  total: number
+}
+
+export type ManualRequirementsPayload = {
+  schema: "manual-requirements/v1"
+  items: Record<string, unknown>[]
+  total: number
+}
+
+export type LifecycleEventsPayload = {
+  schema: "requirement-lifecycle-events/v1"
+  events: Record<string, unknown>[]
+  total: number
+}
+
+// 需求库「采纳」：历史条目归属/模块套用到目标功能需求（经 reviewer_override 通道留痕）
+export type RequirementLibraryAdoptInput = {
+  functionalRequirementId: string
+  ownership?: string
+  module?: string
+  actor: string
+  reason: string
+}
+
+export type RequirementLibraryAdoptPayload = {
+  requirement_id: string
+  ownership_override?: string
+  module_override?: string
+  written: string[]
+}
+
 export type TranslationInput = {
   requirementId: string
   text: string
@@ -1226,6 +1404,130 @@ export class RequirementApiClient {
         requirement_id: input.requirementId,
         text: input.text,
         context: input.context || "",
+      }),
+    })
+  }
+
+  // ===== WS-F / WS4：功能需求级评审 =====
+  // verification 六列 + 四态状态机 + 手工入口 + 需求库检索 + 依赖候选（全部走 api_server，
+  // 已在 codex/wsf-frontend 后端切片落地）。CAS 纪律沿用 isNeedsReconfirmationError：
+  // POST /verification-actions 在 evidence fingerprint 失配时返回 409
+  // {error:"verification_conflict", needs_reconfirmation:true, current_evidence_fingerprint}。
+  async loadVerificationStates(): Promise<VerificationStatesPayload> {
+    return this.request<VerificationStatesPayload>("/verification-states")
+  }
+
+  async applyVerificationAction(
+    input: VerificationActionInput,
+  ): Promise<VerificationActionPayload> {
+    const body: Record<string, unknown> = {
+      requirement_id: input.requirementId,
+      verification: input.verification,
+      actor: input.actor || "vue3-ui",
+    }
+    // CAS 是 opt-in：首次回写（无既有 evidence_fingerprint）省略 expected，后端跳过校验
+    // （apply_verification_override 仅在 expected != current 时抛 VerificationStateConflict）。
+    if (input.expectedEvidenceFingerprint !== undefined) {
+      body.expected_evidence_fingerprint = input.expectedEvidenceFingerprint
+    }
+    return this.request<VerificationActionPayload>("/verification-actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  }
+
+  async rollbackRequirement(
+    input: RequirementRollbackInput,
+  ): Promise<RequirementRollbackPayload> {
+    return this.request<RequirementRollbackPayload>("/requirement-rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requirement_id: input.requirementId,
+        target: input.target,
+        actor: input.actor,
+        reason: input.reason,
+      }),
+    })
+  }
+
+  async createManualRequirement(
+    input: ManualRequirementInput,
+  ): Promise<ManualRequirementPayload> {
+    return this.request<ManualRequirementPayload>("/manual-requirement", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        objective: input.objective,
+        behaviors: input.behaviors || [],
+        module: input.module || "",
+        ownership: input.ownership || "",
+        priority: input.priority || "P1",
+        notes: input.notes || "",
+        actor: input.actor || "vue3-ui",
+      }),
+    })
+  }
+
+  async loadDependencyCandidates(): Promise<DependencyCandidatesPayload> {
+    return this.request<DependencyCandidatesPayload>("/dependency-candidates")
+  }
+
+  async decideDependency(
+    input: DependencyDecisionInput,
+  ): Promise<DependencyDecisionPayload> {
+    return this.request<DependencyDecisionPayload>("/dependency-decisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: input.from,
+        to: input.to,
+        kind: input.kind,
+        accept: input.accept,
+        actor: input.actor || "vue3-ui",
+        reason: input.reason || "",
+      }),
+    })
+  }
+
+  async searchRequirementLibrary(
+    input: { query: string; limit?: number },
+  ): Promise<RequirementLibrarySearchPayload> {
+    const params = new URLSearchParams()
+    params.set("q", input.query || "")
+    if (input.limit !== undefined) params.set("limit", String(input.limit))
+    return this.request<RequirementLibrarySearchPayload>(
+      `/requirement-library/search?${params.toString()}`,
+    )
+  }
+
+  // WS-F 契约缺口修复：三个只读 GET 端点（旧后端可能无此端点 → 前端 HTTP 优先、IPC 兜底）
+  async loadFunctionalRequirements(): Promise<FunctionalRequirementsPayload> {
+    return this.request<FunctionalRequirementsPayload>("/functional-requirements")
+  }
+
+  async loadManualRequirements(): Promise<ManualRequirementsPayload> {
+    return this.request<ManualRequirementsPayload>("/manual-requirements")
+  }
+
+  async loadLifecycleEvents(): Promise<LifecycleEventsPayload> {
+    return this.request<LifecycleEventsPayload>("/lifecycle-events")
+  }
+
+  // 需求库「采纳」：actor/reason 必填（reviewer_override 留痕），后端经既有 verification_states 通道持久化
+  async adoptRequirementLibrary(
+    input: RequirementLibraryAdoptInput,
+  ): Promise<RequirementLibraryAdoptPayload> {
+    return this.request<RequirementLibraryAdoptPayload>("/requirement-library/adopt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requirement_id: input.functionalRequirementId,
+        ownership: input.ownership || "",
+        module: input.module || "",
+        actor: input.actor,
+        reason: input.reason,
       }),
     })
   }

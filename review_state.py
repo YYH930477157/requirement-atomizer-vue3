@@ -39,6 +39,10 @@ _REPLACE_RETRY_DELAY_S = 0.02
 CLAIM_AUTHORITY_WRITE_PROTOCOL_VERSION = "claim-authority-write-v1"
 ATOMIC_TARGET_AUTHORITY_WRITE_REVISION_VERSION = "atomic-target-authority-write-revision-v1"
 TARGET_PUBLICATION_REVISION_VERSION = "target-publication-revision-v1"
+# WS2 §4.3 review_state level 字段：评审对象的粒度（functional=功能需求级 / atomic=原子级）。
+# 旧文件无 level → 解释为 atomic（legacy 默认）；零迁移：缺字段不惊扰、不强制重写。
+REVIEW_LEVELS = ("functional", "atomic")
+DEFAULT_REVIEW_LEVEL = "atomic"
 
 
 class ReviewAuthorityConflict(ValueError):
@@ -47,6 +51,24 @@ class ReviewAuthorityConflict(ValueError):
     def __init__(self, message: str, *, current_revision: str) -> None:
         super().__init__(message)
         self.current_revision = str(current_revision)
+
+
+def review_level(state: dict[str, Any] | None) -> str:
+    """WS2 §4.3：解析评审状态行的粒度 level（functional/atomic）。
+
+    旧文件无 level 字段 → 解释为 atomic（legacy 评审对象即原子需求）。零迁移：不强制重写
+    旧文件，缺字段即默认值。非法值同样回退 atomic，绝不抛穿读路径。
+    """
+    if not isinstance(state, dict):
+        return DEFAULT_REVIEW_LEVEL
+    level = str(state.get("level") or "").strip().lower()
+    return level if level in REVIEW_LEVELS else DEFAULT_REVIEW_LEVEL
+
+
+def normalize_review_level(value: str | None) -> str:
+    """写路径用：把 level 规范化为合法枚举值（非法/空 → 默认 atomic）。"""
+    level = str(value or "").strip().lower()
+    return level if level in REVIEW_LEVELS else DEFAULT_REVIEW_LEVEL
 
 
 def target_publication_revision(path: Path) -> str:
@@ -81,6 +103,8 @@ class RequirementReviewState:
     status: str = "candidate"
     history: list[ReviewEvent] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # WS2 §4.3：评审对象粒度。旧文件读路径缺该字段时经 review_level() 解释为 atomic。
+    level: str = DEFAULT_REVIEW_LEVEL
 
     def transition(self, to_status: str, *, actor: str, reason: str) -> None:
         allowed = VALID_TRANSITIONS.get(self.status, set())
@@ -96,6 +120,7 @@ class RequirementReviewState:
             "status": self.status,
             "history": [event.__dict__ for event in self.history],
             "metadata": self.metadata,
+            "level": self.level,
         }
 
 
@@ -108,11 +133,14 @@ def apply_expert_decision(
     reason: str = "",
     expected_target_fingerprint: str | None = None,
     expected_target_authority_write_revision: str | None = None,
+    level: str | None = None,
 ) -> dict[str, Any]:
     """专家覆盖式裁决：决策状态间可自由改判（含 accepted→rejected、rejected→
     expert_pending 重审），这是有意语义——专家是权威裁决方，VALID_TRANSITIONS
     只约束自动化 LLM 路径。唯一禁止的跳转是从 frozen 改出（须显式解冻流程，
     不属于本入口）。每次改判都追加 history（actor/reason/timestamp），审计链完整。
+
+    WS2 §4.3 ``level``（functional/atomic）：显式标注评审对象粒度，缺省/旧文件 → atomic。
     """
     if status not in EXPERT_DECISION_STATUSES:
         raise ValueError(f"Unknown review status: {status}")
@@ -150,11 +178,17 @@ def apply_expert_decision(
                 )
         state_index = _find_state_index(states, requirement_id)
         if state_index is None:
-            state = RequirementReviewState(requirement_id)
+            state = RequirementReviewState(
+                requirement_id,
+                level=normalize_review_level(level),
+            )
             states.append(state.to_dict())
             state_index = len(states) - 1
         else:
             state = _state_from_dict(states[state_index])
+            # 显式传入 level 时覆盖（否则保留既有 row 的 level，旧文件即 atomic）
+            if level is not None:
+                state.level = normalize_review_level(level)
 
         if state.status == "frozen" and status != "frozen":
             raise ValueError("Cannot override frozen review state")
@@ -554,6 +588,7 @@ def _state_from_dict(payload: dict[str, Any]) -> RequirementReviewState:
         str(payload.get("requirement_id") or ""),
         status=str(payload.get("status") or "candidate"),
         metadata=dict(payload.get("metadata") or {}),
+        level=normalize_review_level(payload.get("level") if "level" in payload else None),
     )
     state.history = [
         ReviewEvent(
@@ -645,3 +680,160 @@ def review_event_key(event: dict[str, Any]) -> tuple[str, str, str, str, str]:
         str(event.get("actor") or ""),
         str(event.get("reason") or ""),
     )
+
+
+# ===========================================================================
+# WS4 共享状态 I/O：verification_states / requirement_lifecycle_events /
+# manual_requirements / dependency_decisions。
+# ---------------------------------------------------------------------------
+# 全部走 governed state 路径 + 跨进程锁（process_file_lock）+ 原子替换（带
+# PermissionError 重试），与既有 review_states.jsonl / clarification_answers 同纪律。
+# 读路径容错（坏行跳过），写路径锁内整文件原子替换或 append-only。
+# ===========================================================================
+VERIFICATION_STATES_FILE = "verification_states.jsonl"
+VERIFICATION_STATES_LOCK = "verification_states.lock"
+REQUIREMENT_LIFECYCLE_EVENTS_FILE = "requirement_lifecycle_events.jsonl"
+MANUAL_REQUIREMENTS_FILE = "manual_requirements.jsonl"
+DEPENDENCY_DECISIONS_FILE = "dependency_decisions.jsonl"
+
+
+class VerificationStateConflict(ValueError):
+    """verification 回写 CAS 失配：需求内容已变化，拒绝自动合入转人工。"""
+
+    def __init__(self, message: str, *, requirement_id: str, current_fingerprint: str) -> None:
+        super().__init__(message)
+        self.requirement_id = str(requirement_id)
+        self.current_fingerprint = str(current_fingerprint)
+
+
+@contextmanager
+def verification_state_lock(out_dir: Path, *, timeout_s: float = 10.0) -> Iterator[None]:
+    """verification/手工/依赖状态文件的跨进程锁（独立锁文件，避免与 review_states 抢锁）。"""
+    root = out_dir.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    process_lock = _process_lock_for(root)
+    with process_lock:
+        lock_path = governed_artifact_path(root, VERIFICATION_STATES_LOCK, category="state")
+        with process_file_lock(lock_path, timeout_s=timeout_s, label="verification state lock"):
+            yield
+
+
+def _read_jsonl_tolerant(path: Path) -> list[dict[str, Any]]:
+    """容错读 JSONL：坏行跳过而非整文件崩（与 clarification answers 同纪律）。"""
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def _verification_states_path(out_dir: Path) -> Path:
+    return governed_artifact_path(out_dir, VERIFICATION_STATES_FILE, category="state")
+
+
+def read_verification_states(out_dir: Path) -> dict[str, dict[str, Any]]:
+    """读全部 verification 覆盖记录，按 requirement_id 索引（只读路径，for_write=False）。"""
+    path = governed_artifact_path(Path(out_dir).expanduser().resolve(),
+                                  VERIFICATION_STATES_FILE, category="state", for_write=False)
+    states: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl_tolerant(path):
+        rid = str(row.get("requirement_id") or "").strip()
+        if rid:
+            states[rid] = row
+    return states
+
+
+def _write_verification_states_unlocked(path: Path, states: dict[str, dict[str, Any]]) -> None:
+    rows = sorted(states.values(), key=lambda row: str(row.get("requirement_id") or ""))
+    _atomic_write_jsonl(path, rows)
+
+
+def upsert_verification_state(
+    out_dir: Path,
+    requirement_id: str,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """锁内读-合并-原子写一条 verification 记录。返回落盘后的完整记录。"""
+    root = Path(out_dir).expanduser().resolve()
+    rid = str(requirement_id or "").strip()
+    if not rid:
+        raise ValueError("requirement_id is required for verification state")
+    with verification_state_lock(root):
+        path = _verification_states_path(root)
+        states = {row.get("requirement_id"): row for row in _read_jsonl_tolerant(path)}
+        merged = dict(states.get(rid) or {})
+        merged.update(record)
+        merged["requirement_id"] = rid
+        states[rid] = merged
+        _write_verification_states_unlocked(path, states)
+    return merged
+
+
+def read_lifecycle_events(out_dir: Path) -> list[dict[str, Any]]:
+    path = governed_artifact_path(Path(out_dir).expanduser().resolve(),
+                                  REQUIREMENT_LIFECYCLE_EVENTS_FILE, category="state", for_write=False)
+    return _read_jsonl_tolerant(path)
+
+
+def append_lifecycle_event(out_dir: Path, event: dict[str, Any]) -> None:
+    """append-only 生命周期事件（前进/回退均留痕）。锁内追加。"""
+    root = Path(out_dir).expanduser().resolve()
+    with verification_state_lock(root):
+        path = governed_artifact_path(root, REQUIREMENT_LIFECYCLE_EVENTS_FILE, category="state")
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def read_manual_requirements(out_dir: Path) -> list[dict[str, Any]]:
+    path = governed_artifact_path(Path(out_dir).expanduser().resolve(),
+                                  MANUAL_REQUIREMENTS_FILE, category="state", for_write=False)
+    return _read_jsonl_tolerant(path)
+
+
+def append_manual_requirement(out_dir: Path, record: dict[str, Any]) -> None:
+    """锁内追加一条手工需求记录（append-only，去重由调用方保证幂等键）。"""
+    root = Path(out_dir).expanduser().resolve()
+    with verification_state_lock(root):
+        path = governed_artifact_path(root, MANUAL_REQUIREMENTS_FILE, category="state")
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def read_dependency_decisions(out_dir: Path) -> list[dict[str, Any]]:
+    path = governed_artifact_path(Path(out_dir).expanduser().resolve(),
+                                  DEPENDENCY_DECISIONS_FILE, category="state", for_write=False)
+    return _read_jsonl_tolerant(path)
+
+
+def upsert_dependency_decision(out_dir: Path, decision: dict[str, Any]) -> dict[str, Any]:
+    """锁内读-合并-原子写一条依赖裁决（接受才写库，拒绝不落库由调用方控制）。"""
+    root = Path(out_dir).expanduser().resolve()
+    key_fields = (
+        str(decision.get("from") or ""),
+        str(decision.get("to") or ""),
+        str(decision.get("kind") or ""),
+    )
+    if not all(key_fields):
+        raise ValueError("dependency decision requires from/to/kind")
+    with verification_state_lock(root):
+        path = governed_artifact_path(root, DEPENDENCY_DECISIONS_FILE, category="state")
+        rows = _read_jsonl_tolerant(path)
+        index = {
+            (str(row.get("from") or ""), str(row.get("to") or ""), str(row.get("kind") or "")): row
+            for row in rows
+        }
+        existing = dict(index.get(key_fields) or {})
+        existing.update(decision)
+        index[key_fields] = existing
+        _atomic_write_jsonl(path, list(index.values()))
+    return index[key_fields]

@@ -101,7 +101,53 @@ SIGNAL_BLOCKER_LEVELS = {
     "consistency:compliance_uncovered_overflow": BLOCKER_BLOCKING,
     "analyze:open_question": BLOCKER_IMPORTANT,
     "analyze:assumption": BLOCKER_IMPORTANT,
+    # WS4 弱词/可测性扫描（功能需求级）：弱词→模糊（important），验收不可测→缺失（blocking）
+    "weakness:vague_word": BLOCKER_IMPORTANT,
+    "weakness:untestable": BLOCKER_BLOCKING,
 }
+
+# WS4 弱词词典（Cap3）：内置词表 + 可选 YAML 覆盖（RATOMIZER_WEAK_WORDS_PATH，与 domain_packs 惯例一致）。
+# 命中即汇入既有四分类的「模糊」类，不新建报告；LLM 标的 ambiguity 布尔保留原位、并列展示不合并。
+# 刻意只用语义明确的整词（适当/尽快/灵活/酌情…），不含「相关/一般/通常」等高频泛词——
+# 那些在精确规格里大量合法出现，作为弱词会造成整篇文档假阳性 NEEDS WORK（宁漏勿错）。
+DEFAULT_WEAK_WORDS: tuple[str, ...] = (
+    "适当", "尽快", "灵活", "酌情", "视情况", "根据实际情况", "相应的",
+    "as appropriate", "in a timely manner", "flexible", "as needed",
+    "etc", "and so on", "reasonable amount",
+)
+
+
+def _load_weak_words() -> tuple[str, ...]:
+    """加载弱词词典：env YAML 覆盖 > 内置词表。YAML 缺失/损坏如实退内置，绝不伪造空词表。"""
+    yaml_path = os.environ.get("RATOMIZER_WEAK_WORDS_PATH", "").strip()
+    if not yaml_path:
+        return DEFAULT_WEAK_WORDS
+    try:
+        path = Path(yaml_path).expanduser()
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return DEFAULT_WEAK_WORDS
+    parsed: list[str] = list(DEFAULT_WEAK_WORDS)
+    try:
+        import yaml  # type: ignore[import-untyped]
+        data = yaml.safe_load(text)
+    except Exception:
+        # PyYAML 缺失或 YAML 损坏：按行裸解析（每行一个词，# 起注释）
+        for line in text.splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                parsed.append(line)
+        return tuple(dict.fromkeys(parsed))
+    if isinstance(data, dict):
+        words = data.get("weak_words") or data.get("words") or []
+    else:
+        words = data or []
+    if isinstance(words, (list, tuple)):
+        for item in words:
+            value = str(item or "").strip()
+            if value:
+                parsed.append(value)
+    return tuple(dict.fromkeys(parsed))
 
 _SUSPICION_POLICIES: dict[str, tuple[str, str, str, str, str]] = {
     # reason: (stable signal, category, audience, blocker_level, tier)
@@ -567,6 +613,8 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
                     evidence={"title": title, "flag": str(flag), "source_ids": source_ids},
                     subject_key=f"{functional_identity}:conflict:{flag_index}"))
 
+    entries.extend(_weakness_scan_entries(out_dir))
+
     entries.extend(_parse_audit_entries(out_dir))
     # A producer may repeat the same stable signal in multiple sidecars. Keep the first occurrence so
     # reviewers never see duplicate actions for the same versioned clarification subject.
@@ -574,6 +622,68 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
     for entry in entries:
         deduped.setdefault(str(entry["clarification_id"]), entry)
     return list(deduped.values())
+
+
+def _weakness_scan_entries(out_dir: Path, functional_items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """WS4 弱词/可测性扫描（Cap3）：功能需求级复跑 extract_guards.vague_acceptance + 弱词词典。
+
+    弱词命中 →「模糊」（important）；可测性不足（vague_acceptance 返回不可测验收）→「缺失」（blocking）。
+    汇入既有四分类与就绪判定，不新建报告；LLM 标的 ambiguity 布尔保留原位并列展示，不合并。
+    手工需求（manual_requirements.jsonl）走完全相同的下游扫描。
+    """
+    from extract_guards import vague_acceptance
+    from requirement_schema import requirement_identity
+
+    items: list[dict[str, Any]] = []
+    if isinstance(functional_items, list):
+        items.extend(item for item in functional_items if isinstance(item, dict))
+    else:
+        # 自加载 functional_requirements.json（避免依赖 collect_questions 的条件局部变量）
+        synth_path = out_dir / "functional_requirements.json"
+        if synth_path.exists():
+            try:
+                payload = json.loads(synth_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+            for item in (payload.get("items") or []) if isinstance(payload, dict) else []:
+                if isinstance(item, dict):
+                    items.append(item)
+    try:
+        from review_state import read_manual_requirements
+        items.extend(read_manual_requirements(out_dir))
+    except Exception:
+        pass
+
+    weak_words = _load_weak_words()
+    entries: list[dict[str, Any]] = []
+    for item in items:
+        identity = str(requirement_identity(item) or "")
+        title = str(item.get("title") or item.get("functional_key") or identity)
+        section = str(item.get("source_section") or "")
+        quote = str(item.get("source_quote") or "")
+        surface = " ".join(str(item.get(field) or "") for field in ("title", "objective", "description")) \
+            + " " + " ".join(str(value) for value in (item.get("behaviors") or []))
+        lowered = surface.casefold()
+        hits = sorted({word for word in weak_words if word and word.casefold() in lowered})
+        if hits:
+            entries.append(_entry(
+                CAT_AMBIGUOUS,
+                f"功能「{title[:40]}」含弱词/模糊表述（{', '.join(hits[:6])}），请细化为可测、可判定的需求",
+                section=section, quote=quote, source_id=identity,
+                signal="weakness:vague_word", tier=TIER_HARD, audience=AUDIENCE_INTERNAL,
+                blocker_level=BLOCKER_IMPORTANT,
+                evidence={"weak_words": hits[:10], "title": title[:80], "surface": surface[:200]},
+                subject_key=f"{identity}:weak-word"))
+        for vague_text in vague_acceptance(item):
+            entries.append(_entry(
+                CAT_MISSING,
+                f"功能「{title[:40]}」的验收含不可测表述：{str(vague_text)[:100]}",
+                section=section, quote=quote, source_id=identity,
+                signal="weakness:untestable", tier=TIER_HARD, audience=AUDIENCE_INTERNAL,
+                blocker_level=BLOCKER_BLOCKING,
+                evidence={"vague_acceptance": str(vague_text)[:200], "title": title[:80]},
+                subject_key=identity + ":untestable:" + _hash_payload({"vague": str(vague_text)})[:10]))
+    return entries
 
 
 def _parse_audit_entries(out_dir: Path) -> list[dict[str, Any]]:

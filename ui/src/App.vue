@@ -502,9 +502,13 @@
         </section>
         </template>
         <DocumentReview v-else-if="activeNav === 'document'" :client="apiClient" :session-key="reviewSessionKey"
-                        :active="activeNav === 'document'" :refresh-token="documentRefreshToken" />
+                        :active="activeNav === 'document'" :refresh-token="documentRefreshToken"
+                        :focus-block-id="documentFocusBlockId" />
         <ClaimLedger v-else-if="activeNav === 'claim'" :client="apiClient" :session-key="reviewSessionKey"
                      :active="activeNav === 'claim'" :refresh-token="documentRefreshToken" />
+        <FunctionalReview v-else-if="activeNav === 'functional'" :client="apiClient" :session-key="reviewSessionKey"
+                          :active="activeNav === 'functional'" :refresh-token="documentRefreshToken"
+                          :output-dir="currentOutputDir" @focus-block="focusBlockFromFunctional" />
 
         <footer class="status-bar">
           <span :title="currentOutputDir || undefined">输出目录：{{ currentOutputDir ? tailPath(currentOutputDir) : "尚未选择输出目录" }}</span>
@@ -692,6 +696,7 @@ import {
   FolderOpen,
   FolderOutput,
   History,
+  Layers,
   MessageSquareReply,
   MessagesSquare,
   ListChecks,
@@ -717,11 +722,12 @@ import type {
 } from "./api-client"
 import ClaimLedger from "./ClaimLedger.vue"
 import DocumentReview from "./DocumentReview.vue"
+import FunctionalReview from "./FunctionalReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
 import { applyReviewState, mapBackendRequirement, statusDisplay as displayStatus } from "./requirement-mapper"
 import type { Requirement, ReviewStatus } from "./types"
 
-type PhaseNavId = "run" | "review" | "document" | "claim" | "settings"
+type PhaseNavId = "run" | "review" | "document" | "claim" | "functional" | "settings"
 type StatFilter = "all" | "accepted" | "expert_pending" | "ambiguous"
 type LlmSettings = {
   enabled: boolean
@@ -740,6 +746,7 @@ type LlmSettings = {
 const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: Component }> = [
   { id: "run", label: "运行", icon: Play },
   { id: "review", label: "审查工作台", icon: ClipboardCheck },
+  { id: "functional", label: "功能需求", icon: Layers },
   { id: "document", label: "文档批注", icon: FileText },
   { id: "claim", label: "Claim 账本", icon: ListChecks },
   { id: "settings", label: "设置", icon: Settings },
@@ -815,7 +822,12 @@ const resultPackageStatusLabel = computed(() => ({
   completed: "自动分析：已完成",
 })[resultPackageStatus.value])
 const documentRefreshToken = ref(0)
+// F4：functional 评审来源块跳转传入的块 id——DocumentReview 据此滚动+高亮（空串=无定位）
+const documentFocusBlockId = ref("")
 let apiSessionLoadGeneration = 0
+// loadInitialApiSession 轮询的取消标志：onUnmounted 置 true 取消遗留轮询，onMounted
+// 复位 false 放行新挂载实例；跨挂载的陈旧轮询由 generation guard 兜底（见 loadInitialApiSession）。
+let apiSessionPollingCancelled = false
 let stopApiSessionReady: (() => void) | undefined
 const apiMessage = ref("")
 const apiMessageExpanded = ref(false)
@@ -1277,6 +1289,8 @@ const knowledgeMatches = computed(() => {
 })
 
 onMounted(() => {
+  // 新挂载实例放行轮询：上一实例 unmount 时置的取消标志在此复位
+  apiSessionPollingCancelled = false
   heartbeatTimer = setInterval(() => {
     nowTick.value = Date.now()
   }, 5000)
@@ -1296,6 +1310,11 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  // 取消 loadInitialApiSession 轮询：置取消标志 + 推进 generation。遗留轮询在下次 await
+  // 后检测到取消标志或代际过期即放弃，避免 unmount 后读新会话的 window.ratomizerDesktop
+  // 并多发加载请求（既有潜伏缺陷，F2/F4 时序变化把它暴露为测试 flake）。
+  apiSessionPollingCancelled = true
+  apiSessionLoadGeneration += 1
   stopProgressDemo()
   stopApiSessionReady?.()
   stopApiSessionReady = undefined
@@ -1317,6 +1336,21 @@ function closeSettingsPanel() {
   if (activeNav.value === "settings") {
     activeNav.value = "review"
   }
+}
+
+// WS-F：功能需求评审的来源块跳转——切到文档批注视图并刷新，把来源块 id 传入 DocumentReview
+// 让其滚动到对应块并高亮（F4：此前 DocumentReview 不接受 focusBlockId，只做视图切换+刷新）。
+function focusBlockFromFunctional(blockId: string) {
+  if (!currentOutputDir.value) {
+    apiMessage.value = "尚未选择输出目录，无法跳转文档批注"
+    return
+  }
+  // 若已在文档视图，先清空再赋值以触发 watch（同一 id 二次跳转也能重新高亮）
+  if (documentFocusBlockId.value === blockId) documentFocusBlockId.value = ""
+  documentFocusBlockId.value = blockId
+  activeNav.value = "document"
+  documentRefreshToken.value += 1
+  apiMessage.value = blockId ? `已跳转文档批注（来源块 ${blockId}）` : ""
 }
 
 async function loadLlmSettings() {
@@ -2136,9 +2170,17 @@ async function handleImportDecisions() {
 }
 
 async function loadInitialApiSession() {
-  // 后端（PyInstaller exe）启动需要数秒——轮询等它就绪，而不是首查 null 就放弃
+  // 后端（PyInstaller exe）启动需要数秒——轮询等它就绪，而不是首查 null 就放弃。
+  // 绑定本次轮询的 generation，并在每次 await 后复查「取消标志」与「当前 session 一致性
+  // （generation guard）」：onUnmounted（置取消标志 + 推进 generation）、disconnectReviewSession
+  // 或更新的 loadFromSession 任一发生即放弃。否则组件 unmount 后遗留的轮询会读下一个测试/会话
+  // 的 window.ratomizerDesktop 并多发加载请求（loadFromSession 自身在其入口 ++generation，
+  // 故守卫必须在调用前于此拦截）。
+  const generation = apiSessionLoadGeneration
   for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (apiSessionPollingCancelled || generation !== apiSessionLoadGeneration) return
     const session = await window.ratomizerDesktop?.getApiSession?.()
+    if (apiSessionPollingCancelled || generation !== apiSessionLoadGeneration) return
     if (session) {
       try {
         await loadFromSession(session, { restoreContext: true })

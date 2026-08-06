@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
@@ -218,6 +218,42 @@ class LLMResponseFormatUnsupported(LLMResponseError):
 
 class LLMBudgetExceeded(LLMError):
     """Raised before an HTTP request that would exceed a shared hard budget."""
+
+
+# --- WS3 文档级预算钩子挂载点 -------------------------------------------------
+# ``_post_json`` 是所有 OpenAI 兼容 HTTP 调用的唯一出口。本挂载点让一份**文档级预算单**
+# （``llm_budget.LLMBudgetLedger``）在不侵入任何调用点的前提下，对所有 LLM 调用统一扣减：
+# ``intercept`` 在 HTTP 发出前按 token ceiling 估算余量、超额即抛 ``LLMBudgetExceeded``，
+# 调用方既有的 ``except Exception → stub`` 降级路径自然接管；``settle`` / ``charge_failed``
+# 在收到响应后按真实 / 保守 token 结算。
+#
+# 默认 ``None`` = 零行为改变（硬边界：默认不启用不改变行为）。仅当
+# ``llm_budget.LLMBudgetLedger.attach()`` 显式挂载后激活。本钩子与 per-call 的
+# ``LLMRequestBudget``（claim 通道）是两层独立记账，互不干扰。
+class DocumentBudgetHook(Protocol):
+    def intercept(self, payload: dict[str, Any]) -> None: ...
+    def settle(self, usage: object) -> None: ...
+    def charge_failed(self) -> None: ...
+
+
+_DOCUMENT_BUDGET_HOOK: DocumentBudgetHook | None = None
+
+
+def set_document_budget_hook(hook: DocumentBudgetHook | None) -> None:
+    """挂载文档级预算单（此后所有 ``_post_json`` 调用经钩子扣减）。"""
+    global _DOCUMENT_BUDGET_HOOK
+    _DOCUMENT_BUDGET_HOOK = hook
+
+
+def clear_document_budget_hook() -> None:
+    """卸载文档级预算单（``_post_json`` 回到无预算拦截的旧行为）。"""
+    global _DOCUMENT_BUDGET_HOOK
+    _DOCUMENT_BUDGET_HOOK = None
+
+
+def get_document_budget_hook() -> DocumentBudgetHook | None:
+    """测试 / 诊断用：读取当前挂载的文档级预算钩子。"""
+    return _DOCUMENT_BUDGET_HOOK
 
 
 def _normalized_usage(usage: object) -> dict[str, int] | None:
@@ -989,6 +1025,11 @@ def _post_json(
     attempt = 0
     rate_hits = 0
     while attempt < max_attempts:
+        # WS3 文档级预算：HTTP 发出前按 token ceiling 估算余量拦截（默认钩子 None=零行为）。
+        # 抛 LLMBudgetExceeded 时不进下方 try/finally（gate 未 acquire、reservation 未预留），
+        # 调用方既有的 except Exception → stub 降级路径自然接管。
+        if _DOCUMENT_BUDGET_HOOK is not None:
+            _DOCUMENT_BUDGET_HOOK.intercept(payload)
         reservation_id = (
             _request_budget.reserve(payload) if _request_budget is not None else None
         )
@@ -1015,6 +1056,8 @@ def _post_json(
                 if _request_budget is not None and reservation_id is not None:
                     _request_budget.commit(reservation_id, parsed.get("usage"))
                     budget_settled = True
+                if _DOCUMENT_BUDGET_HOOK is not None:
+                    _DOCUMENT_BUDGET_HOOK.settle(parsed.get("usage"))
                 _write_trace({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "model": config.model,
                               "dur_s": round(duration, 1), "attempt": attempt + 1,
                               "messages": _truncate_for_trace(payload.get("messages")),
@@ -1080,6 +1123,8 @@ def _post_json(
             if (_request_budget is not None and reservation_id is not None
                     and not budget_settled):
                 _request_budget.fail(reservation_id)
+            if _DOCUMENT_BUDGET_HOOK is not None and not budget_settled:
+                _DOCUMENT_BUDGET_HOOK.charge_failed()
             if gate is not None:
                 gate.release()
     raise LLMConnectionError("LLM service is unavailable")
