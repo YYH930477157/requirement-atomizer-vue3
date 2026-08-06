@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://requirement-atomizer.local/schemas/gold_functional_entry.schema.json",
+  "title": "Requirement Atomizer functional truth-set entry (gold_functional_v1)",
+  "description": "One expert-annotated functional requirement. Field model is isomorphic to functional_catalog (objective/behaviors/preconditions/data_constraints/variants/exceptions/related_dlms_objects) plus a source_anchor structure (section + coordinate list + optional conflict_with cross-reference). Used by tools/agreement.py (inter-annotator agreement) and tools/functional_truth_eval.py (direct-extract recall/precision).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entry_id", "doc_ref", "objective", "source_anchor"],
+  "properties": {
+    "entry_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable annotator-local id, unique within one expert's file."
+    },
+    "doc_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Document identifier. Recall/precision are reported per doc_ref and never averaged across documents."
+    },
+    "annotation_status": {
+      "enum": ["real", "fixture"],
+      "description": "real = genuine expert annotation; fixture = synthetic self-proof entry. Defaults to real when absent. Tools count only real entries toward truth_status; fixtures are reported separately and never masquerade as annotations."
+    },
+    "annotator": {"type": "string", "minLength": 1},
+    "annotated_at": {"type": "string", "format": "date"},
+    "title": {"type": "string"},
+    "functional_key": {"type": "string"},
+    "module": {"type": "string"},
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One independently testable system-behavior goal. Verbatim transcribed from / tightly anchored to the source clause."
+    },
+    "behaviors": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "preconditions": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "data_constraints": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "description": "Numeric/unit/OBIS values transcribed verbatim. Scored by exact set equality (no unit conversion, no rounding) — see agreement.py."
+    },
+    "variants": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "related_dlms_objects": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "source_anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["section", "coordinates"],
+      "description": "Source provenance anchor. Entry-level matching (agreement + recall/precision) requires same section AND >=1 shared coordinate.",
+      "properties": {
+        "section": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Clause/section label, e.g. '4.1.2'. Must match the parser's source_section coordinate space (block ids share this granularity)."
+        },
+        "coordinates": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1},
+          "description": "Anchor coordinates in the parser's coordinate space (block ids, e.g. BLK-000123). Granularity (paragraph vs sentence) MUST be frozen in the annotation spec before D3 agreement runs."
+        },
+        "conflict_with": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional cross-reference to the entry_id of a conflicting peer ('mark do not resolve' convention). Entries carrying conflict_with are exempt from entry-agreement Dice (both files); the referenced peer must exist in the same file or the entry fails protocol compliance."
+        }
+      }
+    },
+    "expects_drilldown": {
+      "type": "boolean",
+      "description": "Optional calibration hint: this entry warrants atom-level evidence (multi-behavior / multi-condition). When present, tools/functional_truth_eval.py --sweep-thresholds uses it as the drill-decision ground truth; when absent the sweep falls back to a deterministic richness proxy. Populate during S2 annotation only when the entry genuinely needs drilling."
+    },
+    "notes": {"type": "string"}
+  }
+}
