@@ -508,4 +508,51 @@ describe("FunctionalReview (WS-F)", () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="library-panel"]').text()).toContain("未配置 RATOMIZER_REQUIREMENT_LIBRARY")
   })
+
+  it("hides unconfirmed (draft) library entries by default and reveals them via the toggle (S1-10d)", async () => {
+    const client = makeClient({
+      searchRequirementLibrary: vi.fn().mockResolvedValue({
+        kind: "requirement_search", matches: 2,
+        results: [
+          { objective: "已确认历史需求", overlap_score: 0.5, lifecycle_state: "confirmed", project: "项目A" },
+          { objective: "草稿历史需求", overlap_score: 0.4, lifecycle_state: "draft", project: "项目A" },
+        ],
+      }),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="run-library-search"]').trigger("click")
+    await flushPromises()
+
+    const panel = wrapper.find('[data-testid="library-panel"]')
+    // 默认隐藏 draft：已确认条目可见，草稿条目不可见
+    expect(panel.text()).toContain("已确认历史需求")
+    expect(panel.text()).not.toContain("草稿历史需求")
+    // 隐藏计数提示
+    expect(panel.text()).toContain("1 条未确认已隐藏")
+    // 勾选「显示未确认」后草稿条目出现
+    await wrapper.find('[data-testid="toggle-unconfirmed-library"]').setValue(true)
+    await flushPromises()
+    expect(panel.text()).toContain("草稿历史需求")
+  })
+
+  it("keeps showing legacy library entries that have no lifecycle_state (backward compatible, S1-10d)", async () => {
+    // 旧库条目无 lifecycle_state——按已确认对待，不被默认隐藏（避免整库历史条目全部消失）
+    const client = makeClient({
+      searchRequirementLibrary: vi.fn().mockResolvedValue({
+        kind: "requirement_search", matches: 1,
+        results: [{ objective: "旧库历史需求", overlap_score: 0.45, project: "项目A" }],
+      }),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="run-library-search"]').trigger("click")
+    await flushPromises()
+
+    const panel = wrapper.find('[data-testid="library-panel"]')
+    expect(panel.text()).toContain("旧库历史需求")
+    expect(panel.text()).not.toContain("未确认已隐藏")
+  })
 })

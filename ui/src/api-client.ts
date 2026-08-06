@@ -243,6 +243,9 @@ export type RequirementLibraryEntry = {
   source_kind?: string
   title?: string
   overlap_score?: number
+  // S1-10d：入库质量门收录时携带的生命周期态；采纳 UI 默认隐藏未确认（draft）条目。
+  // 缺省（旧库未带此字段）按「已确认」对待——只隐藏显式 draft，避免把整库历史条目全隐藏。
+  lifecycle_state?: LifecycleState
 }
 
 export type RequirementLibrarySearchPayload = {

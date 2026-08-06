@@ -543,6 +543,9 @@ def import_verification_workbook_task(
 
     复用 import-clarification-answers 的解析模式：按需求追溯ID（notes 列）定位行，
     读六列单元格 → verification 子对象，CAS 指纹失配（需求已重新生成）拒绝自动合入转人工。
+
+    S1-10b：被 CAS 拒绝的行（内容漂移/rid 不在索引）进 ``rejected`` 清单，每条含
+    requirement_id + xlsx 物理行号 + sheet + 原因——精确到行可定位回线下表格人工核对。
     """
     from openpyxl import load_workbook
     from requirement_schema import fingerprint_from_cells, parse_verification_columns
@@ -552,7 +555,8 @@ def import_verification_workbook_task(
     index = load_requirement_index(root)
     workbook_path = workbook_path.expanduser().resolve()
     wb = load_workbook(workbook_path, read_only=True, data_only=True)
-    harvested: list[tuple[str, list[Any], tuple[Any, ...]]] = []
+    # (rid, six, content, row_number, sheet_title)——多 sheet 时行号+sheet 才能唯一定位
+    harvested: list[tuple[str, list[Any], tuple[Any, ...], int, str]] = []
     try:
         for sheet in wb.worksheets:
             header = [str(cell.value or "").strip() for cell in next(
@@ -560,7 +564,8 @@ def import_verification_workbook_task(
             if "项目负责人确认" not in header:
                 continue
             col = {name: idx for idx, name in enumerate(header)}
-            for row in sheet.iter_rows(min_row=2, values_only=True):
+            # row_number = xlsx 物理行号（min_row=2 → 首条数据行是第 2 行）
+            for row_number, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
                 if not row:
                     continue
                 notes_idx = col.get("说明、示例、注意事项", 6)
@@ -581,19 +586,28 @@ def import_verification_workbook_task(
                     row[col.get("描述", 3)] if len(row) > col.get("描述", 3) else "",
                     row[col.get("客户需求章节", 8)] if len(row) > col.get("客户需求章节", 8) else "",
                 )
-                harvested.append((rid, six, content))
+                harvested.append((rid, six, content, row_number, sheet.title))
     finally:
         wb.close()
 
     imported = stale = missing = 0
-    for rid, six, content in harvested:
+    rejected: list[dict[str, Any]] = []
+    for rid, six, content, row_number, sheet_title in harvested:
         entry = index.get(rid)
         if not entry:
             missing += 1
+            rejected.append({
+                "requirement_id": rid, "row": row_number, "sheet": sheet_title,
+                "reason": "需求追溯ID不在当前索引（需求可能已删除或尚未生成）",
+            })
             continue
         # CAS：行单元格内容指纹必须与当前需求一致（失配=需求已重新生成，转人工）
         if fingerprint_from_cells(*content) != entry["fingerprint"]:
             stale += 1
+            rejected.append({
+                "requirement_id": rid, "row": row_number, "sheet": sheet_title,
+                "reason": "内容指纹失配（需求已重新生成，请人工核对后再回灌）",
+            })
             continue
         verification = parse_verification_columns(six, actor_fallback=actor)
         # 仅当六列至少有一项非默认值才写（避免空行覆盖既有状态）
@@ -608,6 +622,8 @@ def import_verification_workbook_task(
         "imported": imported,
         "stale": stale,
         "missing": missing,
+        # S1-10b：拒绝清单精确到 requirement_id + xlsx 行号 + sheet + 原因
+        "rejected": rejected,
         "written": ["verification_states.jsonl"] if imported else [],
     }
 
@@ -720,38 +736,65 @@ def add_manual_requirement_task(
 def build_requirement_library_task(
     project_dirs: list[Path],
     output_path: Path,
+    *,
+    include_unconfirmed: bool = False,
 ) -> dict[str, Any]:
-    """汇总各项目 functional_requirements 为带项目元数据的 JSONL 检索库（不引入数据库）。"""
+    """汇总各项目 functional_requirements 为带项目元数据的 JSONL 检索库（不引入数据库）。
+
+    S1-10d 需求库入库质量门：默认仅收录 lifecycle>=confirmed 的条目（draft 视为未确认，不入库）；
+    ``include_unconfirmed=True`` 显式收录 draft 条目。每条 entry 携带 ``lifecycle_state``，供
+    采纳 UI 默认隐藏未确认条目。functional_requirements 经 governed 双路径探测读取
+    （package_v1 下在 .ratomizer/pipeline/，裸根拼会落空——B1 类寻址失守）。
+    """
     import json as _json
-    from requirement_schema import library_entry_from_requirement
+    from requirement_schema import (
+        LIFECYCLE_CONFIRMED, library_entry_from_requirement, lifecycle_rank, requirement_identity,
+    )
+    from requirements_analysis_rules import _read_functional_requirements_payload
+    from review_state import read_verification_states
 
     output_path = output_path.expanduser().resolve()
     entries: list[dict[str, Any]] = []
     sources: list[dict[str, Any]] = []
+    total_skipped_unconfirmed = 0
+    confirmed_floor = lifecycle_rank(LIFECYCLE_CONFIRMED)
     for project_dir in project_dirs:
         root = Path(project_dir).expanduser().resolve()
-        synth_path = root / "functional_requirements.json"
-        if not synth_path.exists():
-            sources.append({"project_dir": str(root), "imported": 0, "reason": "functional_requirements.json 缺失"})
-            continue
-        try:
-            payload = _json.loads(synth_path.read_text(encoding="utf-8"))
-        except (OSError, _json.JSONDecodeError):
-            payload = {}
+        payload = _read_functional_requirements_payload(root)
         items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list) or not items:
+            sources.append({"project_dir": str(root), "imported": 0,
+                            "reason": "functional_requirements.json 缺失"})
+            continue
+        # 生命周期来自 verification_states.jsonl（governed state 路径，for_write=False 不建目录）
+        lifecycle_by_rid = {
+            str(row.get("requirement_id") or "").strip(): str(row.get("lifecycle_state") or "draft")
+            for row in read_verification_states(root).values()
+        }
         project_name = str(payload.get("source") or root.name) if isinstance(payload, dict) else root.name
         created_at = ""
         prov = payload.get("provenance") if isinstance(payload, dict) else None
         if isinstance(prov, dict):
             created_at = str(prov.get("generated_at") or "")
         count = 0
+        skipped_unconfirmed = 0
         for item in items or []:
             if not isinstance(item, dict):
                 continue
-            entries.append(library_entry_from_requirement(
-                item, project=project_name, doc_source=str(synth_path), created_at=created_at))
+            rid = requirement_identity(item)
+            lifecycle_state = lifecycle_by_rid.get(rid) or "draft"
+            # 质量门：默认仅收录 lifecycle>=confirmed；draft 不入库（视为未确认）
+            if not include_unconfirmed and lifecycle_rank(lifecycle_state) < confirmed_floor:
+                skipped_unconfirmed += 1
+                continue
+            entry = library_entry_from_requirement(
+                item, project=project_name, doc_source=str(root), created_at=created_at)
+            entry["lifecycle_state"] = lifecycle_state
+            entries.append(entry)
             count += 1
-        sources.append({"project_dir": str(root), "project": project_name, "imported": count})
+        total_skipped_unconfirmed += skipped_unconfirmed
+        sources.append({"project_dir": str(root), "project": project_name, "imported": count,
+                        "skipped_unconfirmed": skipped_unconfirmed})
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = output_path.with_suffix(output_path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as handle:
@@ -762,6 +805,8 @@ def build_requirement_library_task(
         "kind": "requirement_library",
         "library": str(output_path),
         "entries": len(entries),
+        "skipped_unconfirmed": total_skipped_unconfirmed,
+        "include_unconfirmed": bool(include_unconfirmed),
         "sources": sources,
     }
 
@@ -2436,6 +2481,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "build-requirement-library", help="汇总各项目 functional_requirements 为 JSONL 检索库")
     lib_build_parser.add_argument("--projects", type=Path, nargs="+", required=True)
     lib_build_parser.add_argument("--library", type=Path, required=True, help="输出的检索库 JSONL 路径")
+    lib_build_parser.add_argument(
+        "--include-unconfirmed", action="store_true",
+        help="默认仅收录 lifecycle>=confirmed 的条目；此开关显式收录 draft（未确认）条目")
 
     lib_search_parser = subparsers.add_parser(
         "search-requirements", help="词面集合重叠度召回历史相似需求")
@@ -2846,7 +2894,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.out, objective=args.objective, behaviors=args.behaviors, module=args.module,
                 ownership=args.ownership, priority=args.priority, notes=args.notes, actor=args.actor)
         elif args.command == "build-requirement-library":
-            payload = build_requirement_library_task(args.projects, args.library)
+            payload = build_requirement_library_task(
+                args.projects, args.library, include_unconfirmed=args.include_unconfirmed)
         elif args.command == "search-requirements":
             payload = search_requirements_task(args.library, args.query, limit=args.limit)
         elif args.command == "recommend-dependencies":

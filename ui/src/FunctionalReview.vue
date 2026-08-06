@@ -175,6 +175,9 @@ const rollbackSubmitting = ref(false)
 const libraryResults = ref<RequirementLibraryEntry[]>([])
 const libraryNote = ref("")
 const libraryLoading = ref(false)
+// S1-10d：采纳 UI 默认隐藏未确认（draft）历史条目；旧库无 lifecycle_state 视为已确认（不隐藏）
+const showUnconfirmedLibrary = ref(false)
+const hiddenUnconfirmedCount = computed(() => libraryResults.value.filter(isUnconfirmedLibraryEntry).length)
 
 // 需求库「采纳」对话框（actor/reason 必填——经 reviewer_override 通道留痕）
 const adoptOpen = ref(false)
@@ -270,6 +273,18 @@ function hasNoDocSource(item: FunctionalItem): boolean {
 function lifecycleLabelOf(state: string | undefined): string {
   return (state && LIFECYCLE_LABELS[state as LifecycleState]) || state || ""
 }
+
+// S1-10d：历史库条目是否「未确认」——仅显式 draft 视为未确认；缺省（旧库）按已确认对待。
+// 入库质量门（build-requirement-library）默认只收 lifecycle>=confirmed，故新库本不含 draft；
+// 此过滤主要处理 --include-unconfirmed 显式收录的 draft 条目，避免采纳未确认结论。
+function isUnconfirmedLibraryEntry(entry: RequirementLibraryEntry): boolean {
+  return String(entry.lifecycle_state || "").trim() === "draft"
+}
+
+const visibleLibraryResults = computed<RequirementLibraryEntry[]>(() => {
+  if (showUnconfirmedLibrary.value) return libraryResults.value
+  return libraryResults.value.filter((entry) => !isUnconfirmedLibraryEntry(entry))
+})
 
 function atomicId(row: BackendRequirement, idx: number): string {
   return readField(row, "stable_req_id") || readField(row, "requirement_id") || readField(row, "id") || `row-${idx}`
@@ -719,6 +734,8 @@ async function runLibrarySearch() {
     const payload: RequirementLibrarySearchPayload = await client.searchRequirementLibrary({ query, limit: 10 })
     if (generation !== opGeneration) return
     libraryResults.value = Array.isArray(payload.results) ? payload.results : []
+    // S1-10d：每次新检索复位「显示未确认」开关（hiddenUnconfirmedCount 是 computed 自动统计）
+    showUnconfirmedLibrary.value = false
     // 后端在未配置 RATOMIZER_REQUIREMENT_LIBRARY 时返回 200 + note（非错误，必须如实展示）
     libraryNote.value = payload.note || (libraryResults.value.length ? "" : "未命中相似历史需求")
   } catch (err) {
@@ -1059,7 +1076,7 @@ function toggleChildren(itemId: string) {
             <h4 class="block-title">事件时间线（append-only，不可抹除）</h4>
             <ol class="timeline">
               <li v-for="(event, idx) in selectedEvents" :key="`evt-${idx}`" class="timeline-item">
-                <span class="timeline-kind">{{ event.kind === "rollback" ? "回退" : event.kind }}</span>
+                <span class="timeline-kind">{{ event.kind === "rollback" ? "回退" : event.kind === "advance" ? "前进" : event.kind }}</span>
                 <span class="timeline-transition">{{ lifecycleLabelOf(event.from_state) }} → {{ lifecycleLabelOf(event.to_state) }}</span>
                 <span class="timeline-actor">{{ event.actor || "—" }}</span>
                 <span v-if="event.reason" class="timeline-reason">{{ event.reason }}</span>
@@ -1096,11 +1113,25 @@ function toggleChildren(itemId: string) {
               </button>
             </div>
             <p v-if="libraryNote" class="field-hint">{{ libraryNote }}</p>
-            <ul v-if="libraryResults.length" class="library-list">
-              <li v-for="(entry, idx) in libraryResults" :key="`lib-${idx}`" class="library-item">
+            <!-- S1-10d：默认隐藏未确认（draft）历史条目——采纳 UI 不引导采纳未确认结论 -->
+            <label v-if="libraryResults.length" class="unconfirmed-toggle" data-testid="library-unconfirmed-toggle">
+              <input
+                type="checkbox"
+                :checked="showUnconfirmedLibrary"
+                data-testid="toggle-unconfirmed-library"
+                @change="showUnconfirmedLibrary = ($event.target as HTMLInputElement).checked"
+              />
+              <span>显示未确认条目</span>
+              <span v-if="!showUnconfirmedLibrary && hiddenUnconfirmedCount > 0" class="unconfirmed-count">
+                （{{ hiddenUnconfirmedCount }} 条未确认已隐藏）
+              </span>
+            </label>
+            <ul v-if="visibleLibraryResults.length" class="library-list">
+              <li v-for="(entry, idx) in visibleLibraryResults" :key="`lib-${idx}`" class="library-item">
                 <div class="library-head">
                   <span class="library-score">相似度 {{ ((entry.overlap_score || 0) * 100).toFixed(0) }}%</span>
                   <span v-if="entry.ownership_corrected" class="corrected-tag">归属已修正</span>
+                  <span v-if="entry.lifecycle_state" :class="['lifecycle-badge', lifecycleTone(entry.lifecycle_state)]">{{ lifecycleLabelOf(entry.lifecycle_state) }}</span>
                   <span v-if="entry.project" class="library-project">{{ entry.project }}</span>
                 </div>
                 <div class="library-objective">{{ entry.objective || entry.title }}</div>
@@ -1111,6 +1142,9 @@ function toggleChildren(itemId: string) {
                 </div>
               </li>
             </ul>
+            <p v-else-if="libraryResults.length && !visibleLibraryResults.length" class="field-hint">
+              全部命中为未确认（draft）条目，已默认隐藏——勾选「显示未确认条目」可查看。
+            </p>
           </section>
         </template>
       </aside>
@@ -1372,6 +1406,9 @@ function toggleChildren(itemId: string) {
 .library-project { font-size: 11px; color: #6b7280; }
 .library-objective { font-size: 13px; line-height: 1.4; }
 .library-behaviors { font-size: 12px; color: #6b7280; }
+.unconfirmed-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #6b7280; cursor: pointer; }
+.unconfirmed-toggle input { cursor: pointer; }
+.unconfirmed-count { color: #9d174d; }
 .fr-atomic { display: flex; flex-direction: column; gap: 10px; }
 .atomic-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .atomic-table th, .atomic-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }

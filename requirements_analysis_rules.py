@@ -317,6 +317,7 @@ def apply_verification_override(
     )
     from review_state import (
         VerificationStateConflict,
+        append_lifecycle_event,
         read_verification_states,
         upsert_verification_state,
     )
@@ -337,19 +338,37 @@ def apply_verification_override(
     existing = read_verification_states(root).get(rid, {})
     current_state = str(existing.get("lifecycle_state") or "draft")
     new_state = advance_lifecycle(current_state, normalized)
-    previous_max = int(existing.get("lifecycle_max") or lifecycle_rank(current_state))
+    when = str(timestamp or _now_iso())
     record = {
         "requirement_id": rid,
         "verification": normalized,
         "lifecycle_state": new_state,
-        "lifecycle_max": max(previous_max, lifecycle_rank(new_state)),
+        "lifecycle_max": max(
+            int(existing.get("lifecycle_max") or lifecycle_rank(current_state)),
+            lifecycle_rank(new_state),
+        ),
         "evidence_fingerprint": current_fingerprint or str(evidence_fingerprint or ""),
         "source": VERIFICATION_SOURCE,
         "actor": str(actor or ""),
-        "timestamp": str(timestamp or _now_iso()),
+        "timestamp": when,
         "schema": "verification-state/v1",
     }
-    return upsert_verification_state(root, rid, record)
+    persisted = upsert_verification_state(root, rid, record)
+    # S1-10a：前进迁移同样 append 事件（与回退事件同构同流）。
+    # 仅在生命周期严格升态时追加——重复保存（无升态）不污染 append-only 审计流
+    # （S1-6 三连保存不应堆积重复事件）。upsert 已先落盘，事件是同流投影。
+    if lifecycle_rank(new_state) > lifecycle_rank(current_state):
+        append_lifecycle_event(root, {
+            "requirement_id": rid,
+            "from_state": current_state,
+            "to_state": new_state,
+            "kind": "advance",
+            "trigger": "verification-driven",
+            "actor": str(actor or ""),
+            "reason": "",
+            "timestamp": when,
+        })
+    return persisted
 
 
 def apply_requirement_library_adoption(
@@ -440,6 +459,7 @@ def rollback_requirement_lifecycle(
         "from_state": current,
         "to_state": target,
         "kind": "rollback",
+        "trigger": "manual",
         "actor": str(actor or ""),
         "reason": str(reason or ""),
         "timestamp": when,
@@ -513,18 +533,15 @@ def apply_dependency_decision(
 def dependency_candidates_for_project(out_dir: Path) -> list[dict[str, Any]]:
     """对当前项目的功能需求跑确定性依赖/父子候选推荐（只生产值，不动 schema）。"""
     from requirement_schema import recommend_dependency_candidates
+    from review_state import read_manual_requirements
 
     root = Path(out_dir).expanduser().resolve()
-    requirements: list[dict[str, Any]] = []
-    synth_path = root / "functional_requirements.json"
-    if synth_path.exists():
-        try:
-            payload = json.loads(synth_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        items = payload.get("items") if isinstance(payload, dict) else None
-        if isinstance(items, list):
-            requirements.extend(item for item in items if isinstance(item, dict))
-    from review_state import read_manual_requirements
+    # S1-10c：改 governed 双路径探测（.ratomizer/pipeline 优先、根兜底，for_write=False 不建目录）。
+    # 旧实现裸拼 root/"functional_requirements.json"——package_v1 下该文件不在根目录，
+    # 候选恒空（B1 类寻址失守的重现，与 load_requirement_index 同族）。复用既有双路径读取器。
+    requirements: list[dict[str, Any]] = [
+        item for item in (_read_functional_requirements_payload(root).get("items") or [])
+        if isinstance(item, dict)
+    ]
     requirements.extend(read_manual_requirements(root))
     return recommend_dependency_candidates(requirements)

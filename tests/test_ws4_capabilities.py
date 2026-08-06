@@ -241,6 +241,58 @@ class VerificationStateMachineIOTests(unittest.TestCase):
             rollback_requirement_lifecycle(self.out, self.item["functional_requirement_id"],
                                            "draft", actor="专家", reason="不是回退")
 
+    def test_forward_migration_appends_advance_events(self) -> None:
+        """S1-10a：前进迁移同样 append 事件——与回退事件同构同流。
+
+        draft→confirmed→implemented→verified 三次升态写各产一条 advance 事件，
+        from_state/to_state 完整覆盖四个生命周期态；事件携带 trigger=verification-driven
+        （与回退事件同构）。重复保存（无升态）不追加事件——append-only 流不被重复保存污染。
+        """
+        from review_state import read_lifecycle_events
+
+        rid = self.item["functional_requirement_id"]
+        # draft → confirmed（三确认位全部确认）
+        self._override(project_manager_confirm=True, test_lead_confirm=True, dev_test_confirm=True)
+        # confirmed → implemented
+        self._override(project_manager_confirm=True, test_lead_confirm=True,
+                       dev_test_confirm=True, implemented="done")
+        # implemented → verified
+        self._override(project_manager_confirm=True, test_lead_confirm=True,
+                       dev_test_confirm=True, implemented="done", test_completed=True)
+
+        events = read_lifecycle_events(self.out)
+        advance = [e for e in events if e.get("kind") == "advance"]
+        # 三次升态 → 三条 advance 事件，from/to 序列精确还原四态链
+        self.assertEqual([(e.get("from_state"), e.get("to_state")) for e in advance],
+                         [("draft", "confirmed"), ("confirmed", "implemented"),
+                          ("implemented", "verified")])
+        # 与回退事件同构：含 trigger 字段，标记为 verification 驱动
+        self.assertTrue(all(e.get("trigger") == "verification-driven" for e in advance))
+        self.assertTrue(all(e.get("actor") == "tester" for e in advance))
+
+        # 重复保存（已在 verified，无升态）不追加事件——避免 append-only 流被重复保存污染
+        self._override(project_manager_confirm=True, test_lead_confirm=True,
+                       dev_test_confirm=True, implemented="done", test_completed=True)
+        advance_after_resave = [e for e in read_lifecycle_events(self.out)
+                                if e.get("kind") == "advance"]
+        self.assertEqual(len(advance_after_resave), 3)
+
+    def test_rollback_event_carries_trigger_field(self) -> None:
+        """S1-10a：回退事件与前进事件同构——同样携带 trigger 字段（manual）。"""
+        from requirements_analysis_rules import (
+            apply_verification_override, rollback_requirement_lifecycle,
+        )
+        from review_state import read_lifecycle_events
+
+        rid = self.item["functional_requirement_id"]
+        apply_verification_override(self.out, rid, {
+            "project_manager_confirm": True, "test_lead_confirm": True, "dev_test_confirm": True,
+            "implemented": "done", "test_completed": True}, actor="t")
+        rollback_requirement_lifecycle(self.out, rid, "implemented", actor="专家", reason="返工")
+        rollback_events = [e for e in read_lifecycle_events(self.out)
+                           if e.get("kind") == "rollback"]
+        self.assertEqual(rollback_events[0].get("trigger"), "manual")
+
     def test_overlay_persisted_and_readable(self) -> None:
         from requirement_schema import normalize_verification
         from review_state import read_verification_states
@@ -449,6 +501,85 @@ class ExcelWritebackTests(unittest.TestCase):
         self.assertEqual(result["imported"], 1)
         self.assertEqual(result["stale"], 0)
 
+    def test_backfill_rejection_list_names_drifting_rows(self) -> None:
+        """S1-10b：CAS 拒绝清单精确到 requirement_id + xlsx 行号 + 原因。
+
+        构造两行内容漂移（需求已重新生成）回灌：报告 rejected 列表含两条，各自带 rid、
+        行号、原因；imported==0、stale==2。行号与 rid 一一对应可定位到具体物理行。
+        """
+        from openpyxl import load_workbook
+        from desktop_tasks import import_verification_workbook_task
+        from requirements_analysis_excel import write_software_requirements_xlsx
+
+        # 两条需求（独立 functional_requirement_id）
+        item_a = self.item
+        item_b = _write_analysis_item(
+            self.out, analysis_id="AN-002", functional_requirement_id="FREQ-test0002",
+            module="事件记录", submodule="事件记录",
+            description="表具应记录掉电事件", requirement="表具应记录掉电事件",
+            software_requirement_text="表具应记录掉电事件", source_section="4.2.1",
+            source_requirement_ids=["AIR-2"], labels=["事件记录"],
+            objective="记录掉电事件", behaviors=["写入事件日志"],
+        )
+        path = self.out / "software_requirements.xlsx"
+        write_software_requirements_xlsx([dict(item_a), dict(item_b)], path)
+
+        # 线下编辑两行的六列
+        wb = load_workbook(path)
+        import re as _re
+        trace_re = _re.compile(r"需求追溯ID[：:]\s*([^\n\r]+)")
+        # 导出按模块分 sheet——两条在不同 sheet，逐 sheet 扫描建 rid→(row, sheet) 映射
+        rid_to_loc: dict[str, tuple[int, str]] = {}
+        cell_by_loc: dict[str, tuple[Any, int]] = {}
+        for sheet in wb.worksheets:
+            header = [c.value for c in sheet[1]]
+            if "项目负责人确认" not in header:
+                continue
+            col = {name: idx for idx, name in enumerate(header)}
+            impl_col = col["功能是否实现"] + 1
+            for row_number, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+                notes = str(row[col["说明、示例、注意事项"]] or "")
+                m = trace_re.search(notes)
+                if not m:
+                    continue
+                rid = m.group(1).strip()
+                rid_to_loc[rid] = (row_number, sheet.title)
+                cell_by_loc[rid] = (sheet, impl_col)
+        # 两行都填上「已完成」
+        for rid, (sheet, impl_col) in cell_by_loc.items():
+            _row_number = rid_to_loc[rid][0]
+            sheet.cell(row=_row_number, column=impl_col, value="已完成")
+        wb.save(path)
+        wb.close()
+
+        # 模拟需求重新生成：两条都漂移 description（内容指纹漂移）
+        _write_analysis_item(self.out, description="全新不同的固件升级能力A",
+                             requirement="全新不同的固件升级能力A",
+                             software_requirement_text="全新不同的固件升级能力A")
+        _write_analysis_item(self.out, analysis_id="AN-002",
+                             functional_requirement_id="FREQ-test0002",
+                             description="全新不同的掉电记录能力B",
+                             requirement="全新不同的掉电记录能力B",
+                             software_requirement_text="全新不同的掉电记录能力B")
+
+        result = import_verification_workbook_task(self.out, path, actor="x")
+        # 两行均被 CAS 拒绝
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(result["stale"], 2)
+        rejected = result.get("rejected") or []
+        self.assertEqual(len(rejected), 2)
+        # 每条含 rid + 行号 + sheet + 原因，且 (row, sheet) 与导出时一一对应
+        by_rid = {row["requirement_id"]: row for row in rejected}
+        self.assertEqual(set(by_rid), {"FREQ-test0001", "FREQ-test0002"})
+        for rid, row in by_rid.items():
+            expected_row, expected_sheet = rid_to_loc[rid]
+            self.assertEqual(row["row"], expected_row)
+            self.assertEqual(row["sheet"], expected_sheet)
+            self.assertTrue(str(row["reason"]).strip())
+        # 精确到行的证明：两条 (row, sheet) 各不相同（两条物理行可区分定位）
+        locs = {(r["row"], r["sheet"]) for r in rejected}
+        self.assertEqual(len(locs), 2)
+
 
 # ===========================================================================
 # Cap4：手工建需求入口（manual provenance，追溯列留空不伪引）
@@ -590,11 +721,69 @@ class RequirementLibraryTests(unittest.TestCase):
                 ],
             }, ensure_ascii=False), encoding="utf-8")
             library = self.out / "library.jsonl"
-            build = build_requirement_library_task([proj], library)
+            # S1-10d：默认质量门只收 lifecycle>=confirmed；此用例验证检索机制，显式收录未确认
+            build = build_requirement_library_task([proj], library, include_unconfirmed=True)
             self.assertEqual(build["entries"], 2)
         results = search_requirements_task(library, "load profile archive", limit=5)
         self.assertGreater(results["matches"], 0)
         self.assertEqual(results["results"][0]["functional_requirement_id"], "FREQ-a")
+
+    def test_build_library_quality_gate_excludes_draft_by_default(self) -> None:
+        """S1-10d：默认仅收录 lifecycle>=confirmed 的条目；draft 不入库。"""
+        from desktop_tasks import build_requirement_library_task
+        from requirements_analysis_rules import apply_verification_override
+        with tempfile.TemporaryDirectory() as proj:
+            proj = Path(proj)
+            (proj / "functional_requirements.json").write_text(json.dumps({
+                "source": "DocA",
+                "items": [
+                    {"functional_requirement_id": "FREQ-draft", "objective": "草稿需求",
+                     "behaviors": ["x"], "module": "X"},
+                    {"functional_requirement_id": "FREQ-conf", "objective": "已确认需求",
+                     "behaviors": ["y"], "module": "Y"},
+                    {"functional_requirement_id": "FREQ-impl", "objective": "已实现需求",
+                     "behaviors": ["z"], "module": "Z"},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            # 仅把 FREQ-conf 推到 confirmed、FREQ-impl 推到 implemented；FREQ-draft 留 draft
+            apply_verification_override(proj, "FREQ-conf", {
+                "project_manager_confirm": True, "test_lead_confirm": True,
+                "dev_test_confirm": True}, actor="t")
+            apply_verification_override(proj, "FREQ-impl", {
+                "project_manager_confirm": True, "test_lead_confirm": True,
+                "dev_test_confirm": True, "implemented": "done"}, actor="t")
+            library = self.out / "library.jsonl"
+            build = build_requirement_library_task([proj], library)
+            # 默认门：draft 被排除，confirmed/implemented 收录
+            self.assertEqual(build["entries"], 2)
+            self.assertEqual(build.get("skipped_unconfirmed"), 1)
+            entries = [json.loads(line) for line in library.read_text(encoding="utf-8").splitlines() if line.strip()]
+            rids = {e["functional_requirement_id"] for e in entries}
+            self.assertEqual(rids, {"FREQ-conf", "FREQ-impl"})
+            self.assertNotIn("FREQ-draft", rids)
+            # 收录条目携带 lifecycle_state，供采纳 UI 默认隐藏未确认
+            by_rid = {e["functional_requirement_id"]: e for e in entries}
+            self.assertEqual(by_rid["FREQ-conf"]["lifecycle_state"], "confirmed")
+            self.assertEqual(by_rid["FREQ-impl"]["lifecycle_state"], "implemented")
+
+    def test_build_library_include_unconfirmed_switch_admits_draft(self) -> None:
+        """S1-10d：--include-unconfirmed 显式开关收录 draft 条目。"""
+        from desktop_tasks import build_requirement_library_task
+        with tempfile.TemporaryDirectory() as proj:
+            proj = Path(proj)
+            (proj / "functional_requirements.json").write_text(json.dumps({
+                "source": "DocA",
+                "items": [
+                    {"functional_requirement_id": "FREQ-draft", "objective": "草稿需求",
+                     "behaviors": ["x"], "module": "X"},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            library = self.out / "library.jsonl"
+            build = build_requirement_library_task([proj], library, include_unconfirmed=True)
+            self.assertEqual(build["entries"], 1)
+            entries = [json.loads(line) for line in library.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(entries[0]["functional_requirement_id"], "FREQ-draft")
+            self.assertEqual(entries[0]["lifecycle_state"], "draft")
 
     def test_corrected_ownership_ranked_first_on_tie(self) -> None:
         from requirement_schema import (
@@ -667,6 +856,39 @@ class DependencyRecommendTests(unittest.TestCase):
             }, ensure_ascii=False), encoding="utf-8")
             candidates = dependency_candidates_for_project(out)
             self.assertTrue(any(c["kind"] == "refine" for c in candidates))
+
+    def test_project_candidates_read_governed_pipeline_path_under_package_v1(self) -> None:
+        """S1-10c：package_v1 布局下 functional_requirements.json 在 .ratomizer/pipeline/ 也能读到候选。
+
+        旧实现裸拼 root/"functional_requirements.json"——package_v1 下该文件不在根目录，
+        候选恒空（B1 类寻址失守的重现）。改 governed 双路径探测后，根目录无该文件时仍非空。
+        """
+        from result_package import governed_artifact_path, initialize_result_package
+        from requirements_analysis_rules import dependency_candidates_for_project
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            source = out / "input.docx"
+            source.write_bytes(b"fixture")
+            initialize_result_package(out, input_path=source, requested_stages=["atomize"])
+            governed = governed_artifact_path(out, "functional_requirements.json",
+                                              category="pipeline", for_write=True)
+            self.assertEqual(governed, out / ".ratomizer" / "pipeline" / "functional_requirements.json")
+            governed.write_text(json.dumps({
+                "producer": "functional-extract-v1",
+                "items": [
+                    {"functional_requirement_id": "F1", "title": "镜像升级",
+                     "source_section": "4.1.1", "related_dlms_objects": ["0-0:96.3.0"]},
+                    {"functional_requirement_id": "F2", "title": "镜像校验",
+                     "source_section": "4.1.2", "related_dlms_objects": ["0-0:96.3.0"]},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            # 根目录【没有】functional_requirements.json——证明候选来自 governed 双路径探测
+            self.assertFalse((out / "functional_requirements.json").exists())
+            candidates = dependency_candidates_for_project(out)
+            self.assertTrue(candidates, "package_v1 布局下候选应非空（governed 双路径探测）")
+            # 共享 OBIS → depend/exclude 候选；相邻章节 → refine 候选
+            self.assertTrue(any(c["kind"] == "refine" for c in candidates))
+            self.assertTrue(any(c["kind"] in ("depend", "exclude") for c in candidates))
 
 
 # ===========================================================================
@@ -809,8 +1031,15 @@ class ApiHandlerTests(unittest.TestCase):
         handler.handle_lifecycle_events_get()
         self.assertEqual(responses[0][0], 200)
         self.assertEqual(responses[0][1]["schema"], "requirement-lifecycle-events/v1")
-        self.assertEqual(responses[0][1]["total"], 1)
-        self.assertEqual(responses[0][1]["events"][0]["kind"], "rollback")
+        # S1-10a：前进迁移（draft→verified）与回退（verified→implemented）同流 append，
+        # 共 2 条事件；GET 仍是只读投影，不改写历史。
+        events = responses[0][1]["events"]
+        self.assertEqual(responses[0][1]["total"], 2)
+        self.assertEqual([e["kind"] for e in events].count("rollback"), 1)
+        self.assertEqual([e["kind"] for e in events].count("advance"), 1)
+        rollback = next(e for e in events if e["kind"] == "rollback")
+        self.assertEqual(rollback["from_state"], "verified")
+        self.assertEqual(rollback["to_state"], "implemented")
 
     def test_requirement_library_adopt_writes_via_reviewer_override(self) -> None:
         from review_state import read_verification_states
