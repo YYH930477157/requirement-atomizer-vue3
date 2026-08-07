@@ -509,6 +509,9 @@
         <FunctionalReview v-else-if="activeNav === 'functional'" :client="apiClient" :session-key="reviewSessionKey"
                           :active="activeNav === 'functional'" :refresh-token="documentRefreshToken"
                           :output-dir="currentOutputDir" @focus-block="focusBlockFromFunctional" />
+        <DocumentRenderer v-else-if="activeNav === 'renderer'" :file-path="currentInputPath || ''"
+                          :client="apiClient ? {} : null" :active="activeNav === 'renderer'"
+                          @fallback="activeNav = 'document'" />
 
         <footer class="status-bar">
           <span :title="currentOutputDir || undefined">输出目录：{{ currentOutputDir ? tailPath(currentOutputDir) : "尚未选择输出目录" }}</span>
@@ -696,6 +699,7 @@ import {
   FolderOpen,
   FolderOutput,
   History,
+  Image,
   Layers,
   MessageSquareReply,
   MessagesSquare,
@@ -721,13 +725,14 @@ import type {
   TableReviewTable,
 } from "./api-client"
 import ClaimLedger from "./ClaimLedger.vue"
+import DocumentRenderer from "./DocumentRenderer.vue"
 import DocumentReview from "./DocumentReview.vue"
 import FunctionalReview from "./FunctionalReview.vue"
 import { requirements as mockRequirements } from "./mock-data"
 import { applyReviewState, mapBackendRequirement, statusDisplay as displayStatus } from "./requirement-mapper"
 import type { Requirement, ReviewStatus } from "./types"
 
-type PhaseNavId = "run" | "review" | "document" | "claim" | "functional" | "settings"
+type PhaseNavId = "run" | "review" | "document" | "claim" | "functional" | "renderer" | "settings"
 type StatFilter = "all" | "accepted" | "expert_pending" | "ambiguous"
 type LlmSettings = {
   enabled: boolean
@@ -749,6 +754,7 @@ const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: Component }> =
   { id: "functional", label: "功能需求", icon: Layers },
   { id: "document", label: "文档批注", icon: FileText },
   { id: "claim", label: "Claim 账本", icon: ListChecks },
+  { id: "renderer", label: "文档渲染", icon: Image },
   { id: "settings", label: "设置", icon: Settings },
 ]
 
@@ -1672,6 +1678,7 @@ async function handleOpenDocument() {
   const path = await window.ratomizerDesktop?.openDocument()
   if (path) {
     currentInputPath.value = path
+    activeNav.value = "renderer"
     apiMessage.value = `已选择文档：${path}`
     runStage.value = "待运行"
     runProgress.value = 0

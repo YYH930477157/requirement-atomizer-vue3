@@ -17,6 +17,7 @@ from threading import RLock
 from typing import Any, Iterator, Sequence
 
 import ai_extract
+import claim_ledger
 from agent_policy import AGENT_POLICY_VERSION
 from assemble_spec import assemble
 from atomize import run_atomizer_pipeline
@@ -1817,6 +1818,187 @@ def incremental_rerun_plan(
         "rerun_ratio": round(len(rerun_block_ids) / max(1, total_new_blocks), 4),
         "diff": diff,
         "rerun_idempotency_key": plan_key,
+    }
+
+
+# ---------------------------------------------------------------------------
+# WS-E E1 首次全量闭合门
+# ---------------------------------------------------------------------------
+# 在 claim full 模式（三档已建）之上叠加「全部条目确认完成 → READY」门控：
+# 未全确认 / 有 blocking 澄清 / 守恒未闭合 / claim 模式不是 full → 不 READY，并列出缺口清单。
+# 复用既有 readiness 判定与 claim_ledger mode，不新造语义。
+FULL_CLOSURE_SCHEMA = "full-closure/v1"
+
+
+def evaluate_full_closure(out_dir: Path) -> dict[str, Any]:
+    """Evaluate the WS-E E1 first full-closure gate.
+
+    Returns ``{schema, ready, claim_mode, gaps}`` where ``gaps`` lists every
+    blocking condition. The gate is strict: any gap means ``ready=False``.
+    """
+    root = Path(out_dir).expanduser().resolve()
+    gaps: list[dict[str, Any]] = []
+
+    # 1. claim ledger 模式必须是 full（sampling/baseline_gate 不保证全量闭合）
+    claim_mode = claim_ledger.resolve_claim_ledger_mode()
+    if claim_mode != "full":
+        gaps.append({
+            "kind": "claim_mode_not_full",
+            "current": claim_mode,
+            "required": "full",
+            "message": f"Claim ledger mode is '{claim_mode}'; full closure requires 'full'",
+        })
+
+    # 2. claim 侧 document_ready + 无 uncertain claim + 无 pending 结构复核
+    try:
+        from claim_views import build_claim_view
+
+        metrics = build_claim_view(root, "metrics")
+        document_ready = metrics.get("document_ready")
+        effective_metrics = dict(metrics.get("effective_metrics") or {})
+        uncertain_count = int(effective_metrics.get("uncertain_count") or 0)
+        pending_structural = int(metrics.get("structural_review_pending_count") or 0)
+        if not document_ready:
+            gaps.append({
+                "kind": "claim_document_not_ready",
+                "document_ready": document_ready,
+                "uncertain_count": uncertain_count,
+                "pending_structural_reviews": pending_structural,
+            })
+        if uncertain_count > 0:
+            gaps.append({
+                "kind": "uncertain_claims",
+                "count": uncertain_count,
+                "message": f"{uncertain_count} eligible claim(s) remain uncertain",
+            })
+        if pending_structural > 0:
+            gaps.append({
+                "kind": "pending_structural_reviews",
+                "count": pending_structural,
+                "message": f"{pending_structural} structural review(s) pending",
+            })
+    except Exception as exc:  # pragma: no cover - defensive
+        gaps.append({
+            "kind": "claim_metrics_unavailable",
+            "error": str(exc)[:200],
+        })
+
+    # 3. 分析侧 readiness（blocking 澄清、覆盖率、失败章节）
+    try:
+        from agent_state import load_analysis_state
+
+        state = load_analysis_state(root)
+        readiness = state.readiness
+        if readiness.get("verdict") != "READY":
+            gaps.append({
+                "kind": "readiness_not_ready",
+                "verdict": readiness.get("verdict"),
+                "reasons": list(readiness.get("reasons") or []),
+            })
+        # 全部 B-track 条目必须有非 draft/candidate 的裁决
+        unreviewed_statuses = {"draft", "candidate"}
+        unreviewed = [
+            req for req in state.requirements
+            if str(req.get("status") or "draft").lower() in unreviewed_statuses
+        ]
+        if unreviewed:
+            gaps.append({
+                "kind": "unreviewed_requirements",
+                "count": len(unreviewed),
+                "sample_ids": [
+                    str(req.get("ai_req_id") or req.get("requirement_id") or "")
+                    for req in unreviewed[:10]
+                ],
+            })
+    except Exception as exc:  # pragma: no cover - defensive
+        gaps.append({
+            "kind": "analysis_state_unavailable",
+            "error": str(exc)[:200],
+        })
+
+    return {
+        "schema": FULL_CLOSURE_SCHEMA,
+        "ready": len(gaps) == 0,
+        "claim_mode": claim_mode,
+        "gaps": gaps,
+    }
+
+
+# ---------------------------------------------------------------------------
+# WS-E E2 增量闭合：文档 diff 驱动变更集
+# ---------------------------------------------------------------------------
+# 复用 WS3 incremental_rerun_plan 的条款候选哈希，把变化 block_ids 映射到需求，
+# 产出新增/失效/沿用三分类报告。
+CHANGESET_SCHEMA = "requirement-changeset/v1"
+
+
+def build_requirement_changeset(
+    old_requirements: Sequence[dict[str, Any]],
+    new_requirements: Sequence[dict[str, Any]],
+    old_chunks: Sequence[dict[str, Any]],
+    new_chunks: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build an added/obsolete/retained changeset from clause-candidate diff.
+
+    ``old_chunks`` / ``new_chunks`` are clause-candidate descriptors as consumed
+    by ``incremental_rerun_plan``. A new requirement is *added* if its id did not
+    exist in the old set; *obsolete* if it disappeared; *retained* if it stayed.
+    Retained requirements whose ``source_block_ids`` intersect the changed block
+    set are flagged with ``reason: source_changed`` so the caller can rerun them.
+    """
+    plan = incremental_rerun_plan(old_chunks, new_chunks)
+    changed_block_ids = set(plan["rerun_block_ids"])
+
+    def req_id(req: dict[str, Any]) -> str:
+        return str(req.get("ai_req_id") or req.get("requirement_id") or "")
+
+    def source_blocks(req: dict[str, Any]) -> set[str]:
+        return {str(b) for b in (req.get("source_block_ids") or []) if str(b)}
+
+    old_by_id = {req_id(r): r for r in old_requirements}
+    new_by_id = {req_id(r): r for r in new_requirements}
+
+    added: list[dict[str, Any]] = []
+    obsolete: list[dict[str, Any]] = []
+    retained: list[dict[str, Any]] = []
+
+    for req_id_key, req in new_by_id.items():
+        blocks = source_blocks(req)
+        changed = blocks & changed_block_ids
+        if req_id_key not in old_by_id:
+            added.append({
+                "id": req_id_key,
+                "reason": "new_requirement",
+                "source_blocks": sorted(blocks),
+                "changed_source_blocks": sorted(changed),
+            })
+        else:
+            retained.append({
+                "id": req_id_key,
+                "reason": "source_changed" if changed else "unchanged",
+                "source_blocks": sorted(blocks),
+                "changed_source_blocks": sorted(changed),
+            })
+
+    for req_id_key, req in old_by_id.items():
+        if req_id_key not in new_by_id:
+            obsolete.append({
+                "id": req_id_key,
+                "reason": "removed_requirement",
+                "source_blocks": sorted(source_blocks(req)),
+            })
+
+    return {
+        "schema": CHANGESET_SCHEMA,
+        "incremental_rerun_plan": plan,
+        "added": added,
+        "obsolete": obsolete,
+        "retained": retained,
+        "counts": {
+            "added": len(added),
+            "obsolete": len(obsolete),
+            "retained": len(retained),
+        },
     }
 
 
