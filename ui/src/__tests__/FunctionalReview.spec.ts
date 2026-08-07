@@ -162,6 +162,61 @@ function makeClient(over: Record<string, unknown> = {}) {
     loadRequirements: vi.fn().mockResolvedValue([
       { stable_req_id: "SREQ-1", module: "事件记录", chinese_text: "记录掉电", status: "accepted" },
     ]),
+    // V3-3 WS-B adjudication mocks
+    loadAdjudications: vi.fn().mockResolvedValue({
+      schema: "adjudications/v1",
+      items: [
+        {
+          functional_requirement_id: "FRE-1",
+          decision: "review",
+          hard_basis: { ok: true, reject_reasons: [], review_reasons: [], evidence: {} },
+          semantic_vote: null,
+          semantic_usage: { calls: 0, available: false },
+          calibration_status: "pending_annotation",
+          sample_selected: false,
+          actor: "adjudicator",
+          reason: "自动通过未开启",
+          timestamp: "2026-08-06T09:00:00Z",
+          version: "adjudication-v1",
+        },
+      ],
+      total: 1,
+    }),
+    loadAdjudicationSummary: vi.fn().mockResolvedValue({
+      schema: "adjudication-summary/v1",
+      version: "adjudication-v1",
+      enabled: { auto_approve: false, auto_reject: false },
+      counts: { accept: 0, review: 1, reject: 0 },
+      total: 1,
+      calibration: {
+        status: "pending_annotation",
+        far: null,
+        recall: null,
+        precision: null,
+        truth_count: 0,
+        note: "真值集尚未标注，自动通过硬禁用",
+      },
+      latest_run: { run_id: null, recorded_at: null, sampled_count: 0, estimated_far: null },
+    }),
+    runAdjudication: vi.fn().mockResolvedValue({
+      ok: true,
+      schema: "adjudication-summary/v1",
+      run_id: "2026-08-06T09:00:00Z",
+      counts: { accept: 0, review: 1, reject: 0 },
+      total: 1,
+      calibration_status: "pending_annotation",
+      far: null,
+      sampled_count: 0,
+      written: ["adjudication_results.jsonl", "adjudication_audit.jsonl"],
+    }),
+    overturnAdjudication: vi.fn().mockResolvedValue({
+      functional_requirement_id: "FRE-1",
+      decision: "accept",
+      actor: "tester",
+      reason: "人工推翻：test",
+      timestamp: "2026-08-06T09:01:00Z",
+      version: "adjudication-v1",
+    }),
     ...over,
   }
 }

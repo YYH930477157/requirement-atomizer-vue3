@@ -76,6 +76,14 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # 默认非侵入：allow_llm 关闭时编排环只读缺口并把 extract 缺口转人工，不发起任何 LLM 补抽。
     EnvVar("RATOMIZER_ORCHESTRATION_MAX_ROUNDS", "8", "编排环每文档最大轮次上限（1..50，默认 8；达上限未收敛→文档 NEEDS WORK 交人）", False),
     EnvVar("RATOMIZER_ORCHESTRATION_ALLOW_LLM", "0", "编排环经 openai_compatible 路由自动发起 spot_extract/targeted_reextract 的授权开关（=1 启用；默认 0=只读缺口，extract 缺口转人工）", False),
+    # --- WS-B AI 裁决（默认全关；真值校准通过后才允许自动通过） ---
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_APPROVE", "0", "功能需求级自动通过开关（=1 启用；默认 0=全部走人工 review）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_REJECT", "0", "功能需求级自动拒绝开关（=1 启用；硬依据红灯时自动 reject，否则 review）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_REVIEW_RATE", "0.0", "自动 accept 后按概率强制降级为 review 的比例（能力边界抽样，0..1）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_SAMPLE_RATE", "0.1", "自动 accept 结果进抽审队列的比例（高风险编码条目必抽，0..1）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_FAR_THRESHOLD", "0.02", "允许自动通过的误受率上限（默认 2%，需真值集校准）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_TRUTH_SET", "", "功能需求级真值集路径（缺省用 golden_sets/gold_functional_v1/truth.jsonl）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_LLM_ROUTE", "", "AI 裁决语义投票 LLM 路由（缺省复用 RATOMIZER_LLM_MODEL）", False),
     # --- 知识/资产路径 ---
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),
     EnvVar("RATOMIZER_ADJUDICATION_BANK", "", "裁决样本库 JSON 路径（专家 accepted 需求作 few-shot 注入富化；缺省不注入）", False),

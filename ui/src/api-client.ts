@@ -292,6 +292,93 @@ export type RequirementLibraryAdoptPayload = {
   written: string[]
 }
 
+// ===== WS-B AI 裁决 =====
+export type AdjudicationDecision = "accept" | "review" | "reject"
+
+export type AdjudicationHardBasis = {
+  ok: boolean
+  reject_reasons: string[]
+  review_reasons: string[]
+  evidence: Record<string, unknown>
+}
+
+export type AdjudicationRecord = {
+  schema?: string
+  functional_requirement_id: string
+  decision: AdjudicationDecision
+  hard_basis: AdjudicationHardBasis
+  semantic_vote: "accept" | "review" | "reject" | null
+  semantic_usage: Record<string, unknown>
+  calibration_status: string
+  sample_selected: boolean
+  actor: string
+  reason: string
+  timestamp: string
+  version: string
+}
+
+export type AdjudicationRunInput = {
+  route?: string
+  actor?: string
+}
+
+export type AdjudicationRunPayload = {
+  ok: boolean
+  schema?: string
+  version?: string
+  run_id: string
+  counts: Record<AdjudicationDecision, number>
+  total: number
+  calibration_status: string
+  far: number | null
+  sampled_count: number
+  written: string[]
+}
+
+export type AdjudicationOverturnInput = {
+  functionalRequirementId: string
+  newDecision: AdjudicationDecision
+  actor: string
+  reason: string
+}
+
+export type AdjudicationOverturnPayload = {
+  ok: boolean
+  record: AdjudicationRecord
+  written: string[]
+}
+
+export type AdjudicationsPayload = {
+  schema: string
+  items: AdjudicationRecord[]
+  total: number
+}
+
+export type AdjudicationSummaryPayload = {
+  schema: string
+  version?: string
+  enabled: {
+    auto_approve: boolean
+    auto_reject: boolean
+  }
+  counts: Record<AdjudicationDecision, number>
+  total: number
+  calibration: {
+    status: string
+    far: number | null
+    recall: number | null
+    precision: number | null
+    truth_count: number
+    note: string
+  }
+  latest_run: {
+    run_id: string | null
+    recorded_at: string | null
+    sampled_count: number
+    estimated_far: number | null
+  }
+}
+
 export type TranslationInput = {
   requirementId: string
   text: string
@@ -1521,6 +1608,41 @@ export class RequirementApiClient {
 
   async loadLifecycleEvents(): Promise<LifecycleEventsPayload> {
     return this.request<LifecycleEventsPayload>("/lifecycle-events")
+  }
+
+  // WS-B AI 裁决：读取结果 / 摘要 / 运行 / 人工推翻
+  async loadAdjudications(): Promise<AdjudicationsPayload> {
+    return this.request<AdjudicationsPayload>("/adjudications")
+  }
+
+  async loadAdjudicationSummary(): Promise<AdjudicationSummaryPayload> {
+    return this.request<AdjudicationSummaryPayload>("/adjudication-summary")
+  }
+
+  async runAdjudication(input: AdjudicationRunInput = {}): Promise<AdjudicationRunPayload> {
+    return this.request<AdjudicationRunPayload>("/adjudications/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        route: input.route || "",
+        actor: input.actor || "vue3-ui",
+      }),
+    })
+  }
+
+  async overturnAdjudication(
+    input: AdjudicationOverturnInput,
+  ): Promise<AdjudicationOverturnPayload> {
+    return this.request<AdjudicationOverturnPayload>("/adjudications/overturn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        functional_requirement_id: input.functionalRequirementId,
+        new_decision: input.newDecision,
+        actor: input.actor,
+        reason: input.reason,
+      }),
+    })
   }
 
   // 需求库「采纳」：actor/reason 必填（reviewer_override 留痕），后端经既有 verification_states 通道持久化

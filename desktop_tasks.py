@@ -944,6 +944,48 @@ def decide_dependency_task(
     }
 
 
+def adjudicate_task(
+    out_dir: Path,
+    *,
+    route: str | None = None,
+    actor: str = "desktop-adjudicator",
+) -> dict[str, Any]:
+    """WS-B：运行功能需求级 AI 裁决（默认全关；LLM 不可用时全部进 review）。"""
+    from adjudicate import adjudicate_all
+
+    root = out_dir.expanduser().resolve()
+    summary = adjudicate_all(root, route=route, actor=actor)
+    return {
+        "kind": "adjudicate",
+        "out_dir": str(root),
+        **summary,
+    }
+
+
+def overturn_adjudication_task(
+    out_dir: Path,
+    *,
+    functional_requirement_id: str,
+    new_decision: str,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    """WS-B：人工推翻自动裁决结果，写回裁决流（actor/reason 必填）。"""
+    from adjudicate import overturn_adjudication
+
+    root = out_dir.expanduser().resolve()
+    record = overturn_adjudication(
+        root, functional_requirement_id,
+        new_decision=new_decision, actor=actor, reason=reason,
+    )
+    return {
+        "kind": "adjudication_overturn",
+        "out_dir": str(root),
+        "record": record,
+        "written": ["adjudication_results.jsonl"],
+    }
+
+
 @_leased_pipeline_stage("template-write")
 def template_write_task(out_dir: Path, template_path: Path) -> dict[str, Any]:
     """成文：analyze 结果按公司标准化需求列表 V2.3.x 格式追加进对应模块 sheet（确定性零 LLM）。"""
