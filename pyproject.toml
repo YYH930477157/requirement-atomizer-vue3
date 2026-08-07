@@ -74,6 +74,8 @@ py-modules = [
   "functional_synthesis",
   "functional_extract",
   "functional_drilldown",
+  "doc_map",
+  "reconcile",
   "llm_budget",
   "input_completeness",
   "api_server",

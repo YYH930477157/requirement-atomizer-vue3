@@ -2202,6 +2202,14 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 LOGGER.warning("裁决样本库收割失败（忽略）：%s", exc)
         payload["results"] = results
         payload["skipped_stages"] = skipped_stages
+        # V3 WS-A A3：整篇对账 sidecar（RATOMIZER_RECONCILE=1 时链尾自动跑一次；
+        # 默认关=行为面零变化；sidecar 失败不阻断链结果）
+        try:
+            from reconcile import reconcile_enabled
+            if reconcile_enabled():
+                payload["reconcile"] = reconcile_task(out_dir, route=route)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("整篇对账 sidecar 失败（不阻断链）：%s", exc)
     finally:
         _CHAIN_ACTIVE = False
         _detach_budget_ledger(chain_budget)  # S1-1：落盘 cost-report 数据源 + 卸载钩子
@@ -2443,6 +2451,18 @@ def orchestrate_task(
     }
 
 
+def reconcile_task(out_dir: Path, *, route: str = "stub") -> dict[str, Any]:
+    """V3 WS-A A3 整篇对账入口（CHAIN_ORDER 之外的 sidecar，同 orchestrate 纪律）。
+
+    规则筛疑 + LLM 裁定两段；LLM 不可用（stub/无 key/预算耗尽）如实 rules_only。
+    产物 reconcile_report.json（governed pipeline）+ 摘要并入根 quality_report.json。
+    """
+    from reconcile import run_reconcile
+
+    root = out_dir.expanduser().resolve()
+    return run_reconcile(root, route=route)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Requirement Atomizer desktop tasks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2632,6 +2652,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="授权编排环发起 spot_extract/targeted_reextract（默认关闭=只读缺口转人工；"
              "env RATOMIZER_ORCHESTRATION_ALLOW_LLM=1 等效）")
     orchestrate_parser.add_argument("--actor", default="orchestration-loop")
+
+    # V3 WS-A A3：整篇对账 sidecar（CHAIN_ORDER 之外，同 orchestrate 纪律）。
+    reconcile_parser = subparsers.add_parser(
+        "reconcile",
+        help="整篇对账：规则筛疑+LLM 裁定两段，写 reconcile_report.json 并并入 quality_report")
+    reconcile_parser.add_argument("--out-dir", "--out", dest="out", type=Path, required=True)
+    reconcile_parser.add_argument(
+        "--llm-route", choices=["stub", "openai_compatible"], default="stub",
+        help="裁定投票路由（默认 stub=仅规则筛疑 rules_only）")
 
     # WS3 成本看板：数据全部来自文档级预算单记账流水（无新增埋点）。
     cost_report_parser = subparsers.add_parser("cost-report")
@@ -3026,6 +3055,8 @@ def main(argv: list[str] | None = None) -> int:
                 allow_llm=args.allow_llm,
                 actor=args.actor,
             )
+        elif args.command == "reconcile":
+            payload = reconcile_task(args.out, route=args.llm_route)
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:

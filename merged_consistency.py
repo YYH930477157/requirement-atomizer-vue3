@@ -522,3 +522,92 @@ def analyze_consistency(
             ),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# V3 WS-A A3：整篇对账统一规则筛疑（reconcile.py 的第一段；确定性，零 LLM）
+# ---------------------------------------------------------------------------
+# 复用本模块既有三类检测器，归一成统一疑似集供 reconcile 的 LLM 裁定层只读消费。
+# 本函数是**新增**消费面：analyze_consistency 的输出形状/语义零变化（钉串测试锁定）。
+
+RECONCILE_SUSPECT_KINDS = (
+    "cross_section_duplicate",   # 同一引句被 ≥2 条需求引用（跨章重复嫌疑）
+    "obis_value_divergence",     # 同一 OBIS 数值上下文发散（待核冲突嫌疑）
+    "coverage_gap",              # requirement_like 块未被任何需求覆盖（遗漏嫌疑）
+)
+
+_RECONCILE_MAX_SUSPECTS = 200
+_EVIDENCE_TEXT_CAP = 500
+
+
+def _suspect_id(kind: str, members: list[str], anchor: str) -> str:
+    import hashlib
+    basis = "\x1f".join([kind, *sorted(str(m) for m in members), anchor])
+    return "RS-" + hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
+
+
+def screen_reconcile_suspects(
+    requirements: list[dict[str, Any]],
+    req_like_blocks: list[dict[str, Any]] | None = None,
+    *,
+    source_blocks: Any | None = None,
+    expert_excluded_block_ids: set[str] | None = None,
+    max_suspects: int = _RECONCILE_MAX_SUSPECTS,
+) -> list[dict[str, Any]]:
+    """规则筛疑：把三类既有检测器的命中归一成统一疑似集（确定性，零 LLM）。
+
+    返回按 kind/ID 确定性排序的疑似条目；每条带只读确定性证据（引句/编码/数值/块溯源），
+    LLM 裁定层只允许对该疑似集投票，不自由扫描。``max_suspects`` 封顶防失控（截断留痕由
+    调用方以 suspects_total vs 返回长度对比得出）。
+    """
+    suspects: list[dict[str, Any]] = []
+
+    for group in find_cross_section_duplicates(requirements):
+        members = [str(m) for m in group.get("members") or []]
+        quote = str(group.get("source_quote") or "")
+        texts = [quote[:_EVIDENCE_TEXT_CAP]] if quote else []
+        codes = sorted(extract_codes(" ".join(texts)))
+        suspects.append({
+            "suspect_id": _suspect_id("cross_section_duplicate", members, quote),
+            "kind": "cross_section_duplicate",
+            "members": members,
+            "sections": [str(s) for s in (group.get("sections") or [])],
+            "evidence": {"codes": codes, "texts": texts},
+        })
+
+    for group in find_obis_coreference(requirements):
+        if not group.get("values_differ"):
+            continue  # 数值一致的共引不是疑似冲突（非破坏纪律：只筛真嫌疑）
+        members = [str(m) for m in group.get("members") or []]
+        code = str(group.get("obis") or "")
+        suspects.append({
+            "suspect_id": _suspect_id("obis_value_divergence", members, code),
+            "kind": "obis_value_divergence",
+            "members": members,
+            "sections": [str(s) for s in (group.get("sections") or [])],
+            "evidence": {"codes": [code] if code else [], "texts": []},
+        })
+
+    if req_like_blocks is not None:
+        coverage = layered_coverage(
+            requirements,
+            req_like_blocks,
+            source_blocks=source_blocks,
+            expert_excluded_block_ids=expert_excluded_block_ids,
+        )
+        core = coverage.get("core") if isinstance(coverage.get("core"), dict) else coverage
+        samples = list((core or {}).get("uncovered_samples") or [])
+        for row in samples:
+            block_id = str(row.get("block_id") or "")
+            text = str(row.get("text") or "")
+            suspects.append({
+                "suspect_id": _suspect_id("coverage_gap", [block_id], text),
+                "kind": "coverage_gap",
+                "members": [block_id] if block_id else [],
+                "sections": [str(row.get("section") or "")] if row.get("section") else [],
+                "evidence": {"codes": sorted(extract_codes(text)),
+                             "texts": [text[:_EVIDENCE_TEXT_CAP]] if text else []},
+            })
+
+    suspects.sort(key=lambda s: (s["kind"], s["suspect_id"]))
+    return suspects[:max(1, int(max_suspects))]
