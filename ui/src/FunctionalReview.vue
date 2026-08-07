@@ -279,6 +279,79 @@ const adjudicationEnabled = computed(() => ({
   autoReject: adjudicationSummary.value?.enabled?.auto_reject ?? false,
 }))
 
+// 例外队列（G9-1）：非自动通过、或硬依据非全绿（红灯/黄灯）的裁决条目。
+// 旧版加载了 adjudicationSummary 却从不渲染——这里把 summary（计数/分布）与例外条目都落到界面。
+type AdjudicationExceptionRow = {
+  id: string
+  decision: AdjudicationDecision
+  hardOk: boolean
+  hasRejectReasons: boolean
+  hasReviewReasons: boolean
+  rejectReasons: string[]
+  reviewReasons: string[]
+  calibration: string
+  reason: string
+  actor: string
+  risk: "high" | "medium" | "low"
+}
+const exceptionFilter = ref<"all" | "red" | "review" | "reject">("all")
+const adjudicationExceptionRows = computed<AdjudicationExceptionRow[]>(() => {
+  const order: Record<AdjudicationExceptionRow["risk"], number> = { high: 0, medium: 1, low: 2 }
+  const rows: AdjudicationExceptionRow[] = []
+  for (const rec of Object.values(adjudicationRecords.value)) {
+    const rejectReasons = rec.hard_basis?.reject_reasons ?? []
+    const reviewReasons = rec.hard_basis?.review_reasons ?? []
+    const hardOk = !!rec.hard_basis?.ok
+    const hasRejectReasons = rejectReasons.length > 0
+    const hasReviewReasons = reviewReasons.length > 0
+    // 例外 = 非自动通过 或 硬依据非全绿
+    if (rec.decision === "accept" && hardOk) continue
+    const risk: AdjudicationExceptionRow["risk"] =
+      rec.decision === "reject" || hasRejectReasons ? "high"
+        : rec.decision === "review" || hasReviewReasons ? "medium"
+          : "low"
+    rows.push({
+      id: rec.functional_requirement_id,
+      decision: rec.decision,
+      hardOk,
+      hasRejectReasons,
+      hasReviewReasons,
+      rejectReasons,
+      reviewReasons,
+      calibration: rec.calibration_status,
+      reason: rec.reason,
+      actor: rec.actor,
+      risk,
+    })
+  }
+  // 高风险置顶，再按 id 稳定排序（不依赖输入顺序）
+  return rows.sort((a, b) => order[a.risk] - order[b.risk] || a.id.localeCompare(b.id))
+})
+const filteredExceptionRows = computed<AdjudicationExceptionRow[]>(() => {
+  if (exceptionFilter.value === "all") return adjudicationExceptionRows.value
+  if (exceptionFilter.value === "red") return adjudicationExceptionRows.value.filter((r) => !r.hardOk)
+  if (exceptionFilter.value === "review") return adjudicationExceptionRows.value.filter((r) => r.decision === "review")
+  return adjudicationExceptionRows.value.filter((r) => r.decision === "reject")
+})
+const exceptionRiskTone = (risk: AdjudicationExceptionRow["risk"]): string => {
+  switch (risk) {
+    case "high": return "tone-draft"
+    case "medium": return "tone-implemented"
+    default: return "tone-confirmed"
+  }
+}
+const exceptionRiskLabel = (risk: AdjudicationExceptionRow["risk"]): string => {
+  switch (risk) {
+    case "high": return "高风险"
+    case "medium": return "中风险"
+    default: return "低风险"
+  }
+}
+function focusException(row: AdjudicationExceptionRow) {
+  if (!functionalItems.value.some((item) => item.functional_requirement_id === row.id)) return
+  selectedId.value = row.id
+}
+
 function adjudicationTone(decision: string | undefined): string {
   switch (decision) {
     case "accept": return "tone-verified"
@@ -1145,6 +1218,68 @@ function toggleChildren(itemId: string) {
       </div>
     </details>
 
+    <!-- G9-1 AI 裁决摘要 + 例外队列：summary 计数/分布 + 非通过或硬依据红灯的例外条目（高风险置顶） -->
+    <section
+      v-if="adjudicationSummary || adjudicationExceptionRows.length"
+      class="adjudication-dashboard"
+      data-testid="adjudication-dashboard"
+    >
+      <div v-if="adjudicationSummary" class="adjud-summary" data-testid="adjudication-summary">
+        <div class="adjud-counts">
+          <span class="adjud-chip tone-verified" data-testid="adjud-count-accept">自动通过 {{ adjudicationSummary.counts.accept ?? 0 }}</span>
+          <span class="adjud-chip tone-implemented" data-testid="adjud-count-review">待人工审 {{ adjudicationSummary.counts.review ?? 0 }}</span>
+          <span class="adjud-chip tone-draft" data-testid="adjud-count-reject">自动拒绝 {{ adjudicationSummary.counts.reject ?? 0 }}</span>
+          <span class="adjud-chip muted">共 {{ adjudicationSummary.total ?? 0 }}</span>
+        </div>
+        <div class="adjud-meta">
+          <span data-testid="adjud-calibration">校准：{{ adjudicationSummary.calibration?.status || "—" }}<template v-if="adjudicationSummary.calibration?.far != null"> · FAR {{ (adjudicationSummary.calibration.far * 100).toFixed(1) }}%</template></span>
+          <span v-if="adjudicationSummary.calibration?.recall != null">召回 {{ (adjudicationSummary.calibration.recall * 100).toFixed(1) }}%</span>
+          <span v-if="adjudicationSummary.calibration?.precision != null">精度 {{ (adjudicationSummary.calibration.precision * 100).toFixed(1) }}%</span>
+          <span class="muted">真值集 {{ adjudicationSummary.calibration?.truth_count ?? 0 }} 条</span>
+        </div>
+        <div class="adjud-meta">
+          <span>自动通过 {{ adjudicationEnabled.autoApprove ? "已开" : "硬禁用" }}</span>
+          <span>自动拒绝 {{ adjudicationEnabled.autoReject ? "已开" : "硬禁用" }}</span>
+          <span v-if="adjudicationSummary.calibration?.note" class="muted">{{ adjudicationSummary.calibration.note }}</span>
+        </div>
+      </div>
+
+      <div v-if="adjudicationExceptionRows.length" class="adjud-exceptions" data-testid="adjudication-exception-queue">
+        <div class="adjud-exceptions-head">
+          <span class="adjud-exceptions-title">例外队列（{{ adjudicationExceptionRows.length }}，高风险置顶）</span>
+          <div class="adjud-filter" role="group" aria-label="例外队列筛选">
+            <button type="button" :class="['adjud-filter-btn', { active: exceptionFilter === 'all' }]" data-testid="adjud-filter-all" @click="exceptionFilter = 'all'">全部</button>
+            <button type="button" :class="['adjud-filter-btn', { active: exceptionFilter === 'red' }]" data-testid="adjud-filter-red" @click="exceptionFilter = 'red'">硬依据红灯</button>
+            <button type="button" :class="['adjud-filter-btn', { active: exceptionFilter === 'review' }]" data-testid="adjud-filter-review" @click="exceptionFilter = 'review'">待人工审</button>
+            <button type="button" :class="['adjud-filter-btn', { active: exceptionFilter === 'reject' }]" data-testid="adjud-filter-reject" @click="exceptionFilter = 'reject'">已拒绝</button>
+          </div>
+        </div>
+        <ul class="adjud-exception-list">
+          <li
+            v-for="row in filteredExceptionRows"
+            :key="row.id"
+            :class="['adjud-exception-row', `risk-${row.risk}`]"
+            :data-testid="`adjud-exception-${row.id}`"
+          >
+            <button type="button" class="adjud-exception-main" :data-testid="`adjud-exception-focus-${row.id}`" @click="focusException(row)">
+              <span class="adjud-exception-id">{{ row.id }}</span>
+              <span :class="['lifecycle-badge', adjudicationTone(row.decision)]">{{ adjudicationLabel(row.decision) }}</span>
+              <span v-if="!row.hardOk" class="origin-badge conflict" :data-testid="`adjud-exception-red-${row.id}`">硬依据红灯</span>
+              <span :class="['risk-badge', exceptionRiskTone(row.risk)]" :data-testid="`adjud-exception-risk-${row.id}`">{{ exceptionRiskLabel(row.risk) }}</span>
+            </button>
+            <ul v-if="row.rejectReasons.length || row.reviewReasons.length" class="adjud-exception-reasons">
+              <li v-for="(reason, idx) in row.rejectReasons" :key="`r-${idx}`" class="reason-red">红灯：{{ reason }}</li>
+              <li v-for="(reason, idx) in row.reviewReasons" :key="`v-${idx}`" class="reason-review">黄灯：{{ reason }}</li>
+            </ul>
+            <p v-if="row.reason" class="adjud-exception-note">{{ row.actor || "—" }}：{{ row.reason }}</p>
+          </li>
+        </ul>
+        <div v-if="!filteredExceptionRows.length" class="adjud-exception-empty muted" data-testid="adjud-exception-empty">
+          当前筛选下无例外条目。
+        </div>
+      </div>
+    </section>
+
     <!-- 功能需求级视图 -->
     <div v-if="mode === 'functional'" class="fr-split">
       <div class="fr-list" data-testid="functional-list">
@@ -1819,4 +1954,32 @@ function toggleChildren(itemId: string) {
 .metric-value { font-size: 20px; font-weight: 700; color: #1d4ed8; }
 .metric-label { font-size: 11.5px; color: #6b7280; text-align: center; }
 .harvest-meta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 12px; color: #6b7280; }
+
+/* G9-1 AI 裁决摘要 + 例外队列 */
+.adjudication-dashboard { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fafafa; padding: 12px 14px; }
+.adjud-summary { display: flex; flex-direction: column; gap: 6px; }
+.adjud-counts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.adjud-chip { font-size: 12px; padding: 3px 10px; border-radius: 999px; font-weight: 600; background: #e5e7eb; color: #374151; }
+.adjud-chip.muted { background: #f3f4f6; color: #6b7280; font-weight: 500; }
+.adjud-meta { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: #4b5563; }
+.adjud-meta .muted { color: #9ca3af; }
+.adjud-exceptions { border-top: 1px dashed #e5e7eb; padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.adjud-exceptions-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.adjud-exceptions-title { font-size: 13px; font-weight: 600; color: #1f2937; }
+.adjud-filter { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.adjud-filter-btn { border: 1px solid #d1d5db; background: #fff; color: #374151; padding: 3px 9px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+.adjud-filter-btn.active { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+.adjud-exception-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.adjud-exception-row { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; }
+.adjud-exception-row.risk-high { border-color: #fca5a5; background: #fff5f5; }
+.adjud-exception-row.risk-medium { border-color: #fde68a; }
+.adjud-exception-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: transparent; border: none; padding: 0; cursor: pointer; text-align: left; width: 100%; }
+.adjud-exception-id { font-weight: 600; font-size: 13px; color: #1f2937; }
+.adjud-exception-main .lifecycle-badge { font-size: 11px; }
+.risk-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+.adjud-exception-reasons { margin: 6px 0 0; padding-left: 16px; font-size: 12px; color: #4b5563; }
+.adjud-exception-reasons .reason-red { color: #b91c1c; }
+.adjud-exception-reasons .reason-review { color: #b45309; }
+.adjud-exception-note { margin: 4px 0 0; font-size: 12px; color: #6b7280; }
+.adjud-exception-empty { font-size: 12px; padding: 4px 2px; }
 </style>

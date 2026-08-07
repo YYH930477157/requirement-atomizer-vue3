@@ -349,6 +349,31 @@ ipcMain.handle("task:read-artifact", async (_event, input) => {
   }
 });
 
+// 渲染器真实读文件字节（PDF/DOCX/XLSX 原位渲染）。主进程负责路径校验与体量上限，
+// 避免渲染进程任意读取——只有绝对路径、真实文件、≤256MiB 才放行，其余如实拒绝。
+ipcMain.handle("fs:read-bytes", async (_event, input) => {
+  try {
+    const target = input && input.path;
+    if (!target || typeof target !== "string" || !path.isAbsolute(target)) {
+      return { ok: false, reason: "invalid_path" };
+    }
+    const stat = fs.statSync(target);
+    if (!stat.isFile()) {
+      return { ok: false, reason: "not_a_file" };
+    }
+    if (stat.size > 256 * 1024 * 1024) {
+      return { ok: false, reason: "file_too_large", detail: `${stat.size} bytes` };
+    }
+    const buffer = fs.readFileSync(target);
+    return {
+      ok: true,
+      bytes: new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength),
+    };
+  } catch (err) {
+    return { ok: false, reason: "read_error", detail: String((err && err.message) || err) };
+  }
+});
+
 // 会话启动串行化：所有 startApiServer 调用（自动恢复 / 用户选目录 / 管线完成回连 /
 // 保存 LLM 设置重连）排入同一条 promise 链。否则自动恢复的重试回路可能在用户已另选
 // 目录后仍在跑，启动完成后的接管步骤会反杀用户的新会话。
