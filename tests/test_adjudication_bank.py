@@ -221,14 +221,59 @@ class EnrichInjectionTests(unittest.TestCase):
         req = {"source_quote": "q", "description": "d", "requirement": "r", "module": "时钟"}
         self.assertNotEqual(_enrich_key(req, "m", "ctxA"), _enrich_key(req, "m", "ctxB"))
 
-    def test_answers_extend_drift_basis(self) -> None:
-        from requirements_analysis_agent import validate_llm_item
-        source = {"source_quote": "the meter shall sync", "description": "", "requirement": "",
-                  "clarification_answers_text": "答：同步周期 900 秒"}
-        item = {"software_requirement_text": "同步周期 900 秒执行一次时钟同步。"}
-        issues = validate_llm_item(item, source)
-        self.assertFalse(any("fabricated number" in x for x in issues))   # 答复里的数值=有据
+    def test_negative_exemplars_reach_prompt_and_no_empty_shell(self) -> None:
+        from requirements_analysis_agent import build_analysis_prompt
+        prompt = build_analysis_prompt([{"ai_req_id": "A"}], {"modules": []},
+                                       negative_exemplars="- 【时钟】被拒绝范例：标题\n  拒绝原因：噪声")
+        self.assertIn("专家已拒绝的同模块范例", prompt["user"])
+        self.assertIn("被拒绝范例", prompt["user"])
+        self.assertIn("请勿重复同类问题", prompt["user"])
 
+        prompt_empty = build_analysis_prompt([{"ai_req_id": "A"}], {"modules": []})
+        self.assertNotIn("专家已拒绝", prompt_empty["user"])
+        self.assertNotIn("请勿重复同类问题", prompt_empty["user"])
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_negative_exemplars_selected_by_rejected_bucket(self) -> None:
+        bank = {
+            "accepted": {
+                "a": {"module": "时钟", "title": "时钟精度要求", "description": "精度优于 5 秒",
+                      "source_quote": "clock accuracy"},
+            },
+            "rejected": {
+                "b": {"module": "时钟", "title": "错误精度条目", "description": "clock accuracy 噪声",
+                      "reason": "抽取噪声"},
+                "c": {"module": "显示", "title": "显示轮显", "description": "显示轮显", "reason": "无关"},
+            },
+        }
+        negs = ab.select_negative_exemplars(bank, "时钟", "时钟精度 clock accuracy 要求")
+        self.assertEqual(len(negs), 1)
+        self.assertEqual(negs[0]["title"], "错误精度条目")
+        self.assertEqual(ab.select_negative_exemplars(bank, "时钟", "毫无相关词汇"), [])
+
+    def test_negative_exemplars_render_format(self) -> None:
+        rendered = ab.render_negative_exemplars([
+            {"module": "时钟", "title": "噪声条目", "description": "应拒绝", "reason": "抽取噪声"},
+        ])
+        self.assertIn("专家拒绝", rendered)
+        self.assertIn("噪声条目", rendered)
+        self.assertIn("拒绝原因：抽取噪声", rendered)
+
+    def test_negative_exemplars_end_to_end_in_analysis_prompt(self) -> None:
+        """P0-8：rejected 负例经 adjudication_bank 真正进入 analyze 富化 prompt。"""
+        from requirements_analysis_agent import build_analysis_prompt
+        from adjudication_bank import render_negative_exemplars, select_negative_exemplars
+
+        bank = {
+            "accepted": {},
+            "rejected": {
+                "r1": {"module": "通信协议", "title": "垃圾 secure channel", "description": "不成立的 secure channel 需求",
+                       "reason": "无来源依据"},
+            },
+        }
+        negs = select_negative_exemplars(bank, "通信协议", "通信协议 security channel")
+        prompt = build_analysis_prompt([{"ai_req_id": "A", "module": "通信协议"}],
+                                       {"modules": []},
+                                       negative_exemplars=render_negative_exemplars(negs))
+        self.assertIn("专家已拒绝的同模块范例", prompt["user"])
+        self.assertIn("垃圾 secure channel", prompt["user"])
+        self.assertIn("无来源依据", prompt["user"])

@@ -37,6 +37,14 @@ class ConfigRegistryTests(unittest.TestCase):
                        if name not in used and name != "RATOMIZER_ADJUDICATION_BANK")
         self.assertEqual(stale, [], f"注册表中未被代码使用的名字: {stale}")
 
+    def test_text_mode_switch_defaults_to_enabled(self) -> None:
+        from config import text_mode_enabled
+        self.assertTrue(text_mode_enabled())
+        self.assertTrue(text_mode_enabled("1"))
+        self.assertFalse(text_mode_enabled("0"))
+        self.assertFalse(text_mode_enabled("false"))
+        self.assertFalse(text_mode_enabled("off"))
+
     def test_describe_renders(self) -> None:
         from config import describe
         table = describe()

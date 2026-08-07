@@ -42,7 +42,9 @@ SCHEMA_VERSION = "requirements-analysis/v1"
 # v7：无依据富化字段强制"待澄清"（Agent Phase 2 WP2，规则版本 analyze-unfounded-v1 随行）；
 # v6：冻结归属注入 prompt（模型不再重判,只按给定归属定正文深度）；
 # v5：注入文档背景/条款原文/相邻需求,正文连贯成文（2026-07-12 富化深度）
-ANALYZE_PROMPT_VERSION = "analyze-llm-v7"
+ANALYZE_PROMPT_VERSION = "analyze-llm-v8"
+# P0-8：负例 few-shot 注入数量上限（可配）。
+ANALYZE_NEGATIVE_K = int(os.environ.get("RATOMIZER_ANALYZE_NEGATIVE_K", "2"))
 # WP2 待澄清规则版本——确定性后处理（拒/无据 → 待澄清 + open_questions 同步）变更必须
 # bump 并进 analyze_enrich_cache 指纹与阶段 producer（AGENTS.md 缓存指纹纪律）
 # v3：归属护栏（software 项不采纳 LLM 写入的 hardware_dependency）+ 富化调用失败/返回非法同样标待澄清
@@ -279,7 +281,8 @@ def run_requirements_analysis(
     # 公司标准做法知识：从模板现读（不进仓不落索引），仅供启用后的富化使用。
     knowledge = extract_template_knowledge(template_path) if active_chat is not None else {}
     # 裁决样本库（env 指路，未配置=空库零注入）+ 澄清答复（评审会回灌，权威客户输入）
-    from adjudication_bank import load_bank, render_exemplars, resolve_bank_path, select_exemplars
+    from adjudication_bank import (load_bank, render_exemplars, render_negative_exemplars,
+                                   resolve_bank_path, select_exemplars, select_negative_exemplars)
     from clarification_report import load_current_answers
     bank = load_bank(resolve_bank_path()) if active_chat is not None else {}
     answers_by_source: dict[str, list[dict[str, Any]]] = {}
@@ -367,20 +370,24 @@ def run_requirements_analysis(
                 # 单条模式保留"排除自身标题"的旧构造，两种模式各自确定性
                 if module_name not in module_ctx_memo:
                     all_titles = titles_by_module.get(module_name, [])
+                    module_text = " ".join(all_titles[:SIBLING_TITLES_MAX])
                     module_ctx_memo[module_name] = (
                         "\n".join(f"- {t}" for t in all_titles[:SIBLING_TITLES_MAX]),
-                        render_exemplars(select_exemplars(bank, module_name, " ".join(all_titles))),
+                        render_exemplars(select_exemplars(bank, module_name, module_text)),
+                        render_negative_exemplars(select_negative_exemplars(bank, module_name, module_text, k=ANALYZE_NEGATIVE_K)),
                     )
-                siblings_text, exemplars = module_ctx_memo[module_name]
+                siblings_text, exemplars, negative_exemplars = module_ctx_memo[module_name]
             else:
                 req_text = " ".join(str(reviewed_req.get(k) or "") for k in ("title", "description", "source_quote"))
                 exemplars = render_exemplars(select_exemplars(bank, module_name, req_text))
+                negative_exemplars = render_negative_exemplars(select_negative_exemplars(bank, module_name, req_text, k=ANALYZE_NEGATIVE_K))
                 own_title = str(reviewed_req.get("title") or "").strip()[:40]
                 siblings = [t for t in titles_by_module.get(module_name, [])
                             if t != own_title][:SIBLING_TITLES_MAX]
                 siblings_text = "\n".join(f"- {t}" for t in siblings)
             ctx = {"template_refs": render_template_references(refs),
                    "exemplars": exemplars,
+                   "negative_exemplars": negative_exemplars,
                    "answers": reviewed_req.get("clarification_answers_text") or "",
                    "doc_context": doc_context,
                    "section_context": _section_context(reviewed_req, blocks_by_id, blocks_by_section),
@@ -805,6 +812,7 @@ def _llm_enrich_item(
     if llm_item is None:
         prompt = build_analysis_prompt([prompt_req], slim_vocab, ctx.get("template_refs", ""),
                                        exemplars=ctx.get("exemplars", ""),
+                                       negative_exemplars=ctx.get("negative_exemplars", ""),
                                        answers=ctx.get("answers", ""),
                                        doc_context=ctx.get("doc_context", ""),
                                        section_context=ctx.get("section_context", ""),
@@ -893,6 +901,7 @@ def _llm_enrich_batch(
         lead_ctx = jobs[pending[0]][2]
         prompt = build_analysis_prompt(entries, parts[pending[0]][0], "",
                                        exemplars=lead_ctx.get("exemplars", ""),
+                                       negative_exemplars=lead_ctx.get("negative_exemplars", ""),
                                        answers="",
                                        doc_context=lead_ctx.get("doc_context", ""),
                                        section_context="",

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -31,6 +32,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_LLM_CONCURRENCY", "8", "抽取/富化并发度（1..16；2026-07-14 默认 4→8）", True),
     EnvVar("RATOMIZER_LLM_ADAPTIVE", "1", "429 自适应闸门（跨线程全局冷却+在飞上限 AIMD；=0 关闭回到各线程独立退避）", False),
     EnvVar("RATOMIZER_REQUIREMENTS_ANALYSIS_ENRICH", "0", "需求分析 LLM 富化开关（默认关闭；方案库成熟后设为 1 启用）", False),
+    EnvVar("RATOMIZER_ANALYZE_NEGATIVE_K", "2", "analyze 富化负例 few-shot 注入数量上限（0=不注入）", False),
     EnvVar("RATOMIZER_ANALYZE_BATCH", "4", "软需富化合批条数（1..8；1=逐条；硬件翻译批量 ×2 封顶 8）", False),
     EnvVar("RATOMIZER_ENRICH_BATCH", "6", "装配描述富化合批条数（1..10；1=逐条；带蓝皮书条款的条目恒单发）", False),
     EnvVar("RATOMIZER_REBUILD_DEBOUNCE_S", "1.5", "裁决后交付物重建防抖秒数（连续裁决合并为一次重建；0=同步重建）", False),
@@ -56,6 +58,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # 全部默认关闭/采样：直抽是旁路新入口（默认关=旧原子化路径），claim 账本 sampling 为默认档。
     # WS0 功能需求级真值集尚是 pending-human，本切片只交付工程机制（默认关闭、旧路径始终合法）。
     EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT", "0", "功能需求直抽入口开关（=1 启用 functional_extract 单次 LLM 直出功能需求级条目并写 functional_requirements.json；默认 0=旧 extract_units→atomize→functional_synthesis 原子化路径，行为面与缓存指纹不动）", False),
+    EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT_NEGATIVE_K", "2", "functional_extract 直抽负例 few-shot 注入数量上限（0=不注入）", False),
     EnvVar("RATOMIZER_CLAIM_LEDGER_MODE", "sampling", "claim 账本闭合模式（配置解析层默认 sampling；B 轨发布路径 env 未设时仍走 full=生产行为不变，显式设置才 opt-in 生效）。full=全量 verifier 闭合 / sampling=分层抽样 10%+全部高风险 claim，未抽中 claim 延迟到发布门禁并在 claim_sampling_summary.json 留痕 / baseline_gate=发布门禁全量闭合+重型机制联动（用户显式开启时触发全量闭合）。build_shadow_ledger 自身默认 full（直接调用者/既有测试不受影响）；把 sampling 翻转为生产默认属语义变更，留待 S2", False),
     EnvVar("RATOMIZER_CLAIM_LEDGER_SAMPLING_RATE", "0.1", "sampling 模式分层抽样率（0..1，默认 0.1；抽检闭合率低于阈值时自动扩大，判定依据留账本）", False),
     EnvVar("RATOMIZER_CLAIM_LEDGER_SAMPLING_FLOOR_RATE", "0.3", "sampling 模式抽检闭合率下限（低于此值自动扩大抽样或建议转全量，0..1，默认 0.3）", False),
@@ -78,6 +81,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # 默认非侵入：allow_llm 关闭时编排环只读缺口并把 extract 缺口转人工，不发起任何 LLM 补抽。
     EnvVar("RATOMIZER_ORCHESTRATION_MAX_ROUNDS", "8", "编排环每文档最大轮次上限（1..50，默认 8；达上限未收敛→文档 NEEDS WORK 交人）", False),
     EnvVar("RATOMIZER_ORCHESTRATION_ALLOW_LLM", "0", "编排环经 openai_compatible 路由自动发起 spot_extract/targeted_reextract 的授权开关（=1 启用；默认 0=只读缺口，extract 缺口转人工）", False),
+    EnvVar("RATOMIZER_TEXT_MODE", "1", "旧解析文本模式开关（=1 保留 DocumentReview 的「解析文本」模式；=0 隐藏文本模式按钮，删除动作待 G4 平价清单验收后执行）", False),
     # --- WS-A 防漏网 / 内容模型分流（默认关或纯增量登记）---
     EnvVar("RATOMIZER_ENABLE_HTML_PARSER", "0", "HTML 输入解析器开关（=1 启用 parsers/html_parser.py；默认 0，不改变既有 docx/xlsx/pdf 主路径）", False),
     EnvVar("RATOMIZER_PDF_RESEG", "0", "PDF 词典重分词器开关（=1 启用 parsers/pdf_resegment.py 作为碎词修复补充；默认 0）", False),
@@ -122,3 +126,9 @@ def describe() -> str:
     for v in ENV_REGISTRY:
         lines.append(f"| {v.name} | {v.default or '-'} | {'✓' if v.gui_exposed else ''} | {v.description} |")
     return "\n".join(lines)
+
+
+def text_mode_enabled(value: str | None = None) -> bool:
+    """RATOMIZER_TEXT_MODE 是否保留旧解析文本模式（默认保留）。"""
+    raw = os.environ.get("RATOMIZER_TEXT_MODE") if value is None else value
+    return str(raw or "").strip().lower() not in {"0", "false", "off", "no"}

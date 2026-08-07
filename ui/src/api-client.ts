@@ -430,7 +430,14 @@ export type TranslationInput = {
 export type TranslationPayload = {
   requirement_id: string
   translation: string
+  protected_codes?: string[]
   model?: string
+}
+
+export type HealthPayload = {
+  ok: boolean
+  service: string
+  text_mode?: boolean
 }
 
 export type DocumentBlock = {
@@ -1198,6 +1205,11 @@ export class RequirementApiClient {
 
   async loadManifest(): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>("/manifest")
+  }
+
+  async loadHealth(): Promise<HealthPayload> {
+    // D7 预备：/health 不依赖鉴权，携带 text_mode 开关状态
+    return this.request<HealthPayload>("/health")
   }
 
   async loadResultPackage(options: { verify?: boolean } = {}): Promise<ResultPackagePayload> {

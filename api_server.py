@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import config
 import desktop_tasks
 import hmac
 import json
@@ -194,7 +195,11 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_error(403, "Origin not allowed")
             return
         if parsed.path == "/health":
-            self.send_json({"ok": True, "service": "requirement-atomizer-api"})
+            self.send_json({
+                "ok": True,
+                "service": "requirement-atomizer-api",
+                "text_mode": config.text_mode_enabled(),
+            })
             return
         if not token_is_valid(self.local_token, self.headers, params):
             self.send_json({"error": "unauthorized"}, status=401)
@@ -747,7 +752,11 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         except (LLMConnectionError, LLMResponseError) as exc:
             self.send_json({"error": str(exc)}, status=502)
             return
-        self.send_json({"requirement_id": requirement_id, "translation": translation})
+        self.send_json({
+            "requirement_id": requirement_id,
+            "translation": translation,
+            "protected_codes": sorted(_protected_codes(text)),
+        })
 
     def handle_changeset_report(self, params: dict[str, list[str]]) -> None:
         """WS-E E2: produce an added/obsolete/retained changeset from two outputs."""
@@ -2813,17 +2822,32 @@ def build_review_summary(output_dir: Path) -> dict:
     }
 
 
-TRANSLATION_PROMPT_VERSION = "translation-prompt-v1"
+TRANSLATION_PROMPT_VERSION = "translation-prompt-v2"
 
 TRANSLATION_SYSTEM_PROMPT = """You are a technical translator for DLMS/COSEM requirements.
 Translate English requirement text into concise Simplified Chinese.
-Preserve identifiers, quoted service names, OBIS codes, class names, attribute names, and protocol acronyms.
-Return only JSON with two string fields: translation and protected_codes (the exact, space-separated list of protected codes/acronyms/identifiers found in the source)."""
+Preserve identifiers, quoted service names, OBIS codes, class names, attribute names, protocol acronyms, numeric values, and physical units (unit symbols such as V, A, Hz, s, %, °C, bar, etc. should be kept verbatim).
+Return only JSON with two string fields: translation and protected_codes (the exact, space-separated list of protected codes/acronyms/identifiers/units found in the source)."""
+
+
+# P0-7：物理单位符号集合——与 extract_guards._VALUE_UNIT_RE 同源口径，
+# 覆盖电表领域常见量纲（电压/电流/频率/时间/压力/温度/百分比等）。
+_TRANSLATION_UNIT_RE = re.compile(
+    r"(?<![A-Za-z0-9])(\d+(?:[.,]\d+)?)\s*"
+    r"(l/h|m3/h|m³/h|mbar|bar|kPa|Pa|MHz|kHz|Hz|mm|cm|kg|g|ms|min|%|°C|℃|V|mA|A|mT|h|s)"
+    r"(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+
+def _protected_units(text: str) -> set[str]:
+    """受保护单位符号集合：物理量单位在译文中必须逐字保留。"""
+    return {unit for _value, unit in _TRANSLATION_UNIT_RE.findall(str(text or ""))}
 
 
 def _protected_codes(text: str) -> set[str]:
-    """受保护编码集合：OBIS 码、class_id、整数、协议缩写等翻译中必须逐字保留的 token。"""
-    return set(extract_codes(text)) | set(produced_ints(text))
+    """受保护编码集合：OBIS 码、class_id、整数、协议缩写、物理单位等翻译中必须逐字保留的 token。"""
+    return set(extract_codes(text)) | set(produced_ints(text)) | _protected_units(text)
 
 
 def translate_requirement_text(text: str, *, requirement_id: str = "", output_dir: Path | None = None) -> str:

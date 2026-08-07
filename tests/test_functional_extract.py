@@ -378,5 +378,82 @@ class StableUidTests(unittest.TestCase):
         self.assertEqual(fe.assign_stable_uids([], []), [])
 
 
+class NegativeExemplarTests(unittest.TestCase):
+    """P0-8：rejected 负例真正注入 functional_extract 直抽 prompt。"""
+
+    def test_system_prompt_includes_negative_exemplars_when_present(self) -> None:
+        prompt = fe._system_prompt("- 【通信】被拒绝：噪声\n  拒绝原因：无依据")
+        self.assertIn("专家已拒绝的范例", prompt)
+        self.assertIn("请勿产出同类问题", prompt)
+        self.assertIn("被拒绝：噪声", prompt)
+
+    def test_system_prompt_no_empty_shell_when_no_negatives(self) -> None:
+        prompt = fe._system_prompt("")
+        self.assertNotIn("专家已拒绝", prompt)
+        self.assertNotIn("请勿产出同类问题", prompt)
+
+    def test_negative_exemplars_injected_into_legacy_chat(self) -> None:
+        sections = [_clause("4.1 / 通信协议", ["B1"], "The meter shall support secure channel.")]
+        bank = {
+            "accepted": {},
+            "rejected": {
+                "r1": {"module": "通信协议", "title": "噪声 secure channel", "description": "不成立的 secure channel 需求",
+                       "reason": "无来源依据"},
+            },
+        }
+        captured: dict[str, str] = {}
+
+        def chat(system: str, user: str) -> dict:
+            captured["system"] = system
+            return {"items": [{"objective": "支持安全通道", "source_block_ids": ["B1"]}]}
+
+        with patch("functional_extract._load_adjudication_bank", return_value=bank):
+            fe.extract_functional_requirements(sections, chat=chat, route="openai_compatible")
+        self.assertIn("专家已拒绝的范例", captured["system"])
+        self.assertIn("噪声 secure channel", captured["system"])
+        self.assertIn("无来源依据", captured["system"])
+
+    def test_negative_exemplars_injected_into_clause_family_chat(self) -> None:
+        sections = [_clause("4.1 / 通信协议", ["B1"], "The meter shall support secure channel.")]
+        bank = {
+            "accepted": {},
+            "rejected": {
+                "r1": {"module": "通信协议", "title": "噪声 secure channel", "description": "不成立的 secure channel 需求",
+                       "reason": "无来源依据"},
+            },
+        }
+        captured: dict[str, str] = {}
+
+        def chat(system: str, user: str) -> dict:
+            captured["system"] = system
+            return {"items": [{"objective": "支持安全通道", "source_block_ids": ["B1"]}]}
+
+        with patch("functional_extract._load_adjudication_bank", return_value=bank):
+            fe.extract_functional_requirements(
+                sections, chat=chat, route="openai_compatible", strategy="clause_family"
+            )
+        self.assertIn("专家已拒绝的范例", captured["system"])
+        self.assertIn("噪声 secure channel", captured["system"])
+
+    def test_stub_route_does_not_load_bank(self) -> None:
+        sections = [_clause("4.1", ["B1"], "shall X.")]
+        with patch("functional_extract._load_adjudication_bank") as mock_load:
+            fe.extract_functional_requirements(sections, route="stub")
+        mock_load.assert_not_called()
+
+    def test_negative_exemplar_count_respects_config(self) -> None:
+        # 默认 k=2；通过环境变量可配（在子进程中验证，避免污染已导入模块）
+        self.assertEqual(fe.FUNCTIONAL_EXTRACT_NEGATIVE_K, 2)
+        import subprocess
+        import sys
+        code = (
+            "import os, functional_extract; "
+            "print(functional_extract.FUNCTIONAL_EXTRACT_NEGATIVE_K)"
+        )
+        env = {**os.environ, "RATOMIZER_FUNCTIONAL_EXTRACT_NEGATIVE_K": "1"}
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+        self.assertEqual(result.stdout.strip(), "1")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

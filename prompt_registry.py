@@ -34,7 +34,7 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "purpose": "Claim-targeted re-extraction critique prompt"},
 
     # Requirements analysis enrichment
-    {"id": "analyze-llm", "version": "analyze-llm-v7", "owner_module": "requirements_analysis",
+    {"id": "analyze-llm", "version": "analyze-llm-v8", "owner_module": "requirements_analysis",
      "purpose": "Requirements analysis LLM enrichment prompt"},
     {"id": "analyze-unfounded", "version": "analyze-unfounded-v3", "owner_module": "requirements_analysis",
      "purpose": "Unfounded-field downgrade rule version pinned into analyze cache"},
@@ -56,7 +56,7 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "purpose": "Enrichment anti-drift guard version"},
 
     # Functional-extract direct path
-    {"id": "functional-extract", "version": "functional-extract-prompt-v1", "owner_module": "functional_extract",
+    {"id": "functional-extract", "version": "functional-extract-prompt-v2", "owner_module": "functional_extract",
      "purpose": "Functional requirement direct extraction prompt"},
     {"id": "functional-extract-guards", "version": "functional-extract-guards-v2", "owner_module": "functional_extract",
      "purpose": "Functional extract anti-drift guard version"},
@@ -83,7 +83,7 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "purpose": "Agent loop policy version pinned into trace/cache lineage"},
 
     # Translation
-    {"id": "translation", "version": "translation-prompt-v1", "owner_module": "api_server",
+    {"id": "translation", "version": "translation-prompt-v2", "owner_module": "api_server",
      "purpose": "Requirement text translation prompt"},
     {"id": "annotation-translation-guards", "version": "annotation-translation-guards-v1",
      "owner_module": "api_server",
