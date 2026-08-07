@@ -31,6 +31,7 @@ from review_state import (
     atomic_target_authority_write_revision,
     target_publication_revision,
 )
+from adjudicate import AdjudicationUnavailableError
 from io_utils import read_jsonl
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
@@ -466,6 +467,12 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/requirement-library/search":
             self.handle_requirement_library_search(params)
             return
+        if parsed.path == "/adjudications":
+            self.handle_adjudications_get()
+            return
+        if parsed.path == "/adjudication-summary":
+            self.handle_adjudication_summary_get()
+            return
         self.send_error(404, "Unknown endpoint")
 
     def do_POST(self) -> None:
@@ -528,6 +535,12 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/requirement-library/adopt":
             self.handle_requirement_library_adopt()
+            return
+        if parsed.path == "/adjudications/run":
+            self.handle_adjudication_run()
+            return
+        if parsed.path == "/adjudications/overturn":
+            self.handle_adjudication_overturn()
             return
         if parsed.path != "/review-actions":
             self.send_error(404, "Unknown endpoint")
@@ -1696,6 +1709,74 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             "module_override": record.get("module_override", ""),
             "written": ["verification_states.jsonl"],
         })
+
+    def handle_adjudications_get(self) -> None:
+        """WS-B：读取功能需求级 AI 裁决结果。"""
+        from adjudicate import read_adjudication_results
+        try:
+            rows = read_adjudication_results(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"schema": "adjudications/v1", "items": rows, "total": len(rows)})
+
+    def handle_adjudication_summary_get(self) -> None:
+        """WS-B：读取裁决摘要（开关状态、计数、校准状态）。"""
+        from adjudicate import adjudication_summary
+        try:
+            summary = adjudication_summary(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json(summary)
+
+    def handle_adjudication_run(self) -> None:
+        """WS-B：运行 AI 裁决（默认关；LLM 不可用时全部进 review）。"""
+        from adjudicate import adjudicate_all
+        payload = self.read_json_body() or {}
+        route = str(payload.get("route") or "").strip() or None
+        actor = str(payload.get("actor") or "api-adjudicator").strip()
+        try:
+            summary = adjudicate_all(self.output_dir, route=route, actor=actor)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except AdjudicationUnavailableError as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "ok": False}, status=503)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"ok": True, **summary})
+
+    def handle_adjudication_overturn(self) -> None:
+        """WS-B：人工推翻自动裁决结果（actor/reason 必填，append-only 留痕）。"""
+        from adjudicate import overturn_adjudication
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        rid = str(payload.get("functional_requirement_id") or "").strip()
+        new_decision = str(payload.get("new_decision") or "").strip()
+        actor = str(payload.get("actor") or "").strip()
+        reason = str(payload.get("reason") or "").strip()
+        if not rid or not new_decision or not actor or not reason:
+            self.send_json({"error": "functional_requirement_id/new_decision/actor/reason 均必填"}, status=400)
+            return
+        try:
+            record = overturn_adjudication(
+                self.output_dir, rid, new_decision=new_decision, actor=actor, reason=reason)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"ok": True, "record": record, "written": ["adjudication_results.jsonl"]})
 
     def read_json_body(self) -> dict | None:
         try:

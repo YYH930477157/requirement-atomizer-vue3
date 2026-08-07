@@ -23,6 +23,10 @@ import { Check, ChevronDown, ChevronRight, Plus, RefreshCw, RotateCcw, Search, X
 import {
   isNeedsReconfirmationError,
   RequirementApiError,
+  type AdjudicationDecision,
+  type AdjudicationRecord,
+  type AdjudicationsPayload,
+  type AdjudicationSummaryPayload,
   type BackendRequirement,
   type DependencyCandidate,
   type DependencyCandidatesPayload,
@@ -55,6 +59,10 @@ type FunctionalClient = Pick<RequirementApiClient,
   | "loadFunctionalRequirements"
   | "loadManualRequirements"
   | "loadLifecycleEvents"
+  | "loadAdjudications"
+  | "loadAdjudicationSummary"
+  | "runAdjudication"
+  | "overturnAdjudication"
   | "loadRequirements">
 
 const props = defineProps<{
@@ -179,6 +187,25 @@ const libraryLoading = ref(false)
 const showUnconfirmedLibrary = ref(false)
 const hiddenUnconfirmedCount = computed(() => libraryResults.value.filter(isUnconfirmedLibraryEntry).length)
 
+// WS-B AI 裁决
+const adjudicationRecords = ref<Record<string, AdjudicationRecord>>({})
+const adjudicationSummary = ref<AdjudicationSummaryPayload | null>(null)
+const adjudicationLoading = ref(false)
+const adjudicationRunning = ref(false)
+const overturnOpen = ref(false)
+const overturnForm = ref<{
+  functionalRequirementId: string
+  newDecision: AdjudicationDecision
+  actor: string
+  reason: string
+}>({
+  functionalRequirementId: "",
+  newDecision: "review",
+  actor: "",
+  reason: "",
+})
+const overturnSubmitting = ref(false)
+
 // 需求库「采纳」对话框（actor/reason 必填——经 reviewer_override 通道留痕）
 const adoptOpen = ref(false)
 const adoptTarget = ref<RequirementLibraryEntry | null>(null)
@@ -225,6 +252,116 @@ function lifecycleTone(state: LifecycleState | undefined): string {
     case "implemented": return "tone-implemented"
     case "confirmed": return "tone-confirmed"
     default: return "tone-draft"
+  }
+}
+
+// WS-B AI 裁决相关
+const selectedAdjudication = computed<AdjudicationRecord | null>(() =>
+  selectedId.value ? adjudicationRecords.value[selectedId.value] ?? null : null,
+)
+
+const adjudicationEnabled = computed(() => ({
+  autoApprove: adjudicationSummary.value?.enabled?.auto_approve ?? false,
+  autoReject: adjudicationSummary.value?.enabled?.auto_reject ?? false,
+}))
+
+function adjudicationTone(decision: string | undefined): string {
+  switch (decision) {
+    case "accept": return "tone-verified"
+    case "reject": return "tone-draft"
+    case "review": return "tone-implemented"
+    default: return ""
+  }
+}
+
+function adjudicationLabel(decision: string | undefined): string {
+  switch (decision) {
+    case "accept": return "自动通过"
+    case "reject": return "自动拒绝"
+    case "review": return "待人工审"
+    default: return decision || "未裁决"
+  }
+}
+
+async function loadAdjudications() {
+  const client = props.client
+  if (!client) return
+  adjudicationLoading.value = true
+  try {
+    const [recordsPayload, summaryPayload] = await Promise.all([
+      client.loadAdjudications().catch((err: unknown): Error => err as Error),
+      client.loadAdjudicationSummary().catch((err: unknown): Error => err as Error),
+    ]) as [AdjudicationsPayload | Error, AdjudicationSummaryPayload | Error]
+    if (recordsPayload instanceof Error) {
+      // adjudication 文件可能不存在——非致命，不弹错误
+      adjudicationRecords.value = {}
+    } else {
+      const index: Record<string, AdjudicationRecord> = {}
+      for (const row of recordsPayload.items || []) {
+        if (row?.functional_requirement_id) {
+          index[row.functional_requirement_id] = row
+        }
+      }
+      adjudicationRecords.value = index
+    }
+    if (!(summaryPayload instanceof Error)) {
+      adjudicationSummary.value = summaryPayload
+    }
+  } finally {
+    adjudicationLoading.value = false
+  }
+}
+
+async function runAdjudication() {
+  const client = props.client
+  if (!client || adjudicationRunning.value) return
+  adjudicationRunning.value = true
+  apiMessage.value = ""
+  try {
+    const payload = await client.runAdjudication({ actor: "vue3-ui" })
+    apiMessage.value = `裁决完成：accept ${payload.counts.accept} / review ${payload.counts.review} / reject ${payload.counts.reject}（校准：${payload.calibration_status}）`
+    await loadAdjudications()
+  } catch (err) {
+    apiMessage.value = describeError(err, "运行裁决失败")
+  } finally {
+    adjudicationRunning.value = false
+  }
+}
+
+function openOverturn(functionalRequirementId: string, currentDecision: string) {
+  overturnForm.value = {
+    functionalRequirementId,
+    newDecision: currentDecision === "accept" ? "review" : "accept",
+    actor: "",
+    reason: "",
+  }
+  overturnOpen.value = true
+}
+
+async function submitOverturn() {
+  const client = props.client
+  if (!client || overturnSubmitting.value) return
+  const { functionalRequirementId, newDecision, actor, reason } = overturnForm.value
+  if (!actor.trim() || !reason.trim()) {
+    apiMessage.value = "推翻裁决需填写操作者与原因（append-only 留痕）"
+    return
+  }
+  overturnSubmitting.value = true
+  apiMessage.value = ""
+  try {
+    await client.overturnAdjudication({
+      functionalRequirementId,
+      newDecision,
+      actor: actor.trim(),
+      reason: reason.trim(),
+    })
+    overturnOpen.value = false
+    apiMessage.value = `已推翻 ${functionalRequirementId} 为 ${adjudicationLabel(newDecision)}`
+    await loadAdjudications()
+  } catch (err) {
+    apiMessage.value = describeError(err, "推翻裁决失败")
+  } finally {
+    overturnSubmitting.value = false
   }
 }
 
@@ -444,6 +581,8 @@ async function loadAll() {
       client.loadDependencyCandidates().catch((err: unknown) => err),
       loadLifecycleEventList(client),
     ])
+    // adjudication 在首屏并行加载；失败不阻塞主列表
+    void loadAdjudications()
     if (generation !== loadGeneration) return
 
     const items: FunctionalItem[] = [...functionalResult.items, ...manualResult.items]
@@ -864,6 +1003,16 @@ function toggleChildren(itemId: string) {
         <button class="fr-button" type="button" :disabled="!client || loading" data-testid="fr-refresh" @click="loadAll">
           <RefreshCw :size="14" aria-hidden="true" />刷新
         </button>
+        <button
+          class="fr-button"
+          type="button"
+          :disabled="!client || adjudicationRunning"
+          data-testid="fr-run-adjudication"
+          @click="runAdjudication"
+        >
+          <span v-if="adjudicationRunning">裁决中…</span>
+          <span v-else>运行 AI 裁决</span>
+        </button>
         <button class="fr-button primary" type="button" :disabled="!client" data-testid="fr-new-manual" @click="openManual">
           <Plus :size="14" aria-hidden="true" />新建条目
         </button>
@@ -893,6 +1042,11 @@ function toggleChildren(itemId: string) {
               :class="['lifecycle-badge', lifecycleTone(verificationStates[item.functional_requirement_id].lifecycle_state)]"
               :data-testid="`lifecycle-${item.functional_requirement_id}`"
             >{{ lifecycleLabelOf(verificationStates[item.functional_requirement_id].lifecycle_state) }}</span>
+            <span
+              v-if="adjudicationRecords[item.functional_requirement_id]"
+              :class="['lifecycle-badge', adjudicationTone(adjudicationRecords[item.functional_requirement_id].decision)]"
+              :data-testid="`adjudication-${item.functional_requirement_id}`"
+            >{{ adjudicationLabel(adjudicationRecords[item.functional_requirement_id].decision) }}</span>
             <span v-if="hasNoDocSource(item)" class="origin-badge manual" data-testid="manual-badge">无文档来源</span>
             <span v-if="item.conflict_flags?.length" class="origin-badge conflict">冲突 {{ item.conflict_flags.length }}</span>
           </div>
@@ -1000,6 +1154,49 @@ function toggleChildren(itemId: string) {
                 </div>
               </li>
             </ul>
+          </section>
+
+          <!-- WS-B AI 裁决明细 -->
+          <section v-if="selectedAdjudication" class="detail-block" data-testid="adjudication-panel">
+            <h4 class="block-title">
+              AI 裁决
+              <span :class="['lifecycle-badge', adjudicationTone(selectedAdjudication.decision)]">{{ adjudicationLabel(selectedAdjudication.decision) }}</span>
+            </h4>
+            <div class="field">
+              <span class="field-label">硬依据</span>
+              <span v-if="selectedAdjudication.hard_basis?.ok" class="meta-chip">全绿</span>
+              <span v-else class="origin-badge conflict">红灯 / 黄灯</span>
+              <ul v-if="selectedAdjudication.hard_basis?.reject_reasons?.length" class="field-list">
+                <li v-for="(reason, idx) in selectedAdjudication.hard_basis.reject_reasons" :key="`hr-${idx}`">{{ reason }}</li>
+              </ul>
+              <ul v-if="selectedAdjudication.hard_basis?.review_reasons?.length" class="field-list">
+                <li v-for="(reason, idx) in selectedAdjudication.hard_basis.review_reasons" :key="`hv-${idx}`">{{ reason }}</li>
+              </ul>
+            </div>
+            <div class="field">
+              <span class="field-label">语义投票</span>
+              <span v-if="selectedAdjudication.semantic_vote" class="meta-chip">{{ selectedAdjudication.semantic_vote }}</span>
+              <span v-else class="meta-chip">不可用</span>
+              <span v-if="selectedAdjudication.semantic_usage?.reason" class="field-hint">{{ selectedAdjudication.semantic_usage.reason }}</span>
+            </div>
+            <div class="field">
+              <span class="field-label">校准状态</span>
+              <span class="meta-chip">{{ selectedAdjudication.calibration_status }}</span>
+            </div>
+            <div class="field">
+              <span class="field-label">裁决理由</span>
+              <p class="field-hint">{{ selectedAdjudication.reason }}</p>
+            </div>
+            <div class="inline-actions">
+              <button
+                class="fr-button warn"
+                type="button"
+                data-testid="open-overturn"
+                @click="openOverturn(selectedItem.functional_requirement_id, selectedAdjudication.decision)"
+              >
+                <RotateCcw :size="14" aria-hidden="true" />推翻裁决
+              </button>
+            </div>
           </section>
 
           <!-- verification 六列编辑（Cap2） -->
@@ -1305,6 +1502,45 @@ function toggleChildren(itemId: string) {
             <button class="fr-button" type="button" :disabled="adoptSubmitting" @click="adoptOpen = false">取消</button>
             <button class="fr-button primary" type="button" :disabled="adoptSubmitting" data-testid="adopt-submit" @click="submitAdopt">
               {{ adoptSubmitting ? "提交中…" : "确认采纳" }}
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Transition>
+
+    <!-- WS-B 推翻自动裁决对话框（actor/reason 必填——append-only 留痕） -->
+    <Transition name="sheet">
+      <div v-if="overturnOpen" class="manual-overlay" data-testid="overturn-form" role="dialog" aria-modal="true" aria-label="推翻 AI 裁决" @click.self="overturnOpen = false">
+        <section class="manual-dialog">
+          <header class="manual-head">
+            <div>
+              <div class="manual-title">推翻 AI 裁决</div>
+              <div class="manual-subtitle">人工推翻自动裁决结果，写回裁决流（操作者/原因/时间，不可抹除）。</div>
+            </div>
+            <button class="icon-button" type="button" aria-label="关闭" @click="overturnOpen = false"><X :size="18" aria-hidden="true" /></button>
+          </header>
+          <div class="manual-body">
+            <label class="form-field wide">
+              <span class="field-label">目标决策</span>
+              <select v-model="overturnForm.newDecision" data-testid="overturn-target">
+                <option value="accept">接受（accept）</option>
+                <option value="review">人工审（review）</option>
+                <option value="reject">拒绝（reject）</option>
+              </select>
+            </label>
+            <label class="form-field wide">
+              <span class="field-label">操作者<em class="req">*</em></span>
+              <input v-model="overturnForm.actor" type="text" data-testid="overturn-actor" placeholder="必填——记入 append-only 裁决流" />
+            </label>
+            <label class="form-field wide">
+              <span class="field-label">原因<em class="req">*</em></span>
+              <textarea v-model="overturnForm.reason" rows="2" data-testid="overturn-reason" placeholder="必填——为什么推翻自动裁决" />
+            </label>
+          </div>
+          <footer class="manual-foot">
+            <button class="fr-button" type="button" :disabled="overturnSubmitting" @click="overturnOpen = false">取消</button>
+            <button class="fr-button warn" type="button" :disabled="overturnSubmitting" data-testid="overturn-submit" @click="submitOverturn">
+              {{ overturnSubmitting ? "提交中…" : "确认推翻" }}
             </button>
           </footer>
         </section>

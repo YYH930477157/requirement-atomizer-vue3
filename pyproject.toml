@@ -132,6 +132,7 @@ py-modules = [
   "xlsx_io",
   "requirement_record",
   "adjudication_bank",
+  "adjudicate",
   "extract_units",
   "extract_guards",
   "config",

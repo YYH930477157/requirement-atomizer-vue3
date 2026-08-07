@@ -90,6 +90,14 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_CONTEXT_PACK_STRATEGY", "legacy", "A2 功能直抽上下文包策略（legacy=遗留 4000 字符切片默认不变 / clause_family=按条款自然边界组装：目标条款整文不截断+同族相邻条款+doc_map 热区摘要）", False),
     EnvVar("RATOMIZER_CONTEXT_PACK_MAX_CHARS", "24000", "A2 上下文包大小上限字符数（只约束拼包：装不下的邻居整条舍弃；目标条款自身超限仍整文进包，宁超勿截）", False),
     EnvVar("RATOMIZER_RECONCILE", "0", "A3 整篇对账开关（=1 时 chain 链尾自动跑 reconcile：规则筛疑+LLM 裁定两段，硬依据一票否决，LLM 不可用如实 rules_only；默认 0=不跑，亦可用 desktop reconcile 子命令显式执行）", False),
+    # --- WS-B AI 裁决（默认全关；真值校准通过后才允许自动通过） ---
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_APPROVE", "0", "功能需求级自动通过开关（=1 启用；默认 0=全部走人工 review）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_REJECT", "0", "功能需求级自动拒绝开关（=1 启用；硬依据红灯时自动 reject，否则 review）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_REVIEW_RATE", "0.0", "自动 accept 后按概率强制降级为 review 的比例（能力边界抽样，0..1）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_SAMPLE_RATE", "0.1", "自动 accept 结果进抽审队列的比例（高风险编码条目必抽，0..1）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_FAR_THRESHOLD", "0.02", "允许自动通过的误受率上限（默认 2%，需真值集校准）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_TRUTH_SET", "", "功能需求级真值集路径（缺省用 golden_sets/gold_functional_v1/truth.jsonl）", False),
+    EnvVar("RATOMIZER_AUTO_ADJUDICATE_LLM_ROUTE", "", "AI 裁决语义投票 LLM 路由（缺省复用 RATOMIZER_LLM_MODEL）", False),
     # --- 知识/资产路径 ---
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),
     EnvVar("RATOMIZER_ADJUDICATION_BANK", "", "裁决样本库 JSON 路径（专家 accepted 需求作 few-shot 注入富化；缺省不注入）", False),
