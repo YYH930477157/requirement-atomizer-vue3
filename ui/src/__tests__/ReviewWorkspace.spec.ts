@@ -57,6 +57,37 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="detail-scroll"]').classes()).toContain("independent-detail-scroll")
   })
 
+  it("lands on the functional review view by default (G9-4)", async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    // 落地页默认「功能需求」评审视图；run 面板不再默认显示
+    expect(wrapper.find('[data-testid="functional-review"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="run-paths-panel"]').exists()).toBe(false)
+    const navBtn = wrapper.find('[data-testid="nav-功能需求"]')
+    expect(navBtn.exists()).toBe(true)
+    expect(navBtn.classes()).toContain("active")
+  })
+
+  it("groups nav items into collapsed visual sections without dropping entries (G9-7)", async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    const navText = wrapper.find(".side-nav").text()
+    // 评审相关项视觉收敛为分组标题
+    expect(navText).toContain("评审")
+    expect(navText).toContain("文档与账本")
+    // 全部 nav 项 testid 保留——不删项、不改路由
+    for (const label of ["运行", "审查工作台", "功能需求", "文档批注", "Claim 账本", "文档渲染"]) {
+      expect(wrapper.find(`[data-testid="nav-${label}"]`).exists()).toBe(true)
+    }
+  })
+
+  it("keeps translate enabled when a requirement is selected (G9-10 sentinel cleanup)", async () => {
+    const wrapper = mount(App)
+    await openReview(wrapper)
+    // 有需求行时 hasSelectedRequirement=true；翻译按钮不再依赖 magic-string 哨兵比较
+    expect(wrapper.find('[data-testid="action-translate"]').attributes("disabled")).toBeUndefined()
+  })
+
   it("shows a run stage board with per-stage progress", async () => {
     type ProgressHandler = (event: { stage: string; step?: string; status?: string; completed?: number; total?: number; percent?: number }) => void
     let progressHandler: ProgressHandler = () => {
@@ -80,6 +111,9 @@ describe("review workspace shell", () => {
       },
     })
     const wrapper = mount(App)
+    // 落地页默认 functional（G9-4）；run 面板需显式切到「运行」nav
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
 
     expect(wrapper.find('[data-testid="run-paths-panel"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="run-stage-board"]').exists()).toBe(true)
@@ -821,6 +855,9 @@ describe("review workspace shell", () => {
     })
 
     const wrapper = mount(App)
+    // 落地页默认 functional（G9-4）；recent sessions 在 run home，需切到「运行」nav
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await vi.waitFor(() => expect(wrapper.find('[data-testid="recent-open-0"]').exists()).toBe(true))
     await wrapper.find('[data-testid="recent-open-0"]').trigger("click")
     await vi.waitFor(() => expect(wrapper.find('[data-testid="row-SREQ-HISTORY"]').exists()).toBe(true))
@@ -1582,6 +1619,9 @@ describe("review workspace shell", () => {
     })
 
     const wrapper = mount(App)
+    // 落地页默认 functional（G9-4）；review insights 在 run home，需切到「运行」nav
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await vi.waitFor(() => {
       const panel = wrapper.find('[data-testid="review-insights"]')
       expect(panel.exists()).toBe(true)

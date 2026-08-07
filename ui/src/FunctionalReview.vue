@@ -18,7 +18,7 @@
  * recompute_error 教训：错误必须在 UI 可见）。异步带 generation guard（loadInitialApiSession
  * 测试隔离教训：跨 await 后必须复查 generation）。
  */
-import { computed, ref, watch } from "vue"
+import { computed, onMounted, onUnmounted, ref, watch } from "vue"
 import { Check, ChevronDown, ChevronRight, Plus, RefreshCw, RotateCcw, Search, X } from "@lucide/vue"
 import {
   isNeedsReconfirmationError,
@@ -48,6 +48,7 @@ import {
   type VerificationTriple,
 } from "./api-client"
 import type { RequirementApiClient } from "./api-client"
+import { useReviewShortcuts } from "./useReviewShortcuts"
 
 type FunctionalClient = Pick<RequirementApiClient,
   | "loadVerificationStates"
@@ -234,6 +235,33 @@ let opGeneration = 0
 const selectedItem = computed<FunctionalItem | null>(() =>
   functionalItems.value.find((item) => item.functional_requirement_id === selectedId.value) ?? null,
 )
+
+// 功能需求列表上下导航（G9-2）：与 DocumentReview 共用 useReviewShortcuts 的导航键。
+// 裁决快捷键（a/r/d）不在此接入——FunctionalReview 的裁决是批量 runAdjudication + 需
+// actor/reason 留痕的 overturn（append-only），一键裁决会绕过留痕，故只共享导航。
+function stepFunctionalItem(delta: number) {
+  const items = functionalItems.value
+  if (!items.length) return
+  const currentIndex = items.findIndex((it) => it.functional_requirement_id === selectedId.value)
+  const fallback = delta > 0 ? 0 : items.length - 1
+  const baseIndex = currentIndex < 0 ? fallback : currentIndex + delta
+  const nextIndex = Math.min(Math.max(baseIndex, 0), items.length - 1)
+  selectedId.value = items[nextIndex].functional_requirement_id
+}
+
+const { install: installReviewShortcuts, uninstall: uninstallReviewShortcuts } = useReviewShortcuts({
+  isActive: () => props.active,
+  hasItems: () => functionalItems.value.length > 0,
+  step: stepFunctionalItem,
+})
+
+onMounted(() => {
+  installReviewShortcuts()
+})
+
+onUnmounted(() => {
+  uninstallReviewShortcuts()
+})
 
 const selectedState = computed<VerificationStateRow | null>(() =>
   verificationStates.value[selectedId.value] ?? null,
