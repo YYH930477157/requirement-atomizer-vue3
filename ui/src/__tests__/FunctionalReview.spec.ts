@@ -223,6 +223,25 @@ function makeClient(over: Record<string, unknown> = {}) {
       timestamp: "2026-08-06T09:01:00Z",
       version: "adjudication-v1",
     }),
+    loadHarvestReport: vi.fn().mockResolvedValue({
+      schema: "harvest-report/v1",
+      version: "harvest-v1",
+      enabled: false,
+      metrics: {},
+    }),
+    runHarvest: vi.fn().mockResolvedValue({
+      ok: true,
+      schema: "harvest-report/v1",
+      version: "harvest-v1",
+      enabled: true,
+      metrics: {
+        total_ingested: 5,
+        next_project_library_hit_rate: 0.2,
+        kb_hit_count: 1,
+        few_shot_positive_count: 2,
+        negative_intercept_count: 0,
+      },
+    }),
     ...over,
   }
 }

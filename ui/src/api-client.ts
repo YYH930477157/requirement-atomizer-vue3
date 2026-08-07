@@ -379,6 +379,48 @@ export type AdjudicationSummaryPayload = {
   }
 }
 
+// ===== WS-H 知识沉淀闭环 =====
+export type HarvestAssetCounts = {
+  adjudication_bank: number
+  pending_requirements: number
+  pending_solutions: number
+  kb_candidates: number
+  dictionary_candidates: number
+  calibration_reviews: number
+}
+
+export type HarvestMetrics = {
+  total_ingested: number
+  next_project_library_hit_rate: number
+  kb_hit_count: number
+  few_shot_positive_count: number
+  negative_intercept_count: number
+}
+
+export type HarvestReportPayload = {
+  schema?: string
+  version?: string
+  harvested_at?: string
+  enabled?: boolean
+  project_tag?: string
+  actor?: string
+  counts?: HarvestAssetCounts
+  metrics?: HarvestMetrics
+  total_functional_requirements?: number
+  confirmed_count?: number
+  adjudication_summary?: Record<AdjudicationDecision, number>
+  written?: string[]
+  errors?: string[]
+}
+
+export type HarvestRunPayload = {
+  ok: boolean
+} & HarvestReportPayload
+
+export type HarvestRunInput = {
+  actor?: string
+}
+
 export type TranslationInput = {
   requirementId: string
   text: string
@@ -1641,6 +1683,21 @@ export class RequirementApiClient {
         new_decision: input.newDecision,
         actor: input.actor,
         reason: input.reason,
+      }),
+    })
+  }
+
+  // WS-H 知识沉淀闭环：成文导出后自动/手动 harvest，仪表盘五指标只读展示
+  async loadHarvestReport(): Promise<HarvestReportPayload> {
+    return this.request<HarvestReportPayload>("/harvest-report")
+  }
+
+  async runHarvest(input: HarvestRunInput = {}): Promise<HarvestRunPayload> {
+    return this.request<HarvestRunPayload>("/harvest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        actor: input.actor || "vue3-ui",
       }),
     })
   }
