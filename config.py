@@ -84,6 +84,13 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_DOCX_EXTRA_CHANNELS", "0", "DOCX 文本框/页眉页脚额外通道收容开关（=1 启用 parsers/docx_extra_channels.py；默认 0=正文块与 golden 基线逐字节一致）", False),
     EnvVar("RATOMIZER_XLSX_REQUIREMENT_LIST", "0", "Excel 需求清单型分流开关（=1 对 xlsx 行映射抽取并产出 base_library_candidates.jsonl；默认 0=维持 table 路径）", False),
     EnvVar("RATOMIZER_CLAIM_RESCAN", "0", "claim 账本四视角确定性复扫开关（=1 将归属/数值/约束/覆盖问题汇入 quality_report；默认 0）", False),
+    # --- V3 WS-A 三遍法核心（A1 整篇地图 / A2 上下文包 / A3 整篇对账）---
+    # 全部默认关闭/legacy：新路径 opt-in，默认行为面与缓存指纹逐字节不变。
+    EnvVar("RATOMIZER_DOC_MAP", "0", "A1 整篇地图开关（=1 启用 doc_map.LLM 单遍文档地图并写 doc_map.json；预算走文档预算单 structure_hypothesis 子预算，耗尽/stub 如实 unavailable；默认 0=不生成，调用方走无地图路径）", False),
+    EnvVar("RATOMIZER_CONTEXT_PACK_STRATEGY", "legacy", "A2 功能直抽上下文包策略（legacy=遗留 4000 字符切片默认不变 / clause_family=按条款自然边界组装：目标条款整文不截断+同族相邻条款+doc_map 热区摘要）", False),
+    EnvVar("RATOMIZER_CONTEXT_PACK_MAX_CHARS", "24000", "A2 上下文包大小上限字符数（只约束拼包：装不下的邻居整条舍弃；目标条款自身超限仍整文进包，宁超勿截）", False),
+    EnvVar("RATOMIZER_RECONCILE", "0", "A3 整篇对账开关（=1 时 chain 链尾自动跑 reconcile：规则筛疑+LLM 裁定两段，硬依据一票否决，LLM 不可用如实 rules_only；默认 0=不跑，亦可用 desktop reconcile 子命令显式执行）", False),
+    # --- 知识/资产路径 ---
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),
     EnvVar("RATOMIZER_ADJUDICATION_BANK", "", "裁决样本库 JSON 路径（专家 accepted 需求作 few-shot 注入富化；缺省不注入）", False),
     EnvVar("RATOMIZER_HISTORICAL_SAMPLE", "", "真实历史抽取样本路径（合并决策回归门；客户数据不进仓,未设置则该门跳过）", False),
