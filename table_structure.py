@@ -1006,6 +1006,7 @@ def plan_table_leaves(
     merge_ranges: Iterable[Iterable[int]] | None = None,
     headers: list[str] | None = None,
     fact_columns: set[int] | None = None,
+    tender_table_kind: str | None = None,
 ) -> dict[str, Any]:
     """唯一 leaf plan：同一物理内容只能有一个 owner。
 
@@ -1037,6 +1038,31 @@ def plan_table_leaves(
     unsignaled_data_cells: list[tuple[int, int]] = []
     ambiguous_structure_cells: list[tuple[int, int]] = []
     untyped_colon_spec_cells: list[tuple[int, int]] = []
+    tender_commercial_cells: list[tuple[int, int]] = []
+
+    # A9-1：商务/表单表整表受控排除——所有非空 canonical cell 进入默认排除候选，
+    # 不生成 row/cell claim，也不进入功能聚类/需求候选。默认关，OFF 时不执行。
+    if tender_table_kind == "commercial":
+        for row_index in data_rows:
+            row = matrix[row_index - 1]
+            for column_index in range(1, width + 1):
+                if (row_index, column_index) in covered:
+                    continue
+                text = clean_cell(row[column_index - 1]) if column_index - 1 < len(row) else ""
+                if text:
+                    tender_commercial_cells.append((row_index, column_index))
+        return {
+            "mode": "excluded",
+            "row_leaves": row_leaves,
+            "cell_leaves": cell_leaves,
+            "context_cells": context_cells,
+            "multi_duty_cells": multi_duty_cells,
+            "weak_signal_cells": weak_signal_cells,
+            "unsignaled_data_cells": unsignaled_data_cells,
+            "ambiguous_structure_cells": ambiguous_structure_cells,
+            "untyped_colon_spec_cells": untyped_colon_spec_cells,
+            "tender_commercial_cells": tender_commercial_cells,
+        }
 
     def _context(row_index: int, column_index: int, text: str) -> None:
         """内容降级为 context 时登记弱信号证据（B5 第三维：content preservation）。
@@ -1246,6 +1272,7 @@ def plan_table_leaves(
         "unsignaled_data_cells": unsignaled_data_cells,
         "ambiguous_structure_cells": ambiguous_structure_cells,
         "untyped_colon_spec_cells": untyped_colon_spec_cells,
+        "tender_commercial_cells": tender_commercial_cells,
     }
 
 

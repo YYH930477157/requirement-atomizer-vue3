@@ -66,6 +66,16 @@ def _base_disposition(
     candidates = _candidate_sets(block)
     normative = bool(cell.get("requirement_like")) or is_normative_text(text)
 
+    # A9-1：商务/表单表整表受控排除（默认关；OFF 时 block 无该标记）
+    if str(block.get("tender_table_kind") or "") == "commercial":
+        return (
+            "excluded",
+            "high",
+            ["tender_commercial_table", f"role:{role}"],
+            "tender_commercial_table",
+            None,
+        )
+
     if bool(block.get("parse_incomplete")):
         reason = str((block.get("parse_incomplete_reason") or {}).get("code") or "unknown")
         return "review", "low", [f"parse_incomplete:{reason}"], None, None

@@ -1287,6 +1287,16 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
                 f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"
                 f"+{TABLE_STRUCTURE_VERSION}"
             )
+            # A9：tender 适配开关仅在开启时进戳，默认关时保持 producer 不变
+            if os.environ.get("RATOMIZER_TENDER_TABLE_FILTER", "0").strip().lower() not in {"0", "false", "off"}:
+                from tender_table_filter import TENDER_TABLE_FILTER_VERSION
+                producer = f"{producer}+{TENDER_TABLE_FILTER_VERSION}"
+            if os.environ.get("RATOMIZER_TENDER_REGION_FILTER", "0").strip().lower() not in {"0", "false", "off"}:
+                from tender_regions import TENDER_REGION_FILTER_VERSION
+                producer = f"{producer}+{TENDER_REGION_FILTER_VERSION}"
+            if os.environ.get("RATOMIZER_TENDER_FIGURE_PAGE_FILTER", "0").strip().lower() not in {"0", "false", "off"}:
+                from unextracted_registry import UNEXTRACTED_REGISTRY_VERSION
+                producer = f"{producer}+figure-page-v1"
         elif stage == "llm-review":
             # 代码版本必须进戳（审计 R2-H2）：prompt/cache/tools 任一 bump 后旧阶段
             # 产物不得复用——此前 llm-review 是唯一不拼代码版本的阶段。

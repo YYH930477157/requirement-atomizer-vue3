@@ -6,6 +6,8 @@ textbox/header/footer 收容前后差额等。默认开启，纯登记不改行�
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,20 @@ from result_package import governed_artifact_path
 
 UNEXTRACTED_REGISTRY_VERSION = "unextracted-registry/v1"
 REGISTRY_FILENAME = "unextracted_registry.json"
+
+# A9-3：疑似流程图页开关（默认关）
+_FIGURE_PAGE_FILTER_ENV = "RATOMIZER_TENDER_FIGURE_PAGE_FILTER"
+# 页面文本字符阈值：低于此值 + 存在图标题信号 → 疑似流程图页
+_FIGURE_PAGE_CHAR_THRESHOLD = 200
+# 图/流程图标题信号
+_FIGURE_SIGNAL_RE = re.compile(
+    r"\b(?:figure|diagram|flow\s*(?:chart|diagram)?|chart|process\s*(?:flow|diagram)|"
+    r"schematic|illustration|drawing|image|picture|photo|"
+    r"图|流程图|示意图|框图|线路图|照片)"
+    r"|\b(?:flow\s+diagram|flow\s+chart|process\s+flow\s+diagram|process\s+flow\s+chart|"
+    r"credit\s+transfer\s+process)\b",
+    re.IGNORECASE,
+)
 
 # 与 requirements_analysis_template.py 保持一致，避免循环依赖
 _SKIPPED_SHEET_TITLES = {
@@ -32,6 +48,8 @@ KIND_TEXTBOX_CHANNEL = "textbox_channel"
 KIND_HEADER_CHANNEL = "header_channel"
 KIND_FOOTER_CHANNEL = "footer_channel"
 KIND_FRONT_MATTER_BLOCK = "front_matter_block"
+KIND_NON_PRODUCT_REFERENCE_BLOCK = "non_product_reference_block"
+KIND_FIGURE_PAGE = "figure_page"
 
 
 def _entry(
@@ -79,9 +97,15 @@ def _collect_region_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]
         if region in {"body", "noise"} or block.get("noise"):
             continue
         bid = str(block.get("block_id") or "")
+        kind = KIND_NON_PRODUCT_REFERENCE_BLOCK if region == "non_product_reference" else KIND_FRONT_MATTER_BLOCK
+        reason = (
+            f"文档区域标为 {region}，默认不进入 body 抽取"
+            if region != "non_product_reference"
+            else "招标程序性/商务附件区域，按参考类处理，不进功能需求"
+        )
         entries.append(_entry(
-            KIND_FRONT_MATTER_BLOCK,
-            f"文档区域标为 {region}，默认不进入 body 抽取",
+            kind,
+            reason,
             source_id=bid,
             section=" > ".join(str(p) for p in (block.get("section_path") or [])),
             text_preview=str(block.get("text") or ""),
@@ -151,6 +175,61 @@ def _collect_content_channel_blocks(blocks: list[dict[str, Any]]) -> list[dict[s
     return entries
 
 
+def _collect_figure_pages(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A9-3：疑似流程图页强制高亮（默认关）。
+
+    判据：页面文本字符数低于阈值，且存在图/流程图标题信号；或页面块数极少（≤2）
+    且文本极低。基于现有解析期几何/文本证据，不做 VLM 识别。
+    """
+    value = os.environ.get(_FIGURE_PAGE_FILTER_ENV, "0").strip().lower()
+    if value in {"0", "false", "off", ""}:
+        return []
+
+    pages: dict[int, list[dict[str, Any]]] = {}
+    for block in blocks:
+        page_number = block.get("page_number")
+        if page_number is None:
+            continue
+        pages.setdefault(int(page_number), []).append(block)
+
+    entries: list[dict[str, Any]] = []
+    for page_number, page_blocks in sorted(pages.items()):
+        text_blocks = [b for b in page_blocks if str(b.get("type") or "") in {"paragraph", "heading", "caption"}]
+        total_chars = sum(len(str(b.get("text") or "")) for b in text_blocks)
+        if total_chars >= _FIGURE_PAGE_CHAR_THRESHOLD:
+            continue
+        # 图/流程图标题信号
+        has_figure_signal = any(
+            _FIGURE_SIGNAL_RE.search(str(b.get("text") or ""))
+            for b in page_blocks
+        )
+        # 极低文本 + 块数极少（无段落或仅标题）
+        sparse_page = len(text_blocks) <= 2 and total_chars <= 120
+        if not has_figure_signal and not sparse_page:
+            continue
+        title_block = next(
+            (b for b in page_blocks if str(b.get("type") or "") == "heading"),
+            None,
+        )
+        title_text = str(title_block.get("text") or "") if title_block else ""
+        entries.append(_entry(
+            KIND_FIGURE_PAGE,
+            "整页文本极少且疑似含图/流程图，请专家人工核对是否含规范性内容",
+            source_id=f"PAGE-{page_number}",
+            section=" > ".join(str(p) for p in (title_block.get("section_path") or []) if title_block),
+            text_preview=title_text,
+            evidence={
+                "page_number": page_number,
+                "page_text_char_count": total_chars,
+                "text_block_count": len(text_blocks),
+                "has_figure_signal": has_figure_signal,
+                "sparse_page": sparse_page,
+                "title": title_text,
+            },
+        ))
+    return entries
+
+
 def build_unextracted_registry(
     input_path: Path,
     blocks: list[dict[str, Any]],
@@ -166,6 +245,7 @@ def build_unextracted_registry(
     entries.extend(_collect_noise_blocks(blocks))
     entries.extend(_collect_region_blocks(blocks))
     entries.extend(_collect_content_channel_blocks(blocks))
+    entries.extend(_collect_figure_pages(blocks))
     entries.extend(_collect_xlsx_sheets(input_path))
 
     by_kind: dict[str, int] = {}
@@ -236,6 +316,12 @@ def collect_unextracted_clarification_entries(out_dir: Path) -> list[dict[str, A
     for entry in (payload.get("entries") or []):
         kind = entry.get("kind", "")
         # 只把可能含真实需求的项暴露给澄清报告；隐藏/跳过 sheet 是结构性排除
-        if kind in {KIND_NOISE_BLOCK, KIND_FRONT_MATTER_BLOCK, KIND_TEXTBOX_CHANNEL}:
+        if kind in {
+            KIND_NOISE_BLOCK,
+            KIND_FRONT_MATTER_BLOCK,
+            KIND_TEXTBOX_CHANNEL,
+            KIND_NON_PRODUCT_REFERENCE_BLOCK,
+            KIND_FIGURE_PAGE,
+        }:
             entries.append(entry)
     return entries

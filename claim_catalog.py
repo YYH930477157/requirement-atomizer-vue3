@@ -930,6 +930,10 @@ def _enumerate_leaves(
                 str(value)
                 for value in (leaf_plan.get("untyped_colon_spec_cells") or [])
             }
+            tender_commercial_candidate_ids = {
+                str(value)
+                for value in (leaf_plan.get("tender_commercial_cells") or [])
+            }
             rejected_marker_columns = {
                 int(value)
                 for value in (block.get("matrix_rejected_marker_columns") or [])
@@ -981,6 +985,7 @@ def _enumerate_leaves(
                 | untyped_colon_candidate_ids
                 | rejected_marker_candidate_ids
                 | set(disposition_review_reasons)
+                | tender_commercial_candidate_ids
             )
             cell_leaf_id_set -= review_candidate_ids
             cell_leaf_ids = [
@@ -1143,6 +1148,8 @@ def _enumerate_leaves(
                     candidate_reason = "weak_signal_table_cell"
                 elif cell_id in rejected_marker_candidate_ids:
                     candidate_reason = "rejected_matrix_marker_cell"
+                elif cell_id in tender_commercial_candidate_ids:
+                    candidate_reason = "tender_commercial_table"
                 else:
                     candidate_reason = "unsignaled_table_cell"
                 leaf = _table_cell_review_candidate_leaf(
@@ -1607,6 +1614,7 @@ _TABLE_CELL_REVIEW_RULES = {
     "untyped_colon_spec_cell": "catalog-untyped-colon-spec-cell",
     "parse_incomplete_table_cell": "catalog-parse-incomplete-table-cell",
     "normative_context_conflict": "catalog-normative-context-conflict",
+    "tender_commercial_table": "catalog-tender-commercial-table",
 }
 
 

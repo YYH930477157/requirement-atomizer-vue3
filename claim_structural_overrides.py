@@ -71,6 +71,7 @@ CELL_REVIEW_STRUCTURAL_REASONS = frozenset({
     "untyped_colon_spec_cell",
     "parse_incomplete_table_cell",
     "normative_context_conflict",
+    "tender_commercial_table",
 })
 ALLOWED_STRUCTURAL_OVERRIDE_REASONS = frozenset({
     "repeated_page_furniture",
@@ -86,6 +87,7 @@ _STRUCTURAL_RULE_IDS = {
     "untyped_colon_spec_cell": "catalog-untyped-colon-spec-cell",
     "parse_incomplete_table_cell": "catalog-parse-incomplete-table-cell",
     "normative_context_conflict": "catalog-normative-context-conflict",
+    "tender_commercial_table": "catalog-tender-commercial-table",
 }
 
 _LOCK_NAME = "claim_structural_overrides.lock"

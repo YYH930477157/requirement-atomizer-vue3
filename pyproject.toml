@@ -160,6 +160,8 @@ py-modules = [
   "table_recompute",
   "table_review_state",
   "table_structure",
+  "tender_regions",
+  "tender_table_filter",
   "pdf_modern_adapter",
   "xlsx_region_detect",
   "xlsx_requirement_list",

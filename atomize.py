@@ -64,6 +64,7 @@ from table_structure import (
     dual_track_enabled,
     structure_from_hypothesis,
 )
+from tender_table_filter import TENDER_TABLE_FILTER_VERSION, classify_tender_table_kind
 from version import __version__
 
 
@@ -699,6 +700,13 @@ def build_table_artifacts(
         if title_text:
             table_title = title_text
     table_kind = classify_table_kind_structure(headers, effective_data_rows, section_path)
+    # A9-1：商务/表单表识别（默认关，OFF 时逐字节不变）
+    tender_table_kind = classify_tender_table_kind(
+        headers=headers,
+        data_rows=effective_data_rows,
+        section_path=section_path,
+        table_title=table_title,
+    )
     # 矩阵事实列：mapping_matrix 全表取；parameter/other 组合表（DLMS 属性×服务矩阵）
     # 也取——marker 格按 cell 闭环（mixed），COSEM 行 join 与 A 轨能力事实同时保留。
     # P0-4：唯一来源是共享的正向维度证据（一次计算，分类/plan/块载荷/A 轨同消费）
@@ -713,6 +721,7 @@ def build_table_artifacts(
         structure, matrix, table_kind=table_kind,
         merge_ranges=normalized_merges,
         headers=headers, fact_columns=fact_columns,
+        tender_table_kind=tender_table_kind,
     )
     table_text_full = render_table_text(headers, data_rows)
     # 2026-07-27 起扁平文本不再截断（impl-v6 取消 [:5000]、impl-v7 render 默认全行）：
@@ -769,6 +778,12 @@ def build_table_artifacts(
             for row_index, column_index in (plan.get("untyped_colon_spec_cells") or [])
         ],
     }
+    # A9-1：商务/表单表整表受控排除候选（默认关，OFF 时 leaf_plan 不含该键）
+    if plan.get("tender_commercial_cells"):
+        leaf_plan_payload["tender_commercial_cells"] = [
+            f"{table_id}-R{row_index:06d}-C{column_index:06d}"
+            for row_index, column_index in plan["tender_commercial_cells"]
+        ]
     block = {
         "block_id": block_id,
         "order": order,
@@ -819,6 +834,10 @@ def build_table_artifacts(
         "matrix_rejected_marker_columns": sorted(rejected_marker_columns),
         "leaf_plan": leaf_plan_payload,
     }
+    # A9-1：tender 商务/表单表识别标记（默认关，OFF 时字段不存在以保持字节一致）
+    if tender_table_kind:
+        block["tender_table_kind"] = tender_table_kind
+        block["tender_table_filter_version"] = TENDER_TABLE_FILTER_VERSION
     if parse_incomplete_reason:
         block["parse_incomplete_reason"] = dict(parse_incomplete_reason)
 
@@ -1518,6 +1537,17 @@ def mark_doc_regions(
         item["doc_region"] = block_region_by_id.get(item.get("table_block_id"), "body")
     for cell in table_cell_items or []:
         cell["doc_region"] = block_region_by_id.get(cell.get("table_block_id"), "body")
+    # A9-2：tender 区域识别（默认关，OFF 时本段不执行以保持字节一致）
+    if os.environ.get("RATOMIZER_TENDER_REGION_FILTER", "0").strip().lower() not in {"0", "false", "off"}:
+        from tender_regions import apply_tender_regions
+
+        apply_tender_regions(blocks)
+        # 表格/单元格跟随其所属块
+        block_region_by_id = {block["block_id"]: block.get("doc_region", "body") for block in blocks}
+        for item in table_items:
+            item["doc_region"] = block_region_by_id.get(item.get("table_block_id"), "body")
+        for cell in table_cell_items or []:
+            cell["doc_region"] = block_region_by_id.get(cell.get("table_block_id"), "body")
 
 
 def normalize_title(text: str) -> str:
