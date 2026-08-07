@@ -33,7 +33,7 @@ const STATUS_LABELS: Record<string, string> = {
 type DocClient = Pick<RequirementApiClient,
   "loadDocument" | "loadAiRequirements" | "applyAiReviewAction" | "loadPdfAnnotation" | "loadPdfPageBlob">
   & Partial<Pick<RequirementApiClient,
-    "loadAiExtractionStatus" | "loadOmissionActions" | "applyOmissionAction" | "reextractOmission" |
+    "loadHealth" | "loadAiExtractionStatus" | "loadOmissionActions" | "applyOmissionAction" | "reextractOmission" |
     "loadClarificationInternalChecks" | "applyClarificationCheckBatch" | "spotExtract">>
 const props = withDefaults(defineProps<{
   client: DocClient | null
@@ -62,6 +62,8 @@ const spotExtracting = ref("")
 const internalChecks = ref<ClarificationInternalChecksPayload | null>(null)
 const internalCheckSignal = ref("")
 const internalCheckSaving = ref(false)
+// D7 预备：文本模式删除开关（默认保留；后端 /health 下发）
+const textModeEnabled = ref(true)
 type RequirementDraft = { comment: string; module: string; ownership: string }
 const requirementDrafts = new Map<string, RequirementDraft>()
 const omissionDrafts = new Map<string, string>()
@@ -1556,7 +1558,23 @@ function handleReviewShortcut(event: KeyboardEvent) {
   void decide(status, true)
 }
 
-onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
+async function loadTextModeSwitch() {
+  // D7 预备：后端 /health 携带 text_mode 开关，缺省保留文本模式
+  if (!props.client?.loadHealth) return
+  try {
+    const health = await props.client.loadHealth()
+    if (typeof health.text_mode === "boolean") {
+      textModeEnabled.value = health.text_mode
+    }
+  } catch {
+    // /health 失败不影响核心功能，默认保留文本模式
+  }
+}
+
+onMounted(() => {
+  window.addEventListener("keydown", handleReviewShortcut)
+  void loadTextModeSwitch()
+})
 </script>
 
 <template>
@@ -1596,7 +1614,7 @@ onMounted(() => window.addEventListener("keydown", handleReviewShortcut))
           </button>
         </div>
         <div class="mode-toggle">
-          <button type="button" :class="{ active: viewMode === 'text' }" data-testid="mode-text"
+          <button v-if="textModeEnabled" type="button" :class="{ active: viewMode === 'text' }" data-testid="mode-text"
                   @click="switchMode('text')"><Rows3 :size="14" aria-hidden="true" />解析文本</button>
           <button type="button" :class="{ active: viewMode === 'pdf' }" data-testid="mode-pdf"
                   @click="switchMode('pdf')"><Image :size="14" aria-hidden="true" />原版核对</button>

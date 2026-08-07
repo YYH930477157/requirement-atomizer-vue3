@@ -48,13 +48,16 @@ from cosem_behavior_spec import extract_codes, extract_ints
 from requirement_record import provenance
 
 FUNCTIONAL_EXTRACT_VERSION = "functional-extract-v1"
-FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v1"
+FUNCTIONAL_EXTRACT_PROMPT_VERSION = "functional-extract-prompt-v2"
 # S1-8：bump v1→v2。``_reject_drifted_codes`` 清洗范围从仅 objective 扩到全部叙述字段
 # （behaviors/data_constraints/variants/exceptions/preconditions/description），缓存产物内容
 # 变化——指纹含 guards 版本，bump 后旧 stub/LLM 缓存（behaviors 里残留幻觉编码）自然失效。
 FUNCTIONAL_EXTRACT_GUARDS_VERSION = "functional-extract-guards-v2"
 FUNCTIONAL_REQUIREMENTS_FILENAME = "functional_requirements.json"
 FUNCTIONAL_EXTRACT_CACHE = "functional_extract_cache.jsonl"
+
+# P0-8：负例 few-shot 注入数量上限（可配）。
+FUNCTIONAL_EXTRACT_NEGATIVE_K = int(os.environ.get("RATOMIZER_FUNCTIONAL_EXTRACT_NEGATIVE_K", "2"))
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
@@ -77,7 +80,7 @@ _OBLIGATION_MODALS = (
     "应", "必须", "须", "可", "宜",
 )
 
-_SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_BASE = (
     "你是 DLMS/COSEM 电表标准的功能需求抽取器。输入是已切好的条款单元（章节号 + 原文 + 块溯源）。"
     "对每个条款，直接产出功能需求级条目：以「一个可独立测试的系统行为目标」为一条，"
     "同一目标下的多个行为归入 behaviors 列表不拆条，表格行机械事实（单个参数值/单条 OBIS 取值）"
@@ -90,6 +93,18 @@ _SYSTEM_PROMPT = (
     "variants[], exceptions[], related_dlms_objects[], description, source_quote, source_section, "
     "source_block_ids[]}]}。"
 )
+
+
+def _system_prompt(negative_exemplars: str = "") -> str:
+    """P0-8：负例 few-shot 可注入系统提示；无负例时不残留空壳。"""
+    if not negative_exemplars:
+        return _SYSTEM_PROMPT_BASE
+    return (
+        _SYSTEM_PROMPT_BASE + "\n"
+        "【专家已拒绝的范例——请勿产出同类问题】\n"
+        + negative_exemplars
+    )
+
 
 ExtractChat = Callable[[str, str], dict[str, Any]]
 
@@ -532,7 +547,7 @@ def _build_user_prompt(sections: Sequence[dict[str, Any]]) -> str:
 # A2 上下文包（clause_family 策略）：条款自然边界组装，目标条款绝不截断
 # ---------------------------------------------------------------------------
 
-_PACKAGE_SYSTEM_PROMPT = (
+_PACKAGE_SYSTEM_PROMPT_BASE = (
     "你是 DLMS/COSEM 电表标准的功能需求抽取器。输入分三段：[TARGET_CLAUSE] 是本次要抽取的"
     "目标条款（整文，未经截断）；[CONTEXT] 是同族相邻条款（仅作上下文，帮助理解目标条款，"
     "不得从中产出条目）；[DOC_MAP] 是整篇地图热区摘要（仅作定位参考，可能缺席）。\n"
@@ -546,6 +561,17 @@ _PACKAGE_SYSTEM_PROMPT = (
     "variants[], exceptions[], related_dlms_objects[], description, source_quote, "
     "source_block_ids[]}]}。"
 )
+
+
+def _package_system_prompt(negative_exemplars: str = "") -> str:
+    """P0-8：clause_family 策略下的系统提示，负例可注入。"""
+    if not negative_exemplars:
+        return _PACKAGE_SYSTEM_PROMPT_BASE
+    return (
+        _PACKAGE_SYSTEM_PROMPT_BASE + "\n"
+        "【专家已拒绝的范例——请勿产出同类问题】\n"
+        + negative_exemplars
+    )
 
 
 def context_pack_strategy(value: str | None = None) -> str:
@@ -903,6 +929,23 @@ def _replace_with_retry(source: Path, target: Path) -> None:
             time.sleep(0.02 * (attempt + 1))
 
 
+def _load_adjudication_bank() -> dict[str, Any]:
+    """P0-8：只读消费裁决样本库；未配置或不存在 → 空库零注入。"""
+    from adjudication_bank import load_bank, resolve_bank_path
+    return load_bank(resolve_bank_path())
+
+
+def _negative_exemplars_for_section(section: dict[str, Any], bank: dict[str, Any]) -> str:
+    """为单条条款选取同模块相关负例并渲染为 prompt 文本。"""
+    if not bank or not bank.get("rejected"):
+        return ""
+    from adjudication_bank import render_negative_exemplars, select_negative_exemplars
+    module = _derive_module(section)
+    text = _source_text(section)
+    negs = select_negative_exemplars(bank, module, text, k=FUNCTIONAL_EXTRACT_NEGATIVE_K)
+    return render_negative_exemplars(negs) if negs else ""
+
+
 # ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
@@ -930,14 +973,18 @@ def extract_functional_requirements(
     if not sections:
         return [], "stub"
     active_chat, executed_route = _resolve_extract_chat(route, chat)
+    # P0-8：LLM 路径才需负例；stub 路径不读库。
+    bank = _load_adjudication_bank() if active_chat is not None else {}
     if strategy == "clause_family":
         return _extract_by_context_packages(
             sections, active_chat, executed_route, doc_map=doc_map, max_chars=max_chars,
+            bank=bank,
         )
     items: list[dict[str, Any]] | None = None
+    negative_exemplars = _negative_exemplars_for_section(sections[0], bank) if bank else ""
     if active_chat is not None:
         try:
-            payload = active_chat(_SYSTEM_PROMPT, _build_user_prompt(sections))
+            payload = active_chat(_system_prompt(negative_exemplars), _build_user_prompt(sections))
             items = _parse_llm_items(payload, sections)
         except Exception as exc:
             LOGGER.warning("functional_extract LLM 调用失败，退回 stub 路由：%s", exc)
@@ -969,18 +1016,21 @@ def _extract_by_context_packages(
     *,
     doc_map: dict[str, Any] | None,
     max_chars: int | None,
+    bank: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """clause_family 策略：每条款包一次 LLM 调用；包级失败只退化受影响条款。"""
     packages = build_context_packages(sections, doc_map=doc_map, max_chars=max_chars)
     items: list[dict[str, Any]] = []
     llm_ok = 0
     stub_fallback = 0
+    bank = bank or {}
     for package in packages:
         target = package["target"]
         package_items: list[dict[str, Any]] | None = None
+        negative_exemplars = _negative_exemplars_for_section(target, bank)
         if active_chat is not None:
             try:
-                payload = active_chat(_PACKAGE_SYSTEM_PROMPT, _build_package_prompt(package))
+                payload = active_chat(_package_system_prompt(negative_exemplars), _build_package_prompt(package))
                 package_items = _parse_llm_items(payload, [target])
             except Exception as exc:
                 LOGGER.warning("functional_extract 条款包 LLM 调用失败，该条款退回 stub：%s", exc)

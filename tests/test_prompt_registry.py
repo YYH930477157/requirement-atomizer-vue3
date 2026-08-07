@@ -29,11 +29,11 @@ class PromptRegistryTests(unittest.TestCase):
         for version in (
             "ai-extract-v24",
             "ai-verify-v4",
-            "analyze-llm-v7",
+            "analyze-llm-v8",
             "m2-review-v3",
             "llm-review-cache-v6",
             "enrich-v3",
-            "translation-prompt-v1",
+            "translation-prompt-v2",
             "doc-map-prompt-v1",
             "reconcile-prompt-v1",
             "adjudicate-prompt-v1",

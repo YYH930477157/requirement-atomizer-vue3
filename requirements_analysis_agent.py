@@ -14,6 +14,7 @@ def slim_vocabulary(vocabulary: dict[str, Any], module: str) -> dict[str, Any]:
 
 def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[str, Any],
                           template_refs: str = "", *, exemplars: str = "",
+                          negative_exemplars: str = "",
                           answers: str = "", doc_context: str = "",
                           section_context: str = "", siblings: str = "",
                           per_item_fields: bool = False) -> dict[str, str]:
@@ -71,6 +72,11 @@ def build_analysis_prompt(requirements: list[dict[str, Any]], vocabulary: dict[s
         lines += [
             "【专家已验收的同模块范例——粒度/写法基准，内容不得搬运进本需求】",
             exemplars,
+        ]
+    if negative_exemplars:
+        lines += [
+            "【专家已拒绝的同模块范例——请勿重复同类问题】",
+            negative_exemplars,
         ]
     if siblings:
         lines += ["【同模块相邻需求标题——仅供避免重复/保持粒度一致，不得从中引用编码或数值】",
