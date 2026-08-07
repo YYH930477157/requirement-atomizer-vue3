@@ -2472,6 +2472,13 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 payload["adjudication_bank"] = update_bank(bank_path, out_dir)
             except Exception as exc:  # pragma: no cover
                 LOGGER.warning("裁决样本库收割失败（忽略）：%s", exc)
+        # WS-H：成文导出后自动 harvest（默认关，env RATOMIZER_HARVEST=1 启用）
+        if "template-write" in ordered and os.environ.get("RATOMIZER_HARVEST", "").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                from harvest import harvest_assets
+                payload["harvest"] = harvest_assets(out_dir, actor="chain-harvest")
+            except Exception as exc:  # pragma: no cover
+                LOGGER.warning("WS-H harvest 失败（忽略）：%s", exc)
         payload["results"] = results
         payload["skipped_stages"] = skipped_stages
         # V3 WS-A A3：整篇对账 sidecar（RATOMIZER_RECONCILE=1 时链尾自动跑一次；
@@ -2934,7 +2941,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--llm-route", choices=["stub", "openai_compatible"], default="stub",
         help="裁定投票路由（默认 stub=仅规则筛疑 rules_only）")
 
-    # WS3 成本看板：数据全部来自文档级预算单记账流水（无新增埋点）。
+    # WS-H：知识沉淀闭环（成文导出后自动/手动 harvest）
+    harvest_parser = subparsers.add_parser(
+        "harvest",
+        help="执行 WS-H 知识沉淀闭环：收割裁决样本、confirmed 需求、方案、领域知识、语言资产、校准资产",
+    )
+    harvest_parser.add_argument("--out", type=Path, required=True)
+    harvest_parser.add_argument("--actor", default="desktop-harvest")
+
     cost_report_parser = subparsers.add_parser("cost-report")
     cost_report_parser.add_argument(
         "--out-dir", "--out", dest="out", type=Path, required=True,
@@ -3329,6 +3343,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "reconcile":
             payload = reconcile_task(args.out, route=args.llm_route)
+        elif args.command == "harvest":
+            from harvest import harvest_assets
+            payload = {"kind": "harvest", **harvest_assets(args.out, actor=args.actor)}
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:

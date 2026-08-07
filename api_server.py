@@ -485,6 +485,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/adjudication-summary":
             self.handle_adjudication_summary_get()
             return
+        if parsed.path == "/harvest-report":
+            self.handle_harvest_report_get()
+            return
         self.send_error(404, "Unknown endpoint")
 
     def do_POST(self) -> None:
@@ -553,6 +556,9 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/adjudications/overturn":
             self.handle_adjudication_overturn()
+            return
+        if parsed.path == "/harvest":
+            self.handle_harvest()
             return
         if parsed.path != "/review-actions":
             self.send_error(404, "Unknown endpoint")
@@ -1787,6 +1793,17 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         self.send_json(summary)
 
+    def handle_harvest_report_get(self) -> None:
+        """WS-H：读取知识沉淀报告（harvest_report.json）。"""
+        from harvest import read_harvest_report
+        try:
+            report = read_harvest_report(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "harvest_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json(report)
+
     def handle_adjudication_run(self) -> None:
         """WS-B：运行 AI 裁决（默认关；LLM 不可用时全部进 review）。"""
         from adjudicate import adjudicate_all
@@ -1832,6 +1849,19 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
                             "retryable": True}, status=503)
             return
         self.send_json({"ok": True, "record": record, "written": ["adjudication_results.jsonl"]})
+
+    def handle_harvest(self) -> None:
+        """WS-H：手动触发知识沉淀闭环。"""
+        from harvest import harvest_assets
+        payload = self.read_json_body() or {}
+        actor = str(payload.get("actor") or "api-harvest").strip()
+        try:
+            report = harvest_assets(self.output_dir, actor=actor)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "harvest_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"ok": True, **report})
 
     def read_json_body(self) -> dict | None:
         try:

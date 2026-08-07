@@ -32,6 +32,8 @@ import {
   type DependencyCandidatesPayload,
   type DependencyDecisionPayload,
   type FunctionalRequirementsPayload,
+  type HarvestReportPayload,
+  type HarvestRunPayload,
   type LifecycleEventsPayload,
   type LifecycleState,
   type ManualRequirementPayload,
@@ -63,6 +65,8 @@ type FunctionalClient = Pick<RequirementApiClient,
   | "loadAdjudicationSummary"
   | "runAdjudication"
   | "overturnAdjudication"
+  | "loadHarvestReport"
+  | "runHarvest"
   | "loadRequirements"
   | "translateRequirement">
 
@@ -208,6 +212,11 @@ const overturnForm = ref<{
 })
 const overturnSubmitting = ref(false)
 
+// WS-H 知识沉淀仪表盘
+const harvestReport = ref<HarvestReportPayload | null>(null)
+const harvestLoading = ref(false)
+const harvestRunning = ref(false)
+
 // 需求库「采纳」对话框（actor/reason 必填——经 reviewer_override 通道留痕）
 const adoptOpen = ref(false)
 const adoptTarget = ref<RequirementLibraryEntry | null>(null)
@@ -330,6 +339,36 @@ async function runAdjudication() {
     apiMessage.value = describeError(err, "运行裁决失败")
   } finally {
     adjudicationRunning.value = false
+  }
+}
+
+async function loadHarvestReport() {
+  const client = props.client
+  if (!client) return
+  harvestLoading.value = true
+  try {
+    harvestReport.value = await client.loadHarvestReport()
+  } catch (err) {
+    // harvest 文件可能不存在或后端未启用——非致命，不弹错误（仪表盘以禁用态展示）
+    harvestReport.value = null
+  } finally {
+    harvestLoading.value = false
+  }
+}
+
+async function triggerHarvest() {
+  const client = props.client
+  if (!client || harvestRunning.value) return
+  harvestRunning.value = true
+  apiMessage.value = ""
+  try {
+    const payload: HarvestRunPayload = await client.runHarvest({ actor: "vue3-ui" })
+    harvestReport.value = payload
+    apiMessage.value = `知识沉淀完成：已摄入 ${payload.metrics?.total_ingested ?? 0} 条，知识库命中 ${payload.metrics?.kb_hit_count ?? 0}，正样本 ${payload.metrics?.few_shot_positive_count ?? 0}，拦截 ${payload.metrics?.negative_intercept_count ?? 0}`
+  } catch (err) {
+    apiMessage.value = describeError(err, "运行知识沉淀失败")
+  } finally {
+    harvestRunning.value = false
   }
 }
 
@@ -586,8 +625,9 @@ async function loadAll() {
       client.loadDependencyCandidates().catch((err: unknown) => err),
       loadLifecycleEventList(client),
     ])
-    // adjudication 在首屏并行加载；失败不阻塞主列表
+    // adjudication / harvest 在首屏并行加载；失败不阻塞主列表
     void loadAdjudications()
+    void loadHarvestReport()
     if (generation !== loadGeneration) return
 
     const items: FunctionalItem[] = [...functionalResult.items, ...manualResult.items]
@@ -1056,6 +1096,54 @@ function toggleChildren(itemId: string) {
     </header>
 
     <div v-if="apiMessage" class="fr-message" data-testid="fr-message">{{ apiMessage }}</div>
+
+    <!-- WS-H 知识沉淀仪表盘：默认折叠，显示五指标与手动 harvest 入口 -->
+    <details class="harvest-dashboard" data-testid="harvest-dashboard">
+      <summary class="harvest-summary">
+        <span>知识沉淀 (WS-H)</span>
+        <span v-if="harvestReport?.enabled" class="harvest-status on">已启用</span>
+        <span v-else class="harvest-status off">未启用</span>
+      </summary>
+      <div class="harvest-body">
+        <div class="harvest-metrics">
+          <div class="metric-card" data-testid="harvest-metric-ingested">
+            <span class="metric-value">{{ harvestReport?.metrics?.total_ingested ?? "-" }}</span>
+            <span class="metric-label">本次已摄入</span>
+          </div>
+          <div class="metric-card" data-testid="harvest-metric-library-hit-rate">
+            <span class="metric-value">{{ harvestReport?.metrics?.next_project_library_hit_rate != null ? `${(harvestReport.metrics.next_project_library_hit_rate * 100).toFixed(1)}%` : "-" }}</span>
+            <span class="metric-label">下个项目库命中率</span>
+          </div>
+          <div class="metric-card" data-testid="harvest-metric-kb-hits">
+            <span class="metric-value">{{ harvestReport?.metrics?.kb_hit_count ?? "-" }}</span>
+            <span class="metric-label">知识库命中</span>
+          </div>
+          <div class="metric-card" data-testid="harvest-metric-few-shot">
+            <span class="metric-value">{{ harvestReport?.metrics?.few_shot_positive_count ?? "-" }}</span>
+            <span class="metric-label">正样本 few-shot</span>
+          </div>
+          <div class="metric-card" data-testid="harvest-metric-negative-intercept">
+            <span class="metric-value">{{ harvestReport?.metrics?.negative_intercept_count ?? "-" }}</span>
+            <span class="metric-label">负样本拦截</span>
+          </div>
+        </div>
+        <div class="harvest-meta">
+          <span v-if="harvestReport?.harvested_at">最后沉淀：{{ new Date(harvestReport.harvested_at).toLocaleString() }}</span>
+          <span v-if="harvestReport?.project_tag">项目标签：{{ harvestReport.project_tag }}</span>
+          <span v-else>未配置项目标签</span>
+        </div>
+        <button
+          class="fr-button"
+          type="button"
+          :disabled="!client || harvestRunning"
+          data-testid="fr-run-harvest"
+          @click="triggerHarvest"
+        >
+          <span v-if="harvestRunning">沉淀中…</span>
+          <span v-else>运行知识沉淀</span>
+        </button>
+      </div>
+    </details>
 
     <!-- 功能需求级视图 -->
     <div v-if="mode === 'functional'" class="fr-split">
@@ -1718,4 +1806,17 @@ function toggleChildren(itemId: string) {
 .req { color: #b91c1c; font-style: normal; margin-left: 2px; }
 .sheet-enter-active, .sheet-leave-active { transition: opacity 0.18s ease; }
 .sheet-enter-from, .sheet-leave-to { opacity: 0; }
+
+.harvest-dashboard { margin-top: 10px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fafafa; }
+.harvest-summary { padding: 10px 14px; cursor: pointer; font-size: 13.5px; font-weight: 600; color: #1f2937; display: flex; align-items: center; gap: 10px; list-style: none; }
+.harvest-summary::-webkit-details-marker { display: none; }
+.harvest-status { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+.harvest-status.on { background: #dcfce7; color: #166534; }
+.harvest-status.off { background: #e5e7eb; color: #4b5563; }
+.harvest-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+.harvest-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+.metric-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.metric-value { font-size: 20px; font-weight: 700; color: #1d4ed8; }
+.metric-label { font-size: 11.5px; color: #6b7280; text-align: center; }
+.harvest-meta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 12px; color: #6b7280; }
 </style>

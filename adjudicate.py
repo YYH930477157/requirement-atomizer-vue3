@@ -32,13 +32,17 @@ from typing import Any, Callable, Sequence
 from cosem_behavior_spec import extract_codes
 from result_package import governed_artifact_path
 
-ADJUDICATION_VERSION = "adjudication-v1"
-ADJUDICATION_SCHEMA = "adjudication-record/v1"
+ADJUDICATION_VERSION = "adjudication-v2"
+ADJUDICATION_SCHEMA = "adjudication-record/v2"
 # WS-D D2：语义投票 prompt 的版本戳（prompt_registry 登记锚；prompt 文本变更必须 bump）。
 ADJUDICATE_PROMPT_VERSION = "adjudicate-prompt-v1"
 AUDIT_SCHEMA = "adjudication-audit/v1"
 RESULTS_FILENAME = "adjudication_results.jsonl"
 AUDIT_FILENAME = "adjudication_audit.jsonl"
+
+# WS-B V4：忠实性证据门槛（低分二分流用，不用于自动 reject）
+FAITHFULNESS_MIN_SOURCE_CHARS = 6
+FAITHFULNESS_MIN_BLOCK_IDS = 1
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
@@ -507,6 +511,8 @@ class AdjudicationRecord:
     reason: str
     timestamp: str
     version: str
+    low_score_category: str | None = None
+    customer_specific: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -523,6 +529,8 @@ class AdjudicationRecord:
             "semantic_usage": self.semantic_usage,
             "calibration_status": self.calibration_status,
             "sample_selected": self.sample_selected,
+            "low_score_category": self.low_score_category,
+            "customer_specific": self.customer_specific,
             "actor": self.actor,
             "reason": self.reason,
             "timestamp": self.timestamp,
@@ -541,6 +549,103 @@ def _high_risk_for_sampling(item: dict[str, Any]) -> bool:
     return False
 
 
+def _faithfulness_evidence_ok(item: dict[str, Any]) -> tuple[bool, str]:
+    """V4 红线：忠实性证据为骨架——检查来源引句/块 ID/结构字段是否足以对着原文验证。
+
+    返回 (ok, reason)。不满足时 low_score_category = "insufficient_evidence"，进人工队列。
+    """
+    source_quote = str(item.get("source_quote") or "").strip()
+    if len(source_quote) < FAITHFULNESS_MIN_SOURCE_CHARS:
+        return False, f"来源引句过短（{len(source_quote)} 字符），无法逐字验证"
+
+    block_ids = [str(b) for b in (item.get("source_block_ids") or []) if str(b)]
+    if len(block_ids) < FAITHFULNESS_MIN_BLOCK_IDS:
+        return False, "缺少 source_block_ids，来源无法定位"
+
+    objective = str(item.get("objective") or "").strip()
+    if not objective:
+        return False, "objective 为空，无明确义务主体"
+
+    return True, ""
+
+
+def _kb_hit_for_item(item: dict[str, Any]) -> bool:
+    """KB 命中只作加分项：命中返回 True，未命中/无库返回 False，不扣分。"""
+    from adjudication_bank import load_bank, resolve_bank_path, select_exemplars
+
+    bank_path = resolve_bank_path()
+    if bank_path is None:
+        return False
+    bank = load_bank(bank_path)
+    module = str(item.get("module") or "")
+    query = " ".join([
+        str(item.get("objective") or ""),
+        " ".join(str(b) for b in (item.get("behaviors") or [])),
+        str(item.get("description") or ""),
+    ])
+    return bool(select_exemplars(bank, module, query))
+
+
+def _unfamiliar_signal(item: dict[str, Any]) -> bool:
+    """内容"不熟"的启发式信号：模块罕见 / 无历史库命中 / 无 few-shot 正例。
+
+    仅用于 unfamiliar_but_faithful 分流，不进入否决逻辑。
+    """
+    # 若 KB 命中，则不视为不熟
+    if _kb_hit_for_item(item):
+        return False
+    # 需求库命中也视为熟
+    library_path_env = os.environ.get("RATOMIZER_REQUIREMENT_LIBRARY", "").strip()
+    if library_path_env:
+        from requirement_schema import search_requirement_library, tokenize_requirement
+        try:
+            library: list[dict[str, Any]] = []
+            with Path(library_path_env).open(encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        library.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+            query = " ".join([
+                str(item.get("objective") or ""),
+                " ".join(str(b) for b in (item.get("behaviors") or [])),
+            ])
+            if search_requirement_library(query, library, limit=1):
+                return False
+        except Exception:
+            pass
+    return True
+
+
+def _build_low_score_reason(
+    category: str,
+    *,
+    faithfulness_reason: str = "",
+    approve_ok: bool = False,
+    calibration_status: str = "",
+    review_reasons: list[str] | None = None,
+    semantic_vote_value: str | None = None,
+) -> str:
+    """为低分二分流生成 reason 文本。"""
+    if category == "insufficient_evidence":
+        return f"证据不足判不了：{faithfulness_reason}"
+    if category == "unfamiliar_but_faithful":
+        if approve_ok:
+            return "内容不熟但抽取忠实，可放行并标 customer_specific"
+        parts: list[str] = ["内容不熟但抽取忠实"]
+        if calibration_status != "calibrated":
+            parts.append(f"校准未通过：{calibration_status}")
+        if review_reasons:
+            parts.append(f"硬依据黄灯：{'; '.join(review_reasons)}")
+        if semantic_vote_value != "accept":
+            parts.append(f"语义投票={semantic_vote_value or 'unavailable'}")
+        return "；".join(parts) or "内容不熟但抽取忠实，需专家确认"
+    return ""
+
+
 def adjudicate_item(
     item: dict[str, Any],
     *,
@@ -551,15 +656,17 @@ def adjudicate_item(
     chat: Callable[[str, str], dict[str, Any]] | None = None,
     actor: str = "adjudicator",
 ) -> AdjudicationRecord:
-    """对单条功能需求做三路裁决。
+    """对单条功能需求做三路裁决（V4 分数构成）。
 
     决策顺序：
-    1. 硬依据检查（一票否决）。
-    2. 真值校准状态（仅影响是否允许自动通过）。
-    3. LLM 语义投票。
-    4. 综合：accept 需要 approve 开关 + 校准通过 + 硬依据无 review 理由 + 语义 accept；
-       reject 需要 reject 开关 + 硬依据红灯 + 语义非 accept；
-       其余进 review。
+    1. 硬依据检查（一票否决）—— auto-reject 仅允许此处触发。
+    2. 忠实性证据骨架——证据不足判不了 → ``insufficient_evidence`` → review。
+    3. KB 命中只作加分项；不熟但忠实 → ``unfamiliar_but_faithful`` → 可放行但标
+       ``customer_specific``。
+    4. 真值校准状态（仅影响是否允许自动通过）。
+    5. LLM 语义投票。
+    6. 综合：accept 需要 approve 开关 + 校准通过 + 硬依据无 review 理由 + 语义 accept；
+       reject 只允许硬依据红灯触发；其余进 review。
     """
     rid = str(item.get("functional_requirement_id") or item.get("requirement_uid") or "").strip()
     if not rid:
@@ -568,7 +675,7 @@ def adjudicate_item(
     hard = hard_basis_check(item, out_dir=out_dir, conservation=conservation)
     calibration = calibration or calibration_state(out_dir or ".")
 
-    # 硬依据红灯 → reject（只要 reject 开关开）
+    # 1. 硬依据红灯 → reject（只要 reject 开关开）；否则 review。auto-reject 仅此一处。
     if not hard.ok:
         if auto_reject_enabled():
             decision = "reject"
@@ -590,8 +697,17 @@ def adjudicate_item(
             version=ADJUDICATION_VERSION,
         )
 
-    # 自动通过需要校准通过；未就绪则语义投票仅用于 review/reject 判定
+    # 2. 忠实性证据骨架
+    faithful_ok, faithfulness_reason = _faithfulness_evidence_ok(item)
+
+    # 3. LLM 语义投票（硬依据无红灯后调用）
     semantic_vote_value, usage = semantic_vote(item, route=route, chat=chat)
+
+    # 4. 加分项：KB 命中 / 不熟信号
+    kb_hit = _kb_hit_for_item(item)
+    unfamiliar = faithful_ok and _unfamiliar_signal(item)
+    customer_specific = False
+    low_score_category: str | None = None
 
     approve_ok = (
         auto_approve_enabled()
@@ -600,7 +716,41 @@ def adjudicate_item(
         and semantic_vote_value == "accept"
     )
 
-    if approve_ok:
+    # 低分二分流
+    if not faithful_ok:
+        low_score_category = "insufficient_evidence"
+        decision = "review"
+        reason = _build_low_score_reason(
+            low_score_category, faithfulness_reason=faithfulness_reason
+        )
+        sample_selected = False
+    elif unfamiliar:
+        low_score_category = "unfamiliar_but_faithful"
+        customer_specific = True
+        if approve_ok:
+            # 客户特殊需求不因不熟悉被自动拒绝：approve_ok 时 accept 但标记
+            if random.random() < review_rate():
+                decision = "review"
+                reason = f"自动 accept 后按 review_rate={review_rate()} 强制降级为 review（客户特定内容能力边界抽样）"
+                sample_selected = False
+            else:
+                high_risk = _high_risk_for_sampling(item)
+                sample_selected = high_risk or (random.random() < sample_rate())
+                decision = "accept"
+                reason = "硬依据全绿 + 语义 accept + 真值校准通过（客户特定内容，抽取忠实）"
+                if sample_selected:
+                    reason += "（已进抽审队列）"
+        else:
+            decision = "review"
+            reason = _build_low_score_reason(
+                low_score_category,
+                approve_ok=approve_ok,
+                calibration_status=calibration.status,
+                review_reasons=hard.review_reasons,
+                semantic_vote_value=semantic_vote_value,
+            )
+            sample_selected = False
+    elif approve_ok:
         # review_rate：按概率强制降级为 review（模拟能力边界抽样）
         if random.random() < review_rate():
             decision = "review"
@@ -615,8 +765,9 @@ def adjudicate_item(
             if sample_selected:
                 reason += "（已进抽审队列）"
     elif semantic_vote_value == "reject" and auto_reject_enabled():
-        decision = "reject"
-        reason = f"语义投票 reject；硬依据无红灯"
+        # V4：语义 reject 不再触发 auto-reject（拒绝仅允许硬依据红灯）
+        decision = "review"
+        reason = "语义投票 reject，但 V4 自动拒绝仅限硬依据红灯，故转人工审"
         sample_selected = False
     else:
         decision = "review"
@@ -640,6 +791,8 @@ def adjudicate_item(
         semantic_usage=usage,
         calibration_status=calibration.status,
         sample_selected=sample_selected,
+        low_score_category=low_score_category,
+        customer_specific=customer_specific,
         actor=actor,
         reason=reason,
         timestamp=_now_iso(),

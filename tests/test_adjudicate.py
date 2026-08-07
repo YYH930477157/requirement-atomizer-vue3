@@ -271,18 +271,72 @@ class TestAdjudicateItem(EnvFixtureMixin, unittest.TestCase):
             record = adjudicate_item(self._item(), out_dir=tmp, chat=chat)
             self.assertEqual(record.decision, "accept")
 
-    def test_semantic_reject_with_reject_switch(self) -> None:
+    def test_semantic_reject_does_not_auto_reject_without_hard_basis(self) -> None:
+        # V4：自动拒绝仅限硬依据红灯；语义 reject 只转人工 review
         os.environ["RATOMIZER_AUTO_ADJUDICATE_REJECT"] = "1"
         item = self._item()
         chat = lambda _s, _u: {"vote": "reject", "reason": "bad"}
         record = adjudicate_item(item, out_dir=".", chat=chat)
-        self.assertEqual(record.decision, "reject")
+        self.assertEqual(record.decision, "review")
+        self.assertNotEqual(record.decision, "reject")
 
     def test_unavailable_llm_goes_review(self) -> None:
         item = self._item()
         record = adjudicate_item(item, out_dir=".", route="stub")
         self.assertEqual(record.decision, "review")
         self.assertFalse(record.semantic_usage["available"])
+
+    def test_insufficient_evidence_short_quote_goes_review(self) -> None:
+        # 来源引句过短 < FAITHFULNESS_MIN_SOURCE_CHARS，应标记 insufficient_evidence
+        item = self._item(source_quote="shall")
+        chat = lambda _s, _u: {"vote": "accept", "reason": "ok"}
+        record = adjudicate_item(item, out_dir=".", chat=chat)
+        self.assertEqual(record.decision, "review")
+        self.assertEqual(record.low_score_category, "insufficient_evidence")
+        self.assertFalse(record.customer_specific)
+
+    def test_insufficient_evidence_missing_blocks_goes_review(self) -> None:
+        item = self._item(source_block_ids=[])
+        chat = lambda _s, _u: {"vote": "accept", "reason": "ok"}
+        record = adjudicate_item(item, out_dir=".", chat=chat)
+        self.assertEqual(record.decision, "review")
+        self.assertEqual(record.low_score_category, "insufficient_evidence")
+
+    def test_unfamiliar_but_faithful_accepted_and_tagged_when_approve_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            truth = Path(tmp) / "truth.jsonl"
+            truth.write_text(json.dumps({
+                "entry_id": "T1",
+                "doc_ref": "doc",
+                "source_anchor": {"section": "4.1", "coordinates": ["BLK-000001"]},
+                "objective": "measure",
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+            products = Path(tmp) / "functional_requirements.json"
+            products.write_text(json.dumps({
+                "doc_ref": "doc",
+                "items": [self._item(objective="unfamiliar capability X")],
+            }, ensure_ascii=False), encoding="utf-8")
+            os.environ["RATOMIZER_AUTO_ADJUDICATE_APPROVE"] = "1"
+            os.environ["RATOMIZER_AUTO_ADJUDICATE_TRUTH_SET"] = str(truth)
+            os.environ["RATOMIZER_AUTO_ADJUDICATE_SAMPLE_RATE"] = "0"
+            os.environ["RATOMIZER_AUTO_ADJUDICATE_REVIEW_RATE"] = "0"
+            chat = lambda _s, _u: {"vote": "accept", "reason": "ok"}
+            record = adjudicate_item(
+                self._item(objective="unfamiliar capability X"),
+                out_dir=tmp,
+                chat=chat,
+            )
+            self.assertEqual(record.decision, "accept")
+            self.assertEqual(record.low_score_category, "unfamiliar_but_faithful")
+            self.assertTrue(record.customer_specific)
+
+    def test_unfamiliar_but_faithful_goes_review_when_approve_disabled(self) -> None:
+        item = self._item(objective="unfamiliar capability X")
+        chat = lambda _s, _u: {"vote": "accept", "reason": "ok"}
+        record = adjudicate_item(item, out_dir=".", chat=chat)
+        self.assertEqual(record.decision, "review")
+        self.assertEqual(record.low_score_category, "unfamiliar_but_faithful")
+        self.assertTrue(record.customer_specific)
 
 
 class TestAdjudicateAll(EnvFixtureMixin, unittest.TestCase):

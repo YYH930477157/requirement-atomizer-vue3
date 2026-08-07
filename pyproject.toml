@@ -86,6 +86,7 @@ py-modules = [
   "doc_map",
   "reconcile",
   "adjudicate",
+  "harvest",
   "api_server",
   "assemble_spec",
   "atomic_requirement_schema",
