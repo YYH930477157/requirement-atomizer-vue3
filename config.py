@@ -86,6 +86,10 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_DOCX_EXTRA_CHANNELS", "0", "DOCX 文本框/页眉页脚额外通道收容开关（=1 启用 parsers/docx_extra_channels.py；默认 0=正文块与 golden 基线逐字节一致）", False),
     EnvVar("RATOMIZER_XLSX_REQUIREMENT_LIST", "0", "Excel 需求清单型分流开关（=1 对 xlsx 行映射抽取并产出 base_library_candidates.jsonl；默认 0=维持 table 路径）", False),
     EnvVar("RATOMIZER_CLAIM_RESCAN", "0", "claim 账本四视角确定性复扫开关（=1 将归属/数值/约束/覆盖问题汇入 quality_report；默认 0）", False),
+    # --- V4 A9 招标文件适配（默认关，OFF 时行为字节不变） ---
+    EnvVar("RATOMIZER_TENDER_TABLE_FILTER", "0", "A9-1 商务/表单表识别排除开关（=1 启用 tender_table_filter.py；默认 0=维持既有 table 分类）", False),
+    EnvVar("RATOMIZER_TENDER_REGION_FILTER", "0", "A9-2 tender 区域识别开关（=1 启用 tender_regions.py；默认 0=维持既有 doc_region 标记）", False),
+    EnvVar("RATOMIZER_TENDER_FIGURE_PAGE_FILTER", "0", "A9-3 疑似流程图页强制高亮开关（=1 在未抽取登记册中单列整页图页；默认 0=维持既有登记行为）", False),
     # --- V3 WS-A 三遍法核心（A1 整篇地图 / A2 上下文包 / A3 整篇对账）---
     # 全部默认关闭/legacy：新路径 opt-in，默认行为面与缓存指纹逐字节不变。
     EnvVar("RATOMIZER_DOC_MAP", "0", "A1 整篇地图开关（=1 启用 doc_map.LLM 单遍文档地图并写 doc_map.json；预算走文档预算单 structure_hypothesis 子预算，耗尽/stub 如实 unavailable；默认 0=不生成，调用方走无地图路径）", False),

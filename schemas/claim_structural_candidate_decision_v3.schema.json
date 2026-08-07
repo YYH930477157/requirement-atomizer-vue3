@@ -67,7 +67,8 @@
         "rejected_matrix_marker_cell",
         "untyped_colon_spec_cell",
         "parse_incomplete_table_cell",
-        "normative_context_conflict"
+        "normative_context_conflict",
+        "tender_commercial_table"
       ]
     },
     "rule_id": {
@@ -78,7 +79,8 @@
         "catalog-rejected-matrix-marker-cell",
         "catalog-untyped-colon-spec-cell",
         "catalog-parse-incomplete-table-cell",
-        "catalog-normative-context-conflict"
+        "catalog-normative-context-conflict",
+        "catalog-tender-commercial-table"
       ]
     }
   }
