@@ -61,6 +61,16 @@ LOGGER = logging.getLogger("requirement_atomizer")
 # 入口开关（config.ENV_REGISTRY 登记）：默认 0=旧原子化路径，本模块不运行。
 ENTRY_SWITCH_ENV = "RATOMIZER_FUNCTIONAL_EXTRACT"
 
+# --- V3 WS-A A2 上下文包策略（默认 legacy=遗留切片，行为面不变）---
+# legacy：_build_user_prompt 遗留 4000 字符切片（保留，默认）。
+# clause_family：按条款自然边界组装上下文包——目标条款整文（绝不截断）+ 同族相邻条款
+# （复用 extract_units.clause_key 两级族键）+ doc_map 热区摘要（A1 有地图时）；包大小上限
+# 只约束拼包（邻居可舍弃），单条款自身超限仍整文进包（条款是自然原子，宁超勿截）。
+CONTEXT_PACK_STRATEGY_ENV = "RATOMIZER_CONTEXT_PACK_STRATEGY"
+CONTEXT_PACK_MAX_CHARS_ENV = "RATOMIZER_CONTEXT_PACK_MAX_CHARS"
+CONTEXT_PACK_DEFAULT_MAX_CHARS = 24000
+CONTEXT_PACK_STRATEGIES = ("legacy", "clause_family")
+
 # 模态动词（与 functional_drilldown 同源；用于确定性兜底与叙述校验，非下钻判定本身）
 _OBLIGATION_MODALS = (
     "shall", "must", "will", "may", "should",
@@ -119,6 +129,8 @@ def extraction_fingerprint(
     sections: Sequence[dict[str, Any]],
     *,
     route_key: str = "",
+    context_strategy: str = "",
+    doc_map_key: str = "",
 ) -> str:
     """整批条款的指纹，叠加版本/prompt/护栏/route 维度进缓存键。
 
@@ -127,6 +139,10 @@ def extraction_fingerprint(
     模型变化即指纹失配，旧 stub 缓存自然失效——这是**预期行为**（它们本就不该被复用），不是
     回归。``run_functional_extract`` 在算指纹前先用 ``_resolve_route_label`` 把 route 解析成
     稳定身份标签再传入。
+
+    A2：``context_strategy``/``doc_map_key`` 仅在非 legacy 时进键——legacy 指纹与特性引入前
+    逐字节一致（旧缓存继续有效，默认行为面零变化）；clause_family 策略或 doc_map 摘要进入
+    prompt 时换键空间，两策略产物绝不共键。
     """
     canonical = {
         "version": FUNCTIONAL_EXTRACT_VERSION,
@@ -135,6 +151,9 @@ def extraction_fingerprint(
         "route_key": str(route_key or ""),
         "clauses": [clause_fingerprint(section) for section in sections],
     }
+    if context_strategy and context_strategy != "legacy":
+        canonical["context_strategy"] = str(context_strategy)
+        canonical["doc_map_key"] = str(doc_map_key or "")
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -509,6 +528,147 @@ def _build_user_prompt(sections: Sequence[dict[str, Any]]) -> str:
     return json.dumps({"clauses": compact}, ensure_ascii=False)
 
 
+# ---------------------------------------------------------------------------
+# A2 上下文包（clause_family 策略）：条款自然边界组装，目标条款绝不截断
+# ---------------------------------------------------------------------------
+
+_PACKAGE_SYSTEM_PROMPT = (
+    "你是 DLMS/COSEM 电表标准的功能需求抽取器。输入分三段：[TARGET_CLAUSE] 是本次要抽取的"
+    "目标条款（整文，未经截断）；[CONTEXT] 是同族相邻条款（仅作上下文，帮助理解目标条款，"
+    "不得从中产出条目）；[DOC_MAP] 是整篇地图热区摘要（仅作定位参考，可能缺席）。\n"
+    "只对目标条款产出功能需求级条目：以「一个可独立测试的系统行为目标」为一条，同一目标下的"
+    "多个行为归入 behaviors 列表不拆条，表格行机械事实归并入所属需求的 data_constraints。\n"
+    "硬约束：①只能引用目标条款中已存在的原文，禁止臆造 OBIS/hex/class_id/标准号/数值；"
+    "②只填叙述字段（objective/behaviors/preconditions/data_constraints/variants/exceptions/"
+    "related_dlms_objects/description）；③不得填写 id/模块/归属/编码等结构字段；"
+    "④每条产出必须回指目标条款的 source_block_ids（取自输入，原样回填）。\n"
+    "输出 JSON：{\"items\":[{objective, behaviors[], preconditions[], data_constraints[], "
+    "variants[], exceptions[], related_dlms_objects[], description, source_quote, "
+    "source_block_ids[]}]}。"
+)
+
+
+def context_pack_strategy(value: str | None = None) -> str:
+    """上下文包组装策略（ENV_REGISTRY 登记）：默认 legacy=遗留切片，行为面不变。"""
+    raw = os.environ.get(CONTEXT_PACK_STRATEGY_ENV) if value is None else value
+    token = str(raw or "").strip().lower()
+    return token if token in CONTEXT_PACK_STRATEGIES else "legacy"
+
+
+def context_pack_max_chars(value: str | None = None) -> int:
+    """上下文包大小上限（只约束拼包；目标条款自身超限仍整文进包）。"""
+    raw = os.environ.get(CONTEXT_PACK_MAX_CHARS_ENV) if value is None else value
+    try:
+        parsed = int(str(raw or "").strip())
+    except (TypeError, ValueError):
+        return CONTEXT_PACK_DEFAULT_MAX_CHARS
+    return parsed if parsed > 0 else CONTEXT_PACK_DEFAULT_MAX_CHARS
+
+
+def _clause_text_size(section: dict[str, Any]) -> int:
+    return len(str(section.get("text") or "")) + len(str(section.get("heading") or "")) + 4
+
+
+def _doc_map_summary_for(section: dict[str, Any], doc_map: dict[str, Any] | None) -> str:
+    """从 A1 整篇地图摘取本条款的热区/域摘要（无地图或无论点如实空串）。"""
+    if not isinstance(doc_map, dict) or doc_map.get("status") != "ok":
+        return ""
+    path = [str(s) for s in (section.get("section_path") or []) if str(s).strip()]
+    chapter = path[0] if path else ""
+    section_id = str(section.get("section_id") or "")
+    lines: list[str] = []
+    annotations = doc_map.get("llm_annotations") or {}
+    for domain in annotations.get("domains") or []:
+        if section_id and section_id in [str(s) for s in (domain.get("section_ids") or [])]:
+            lines.append(f"功能域 {domain.get('name') or ''}: {domain.get('summary') or ''}".strip())
+    scaffold = doc_map.get("scaffold") or {}
+    density = {
+        str(row.get("chapter") or ""): row
+        for row in (scaffold.get("density_hotspots") or [])
+    }
+    if chapter and chapter in density:
+        row = density[chapter]
+        lines.append(
+            f"章节 {chapter} 需求密度 {row.get('density')}"
+            f"（{row.get('requirement_like_blocks')}/{row.get('total_blocks')} 块）"
+        )
+    for entry in annotations.get("hotspot_rationale") or []:
+        if chapter and str(entry.get("chapter") or "") == chapter:
+            rationale = str(entry.get("rationale") or "").strip()
+            if rationale:
+                lines.append(f"热区理由：{rationale}")
+    return "\n".join(lines)
+
+
+def build_context_packages(
+    sections: Sequence[dict[str, Any]],
+    *,
+    doc_map: dict[str, Any] | None = None,
+    max_chars: int | None = None,
+) -> list[dict[str, Any]]:
+    """按条款自然边界组装上下文包：目标条款整文 + 同族相邻条款 + doc_map 热区摘要。
+
+    上限 ``max_chars`` 只约束拼包——装不下的**邻居**整条舍弃（不截断），目标条款自身
+    超限仍整文进包（条款是自然原子，宁超勿截）。同族判定复用 ``extract_units.clause_key``
+    两级族键；无编号条款（族键 None）不带邻居（宁缺勿猜）。
+    """
+    from extract_units import clause_key
+
+    cap = max_chars if max_chars and max_chars > 0 else CONTEXT_PACK_DEFAULT_MAX_CHARS
+    families: dict[str, list[dict[str, Any]]] = {}
+    for section in sections:
+        key = clause_key(section)
+        if key is not None:
+            families.setdefault(key, []).append(section)
+    packages: list[dict[str, Any]] = []
+    for section in sections:
+        key = clause_key(section)
+        budget = cap - _clause_text_size(section)
+        neighbors: list[dict[str, Any]] = []
+        if key is not None:
+            for sibling in families.get(key, []):
+                if sibling is section:
+                    continue
+                size = _clause_text_size(sibling)
+                if size > budget:
+                    continue  # 装不下的邻居整条舍弃（不截断）；后续小邻居仍可入包
+                neighbors.append(sibling)
+                budget -= size
+        packages.append({
+            "target": section,
+            "neighbors": neighbors,
+            "clause_family": key,
+            "doc_map_summary": _doc_map_summary_for(section, doc_map),
+        })
+    return packages
+
+
+def _package_clause_payload(section: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "section": " / ".join(str(s) for s in (section.get("section_path") or []))
+        or str(section.get("section_id") or ""),
+        "heading": str(section.get("heading") or ""),
+        # 条款自然边界：整文，不切片（与 legacy _build_user_prompt 的 [:4000] 相对）
+        "text": str(section.get("text") or ""),
+        "block_ids": [str(b) for b in (section.get("block_ids") or [])],
+    }
+
+
+def _build_package_prompt(package: dict[str, Any]) -> str:
+    parts = ["[TARGET_CLAUSE]", json.dumps(
+        _package_clause_payload(package["target"]), ensure_ascii=False
+    )]
+    neighbors = [_package_clause_payload(s) for s in package.get("neighbors") or []]
+    if neighbors:
+        parts.append("[CONTEXT]")
+        parts.append(json.dumps({"neighbor_clauses": neighbors}, ensure_ascii=False))
+    summary = str(package.get("doc_map_summary") or "").strip()
+    if summary:
+        parts.append("[DOC_MAP]")
+        parts.append(summary)
+    return "\n".join(parts)
+
+
 def _parse_llm_items(payload: Any, sections: Sequence[dict[str, Any]]) -> list[dict[str, Any]] | None:
     """校验 LLM 返回并按条款顺序 coerce。返回 None 表示返回非法（调用方走 stub）。"""
     if not isinstance(payload, dict):
@@ -753,16 +913,27 @@ def extract_functional_requirements(
     chat: ExtractChat | None = None,
     route: str | None = "stub",
     blocks: Sequence[dict[str, Any]] | None = None,
+    strategy: str = "legacy",
+    doc_map: dict[str, Any] | None = None,
+    max_chars: int | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """条款集合 → 功能需求条目列表 + 执行路由标签（如实，不夸大）。
 
     LLM 单次调用直出（route=openai_compatible 且有 key）；stub / 调用失败 / 返回非法 →
     确定性退化每条款一条，路由标签如实为 'stub'。返回的 items 字段模型与
     functional_catalog 同构，结构字段确定性冻结、叙述字段经护栏清洗。
+
+    A2：``strategy="clause_family"`` 时按条款自然边界逐包调用（目标条款整文不截断 +
+    同族邻居 + doc_map 热区摘要）；部分包 LLM 失败只对受影响条款诚实 stub 退化，
+    路由标签如实为 'mixed'（全部失败为 'stub'，绝不夸大为纯 LLM 路由）。
     """
     if not sections:
         return [], "stub"
     active_chat, executed_route = _resolve_extract_chat(route, chat)
+    if strategy == "clause_family":
+        return _extract_by_context_packages(
+            sections, active_chat, executed_route, doc_map=doc_map, max_chars=max_chars,
+        )
     items: list[dict[str, Any]] | None = None
     if active_chat is not None:
         try:
@@ -791,6 +962,51 @@ def extract_functional_requirements(
     return items, executed_route
 
 
+def _extract_by_context_packages(
+    sections: Sequence[dict[str, Any]],
+    active_chat: ExtractChat | None,
+    executed_route: str,
+    *,
+    doc_map: dict[str, Any] | None,
+    max_chars: int | None,
+) -> tuple[list[dict[str, Any]], str]:
+    """clause_family 策略：每条款包一次 LLM 调用；包级失败只退化受影响条款。"""
+    packages = build_context_packages(sections, doc_map=doc_map, max_chars=max_chars)
+    items: list[dict[str, Any]] = []
+    llm_ok = 0
+    stub_fallback = 0
+    for package in packages:
+        target = package["target"]
+        package_items: list[dict[str, Any]] | None = None
+        if active_chat is not None:
+            try:
+                payload = active_chat(_PACKAGE_SYSTEM_PROMPT, _build_package_prompt(package))
+                package_items = _parse_llm_items(payload, [target])
+            except Exception as exc:
+                LOGGER.warning("functional_extract 条款包 LLM 调用失败，该条款退回 stub：%s", exc)
+                package_items = None
+        if package_items is None:
+            items.append(_stub_item(target, 1))
+            stub_fallback += 1
+        else:
+            items.extend(package_items)
+            llm_ok += 1
+    if active_chat is None or llm_ok == 0:
+        final_route = "stub"
+    elif stub_fallback:
+        final_route = "mixed"  # 部分包 LLM 部分 stub——如实标混合，不夸大
+    else:
+        final_route = executed_route
+    if stub_fallback and active_chat is not None:
+        # 核心交付物部分降级同样记预算单（S1-1 同款纪律：不允许仅 provenance 静默通过）
+        _notify_budget_degraded(
+            "functional_extract_partial_stub_fallback" if llm_ok
+            else "functional_extract_degraded_to_stub"
+        )
+    assign_stable_uids(items, sections)
+    return items, final_route
+
+
 def run_functional_extract(
     out_dir: Path | str,
     *,
@@ -798,21 +1014,40 @@ def run_functional_extract(
     route: str | None = "stub",
     chat: ExtractChat | None = None,
     blocks: Sequence[dict[str, Any]] | None = None,
+    strategy: str | None = None,
+    doc_map: dict[str, Any] | None = None,
+    max_chars: int | None = None,
 ) -> dict[str, Any]:
     """运行功能需求直抽，写 functional_requirements.json（governed 路径 + 原子写）。
 
     ``sections`` 缺省时从 ``chunks.jsonl``（extract_units 条款切分产物）惰性加载——
     不改 extract_units / atomize（硬边界：直抽是旁路新入口，默认关）。
+
+    A2：``strategy`` 缺省读 ``RATOMIZER_CONTEXT_PACK_STRATEGY``（默认 legacy 不变）；
+    clause_family 下自动只读加载 A1 整篇地图（``doc_map.load_doc_map``，缺席/不可用
+    则不带摘要，退回无地图包——不伪造）。
     """
     out_dir = Path(out_dir).expanduser().resolve()
     if sections is None:
         sections = load_clauses(out_dir)
     sections = list(sections)
+    resolved_strategy = context_pack_strategy(strategy)
+    if resolved_strategy == "clause_family" and doc_map is None:
+        try:
+            from doc_map import load_doc_map
+            doc_map = load_doc_map(out_dir)
+        except Exception:  # noqa: BLE001 — 无地图时退回无地图包，不阻断
+            doc_map = None
     # S1-7：指纹并入 route 维度——算指纹前先把 route 解析成稳定身份标签（与执行路径同源）。
     route_label = _resolve_route_label(route, chat)
-    fingerprint = extraction_fingerprint(sections, route_key=route_label)
+    fingerprint = extraction_fingerprint(
+        sections,
+        route_key=route_label,
+        context_strategy=resolved_strategy,
+        doc_map_key=str(doc_map.get("fingerprint") or "") if isinstance(doc_map, dict) else "",
+    )
 
-    # 缓存命中放行（指纹含版本/prompt/护栏/route）
+    # 缓存命中放行（指纹含版本/prompt/护栏/route；clause_family 另含策略与地图键）
     cache = _read_cache(out_dir)
     cached = cache.get(fingerprint)
     if cached is not None and isinstance(cached.get("payload"), dict):
@@ -825,6 +1060,7 @@ def run_functional_extract(
 
     items, executed_route = extract_functional_requirements(
         sections, chat=chat, route=route, blocks=blocks,
+        strategy=resolved_strategy, doc_map=doc_map, max_chars=max_chars,
     )
     conservation = conservation_report(sections, items, blocks=blocks)
 
@@ -836,6 +1072,7 @@ def run_functional_extract(
         "provenance": provenance("functional_extract", FUNCTIONAL_EXTRACT_VERSION),
         "route_requested": route or "stub",
         "route": executed_route,
+        "context_pack_strategy": resolved_strategy,
         "clause_count": len(sections),
         "functional_requirements": len(items),
         "fingerprint": fingerprint,

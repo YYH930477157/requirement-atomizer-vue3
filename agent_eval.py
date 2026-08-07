@@ -46,11 +46,13 @@ from functional_catalog import build_function_catalog, opposed_qualifiers
 from requirements_analysis_rules import classify_ownership
 
 
-EVAL_RUNNER_VERSION = "agent-eval-v2"
+EVAL_RUNNER_VERSION = "agent-eval-v3"
 ENVELOPE_SCHEMA_VERSION = "1.0"
 CASE_SCHEMA = Path(__file__).resolve().parent / "schemas" / "agent_eval_case.schema.json"
-CATEGORIES = ("classify", "grouping", "must_ask", "hallucination")
-BASELINE_CATEGORIES = ("classification", "grouping", "must_ask", "hallucination")
+# WS-D3: 新增 adjudication_audit（裁决误受率）与 doc_map_coverage（地图覆盖率）两类。
+# 当前为 skeleton/真值回归锚：无 truth baseline 时自动标记为 schema_only/manual。
+CATEGORIES = ("classify", "grouping", "must_ask", "hallucination", "adjudication_audit", "doc_map_coverage")
+BASELINE_CATEGORIES = ("classification", "grouping", "must_ask", "hallucination", "adjudication_audit", "doc_map_coverage")
 
 _REJECTED_CANDIDATE_PREFIX = "Rejected candidate:"
 _REJECTED_MERGE_PREFIX = "Rejected merge:"
@@ -304,6 +306,64 @@ def _hallucination_case(case: dict[str, Any], reviewed: set[str]) -> dict[str, A
     return detail
 
 
+def _adjudication_audit_case(case: dict[str, Any], reviewed: set[str]) -> dict[str, Any]:
+    """WS-D3：裁决误受率审计。
+
+    有 truth baseline 时按 expected.verdict 与 adjudication decision 比对；
+    无 truth 时诚实标记为 manual，不进自动分母。
+    """
+    expected = case.get("expected") or {}
+    detail: dict[str, Any] = {
+        "case_id": str(case["case_id"]),
+        "reviewed": str(case["case_id"]) in reviewed,
+        "judge": "manual",
+        "passed": False,
+        "reason": "Adjudication truth baseline pending-human; case excluded from auto pass-rate.",
+    }
+    if "verdict" in expected and "adjudication_decision" in expected:
+        # 真值已存在：检查裁决决策是否与真值一致（误受 = 真值 reject 但决策 accept）
+        actual = str(expected.get("adjudication_decision") or "")
+        truth = str(expected["verdict"])
+        false_accept = truth == "reject" and actual == "accept"
+        detail["judge"] = "auto"
+        detail["truth"] = truth
+        detail["adjudication_decision"] = actual
+        detail["passed"] = not false_accept
+        detail["reason"] = (
+            "False accept detected." if false_accept
+            else "Adjudication decision consistent with truth baseline."
+        )
+    return detail
+
+
+def _doc_map_coverage_case(case: dict[str, Any], reviewed: set[str]) -> dict[str, Any]:
+    """WS-D3：doc_map 条款→块映射覆盖率。
+
+    有 truth baseline 时按 expected.covered_block_ids 比对；无 truth 时诚实标记 manual。
+    """
+    expected = case.get("expected") or {}
+    detail: dict[str, Any] = {
+        "case_id": str(case["case_id"]),
+        "reviewed": str(case["case_id"]) in reviewed,
+        "judge": "manual",
+        "passed": False,
+        "reason": "Doc-map coverage truth baseline pending-human; case excluded from auto pass-rate.",
+    }
+    if "covered_block_ids" in expected:
+        actual = set(expected.get("mapped_block_ids") or [])
+        truth = set(expected["covered_block_ids"])
+        missing = sorted(truth - actual)
+        detail["judge"] = "auto"
+        detail["coverage"] = round(len(actual & truth) / len(truth), 4) if truth else 0.0
+        detail["passed"] = not missing
+        detail["missing_block_ids"] = missing
+        detail["reason"] = (
+            f"Missing {len(missing)} block mappings." if missing
+            else "All truth blocks mapped."
+        )
+    return detail
+
+
 def _baseline(details: Sequence[dict[str, Any]]) -> dict[str, Any]:
     evaluated = len(details)
     passed = sum(1 for row in details if row["passed"])
@@ -352,8 +412,37 @@ def evaluate_cases(
         if case["category"] == "hallucination"
     ]
 
+    adjudication_audit_all = [
+        _adjudication_audit_case(case, reviewed)
+        for case in cases
+        if case["category"] == "adjudication_audit"
+    ]
+    adjudication_audit_auto = [row for row in adjudication_audit_all if row["judge"] == "auto"]
+
+    doc_map_coverage_all = [
+        _doc_map_coverage_case(case, reviewed)
+        for case in cases
+        if case["category"] == "doc_map_coverage"
+    ]
+    doc_map_coverage_auto = [row for row in doc_map_coverage_all if row["judge"] == "auto"]
+
     must_ask_baseline = _baseline(must_ask_auto)
     must_ask_baseline["manual_case_ids"] = manual_case_ids
+    adjudication_audit_baseline = _baseline(adjudication_audit_auto)
+    adjudication_audit_baseline["manual_case_ids"] = [
+        row["case_id"] for row in adjudication_audit_all if row["judge"] == "manual"
+    ]
+    doc_map_coverage_baseline = _baseline(doc_map_coverage_auto)
+    doc_map_coverage_baseline["manual_case_ids"] = [
+        row["case_id"] for row in doc_map_coverage_all if row["judge"] == "manual"
+    ]
+
+    schema_only: list[str] = []
+    if not adjudication_audit_auto:
+        schema_only.append("adjudication_audit")
+    if not doc_map_coverage_auto:
+        schema_only.append("doc_map_coverage")
+
     return {
         "case_count": len(cases),
         "category_counts": category_counts(cases),
@@ -366,7 +455,11 @@ def evaluate_cases(
         "must_ask_details": must_ask_all,
         "hallucination": _baseline(hallucination_details),
         "hallucination_details": hallucination_details,
-        "schema_only_categories": [],
+        "adjudication_audit": adjudication_audit_baseline,
+        "adjudication_audit_details": adjudication_audit_all,
+        "doc_map_coverage": doc_map_coverage_baseline,
+        "doc_map_coverage_details": doc_map_coverage_all,
+        "schema_only_categories": schema_only,
         "unreviewed_case_ids": sorted(
             str(case["case_id"]) for case in cases if str(case["case_id"]) not in reviewed
         ),
@@ -408,6 +501,8 @@ def _record_manifest_baseline(
     manifest["grouping_baseline"] = report["grouping"]
     manifest["must_ask_baseline"] = report["must_ask"]
     manifest["hallucination_baseline"] = report["hallucination"]
+    manifest["adjudication_audit_baseline"] = report["adjudication_audit"]
+    manifest["doc_map_coverage_baseline"] = report["doc_map_coverage"]
     _atomic_write_json(path, manifest)
 
 
@@ -471,6 +566,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "grouping": report["grouping"],
             "must_ask": report["must_ask"],
             "hallucination": report["hallucination"],
+            "adjudication_audit": report["adjudication_audit"],
+            "doc_map_coverage": report["doc_map_coverage"],
             "details": report["classification_details"],
         }
         code = 0

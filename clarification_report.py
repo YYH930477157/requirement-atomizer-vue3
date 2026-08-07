@@ -619,6 +619,7 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
 
     entries.extend(_parse_audit_entries(out_dir))
     entries.extend(_budget_needs_work_entries(out_dir))
+    entries.extend(_unextracted_registry_entries(out_dir))
     # A producer may repeat the same stable signal in multiple sidecars. Keep the first occurrence so
     # reviewers never see duplicate actions for the same versioned clarification subject.
     deduped: dict[str, dict[str, Any]] = {}
@@ -752,6 +753,36 @@ def _budget_needs_work_entries(out_dir: Path) -> list[dict[str, Any]]:
         blocker_level=BLOCKER_BLOCKING,
         tier=TIER_HARD,
     )]
+
+
+def _unextracted_registry_entries(out_dir: Path) -> list[dict[str, Any]]:
+    """A7：未抽取内容登记册进入澄清报告（参考级，不阻塞 READY）。
+
+    噪声块/front_matter/textbox 等是有意排除的，但作为 reviewer 可抽查的线索暴露。
+    """
+    from unextracted_registry import collect_unextracted_clarification_entries
+
+    entries: list[dict[str, Any]] = []
+    for raw in collect_unextracted_clarification_entries(out_dir):
+        kind = str(raw.get("kind") or "unknown")
+        source_id = str(raw.get("source_id") or "")
+        text_preview = str(raw.get("text_preview") or "")
+        section = str(raw.get("section") or "")
+        reason = str(raw.get("reason") or "")
+        entries.append(_entry(
+            CAT_MISSING,
+            f"未抽取内容（{kind}）：{reason or text_preview[:80]}——请核对是否误伤真实需求",
+            section=section,
+            quote=text_preview,
+            source_id=source_id,
+            signal=f"unextracted:{kind}",
+            tier=TIER_SOFT,
+            audience=AUDIENCE_INTERNAL,
+            blocker_level=BLOCKER_IMPORTANT,
+            evidence=raw.get("evidence") or {},
+            subject_key=f"unextracted:{source_id or kind}",
+        ))
+    return entries
 
 
 def readiness_verdict(

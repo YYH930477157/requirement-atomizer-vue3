@@ -26,11 +26,14 @@ from ai_review_actions import (
     source_ai_requirement_id,
     source_fingerprint,
 )
+from cosem_behavior_spec import extract_codes
+from extract_guards import produced_ints
 from review_state import (
     ReviewAuthorityConflict,
     atomic_target_authority_write_revision,
     target_publication_revision,
 )
+from adjudicate import AdjudicationUnavailableError
 from io_utils import read_jsonl
 from llm_client import LLMConnectionError, LLMResponseError, chat_json
 from llm_pipeline import DEFAULT_PIPELINE_PATH, llm_config_from_route, load_review_pipeline
@@ -466,6 +469,12 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/requirement-library/search":
             self.handle_requirement_library_search(params)
             return
+        if parsed.path == "/adjudications":
+            self.handle_adjudications_get()
+            return
+        if parsed.path == "/adjudication-summary":
+            self.handle_adjudication_summary_get()
+            return
         self.send_error(404, "Unknown endpoint")
 
     def do_POST(self) -> None:
@@ -528,6 +537,12 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/requirement-library/adopt":
             self.handle_requirement_library_adopt()
+            return
+        if parsed.path == "/adjudications/run":
+            self.handle_adjudication_run()
+            return
+        if parsed.path == "/adjudications/overturn":
+            self.handle_adjudication_overturn()
             return
         if parsed.path != "/review-actions":
             self.send_error(404, "Unknown endpoint")
@@ -1509,22 +1524,28 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         self.send_json(replay)
 
     def handle_requirement_library_search(self, params: dict) -> None:
-        """WS4：词面集合重叠度召回历史相似需求（零向量、零 LLM）。"""
+        """WS4/WS-C3：历史相似需求召回。配置三库任一即走统一检索；仅配 requirement_library 走旧单库路径。"""
         query = (params.get("q") or params.get("query") or [""])[0]
         limit_raw = (params.get("limit") or ["20"])[0]
         try:
             limit = max(1, min(100, int(limit_raw)))
         except ValueError:
             limit = 20
-        library_path = os.environ.get("RATOMIZER_REQUIREMENT_LIBRARY", "").strip()
-        if not library_path:
+        req_lib = os.environ.get("RATOMIZER_REQUIREMENT_LIBRARY", "").strip()
+        base_lib = os.environ.get("RATOMIZER_BASE_LIBRARY", "").strip()
+        sol_lib = os.environ.get("RATOMIZER_SOLUTION_LIBRARY", "").strip()
+        if not req_lib and not base_lib and not sol_lib:
             self.send_json({"schema": "requirement-search/v1", "query": query,
                             "matches": 0, "results": [],
-                            "note": "未配置 RATOMIZER_REQUIREMENT_LIBRARY，检索库为空"})
+                            "note": "未配置任何需求库（REQUIREMENT_LIBRARY / BASE_LIBRARY / SOLUTION_LIBRARY）"})
             return
         try:
-            from desktop_tasks import search_requirements_task
-            result = search_requirements_task(Path(library_path), query, limit=limit)
+            from desktop_tasks import search_requirements_task, unified_search_requirements_task
+            if req_lib and not base_lib and not sol_lib:
+                # 仅配旧库：保持原契约
+                result = search_requirements_task(Path(req_lib), query, limit=limit)
+            else:
+                result = unified_search_requirements_task(query, limit=limit)
         except FileNotFoundError as exc:
             self.send_json({"error": "requirement_library_missing", "detail": str(exc)}, status=404)
             return
@@ -1696,6 +1717,74 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             "module_override": record.get("module_override", ""),
             "written": ["verification_states.jsonl"],
         })
+
+    def handle_adjudications_get(self) -> None:
+        """WS-B：读取功能需求级 AI 裁决结果。"""
+        from adjudicate import read_adjudication_results
+        try:
+            rows = read_adjudication_results(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"schema": "adjudications/v1", "items": rows, "total": len(rows)})
+
+    def handle_adjudication_summary_get(self) -> None:
+        """WS-B：读取裁决摘要（开关状态、计数、校准状态）。"""
+        from adjudicate import adjudication_summary
+        try:
+            summary = adjudication_summary(self.output_dir)
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json(summary)
+
+    def handle_adjudication_run(self) -> None:
+        """WS-B：运行 AI 裁决（默认关；LLM 不可用时全部进 review）。"""
+        from adjudicate import adjudicate_all
+        payload = self.read_json_body() or {}
+        route = str(payload.get("route") or "").strip() or None
+        actor = str(payload.get("actor") or "api-adjudicator").strip()
+        try:
+            summary = adjudicate_all(self.output_dir, route=route, actor=actor)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except AdjudicationUnavailableError as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "ok": False}, status=503)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"ok": True, **summary})
+
+    def handle_adjudication_overturn(self) -> None:
+        """WS-B：人工推翻自动裁决结果（actor/reason 必填，append-only 留痕）。"""
+        from adjudicate import overturn_adjudication
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        rid = str(payload.get("functional_requirement_id") or "").strip()
+        new_decision = str(payload.get("new_decision") or "").strip()
+        actor = str(payload.get("actor") or "").strip()
+        reason = str(payload.get("reason") or "").strip()
+        if not rid or not new_decision or not actor or not reason:
+            self.send_json({"error": "functional_requirement_id/new_decision/actor/reason 均必填"}, status=400)
+            return
+        try:
+            record = overturn_adjudication(
+                self.output_dir, rid, new_decision=new_decision, actor=actor, reason=reason)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except (TimeoutError, OSError) as exc:
+            self.send_json({"error": "adjudication_unavailable", "detail": str(exc),
+                            "retryable": True}, status=503)
+            return
+        self.send_json({"ok": True, "record": record, "written": ["adjudication_results.jsonl"]})
 
     def read_json_body(self) -> dict | None:
         try:
@@ -2647,16 +2736,24 @@ def build_review_summary(output_dir: Path) -> dict:
     }
 
 
+TRANSLATION_PROMPT_VERSION = "translation-prompt-v1"
+
 TRANSLATION_SYSTEM_PROMPT = """You are a technical translator for DLMS/COSEM requirements.
 Translate English requirement text into concise Simplified Chinese.
 Preserve identifiers, quoted service names, OBIS codes, class names, attribute names, and protocol acronyms.
-Return only JSON with one string field: translation."""
+Return only JSON with two string fields: translation and protected_codes (the exact, space-separated list of protected codes/acronyms/identifiers found in the source)."""
+
+
+def _protected_codes(text: str) -> set[str]:
+    """受保护编码集合：OBIS 码、class_id、整数、协议缩写等翻译中必须逐字保留的 token。"""
+    return set(extract_codes(text)) | set(produced_ints(text))
 
 
 def translate_requirement_text(text: str, *, requirement_id: str = "", output_dir: Path | None = None) -> str:
     pipeline = load_review_pipeline(DEFAULT_PIPELINE_PATH)
     route_payload = dict(pipeline.model_routes.get("openai_compatible") or {})
     config = llm_config_from_route(route_payload)
+    protected = _protected_codes(text)
     payload = chat_json(
         config,
         TRANSLATION_SYSTEM_PROMPT,
@@ -2664,6 +2761,8 @@ def translate_requirement_text(text: str, *, requirement_id: str = "", output_di
             {
                 "requirement_id": requirement_id,
                 "text": text,
+                "protected_codes": sorted(protected),
+                "prompt_version": TRANSLATION_PROMPT_VERSION,
             },
             ensure_ascii=False,
         ),
@@ -2671,6 +2770,12 @@ def translate_requirement_text(text: str, *, requirement_id: str = "", output_di
     translation = str(payload.get("translation") or "").strip()
     if not translation:
         raise LLMResponseError("LLM translation response missing translation")
+    # WS-C4 漂移护栏：受保护编码必须在译文中逐字回指。
+    missing = protected - _protected_codes(translation)
+    if missing:
+        raise LLMResponseError(
+            f"translation drift detected: protected codes missing in translation: {sorted(missing)}"
+        )
     return translation
 
 

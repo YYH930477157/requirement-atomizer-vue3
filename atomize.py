@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import re
 import sys
 from collections import Counter, defaultdict
@@ -24,6 +25,7 @@ from atomic_requirement_schema import validate_atomic_requirements
 from docx_table_parser import DOCX_TABLE_PHYSICAL_VERSION, ParsedDocxTable, parse_docx_table
 from domain_pack import load_domain_pack
 from output_writer import build_quality_report, write_json, write_jsonl, write_summary
+from parsers.docx_extra_channels import extract_docx_extra_channels
 from requirement_kb import KnowledgeRepository
 from requirement_kb.matching import TEXT_REPLACEMENTS, compile_term_pattern, find_matched_terms, normalize_match_term
 from source_spans import source_alignment_fields
@@ -32,6 +34,7 @@ from table_dispositions import (
     TABLE_DISPOSITION_RULE_VERSION,
     build_table_cell_dispositions,
 )
+from unextracted_registry import build_unextracted_registry, write_unextracted_registry
 from table_pattern_engine import load_table_patterns, match_table_pattern
 from table_structure import (
     TABLE_STRUCTURE_VERSION,
@@ -65,7 +68,7 @@ from version import __version__
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
-SUPPORTED_INPUT_FORMATS = (".docx", ".xlsx", ".pdf")
+SUPPORTED_INPUT_FORMATS = (".docx", ".xlsx", ".pdf", ".html")
 
 # S1-4：WS1 双轨入口（LLM 提议→几何校验签发）。开关默认 OFF；OFF 时 ``analyze_table``
 # 确定性路径逐字节不变（硬判据）。``_TABLE_DUAL_TRACK_PROPOSER`` 由具备 LLM 配置的调用方
@@ -1305,6 +1308,34 @@ def extract_docx(
             table_items.extend(new_table_items)
             table_cell_items.extend(new_cell_items)
             last_caption = None
+
+    # A5②：收容文本框/页眉页脚内容（默认关闭，避免 golden blocks.jsonl 漂移）
+    if os.environ.get("RATOMIZER_DOCX_EXTRA_CHANNELS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        extra_channels = extract_docx_extra_channels(document)
+        for channel, texts in extra_channels.items():
+            for text in texts:
+                text = clean_text(text)
+                if not text:
+                    continue
+                order += 1
+                block_id = f"BLK-{order:06d}"
+                section_path = sections.path()
+                kb_matches = match_knowledge(knowledge_bases, text, " > ".join(section_path))
+                domain_tags = merge_tags(tag_domains(text, " > ".join(section_path)), kb_domain_tags(kb_matches))
+                blocks.append({
+                    "block_id": block_id,
+                    "order": order,
+                    "type": "paragraph",
+                    "source_format": "docx",
+                    "content_channel": channel,
+                    "text": text,
+                    "raw_text": text,
+                    "section_path": section_path,
+                    "domain_tags": domain_tags,
+                    "kb_matches": kb_matches,
+                    "requirement_like": is_requirement_like(text),
+                    "noise": False,
+                })
 
     return blocks, table_items, table_cell_items
 
@@ -2679,7 +2710,7 @@ def assert_valid_atomic_requirements(rows: list[dict[str, Any]]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Atomize a technical standard document for LLM requirement analysis.")
-    parser.add_argument("input", type=Path, help="Input .docx or .xlsx file")
+    parser.add_argument("input", type=Path, help="Input .docx, .xlsx, .pdf, or .html file")
     parser.add_argument("--out", type=Path, default=Path("out"), help="Output directory")
     parser.add_argument("--chunk-chars", type=int, default=3500, help="Target character size per retrieval chunk")
     parser.add_argument(
@@ -2707,9 +2738,12 @@ def run_atomizer_pipeline(
         raise AtomizerInputError(f"Input file does not exist: {input_path}")
     input_format = input_path.suffix.lower()
     if input_format == ".xls":
-        raise AtomizerInputError("Legacy .xls input is not supported; save it as .xlsx. Supported formats: .docx, .xlsx, .pdf.")
+        raise AtomizerInputError("Legacy .xls input is not supported; save it as .xlsx. Supported formats: .docx, .xlsx, .pdf, .html.")
+    if input_format == ".html":
+        if os.environ.get("RATOMIZER_ENABLE_HTML_PARSER", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+            raise AtomizerInputError("HTML input is disabled by default; set RATOMIZER_ENABLE_HTML_PARSER=1 to enable.")
     if input_format not in SUPPORTED_INPUT_FORMATS:
-        raise AtomizerInputError(f"Unsupported input format: {input_format or '<none>'}. Supported formats: .docx, .xlsx, .pdf.")
+        raise AtomizerInputError(f"Unsupported input format: {input_format or '<none>'}. Supported formats: .docx, .xlsx, .pdf, .html.")
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2719,12 +2753,24 @@ def run_atomizer_pipeline(
 
     LOGGER.info("extracting %s", input_format.lstrip("."))
     _reset_table_structure_hypotheses()  # S1-4：双轨假设累积按本次运行隔离
+    xlsx_requirement_list_candidates: int | None = None
     if input_format == ".docx":
         blocks, table_items, table_cell_items = extract_docx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     elif input_format == ".xlsx":
         from parsers.xlsx_parser import extract_xlsx
 
         blocks, table_items, table_cell_items = extract_xlsx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
+        # A6：需求清单型 xlsx 行映射分流（默认关）
+        if os.environ.get("RATOMIZER_XLSX_REQUIREMENT_LIST", "").strip().lower() in {"1", "true", "yes", "on"}:
+            from xlsx_requirement_list import extract_requirement_list_candidates, write_base_library_candidates
+            xlsx_candidates = extract_requirement_list_candidates(input_path)
+            if xlsx_candidates:
+                write_base_library_candidates(out_dir, xlsx_candidates)
+                xlsx_requirement_list_candidates = len(xlsx_candidates)
+    elif input_format == ".html":
+        from parsers.html_parser import extract_html
+
+        blocks, table_items, table_cell_items = extract_html(input_path, knowledge_bases=knowledge_bases)
     else:
         from parsers.pdf_parser import extract_pdf
 
@@ -2736,6 +2782,11 @@ def run_atomizer_pipeline(
     if domain_pack_dir is not None:
         pattern_shadow = apply_table_pattern_shadow(blocks, table_items, domain_pack_dir)
     mark_doc_regions(blocks, table_items, document_profile=document_profile, table_cell_items=table_cell_items)
+    # A7：未抽取内容登记册（默认开启，纯登记不改行为）
+    unextracted_registry: dict[str, Any] | None = None
+    if os.environ.get("RATOMIZER_UNEXTRACTED_REGISTRY", "1").strip().lower() not in {"0", "false", "off"}:
+        unextracted_registry = build_unextracted_registry(input_path, blocks)
+        write_unextracted_registry(out_dir, unextracted_registry)
     table_cell_dispositions = build_table_cell_dispositions(blocks, table_cell_items)
     LOGGER.info("building chunks")
     chunks = build_chunks(blocks, target_chars=chunk_chars, include_regions={"body"})
@@ -2753,7 +2804,7 @@ def run_atomizer_pipeline(
     except ValueError as exc:
         raise AtomizerPipelineError(str(exc)) from exc
     llm_tasks = build_llm_tasks(chunks, body_table_items)
-    quality_report = build_quality_report(blocks, table_items, atomic_candidates, llm_tasks, pattern_shadow=pattern_shadow)
+    quality_report = build_quality_report(blocks, table_items, atomic_candidates, llm_tasks, pattern_shadow=pattern_shadow, out_dir=out_dir)
 
     LOGGER.info("writing outputs")
     block_count = write_jsonl(out_dir / "blocks.jsonl", blocks)
@@ -2815,6 +2866,7 @@ def run_atomizer_pipeline(
             "atomic_requirements": "atomic_requirements.jsonl",
             "llm_tasks": "llm_tasks.jsonl",
             "quality_report": "quality_report.json",
+            "unextracted_registry": "unextracted_registry.json",
             "summary": "summary.md",
         },
     }
@@ -2826,6 +2878,18 @@ def run_atomizer_pipeline(
             "switch": TABLE_DUAL_TRACK_SWITCH,
             "issued_count": hypothesis_count,
         }
+    # A7：登记册写入后同步登记 manifest
+    if unextracted_registry is not None:
+        manifest["counts"]["unextracted_entries"] = unextracted_registry.get("total", 0)
+        manifest["unextracted_registry"] = {
+            "version": unextracted_registry.get("schema", ""),
+            "total": unextracted_registry.get("total", 0),
+            "by_kind": unextracted_registry.get("by_kind", {}),
+        }
+    # A6：需求清单候选写入后同步登记 manifest
+    if xlsx_requirement_list_candidates is not None:
+        manifest["counts"]["xlsx_requirement_list_candidates"] = xlsx_requirement_list_candidates
+        manifest["files"]["base_library_candidates"] = "base_library_candidates.jsonl"
     write_json(out_dir / "manifest.json", manifest)
     write_summary(out_dir / "summary.md", manifest, domain_counts, kb_counts, quality_report=quality_report)
 

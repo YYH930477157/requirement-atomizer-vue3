@@ -266,6 +266,53 @@ def render_exemplars(exemplars: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def select_negative_exemplars(
+    bank: dict[str, Any],
+    module: str,
+    req_text: str,
+    k: int = EXEMPLAR_TOP_K,
+) -> list[dict[str, Any]]:
+    """WS-D4：同模块 + 词面相关的已拒绝（rejected）负例 top-k。
+
+    复用 adjudication_bank 既有 rejected 桶，按词面重叠确定性选取；零重叠不注入——
+    宁漏勿错。返回条目可用于 few-shot prompt 的 "避免此类产出" 段落。
+    """
+    from requirements_analysis_template import _match_tokens
+
+    req_tokens = _match_tokens(req_text)
+    if not req_tokens:
+        return []
+    scored: list[tuple[int, str, dict[str, Any]]] = []
+    for rid, ex in (bank.get("rejected") or {}).items():
+        if module and str(ex.get("module") or "") != module:
+            continue
+        score = len(req_tokens & _match_tokens(
+            " ".join([ex.get("title") or "", ex.get("description") or "",
+                      ex.get("reason") or ""])))
+        if score > 0:
+            scored.append((score, rid, ex))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    picked: list[dict[str, Any]] = []
+    used = 0
+    for _score, _rid, ex in scored[:k]:
+        size = len(str(ex.get("description") or "")) + len(str(ex.get("reason") or ""))
+        if picked and used + size > EXEMPLAR_MAX_CHARS:
+            break
+        picked.append(ex)
+        used += size
+    return picked
+
+
+def render_negative_exemplars(exemplars: list[dict[str, Any]]) -> str:
+    """负例渲染为 prompt 文本：说明什么样的需求/写法应被避免。"""
+    lines = ["以下是被专家拒绝的范例，请勿重复同类问题："]
+    for ex in exemplars:
+        lines.append(f"- 【{ex.get('module') or '未分类'}】{ex.get('title')}：{ex.get('description')}")
+        if ex.get("reason"):
+            lines.append(f"  拒绝原因：{ex.get('reason')}")
+    return "\n".join(lines)
+
+
 def resolve_bank_path() -> Path | None:
     import os
     raw = os.environ.get(BANK_ENV, "").strip()

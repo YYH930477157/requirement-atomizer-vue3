@@ -7,7 +7,9 @@
     "classify": 12,
     "grouping": 8,
     "must_ask": 10,
-    "hallucination": 10
+    "hallucination": 10,
+    "adjudication_audit": 0,
+    "doc_map_coverage": 0
   },
   "curation": {
     "prepared_by": "Codex",

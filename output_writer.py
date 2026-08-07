@@ -26,6 +26,7 @@ def build_quality_report(
     llm_tasks: list[dict[str, Any]],
     *,
     pattern_shadow: dict[str, Any] | None = None,
+    out_dir: Path | None = None,
 ) -> dict[str, Any]:
     type_counts = Counter(row.get("requirement_type", "unknown") for row in atomic_candidates)
     source_counts = Counter(row.get("source_type", "unknown") for row in atomic_candidates)
@@ -71,8 +72,22 @@ def build_quality_report(
         len(b.get("text_repairs") or []) for b in hygiene_blocks
     )
 
+    # A7：未抽取内容登记册摘要（默认开启，纯登记）
+    unextracted_summary = {"available": False, "total": 0, "by_kind": {}}
+    if out_dir is not None:
+        from unextracted_registry import summarize_unextracted_counts
+        unextracted_summary = summarize_unextracted_counts(out_dir)
+
+    # A4：claim 账本四视角复扫（默认关闭）
+    claim_rescan = None
+    if out_dir is not None:
+        from claim_quality_rescan import run_claim_rescan
+        claim_rescan = run_claim_rescan(out_dir)
+
     return {
         "quality_report_version": "1.0",
+        "unextracted_registry": unextracted_summary,
+        "claim_rescan": claim_rescan,
         "audit": {
             "region_block_counts": dict(region_counts),
             "noise_blocks": len(noise_blocks),

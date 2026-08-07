@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reconcile-report/v1",
+  "title": "Reconcile report (V3 WS-A A3)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "producer",
+    "prompt_version",
+    "provenance",
+    "provenance_mode",
+    "llm_unavailable_reason",
+    "route_requested",
+    "route",
+    "requirements_count",
+    "summary",
+    "adjudications"
+  ],
+  "properties": {
+    "schema_version": {"const": "reconcile-report/v1"},
+    "producer": {"type": "string", "minLength": 1},
+    "prompt_version": {"type": "string", "minLength": 1},
+    "provenance": {"type": "object"},
+    "provenance_mode": {"enum": ["rules_only", "rules_plus_llm"]},
+    "llm_unavailable_reason": {"type": ["string", "null"]},
+    "route_requested": {"type": "string"},
+    "route": {"type": "string", "minLength": 1},
+    "requirements_count": {"type": "integer", "minimum": 0},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suspects", "hard_veto", "llm_confirmed", "llm_cleared", "uncertain", "rules_only"],
+      "properties": {
+        "suspects": {"type": "integer", "minimum": 0},
+        "hard_veto": {"type": "integer", "minimum": 0},
+        "llm_confirmed": {"type": "integer", "minimum": 0},
+        "llm_cleared": {"type": "integer", "minimum": 0},
+        "uncertain": {"type": "integer", "minimum": 0},
+        "rules_only": {"type": "boolean"}
+      }
+    },
+    "adjudications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "suspect_id", "kind", "members", "sections", "evidence",
+          "rule_screen", "hard_evidence", "hard_failures",
+          "llm_vote", "llm_rationale", "rejected_codes", "final"
+        ],
+        "properties": {
+          "suspect_id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["cross_section_duplicate", "obis_value_divergence", "coverage_gap"]},
+          "members": {"type": "array", "items": {"type": "string"}},
+          "sections": {"type": "array", "items": {"type": "string"}},
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["codes", "texts"],
+            "properties": {
+              "codes": {"type": "array", "items": {"type": "string"}},
+              "texts": {"type": "array", "items": {"type": "string"}}
+            }
+          },
+          "rule_screen": {"const": "suspect"},
+          "hard_evidence": {"enum": ["pass", "fail"]},
+          "hard_failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["member", "code", "reason"],
+              "properties": {
+                "member": {"type": "string"},
+                "code": {"type": "string"},
+                "reason": {"type": "string"}
+              }
+            }
+          },
+          "llm_vote": {
+            "type": ["string", "null"],
+            "enum": ["confirmed_issue", "not_an_issue", "uncertain", "invalid_llm_code_drift", null]
+          },
+          "llm_rationale": {"type": "string"},
+          "rejected_codes": {"type": "array", "items": {"type": "string"}},
+          "final": {
+            "enum": [
+              "hard_veto",
+              "rules_only_suspect",
+              "llm_confirmed_issue",
+              "llm_cleared",
+              "llm_uncertain",
+              "llm_vote_invalid"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

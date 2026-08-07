@@ -877,6 +877,44 @@ def search_requirements_task(
     }
 
 
+def unified_search_requirements_task(
+    query: str,
+    *,
+    limit: int = 20,
+    retriever: Any = None,
+) -> dict[str, Any]:
+    """WS-C3：跨三库统一检索（requirement / base / solution）。
+
+    任一库配置存在即启用；未配置库如实跳过。默认词面，可注入外部 retriever。
+    """
+    from unified_requirement_retriever import build_unified_retriever, default_library_paths
+
+    paths = default_library_paths()
+    configured = {k: v for k, v in paths.items() if v is not None}
+    if not configured:
+        return {
+            "kind": "unified_requirement_search",
+            "query": query,
+            "matches": 0,
+            "results": [],
+            "retriever_kind": "unavailable",
+            "note": "未配置任何需求库（RATOMIZER_REQUIREMENT_LIBRARY / BASE_LIBRARY / SOLUTION_LIBRARY）",
+        }
+    retriever_obj = build_unified_retriever(library_paths=paths, retriever=retriever)
+    results = retriever_obj.search(query, limit=limit)
+    return {
+        "kind": "unified_requirement_search",
+        "query": query,
+        "matches": len(results),
+        "results": results,
+        "retriever_kind": getattr(retriever_obj, "retriever_kind", "unknown"),
+        "source_counts": {
+            source: sum(1 for r in results if r.get("library_source") == source)
+            for source in configured
+        },
+    }
+
+
 def recommend_dependencies_task(out_dir: Path) -> dict[str, Any]:
     """对当前项目跑确定性依赖/父子候选推荐（只生产值，不动 schema）。
 
@@ -941,6 +979,48 @@ def decide_dependency_task(
         "out_dir": str(root),
         **result,
         "written": written,
+    }
+
+
+def adjudicate_task(
+    out_dir: Path,
+    *,
+    route: str | None = None,
+    actor: str = "desktop-adjudicator",
+) -> dict[str, Any]:
+    """WS-B：运行功能需求级 AI 裁决（默认全关；LLM 不可用时全部进 review）。"""
+    from adjudicate import adjudicate_all
+
+    root = out_dir.expanduser().resolve()
+    summary = adjudicate_all(root, route=route, actor=actor)
+    return {
+        "kind": "adjudicate",
+        "out_dir": str(root),
+        **summary,
+    }
+
+
+def overturn_adjudication_task(
+    out_dir: Path,
+    *,
+    functional_requirement_id: str,
+    new_decision: str,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    """WS-B：人工推翻自动裁决结果，写回裁决流（actor/reason 必填）。"""
+    from adjudicate import overturn_adjudication
+
+    root = out_dir.expanduser().resolve()
+    record = overturn_adjudication(
+        root, functional_requirement_id,
+        new_decision=new_decision, actor=actor, reason=reason,
+    )
+    return {
+        "kind": "adjudication_overturn",
+        "out_dir": str(root),
+        "record": record,
+        "written": ["adjudication_results.jsonl"],
     }
 
 
@@ -2202,6 +2282,14 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 LOGGER.warning("裁决样本库收割失败（忽略）：%s", exc)
         payload["results"] = results
         payload["skipped_stages"] = skipped_stages
+        # V3 WS-A A3：整篇对账 sidecar（RATOMIZER_RECONCILE=1 时链尾自动跑一次；
+        # 默认关=行为面零变化；sidecar 失败不阻断链结果）
+        try:
+            from reconcile import reconcile_enabled
+            if reconcile_enabled():
+                payload["reconcile"] = reconcile_task(out_dir, route=route)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("整篇对账 sidecar 失败（不阻断链）：%s", exc)
     finally:
         _CHAIN_ACTIVE = False
         _detach_budget_ledger(chain_budget)  # S1-1：落盘 cost-report 数据源 + 卸载钩子
@@ -2443,6 +2531,18 @@ def orchestrate_task(
     }
 
 
+def reconcile_task(out_dir: Path, *, route: str = "stub") -> dict[str, Any]:
+    """V3 WS-A A3 整篇对账入口（CHAIN_ORDER 之外的 sidecar，同 orchestrate 纪律）。
+
+    规则筛疑 + LLM 裁定两段；LLM 不可用（stub/无 key/预算耗尽）如实 rules_only。
+    产物 reconcile_report.json（governed pipeline）+ 摘要并入根 quality_report.json。
+    """
+    from reconcile import run_reconcile
+
+    root = out_dir.expanduser().resolve()
+    return run_reconcile(root, route=route)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Requirement Atomizer desktop tasks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2632,6 +2732,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="授权编排环发起 spot_extract/targeted_reextract（默认关闭=只读缺口转人工；"
              "env RATOMIZER_ORCHESTRATION_ALLOW_LLM=1 等效）")
     orchestrate_parser.add_argument("--actor", default="orchestration-loop")
+
+    # V3 WS-A A3：整篇对账 sidecar（CHAIN_ORDER 之外，同 orchestrate 纪律）。
+    reconcile_parser = subparsers.add_parser(
+        "reconcile",
+        help="整篇对账：规则筛疑+LLM 裁定两段，写 reconcile_report.json 并并入 quality_report")
+    reconcile_parser.add_argument("--out-dir", "--out", dest="out", type=Path, required=True)
+    reconcile_parser.add_argument(
+        "--llm-route", choices=["stub", "openai_compatible"], default="stub",
+        help="裁定投票路由（默认 stub=仅规则筛疑 rules_only）")
 
     # WS3 成本看板：数据全部来自文档级预算单记账流水（无新增埋点）。
     cost_report_parser = subparsers.add_parser("cost-report")
@@ -3026,6 +3135,8 @@ def main(argv: list[str] | None = None) -> int:
                 allow_llm=args.allow_llm,
                 actor=args.actor,
             )
+        elif args.command == "reconcile":
+            payload = reconcile_task(args.out, route=args.llm_route)
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:
