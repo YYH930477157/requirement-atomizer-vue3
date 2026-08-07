@@ -83,7 +83,9 @@ class PromptRegistryTests(unittest.TestCase):
         issues = lint_directory(
             root,
             excluded_constants={"PROMPT_REGISTRY_VERSION"},
-            skip_dirs={"build", "dist", ".git", "__pycache__", "node_modules", ".worktrees"},
+            # skip_dirs 不传：用 prompt_registry.lint_directory 的模块默认（含 .claude/
+            # .worktrees/out/ 等非源码目录），避免测试与模块两处清单漂移（2026-08-07
+            # 主检出 .claude/worktrees 残影误报的根因就是两处清单不一致）。
         )
         if issues:
             self.fail(f"unregistered prompt versions found: {issues}")

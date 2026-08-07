@@ -167,7 +167,13 @@ def lint_directory(
     skip_dirs: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Lint all ``*.py`` files under ``path``."""
-    skip = set(skip_dirs or {"build", "dist", ".git", "__pycache__", "node_modules"})
+    skip = set(skip_dirs or {
+        "build", "dist", ".git", "__pycache__", "node_modules",
+        # 非源码目录（主检出才有）：历史 worktree 残影与构建/产物目录不参与 lint，
+        # 否则陈旧副本里的旧版本常量会误报未登记（2026-08-07 main 合并实测）。
+        ".claude", ".worktrees", ".pytest_cache", "out",
+        "dist-backend", "build-electron-backend", "requirement_atomizer.egg-info",
+    })
     issues: list[dict[str, Any]] = []
     for py_file in path.rglob("*.py"):
         if any(part in skip for part in py_file.parts):
