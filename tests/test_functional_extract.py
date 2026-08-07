@@ -101,6 +101,29 @@ class LLMRouteTests(unittest.TestCase):
         # 臆造编码被剔除（rejected_codes 非空，related 不含该编码）
         self.assertTrue(any("0-0:10.0.0" in c for c in items[0]["rejected_codes"]))
 
+    def test_llm_code_drift_in_behaviors_hard_blocked(self) -> None:
+        # S1-8：_reject_drifted_codes 清洗范围必须覆盖全部叙述字段——旧实现只清 objective，
+        # behaviors/data_constraints 里的幻觉编码原样保留。docstring 承诺"剔除 LLM 产出但来源
+        # 没有的编码"，不许反过来改 docstring 迁就实现。
+        sections = [_clause("4.3b", ["B33"], "The meter shall log events.")]
+
+        def chat(system: str, user: str) -> dict:
+            return {"items": [{
+                "objective": "记录事件",
+                "behaviors": ["记录 OBIS 0-0:10.0.0 事件"],   # 幻觉编码落在 behaviors
+                "data_constraints": ["class_id 99 制式"],       # 幻觉编码落在 data_constraints
+                "source_block_ids": ["B33"],
+            }]}
+
+        items, _ = fe.extract_functional_requirements(sections, chat=chat, route="openai_compatible")
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        # 两个幻觉编码都进 rejected_codes 留痕
+        self.assertTrue(any("0-0:10.0.0" in c for c in item["rejected_codes"]))
+        # behaviors / data_constraints 中的幻觉编码被实际剔除（不只是 objective）
+        self.assertFalse(any("0-0:10.0.0" in b for b in item["behaviors"]),
+                         f"behaviors 仍含幻觉编码：{item['behaviors']}")
+
     def test_llm_numeric_drift_soft_flagged(self) -> None:
         # 来源没有 999，LLM 写 999 → 软标（保留 + flag），不硬拦
         sections = [_clause("4.4", ["B4"], "The meter shall report energy.")]
@@ -222,6 +245,137 @@ class RunAndCacheTests(unittest.TestCase):
         s1 = [_clause("7.3", ["B1"], "alpha")]
         s2 = [_clause("7.3", ["B1"], "beta")]
         self.assertNotEqual(fe.extraction_fingerprint(s1), fe.extraction_fingerprint(s2))
+
+
+class RouteFingerprintTests(unittest.TestCase):
+    """S1-7：缓存指纹必须并入 route 维度——历史 stub 产物不应被后续真实 LLM 请求静默复用。
+
+    实证场景（重构结论 §1.3 实证缺陷）：同一份条款先用 stub 跑（无 key），缓存 stub 产物；
+    再切 openai_compatible 重跑，旧 stub 缓存被命中→LLM 永不被调用。修复后 route/model 变化
+    即指纹失配，旧 stub 缓存诚实失效（预期行为，它们本就不该被复用）。
+    """
+
+    def test_fingerprint_differs_by_route_key(self) -> None:
+        sections = [_clause("8.1", ["B1"], "shall X.")]
+        stub_fp = fe.extraction_fingerprint(sections, route_key="stub")
+        llm_fp = fe.extraction_fingerprint(sections, route_key="llm:mimo-v2.5")
+        self.assertNotEqual(stub_fp, llm_fp)
+        # 相同 route_key 仍稳定（缓存可复用的合法路径）
+        self.assertEqual(stub_fp, fe.extraction_fingerprint(sections, route_key="stub"))
+
+    def test_resolve_route_label_stub_when_no_key(self) -> None:
+        # route=stub → 'stub'；route=openai_compatible 但无 key/env → 解析失败退回 'stub'
+        self.assertEqual(fe._resolve_route_label("stub", None), "stub")
+        self.assertEqual(fe._resolve_route_label(None, None), "stub")
+        # openai_compatible 在测试环境无 key → 诚实退回 stub（不夸大）
+        self.assertEqual(fe._resolve_route_label("openai_compatible", None), "stub")
+
+    def test_resolve_route_label_injected_when_chat_given(self) -> None:
+        # 注入 chat（测试用）→ 'injected'，与 stub/openai_compatible 产物不共键
+        chat = lambda system, user: {"items": []}  # noqa: E731
+        self.assertEqual(fe._resolve_route_label("openai_compatible", chat), "injected")
+        self.assertEqual(fe._resolve_route_label("stub", chat), "injected")
+
+    def test_stub_cache_not_reused_when_route_changes_to_llm(self) -> None:
+        """实证复测：stub 跑后改 openai_compatible + 注入 chat 重跑，LLM 真实被调用。"""
+        with TemporaryDirectory() as tmp:
+            sections = [_clause("8.2", ["B1"], "The meter shall log.")]
+            # 第一次：stub 路由（无 key）→ 缓存 stub 产物
+            first = fe.run_functional_extract(tmp, sections=sections, route="stub")
+            self.assertEqual(first["route"], "stub")
+            self.assertEqual(first["functional_requirements"], 1)
+
+            # 第二次：openai_compatible + 注入 chat → 必须真实调用（不被 stub 缓存复用）
+            calls: list[int] = []
+
+            def chat(system: str, user: str) -> dict:
+                calls.append(1)
+                return {"items": [{
+                    "objective": "LLM 抽取的目标",
+                    "behaviors": ["log"],
+                    "source_block_ids": ["B1"],
+                    "source_quote": "The meter shall log.",
+                }]}
+
+            second = fe.run_functional_extract(
+                tmp, sections=sections, route="openai_compatible", chat=chat,
+            )
+            # LLM（注入 chat）真实被调用——证明 stub 缓存未被复用
+            self.assertGreater(len(calls), 0)
+            self.assertTrue(second["route"].startswith("injected"))
+            # 产物反映 LLM 抽取（objective 带标记），非 stub 占位
+            self.assertEqual(second["functional_requirements"], 1)
+
+
+class StableUidTests(unittest.TestCase):
+    """T3-1 跨再生成稳定 ID：``requirement_uid`` 按条款序号定位，与内容哈希解耦。"""
+
+    def test_stub_items_get_positional_uids_in_clause_order(self) -> None:
+        sections = [
+            _clause("4.1", ["B1"], "The meter shall log events."),
+            _clause("4.2", ["B2"], "The meter shall collect voltage."),
+        ]
+        items, _ = fe.extract_functional_requirements(sections, route="stub")
+        self.assertEqual([i["requirement_uid"] for i in items], ["FR-0001", "FR-0002"])
+        # 旧 content-hash 别名仍存在（不做原地替换）
+        self.assertTrue(all(i["functional_requirement_id"].startswith("FRE-") for i in items))
+
+    def test_uid_stable_across_regen_with_narrative_and_order_drift(self) -> None:
+        """核心验收：再生成（叙述变 + LLM 输出顺序交换）后，同一条款的 ``requirement_uid`` 不变。
+
+        旧 ``functional_requirement_id`` 含 output index → 顺序交换即漂移；新 uid 按条款序号
+        定位 → 稳定。证明 uid 可作长期 RTM 主键。
+        """
+        sections = [
+            _clause("4.1", ["B1"], "The meter shall log events."),
+            _clause("4.2", ["B2"], "The meter shall collect voltage at 230 V."),
+        ]
+
+        def chat_v1(system: str, user: str) -> dict:
+            # 顺序：先 B1 条款，后 B2 条款
+            return {"items": [
+                {"objective": "记录事件A", "behaviors": ["写日志A"], "source_block_ids": ["B1"]},
+                {"objective": "采集电压B", "behaviors": ["采 230V"], "source_block_ids": ["B2"]},
+            ]}
+
+        def chat_v2(system: str, user: str) -> dict:
+            # 再生成：叙述全变 + 输出顺序交换（B2 先、B1 后）
+            return {"items": [
+                {"objective": "完全不同的电压采集措辞", "behaviors": ["全新采压行为"], "source_block_ids": ["B2"]},
+                {"objective": "完全不同的事件记录措辞", "behaviors": ["全新日志行为"], "source_block_ids": ["B1"]},
+            ]}
+
+        items_v1, _ = fe.extract_functional_requirements(sections, chat=chat_v1, route="openai_compatible")
+        items_v2, _ = fe.extract_functional_requirements(sections, chat=chat_v2, route="openai_compatible")
+
+        # UID 按条款稳定：B1 条款恒为 FR-0001，B2 条款恒为 FR-0002（与 LLM 输出顺序无关）
+        def by_block(items, block):
+            return next(i for i in items if block in i["source_block_ids"])
+
+        self.assertEqual(by_block(items_v1, "B1")["requirement_uid"], "FR-0001")
+        self.assertEqual(by_block(items_v2, "B1")["requirement_uid"], "FR-0001")
+        self.assertEqual(by_block(items_v1, "B2")["requirement_uid"], "FR-0002")
+        self.assertEqual(by_block(items_v2, "B2")["requirement_uid"], "FR-0002")
+        # 叙述确实变了（再生成生效）
+        self.assertNotEqual(by_block(items_v1, "B1")["objective"], by_block(items_v2, "B1")["objective"])
+
+    def test_multi_item_per_clause_gets_stable_subindex(self) -> None:
+        """同一条款产出多条 → ``.2``/``.3`` 子序，按别名 id 稳定排序（再生成间确定）。"""
+        sections = [_clause("4.1", ["B1"], "The meter shall log events and raise alarms.")]
+        items_payload = {"items": [
+            {"objective": "记录事件", "behaviors": ["写日志"], "source_block_ids": ["B1"]},
+            {"objective": "告警", "behaviors": ["发告警"], "source_block_ids": ["B1"]},
+        ]}
+
+        def chat(system, user):
+            return items_payload
+
+        out = fe.extract_functional_requirements(sections, chat=chat, route="openai_compatible")[0]
+        uids = sorted(i["requirement_uid"] for i in out)
+        self.assertEqual(uids, ["FR-0001", "FR-0001.2"])
+
+    def test_assign_stable_uids_empty(self) -> None:
+        self.assertEqual(fe.assign_stable_uids([], []), [])
 
 
 if __name__ == "__main__":  # pragma: no cover

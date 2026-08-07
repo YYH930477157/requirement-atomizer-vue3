@@ -104,6 +104,8 @@ SIGNAL_BLOCKER_LEVELS = {
     # WS4 弱词/可测性扫描（功能需求级）：弱词→模糊（important），验收不可测→缺失（blocking）
     "weakness:vague_word": BLOCKER_IMPORTANT,
     "weakness:untestable": BLOCKER_BLOCKING,
+    # WS3 文档预算治理：核心交付物（功能直抽）降级 / 预算耗尽 → 文档级 NEEDS WORK（blocking）
+    "budget:document_needs_work": BLOCKER_BLOCKING,
 }
 
 # WS4 弱词词典（Cap3）：内置词表 + 可选 YAML 覆盖（RATOMIZER_WEAK_WORDS_PATH，与 domain_packs 惯例一致）。
@@ -616,6 +618,7 @@ def collect_questions(out_dir: Path) -> list[dict[str, Any]]:
     entries.extend(_weakness_scan_entries(out_dir))
 
     entries.extend(_parse_audit_entries(out_dir))
+    entries.extend(_budget_needs_work_entries(out_dir))
     # A producer may repeat the same stable signal in multiple sidecars. Keep the first occurrence so
     # reviewers never see duplicate actions for the same versioned clarification subject.
     deduped: dict[str, dict[str, Any]] = {}
@@ -713,6 +716,42 @@ def _parse_audit_entries(out_dir: Path) -> list[dict[str, Any]]:
             "文档前半可能被 Scope 标题误判整体标成前言——请核对 doc_region 分布",
             signal="parse_audit:body_ratio", audience=AUDIENCE_INTERNAL))
     return entries
+
+
+def _budget_needs_work_entries(out_dir: Path) -> list[dict[str, Any]]:
+    """S1-1：文档预算单 document_needs_work=True → 阻塞级澄清项（接入就绪门）。
+
+    预算治理把「核心交付物（功能需求直抽）降级 stub」或「预算耗尽」强制记为文档级 NEEDS WORK
+    （``llm_budget`` 的 ``document_needs_work``，不允许仅 provenance 标注静默通过）。此处把该
+    事实接入澄清报告与就绪门：blocking 条目 → ``unresolved_blocking>0`` → ``readiness=NEEDS WORK``。
+    预算单缺席（``RATOMIZER_LLM_BUDGET`` 未开）时返回空，行为面不动。
+    """
+    try:
+        from llm_budget import LLMBudgetLedger
+
+        ledger = LLMBudgetLedger.load(out_dir)
+    except Exception:  # 预算单缺失/损坏不影响澄清报告聚合（保守不阻塞）
+        return []
+    if ledger is None or not ledger.document_needs_work:
+        return []
+    snap = ledger.snapshot()
+    degraded = snap.get("degraded_stages") or {}
+    exhausted = snap.get("exhausted_stages") or {}
+    parts: list[str] = []
+    if degraded:
+        parts.append("降级环节：" + ", ".join(sorted(degraded)))
+    if exhausted:
+        parts.append("耗尽环节：" + ", ".join(sorted(exhausted)))
+    detail = "；".join(parts) or "功能需求直抽降级 / 预算耗尽"
+    return [_entry(
+        "成本治理",
+        f"文档预算治理触发 NEEDS WORK：{detail}。请核查降级/耗尽环节产物的完整性后再判定就绪"
+        "（预算耗尽使核心功能需求直抽降级为 stub 占位，provenance 已如实标注）。",
+        signal="budget:document_needs_work",
+        audience=AUDIENCE_INTERNAL,
+        blocker_level=BLOCKER_BLOCKING,
+        tier=TIER_HARD,
+    )]
 
 
 def readiness_verdict(

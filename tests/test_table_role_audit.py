@@ -243,6 +243,94 @@ class RoleAuditTests(unittest.TestCase):
         # 禁止跨族平均：obis 0% 不能被 parameter 100% 掩盖——both reported separately.
         self.assertEqual(rep["failing_families"], ["obis_object"])
 
+    def test_evaluate_rejects_forged_correct_boolean_exits_2(self):
+        """S1-9：evaluate 不得信任 verdicts 里预固化的 ``correct`` 布尔。
+
+        伪造场景：工作单假设角色为 data；verdicts 文件手填 ``expert_role="header"``（与假设
+        不符）却把 ``correct: true`` 一起固化。旧实现读 ``cv["correct"]`` 直接采信→伪造通过
+        门禁。修复后 evaluate 必须用 verdicts 的 ``expert_role`` 与工作单的
+        ``hypothesized_role`` **重算** correct，伪造被拒（exit 2）。
+        """
+        # 工作单：假设全对（header 行=header，data 行=data）
+        self._write_corpus(
+            "docA", "TBL-000001", "BLK-000003", "parameter_matrix",
+            ["P", "V"], [("a", "1"), ("b", "2")], wrong_rows=(),
+        )
+        ws = self.root / "wk.jsonl"
+        audit.main(["sample", "--corpus", str(self.root / "corpus"),
+                    "--per-family", "10", "--min-cells", "1", "--seed", "x",
+                    "--worksheet", str(ws)])
+        row = _read_jsonl(ws)[0]
+
+        # 伪造 verdicts：data 行的 expert_role 填成 header（错），但 correct 手填 true
+        forged_cells = []
+        for c in row["cells"]:
+            if c["coordinate"][0] == HEADER_ROW:
+                forged_cells.append({**c, "expert_role": "header", "correct": True})  # 真 correct
+            else:
+                forged_cells.append({**c, "expert_role": "header", "correct": True})  # 伪造 correct
+        verdicts = self.root / "v.jsonl"
+        write_jsonl(verdicts, [{
+            "schema": "role-audit-verdict/v1",
+            "document_id": row["document_id"],
+            "table_id": row["table_id"],
+            "family_id": row["family_id"],
+            "reviewer": "forger",
+            "cell_verdicts": forged_cells,
+            "merge_group_verdicts": [],
+        }])
+        report = self.root / "r.json"
+        rc = audit.main(["evaluate", "--worksheet", str(ws), "--verdicts", str(verdicts),
+                         "--threshold", "0.95", "--report", str(report)])
+        # 重算后 data 行全错（expert_role=header ≠ 假设 data）→ 族准确率 < 阈值 → exit 2
+        self.assertEqual(rc, 2)
+        rep = json.loads(report.read_text(encoding="utf-8"))
+        fam = rep["families"][0]
+        self.assertGreater(fam["cells_wrong"], 0)
+        self.assertFalse(fam["meets_threshold"])
+
+    def test_evaluate_family_id_taken_from_worksheet_not_verdict(self):
+        """S1-9：family_id 以抽样框（工作单）为准，不信 verdicts 自带值。
+
+        伪造场景：工作单族=obis_object（实为失败族），verdicts 自报 family_id=
+        parameter_matrix（企图混入通过族平均掩盖）。修复后以工作单族归类，obis_object 仍按
+        自身准确率裁决。
+        """
+        # 工作单：obis_object 全错（wrong_rows 全标 header，实为 data）
+        self._write_corpus(
+            "docA", "TBL-A", "BLK-A", "obis_object",
+            ["OBIS", "Meaning"], [("x", "y"), ("z", "w")], wrong_rows=(1, 2),
+        )
+        ws = self.root / "wk.jsonl"
+        audit.main(["sample", "--corpus", str(self.root / "corpus"),
+                    "--per-family", "10", "--min-cells", "1", "--seed", "x",
+                    "--worksheet", str(ws)])
+        row = _read_jsonl(ws)[0]
+        # 专家真值：header 行=header，data 行=data（与假设 header 不符 → 全错）
+        cells = []
+        for c in row["cells"]:
+            expert = "header" if c["coordinate"][0] == HEADER_ROW else "data"
+            cells.append({**c, "expert_role": expert, "correct": True})  # correct 也伪造为 true
+        verdicts = self.root / "v.jsonl"
+        write_jsonl(verdicts, [{
+            "schema": "role-audit-verdict/v1",
+            "document_id": row["document_id"],
+            "table_id": row["table_id"],
+            "family_id": "parameter_matrix",  # 自报假族（工作单实为 obis_object）
+            "reviewer": "forger",
+            "cell_verdicts": cells,
+            "merge_group_verdicts": [],
+        }])
+        report = self.root / "r.json"
+        rc = audit.main(["evaluate", "--worksheet", str(ws), "--verdicts", str(verdicts),
+                         "--threshold", "0.95", "--report", str(report)])
+        self.assertEqual(rc, 2)
+        rep = json.loads(report.read_text(encoding="utf-8"))
+        families = {f["family_id"] for f in rep["families"]}
+        # 以工作单为准：归入 obis_object（而非 verdicts 自报的 parameter_matrix）
+        self.assertIn("obis_object", families)
+        self.assertNotIn("parameter_matrix", families)
+
     def test_evaluate_no_judged_cells_exits_3(self):
         self._write_corpus(
             "docA", "TBL-000001", "BLK-000003", "parameter_matrix",

@@ -27,12 +27,32 @@ _OBLIGATION_MODALS = (
     "应", "必须", "须", "可", "宜", "需要",
 )
 # 条件连接词 / 互斥分支标记：multi_condition 信号计数基准（与 semantic_quality 互斥限定词
-# 判据同源——functional_catalog.opposed_qualifiers 检测互斥分支）
-_CONDITION_CONNECTORS = (
-    "if ", "when ", "unless ", "in case ", "where ", "depending on",
-    "either", "or ", "otherwise",
-    "如果", "若", "当", "除非", "在.*时", "或者", "否则", "视.*而定",
+# 判据同源——functional_catalog.opposed_qualifiers 检测互斥分支）。
+#
+# S1-8：旧实现用裸子串匹配（``"or " in lowered``），``"or "`` 是 ``"for "``/``"author "``/
+# ``"priority "`` 的子串→含 ``for`` 的普通条款近恒 fired。英文连接词改 **词边界** 正则
+# （``\bor\b``），杜绝子串误命中；中文单字 ``"当"``/``"若"`` 同样过宽（命中 ``适当``/``当地``/
+# ``若干``），收紧为 **词组级判据**（``当…时``/``若是``/``若…则``）。
+_CONDITION_CONNECTORS_EN = (
+    "if", "when", "unless", "in case", "where", "depending on",
+    "either", "or", "otherwise",
 )
+_CONDITION_CONNECTORS_ZH_PATTERNS = (
+    r"如果",
+    r"若是",
+    r"若.{0,8}则",      # 若…则（条件推导）
+    r"当.{0,12}时",     # 当…时（避免命中 当然/适当/当时/当地）
+    r"除非",
+    r"或者",
+    r"否则",
+    r"在.{0,12}时",     # 在…时（原有判据，加界防过宽）
+    r"视.{0,8}而定",    # 视…而定（原有判据，加界防过宽）
+)
+_EN_CONNECTOR_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in _CONDITION_CONNECTORS_EN) + r")\b",
+    re.IGNORECASE,
+)
+_ZH_CONNECTOR_RE = re.compile("|".join(_CONDITION_CONNECTORS_ZH_PATTERNS))
 _CHALLENGE_MARKERS = ("challenge", "质疑", "取证", "逐句", "存疑", "disagree", "需复核")
 
 
@@ -104,24 +124,21 @@ def multi_condition_signal(
     ``opposed_check`` 注入是为了与 ``functional_catalog.opposed_qualifiers`` 同源——但
     opposed_qualifiers 是成对需求间判定，单条款内只能用连接词检测；成对互斥在 catalog 层
     已分家（不在此处）。这里只做单条款内的条件连接词/分支计数。
+
+    S1-8：英文连接词用词边界正则（``\bor\b``，避免 ``"or "`` 命中 ``"for "``）；中文用词组
+    级判据（``当…时`` 等，避免单字 ``"当"`` 命中 ``适当/当地``）。命中连接词的种类数（去重）
+    达阈值即 fired。
     """
-    lowered = " " + text.lower() + " "
-    hits = 0
-    hit_terms: list[str] = []
-    for connector in _CONDITION_CONNECTORS:
-        if ".*" in connector:
-            if re.search(connector, text):
-                hits += 1
-                hit_terms.append(connector)
-        elif connector in lowered:
-            hits += 1
-            hit_terms.append(connector.strip())
+    en_terms = {m.group(0).lower() for m in _EN_CONNECTOR_RE.finditer(text)}
+    zh_terms = {m.group(0) for m in _ZH_CONNECTOR_RE.finditer(text)}
+    hit_terms = sorted(en_terms | zh_terms)
+    hits = len(hit_terms)
     return {
         "name": "multi_condition",
         "fired": hits >= threshold,
         "condition_count": hits,
         "threshold": threshold,
-        "connectors": sorted(set(hit_terms)),
+        "connectors": hit_terms,
     }
 
 

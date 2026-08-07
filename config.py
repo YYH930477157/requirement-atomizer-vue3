@@ -56,7 +56,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # 全部默认关闭/采样：直抽是旁路新入口（默认关=旧原子化路径），claim 账本 sampling 为默认档。
     # WS0 功能需求级真值集尚是 pending-human，本切片只交付工程机制（默认关闭、旧路径始终合法）。
     EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT", "0", "功能需求直抽入口开关（=1 启用 functional_extract 单次 LLM 直出功能需求级条目并写 functional_requirements.json；默认 0=旧 extract_units→atomize→functional_synthesis 原子化路径，行为面与缓存指纹不动）", False),
-    EnvVar("RATOMIZER_CLAIM_LEDGER_MODE", "sampling", "claim 账本闭合模式：full=全量 verifier 闭合（现状）/ sampling=分层抽样 10%+全部高风险 claim（默认）/ baseline_gate=发布门禁全量闭合+联动重型机制。仅 sampling/baseline_gate 收窄闭合面，full 与现状逐字节一致", False),
+    EnvVar("RATOMIZER_CLAIM_LEDGER_MODE", "sampling", "claim 账本闭合模式（配置解析层默认 sampling；B 轨发布路径 env 未设时仍走 full=生产行为不变，显式设置才 opt-in 生效）。full=全量 verifier 闭合 / sampling=分层抽样 10%+全部高风险 claim，未抽中 claim 延迟到发布门禁并在 claim_sampling_summary.json 留痕 / baseline_gate=发布门禁全量闭合+重型机制联动（用户显式开启时触发全量闭合）。build_shadow_ledger 自身默认 full（直接调用者/既有测试不受影响）；把 sampling 翻转为生产默认属语义变更，留待 S2", False),
     EnvVar("RATOMIZER_CLAIM_LEDGER_SAMPLING_RATE", "0.1", "sampling 模式分层抽样率（0..1，默认 0.1；抽检闭合率低于阈值时自动扩大，判定依据留账本）", False),
     EnvVar("RATOMIZER_CLAIM_LEDGER_SAMPLING_FLOOR_RATE", "0.3", "sampling 模式抽检闭合率下限（低于此值自动扩大抽样或建议转全量，0..1，默认 0.3）", False),
     EnvVar("RATOMIZER_FUNCTIONAL_DRILLDOWN_MULTI_BEHAVIOR", "2", "原子级下钻「多行为」信号阈值：同一主语下义务性模态动词支配不同动作数 ≥N 触发下钻（默认 2）", False),
@@ -71,6 +71,11 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # 全部默认非侵入：弱词词典缺省走内置词表；需求库/弱词 YAML 路径未配置时不激活对应加载。
     EnvVar("RATOMIZER_WEAK_WORDS_PATH", "", "弱词词典 YAML 路径（覆盖内置词表；未配置=用内置 适当/尽快/灵活/等 词表，与 domain_packs 词表惯例一致）", False),
     EnvVar("RATOMIZER_REQUIREMENT_LIBRARY", "", "需求库 JSONL 路径（各项目功能需求汇总检索库；API 词面检索缺省读此；未配置=API 检索返回空）", False),
+    EnvVar("RATOMIZER_REQUIREMENT_RETRIEVER", "literal", "需求检索器类型（T3-4 插件点：literal=词面 Jaccard 默认 / vector=预留可关开关，当前无向量依赖、选 vector 如实回退词面，产出仍过确定性校验）", False),
+    # --- T2 编排环（agent_loop 升格：缺口驱动的再规划，裁决仍在专家面板）---
+    # 默认非侵入：allow_llm 关闭时编排环只读缺口并把 extract 缺口转人工，不发起任何 LLM 补抽。
+    EnvVar("RATOMIZER_ORCHESTRATION_MAX_ROUNDS", "8", "编排环每文档最大轮次上限（1..50，默认 8；达上限未收敛→文档 NEEDS WORK 交人）", False),
+    EnvVar("RATOMIZER_ORCHESTRATION_ALLOW_LLM", "0", "编排环经 openai_compatible 路由自动发起 spot_extract/targeted_reextract 的授权开关（=1 启用；默认 0=只读缺口，extract 缺口转人工）", False),
     # --- 知识/资产路径 ---
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),
     EnvVar("RATOMIZER_ADJUDICATION_BANK", "", "裁决样本库 JSON 路径（专家 accepted 需求作 few-shot 注入富化；缺省不注入）", False),

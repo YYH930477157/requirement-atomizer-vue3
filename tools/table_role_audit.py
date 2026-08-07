@@ -480,7 +480,18 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                            f"verdict row schema mismatch: {verdict.get('schema')!r}", exit_code=3)
         table_id = verdict.get("table_id")
         ws = worksheet.get(table_id)
-        family_id = str(verdict.get("family_id") or (ws.get("family_id") if ws else "") or "unmatched")
+        # S1-9：family_id 以抽样框（工作单）为准，不信 verdicts 自带值——否则伪造 verdicts
+        # 可自报通过族以混入平均掩盖失败族。
+        family_id = str((ws.get("family_id") if ws else "") or verdict.get("family_id") or "unmatched")
+        # S1-9：假设角色真值取自工作单（抽样框），按 cell_id 建索引——evaluate 必须用 verdicts
+        # 的 expert_role 与工作单的 hypothesized_role **重算** correct，不信任 verdicts 里预固化
+        # 的 ``correct`` 布尔（手填 correct:true 可骗过门禁）。
+        ws_hypo_by_cell: dict[str, str] = {}
+        if ws:
+            for c in ws.get("cells") or []:
+                cid = str(c.get("cell_id") or "")
+                if cid:
+                    ws_hypo_by_cell[cid] = str(c.get("hypothesized_role") or "")
         t_correct = t_wrong = t_judged = 0
         for cv in verdict.get("cell_verdicts") or []:
             expert_role = cv.get("expert_role")
@@ -492,7 +503,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                                exit_code=3)
             t_judged += 1
             judged_cells_total += 1
-            if cv.get("correct"):
+            # 重算 correct：专家裁定 == 工作单假设角色。工作单无此 cell_id（抽样框外）→ 无法
+            # 核验，记为错（防伪造：verdict 引用了工作单不存在的格时不能凭 verdict 自填值通过）。
+            hypo = ws_hypo_by_cell.get(str(cv.get("cell_id") or ""))
+            correct = bool(hypo) and str(expert_role) == str(hypo)
+            if correct:
                 t_correct += 1
                 family_stats[family_id]["correct"] += 1
             else:

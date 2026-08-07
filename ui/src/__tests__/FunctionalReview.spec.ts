@@ -263,6 +263,59 @@ describe("FunctionalReview (WS-F)", () => {
     expect(text).toContain("已实现")
   })
 
+  it("syncs evidence_fingerprint from the save response so three consecutive saves never 409 (S1-6)", async () => {
+    // S1-6 复现条件：首次保存（无既有 verification state）。修复前保存成功后本地行指纹留空，
+    // 第二次保存携空串当 expected → 假 409。这里 mock 后端按真实 CAS 语义判 409。
+    const responseFingerprint = "fp-real-stable"
+    const apply = vi.fn((input: { requirementId: string; expectedEvidenceFingerprint?: string }) => {
+      if (input.expectedEvidenceFingerprint !== undefined
+        && input.expectedEvidenceFingerprint !== responseFingerprint) {
+        return Promise.reject(new RequirementApiError(409, {
+          error: "verification_conflict",
+          needs_reconfirmation: true,
+          current_evidence_fingerprint: responseFingerprint,
+          detail: "CAS 失配",
+        }))
+      }
+      return Promise.resolve({
+        requirement_id: input.requirementId,
+        verification: {},
+        lifecycle_state: "confirmed",
+        evidence_fingerprint: responseFingerprint,
+        written: ["verification_states.jsonl"],
+      })
+    })
+    const client = makeClient({
+      // 无既有 state：首次保存场景（本地行指纹起初缺失）
+      loadVerificationStates: vi.fn().mockResolvedValue({ schema: "verification-states/v1", states: [], total: 0 }),
+      applyVerificationAction: apply as unknown as ReturnType<typeof vi.fn>,
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    // 第一次保存：无既有指纹 → expectedEvidenceFingerprint 缺省（不发送 expected_evidence_fingerprint）
+    await wrapper.find('[data-testid="save-verification"]').trigger("click")
+    await flushPromises()
+    const first = (apply.mock.calls[0][0] as { expectedEvidenceFingerprint?: string }).expectedEvidenceFingerprint
+    expect(first).toBeUndefined()
+    expect(wrapper.find('[data-testid="fr-message"]').text()).not.toContain("证据指纹失配")
+
+    // 第二次保存：本地行指纹已同步为响应值 → 携正确指纹，无 409
+    await wrapper.find('[data-testid="save-verification"]').trigger("click")
+    await flushPromises()
+    const second = (apply.mock.calls[1][0] as { expectedEvidenceFingerprint?: string }).expectedEvidenceFingerprint
+    expect(second).toBe(responseFingerprint)
+
+    // 第三次保存：仍携同步后的指纹 → 无 409（三连保存通过）
+    await wrapper.find('[data-testid="save-verification"]').trigger("click")
+    await flushPromises()
+    const third = (apply.mock.calls[2][0] as { expectedEvidenceFingerprint?: string }).expectedEvidenceFingerprint
+    expect(third).toBe(responseFingerprint)
+    // 三次保存全部成功（无 409 刷新提示）
+    expect(wrapper.find('[data-testid="fr-message"]').text()).not.toContain("证据指纹失配")
+    expect(apply).toHaveBeenCalledTimes(3)
+  })
+
   it("saves verification via POST with the CAS evidence_fingerprint and refreshes on 409 (Cap2)", async () => {
     const client = makeClient({
       applyVerificationAction: vi.fn()
@@ -454,5 +507,52 @@ describe("FunctionalReview (WS-F)", () => {
     await wrapper.find('[data-testid="run-library-search"]').trigger("click")
     await flushPromises()
     expect(wrapper.find('[data-testid="library-panel"]').text()).toContain("未配置 RATOMIZER_REQUIREMENT_LIBRARY")
+  })
+
+  it("hides unconfirmed (draft) library entries by default and reveals them via the toggle (S1-10d)", async () => {
+    const client = makeClient({
+      searchRequirementLibrary: vi.fn().mockResolvedValue({
+        kind: "requirement_search", matches: 2,
+        results: [
+          { objective: "已确认历史需求", overlap_score: 0.5, lifecycle_state: "confirmed", project: "项目A" },
+          { objective: "草稿历史需求", overlap_score: 0.4, lifecycle_state: "draft", project: "项目A" },
+        ],
+      }),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="run-library-search"]').trigger("click")
+    await flushPromises()
+
+    const panel = wrapper.find('[data-testid="library-panel"]')
+    // 默认隐藏 draft：已确认条目可见，草稿条目不可见
+    expect(panel.text()).toContain("已确认历史需求")
+    expect(panel.text()).not.toContain("草稿历史需求")
+    // 隐藏计数提示
+    expect(panel.text()).toContain("1 条未确认已隐藏")
+    // 勾选「显示未确认」后草稿条目出现
+    await wrapper.find('[data-testid="toggle-unconfirmed-library"]').setValue(true)
+    await flushPromises()
+    expect(panel.text()).toContain("草稿历史需求")
+  })
+
+  it("keeps showing legacy library entries that have no lifecycle_state (backward compatible, S1-10d)", async () => {
+    // 旧库条目无 lifecycle_state——按已确认对待，不被默认隐藏（避免整库历史条目全部消失）
+    const client = makeClient({
+      searchRequirementLibrary: vi.fn().mockResolvedValue({
+        kind: "requirement_search", matches: 1,
+        results: [{ objective: "旧库历史需求", overlap_score: 0.45, project: "项目A" }],
+      }),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="run-library-search"]').trigger("click")
+    await flushPromises()
+
+    const panel = wrapper.find('[data-testid="library-panel"]')
+    expect(panel.text()).toContain("旧库历史需求")
+    expect(panel.text()).not.toContain("未确认已隐藏")
   })
 })

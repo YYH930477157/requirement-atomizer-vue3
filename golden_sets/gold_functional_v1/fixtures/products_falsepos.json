@@ -1,0 +1,11 @@
+{
+  "doc_ref": "SYN-DOC-1",
+  "producer": "synthetic-fixture",
+  "fixture_note": "SYNTHETIC FIXTURE — self-proof form 3 (false-positive): all three truth entries covered, plus one floating product (FP-X) whose anchor hits no truth entry. recall=3/3 precision=3/4.",
+  "items": [
+    {"functional_requirement_id": "FP-1", "source_section": "4.1", "source_block_ids": ["BLK-001"], "objective": "The meter shall record billing-relevant load data.", "behaviors": ["The meter shall record active energy"], "preconditions": [], "data_constraints": [], "variants": [], "exceptions": [], "related_dlms_objects": [], "source_kind": "functional_extract"},
+    {"functional_requirement_id": "FP-2", "source_section": "4.2", "source_block_ids": ["BLK-002"], "objective": "The meter shall detect reverse power flow.", "behaviors": ["The meter shall detect reverse flow when reverse flow exceeds the configured threshold", "The meter shall raise a tamper event"], "preconditions": ["reverse flow exceeds the configured threshold"], "data_constraints": [], "variants": [], "exceptions": [], "related_dlms_objects": [], "source_kind": "functional_extract"},
+    {"functional_requirement_id": "FP-3", "source_section": "4.3", "source_block_ids": ["BLK-003"], "objective": "The meter shall archive load profile data at the configured interval.", "behaviors": ["The meter shall archive load profile entries"], "preconditions": [], "data_constraints": ["15 min interval"], "variants": [], "exceptions": [], "related_dlms_objects": [], "source_kind": "functional_extract"},
+    {"functional_requirement_id": "FP-X", "source_section": "4.9", "source_block_ids": ["BLK-999"], "objective": "Fabricated requirement with no source clause.", "behaviors": ["The meter shall do something unspecified"], "preconditions": [], "data_constraints": [], "variants": [], "exceptions": [], "related_dlms_objects": [], "source_kind": "functional_extract"}
+  ]
+}

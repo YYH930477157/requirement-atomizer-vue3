@@ -131,3 +131,28 @@ python tools/table_role_audit.py evaluate `
 - **冻结 `out/` 基线**：主检出的 `out/abnt_nbr_16968_atomizer_v5/`（按**三个种子 `--kb` + domain-pack** 生成，不是单编译库）。
 - **签发成功的假设产物**：双轨制结构理解器（`llm_table_understanding.py`）在金标语料上跑出的 `table_structure_hypotheses.jsonl`（`validator_status=="issued"`）。本切片交付时提议轨尚未在金标上实跑，故角色抽审的真实抽样框也 pending。
 - **专家档期**：角色语义抽审的逐格裁定（W8.3.b）与 WS0 真值集标注一致，需专家对照批注 HTML 完成。
+
+---
+
+## 默认值翻转门禁（S1 接线收口附加条款，2026-08-06）
+
+> 来源：S1-A 后端接线简报附加门禁（Kimi 修正项）。S1-4 把 WS1 双轨接进 `atomize.py` 主线，
+> 但**默认仍 OFF**——OFF 时产物与 main 逐字节一致（硬判据，有测试钉死）。这条门禁约束的是
+> **未来把 `RATOMIZER_TABLE_DUAL_TRACK` 默认值翻转为开启的那次合并**，防止翻转时扯皮。
+
+把 `RATOMIZER_TABLE_DUAL_TRACK` 默认值翻转为 ON 的那次合并，**由该次合并负责**：
+
+1. **bump `TABLE_STRUCTURE_VERSION`**（`table_structure.py`）。默认翻转使假设派生结构进入 A 轨
+   解析产物，属解析行为面变更；版本 bump 使旧解析缓存指纹失效（与既有"行为面变更必须 bump"
+   纪律一致），旧产物经版本闸如实返回 `base_migration_required` 而非静默沿用。
+2. **用三个种子 `--kb` + domain-pack 重生成 `out/abnt_nbr_16968_atomizer_v5/` 基线**（不是单编译库——
+   单库会假漂移，见 `AGENTS.md` 的 KB 双轨口径）。重生成后逐项说明 `golden_sets/abnt_nbr_16968_v5/
+   golden_summary.json` 的漂移（counts / requirement_type / source_type 分布 / coverage），合并才算
+   最终完成。
+3. **跑 W8 全部门禁**（corpus_eval 三指标逐文档不劣化 + 受保护编码零漂移 + 按表格族角色语义抽审
+   ≥95%）。任一红灯即该文档类型不翻转，保持旧确定性路径。
+
+在翻转合并的 commit message 中**显式声明**上述三项（版本面变更 + 对缓存与 golden 基线的影响），
+与仓库提交信息准则一致。**在翻转之前**，双轨始终是 opt-in 开关：`RATOMIZER_TABLE_DUAL_TRACK=1`
+跑测试文档时假设产物落盘 `table_structure_hypotheses.jsonl`、`table_role_audit` 抽样框非空；
+开关 OFF 时解析主线与 4.1 万行测试资产逐字节不变。

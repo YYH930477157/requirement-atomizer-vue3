@@ -113,6 +113,113 @@ def resolve_kb_paths(kb_paths: list[Path] | None) -> list[Path]:
     return [resolve_bundled_path(path) for path in kb_paths]
 
 
+def _budget_document_id(input_path: Path | None, out_dir: Path) -> str:
+    """文档预算单稳定 document_id：输入文件名优先，其次输出目录名。"""
+    if input_path is not None:
+        stem = Path(input_path).stem.strip()
+        if stem:
+            return stem
+    return (out_dir.name or "document").strip() or "document"
+
+
+def _attach_budget_ledger_for_run(out_dir: Path, input_path: Path | None = None):
+    """S1-1：``RATOMIZER_LLM_BUDGET=1`` 时创建文档预算单并 ``attach()`` 到 llm_client 钩子。
+
+    开关未开返回 None（既有行为逐字节不变）。开启后所有 LLM HTTP 调用经钩子扣减，超额在
+    ``intercept`` 事前拦截（调用方既有 stub catch 接管），落盘 ``llm_budget.json`` 供 cost-report。
+    """
+    try:
+        from llm_budget import LLMBudgetLedger, budget_enabled
+    except Exception:  # noqa: BLE001 — 预算模块不可用不得阻断主流程
+        return None
+    if not budget_enabled():
+        return None
+    try:
+        ledger = LLMBudgetLedger.for_document(
+            _budget_document_id(input_path, out_dir), out_dir=out_dir
+        )
+        ledger.attach()
+        return ledger
+    except Exception as exc:  # noqa: BLE001 — 预算单创建/挂载失败不得阻断主流程
+        logging.getLogger("requirement_atomizer").warning("文档预算单 attach 失败：%s", exc)
+        return None
+
+
+def _detach_budget_ledger(ledger) -> None:
+    """S1-1：退出时 save（落盘 cost-report 数据源）+ detach（llm_client 回到无预算行为）。"""
+    if ledger is None:
+        return
+    try:
+        ledger.save()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("requirement_atomizer").warning("文档预算单 save 失败：%s", exc)
+    try:
+        ledger.detach()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@contextmanager
+def _budget_stage(ledger, stage: str):
+    """把一个流水线环节包进预算单的 stage 上下文（无活动预算单则空操作）。"""
+    if ledger is None:
+        yield
+        return
+    with ledger.enter_stage(stage):
+        yield
+
+
+def _attach_dual_track_proposer(route: str | None) -> bool:
+    """S1-4：``RATOMIZER_TABLE_DUAL_TRACK=1`` 且有 openai_compatible route 时，挂双轨提议器。
+
+    atomize 自身只做几何校验 + 假设派生 + 落盘（零 LLM）；提议器闭包捕获 config 调
+    ``llm_table_understanding.propose_table_structure``。无 route（stub）/ 开关关 /
+    config 解析失败 → 不挂，atomize 走确定性 ``analyze_table``（OFF 字节不变）。
+    """
+    try:
+        from table_structure import dual_track_enabled
+    except Exception:  # noqa: BLE001
+        return False
+    if not dual_track_enabled() or not route or route == "stub":
+        return False
+    try:
+        from ai_extract import DEFAULT_PIPELINE_PATH, config_for_route
+        from atomize import set_table_dual_track_proposer
+        from llm_table_understanding import propose_table_structure
+
+        config = config_for_route(route, DEFAULT_PIPELINE_PATH)
+    except Exception:  # noqa: BLE001
+        return False
+    if config is None:
+        return False
+
+    def proposer(parsed_table, *, table_id="", block_id="", section_path=None):
+        return propose_table_structure(parsed_table, config=config)
+
+    try:
+        set_table_dual_track_proposer(proposer)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _detach_dual_track_proposer() -> None:
+    try:
+        from atomize import clear_table_dual_track_proposer
+
+        clear_table_dual_track_proposer()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# 链内阶段名 → 预算单环节（仅 LLM 承载环节映射，确定性环节不进账本分摊）
+_CHAIN_BUDGET_STAGES = {
+    "ai-extract": "functional_extract",
+    "assemble": "spec_enrich",
+    "requirements-analysis": "analyze_enrich",
+}
+
+
 def run_pipeline_task(
     input_path: Path,
     out_dir: Path,
@@ -128,88 +235,99 @@ def run_pipeline_task(
     input_path = input_path.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    atomize_config = {
-        "chunk_chars": chunk_chars,
-        "kb_paths": [str(path) for path in resolve_kb_paths(kb_paths)],
-        "domain_pack_dir": str(resolve_bundled_path(domain_pack_dir) or ""),
-    }
-    atomize_reused = stage_is_reusable(
-        out_dir, "atomize", input_path=input_path, config=atomize_config)
-    if atomize_reused:
-        manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
-        manifest["resume_action"] = "skipped"
-        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
-                            action="skipped", input_path=input_path, config=atomize_config)
-        emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "skipped", "percent": 100})
-    else:
-        update_run_manifest(out_dir, "atomize", "running")
-        emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "running", "percent": 10})
-        try:
-            manifest = run_atomizer_pipeline(
-                input_path,
-                out_dir,
-                chunk_chars=chunk_chars,
-                kb_paths=resolve_kb_paths(kb_paths),
-                domain_pack_dir=resolve_bundled_path(domain_pack_dir),
-            )
-        except Exception as exc:
-            update_run_manifest(out_dir, "atomize", "failed", error=str(exc))
-            raise
-        update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
-                            action="ran", input_path=input_path, config=atomize_config)
-        emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "ok", "percent": 100})
+    # S1-1：开启 RATOMIZER_LLM_BUDGET 时挂文档预算单（attach 后所有 LLM 调用经钩子扣减 +
+    # 超额事前拦截；save 落盘 cost-report 数据源）。开关未开返回 None，行为逐字节不变。
+    budget = _attach_budget_ledger_for_run(out_dir, input_path)
+    _attach_dual_track_proposer(llm_route)  # S1-4：双轨开且有 route 时挂提议器（atomize 用）
+    try:
+        atomize_config = {
+            "chunk_chars": chunk_chars,
+            "kb_paths": [str(path) for path in resolve_kb_paths(kb_paths)],
+            "domain_pack_dir": str(resolve_bundled_path(domain_pack_dir) or ""),
+        }
+        atomize_reused = stage_is_reusable(
+            out_dir, "atomize", input_path=input_path, config=atomize_config)
+        if atomize_reused:
+            manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+            manifest["resume_action"] = "skipped"
+            update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
+                                action="skipped", input_path=input_path, config=atomize_config)
+            emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "skipped", "percent": 100})
+        else:
+            update_run_manifest(out_dir, "atomize", "running")
+            emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "running", "percent": 10})
+            try:
+                # 预算单环节：structure_hypothesis（atomize 的 LLM 仅在 WS1 双轨开时出现）
+                with _budget_stage(budget, "structure_hypothesis"):
+                    manifest = run_atomizer_pipeline(
+                        input_path,
+                        out_dir,
+                        chunk_chars=chunk_chars,
+                        kb_paths=resolve_kb_paths(kb_paths),
+                        domain_pack_dir=resolve_bundled_path(domain_pack_dir),
+                    )
+            except Exception as exc:
+                update_run_manifest(out_dir, "atomize", "failed", error=str(exc))
+                raise
+            update_run_manifest(out_dir, "atomize", "ok", outputs=STAGE_REQUIRED_OUTPUTS["atomize"],
+                                action="ran", input_path=input_path, config=atomize_config)
+            emit_progress({"stage": "pipeline_stage", "step": "atomize", "status": "ok", "percent": 100})
 
-    # 审计 P1-d：用户 --kb 必须贯通到审查阶段——此前 atomize 按客户 KB 匹配、审查工具
-    # 却落回默认 KB 复核（KB 双轨错配）。None（未显式传 kb）保持旧默认行为；显式传入时
-    # 同一份解析结果进 run_review_pipeline 与阶段指纹，两侧文件集合严格一致。
-    review_kb_paths = resolve_kb_paths(kb_paths) if kb_paths is not None else None
-    review_config: dict[str, Any] = {
-        # 审计 R2-H2：scope/limit 改变审查覆盖面，必须进阶段指纹——否则先 targeted 后
-        # all、或先限量后全量时指纹不变，阶段被整体跳过。
-        "review_scope": review_scope,
-        "llm_review_limit": llm_review_limit,
-    }
-    if review_kb_paths is not None:
-        review_config["kb_paths"] = [str(path) for path in review_kb_paths]
-    # 审计 R2-H2/H3：--domain-pack 同时喂审查（review_policy 合并）与阶段指纹，与
-    # atomize 同轨取解析后的包目录；未传时保持 review 默认捆绑包行为不变（显式 None
-    # 会关掉 merge_review_policy 的默认包合并）。
-    review_domain_pack_path: Path | None = None
-    resolved_domain_pack_dir = resolve_bundled_path(domain_pack_dir)
-    if resolved_domain_pack_dir is not None:
-        review_config["domain_pack_dir"] = str(resolved_domain_pack_dir)
-        review_domain_pack_path = resolved_domain_pack_dir / "pack.yaml"
-    if skip_review:
-        review = None
-    elif atomize_reused and stage_is_reusable(out_dir, "llm-review", route=llm_route, config=review_config):
-        review = skipped_stage_payload(out_dir, "llm-review")
-        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="skipped", config=review_config)
-        emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "skipped", "percent": 100})
-    else:
-        update_run_manifest(out_dir, "llm-review", "running", config=review_config)
-        emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "running", "percent": 0})
-        try:
-            review = run_review_pipeline(
-                out_dir,
-                route=llm_route,
-                scope=review_scope,
-                llm_review_limit=llm_review_limit,
-                progress_callback=emit_progress,
-                kb_paths=review_kb_paths,
-                domain_pack_path=review_domain_pack_path or DEFAULT_DOMAIN_PACK_PATH,
-            )
-        except Exception as exc:
-            update_run_manifest(out_dir, "llm-review", "failed", error=str(exc), config=review_config)
-            raise
-        update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="ran", config=review_config)
-    return {
-        "kind": "pipeline",
-        "out_dir": str(out_dir),
-        "input": str(input_path),
-        "manifest": manifest,
-        "review": review,
-        "summary": _stage_summary(out_dir),
-    }
+        # 审计 P1-d：用户 --kb 必须贯通到审查阶段——此前 atomize 按客户 KB 匹配、审查工具
+        # 却落回默认 KB 复核（KB 双轨错配）。None（未显式传 kb）保持旧默认行为；显式传入时
+        # 同一份解析结果进 run_review_pipeline 与阶段指纹，两侧文件集合严格一致。
+        review_kb_paths = resolve_kb_paths(kb_paths) if kb_paths is not None else None
+        review_config: dict[str, Any] = {
+            # 审计 R2-H2：scope/limit 改变审查覆盖面，必须进阶段指纹——否则先 targeted 后
+            # all、或先限量后全量时指纹不变，阶段被整体跳过。
+            "review_scope": review_scope,
+            "llm_review_limit": llm_review_limit,
+        }
+        if review_kb_paths is not None:
+            review_config["kb_paths"] = [str(path) for path in review_kb_paths]
+        # 审计 R2-H2/H3：--domain-pack 同时喂审查（review_policy 合并）与阶段指纹，与
+        # atomize 同轨取解析后的包目录；未传时保持 review 默认捆绑包行为不变（显式 None
+        # 会关掉 merge_review_policy 的默认包合并）。
+        review_domain_pack_path: Path | None = None
+        resolved_domain_pack_dir = resolve_bundled_path(domain_pack_dir)
+        if resolved_domain_pack_dir is not None:
+            review_config["domain_pack_dir"] = str(resolved_domain_pack_dir)
+            review_domain_pack_path = resolved_domain_pack_dir / "pack.yaml"
+        if skip_review:
+            review = None
+        elif atomize_reused and stage_is_reusable(out_dir, "llm-review", route=llm_route, config=review_config):
+            review = skipped_stage_payload(out_dir, "llm-review")
+            update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="skipped", config=review_config)
+            emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "skipped", "percent": 100})
+        else:
+            update_run_manifest(out_dir, "llm-review", "running", config=review_config)
+            emit_progress({"stage": "pipeline_stage", "step": "llm-review", "status": "running", "percent": 0})
+            try:
+                with _budget_stage(budget, "llm_review"):  # 预算单环节：llm_review
+                    review = run_review_pipeline(
+                        out_dir,
+                        route=llm_route,
+                        scope=review_scope,
+                        llm_review_limit=llm_review_limit,
+                        progress_callback=emit_progress,
+                        kb_paths=review_kb_paths,
+                        domain_pack_path=review_domain_pack_path or DEFAULT_DOMAIN_PACK_PATH,
+                    )
+            except Exception as exc:
+                update_run_manifest(out_dir, "llm-review", "failed", error=str(exc), config=review_config)
+                raise
+            update_run_manifest(out_dir, "llm-review", "ok", route=llm_route, outputs=STAGE_REQUIRED_OUTPUTS["llm-review"], action="ran", config=review_config)
+        return {
+            "kind": "pipeline",
+            "out_dir": str(out_dir),
+            "input": str(input_path),
+            "manifest": manifest,
+            "review": review,
+            "summary": _stage_summary(out_dir),
+        }
+    finally:
+        _detach_budget_ledger(budget)
+        _detach_dual_track_proposer()
 
 
 def export_task(out_dir: Path, formats: list[str]) -> dict[str, Any]:
@@ -424,17 +542,23 @@ def import_verification_workbook_task(
     """回灌线下改过的 software_requirements.xlsx 六列 → verification_states.jsonl。
 
     复用 import-clarification-answers 的解析模式：按需求追溯ID（notes 列）定位行，
-    读六列单元格 → verification 子对象，CAS 指纹失配（需求已重新生成）拒绝自动合入转人工。
+    读六列单元格 → verification 子对象，CAS 指纹失配（结构字段漂移）拒绝自动合入转人工。
+
+    T3-2 CAS 分桶：回灌闸只比对**结构列**（子模块 + 客户需求章节）——``description``（叙述）
+    不再进闸，叙述措辞变化不再误拒回灌。结构漂移行进 ``rejected``；叙述漂移（结构匹配、
+    描述变化）进 ``narrative_review`` 清单——状态仍回灌（不吊销），仅提示专家复核措辞。
+    S1-10b：``rejected`` 每条含 requirement_id + xlsx 物理行号 + sheet + 原因。
     """
     from openpyxl import load_workbook
-    from requirement_schema import fingerprint_from_cells, parse_verification_columns
+    from requirement_schema import parse_verification_columns, structural_fingerprint_from_cells
     from requirements_analysis_rules import apply_verification_override, load_requirement_index
 
     root = out_dir.expanduser().resolve()
     index = load_requirement_index(root)
     workbook_path = workbook_path.expanduser().resolve()
     wb = load_workbook(workbook_path, read_only=True, data_only=True)
-    harvested: list[tuple[str, list[Any], tuple[Any, ...]]] = []
+    # (rid, six, structural_cells, description_cell, row_number, sheet_title)
+    harvested: list[tuple[str, list[Any], tuple[Any, ...], Any, int, str]] = []
     try:
         for sheet in wb.worksheets:
             header = [str(cell.value or "").strip() for cell in next(
@@ -442,7 +566,8 @@ def import_verification_workbook_task(
             if "项目负责人确认" not in header:
                 continue
             col = {name: idx for idx, name in enumerate(header)}
-            for row in sheet.iter_rows(min_row=2, values_only=True):
+            # row_number = xlsx 物理行号（min_row=2 → 首条数据行是第 2 行）
+            for row_number, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
                 if not row:
                     continue
                 notes_idx = col.get("说明、示例、注意事项", 6)
@@ -458,25 +583,44 @@ def import_verification_workbook_task(
                         ("功能是否实现", 13), ("测试用例号", 14), ("测试是否完成", 15),
                     )
                 ]
-                content = (
+                # T3-2：结构闸只用子模块 + 客户需求章节（描述=叙述，降级为复核提示）
+                structural_cells = (
                     row[col.get("子模块", 2)] if len(row) > col.get("子模块", 2) else "",
-                    row[col.get("描述", 3)] if len(row) > col.get("描述", 3) else "",
                     row[col.get("客户需求章节", 8)] if len(row) > col.get("客户需求章节", 8) else "",
                 )
-                harvested.append((rid, six, content))
+                description_cell = row[col.get("描述", 3)] if len(row) > col.get("描述", 3) else ""
+                harvested.append((rid, six, structural_cells, description_cell, row_number, sheet.title))
     finally:
         wb.close()
 
     imported = stale = missing = 0
-    for rid, six, content in harvested:
+    rejected: list[dict[str, Any]] = []
+    narrative_review: list[dict[str, Any]] = []
+    for rid, six, structural_cells, description_cell, row_number, sheet_title in harvested:
         entry = index.get(rid)
         if not entry:
             missing += 1
+            rejected.append({
+                "requirement_id": rid, "row": row_number, "sheet": sheet_title,
+                "reason": "需求追溯ID不在当前索引（需求可能已删除或尚未生成）",
+            })
             continue
-        # CAS：行单元格内容指纹必须与当前需求一致（失配=需求已重新生成，转人工）
-        if fingerprint_from_cells(*content) != entry["fingerprint"]:
+        # CAS 结构闸：子模块 + 客户需求章节 指纹必须与当前需求一致（结构漂移=转人工）
+        if structural_fingerprint_from_cells(*structural_cells) != entry["cell_fingerprint"]:
             stale += 1
+            rejected.append({
+                "requirement_id": rid, "row": row_number, "sheet": sheet_title,
+                "reason": "结构字段失配（子模块/客户需求章节已变化，请人工核对后再回灌）",
+            })
             continue
+        # 叙述复核提示：结构匹配但描述变化 → 不吊销，进 narrative_review 提示专家复核
+        item_description = str((entry.get("item") or {}).get("description") or "")
+        if str(description_cell or "").strip() and item_description and \
+                _backfill_description_drifted(description_cell, item_description):
+            narrative_review.append({
+                "requirement_id": rid, "row": row_number, "sheet": sheet_title,
+                "reason": "描述（叙述）变化——状态已回灌，请复核措辞是否仍准确",
+            })
         verification = parse_verification_columns(six, actor_fallback=actor)
         # 仅当六列至少有一项非默认值才写（避免空行覆盖既有状态）
         if verification == default_verification_for_check():
@@ -490,8 +634,23 @@ def import_verification_workbook_task(
         "imported": imported,
         "stale": stale,
         "missing": missing,
+        # S1-10b：拒绝清单精确到 requirement_id + xlsx 行号 + sheet + 原因
+        "rejected": rejected,
+        # T3-2：叙述复核清单（状态已回灌不吊销，仅提示）
+        "narrative_review": narrative_review,
         "written": ["verification_states.jsonl"] if imported else [],
     }
+
+
+def _backfill_description_drifted(cell_description: Any, item_description: str) -> bool:
+    """回灌描述（叙述）漂移判定：折叠空白 + 去控制字符后逐字不等即视为叙述变化。
+
+    仅用于 ``narrative_review`` 复核提示，不参与 CAS 吊销；宽松归一避免无害空白差异误报。
+    """
+    import re as _re
+    norm_cell = _re.sub(r"\s+", " ", str(cell_description or "")).strip()
+    norm_item = _re.sub(r"\s+", " ", str(item_description or "")).strip()
+    return bool(norm_cell) and bool(norm_item) and norm_cell != norm_item
 
 
 def default_verification_for_check() -> Any:
@@ -602,38 +761,65 @@ def add_manual_requirement_task(
 def build_requirement_library_task(
     project_dirs: list[Path],
     output_path: Path,
+    *,
+    include_unconfirmed: bool = False,
 ) -> dict[str, Any]:
-    """汇总各项目 functional_requirements 为带项目元数据的 JSONL 检索库（不引入数据库）。"""
+    """汇总各项目 functional_requirements 为带项目元数据的 JSONL 检索库（不引入数据库）。
+
+    S1-10d 需求库入库质量门：默认仅收录 lifecycle>=confirmed 的条目（draft 视为未确认，不入库）；
+    ``include_unconfirmed=True`` 显式收录 draft 条目。每条 entry 携带 ``lifecycle_state``，供
+    采纳 UI 默认隐藏未确认条目。functional_requirements 经 governed 双路径探测读取
+    （package_v1 下在 .ratomizer/pipeline/，裸根拼会落空——B1 类寻址失守）。
+    """
     import json as _json
-    from requirement_schema import library_entry_from_requirement
+    from requirement_schema import (
+        LIFECYCLE_CONFIRMED, library_entry_from_requirement, lifecycle_rank, requirement_identity,
+    )
+    from requirements_analysis_rules import _read_functional_requirements_payload
+    from review_state import read_verification_states
 
     output_path = output_path.expanduser().resolve()
     entries: list[dict[str, Any]] = []
     sources: list[dict[str, Any]] = []
+    total_skipped_unconfirmed = 0
+    confirmed_floor = lifecycle_rank(LIFECYCLE_CONFIRMED)
     for project_dir in project_dirs:
         root = Path(project_dir).expanduser().resolve()
-        synth_path = root / "functional_requirements.json"
-        if not synth_path.exists():
-            sources.append({"project_dir": str(root), "imported": 0, "reason": "functional_requirements.json 缺失"})
-            continue
-        try:
-            payload = _json.loads(synth_path.read_text(encoding="utf-8"))
-        except (OSError, _json.JSONDecodeError):
-            payload = {}
+        payload = _read_functional_requirements_payload(root)
         items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list) or not items:
+            sources.append({"project_dir": str(root), "imported": 0,
+                            "reason": "functional_requirements.json 缺失"})
+            continue
+        # 生命周期来自 verification_states.jsonl（governed state 路径，for_write=False 不建目录）
+        lifecycle_by_rid = {
+            str(row.get("requirement_id") or "").strip(): str(row.get("lifecycle_state") or "draft")
+            for row in read_verification_states(root).values()
+        }
         project_name = str(payload.get("source") or root.name) if isinstance(payload, dict) else root.name
         created_at = ""
         prov = payload.get("provenance") if isinstance(payload, dict) else None
         if isinstance(prov, dict):
             created_at = str(prov.get("generated_at") or "")
         count = 0
+        skipped_unconfirmed = 0
         for item in items or []:
             if not isinstance(item, dict):
                 continue
-            entries.append(library_entry_from_requirement(
-                item, project=project_name, doc_source=str(synth_path), created_at=created_at))
+            rid = requirement_identity(item)
+            lifecycle_state = lifecycle_by_rid.get(rid) or "draft"
+            # 质量门：默认仅收录 lifecycle>=confirmed；draft 不入库（视为未确认）
+            if not include_unconfirmed and lifecycle_rank(lifecycle_state) < confirmed_floor:
+                skipped_unconfirmed += 1
+                continue
+            entry = library_entry_from_requirement(
+                item, project=project_name, doc_source=str(root), created_at=created_at)
+            entry["lifecycle_state"] = lifecycle_state
+            entries.append(entry)
             count += 1
-        sources.append({"project_dir": str(root), "project": project_name, "imported": count})
+        total_skipped_unconfirmed += skipped_unconfirmed
+        sources.append({"project_dir": str(root), "project": project_name, "imported": count,
+                        "skipped_unconfirmed": skipped_unconfirmed})
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = output_path.with_suffix(output_path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as handle:
@@ -644,14 +830,27 @@ def build_requirement_library_task(
         "kind": "requirement_library",
         "library": str(output_path),
         "entries": len(entries),
+        "skipped_unconfirmed": total_skipped_unconfirmed,
+        "include_unconfirmed": bool(include_unconfirmed),
         "sources": sources,
     }
 
 
-def search_requirements_task(library_path: Path, query: str, *, limit: int = 20) -> dict[str, Any]:
-    """词面集合重叠度召回历史相似需求（明确不引入向量检索与 LLM 相似度）。"""
+def search_requirements_task(
+    library_path: Path,
+    query: str,
+    *,
+    limit: int = 20,
+    retriever: Any = None,
+) -> dict[str, Any]:
+    """召回历史相似需求（T3-4：经 ``RequirementRetriever`` 插件点，默认词面，可注入）。
+
+    ``retriever`` 注入优先（测试/外部向量插件）；否则按需求库建词面默认检索器。明确不引入
+    向量依赖——``RATOMIZER_REQUIREMENT_RETRIEVER=vector`` 当前如实回退词面并标 ``retriever_kind``。
+    任何检索器产出仍是同一 entry 形态，下游确定性校验不放松。
+    """
     import json as _json
-    from requirement_schema import search_requirement_library
+    from requirement_schema import build_requirement_retriever
 
     library_path = library_path.expanduser().resolve()
     if not library_path.exists():
@@ -666,36 +865,50 @@ def search_requirements_task(library_path: Path, query: str, *, limit: int = 20)
                 library.append(_json.loads(line))
             except _json.JSONDecodeError:
                 continue
-    results = search_requirement_library(query, library, limit=limit)
+    retriever_obj = build_requirement_retriever(library, retriever=retriever)
+    results = retriever_obj.search(query, limit=limit)
     return {
         "kind": "requirement_search",
         "library": str(library_path),
         "query": query,
         "matches": len(results),
         "results": results,
+        "retriever_kind": getattr(retriever_obj, "retriever_kind", "literal"),
     }
 
 
 def recommend_dependencies_task(out_dir: Path) -> dict[str, Any]:
-    """对当前项目跑确定性依赖/父子候选推荐（只生产值，不动 schema）。"""
+    """对当前项目跑确定性依赖/父子候选推荐（只生产值，不动 schema）。
+
+    T3-1：候选状态反映 RTM 边事件流的最新裁决——accept→``accepted``、reject→``rejected``、
+    未裁决→``pending``。物化库（``dependency_decisions.jsonl``）只含 accept；事件流含全部，
+    故以事件流回放为准（最后决策胜出）。
+    """
     from requirements_analysis_rules import dependency_candidates_for_project
-    from review_state import read_dependency_decisions
+    from review_state import read_rtm_edge_events, replay_rtm_edges
 
     root = out_dir.expanduser().resolve()
     candidates = dependency_candidates_for_project(root)
-    decided = {(d.get("from"), d.get("to"), d.get("kind")): d
-               for d in read_dependency_decisions(root)}
+    replay = replay_rtm_edges(read_rtm_edge_events(root))
+    edges = replay.get("edges") or {}
+    decided_by_tuple = {
+        (e.get("from"), e.get("to"), e.get("kind")): e["decision"]
+        for e in edges.values()
+    }
     rendered = []
     for candidate in candidates:
         key = (candidate.get("from"), candidate.get("to"), candidate.get("kind"))
         candidate = dict(candidate)
-        candidate["status"] = "accepted" if key in decided else "pending"
+        decision = decided_by_tuple.get(key)
+        candidate["status"] = {"accept": "accepted", "reject": "rejected"}.get(decision, "pending")
         rendered.append(candidate)
     return {
         "kind": "dependency_candidates",
         "out_dir": str(root),
         "candidates": rendered,
         "pending": sum(1 for c in rendered if c["status"] == "pending"),
+        "accepted": sum(1 for c in rendered if c["status"] == "accepted"),
+        "rejected": sum(1 for c in rendered if c["status"] == "rejected"),
     }
 
 
@@ -719,11 +932,15 @@ def decide_dependency_task(
     result = apply_dependency_decision(
         root, {"from": frm, "to": to, "kind": kind}, accepted=accepted, actor=actor, reason=reason,
     )
+    # T3-1：accept 与 reject 都追加 RTM 边事件流；accept 另落物化库
+    written = ["requirement_rtm_edges.jsonl"]
+    if result.get("written"):
+        written.append("dependency_decisions.jsonl")
     return {
         "kind": "dependency_decision",
         "out_dir": str(root),
         **result,
-        "written": ["dependency_decisions.jsonl"] if result.get("written") else [],
+        "written": written,
     }
 
 
@@ -1837,6 +2054,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
     global _CHAIN_ACTIVE
     _CHAIN_ACTIVE = True   # 链内各阶段跳过 summary;finally 复位,失败路径不污染后续任务
+    chain_budget = _attach_budget_ledger_for_run(out_dir)  # S1-1：开启预算单时挂账本
     try:
         llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis",
                       "export-annotation-html"}
@@ -1930,7 +2148,10 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             else:
                 update_run_manifest(out_dir, stage, "running")
                 try:
-                    stage_payload = runners[stage]()
+                    # S1-1：LLM 承载环节进预算单 stage 上下文（按 _CHAIN_BUDGET_STAGES 映射；
+                    # 无活动预算单时空操作，确定性环节不进账本分摊）
+                    with _budget_stage(chain_budget, _CHAIN_BUDGET_STAGES.get(stage, "default")):
+                        stage_payload = runners[stage]()
                 except Exception as exc:
                     update_run_manifest(out_dir, stage, "failed", error=str(exc))
                     raise RuntimeError(f"{stage} 阶段失败：{exc}") from exc
@@ -1983,6 +2204,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         payload["skipped_stages"] = skipped_stages
     finally:
         _CHAIN_ACTIVE = False
+        _detach_budget_ledger(chain_budget)  # S1-1：落盘 cost-report 数据源 + 卸载钩子
     payload["summary"] = build_output_summary(out_dir)
     return payload
 
@@ -2184,6 +2406,43 @@ def build_output_summary(out_dir: Path) -> dict[str, Any]:
     }
 
 
+def orchestrate_task(
+    out_dir: Path,
+    *,
+    max_rounds: int | None = None,
+    allow_llm: bool = False,
+    actor: str = "orchestration-loop",
+) -> dict[str, Any]:
+    """T2 编排环入口（CHAIN_ORDER 之外的 sidecar，同 agent-loop 纪律）。
+
+    读四类缺口 → 经既有 allow_llm 授权通道发起 spot_extract/targeted_reextract → 写
+    orchestration_trace.jsonl，直到收敛或达上限。裁决仍在专家面板；编排环只决定"该看哪里"。
+    默认 allow_llm=False（只读缺口 + extract 缺口转人工），显式授权才发起 LLM 补抽。
+    """
+    from orchestration_loop import (
+        resolve_allow_llm,
+        resolve_max_rounds,
+        run_orchestration_loop,
+    )
+
+    root = out_dir.expanduser().resolve()
+    # CLI 显式值优先；缺省时 ENV（RATOMIZER_ORCHESTRATION_MAX_ROUNDS）覆盖，再缺省回 8。
+    rounds = resolve_max_rounds(max_rounds)
+    authorized = resolve_allow_llm(bool(allow_llm))
+    summary = run_orchestration_loop(
+        root, max_rounds=rounds, allow_llm=authorized, actor=actor
+    )
+    return {
+        "kind": "orchestrate",
+        "out_dir": str(root),
+        "summary": summary,
+        "written": [
+            summary.get("trace_file") or "orchestration_trace.jsonl",
+            "orchestration_summary.json",
+        ],
+    }
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Requirement Atomizer desktop tasks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2313,6 +2572,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "build-requirement-library", help="汇总各项目 functional_requirements 为 JSONL 检索库")
     lib_build_parser.add_argument("--projects", type=Path, nargs="+", required=True)
     lib_build_parser.add_argument("--library", type=Path, required=True, help="输出的检索库 JSONL 路径")
+    lib_build_parser.add_argument(
+        "--include-unconfirmed", action="store_true",
+        help="默认仅收录 lifecycle>=confirmed 的条目；此开关显式收录 draft（未确认）条目")
 
     lib_search_parser = subparsers.add_parser(
         "search-requirements", help="词面集合重叠度召回历史相似需求")
@@ -2356,6 +2618,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         required=True,
     )
+
+    # T2 编排环（agent_loop 升格）：缺口驱动的再规划，裁决仍在专家面板。
+    orchestrate_parser = subparsers.add_parser(
+        "orchestrate",
+        help="编排环：读缺口→授权补抽→写 trace，直到收敛或达上限（NEEDS WORK 交人）")
+    orchestrate_parser.add_argument("--out-dir", "--out", dest="out", type=Path, required=True)
+    orchestrate_parser.add_argument(
+        "--max-rounds", type=int, default=None,
+        help=f"每文档最大编排轮次（默认 8，上限 50；env RATOMIZER_ORCHESTRATION_MAX_ROUNDS）")
+    orchestrate_parser.add_argument(
+        "--allow-llm", action="store_true",
+        help="授权编排环发起 spot_extract/targeted_reextract（默认关闭=只读缺口转人工；"
+             "env RATOMIZER_ORCHESTRATION_ALLOW_LLM=1 等效）")
+    orchestrate_parser.add_argument("--actor", default="orchestration-loop")
 
     # WS3 成本看板：数据全部来自文档级预算单记账流水（无新增埋点）。
     cost_report_parser = subparsers.add_parser("cost-report")
@@ -2723,7 +2999,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.out, objective=args.objective, behaviors=args.behaviors, module=args.module,
                 ownership=args.ownership, priority=args.priority, notes=args.notes, actor=args.actor)
         elif args.command == "build-requirement-library":
-            payload = build_requirement_library_task(args.projects, args.library)
+            payload = build_requirement_library_task(
+                args.projects, args.library, include_unconfirmed=args.include_unconfirmed)
         elif args.command == "search-requirements":
             payload = search_requirements_task(args.library, args.query, limit=args.limit)
         elif args.command == "recommend-dependencies":
@@ -2742,6 +3019,13 @@ def main(argv: list[str] | None = None) -> int:
                     actor_trigger="desktop-claim-ledger-fold",
                 ),
             }
+        elif args.command == "orchestrate":
+            payload = orchestrate_task(
+                args.out,
+                max_rounds=args.max_rounds,
+                allow_llm=args.allow_llm,
+                actor=args.actor,
+            )
         else:
             payload = {"kind": "summary", "out_dir": str(args.out.expanduser().resolve()), "summary": build_output_summary(args.out)}
     except Exception as exc:

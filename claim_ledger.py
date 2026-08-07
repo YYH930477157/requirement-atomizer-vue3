@@ -4054,7 +4054,13 @@ def build_shadow_ledger(
                     "selected_ratio": verifier_selection.get("selected_ratio", 1.0),
                     "escalate": verifier_selection.get("escalate"),
                     "threshold_met": verifier_selection.get("threshold_met"),
-                    "deferred_in_run": sampling_deferred_claim_ids,
+                    # S1-5：未抽中 claim 清单=抽样决策的完整 deferred 集（selection-time 权威）。
+                    # 此前只用 sampling_deferred_claim_ids——它只收录带语义候选的 deferred claim，
+                    # 无候选的 deferred claim（如无 target 匹配）被漏记，清单与 deferred_count 不一致。
+                    "deferred_in_run": sorted(set(
+                        list(verifier_selection.get("deferred_ids") or [])
+                        + list(sampling_deferred_claim_ids)
+                    )),
                 }
             ),
         },
@@ -4102,9 +4108,79 @@ def current_shadow_versions() -> dict[str, str]:
     return current_base_versions()
 
 
+def _publish_claim_ledger_mode() -> str:
+    """S1-5：B 轨发布路径的 claim ledger mode。
+
+    * env ``RATOMIZER_CLAIM_LEDGER_MODE`` **显式设置**（sampling/baseline_gate/full）→
+      经 ``resolve_claim_ledger_mode`` 解析后在发布路径真实生效（sampling 收窄闭合面并留痕
+      未抽中 claim，baseline_gate 触发发布门禁全量闭合）。
+    * env **未设置** → ``"full"``（生产默认行为逐字节不变——硬边界「其余各项默认行为不变」；
+      把 sampling 翻转为生产默认属语义变更，留待 S2 数字后显式决策）。
+
+    注意 ``resolve_claim_ledger_mode()`` 自身在 env 未设时返回 ``DEFAULT_CLAIM_LEDGER_MODE``
+    （"sampling"）——那是配置解析层的默认档；本函数把「发布路径默认 full」与「解析层默认
+    sampling」两个口径分开，使 env 设置在发布路径 opt-in 生效而不悄悄翻转生产行为。
+    """
+    raw = os.environ.get("RATOMIZER_CLAIM_LEDGER_MODE")
+    if raw is None or not str(raw).strip():
+        return "full"
+    return resolve_claim_ledger_mode(raw)
+
+
+def _write_sampling_deferred_summary(root: Path, shadow: dict[str, Any]) -> None:
+    """S1-5 留痕：sampling/baseline_gate 模式下未抽中 claim 的计数/清单写入 governed summary。
+
+    「保障被推迟至发布门禁」的事实必须留痕（方案原话）：sampling 收窄闭合面后被延迟到发布
+    门禁的 claim 清单不能只活在内存 shadow 里。写 ``claim_sampling_summary.json``（governed
+    state 路径 + 跨进程锁 + 原子替换），与 shadow meta 的 sampling 块同源。full 模式不写
+    （无延迟，行为面不动）。落盘失败不阻断发布——shadow meta 已是权威记录，此处只补一份
+    人读/机器读的独立 quality_report 口径留痕。
+    """
+    meta = (shadow or {}).get("meta") or {}
+    mode = str(meta.get("claim_ledger_mode") or "")
+    sampling = meta.get("sampling")
+    if mode == "full" or not isinstance(sampling, dict):
+        return
+    from result_package import governed_artifact_path
+
+    summary = {
+        "schema": "claim-sampling-summary/v1",
+        "mode": mode,
+        "eligible_count": int(sampling.get("eligible_count") or 0),
+        "selected_count": int(sampling.get("selected_count") or 0),
+        "deferred_count": int(sampling.get("deferred_count") or 0),
+        "deferred_claim_ids": list(sampling.get("deferred_in_run") or []),
+        "sampling_rate": sampling.get("sampling_rate"),
+        "selected_ratio": sampling.get("selected_ratio"),
+        "escalate": sampling.get("escalate"),
+    }
+    target = governed_artifact_path(
+        root, "claim_sampling_summary.json", category="state", for_write=True
+    )
+    lock_path = governed_artifact_path(
+        root, "claim_sampling_summary.lock", category="state", for_write=True
+    )
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    try:
+        from process_file_lock import process_file_lock
+
+        with process_file_lock(lock_path, timeout_s=10.0, label="claim_sampling_summary"):
+            tmp.write_text(
+                json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            os.replace(tmp, target)
+    except Exception as exc:  # 留痕失败不阻断发布（shadow meta 已是权威记录）
+        logging.getLogger("requirement_atomizer").warning(
+            "claim_sampling_summary 落盘失败：%s", exc
+        )
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def publish_b_track_shadow(
     out_dir: Path | str,
-    *,
     run_id: str,
     route_mode: str,
     extraction_status: str,
@@ -4178,11 +4254,16 @@ def publish_b_track_shadow(
             )
         ),
         validation_generation_run_id=run_id,
+        # S1-5：env 显式设置的 claim ledger mode 在发布路径真实生效（build_shadow_ledger 自身
+        # 默认 full，直接调用者/既有测试不动）；env 未设时发布路径默认 full（生产行为不变）。
+        mode=_publish_claim_ledger_mode(),
     )
     if on_shadow_built is not None:
         # Crash window probe: the paid verifier decisions exist only in memory
         # until the WAL commits them; the hook makes them durable beforehand.
         on_shadow_built(shadow)
+    # S1-5：sampling/baseline_gate 模式留痕未抽中 claim 清单到 governed summary（quality_report 口径）。
+    _write_sampling_deferred_summary(root, shadow)
     requirements_path = root / "ai_requirements.jsonl"
     requirements_hash = file_sha256(requirements_path) if requirements_path.is_file() else ""
     generation = publish_shadow_generation(

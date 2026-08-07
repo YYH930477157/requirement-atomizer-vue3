@@ -56,11 +56,165 @@ from table_structure import (
     row_is_weak_signal,
     validate_merge_text,
 )
+from table_structure import (
+    TABLE_DUAL_TRACK_SWITCH,
+    dual_track_enabled,
+    structure_from_hypothesis,
+)
 from version import __version__
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
 SUPPORTED_INPUT_FORMATS = (".docx", ".xlsx", ".pdf")
+
+# S1-4：WS1 双轨入口（LLM 提议→几何校验签发）。开关默认 OFF；OFF 时 ``analyze_table``
+# 确定性路径逐字节不变（硬判据）。``_TABLE_DUAL_TRACK_PROPOSER`` 由具备 LLM 配置的调用方
+# （desktop_tasks）经 ``set_table_dual_track_proposer`` 挂载；atomize 自己只做几何校验 +
+# 假设派生结构 + 签发假设落盘（确定性，零 LLM）。``_TABLE_STRUCTURE_HYPOTHESES`` 为本次
+# 运行累积的签发记录，``run_atomizer_pipeline`` 在抽取后落盘 ``table_structure_hypotheses.jsonl``。
+_TABLE_DUAL_TRACK_PROPOSER: Any = None
+_TABLE_STRUCTURE_HYPOTHESES: list[dict[str, Any]] = []
+TABLE_STRUCTURE_HYPOTHESES_FILENAME = "table_structure_hypotheses.jsonl"
+SIGNED_HYPOTHESIS_SCHEMA = "signed-table-hypothesis/v1"
+
+
+def set_table_dual_track_proposer(proposer: Any) -> None:
+    """挂载双轨提议器（``proposer(parsed_table, *, table_id, block_id, section_path) ->
+    TableUnderstandingResult | None``）。由具备 openai_compatible 配置的调用方挂载。"""
+    global _TABLE_DUAL_TRACK_PROPOSER
+    _TABLE_DUAL_TRACK_PROPOSER = proposer
+
+
+def clear_table_dual_track_proposer() -> None:
+    """卸载提议器并清空本次运行的假设累积（desktop_tasks 在 run 结束后调用）。"""
+    global _TABLE_DUAL_TRACK_PROPOSER
+    _TABLE_DUAL_TRACK_PROPOSER = None
+    _TABLE_STRUCTURE_HYPOTHESES.clear()
+
+
+def _reset_table_structure_hypotheses() -> None:
+    _TABLE_STRUCTURE_HYPOTHESES.clear()
+
+
+def _dual_track_docx_structure(
+    parsed: ParsedDocxTable,
+    *,
+    table_id: str,
+    block_id: str,
+    section_path: list[str],
+    headers_hint: list[str] | None = None,
+    document_id: str = "",
+) -> dict[str, Any] | None:
+    """S1-4：对 docx 表跑双轨（提议→几何签发）；issued 返回假设派生结构，否则 None。
+
+    OFF / 无提议器 / 提议失败 / 未签发 → 返回 ``None``，调用方走确定性 ``analyze_table``
+    （字节不变）。签发成功的假设记入 ``_TABLE_STRUCTURE_HYPOTHESES`` 供落盘 + 角色抽审。
+    """
+    if not dual_track_enabled() or _TABLE_DUAL_TRACK_PROPOSER is None:
+        return None
+    try:
+        result = _TABLE_DUAL_TRACK_PROPOSER(
+            parsed, table_id=table_id, block_id=block_id, section_path=section_path
+        )
+    except Exception as exc:  # noqa: BLE001 — 提议器失败诚实回退确定性，不阻断解析
+        LOGGER.warning("dual-track proposer 失败，回退确定性几何：%s", exc)
+        return None
+    if result is None:
+        return None
+    hypothesis = getattr(result, "hypothesis", None)
+    status = str(getattr(result, "status", "") or "")
+    if hypothesis is None or status != "proposed":
+        return None  # unavailable（无 route / 调用失败 / 返回非法）→ fallback_no_hypothesis
+    try:
+        from table_geometry_validator import ISSUED, validate_table_geometry
+
+        signed = validate_table_geometry(hypothesis, parsed)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("dual-track 几何校验失败，回退确定性几何：%s", exc)
+        return None
+    if str(getattr(signed, "status", "") or "") != ISSUED:
+        # partial_conflict / invalidated → fallback_validation_failed（确定性兜底）。
+        # 冲突集路由到人工面板留作后续；本切片不阻断，产物与 OFF 一致。
+        return None
+    _record_signed_hypothesis(
+        parsed,
+        hypothesis=hypothesis,
+        table_id=table_id,
+        block_id=block_id,
+        section_path=section_path,
+        headers_hint=headers_hint,
+        family_id=str(getattr(result, "family_id", "") or ""),
+        document_id=document_id,
+    )
+    return structure_from_hypothesis(parsed.matrix, hypothesis)
+
+
+def _record_signed_hypothesis(
+    parsed: ParsedDocxTable,
+    *,
+    hypothesis: dict[str, Any],
+    table_id: str,
+    block_id: str,
+    section_path: list[str],
+    headers_hint: list[str] | None,
+    family_id: str,
+    document_id: str,
+) -> None:
+    """把签发的假设记入本次运行累积（落盘 ``table_structure_hypotheses.jsonl`` 的单条记录）。"""
+    cells_meta: list[dict[str, Any]] = []
+    headers = list(headers_hint or [])
+    for (row, col), cell in getattr(parsed, "cells", {}).items():
+        role = ""
+        for entry in hypothesis.get("cells") or []:
+            coord = entry.get("coordinate")
+            if isinstance(coord, (list, tuple)) and len(coord) == 2 \
+                    and int(coord[0]) == int(row) and int(coord[1]) == int(col):
+                role = str(entry.get("role") or "")
+                break
+        cells_meta.append({
+            "row_index": int(row),
+            "column_index": int(col),
+            "text": str(getattr(cell, "text", "") or ""),
+            "structural_role": role,
+        })
+    _TABLE_STRUCTURE_HYPOTHESES.append({
+        "schema": SIGNED_HYPOTHESIS_SCHEMA,
+        "document_id": document_id,
+        "table_id": table_id,
+        "block_id": block_id,
+        "section_path": list(section_path or []),
+        "family_id": family_id,
+        "validator_status": "issued",
+        "headers": headers,
+        "hypothesis": hypothesis,
+        "_cells": cells_meta,
+    })
+
+
+def _flush_table_structure_hypotheses(out_dir: Path, *, document_id: str = "") -> int:
+    """S1-4：把本次运行签发的假设落盘到 governed ``table_structure_hypotheses.jsonl``。
+
+    仅在双轨开 + 有签发假设时写；OFF 或无假设时不写任何文件（产物与 main 一致）。
+    返回写入条数。落盘走 governed_artifact_path（legacy 布局=根目录，table_role_audit 读处；
+    package_v1 布局=.ratomizer/pipeline/，由结果包登记发布）。document_id 在落盘时统一盖戳
+    （run_atomizer_pipeline 知道文档身份，per-table 记录无需各自携带）。
+    """
+    if not dual_track_enabled() or not _TABLE_STRUCTURE_HYPOTHESES:
+        return 0
+    from result_package import governed_artifact_path
+
+    records = [
+        {**record, "document_id": document_id or record.get("document_id") or ""}
+        for record in _TABLE_STRUCTURE_HYPOTHESES
+    ]
+    target = governed_artifact_path(
+        out_dir, TABLE_STRUCTURE_HYPOTHESES_FILENAME, category="pipeline", for_write=True
+    )
+    write_jsonl(target, records)
+    return len(records)
+
+
+
 
 
 DEFAULT_MAJOR_HEADINGS = (
@@ -457,11 +611,18 @@ def build_table_artifacts(
     cell_bboxes: dict[tuple[int, int], Any] | None = None,
     geometry_kind: str | None = None,
     cell_metadata: dict[tuple[int, int], dict[str, Any]] | None = None,
+    structure_override: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """表格三件套：block + table_items（行容器）+ table_cell_items（canonical cells）。
 
     table-structure-v2：标题/表头/合并/粒度全部由 table_structure 确定性识别；
-    不新增顶层 block，行/格身份用 item_id/cell_id。"""
+    不新增顶层 block，行/格身份用 item_id/cell_id。
+
+    S1-4：``structure_override``（非 None 时）跳过 ``analyze_table``，直接用 WS1 双轨
+    签发的假设派生结构（``structure_from_hypothesis`` 形状）。``None``（默认）= 旧确定性
+    ``analyze_table`` 路径逐字节不变（OFF 硬判据）。调用方仅在 ``dual_track_enabled()`` 且
+    几何校验签发 issued 时才传 override。
+    """
     normalized_merges = normalize_merge_ranges(merge_ranges)
     # 合并证据矛盾（上游解析冲突/面积相交）→ 放弃精确几何、保留全部文本，
     # 结构标 needs_review；绝不拿自相矛盾的 merge 照常产出（伪造合并事故）
@@ -485,7 +646,7 @@ def build_table_artifacts(
         if text_conflicts:
             normalized_merges = valid_merges
             merge_evidence_status = "dropped_text_conflict"
-    structure = analyze_table(
+    structure = structure_override if structure_override is not None else analyze_table(
         matrix,
         # 当前解析无几何证据与确认无合并都不得授予分组标题；区别只通过
         # merge_evidence_status 如实保留，旧产物由版本迁移门处理。
@@ -759,7 +920,15 @@ def build_table_artifacts(
 
 def interpret_table_matrix(matrix: list[list[str]]) -> dict[str, Any]:
     width = max((len(row) for row in matrix), default=0)
-    structure = analyze_table(matrix)
+    # S1-4：双轨分支（xlsx/pdf 的轻量结构预览）。OFF → analyze_table 逐字节不变；
+    # ON → analyze_table_dual_track（无 parsed_table 几何 → mode=fallback_no_hypothesis，
+    # 结构与确定性一致，仅多一块 dual_track 审计标记；假设签发只发生在 docx 主路径）。
+    if dual_track_enabled():
+        from table_structure import analyze_table_dual_track
+
+        structure = analyze_table_dual_track(matrix)
+    else:
+        structure = analyze_table(matrix)
     header_rows = [pad_row(matrix[row_index - 1], width) for row_index in structure["header_row_indexes"]]
     data_rows = [pad_row(matrix[row_index - 1], width) for row_index in structure["data_row_indexes"]]
     headers = effective_table_headers(header_rows, width)
@@ -1187,6 +1356,15 @@ def _build_docx_table_tree(
     top-level block ID. This preserves the stable ``BLK-*`` sequence while keeping
     every nested row/cell independently addressable.
     """
+    # S1-4：WS1 双轨——LLM 提议→几何校验签发；issued 时用假设派生结构，否则 None（确定性兜底）。
+    # OFF / 无提议器 / 未签发 → override=None，build_table_artifacts 走 analyze_table 逐字节不变。
+    header_row_hint = next(
+        (row for row in (parsed.matrix or []) if any(str(c or "").strip() for c in row)), [],
+    )
+    structure_override = _dual_track_docx_structure(
+        parsed, table_id=table_id, block_id=block_id,
+        section_path=section_path, headers_hint=[str(c or "") for c in header_row_hint],
+    )
     block, items, cells = build_table_artifacts(
         parsed.matrix,
         raw_matrix=parsed.raw_matrix,
@@ -1202,6 +1380,7 @@ def _build_docx_table_tree(
         explicit_header_rows=parsed.explicit_header_rows or None,
         source_format="docx",
         cell_metadata=_docx_cell_metadata(parsed, table_id=table_id),
+        structure_override=structure_override,
     )
     block["docx_table_physical_version"] = DOCX_TABLE_PHYSICAL_VERSION
     block["nested_tables"] = []
@@ -2539,6 +2718,7 @@ def run_atomizer_pipeline(
     document_profile = load_document_profile_from_domain_pack(domain_pack_dir)
 
     LOGGER.info("extracting %s", input_format.lstrip("."))
+    _reset_table_structure_hypotheses()  # S1-4：双轨假设累积按本次运行隔离
     if input_format == ".docx":
         blocks, table_items, table_cell_items = extract_docx(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     elif input_format == ".xlsx":
@@ -2550,6 +2730,8 @@ def run_atomizer_pipeline(
 
         blocks, table_items, table_cell_items = extract_pdf(input_path, knowledge_bases=knowledge_bases, document_profile=document_profile)
     LOGGER.info("extracted %s blocks, %s table rows, %s table cells", len(blocks), len(table_items), len(table_cell_items))
+    # S1-4：双轨签发的表格结构假设落盘（OFF / 无假设 → 不写任何文件，产物与 main 一致）。
+    hypothesis_count = _flush_table_structure_hypotheses(out_dir, document_id=input_path.stem)
     pattern_shadow = None
     if domain_pack_dir is not None:
         pattern_shadow = apply_table_pattern_shadow(blocks, table_items, domain_pack_dir)
@@ -2636,6 +2818,14 @@ def run_atomizer_pipeline(
             "summary": "summary.md",
         },
     }
+    # S1-4：双轨开且有签发假设时，登记到 manifest 计数/文件（OFF 或无假设 → manifest 不变）。
+    if hypothesis_count:
+        manifest["counts"]["table_structure_hypotheses"] = hypothesis_count
+        manifest["files"]["table_structure_hypotheses"] = TABLE_STRUCTURE_HYPOTHESES_FILENAME
+        manifest["table_dual_track"] = {
+            "switch": TABLE_DUAL_TRACK_SWITCH,
+            "issued_count": hypothesis_count,
+        }
     write_json(out_dir / "manifest.json", manifest)
     write_summary(out_dir / "summary.md", manifest, domain_counts, kb_counts, quality_report=quality_report)
 

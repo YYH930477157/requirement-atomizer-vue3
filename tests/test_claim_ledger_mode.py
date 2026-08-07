@@ -153,5 +153,121 @@ class BuildShadowLedgerModeDefaultTests(unittest.TestCase):
         self.assertGreaterEqual(sampling["deferred_count"], 1)
 
 
+def _catalog_build(claims: list[dict]) -> dict:
+    return {
+        "catalog": list(claims),
+        "units": [],
+        "meta": {"catalog_generation_id": "g1", "accounting_status": "complete"},
+    }
+
+
+class PublishModeThreadingTests(unittest.TestCase):
+    """S1-5：publish_b_track_shadow 显式传 mode=resolve_claim_ledger_mode()——env 设置真实生效。
+
+    现状（接线前）：publish_b_track_shadow 不传 mode，build_shadow_ledger 恒走 full，
+    env 设置对生产零效果。接线后：env=sampling/baseline_gate/full 在发布路径真实生效。
+    build_shadow_ledger 自身默认仍是 full（直接调用者 / 4.1 万测试不动）——sampling 仅在
+    被显式调用（publish_b_track_shadow→resolve_claim_ledger_mode）时生效。
+    """
+
+    def test_publish_threads_resolved_mode_for_each_env(self) -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        captured: dict = {}
+
+        def fake_build(catalog, requirements, **kwargs):
+            captured["mode"] = kwargs.get("mode")
+            mode = kwargs.get("mode") or "full"
+            return {
+                "meta": {"claim_ledger_mode": mode, "sampling": None if mode == "full" else {}},
+                "groups": [], "ledger": [], "metrics": {},
+            }
+
+        for env, expected in (("sampling", "sampling"), ("full", "full"), ("baseline_gate", "baseline_gate")):
+            captured.clear()
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "ai_requirements.jsonl").write_text("{}", encoding="utf-8")
+                with patch.dict(os.environ, {"RATOMIZER_CLAIM_LEDGER_MODE": env}), \
+                        patch.object(cl, "build_shadow_ledger", side_effect=fake_build), \
+                        patch("claim_artifacts.publish_shadow_generation", return_value={"run_id": "r"}), \
+                        patch("claim_review_actions.fold_effective_ledger", return_value={}):
+                    cl.publish_b_track_shadow(
+                        root, run_id="r", route_mode="stub", extraction_status="success",
+                        catalog_build=_catalog_build([]), requirements=[],
+                    )
+            self.assertEqual(captured.get("mode"), expected, f"env={env} 应线程传入 mode={expected}")
+
+    def test_env_unset_publish_stays_full_default_unchanged(self) -> None:
+        """硬边界「其余各项默认行为不变」：env 未设时发布路径仍走 full（不悄悄翻 sampling）。"""
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        captured: dict = {}
+
+        def fake_build(catalog, requirements, **kwargs):
+            captured["mode"] = kwargs.get("mode")
+            return {"meta": {"claim_ledger_mode": kwargs.get("mode"), "sampling": None},
+                    "groups": [], "ledger": [], "metrics": {}}
+
+        old = os.environ.pop("RATOMIZER_CLAIM_LEDGER_MODE", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "ai_requirements.jsonl").write_text("{}", encoding="utf-8")
+                with patch.object(cl, "build_shadow_ledger", side_effect=fake_build), \
+                        patch("claim_artifacts.publish_shadow_generation", return_value={"run_id": "r"}), \
+                        patch("claim_review_actions.fold_effective_ledger", return_value={}):
+                    cl.publish_b_track_shadow(
+                        root, run_id="r", route_mode="stub", extraction_status="success",
+                        catalog_build=_catalog_build([]), requirements=[],
+                    )
+        finally:
+            if old is not None:
+                os.environ["RATOMIZER_CLAIM_LEDGER_MODE"] = old
+        # env 未设 → 发布路径默认 full（生产默认行为逐字节不变）
+        self.assertEqual(captured.get("mode"), "full")
+
+    def test_sampling_run_records_deferred_claims_in_summary_artifact(self) -> None:
+        """sampling 跑批：未抽中 claim 的计数/清单留痕到 governed summary（quality_report/manifest 口径）。"""
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from result_package import governed_artifact_path
+        names = ["alpha", "beta", "gamma", "delta", "epsilon",
+                 "zeta", "eta", "theta", "iota", "kappa"]
+        catalog = [_claim(f"C{i:02d}", f"shall log event {names[i]}") for i in range(10)]
+        catalog[1] = _claim("C01", "OBIS 1-1:32.7.0")  # 高风险（受保护编码）
+        catalog[5] = _claim("C05", "voltage at 230 V")  # 高风险（数值命题）
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ai_requirements.jsonl").write_text("{}", encoding="utf-8")
+            with patch.dict(os.environ, {"RATOMIZER_CLAIM_LEDGER_MODE": "sampling"}), \
+                    patch("claim_artifacts.publish_shadow_generation", return_value={"run_id": "r"}), \
+                    patch("claim_review_actions.fold_effective_ledger", return_value={}):
+                published = cl.publish_b_track_shadow(
+                    root, run_id="r", route_mode="stub", extraction_status="success",
+                    catalog_build=_catalog_build(catalog), requirements=[],
+                )
+            # shadow meta（发布门禁 manifest 的采样块来源）记录 sampling + deferred
+            meta = published["shadow"]["meta"]
+            self.assertEqual(meta["claim_ledger_mode"], "sampling")
+            self.assertGreater(meta["sampling"]["deferred_count"], 0)
+            # governed summary（quality_report 口径）留痕未抽中 claim 清单
+            summary_path = governed_artifact_path(root, "claim_sampling_summary.json", category="state")
+            self.assertTrue(summary_path.is_file())
+            summary = __import__("json").loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["mode"], "sampling")
+            self.assertGreater(summary["deferred_count"], 0)
+            self.assertTrue(summary["deferred_claim_ids"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

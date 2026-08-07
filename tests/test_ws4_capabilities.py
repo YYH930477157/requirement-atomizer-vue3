@@ -205,9 +205,9 @@ class VerificationStateMachineIOTests(unittest.TestCase):
                                         expected_evidence_fingerprint="stale-fingerprint")
 
     def test_cas_accepts_when_fingerprint_matches(self) -> None:
-        from requirement_schema import requirement_content_fingerprint
+        from requirement_schema import requirement_structural_fingerprint
         from requirements_analysis_rules import apply_verification_override
-        fp = requirement_content_fingerprint(self.item)
+        fp = requirement_structural_fingerprint(self.item)
         rec = apply_verification_override(self.out, self.item["functional_requirement_id"],
                                           {"implemented": "done"}, actor="t",
                                           expected_evidence_fingerprint=fp)
@@ -241,6 +241,58 @@ class VerificationStateMachineIOTests(unittest.TestCase):
             rollback_requirement_lifecycle(self.out, self.item["functional_requirement_id"],
                                            "draft", actor="专家", reason="不是回退")
 
+    def test_forward_migration_appends_advance_events(self) -> None:
+        """S1-10a：前进迁移同样 append 事件——与回退事件同构同流。
+
+        draft→confirmed→implemented→verified 三次升态写各产一条 advance 事件，
+        from_state/to_state 完整覆盖四个生命周期态；事件携带 trigger=verification-driven
+        （与回退事件同构）。重复保存（无升态）不追加事件——append-only 流不被重复保存污染。
+        """
+        from review_state import read_lifecycle_events
+
+        rid = self.item["functional_requirement_id"]
+        # draft → confirmed（三确认位全部确认）
+        self._override(project_manager_confirm=True, test_lead_confirm=True, dev_test_confirm=True)
+        # confirmed → implemented
+        self._override(project_manager_confirm=True, test_lead_confirm=True,
+                       dev_test_confirm=True, implemented="done")
+        # implemented → verified
+        self._override(project_manager_confirm=True, test_lead_confirm=True,
+                       dev_test_confirm=True, implemented="done", test_completed=True)
+
+        events = read_lifecycle_events(self.out)
+        advance = [e for e in events if e.get("kind") == "advance"]
+        # 三次升态 → 三条 advance 事件，from/to 序列精确还原四态链
+        self.assertEqual([(e.get("from_state"), e.get("to_state")) for e in advance],
+                         [("draft", "confirmed"), ("confirmed", "implemented"),
+                          ("implemented", "verified")])
+        # 与回退事件同构：含 trigger 字段，标记为 verification 驱动
+        self.assertTrue(all(e.get("trigger") == "verification-driven" for e in advance))
+        self.assertTrue(all(e.get("actor") == "tester" for e in advance))
+
+        # 重复保存（已在 verified，无升态）不追加事件——避免 append-only 流被重复保存污染
+        self._override(project_manager_confirm=True, test_lead_confirm=True,
+                       dev_test_confirm=True, implemented="done", test_completed=True)
+        advance_after_resave = [e for e in read_lifecycle_events(self.out)
+                                if e.get("kind") == "advance"]
+        self.assertEqual(len(advance_after_resave), 3)
+
+    def test_rollback_event_carries_trigger_field(self) -> None:
+        """S1-10a：回退事件与前进事件同构——同样携带 trigger 字段（manual）。"""
+        from requirements_analysis_rules import (
+            apply_verification_override, rollback_requirement_lifecycle,
+        )
+        from review_state import read_lifecycle_events
+
+        rid = self.item["functional_requirement_id"]
+        apply_verification_override(self.out, rid, {
+            "project_manager_confirm": True, "test_lead_confirm": True, "dev_test_confirm": True,
+            "implemented": "done", "test_completed": True}, actor="t")
+        rollback_requirement_lifecycle(self.out, rid, "implemented", actor="专家", reason="返工")
+        rollback_events = [e for e in read_lifecycle_events(self.out)
+                           if e.get("kind") == "rollback"]
+        self.assertEqual(rollback_events[0].get("trigger"), "manual")
+
     def test_overlay_persisted_and_readable(self) -> None:
         from requirement_schema import normalize_verification
         from review_state import read_verification_states
@@ -266,38 +318,69 @@ class FunctionalRequirementIndexCasTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_fre_item_cas_rejects_stale_fingerprint_after_content_drift(self) -> None:
-        """FRE-* 条目回写后再改内容 → 二次回写携旧指纹被拒（CAS 真实生效）。"""
-        from requirement_schema import requirement_content_fingerprint
+    def test_fre_narrative_drift_keeps_confirmation_with_review_hint(self) -> None:
+        """T3-2：纯叙述字段变化（objective/behaviors/description）→ 确认保留 + 复核提示，
+        不吊销。结构指纹不变，故 CAS 闸放行；叙述指纹变化 → ``narrative_drift_hint=True``。"""
+        from requirement_schema import (
+            requirement_narrative_fingerprint, requirement_structural_fingerprint,
+        )
+        from requirements_analysis_rules import apply_verification_override
+
+        item = _write_functional_item(self.out)
+        rid = item["functional_requirement_id"]
+        struct_fp = requirement_structural_fingerprint(item)
+
+        # 首次回写：结构指纹一致 → 通过，建立叙述基线
+        rec = apply_verification_override(self.out, rid, {"implemented": "done"},
+                                          actor="tester",
+                                          expected_evidence_fingerprint=struct_fp)
+        self.assertEqual(rec["evidence_fingerprint"], struct_fp)
+        self.assertFalse(rec["narrative_drift_hint"])
+
+        # 需求重新生成：只改叙述（objective/behaviors/description）——结构指纹不变
+        narr_mutated = _write_functional_item(
+            self.out, objective="表具应支持全新不同的掉电记录能力",
+            behaviors=["全新行为"], description="全新的掉电记录能力描述")
+        self.assertEqual(requirement_structural_fingerprint(narr_mutated), struct_fp)
+        self.assertNotEqual(
+            requirement_narrative_fingerprint(narr_mutated),
+            requirement_narrative_fingerprint(item),
+        )
+
+        # 二次回写携结构指纹（客户端 round-trip 它）→ 通过（不吊销），且带复核提示
+        rec2 = apply_verification_override(self.out, rid, {"implemented": "done"},
+                                           actor="tester",
+                                           expected_evidence_fingerprint=struct_fp)
+        self.assertEqual(rec2["evidence_fingerprint"], struct_fp)
+        self.assertTrue(rec2["narrative_drift_hint"])
+
+    def test_fre_structural_drift_revokes_confirmation(self) -> None:
+        """T3-2：结构字段变化（模块/归属/OBIS/来源 block_ids）→ 结构指纹漂移 → CAS 吊销。"""
+        from requirement_schema import requirement_structural_fingerprint
         from requirements_analysis_rules import apply_verification_override
         from review_state import VerificationStateConflict
 
-        # 仅 functional_requirements.json（无 engineering_analysis.json）——这是 F1 的核心场景
         item = _write_functional_item(self.out)
         rid = item["functional_requirement_id"]
-        fp_before = requirement_content_fingerprint(item)
+        struct_fp = requirement_structural_fingerprint(item)
+        apply_verification_override(self.out, rid, {"implemented": "done"}, actor="tester",
+                                    expected_evidence_fingerprint=struct_fp)
 
-        # 首次回写：expected 与当前内容指纹一致 → 通过，落盘 evidence_fingerprint=fp_before
-        rec = apply_verification_override(self.out, rid, {"implemented": "done"},
-                                          actor="tester",
-                                          expected_evidence_fingerprint=fp_before)
-        self.assertEqual(rec["evidence_fingerprint"], fp_before)
+        # 结构漂移：改模块 + 来源 block_ids（物质性变化）
+        struct_mutated = _write_functional_item(
+            self.out, module="事件记录", source_block_ids=["BLK-999"],
+            source_quote="The meter shall log events. OBIS 1-1:1.1.1",
+            related_dlms_objects=["1-1:1.1.1"],
+        )
+        self.assertNotEqual(requirement_structural_fingerprint(struct_mutated), struct_fp)
 
-        # 需求重新生成：改 description（内容指纹的稳定识别字段）→ 指纹漂移
-        mutated = _write_functional_item(
-            self.out, objective="表具应支持全新不同的掉电记录能力",
-            behaviors=["全新行为"], description="全新的掉电记录能力描述")
-        fp_after = requirement_content_fingerprint(mutated)
-        self.assertNotEqual(fp_after, fp_before)
-
-        # 二次回写携【旧】指纹（前端持有的是首次回写后的 evidence_fingerprint）→ 必须被拒
+        # 携旧结构指纹回写 → 必须被拒（吊销转人工）
         with self.assertRaises(VerificationStateConflict) as ctx:
-            apply_verification_override(self.out, rid, {"implemented": "done"},
-                                        actor="tester",
-                                        expected_evidence_fingerprint=fp_before)
+            apply_verification_override(self.out, rid, {"implemented": "done"}, actor="tester",
+                                        expected_evidence_fingerprint=struct_fp)
         self.assertEqual(ctx.exception.requirement_id, rid)
-        # 当前指纹已是漂移后的值（不是旧 F1 缺陷里的空串）
-        self.assertEqual(ctx.exception.current_fingerprint, fp_after)
+        self.assertEqual(ctx.exception.current_fingerprint,
+                         requirement_structural_fingerprint(struct_mutated))
         self.assertNotEqual(ctx.exception.current_fingerprint, "")
 
     def test_fre_item_indexed_from_governed_pipeline_path(self) -> None:
@@ -410,8 +493,9 @@ class ExcelWritebackTests(unittest.TestCase):
         self.assertEqual(record["verification"]["test_case_ids"], ["TC-1", "TC-2"])
         self.assertTrue(record["verification"]["test_completed"])
 
-    def test_backfill_cas_rejects_regenerated_content(self) -> None:
-        """需求重新生成后内容漂移→回灌 CAS 失配→转人工（不自动合入）。"""
+    def test_backfill_narrative_drift_tolerated_with_review_hint(self) -> None:
+        """T3-2：纯叙述变化（description）不再拒回灌——结构列（子模块+客户需求章节）匹配即
+        合入，描述变化进 ``narrative_review`` 复核提示（状态不吊销）。"""
         from openpyxl import load_workbook
         from desktop_tasks import import_verification_workbook_task
         path = self._export()
@@ -422,10 +506,32 @@ class ExcelWritebackTests(unittest.TestCase):
         ws.cell(row=2, column=col["功能是否实现"] + 1, value="已完成")
         wb.save(path)
         wb.close()
-        # 模拟需求重新生成：改 description（内容指纹漂移）
+        # 模拟需求重新生成：只改 description/requirement/soft_text（叙述）——结构列不变
         _write_analysis_item(self.out, description="表具应支持全新不同的固件升级能力",
                              requirement="表具应支持全新不同的固件升级能力",
                              software_requirement_text="表具应支持全新不同的固件升级能力")
+        result = import_verification_workbook_task(self.out, path, actor="x")
+        self.assertEqual(result["imported"], 1)   # 结构匹配 → 回灌（状态保留）
+        self.assertEqual(result["stale"], 0)      # 叙述变化不再拒
+        narrative_review = result.get("narrative_review") or []
+        self.assertEqual(len(narrative_review), 1)
+        self.assertEqual(narrative_review[0]["requirement_id"], "FREQ-test0001")
+
+    def test_backfill_structural_drift_rejects_regenerated_content(self) -> None:
+        """T3-2：结构列（子模块/客户需求章节）漂移→回灌 CAS 失配→转人工（不自动合入）。"""
+        from openpyxl import load_workbook
+        from desktop_tasks import import_verification_workbook_task
+        path = self._export()
+        wb = load_workbook(path)
+        ws = wb.active
+        header = [c.value for c in ws[1]]
+        col = {name: idx for idx, name in enumerate(header)}
+        ws.cell(row=2, column=col["功能是否实现"] + 1, value="已完成")
+        wb.save(path)
+        wb.close()
+        # 模拟需求重新生成：改 module/submodule + source_section（结构漂移）
+        _write_analysis_item(self.out, module="事件记录", submodule="事件记录",
+                             source_section="9.9.9")
         result = import_verification_workbook_task(self.out, path, actor="x")
         self.assertEqual(result["imported"], 0)
         self.assertGreater(result["stale"], 0)
@@ -448,6 +554,84 @@ class ExcelWritebackTests(unittest.TestCase):
         result = import_verification_workbook_task(self.out, path, actor="x")
         self.assertEqual(result["imported"], 1)
         self.assertEqual(result["stale"], 0)
+
+    def test_backfill_rejection_list_names_drifting_rows(self) -> None:
+        """S1-10b：CAS 拒绝清单精确到 requirement_id + xlsx 行号 + 原因。
+
+        T3-2：构造两行**结构**漂移（子模块/客户需求章节已变化）回灌：报告 rejected 列表含
+        两条，各自带 rid、行号、原因；imported==0、stale==2。行号与 rid 一一对应可定位到
+        具体物理行。（叙述漂移不再拒——见 test_backfill_narrative_drift_tolerated_with_review_hint。）
+        """
+        from openpyxl import load_workbook
+        from desktop_tasks import import_verification_workbook_task
+        from requirements_analysis_excel import write_software_requirements_xlsx
+
+        # 两条需求（独立 functional_requirement_id）
+        item_a = self.item
+        item_b = _write_analysis_item(
+            self.out, analysis_id="AN-002", functional_requirement_id="FREQ-test0002",
+            module="事件记录", submodule="事件记录",
+            description="表具应记录掉电事件", requirement="表具应记录掉电事件",
+            software_requirement_text="表具应记录掉电事件", source_section="4.2.1",
+            source_requirement_ids=["AIR-2"], labels=["事件记录"],
+            objective="记录掉电事件", behaviors=["写入事件日志"],
+        )
+        path = self.out / "software_requirements.xlsx"
+        write_software_requirements_xlsx([dict(item_a), dict(item_b)], path)
+
+        # 线下编辑两行的六列
+        wb = load_workbook(path)
+        import re as _re
+        trace_re = _re.compile(r"需求追溯ID[：:]\s*([^\n\r]+)")
+        # 导出按模块分 sheet——两条在不同 sheet，逐 sheet 扫描建 rid→(row, sheet) 映射
+        rid_to_loc: dict[str, tuple[int, str]] = {}
+        cell_by_loc: dict[str, tuple[Any, int]] = {}
+        for sheet in wb.worksheets:
+            header = [c.value for c in sheet[1]]
+            if "项目负责人确认" not in header:
+                continue
+            col = {name: idx for idx, name in enumerate(header)}
+            impl_col = col["功能是否实现"] + 1
+            for row_number, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+                notes = str(row[col["说明、示例、注意事项"]] or "")
+                m = trace_re.search(notes)
+                if not m:
+                    continue
+                rid = m.group(1).strip()
+                rid_to_loc[rid] = (row_number, sheet.title)
+                cell_by_loc[rid] = (sheet, impl_col)
+        # 两行都填上「已完成」
+        for rid, (sheet, impl_col) in cell_by_loc.items():
+            _row_number = rid_to_loc[rid][0]
+            sheet.cell(row=_row_number, column=impl_col, value="已完成")
+        wb.save(path)
+        wb.close()
+
+        # 模拟需求重新生成：两条都漂移**结构列**（子模块 + 客户需求章节）
+        _write_analysis_item(self.out, module="升级V2", submodule="升级V2",
+                             source_section="4.1.1X")
+        _write_analysis_item(self.out, analysis_id="AN-002",
+                             functional_requirement_id="FREQ-test0002",
+                             module="事件记录V2", submodule="事件记录V2",
+                             source_section="4.2.1X")
+
+        result = import_verification_workbook_task(self.out, path, actor="x")
+        # 两行均被 CAS 拒绝
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(result["stale"], 2)
+        rejected = result.get("rejected") or []
+        self.assertEqual(len(rejected), 2)
+        # 每条含 rid + 行号 + sheet + 原因，且 (row, sheet) 与导出时一一对应
+        by_rid = {row["requirement_id"]: row for row in rejected}
+        self.assertEqual(set(by_rid), {"FREQ-test0001", "FREQ-test0002"})
+        for rid, row in by_rid.items():
+            expected_row, expected_sheet = rid_to_loc[rid]
+            self.assertEqual(row["row"], expected_row)
+            self.assertEqual(row["sheet"], expected_sheet)
+            self.assertTrue(str(row["reason"]).strip())
+        # 精确到行的证明：两条 (row, sheet) 各不相同（两条物理行可区分定位）
+        locs = {(r["row"], r["sheet"]) for r in rejected}
+        self.assertEqual(len(locs), 2)
 
 
 # ===========================================================================
@@ -590,11 +774,69 @@ class RequirementLibraryTests(unittest.TestCase):
                 ],
             }, ensure_ascii=False), encoding="utf-8")
             library = self.out / "library.jsonl"
-            build = build_requirement_library_task([proj], library)
+            # S1-10d：默认质量门只收 lifecycle>=confirmed；此用例验证检索机制，显式收录未确认
+            build = build_requirement_library_task([proj], library, include_unconfirmed=True)
             self.assertEqual(build["entries"], 2)
         results = search_requirements_task(library, "load profile archive", limit=5)
         self.assertGreater(results["matches"], 0)
         self.assertEqual(results["results"][0]["functional_requirement_id"], "FREQ-a")
+
+    def test_build_library_quality_gate_excludes_draft_by_default(self) -> None:
+        """S1-10d：默认仅收录 lifecycle>=confirmed 的条目；draft 不入库。"""
+        from desktop_tasks import build_requirement_library_task
+        from requirements_analysis_rules import apply_verification_override
+        with tempfile.TemporaryDirectory() as proj:
+            proj = Path(proj)
+            (proj / "functional_requirements.json").write_text(json.dumps({
+                "source": "DocA",
+                "items": [
+                    {"functional_requirement_id": "FREQ-draft", "objective": "草稿需求",
+                     "behaviors": ["x"], "module": "X"},
+                    {"functional_requirement_id": "FREQ-conf", "objective": "已确认需求",
+                     "behaviors": ["y"], "module": "Y"},
+                    {"functional_requirement_id": "FREQ-impl", "objective": "已实现需求",
+                     "behaviors": ["z"], "module": "Z"},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            # 仅把 FREQ-conf 推到 confirmed、FREQ-impl 推到 implemented；FREQ-draft 留 draft
+            apply_verification_override(proj, "FREQ-conf", {
+                "project_manager_confirm": True, "test_lead_confirm": True,
+                "dev_test_confirm": True}, actor="t")
+            apply_verification_override(proj, "FREQ-impl", {
+                "project_manager_confirm": True, "test_lead_confirm": True,
+                "dev_test_confirm": True, "implemented": "done"}, actor="t")
+            library = self.out / "library.jsonl"
+            build = build_requirement_library_task([proj], library)
+            # 默认门：draft 被排除，confirmed/implemented 收录
+            self.assertEqual(build["entries"], 2)
+            self.assertEqual(build.get("skipped_unconfirmed"), 1)
+            entries = [json.loads(line) for line in library.read_text(encoding="utf-8").splitlines() if line.strip()]
+            rids = {e["functional_requirement_id"] for e in entries}
+            self.assertEqual(rids, {"FREQ-conf", "FREQ-impl"})
+            self.assertNotIn("FREQ-draft", rids)
+            # 收录条目携带 lifecycle_state，供采纳 UI 默认隐藏未确认
+            by_rid = {e["functional_requirement_id"]: e for e in entries}
+            self.assertEqual(by_rid["FREQ-conf"]["lifecycle_state"], "confirmed")
+            self.assertEqual(by_rid["FREQ-impl"]["lifecycle_state"], "implemented")
+
+    def test_build_library_include_unconfirmed_switch_admits_draft(self) -> None:
+        """S1-10d：--include-unconfirmed 显式开关收录 draft 条目。"""
+        from desktop_tasks import build_requirement_library_task
+        with tempfile.TemporaryDirectory() as proj:
+            proj = Path(proj)
+            (proj / "functional_requirements.json").write_text(json.dumps({
+                "source": "DocA",
+                "items": [
+                    {"functional_requirement_id": "FREQ-draft", "objective": "草稿需求",
+                     "behaviors": ["x"], "module": "X"},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            library = self.out / "library.jsonl"
+            build = build_requirement_library_task([proj], library, include_unconfirmed=True)
+            self.assertEqual(build["entries"], 1)
+            entries = [json.loads(line) for line in library.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(entries[0]["functional_requirement_id"], "FREQ-draft")
+            self.assertEqual(entries[0]["lifecycle_state"], "draft")
 
     def test_corrected_ownership_ranked_first_on_tie(self) -> None:
         from requirement_schema import (
@@ -637,20 +879,59 @@ class DependencyRecommendTests(unittest.TestCase):
         self.assertIn(DEPENDENCY_EXCLUDE, kinds)
         self.assertIn(DEPENDENCY_REFINE, kinds)
 
-    def test_accept_writes_reject_does_not(self) -> None:
+    def test_accept_lands_edge_reject_keeps_record(self) -> None:
+        """T3-1 RTM 边：accept 落边（物化库 + 事件流）；reject 留记录（只事件流，不落物化库）。
+
+        旧「拒绝不落库=拒绝无声消失」升格为「拒绝进 append-only 事件流」，回放可重建裁决史。
+        """
         from desktop_tasks import decide_dependency_task
-        from review_state import read_dependency_decisions
+        from review_state import (
+            read_dependency_decisions, read_rtm_edge_events, replay_rtm_edges,
+        )
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             accepted = decide_dependency_task(out, frm="F1", to="F2", kind="depend",
                                               accepted=True, actor="专家", reason="升级依赖校验")
-            self.assertTrue(accepted["written"])
+            # accept：物化库 + 事件流都写
+            self.assertIn("dependency_decisions.jsonl", accepted["written"])
+            self.assertIn("requirement_rtm_edges.jsonl", accepted["written"])
             self.assertEqual(len(read_dependency_decisions(out)), 1)
+
             rejected = decide_dependency_task(out, frm="F1", to="F2", kind="exclude",
                                               accepted=False, actor="专家", reason="非互斥")
-            self.assertFalse(rejected["written"])
-            # 拒绝不落库：仍只有一条
-            self.assertEqual(len(read_dependency_decisions(out)), 1)
+            # reject：只写事件流（留记录），不落物化库
+            self.assertIn("requirement_rtm_edges.jsonl", rejected["written"])
+            self.assertNotIn("dependency_decisions.jsonl", rejected["written"])
+            self.assertEqual(len(read_dependency_decisions(out)), 1)  # 物化库仍只 accept 那条
+
+            # 事件流含 accept + reject 两条；回放重建 accepted=1 / rejected=1
+            events = read_rtm_edge_events(out)
+            self.assertEqual(len(events), 2)
+            replay = replay_rtm_edges(events)
+            self.assertEqual(replay["accepted_count"], 1)
+            self.assertEqual(replay["rejected_count"], 1)
+            # 边带 kind/from/to/decision/actor/recorded_at
+            edge = next(e for e in replay["edges"].values() if e["decision"] == "reject")
+            self.assertEqual(edge["kind"], "exclude")
+            self.assertEqual(edge["actor"], "专家")
+
+    def test_rtm_edge_replay_last_decision_wins_and_is_idempotent(self) -> None:
+        """T3-1：同一 edge accept→reject→accept 序列回放取末尾；两次回放逐字节一致。"""
+        from review_state import replay_rtm_edges
+        events = [
+            {"edge_id": "E1", "kind": "depend", "from": "F1", "to": "F2",
+             "decision": "accept", "actor": "a", "reason": "", "recorded_at": "t1"},
+            {"edge_id": "E1", "kind": "depend", "from": "F1", "to": "F2",
+             "decision": "reject", "actor": "a", "reason": "重审", "recorded_at": "t2"},
+            {"edge_id": "E1", "kind": "depend", "from": "F1", "to": "F2",
+             "decision": "accept", "actor": "a", "reason": "再确认", "recorded_at": "t3"},
+        ]
+        replay1 = replay_rtm_edges(events)
+        replay2 = replay_rtm_edges(events)
+        self.assertEqual(replay1, replay2)  # 幂等
+        self.assertEqual(replay1["accepted_count"], 1)
+        self.assertEqual(replay1["rejected_count"], 0)
+        self.assertEqual(replay1["edges"]["E1"]["reason"], "再确认")  # 末尾胜出
 
     def test_project_candidates_read_functional_requirements(self) -> None:
         from requirements_analysis_rules import dependency_candidates_for_project
@@ -667,6 +948,39 @@ class DependencyRecommendTests(unittest.TestCase):
             }, ensure_ascii=False), encoding="utf-8")
             candidates = dependency_candidates_for_project(out)
             self.assertTrue(any(c["kind"] == "refine" for c in candidates))
+
+    def test_project_candidates_read_governed_pipeline_path_under_package_v1(self) -> None:
+        """S1-10c：package_v1 布局下 functional_requirements.json 在 .ratomizer/pipeline/ 也能读到候选。
+
+        旧实现裸拼 root/"functional_requirements.json"——package_v1 下该文件不在根目录，
+        候选恒空（B1 类寻址失守的重现）。改 governed 双路径探测后，根目录无该文件时仍非空。
+        """
+        from result_package import governed_artifact_path, initialize_result_package
+        from requirements_analysis_rules import dependency_candidates_for_project
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            source = out / "input.docx"
+            source.write_bytes(b"fixture")
+            initialize_result_package(out, input_path=source, requested_stages=["atomize"])
+            governed = governed_artifact_path(out, "functional_requirements.json",
+                                              category="pipeline", for_write=True)
+            self.assertEqual(governed, out / ".ratomizer" / "pipeline" / "functional_requirements.json")
+            governed.write_text(json.dumps({
+                "producer": "functional-extract-v1",
+                "items": [
+                    {"functional_requirement_id": "F1", "title": "镜像升级",
+                     "source_section": "4.1.1", "related_dlms_objects": ["0-0:96.3.0"]},
+                    {"functional_requirement_id": "F2", "title": "镜像校验",
+                     "source_section": "4.1.2", "related_dlms_objects": ["0-0:96.3.0"]},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            # 根目录【没有】functional_requirements.json——证明候选来自 governed 双路径探测
+            self.assertFalse((out / "functional_requirements.json").exists())
+            candidates = dependency_candidates_for_project(out)
+            self.assertTrue(candidates, "package_v1 布局下候选应非空（governed 双路径探测）")
+            # 共享 OBIS → depend/exclude 候选；相邻章节 → refine 候选
+            self.assertTrue(any(c["kind"] == "refine" for c in candidates))
+            self.assertTrue(any(c["kind"] in ("depend", "exclude") for c in candidates))
 
 
 # ===========================================================================
@@ -809,8 +1123,15 @@ class ApiHandlerTests(unittest.TestCase):
         handler.handle_lifecycle_events_get()
         self.assertEqual(responses[0][0], 200)
         self.assertEqual(responses[0][1]["schema"], "requirement-lifecycle-events/v1")
-        self.assertEqual(responses[0][1]["total"], 1)
-        self.assertEqual(responses[0][1]["events"][0]["kind"], "rollback")
+        # S1-10a：前进迁移（draft→verified）与回退（verified→implemented）同流 append，
+        # 共 2 条事件；GET 仍是只读投影，不改写历史。
+        events = responses[0][1]["events"]
+        self.assertEqual(responses[0][1]["total"], 2)
+        self.assertEqual([e["kind"] for e in events].count("rollback"), 1)
+        self.assertEqual([e["kind"] for e in events].count("advance"), 1)
+        rollback = next(e for e in events if e["kind"] == "rollback")
+        self.assertEqual(rollback["from_state"], "verified")
+        self.assertEqual(rollback["to_state"], "implemented")
 
     def test_requirement_library_adopt_writes_via_reviewer_override(self) -> None:
         from review_state import read_verification_states

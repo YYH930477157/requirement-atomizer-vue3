@@ -42,6 +42,30 @@ class StructuralSignalsTests(unittest.TestCase):
         sig = fd.multi_condition_signal("如果发生故障，则记录；否则忽略。")
         self.assertTrue(sig["fired"])
 
+    def test_multi_condition_for_substring_does_not_false_fire(self) -> None:
+        # S1-8："or " 是 "for " 的子串，旧实现用裸子串匹配→含 "for " 的条款近恒 fired。
+        sig = fd.multi_condition_signal("Configure the meter for cold environment operation.")
+        self.assertFalse(sig["fired"], f"应不触发，命中的连接词：{sig['connectors']}")
+        # "author "/"priority "/"memory " 等含 "or " 的常见词同样不应误触
+        self.assertFalse(fd.multi_condition_signal("The author shall document priority levels.")["fired"])
+
+    def test_multi_condition_word_boundary_or_still_fires(self) -> None:
+        # 真正的 "or" 分支（词边界）仍触发
+        sig = fd.multi_condition_signal("Shall select mode A or mode B.")
+        self.assertTrue(sig["fired"])
+        self.assertIn("or", sig["connectors"])
+
+    def test_multi_condition_chinese_dang_single_char_not_false_fire(self) -> None:
+        # S1-8：单字 "当" 过宽——"适当"/"当地"/"当时" 都含 "当" 但不是条件连接词。
+        # 收紧为词组级判据（"当…时"）后，这些常见词不再误触。
+        self.assertFalse(fd.multi_condition_signal("应适当增加缓冲区大小。")["fired"])
+        self.assertFalse(fd.multi_condition_signal("设备应就地安装。")["fired"])
+
+    def test_multi_condition_chinese_dang_shi_phrase_fires(self) -> None:
+        # "当…时"（当电压超过阈值时）是真正的条件从句，仍触发
+        sig = fd.multi_condition_signal("当电压超过阈值时，应断开负载。")
+        self.assertTrue(sig["fired"])
+
     def test_parameter_matrix_fires_on_multi_rows(self) -> None:
         section = _section("see table", block_ids=["T1"])
         table_items = [{"table_block_id": "T1"} for _ in range(3)]

@@ -1,0 +1,8 @@
+{
+  "doc_ref": "SYN-DOC-1",
+  "producer": "synthetic-fixture",
+  "fixture_note": "SYNTHETIC FIXTURE — self-proof form 2 (miss / false-negative): only FP-1 produced; SYN-B and SYN-C missed. recall=1/3 precision=1/1.",
+  "items": [
+    {"functional_requirement_id": "FP-1", "source_section": "4.1", "source_block_ids": ["BLK-001"], "objective": "The meter shall record billing-relevant load data.", "behaviors": ["The meter shall record active energy"], "preconditions": [], "data_constraints": [], "variants": [], "exceptions": [], "related_dlms_objects": [], "source_kind": "functional_extract"}
+  ]
+}

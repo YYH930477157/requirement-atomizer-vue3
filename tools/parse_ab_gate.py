@@ -48,6 +48,11 @@ AB_GATE_REPORT_SCHEMA = "parse-ab-gate-report/v1"
 AB_GATE_DOCUMENT_SCHEMA = "ab-gate-document/v1"
 DUAL_TRACK_SWITCH = "RATOMIZER_TABLE_DUAL_TRACK"
 
+# 真值集消费（T1-2）：默认真值集目录。真值数据本身 pending-human——本参数只接通消费链路，
+# 真值集空时如实报 pending_annotation，绝不伪造查全/查准数字。真值条目按 annotation_status
+# 区分 real/fixture；fixtures/ 子目录的合成条目用于自证消费链路，永不计为真实标注。
+DEFAULT_TRUTH_SET = "golden_sets/gold_functional_v1"
+
 # corpus_eval 三指标名（碎片率/漏值/覆盖率）。碎片率映射到 self_check_ratio——自检补充
 # 是"原句被拆碎后补救"的直接量化；漏值=values_left_behind；覆盖率=coverage_pct。
 FRAGMENTATION_KEY = "self_check_ratio"
@@ -283,6 +288,74 @@ def _corpus_eval_compare(old_root: Path, new_root: Path) -> dict[str, Any]:
 
 
 # =============================================================================
+# 真值集消费（T1-2）
+# =============================================================================
+
+
+def _classify_truth_entries(raw_entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """按 ``annotation_status`` 把真值条目分成 (real, fixture)。缺省视为 real。"""
+    real: list[dict[str, Any]] = []
+    fixture: list[dict[str, Any]] = []
+    for entry in raw_entries:
+        if str(entry.get("annotation_status") or "real").lower() == "fixture":
+            fixture.append(entry)
+        else:
+            real.append(entry)
+    return real, fixture
+
+
+def load_truth_set(path: Path) -> dict[str, Any]:
+    """载入真值集并按 real/fixture 分类。
+
+    目录→读 ``truth.jsonl``（真实标注）+ ``fixtures/*.jsonl``（合成自证夹具）；文件→读该文件
+    （按 annotation_status 分类）。真值集不存在 / 空文件 / 0 real 条目→``truth_status=pending``。
+    返回的 dict 只含可消费的工程状态（计数 + 抽样框对齐 + 占位指针），**不计算也不伪造查全/查准
+    数字**——查全/查准由 ``tools/functional_truth_eval.py``（T1-3）在拿到直抽产物后权威计算。
+    """
+    path = Path(path)
+    real: list[dict[str, Any]] = []
+    fixture: list[dict[str, Any]] = []
+    missing = False
+    if path.is_dir():
+        truth_file = path / "truth.jsonl"
+        if truth_file.exists():
+            raw = [json.loads(line) for line in truth_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            r, f = _classify_truth_entries(raw)
+            real.extend(r); fixture.extend(f)
+        for fx in sorted((path / "fixtures").glob("*.jsonl")) if (path / "fixtures").is_dir() else []:
+            raw = [json.loads(line) for line in fx.read_text(encoding="utf-8").splitlines() if line.strip()]
+            r, f = _classify_truth_entries(raw)
+            # fixtures 目录本就是合成夹具；非 fixture 标记的也归入 fixture（防御）
+            fixture.extend(f); fixture.extend(r)
+    elif path.is_file():
+        raw = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        r, f = _classify_truth_entries(raw)
+        real.extend(r); fixture.extend(f)
+    else:
+        missing = True
+
+    truth_doc_refs = sorted({str(e.get("doc_ref") or "") for e in real if str(e.get("doc_ref") or "")})
+    # 角色抽审抽样框状态：真值是否就绪（real 条目非空）。就绪后抽样框由真实 doc_ref 驱动；
+    # 未就绪如实 pending，不伪造。
+    truth_status = "annotated" if real else "pending_annotation"
+    return {
+        "truth_status": truth_status,
+        "missing_path": missing,
+        "counts": {"real": len(real), "fixture": len(fixture)},
+        "truth_doc_refs": truth_doc_refs,
+        # 直抽查全/查准占位：parse_ab_gate 不产直抽产物，查全/查准由 functional_truth_eval 权威计算。
+        # 就绪时给出对接命令；未就绪/无产物时 pending。
+        "direct_extract_recall_precision": {
+            "status": ("ready_to_compute" if real else "pending_annotation"),
+            "authority": "tools/functional_truth_eval.py --products <functional_requirements.json> --truth-set <dir>",
+            "value": None,
+        },
+        "note": ("真值数据本身 pending-human；fixture 条目仅自证消费链路，不计为真实标注。"
+                 " 查全/查准数字由 functional_truth_eval 在直抽产物就绪后计算，本工具不伪造。"),
+    }
+
+
+# =============================================================================
 # 命令
 # =============================================================================
 
@@ -340,6 +413,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         corpus_eval_section = _corpus_eval_compare(Path(old_root), Path(new_root))
         corpus_eval_degraded = corpus_eval_section.get("degraded_metrics", [])
 
+    # 真值集消费（T1-2）：只接通工程链路，不参与 pass/fail 裁决（真值是尺子，不是被测物）。
+    truth_section: dict[str, Any] | None = None
+    if args.truth_set is not None:
+        truth_section = load_truth_set(Path(args.truth_set))
+
     # 裁决：受保护编码零漂移是 HARD（任一漂移即红灯）；corpus_eval 指标劣化即红灯；
     # 无 corpus_eval 时（夹具模式）只以 HARD 门裁决，并如实标注 corpus_eval 为 pending。
     drift_red = total_drift > 0
@@ -366,6 +444,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             "reason": ("corpus_eval 三指标对比需要真实 atomize 输出目录（--corpus-eval-roots OLD NEW）。"
                        " 本 worktree 无金标语料/冻结 out/ 基线，实跑裁决 pending-human。"),
         },
+        "truth": truth_section,
         "decision": decision,
         "red_lights": {
             "protected_encoding_drift": drift_red,
@@ -390,6 +469,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         "fallback": fallback_count,
         "protected_encoding_drift_total": total_drift,
         "corpus_eval_status": ("compared" if corpus_eval_section else "pending"),
+        "truth_status": (truth_section["truth_status"] if truth_section else None),
+        "truth_counts": (truth_section["counts"] if truth_section else None),
         "report": str(report_path) if report_path else None,
         "error": ({"type": "degradation_detected",
                    "message": (("protected-encoding drift on: " + ", ".join(drift_tables))
@@ -410,6 +491,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--corpus-eval-roots", type=Path, nargs=2, default=None,
                         metavar=("OLD", "NEW"),
                         help="真实 atomize 输出目录对（旧/新），用于 corpus_eval 三指标对比")
+    parser.add_argument("--truth-set", type=Path, default=None,
+                        metavar="DIR",
+                        help=("真值集目录（默认 golden_sets/gold_functional_v1）。接通角色抽审抽样框状态 + "
+                              "直抽查全/查准占位；真值空时如实报 pending_annotation，不伪造数字"))
     parser.add_argument("--report", type=Path, default=None, help="输出裁决报告 JSON")
     parser.set_defaults(func=cmd_run)
     return parser
