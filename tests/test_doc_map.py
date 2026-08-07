@@ -152,6 +152,57 @@ class LLMRouteTests(unittest.TestCase):
             self.assertTrue(result["status"].startswith("unavailable:"))
             self.assertFalse((Path(tmp) / doc_map.DOC_MAP_FILENAME).exists())
 
+
+def _valid_doc_map_payload() -> dict:
+    return {
+        "schema_version": doc_map.DOC_MAP_SCHEMA,
+        "producer": doc_map.DOC_MAP_VERSION,
+        "prompt_version": doc_map.DOC_MAP_PROMPT_VERSION,
+        "provenance": {},
+        "status": "ok",
+        "route_requested": "stub",
+        "route": "stub",
+        "fingerprint": "fp",
+        "content_fingerprint": "cfp",
+        "clause_count": 0,
+        "scaffold": {"skeleton": [], "clause_block_map": [], "table_families": [], "density_hotspots": []},
+        "llm_annotations": {
+            "document_type": "metering profile",
+            "domains": [],
+            "hotspot_rationale": [],
+            "notes": "",
+            "rejected_codes": [],
+        },
+    }
+
+
+class RuntimeSchemaValidationTests(unittest.TestCase):
+    """A-4：写盘前封闭 schema 运行时校验落地（docstring 不再是空承诺）。"""
+
+    def test_validator_accepts_well_formed_payload(self) -> None:
+        # 不抛即通过
+        doc_map._validate_payload_schema(
+            _valid_doc_map_payload(), "doc_map.schema.json", label="doc_map.json"
+        )
+
+    def test_validator_rejects_closed_schema_violation(self) -> None:
+        payload = _valid_doc_map_payload()
+        payload["unexpected_disallowed_field"] = True  # additionalProperties: false
+        with self.assertRaises(ValueError):
+            doc_map._validate_payload_schema(
+                payload, "doc_map.schema.json", label="doc_map.json"
+            )
+
+    def test_result_summary_does_not_write_invalid_payload(self) -> None:
+        """写边界校验：畸形产物在落盘前被拦下（fail-loud，不写半成品）。"""
+        bad_payload = _valid_doc_map_payload()
+        bad_payload["status"] = "something_else"  # status const="ok" 违例
+        with TemporaryDirectory() as tmp:
+            with patch("input_completeness.attach_input_completeness", lambda p, o: None):
+                with self.assertRaises(ValueError):
+                    doc_map._result_summary(bad_payload, tmp, route="stub", written=True)
+            self.assertFalse((Path(tmp) / doc_map.DOC_MAP_FILENAME).exists())
+
     def test_stub_route_honest_unavailable(self) -> None:
         with TemporaryDirectory() as tmp:
             result = doc_map.run_doc_map(

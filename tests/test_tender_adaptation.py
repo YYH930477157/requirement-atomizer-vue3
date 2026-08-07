@@ -194,6 +194,64 @@ class TenderRegionTests(unittest.TestCase):
         self.assertEqual(blocks[2]["doc_region"], "body")
         self.assertEqual(blocks[2].get("tender_region"), "tender_technical")
 
+    # --- A-1：泛词误伤收窄（技术章节不得被整章踢出功能需求）---------------------
+
+    def test_qualification_tests_stays_technical(self):
+        """'Qualification Tests' 是设备验收技术章节，不得命中 procedural qualification。"""
+        block = {"type": "heading", "text": "Qualification Tests"}
+        self.assertEqual(classify_tender_region(block), "tender_technical")
+
+    def test_type_routine_tests_stay_technical(self):
+        block = {"type": "heading", "text": "Type Tests and Routine Tests"}
+        self.assertEqual(classify_tender_region(block), "tender_technical")
+
+    def test_acceptance_test_procedure_stays_technical(self):
+        block = {"type": "heading", "text": "Acceptance Test Procedure"}
+        self.assertEqual(classify_tender_region(block), "tender_technical")
+
+    def test_evaluation_of_performance_not_kicked_to_reference(self):
+        """'Evaluation of Harmonic Performance' 是技术评估，不得被 procedural evaluation 误伤。
+
+        不得归为 tender_instructions（否则整章进 non_product_reference 静默漏抽）。
+        """
+        block = {"type": "heading", "text": "Evaluation of Harmonic Performance"}
+        self.assertNotEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_assessment_of_compliance_not_kicked_to_reference(self):
+        block = {"type": "heading", "text": "Assessment of Compliance Accuracy"}
+        self.assertNotEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_qualification_tests_block_stays_body(self):
+        """整章链路：含 'Qualification Tests' 的块保持 doc_region=body（进功能需求候选）。"""
+        blocks = [
+            {"block_id": "B1", "type": "heading", "text": "Qualification Tests", "doc_region": "body"},
+        ]
+        apply_tender_regions(blocks)
+        self.assertEqual(blocks[0]["doc_region"], "body")
+        self.assertEqual(blocks[0].get("tender_region"), "tender_technical")
+
+    # --- A-1 回归守卫：收窄后真正的 procedural 短语仍命中 instructions ----------
+
+    def test_qualification_requirements_still_instructions(self):
+        block = {"type": "heading", "text": "Qualification Requirements"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_bid_evaluation_still_instructions(self):
+        block = {"type": "heading", "text": "Bid Evaluation"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_evaluation_criteria_still_instructions(self):
+        block = {"type": "heading", "text": "Evaluation Criteria"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_prequalification_still_instructions(self):
+        block = {"type": "heading", "text": "Pre-Qualification of Bidders"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
+    def test_scoring_sheet_still_instructions(self):
+        block = {"type": "heading", "text": "Scoring Sheet"}
+        self.assertEqual(classify_tender_region(block), "tender_instructions")
+
 
 class TenderFigurePageTests(unittest.TestCase):
     """A9-3：疑似流程图页强制高亮。"""

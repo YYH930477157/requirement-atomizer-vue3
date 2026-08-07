@@ -66,6 +66,41 @@ _SYSTEM_PROMPT = (
 # LLM 注释层允许的顶层键（封闭契约；多键/缺键均判 invalid）
 _LLM_KEYS = {"document_type", "domains", "hotspot_rationale", "notes"}
 
+# A-4（2026-08-07）：产物封闭 schema 运行时校验落地。docstring 原仅声称校验
+# schemas/doc_map.schema.json 但运行时零执行；现将写盘前 jsonschema 校验接上——
+# 构造方若与 schema 漂移即在此 fail-loud，绝不落盘畸形产物。
+_SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
+_SCHEMA_VALIDATOR_CACHE: dict[str, Any] = {}
+
+
+def _payload_validator(schema_filename: str):
+    """加载并缓存 Draft 2020-12 校验器（schema 自身先 check_schema）。"""
+    validator = _SCHEMA_VALIDATOR_CACHE.get(schema_filename)
+    if validator is not None:
+        return validator
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((_SCHEMA_DIR / schema_filename).read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    _SCHEMA_VALIDATOR_CACHE[schema_filename] = validator
+    return validator
+
+
+def _validate_payload_schema(payload: Any, schema_filename: str, *, label: str) -> None:
+    """写盘前对产物做封闭 schema 校验；违例 fail-loud（构造逻辑与 schema 漂移属代码 bug）。"""
+    errors = sorted(
+        _payload_validator(schema_filename).iter_errors(payload),
+        key=lambda error: tuple(str(part) for part in error.absolute_path),
+    )
+    if not errors:
+        return
+    error = errors[0]
+    location = ".".join(str(part) for part in error.absolute_path) or "<root>"
+    raise ValueError(
+        f"doc_map {label} 违反封闭 schema {schema_filename} @ {location}: {error.message}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # 入口开关
@@ -540,6 +575,8 @@ def _result_summary(
     if written:
         from result_package import governed_artifact_path
 
+        # A-4：写盘前按封闭 schema 校验产物（additionalProperties 全闭）。
+        _validate_payload_schema(payload, "doc_map.schema.json", label="doc_map.json")
         target = governed_artifact_path(out_dir, DOC_MAP_FILENAME, category="pipeline")
         tmp = target.with_suffix(target.suffix + ".tmp")
         tmp.write_text(

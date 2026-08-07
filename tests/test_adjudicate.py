@@ -26,6 +26,8 @@ from adjudicate import (
     read_adjudication_audit,
     semantic_vote,
 )
+from adjudicate import CalibrationState
+import dataclasses
 
 
 class EnvFixtureMixin:
@@ -211,6 +213,85 @@ class TestCalibration(EnvFixtureMixin, unittest.TestCase):
             cal = calibration_state(tmp, products_path=products)
             self.assertEqual(cal.status, "insufficient")
             self.assertEqual(cal.far, 1.0)
+
+
+class TestCalibrationStratumHonesty(EnvFixtureMixin, unittest.TestCase):
+    """A-2：钉死校准当前为单层（不按 KB 命中/未命中分层）。
+
+    V4 设计曾承诺"阈值按 KB 命中/未命中分层校准"，但该分层依赖真实真值标注（两层各自
+    足够样本）与 FAR 可达性验证（评审报告 #3：当前不可达），均为人工硬阻塞，故**显式延后**。
+    本测试钉死单层现状：真值集被当作一个池子计算单一 FAR，无分层字段。引入分层时必须
+    同步更新本测试与 ``CalibrationState`` 说明——使延后是"显式且有据"而非"静默空壳"。
+    """
+
+    def test_calibration_state_dataclass_has_no_stratum_fields(self) -> None:
+        """CalibrationState 不含任何 KB 分层字段（single-stratum 现状的形状契约）。"""
+        field_names = {f.name for f in dataclasses.fields(CalibrationState)}
+        # 现有单层字段
+        self.assertIn("far", field_names)
+        self.assertIn("precision", field_names)
+        # 不得存在任何分层字段——存在即代表有人加了未经验证的分层机制
+        stratum_fields = {
+            name for name in field_names
+            if "stratum" in name.lower() or "kb_" in name.lower()
+            or "_by_kb" in name.lower() or name in {"strata", "by_stratum"}
+        }
+        self.assertEqual(stratum_fields, set(), f"未预期的分层字段：{stratum_fields}")
+
+    def test_far_is_single_scalar_not_stratified(self) -> None:
+        """calibration_state 返回单一标量 far，非按 KB 命中拆分的 dict。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            truth = Path(tmp) / "truth.jsonl"
+            truth.write_text(json.dumps({
+                "entry_id": "T1",
+                "doc_ref": "doc",
+                "source_anchor": {"section": "4.1", "coordinates": ["BLK-000001"]},
+                "objective": "measure energy",
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+            # 两条产物：一条可能命中 KB（"measure energy"），一条不像 KB 内容（"proprietary fuzz"）
+            products = Path(tmp) / "functional_requirements.json"
+            products.write_text(json.dumps({
+                "doc_ref": "doc",
+                "items": [
+                    {"functional_requirement_id": "FRE-0001", "objective": "measure energy",
+                     "source_section": "4.1", "source_block_ids": ["BLK-000001"]},
+                    {"functional_requirement_id": "FRE-0002", "objective": "proprietary fuzz bucket",
+                     "source_section": "9.9", "source_block_ids": ["BLK-000099"]},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            os.environ["RATOMIZER_AUTO_ADJUDICATE_TRUTH_SET"] = str(truth)
+            cal = calibration_state(tmp, products_path=products)
+        # far 是单一标量（int/float/None），不是 dict/按 KB 拆分
+        self.assertIn(type(cal.far), {float, int, type(None)})
+        self.assertFalse(isinstance(cal.far, dict))
+
+    def test_kb_hit_and_miss_products_share_single_precision(self) -> None:
+        """KB 命中/未命中产物进入同一 precision 池——不存在只标定 non-KB 层的门槛。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            truth = Path(tmp) / "truth.jsonl"
+            truth.write_text(json.dumps({
+                "entry_id": "T1",
+                "doc_ref": "doc",
+                "source_anchor": {"section": "4.1", "coordinates": ["BLK-000001"]},
+                "objective": "measure energy",
+            }, ensure_ascii=False) + "\n", encoding="utf-8")
+            products = Path(tmp) / "functional_requirements.json"
+            products.write_text(json.dumps({
+                "doc_ref": "doc",
+                "items": [
+                    # 一条命中真值（precision 贡献），一条空悬——两条同池
+                    {"functional_requirement_id": "FRE-0001", "objective": "measure energy",
+                     "source_section": "4.1", "source_block_ids": ["BLK-000001"]},
+                    {"functional_requirement_id": "FRE-0002", "objective": "dangling unrelated",
+                     "source_section": "9.9", "source_block_ids": ["BLK-000099"]},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            os.environ["RATOMIZER_AUTO_ADJUDICATE_TRUTH_SET"] = str(truth)
+            cal = calibration_state(tmp, products_path=products)
+        # 单一 precision/far 反映两条产物的合并结果；无 kb_hit_precision / kb_miss_precision
+        self.assertIsNotNone(cal.precision)
+        for attr in ("kb_hit_precision", "kb_miss_precision", "kb_hit_far", "kb_miss_far"):
+            self.assertFalse(hasattr(cal, attr), f"CalibrationState 不应有分层属性 {attr}")
 
 
 class TestAdjudicateItem(EnvFixtureMixin, unittest.TestCase):

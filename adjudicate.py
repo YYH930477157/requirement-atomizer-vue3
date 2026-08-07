@@ -422,8 +422,20 @@ def _usage_tokens(response: Any) -> int:
 
 @dataclass
 class CalibrationState:
+    """真值校准状态（V4 现状：**单层（single-stratum）**）。
+
+    A-2（2026-08-07）诚实化：校准当前对**整份真值集**计算单一 FAR（= 1 - precision），
+    **不**按 KB 命中/未命中分层。V4 设计曾设想"阈值按 KB 命中/未命中分层校准（招标类
+    真值文档提供 non-KB 标定样本）"，但该分层依赖真实真值标注（含两个层各自足够样本）
+    与 FAR 可达性验证（评审报告 #3：微型真值集上 FAR 系统性偏高、自动通过门当前不可达），
+    二者均为纯人工硬阻塞，故分层实现**显式延后**——不在空真值集上构建无法验证的分层机制
+    （那只是更精致的空壳）。本 dataclass 因此**不含**任何分层字段（strata / kb_hit_far /
+    kb_miss_far 等）；引入分层时必须同步更新此处说明与 ``test_calibration_is_single_stratum``
+    特征测试。无论分层与否，真值 pending 时 ``pending_annotation`` 硬禁用自动通过的语义不变。
+    """
+
     status: str  # "pending_annotation" | "calibrated" | "insufficient"
-    far: float | None = None           # 误受率（false acceptance rate）
+    far: float | None = None           # 误受率（false acceptance rate，单一标量，非分层）
     recall: float | None = None
     precision: float | None = None
     truth_count: int = 0
@@ -437,11 +449,15 @@ def calibration_state(
     *,
     products_path: Path | str | None = None,
 ) -> CalibrationState:
-    """检查真值集状态与误受率。
+    """检查真值集状态与误受率（**单层**：整份真值集一个 FAR，不按 KB 命中分层）。
 
     * 真值集为空 → ``pending_annotation``：自动通过硬禁用。
     * 真值集非空但无法评估 → ``insufficient``。
     * 评估通过且 far < threshold → ``calibrated``。
+
+    A-2：KB 命中/未命中分层校准为**显式延后项**（详见 ``CalibrationState`` 说明与
+    ``docs/adjudication-calibration-status.md``）。此处对全部产物计算单一 precision/recall，
+    KB 命中只在 ``adjudicate_item`` 的"不熟但忠实"分流里作加分项，不进入校准门槛。
     """
     truth_path = truth_set_path()
     if truth_path is None or not truth_path.is_file() or truth_path.stat().st_size == 0:

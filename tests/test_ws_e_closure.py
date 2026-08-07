@@ -1,6 +1,7 @@
 """WS-E 首次全量闭合 + 增量变更集测试。"""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -145,6 +146,94 @@ class EvaluateFullClosureTests(unittest.TestCase):
             result = dt.evaluate_full_closure(self.tmp)
         self.assertTrue(result["ready"])
         self.assertEqual(result["gaps"], [])
+
+    def test_conservation_open_blocks_ready(self) -> None:
+        """A-5：守恒未闭合必须显式入 gaps 并阻断 READY（注释承诺落地）。
+
+        E1 门注释承诺"守恒未闭合 → 不 READY"，但原实现只检查 claim 模式 / claim ready /
+        分析 readiness / 全部已裁决，从未直接消费 functional_extract 守恒状态——守恒未闭合
+        时仍可能判 ready=True（靠间接覆盖，缺口清单不含 conservation_open）。
+        """
+        os.environ["RATOMIZER_CLAIM_LEDGER_MODE"] = "full"
+        self._write_minimal_state()
+        # functional_requirements.json 守恒未闭合（missing 一块）
+        (self.tmp / "functional_requirements.json").write_text(
+            json.dumps({
+                "items": [{"functional_requirement_id": "FRE-0001", "source_block_ids": ["B1"]}],
+                "conservation": {"ok": False, "missing_block_ids": ["B9"]},
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        with patch("agent_state.load_analysis_state") as mock_state, \
+                patch("claim_views.build_claim_view") as mock_view:
+            from agent_state import AnalysisState
+            mock_state.return_value = AnalysisState(
+                out_dir=self.tmp,
+                run_id="r1",
+                manifest={},
+                stage_statuses={},
+                requirements=tuple([
+                    {"ai_req_id": "R1", "status": "accepted", "source_block_ids": ["B1"]},
+                ]),
+                quality={},
+                coverage={},
+                coverage_gaps=tuple(),
+                open_questions=tuple(),
+                readiness={"verdict": "READY", "reasons": []},
+                failed_sections=0,
+                failed_section_ids=tuple(),
+                failed_section_block_ids=tuple(),
+                pending_extraction_block_ids=tuple(),
+            )
+            mock_view.return_value = {
+                "document_ready": True,
+                "effective_fresh": True,
+                "effective_metrics": {"uncertain_count": 0},
+                "structural_review_pending_count": 0,
+                "health": {},
+            }
+            result = dt.evaluate_full_closure(self.tmp)
+        self.assertFalse(result["ready"], "守恒未闭合必须阻断 READY")
+        kinds = {g["kind"] for g in result["gaps"]}
+        self.assertIn("conservation_open", kinds, "缺口清单必须含 conservation_open")
+
+    def test_conservation_ok_does_not_block_ready(self) -> None:
+        """守恒闭合时不产生 conservation_open 缺口（回归守卫）。"""
+        os.environ["RATOMIZER_CLAIM_LEDGER_MODE"] = "full"
+        self._write_minimal_state()
+        (self.tmp / "functional_requirements.json").write_text(
+            json.dumps({"items": [], "conservation": {"ok": True}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        with patch("agent_state.load_analysis_state") as mock_state, \
+                patch("claim_views.build_claim_view") as mock_view:
+            from agent_state import AnalysisState
+            mock_state.return_value = AnalysisState(
+                out_dir=self.tmp,
+                run_id="r1",
+                manifest={},
+                stage_statuses={},
+                requirements=tuple(),
+                quality={},
+                coverage={},
+                coverage_gaps=tuple(),
+                open_questions=tuple(),
+                readiness={"verdict": "READY", "reasons": []},
+                failed_sections=0,
+                failed_section_ids=tuple(),
+                failed_section_block_ids=tuple(),
+                pending_extraction_block_ids=tuple(),
+            )
+            mock_view.return_value = {
+                "document_ready": True,
+                "effective_fresh": True,
+                "effective_metrics": {"uncertain_count": 0},
+                "structural_review_pending_count": 0,
+                "health": {},
+            }
+            result = dt.evaluate_full_closure(self.tmp)
+        kinds = {g["kind"] for g in result["gaps"]}
+        self.assertNotIn("conservation_open", kinds)
 
 
 class BuildRequirementChangesetTests(unittest.TestCase):
