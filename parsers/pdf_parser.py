@@ -1510,6 +1510,12 @@ def _merge_words(words: list[dict[str, Any]], *, defrag: bool = False) -> dict[s
     repairs: list[dict[str, Any]] = []
     if defrag:
         text, repairs = defragment_text_with_audit(text)
+        # A8②：可选词典重分词（默认关）
+        from parsers.pdf_resegment import maybe_resegment
+        reseg_text, reseg_events = maybe_resegment(text)
+        if reseg_events:
+            text = reseg_text
+            repairs.extend(reseg_events)
     result = {
         "text": text,
         "top": min(float(word["top"]) for word in ordered),

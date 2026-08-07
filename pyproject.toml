@@ -65,6 +65,7 @@ py-modules = [
   "claim_views",
   "table_claim_authority",
   "claim_held_out",
+  "claim_quality_rescan",
   "claim_review_import",
   "claim_review_packet",
   "merged_consistency",
@@ -151,7 +152,9 @@ py-modules = [
   "table_structure",
   "pdf_modern_adapter",
   "xlsx_region_detect",
+  "xlsx_requirement_list",
   "text_normalize",
+  "unextracted_registry",
   "version",
 ]
 

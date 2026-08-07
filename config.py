@@ -76,7 +76,14 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # 默认非侵入：allow_llm 关闭时编排环只读缺口并把 extract 缺口转人工，不发起任何 LLM 补抽。
     EnvVar("RATOMIZER_ORCHESTRATION_MAX_ROUNDS", "8", "编排环每文档最大轮次上限（1..50，默认 8；达上限未收敛→文档 NEEDS WORK 交人）", False),
     EnvVar("RATOMIZER_ORCHESTRATION_ALLOW_LLM", "0", "编排环经 openai_compatible 路由自动发起 spot_extract/targeted_reextract 的授权开关（=1 启用；默认 0=只读缺口，extract 缺口转人工）", False),
-    # --- 知识/资产路径 ---
+    # --- WS-A 防漏网 / 内容模型分流（默认关或纯增量登记）---
+    EnvVar("RATOMIZER_ENABLE_HTML_PARSER", "0", "HTML 输入解析器开关（=1 启用 parsers/html_parser.py；默认 0，不改变既有 docx/xlsx/pdf 主路径）", False),
+    EnvVar("RATOMIZER_PDF_RESEG", "0", "PDF 词典重分词器开关（=1 启用 parsers/pdf_resegment.py 作为碎词修复补充；默认 0）", False),
+    EnvVar("RATOMIZER_PDF_RESEG_WORDLIST", "", "PDF 重分词器词表路径（YAML/TXT；未配置使用内置默认词表）", False),
+    EnvVar("RATOMIZER_UNEXTRACTED_REGISTRY", "1", "未抽取内容登记册开关（=0 关闭 unextracted_registry.json；默认 1 纯登记不改行为）", False),
+    EnvVar("RATOMIZER_DOCX_EXTRA_CHANNELS", "0", "DOCX 文本框/页眉页脚额外通道收容开关（=1 启用 parsers/docx_extra_channels.py；默认 0=正文块与 golden 基线逐字节一致）", False),
+    EnvVar("RATOMIZER_XLSX_REQUIREMENT_LIST", "0", "Excel 需求清单型分流开关（=1 对 xlsx 行映射抽取并产出 base_library_candidates.jsonl；默认 0=维持 table 路径）", False),
+    EnvVar("RATOMIZER_CLAIM_RESCAN", "0", "claim 账本四视角确定性复扫开关（=1 将归属/数值/约束/覆盖问题汇入 quality_report；默认 0）", False),
     EnvVar("RATOMIZER_BLUE_BOOK_INDEX", "", "蓝皮书索引 blue_book_index.json 路径（缺省自动探测 out_dir/仓库 out/bluebook）", False),
     EnvVar("RATOMIZER_ADJUDICATION_BANK", "", "裁决样本库 JSON 路径（专家 accepted 需求作 few-shot 注入富化；缺省不注入）", False),
     EnvVar("RATOMIZER_HISTORICAL_SAMPLE", "", "真实历史抽取样本路径（合并决策回归门；客户数据不进仓,未设置则该门跳过）", False),
