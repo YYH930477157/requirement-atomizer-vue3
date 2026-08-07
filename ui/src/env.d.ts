@@ -2,6 +2,9 @@
 
 declare module "*.vue"
 declare module "katex"
+declare module "pdfjs-dist"
+declare module "docx-preview"
+declare module "xlsx"
 
 declare global {
   type RequirementAtomizerApiSession = {

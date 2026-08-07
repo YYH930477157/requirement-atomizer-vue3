@@ -89,6 +89,8 @@ describe("review workspace shell", () => {
     expect(wrapper.find('[data-testid="run-stage-functional-synthesis"]').exists()).toBe(true)
 
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
     progressHandler({ stage: "pipeline_stage", step: "atomize", status: "ok", percent: 100 })
     progressHandler({ stage: "llm_review", completed: 1, total: 2, percent: 50 })
@@ -1088,6 +1090,8 @@ describe("review workspace shell", () => {
     const wrapper = mount(App)
 
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
     await vi.waitFor(() => {
@@ -1158,6 +1162,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
@@ -1207,6 +1213,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
@@ -1276,6 +1284,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
@@ -1386,6 +1396,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await vi.waitFor(() => {
       expect(window.ratomizerDesktop?.getDefaultOutputRoot).toHaveBeenCalled()
     })
@@ -1476,6 +1488,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
     // 一次 Run 发一条后端 chain 命令（编排在后端；LLM 关 → stub）
@@ -1502,6 +1516,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
     await vi.waitFor(() =>
@@ -1526,6 +1542,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
@@ -1601,6 +1619,8 @@ describe("review workspace shell", () => {
     const wrapper = mount(App)
 
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
     await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
     await wrapper.find('[data-testid="action-test-pipeline"]').trigger("click")
@@ -1650,6 +1670,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-test-pipeline"]').trigger("click")
 
     // 测试运行 = 一条样本链命令（1/5 试抽 + 分析 + 澄清，强制 openai_compatible）
@@ -1692,6 +1714,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
@@ -1763,6 +1787,8 @@ describe("review workspace shell", () => {
     const wrapper = mount(App)
 
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     expect(wrapper.find('[data-testid="selected-input-path"]').text()).toContain("C:\\input\\Appendix 9.docx")
     expect(window.ratomizerDesktop?.runPipeline).not.toHaveBeenCalled()
 
@@ -1807,6 +1833,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
 
     void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
@@ -1854,6 +1882,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
@@ -1892,6 +1922,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="llm-mode-toggle"]').setValue(true)
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
@@ -1917,6 +1949,8 @@ describe("review workspace shell", () => {
     const wrapper = mount(App)
     await flushPromises()
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
 
     await vi.waitFor(() => {
@@ -1954,6 +1988,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
     await vi.waitFor(() => {
       expect(window.ratomizerDesktop?.onTaskProgress).toHaveBeenCalled()
@@ -2000,6 +2036,8 @@ describe("review workspace shell", () => {
 
     const wrapper = mount(App)
     await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
     await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
     void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
     await vi.waitFor(() => {
@@ -2052,6 +2090,8 @@ describe("review workspace shell", () => {
 
       const wrapper = mount(App)
       await wrapper.find('[data-testid="action-open-document"]').trigger("click")
+    await wrapper.find('[data-testid="nav-运行"]').trigger("click")
+    await flushPromises()
       await wrapper.find('[data-testid="action-select-output-dir"]').trigger("click")
       void wrapper.find('[data-testid="action-run-pipeline"]').trigger("click")
       await flushPromises()

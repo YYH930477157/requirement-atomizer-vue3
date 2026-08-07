@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import desktop_tasks
 import hmac
 import json
 import math
@@ -344,6 +345,15 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/review-insights":
             self.send_json(load_review_insights(self.output_dir))
+            return
+        if parsed.path == "/closure-status":
+            try:
+                self.send_json(desktop_tasks.evaluate_full_closure(self.output_dir))
+            except (TimeoutError, OSError, ValueError) as exc:
+                self.send_json({"error": str(exc), "retryable": True}, status=503)
+            return
+        if parsed.path == "/changeset-report":
+            self.handle_changeset_report(params)
             return
         if parsed.path == "/clarification-internal-checks":
             from clarification_report import current_internal_checks
@@ -732,6 +742,43 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=502)
             return
         self.send_json({"requirement_id": requirement_id, "translation": translation})
+
+    def handle_changeset_report(self, params: dict[str, list[str]]) -> None:
+        """WS-E E2: produce an added/obsolete/retained changeset from two outputs."""
+        old_out_dir = one(params, "old_out_dir") or ""
+        new_out_dir = one(params, "new_out_dir") or ""
+        if not old_out_dir or not new_out_dir:
+            self.send_json({"error": "old_out_dir and new_out_dir are required"}, status=400)
+            return
+        old_root = Path(old_out_dir).expanduser().resolve()
+        new_root = Path(new_out_dir).expanduser().resolve()
+        if not old_root.is_dir() or not new_root.is_dir():
+            self.send_json({"error": "old_out_dir and new_out_dir must be existing directories"}, status=400)
+            return
+        try:
+            old_blocks = read_jsonl(governed_artifact_path(old_root, "blocks.jsonl", for_write=False))
+            new_blocks = read_jsonl(governed_artifact_path(new_root, "blocks.jsonl", for_write=False))
+            old_requirements = read_jsonl(governed_artifact_path(old_root, "ai_requirements.jsonl", for_write=False))
+            new_requirements = read_jsonl(governed_artifact_path(new_root, "ai_requirements.jsonl", for_write=False))
+        except (OSError, ValueError) as exc:
+            self.send_json({"error": f"Cannot read artifacts: {exc}", "retryable": False}, status=400)
+            return
+
+        def block_to_candidate(block: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "section_id": str(block.get("block_id") or ""),
+                "section_path": [str(s) for s in (block.get("section_path") or [])],
+                "heading": str(block.get("section_path")[-1]) if block.get("section_path") else "",
+                "text": str(block.get("text") or ""),
+                "block_ids": [str(block.get("block_id") or "")],
+            }
+
+        old_chunks = [block_to_candidate(b) for b in old_blocks if b.get("text")]
+        new_chunks = [block_to_candidate(b) for b in new_blocks if b.get("text")]
+        report = desktop_tasks.build_requirement_changeset(
+            old_requirements, new_requirements, old_chunks, new_chunks,
+        )
+        self.send_json(report)
 
     def handle_ai_review_action(self) -> None:
         payload = self.read_json_body()
