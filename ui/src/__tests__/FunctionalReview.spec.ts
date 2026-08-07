@@ -117,6 +117,12 @@ function makeClient(over: Record<string, unknown> = {}) {
       kind: "requirement_search", query: "应记录掉电事件", matches: 1,
       results: [{ objective: "历史掉电记录需求", overlap_score: 0.42, ownership: "software", ownership_corrected: true, project: "项目A" }],
     }),
+    translateRequirement: vi.fn().mockResolvedValue({
+      requirement_id: "FRE-1",
+      translation: "应记录掉电事件",
+      source_language: "en",
+      target_language: "zh",
+    }),
     adoptRequirementLibrary: vi.fn().mockResolvedValue({
       requirement_id: "FRE-1", ownership_override: "software", module_override: "事件记录",
       written: ["verification_states.jsonl"],

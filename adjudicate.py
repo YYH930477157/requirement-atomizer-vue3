@@ -34,6 +34,8 @@ from result_package import governed_artifact_path
 
 ADJUDICATION_VERSION = "adjudication-v1"
 ADJUDICATION_SCHEMA = "adjudication-record/v1"
+# WS-D D2：语义投票 prompt 的版本戳（prompt_registry 登记锚；prompt 文本变更必须 bump）。
+ADJUDICATE_PROMPT_VERSION = "adjudicate-prompt-v1"
 AUDIT_SCHEMA = "adjudication-audit/v1"
 RESULTS_FILENAME = "adjudication_results.jsonl"
 AUDIT_FILENAME = "adjudication_audit.jsonl"

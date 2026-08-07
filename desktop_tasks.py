@@ -877,6 +877,44 @@ def search_requirements_task(
     }
 
 
+def unified_search_requirements_task(
+    query: str,
+    *,
+    limit: int = 20,
+    retriever: Any = None,
+) -> dict[str, Any]:
+    """WS-C3：跨三库统一检索（requirement / base / solution）。
+
+    任一库配置存在即启用；未配置库如实跳过。默认词面，可注入外部 retriever。
+    """
+    from unified_requirement_retriever import build_unified_retriever, default_library_paths
+
+    paths = default_library_paths()
+    configured = {k: v for k, v in paths.items() if v is not None}
+    if not configured:
+        return {
+            "kind": "unified_requirement_search",
+            "query": query,
+            "matches": 0,
+            "results": [],
+            "retriever_kind": "unavailable",
+            "note": "未配置任何需求库（RATOMIZER_REQUIREMENT_LIBRARY / BASE_LIBRARY / SOLUTION_LIBRARY）",
+        }
+    retriever_obj = build_unified_retriever(library_paths=paths, retriever=retriever)
+    results = retriever_obj.search(query, limit=limit)
+    return {
+        "kind": "unified_requirement_search",
+        "query": query,
+        "matches": len(results),
+        "results": results,
+        "retriever_kind": getattr(retriever_obj, "retriever_kind", "unknown"),
+        "source_counts": {
+            source: sum(1 for r in results if r.get("library_source") == source)
+            for source in configured
+        },
+    }
+
+
 def recommend_dependencies_task(out_dir: Path) -> dict[str, Any]:
     """对当前项目跑确定性依赖/父子候选推荐（只生产值，不动 schema）。
 

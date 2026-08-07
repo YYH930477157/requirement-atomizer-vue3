@@ -63,7 +63,8 @@ type FunctionalClient = Pick<RequirementApiClient,
   | "loadAdjudicationSummary"
   | "runAdjudication"
   | "overturnAdjudication"
-  | "loadRequirements">
+  | "loadRequirements"
+  | "translateRequirement">
 
 const props = defineProps<{
   client: FunctionalClient | null
@@ -107,6 +108,7 @@ type FunctionalItem = {
   manual_actor?: string
   notes?: string
   ownership_override?: string
+  translated?: string
   _origin: "functional" | "manual"
 }
 
@@ -213,7 +215,10 @@ const adoptActor = ref("")
 const adoptReason = ref("")
 const adoptSubmitting = ref(false)
 
-// generation guard（loadInitialApiSession 测试隔离教训）
+// WS-C4：中英对照翻译
+const selectedTranslation = ref("")
+const translationLoading = ref(false)
+const translationError = ref("")
 let loadGeneration = 0
 let opGeneration = 0
 
@@ -940,6 +945,37 @@ function ignoreLibraryEntry(entry: RequirementLibraryEntry) {
   libraryResults.value = libraryResults.value.filter((row) => row !== entry)
 }
 
+async function translateSelectedItem() {
+  // WS-C4：调用 /translations 获取中英对照译文；LLM 不可用时如实报错。
+  const client = props.client
+  const item = selectedItem.value
+  if (!client || !item) return
+  const text = item.source_quote || item.objective || item.title || ""
+  if (!text.trim()) {
+    translationError.value = "当前条目无英文原文可翻译"
+    return
+  }
+  const generation = ++opGeneration
+  translationLoading.value = true
+  translationError.value = ""
+  selectedTranslation.value = ""
+  try {
+    const payload = await client.translateRequirement({
+      requirementId: item.functional_requirement_id,
+      text,
+      context: item.source_section || "",
+    })
+    if (generation !== opGeneration) return
+    selectedTranslation.value = payload.translation || ""
+    item.translated = payload.translation || ""
+  } catch (err) {
+    if (generation !== opGeneration) return
+    translationError.value = describeError(err, "翻译失败（LLM 不可用或译文漂移被拦截）")
+  } finally {
+    if (generation === opGeneration) translationLoading.value = false
+  }
+}
+
 async function decideCandidate(candidate: DependencyCandidate, accept: boolean) {
   const client = props.client
   if (!client) return
@@ -1131,6 +1167,28 @@ function toggleChildren(itemId: string) {
                 </div>
               </div>
             </template>
+          </section>
+
+          <!-- WS-C4：中英对照翻译 -->
+          <section class="detail-block">
+            <h4 class="block-title">中文翻译</h4>
+            <button
+              type="button"
+              class="action-btn small"
+              data-testid="translate-btn"
+              :disabled="translationLoading"
+              @click="translateSelectedItem"
+            >
+              {{ translationLoading ? "翻译中..." : "翻译当前原文" }}
+            </button>
+            <div v-if="translationError" class="error-note">{{ translationError }}</div>
+            <div v-if="selectedTranslation || selectedItem.translated" class="field">
+              <span class="field-label">译文</span>
+              <blockquote class="source-quote translated" data-testid="translation-result">
+                {{ selectedTranslation || selectedItem.translated }}
+              </blockquote>
+            </div>
+            <div v-else class="muted-note">点击上方按钮获取中英对照翻译；LLM 不可用时将如实报错。</div>
           </section>
 
           <!-- 原子级下钻子条目（parent/children） -->

@@ -316,9 +316,9 @@ class ReportShapeTests(unittest.TestCase):
             {"verdict": "reject", "forbidden": ["0-0:44.1.0.255"]},
         )
         report = agent_eval.evaluate_cases([case], reviewed_ids={"hallucination-909"})
-        self.assertEqual(report["hallucination"]["runner_version"], "agent-eval-v2")
+        self.assertEqual(report["hallucination"]["runner_version"], "agent-eval-v3")
         self.assertEqual(report["hallucination"]["passed"], 1)
-        self.assertEqual(report["schema_only_categories"], [])
+        self.assertEqual(report["schema_only_categories"], ["adjudication_audit", "doc_map_coverage"])
         self.assertEqual(report["unreviewed_case_ids"], [])
         self.assertTrue(report["hallucination_details"][0]["reviewed"])
 

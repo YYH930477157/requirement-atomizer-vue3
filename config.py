@@ -71,6 +71,8 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # 全部默认非侵入：弱词词典缺省走内置词表；需求库/弱词 YAML 路径未配置时不激活对应加载。
     EnvVar("RATOMIZER_WEAK_WORDS_PATH", "", "弱词词典 YAML 路径（覆盖内置词表；未配置=用内置 适当/尽快/灵活/等 词表，与 domain_packs 词表惯例一致）", False),
     EnvVar("RATOMIZER_REQUIREMENT_LIBRARY", "", "需求库 JSONL 路径（各项目功能需求汇总检索库；API 词面检索缺省读此；未配置=API 检索返回空）", False),
+    EnvVar("RATOMIZER_BASE_LIBRARY", "", "基本需求库 JSONL 路径（历史 xlsx 经 A6 管道聚合、专家确认后入库）", False),
+    EnvVar("RATOMIZER_SOLUTION_LIBRARY", "", "方案库 JSONL 路径（历史项目 design_options 沉淀、专家确认后入库）", False),
     EnvVar("RATOMIZER_REQUIREMENT_RETRIEVER", "literal", "需求检索器类型（T3-4 插件点：literal=词面 Jaccard 默认 / vector=预留可关开关，当前无向量依赖、选 vector 如实回退词面，产出仍过确定性校验）", False),
     # --- T2 编排环（agent_loop 升格：缺口驱动的再规划，裁决仍在专家面板）---
     # 默认非侵入：allow_llm 关闭时编排环只读缺口并把 extract 缺口转人工，不发起任何 LLM 补抽。

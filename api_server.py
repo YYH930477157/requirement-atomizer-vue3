@@ -26,6 +26,8 @@ from ai_review_actions import (
     source_ai_requirement_id,
     source_fingerprint,
 )
+from cosem_behavior_spec import extract_codes
+from extract_guards import produced_ints
 from review_state import (
     ReviewAuthorityConflict,
     atomic_target_authority_write_revision,
@@ -1522,22 +1524,28 @@ class RequirementAPIHandler(BaseHTTPRequestHandler):
         self.send_json(replay)
 
     def handle_requirement_library_search(self, params: dict) -> None:
-        """WS4：词面集合重叠度召回历史相似需求（零向量、零 LLM）。"""
+        """WS4/WS-C3：历史相似需求召回。配置三库任一即走统一检索；仅配 requirement_library 走旧单库路径。"""
         query = (params.get("q") or params.get("query") or [""])[0]
         limit_raw = (params.get("limit") or ["20"])[0]
         try:
             limit = max(1, min(100, int(limit_raw)))
         except ValueError:
             limit = 20
-        library_path = os.environ.get("RATOMIZER_REQUIREMENT_LIBRARY", "").strip()
-        if not library_path:
+        req_lib = os.environ.get("RATOMIZER_REQUIREMENT_LIBRARY", "").strip()
+        base_lib = os.environ.get("RATOMIZER_BASE_LIBRARY", "").strip()
+        sol_lib = os.environ.get("RATOMIZER_SOLUTION_LIBRARY", "").strip()
+        if not req_lib and not base_lib and not sol_lib:
             self.send_json({"schema": "requirement-search/v1", "query": query,
                             "matches": 0, "results": [],
-                            "note": "未配置 RATOMIZER_REQUIREMENT_LIBRARY，检索库为空"})
+                            "note": "未配置任何需求库（REQUIREMENT_LIBRARY / BASE_LIBRARY / SOLUTION_LIBRARY）"})
             return
         try:
-            from desktop_tasks import search_requirements_task
-            result = search_requirements_task(Path(library_path), query, limit=limit)
+            from desktop_tasks import search_requirements_task, unified_search_requirements_task
+            if req_lib and not base_lib and not sol_lib:
+                # 仅配旧库：保持原契约
+                result = search_requirements_task(Path(req_lib), query, limit=limit)
+            else:
+                result = unified_search_requirements_task(query, limit=limit)
         except FileNotFoundError as exc:
             self.send_json({"error": "requirement_library_missing", "detail": str(exc)}, status=404)
             return
@@ -2728,16 +2736,24 @@ def build_review_summary(output_dir: Path) -> dict:
     }
 
 
+TRANSLATION_PROMPT_VERSION = "translation-prompt-v1"
+
 TRANSLATION_SYSTEM_PROMPT = """You are a technical translator for DLMS/COSEM requirements.
 Translate English requirement text into concise Simplified Chinese.
 Preserve identifiers, quoted service names, OBIS codes, class names, attribute names, and protocol acronyms.
-Return only JSON with one string field: translation."""
+Return only JSON with two string fields: translation and protected_codes (the exact, space-separated list of protected codes/acronyms/identifiers found in the source)."""
+
+
+def _protected_codes(text: str) -> set[str]:
+    """受保护编码集合：OBIS 码、class_id、整数、协议缩写等翻译中必须逐字保留的 token。"""
+    return set(extract_codes(text)) | set(produced_ints(text))
 
 
 def translate_requirement_text(text: str, *, requirement_id: str = "", output_dir: Path | None = None) -> str:
     pipeline = load_review_pipeline(DEFAULT_PIPELINE_PATH)
     route_payload = dict(pipeline.model_routes.get("openai_compatible") or {})
     config = llm_config_from_route(route_payload)
+    protected = _protected_codes(text)
     payload = chat_json(
         config,
         TRANSLATION_SYSTEM_PROMPT,
@@ -2745,6 +2761,8 @@ def translate_requirement_text(text: str, *, requirement_id: str = "", output_di
             {
                 "requirement_id": requirement_id,
                 "text": text,
+                "protected_codes": sorted(protected),
+                "prompt_version": TRANSLATION_PROMPT_VERSION,
             },
             ensure_ascii=False,
         ),
@@ -2752,6 +2770,12 @@ def translate_requirement_text(text: str, *, requirement_id: str = "", output_di
     translation = str(payload.get("translation") or "").strip()
     if not translation:
         raise LLMResponseError("LLM translation response missing translation")
+    # WS-C4 漂移护栏：受保护编码必须在译文中逐字回指。
+    missing = protected - _protected_codes(translation)
+    if missing:
+        raise LLMResponseError(
+            f"translation drift detected: protected codes missing in translation: {sorted(missing)}"
+        )
     return translation
 
 
