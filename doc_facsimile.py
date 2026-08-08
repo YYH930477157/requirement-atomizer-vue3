@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import shutil
 import subprocess
 import tempfile
@@ -120,7 +121,7 @@ def _office_app_name(input_path: Path) -> str | None:
     return None
 
 
-def _convert_via_com(input_path: Path, target: Path, *, timeout_s: float = COM_TIMEOUT_S) -> bool:
+def _convert_via_com_inner(input_path: Path, target: Path) -> bool:
     """Office COM 转换：单线程、不可见、禁弹窗、finally 里 Quit + CoUninitialize。
 
     任何一步失败（无 Office / 非 Windows / pywin32 缺失 / 超时）都返回 False 走兜底，
@@ -182,6 +183,38 @@ def _convert_via_com(input_path: Path, target: Path, *, timeout_s: float = COM_T
             pythoncom.CoUninitialize()
         except Exception:
             pass
+
+
+def _convert_via_com(input_path: Path, target: Path, *, timeout_s: float = COM_TIMEOUT_S) -> bool:
+    """COM 转换的超时外壳（2026-08-08 实机 30 分钟卡死修复）。
+
+    历史上的 `_convert_via_com`（现 `_convert_via_com_inner`）声明了 timeout_s 却从未
+    使用——COM 调用（Dispatch/Open/SaveAs2）在 Word 弹不可见模态（文件恢复/宏警告/
+    字体替换/激活窗）时可**无限期阻塞**，整条 export-annotation-html 流水线随之卡死。
+    线程无法杀死一个阻塞中的 COM 调用，所以这里超时的是**等待**：超时即放弃 COM 路径
+    走 soffice 兜底（其有真实子进程超时），流水线不再被单点模态锁死。残留的守护线程
+    与隐藏 Word 进程可能稍后自行退出；流水线不等待它们。
+    """
+    outcome: dict[str, bool] = {}
+
+    def _run() -> None:
+        try:
+            outcome["ok"] = _convert_via_com_inner(input_path, target)
+        except Exception as exc:  # 兜底防线：COM 侧任何未预见异常都不得上抛
+            LOGGER.warning("影印转换：COM 转换异常（%s）", exc)
+            outcome["ok"] = False
+
+    worker = threading.Thread(target=_run, name="doc-facsimile-com", daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        LOGGER.warning(
+            "影印转换：COM 超时（%.0fs）：%s——Word 可能存在不可见模态弹窗；"
+            "放弃 COM 路径走 LibreOffice 兜底（隐藏 Word 进程可手动结束）",
+            timeout_s, input_path.name,
+        )
+        return False
+    return outcome.get("ok", False)
 
 
 def find_soffice() -> str | None:

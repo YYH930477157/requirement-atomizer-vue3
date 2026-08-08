@@ -274,5 +274,45 @@ class ConvertToPdfTests(unittest.TestCase):
             self.assertIsNone(convert_to_pdf(root / "missing.docx", root))
 
 
+class ComTimeoutWrapperTests(unittest.TestCase):
+    """COM 外壳超时纪律（2026-08-08 实机 30 分钟卡死修复）：COM 调用阻塞不再锁死流水线。"""
+
+    def test_blocked_com_call_times_out_to_soffice_fallback(self) -> None:
+        """inner 长时间阻塞时，外壳在 timeout 内返回 False（走 soffice 兜底）。"""
+        import time
+
+        original = doc_facsimile._convert_via_com_inner
+        doc_facsimile._convert_via_com_inner = lambda *_a, **_k: time.sleep(5) or True
+        try:
+            start = time.time()
+            result = _convert_via_com(Path("fake.docx"), Path("fake.pdf"), timeout_s=1.0)
+            elapsed = time.time() - start
+        finally:
+            doc_facsimile._convert_via_com_inner = original
+        self.assertFalse(result)
+        self.assertLess(elapsed, 2.5, "外壳必须在 timeout 量级内返回，不得等阻塞的 COM 调用")
+
+    def test_inner_exception_is_honest_false_not_raised(self) -> None:
+        """inner 未预见异常不得上抛（外壳兜底防线）。"""
+        original = doc_facsimile._convert_via_com_inner
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("simulated COM crash")
+
+        doc_facsimile._convert_via_com_inner = _boom
+        try:
+            self.assertFalse(_convert_via_com(Path("fake.docx"), Path("fake.pdf"), timeout_s=5.0))
+        finally:
+            doc_facsimile._convert_via_com_inner = original
+
+    def test_normal_inner_result_passes_through(self) -> None:
+        original = doc_facsimile._convert_via_com_inner
+        doc_facsimile._convert_via_com_inner = lambda *_a, **_k: True
+        try:
+            self.assertTrue(_convert_via_com(Path("fake.docx"), Path("fake.pdf"), timeout_s=5.0))
+        finally:
+            doc_facsimile._convert_via_com_inner = original
+
+
 if __name__ == "__main__":
     unittest.main()
