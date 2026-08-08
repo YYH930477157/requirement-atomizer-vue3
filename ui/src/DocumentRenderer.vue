@@ -1,10 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue"
+import { computed, onUnmounted, ref, watch } from "vue"
 import { FileText, FileSpreadsheet, FileType2, Image, AlertTriangle, MonitorX } from "@lucide/vue"
+// 静态 import：让 Vite 真正把三个依赖打进产物（旧版用 new Function("return import(...)")
+// 是死代码——Vite 不分析它，产物不含依赖；裸说明符运行时也必抛）。
+import * as pdfjsLib from "pdfjs-dist"
+// worker 以 ?url 形式交 Vite 静态分包；真实 Chromium 下 pdf.js 启用 worker 渲染页面。
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url"
+import * as docxPreview from "docx-preview"
+import * as XLSX from "xlsx"
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 // G1-G8 展示层：三种格式渲染器 + 统一标注叠加 + 扫描件徽标 + 诚实降级。
-// 三个依赖允许新增但可能因环境/网络无法安装；这里用 new Function 动态 import
-// 兜底，装不上时降级到既有 HTML 批注视图提示。
+// 渲染器真实读文件字节：PDF 走 pdf.js 页渲染、DOCX 走 docx-preview、XLSX 走 SheetJS 网格。
+// 字节来源经 loadBytes 回调（App.vue 接 Electron readFileBytes 桥）；缺失/异常时诚实降级。
 
 type RendererType = "pdf" | "docx" | "xlsx" | "html" | "unknown"
 
@@ -12,12 +21,16 @@ const props = withDefaults(defineProps<{
   filePath: string
   fileType?: RendererType
   isScanned?: boolean
+  scannedSource?: string
   annotations?: Record<string, unknown>
   client?: Record<string, unknown> | null
   active?: boolean
+  /** 字节源：传入文件绝对路径返回其字节。未提供时回退 window.ratomizerDesktop.readFileBytes。 */
+  loadBytes?: (path: string) => Promise<ArrayBuffer | Uint8Array>
 }>(), {
   fileType: "unknown",
   isScanned: false,
+  scannedSource: "",
   annotations: () => ({}),
   client: null,
   active: true,
@@ -30,6 +43,8 @@ const emit = defineEmits<{
 const loading = ref(false)
 const error = ref("")
 const renderer = ref<RendererType>("unknown")
+const pageCount = ref(0)
+const sheetCount = ref(0)
 const containerRef = ref<HTMLElement | null>(null)
 
 const displayType = computed((): RendererType => {
@@ -45,48 +60,102 @@ const displayType = computed((): RendererType => {
 function reset() {
   error.value = ""
   renderer.value = "unknown"
+  pageCount.value = 0
+  sheetCount.value = 0
   if (containerRef.value) containerRef.value.innerHTML = ""
 }
 
-async function renderPdf() {
-  try {
-    // 使用 new Function 让 import 成为运行时调用，避免构建时因包未安装而失败
-    const pdfjs = await new Function("return import('pdfjs-dist')")()
-    if (!pdfjs || !containerRef.value) {
-      throw new Error("pdfjs-dist unavailable")
+/** 读取真实字节：优先 prop 回调，其次 Electron 桥；都没有则抛错触发诚实降级。 */
+async function readBytes(): Promise<Uint8Array> {
+  let bytes: ArrayBuffer | Uint8Array | undefined
+  if (typeof props.loadBytes === "function") {
+    bytes = await props.loadBytes(props.filePath)
+  } else if (typeof window !== "undefined" && window.ratomizerDesktop?.readFileBytes) {
+    const resp = await window.ratomizerDesktop.readFileBytes({ path: props.filePath })
+    if (!resp || !resp.ok || !resp.bytes) {
+      throw new Error(`读取文件字节失败：${resp?.reason || "unknown"}`)
     }
-    // 渲染占位：无法保证 worker 配置与 CORS，先展示徽标与提示
-    renderer.value = "pdf"
-    containerRef.value.innerHTML = `<div class="renderer-pdf-placeholder">PDF 渲染占位（pdf.js 已加载）</div>`
-  } catch {
-    throw new Error("pdf.js 加载失败")
+    bytes = resp.bytes
   }
+  if (!bytes) {
+    throw new Error("无可用的文件字节源（未提供 loadBytes 且 Electron 桥缺失）")
+  }
+  return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
 }
 
-async function renderDocx() {
-  try {
-    const docxPreview = await new Function("return import('docx-preview')")()
-    if (!docxPreview || !containerRef.value) {
-      throw new Error("docx-preview unavailable")
+async function renderPdf(bytes: Uint8Array) {
+  // pdf.js 真实解析字节并逐页渲染到 <canvas>。无 canvas 后端（如 jsdom）时逐页如实降级占位，
+  // 但页数来自真实解析，证明字节确被读取。
+  const doc = await pdfjsLib.getDocument({ data: bytes }).promise
+  pageCount.value = doc.numPages
+  const host = containerRef.value
+  if (!host) return
+  host.innerHTML = ""
+  const pagesWrap = document.createElement("div")
+  pagesWrap.className = "pdf-pages"
+  pagesWrap.setAttribute("data-testid", "pdf-pages")
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i)
+    const viewport = page.getViewport({ scale: 1.2 })
+    const canvas = document.createElement("canvas")
+    canvas.className = "pdf-page-canvas"
+    canvas.width = Math.floor(viewport.width)
+    canvas.height = Math.floor(viewport.height)
+    canvas.setAttribute("data-testid", `pdf-page-${i}`)
+    const ctx = canvas.getContext("2d")
+    if (ctx) {
+      await page.render({ canvasContext: ctx, viewport, canvas } as Parameters<typeof page.render>[0]).promise
+    } else {
+      // 无 canvas 2D 上下文（测试环境）——如实标注，但仍挂出真实页号
+      canvas.dataset.canvasUnavailable = "true"
     }
-    renderer.value = "docx"
-    containerRef.value.innerHTML = `<div class="renderer-docx-placeholder">DOCX 渲染占位（docx-preview 已加载）</div>`
-  } catch {
-    throw new Error("docx-preview 加载失败")
+    pagesWrap.appendChild(canvas)
   }
+  host.appendChild(pagesWrap)
 }
 
-async function renderXlsx() {
-  try {
-    const xlsx = await new Function("return import('xlsx')")()
-    if (!xlsx || !containerRef.value) {
-      throw new Error("xlsx unavailable")
-    }
-    renderer.value = "xlsx"
-    containerRef.value.innerHTML = `<div class="renderer-xlsx-placeholder">XLSX 渲染占位（SheetJS 已加载）</div>`
-  } catch {
-    throw new Error("SheetJS 加载失败")
-  }
+async function renderDocx(bytes: Uint8Array) {
+  const host = containerRef.value
+  if (!host) return
+  host.innerHTML = ""
+  // docx-preview 真实把 docx 字节渲染为 HTML（JSZip 解析 + 段落/表格/样式重建）
+  await docxPreview.renderAsync(bytes, host, undefined, {
+    className: "docx-body",
+    inWrapper: true,
+    ignoreWidth: false,
+    ignoreHeight: false,
+  })
+  host.setAttribute("data-testid", "docx-rendered")
+}
+
+async function renderXlsx(bytes: Uint8Array) {
+  const host = containerRef.value
+  if (!host) return
+  host.innerHTML = ""
+  // SheetJS 真实解析工作簿，逐 sheet 转 HTML 表格（单元格值为真实字节内容）
+  const wb = XLSX.read(bytes, { type: "array" })
+  sheetCount.value = wb.SheetNames.length
+  const wrap = document.createElement("div")
+  wrap.className = "xlsx-sheets"
+  wrap.setAttribute("data-testid", "xlsx-sheets")
+  wb.SheetNames.forEach((name) => {
+    const ws = wb.Sheets[name]
+    if (!ws) return
+    const sheetBox = document.createElement("div")
+    sheetBox.className = "xlsx-sheet"
+    sheetBox.setAttribute("data-testid", "xlsx-sheet")
+    const caption = document.createElement("div")
+    caption.className = "xlsx-sheet-name"
+    caption.textContent = name
+    sheetBox.appendChild(caption)
+    const html = XLSX.utils.sheet_to_html(ws, { id: `xlsx-sheet-${name}`, editable: false })
+    const tpl = document.createElement("template")
+    tpl.innerHTML = html
+    sheetBox.appendChild(tpl.content)
+    wrap.appendChild(sheetBox)
+  })
+  host.appendChild(wrap)
+  host.setAttribute("data-testid", "xlsx-rendered")
 }
 
 function renderHtml() {
@@ -102,11 +171,19 @@ async function render() {
   loading.value = true
   try {
     const type = displayType.value
-    if (type === "pdf") await renderPdf()
-    else if (type === "docx") await renderDocx()
-    else if (type === "xlsx") await renderXlsx()
-    else if (type === "html") renderHtml()
+    if (type === "unknown") throw new Error(`不支持的文件类型：${type}`)
+    // HTML 工作副本无源文件字节——直接占位，不读字节、不触发降级
+    if (type === "html") {
+      renderHtml()
+      renderer.value = "html"
+      return
+    }
+    const bytes = await readBytes()
+    if (type === "pdf") await renderPdf(bytes)
+    else if (type === "docx") await renderDocx(bytes)
+    else if (type === "xlsx") await renderXlsx(bytes)
     else throw new Error(`不支持的文件类型：${type}`)
+    renderer.value = type
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : String(exc)
     emit("fallback")
@@ -134,8 +211,10 @@ onUnmounted(() => reset())
       </span>
       <span v-if="isScanned" class="scanned-badge" data-testid="scanned-badge">
         <AlertTriangle :size="13" aria-hidden="true" />
-        仅展示 · 扫描件
+        仅展示 · 扫描件<span v-if="scannedSource" class="scanned-source">（{{ scannedSource }}）</span>
       </span>
+      <span v-if="pageCount" class="renderer-meta" data-testid="renderer-page-count">页数 {{ pageCount }}</span>
+      <span v-if="sheetCount" class="renderer-meta" data-testid="renderer-sheet-count">工作表 {{ sheetCount }}</span>
       <span class="renderer-path" data-testid="renderer-path">{{ filePath }}</span>
     </header>
 
@@ -156,7 +235,7 @@ onUnmounted(() => reset())
       data-testid="renderer-canvas"
     ></div>
 
-    <!-- G2 统一标注叠加层：当后端提供标注数据时渲染（本版为结构占位，随 pdf.js 等渲染后叠加） -->
+    <!-- G2 统一标注叠加层：当后端提供标注数据时渲染（随 pdf.js 等渲染后叠加） -->
     <div
       v-if="Object.keys(annotations || {}).length && !loading && !error"
       class="annotation-overlay"
@@ -206,6 +285,17 @@ onUnmounted(() => reset())
   border-radius: 4px;
   font-weight: 600;
 }
+.scanned-source {
+  font-weight: 400;
+  opacity: 0.85;
+}
+.renderer-meta {
+  padding: 2px 8px;
+  background: #ecfdf5;
+  color: #065f46;
+  border-radius: 4px;
+  font-weight: 600;
+}
 .renderer-path {
   margin-left: auto;
   color: #6b7280;
@@ -238,9 +328,46 @@ onUnmounted(() => reset())
   padding: 16px;
   overflow: auto;
 }
-.renderer-canvas :deep(.renderer-pdf-placeholder),
-.renderer-canvas :deep(.renderer-docx-placeholder),
-.renderer-canvas :deep(.renderer-xlsx-placeholder),
+.renderer-canvas :deep(.pdf-pages) {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+}
+.renderer-canvas :deep(.pdf-page-canvas) {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  background: #fff;
+  max-width: 100%;
+}
+.renderer-canvas :deep(.docx-body) {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.renderer-canvas :deep(.docx-body .docx-wrapper) {
+  background: #fff;
+  padding: 8px;
+}
+.renderer-canvas :deep(.xlsx-sheets) {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.renderer-canvas :deep(.xlsx-sheet-name) {
+  font-weight: 600;
+  font-size: 13px;
+  color: #1f2937;
+  margin-bottom: 6px;
+}
+.renderer-canvas :deep(.xlsx-sheet table) {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.renderer-canvas :deep(.xlsx-sheet td),
+.renderer-canvas :deep(.xlsx-sheet th) {
+  border: 1px solid #d1d5db;
+  padding: 3px 6px;
+  white-space: nowrap;
+}
 .renderer-canvas :deep(.renderer-html-placeholder) {
   display: flex;
   align-items: center;

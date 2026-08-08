@@ -635,4 +635,165 @@ describe("FunctionalReview (WS-F)", () => {
     expect(panel.text()).toContain("旧库历史需求")
     expect(panel.text()).not.toContain("未确认已隐藏")
   })
+
+  // ===== G9-1 例外队列：summary 计数/分布 + 例外条目过滤 + 高风险置顶 =====
+  it("renders adjudication summary counts and an exception queue with high-risk pinned first", async () => {
+    const client = makeClient({
+      // FRE-1 与 FRE-2 都是真实功能需求条目，例外队列点击可跳转到明细
+      loadFunctionalRequirements: vi.fn().mockResolvedValue({
+        schema: "functional-requirements/v1",
+        total: 2,
+        items: [
+          {
+            functional_requirement_id: "FRE-1",
+            objective: "应记录掉电事件",
+            behaviors: ["检测到掉电时写日志"],
+            source_quote: "The meter shall log power failure events.",
+            source_section: "4.1 / 事件记录",
+            source_block_ids: ["BLK-001"],
+            source_kind: "functional_extract",
+          },
+          {
+            functional_requirement_id: "FRE-2",
+            objective: "应支持配置辅助输出接口",
+            behaviors: ["提供配置入口"],
+            source_quote: "The meter shall support configurable auxiliary output.",
+            source_section: "5.2 / 接口",
+            source_block_ids: ["BLK-051"],
+            source_kind: "functional_extract",
+          },
+        ],
+      }),
+      loadAdjudications: vi.fn().mockResolvedValue({
+        schema: "adjudications/v1",
+        total: 3,
+        items: [
+          {
+            functional_requirement_id: "FRE-1",
+            decision: "review",
+            hard_basis: { ok: true, reject_reasons: [], review_reasons: [], evidence: {} },
+            semantic_vote: null, semantic_usage: { calls: 0, available: false },
+            calibration_status: "pending_annotation", sample_selected: false,
+            actor: "adjudicator", reason: "自动通过未开启", timestamp: "2026-08-06T09:00:00Z", version: "adjudication-v1",
+          },
+          {
+            functional_requirement_id: "FRE-2",
+            decision: "reject",
+            hard_basis: { ok: false, reject_reasons: ["foreign_standard_drift"], review_reasons: [], evidence: {} },
+            semantic_vote: null, semantic_usage: { calls: 0, available: false },
+            calibration_status: "pending_annotation", sample_selected: false,
+            actor: "adjudicator", reason: "外标准号漂移", timestamp: "2026-08-06T09:00:00Z", version: "adjudication-v1",
+          },
+          {
+            functional_requirement_id: "FRE-3",
+            decision: "accept",
+            hard_basis: { ok: true, reject_reasons: [], review_reasons: [], evidence: {} },
+            semantic_vote: null, semantic_usage: { calls: 0, available: false },
+            calibration_status: "pending_annotation", sample_selected: false,
+            actor: "adjudicator", reason: "全绿", timestamp: "2026-08-06T09:00:00Z", version: "adjudication-v1",
+          },
+        ],
+      }),
+      loadAdjudicationSummary: vi.fn().mockResolvedValue({
+        schema: "adjudication-summary/v1", version: "adjudication-v1",
+        enabled: { auto_approve: false, auto_reject: false },
+        counts: { accept: 1, review: 1, reject: 1 }, total: 3,
+        calibration: { status: "pending_annotation", far: null, recall: null, precision: null, truth_count: 0, note: "真值集未标注" },
+        latest_run: { run_id: null, recorded_at: null, sampled_count: 0, estimated_far: null },
+      }),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    // summary 计数/分布渲染
+    const summary = wrapper.find('[data-testid="adjudication-summary"]')
+    expect(summary.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adjud-count-accept"]').text()).toContain("1")
+    expect(wrapper.find('[data-testid="adjud-count-review"]').text()).toContain("1")
+    expect(wrapper.find('[data-testid="adjud-count-reject"]').text()).toContain("1")
+
+    // 例外队列：FRE-3（accept+全绿）不出列；FRE-2（reject+红灯）高风险置顶；FRE-1（review）中风险
+    const queue = wrapper.find('[data-testid="adjudication-exception-queue"]')
+    expect(queue.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adjud-exception-FRE-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adjud-exception-FRE-2"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adjud-exception-FRE-3"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="adjud-exception-red-FRE-2"]').exists()).toBe(true)
+    const rows = wrapper.findAll(".adjud-exception-row")
+    expect(rows[0].classes()).toContain("risk-high") // FRE-2 高风险置顶
+    expect(rows[1].classes()).toContain("risk-medium") // FRE-1 中风险
+
+    // 硬依据红灯筛选：只剩 FRE-2
+    await wrapper.find('[data-testid="adjud-filter-red"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.find('[data-testid="adjud-exception-FRE-1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="adjud-exception-FRE-2"]').exists()).toBe(true)
+
+    // 点例外条目聚焦到对应功能需求（FRE-2 是真实功能条目，跳转后明细显示其目标）
+    await wrapper.find('[data-testid="adjud-filter-all"]').trigger("click")
+    await flushPromises()
+    await wrapper.find('[data-testid="adjud-exception-focus-FRE-2"]').trigger("click")
+    await flushPromises()
+    expect(wrapper.find('[data-testid="functional-detail"]').text()).toContain("应支持配置辅助输出接口")
+  })
+
+  // ===== G9-1 推翻对话框：actor/reason 必填 + append-only 留痕 =====
+  it("overturn dialog requires actor+reason and posts the audit-trail overturn", async () => {
+    const client = makeClient()
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    // FRE-1（裁决 review）选中后裁决面板露出推翻入口
+    expect(wrapper.find('[data-testid="adjudication-panel"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="open-overturn"]').trigger("click")
+    expect(wrapper.find('[data-testid="overturn-form"]').exists()).toBe(true)
+
+    // 缺操作者/原因不提交
+    await wrapper.find('[data-testid="overturn-submit"]').trigger("click")
+    await flushPromises()
+    expect((client.overturnAdjudication as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="fr-message"]').text()).toContain("操作者与原因")
+
+    // 填齐后提交——currentDecision=review → newDecision=accept，连同 actor/reason 留痕
+    await wrapper.find('[data-testid="overturn-actor"]').setValue("审核人A")
+    await wrapper.find('[data-testid="overturn-reason"]').setValue("外标准号实为引用，不应拒绝")
+    await wrapper.find('[data-testid="overturn-submit"]').trigger("click")
+    await flushPromises()
+
+    expect((client.overturnAdjudication as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+      expect.objectContaining({ functionalRequirementId: "FRE-1", newDecision: "accept", actor: "审核人A", reason: "外标准号实为引用，不应拒绝" }),
+    )
+    expect(wrapper.find('[data-testid="overturn-form"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="fr-message"]').text()).toContain("已推翻")
+  })
+
+  // ===== WS-C4 翻译视图：成功透传译文 + 漂移护栏拦截如实报错 =====
+  it("translates the selected English source and renders the bilingual result", async () => {
+    const { wrapper } = mountReview()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="translate-btn"]').trigger("click")
+    await flushPromises()
+
+    // 真实把所选条目的英文原文交给 /translations，译文回填并渲染
+    expect(wrapper.find('[data-testid="translation-result"]').text()).toContain("应记录掉电事件")
+  })
+
+  it("surfaces the translation guard interception honestly instead of passing drift through", async () => {
+    const client = makeClient({
+      translateRequirement: vi.fn().mockRejectedValue(new RequirementApiError(422, {
+        error: "translation_drift_intercepted",
+        detail: "译文漂移被护栏拦截",
+      })),
+    })
+    const { wrapper } = mountReview({ client })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="translate-btn"]').trigger("click")
+    await flushPromises()
+
+    // 护栏拦截不透传漂移译文，只如实报错（不渲染 translation-result）
+    expect(wrapper.find('[data-testid="translation-result"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain("漂移")
+  })
 })

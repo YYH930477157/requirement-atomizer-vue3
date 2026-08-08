@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld("ratomizerDesktop", {
   runChain: (input) => ipcRenderer.invoke("task:chain", input),
   importClarificationAnswers: (input) => ipcRenderer.invoke("task:import-clarification-answers", input),
   readArtifact: (input) => ipcRenderer.invoke("task:read-artifact", input),
+  readFileBytes: (input) => ipcRenderer.invoke("fs:read-bytes", input),
   selectTemplate: () => ipcRenderer.invoke("dialog:open-template"),
   openLogsDir: () => ipcRenderer.invoke("logs:open"),
 });

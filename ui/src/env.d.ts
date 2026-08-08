@@ -2,9 +2,12 @@
 
 declare module "*.vue"
 declare module "katex"
-declare module "pdfjs-dist"
-declare module "docx-preview"
-declare module "xlsx"
+
+// Vite ?url 后缀把资源以 URL 字符串导入（pdf.js worker 等静态分包用）。
+declare module "*?url" {
+  const src: string
+  export default src
+}
 
 declare global {
   type RequirementAtomizerApiSession = {
@@ -168,6 +171,13 @@ declare global {
       }>
       selectTemplate: () => Promise<string>
       openLogsDir: () => Promise<{ dir: string }>
+      // 真渲染器读文件字节：传入绝对路径，主进程校验后返回字节。非 Electron 环境缺失→渲染器诚实降级。
+      readFileBytes?: (input: { path: string }) => Promise<{
+        ok: boolean
+        bytes?: Uint8Array
+        reason?: string
+        detail?: string
+      }>
     }
   }
 }

@@ -2,6 +2,12 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os"
 import { describe, expect, it } from "vitest"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
+
+// 测试自身位置推导真实仓库布局，避免硬编码 D:\ 机器路径（POSIX 下反斜杠非分隔符会让 path.resolve 失真）。
+const here = path.dirname(fileURLToPath(import.meta.url))
+const electronDir = path.resolve(here, "..")
+const repoRoot = path.resolve(here, "../../..")
 
 import {
   PROGRESS_PREFIX,
@@ -136,10 +142,11 @@ describe("Electron main helpers", () => {
   })
 
   it("falls back to Python source execution during development", () => {
-    const scriptPath = path.resolve("D:\\Codex\\requirement-atomizer-vue3", "desktop_tasks.py")
+    // 真实开发布局：electron/ 目录在仓库内，desktop_tasks.py 在仓库根。
+    const scriptPath = path.resolve(repoRoot, "desktop_tasks.py")
 
     const command = resolveBackendCommand("desktop_tasks.py", {
-      dirname: "D:\\Codex\\requirement-atomizer-vue3\\ui\\electron",
+      dirname: electronDir,
       resourcesPath: "",
       existsSync: (candidate: string) => candidate === scriptPath,
       env: { RATOMIZER_PYTHON: "py -3.12" },

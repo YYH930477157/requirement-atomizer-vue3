@@ -511,7 +511,9 @@
                           :output-dir="currentOutputDir" @focus-block="focusBlockFromFunctional" />
         <DocumentRenderer v-else-if="activeNav === 'renderer'" :file-path="currentInputPath || ''"
                           :client="apiClient ? {} : null" :active="activeNav === 'renderer'"
-                          @fallback="activeNav = 'document'" />
+                          :is-scanned="rendererScanned" :scanned-source="rendererScannedSource"
+                          :annotations="rendererAnnotations" :load-bytes="loadBytesForRenderer"
+                          @fallback="onRendererFallback" />
 
         <footer class="status-bar">
           <span :title="currentOutputDir || undefined">输出目录：{{ currentOutputDir ? tailPath(currentOutputDir) : "尚未选择输出目录" }}</span>
@@ -830,6 +832,12 @@ const resultPackageStatusLabel = computed(() => ({
 const documentRefreshToken = ref(0)
 // F4：functional 评审来源块跳转传入的块 id——DocumentReview 据此滚动+高亮（空串=无定位）
 const documentFocusBlockId = ref("")
+// G 展示层：渲染器叠加层数据 + 扫描件徽标。渲染视图激活时从既有 /document/pdf 通道加载，
+// 让标注叠加层与扫描件徽标在真实使用路径可见（旧版 App.vue 从不传 isScanned/annotations，仅单测可达）。
+const rendererAnnotations = ref<Record<string, number>>({})
+const rendererScanned = ref(false)
+const rendererScannedSource = ref("")
+let rendererMetaGeneration = 0
 let apiSessionLoadGeneration = 0
 // loadInitialApiSession 轮询的取消标志：onUnmounted 置 true 取消遗留轮询，onMounted
 // 复位 false 放行新挂载实例；跨挂载的陈旧轮询由 generation guard 兜底（见 loadInitialApiSession）。
@@ -1358,6 +1366,62 @@ function focusBlockFromFunctional(blockId: string) {
   documentRefreshToken.value += 1
   apiMessage.value = blockId ? `已跳转文档批注（来源块 ${blockId}）` : ""
 }
+
+// 渲染器字节源：委托 Electron readFileBytes 桥（主进程校验绝对路径 + 体量上限后返回字节）。
+// 非 Electron 环境无桥——抛错交由 DocumentRenderer 诚实降级，绝不伪造空字节。
+async function loadBytesForRenderer(filePath: string): Promise<ArrayBuffer | Uint8Array> {
+  const bridge = window.ratomizerDesktop?.readFileBytes
+  if (!bridge) throw new Error("Electron readFileBytes 桥不可用")
+  const resp = await bridge({ path: filePath })
+  if (!resp || !resp.ok || !resp.bytes) {
+    throw new Error(`读取文件字节失败：${resp?.reason || "unknown"}`)
+  }
+  return resp.bytes
+}
+
+// 渲染失败诚实降级：仅当用户仍停留在渲染视图时回到文档批注视图。
+// 渲染是异步的——用户可能已手动切走，陈旧的失败回放不应把他从当前视图拉回。
+function onRendererFallback() {
+  if (activeNav.value === "renderer") activeNav.value = "document"
+}
+
+// 渲染视图激活时从既有 /document/pdf 通道装配叠加层数据 + 扫描件徽标来源。
+// 扫描件判定保守：仅当后端影印数据给出明确扫描/图像类原因时置 true 并标注来源，否则默认 false。
+async function loadRendererMeta() {
+  const generation = ++rendererMetaGeneration
+  const client = apiClient.value
+  if (!client) {
+    rendererAnnotations.value = {}
+    rendererScanned.value = false
+    rendererScannedSource.value = ""
+    return
+  }
+  try {
+    const payload = await client.loadPdfAnnotation()
+    if (generation !== rendererMetaGeneration) return
+    rendererAnnotations.value = {
+      pages: payload.pages?.length ?? 0,
+      requirementMarkers: payload.requirement_markers?.length ?? 0,
+      blockZones: payload.block_zones?.length ?? 0,
+      claimZones: payload.claim_zones?.length ?? 0,
+    }
+    const reason = (payload.reason || "").toLowerCase()
+    const looksScanned = !payload.available && /scan|image|无文字层|no_text|图片|光栅/.test(reason)
+    rendererScanned.value = looksScanned
+    rendererScannedSource.value = looksScanned
+      ? `影印通道：${payload.reason}`
+      : (payload.available ? "影印通道：文字层可用" : "保守默认（未判定扫描件）")
+  } catch {
+    if (generation !== rendererMetaGeneration) return
+    rendererAnnotations.value = {}
+    rendererScanned.value = false
+    rendererScannedSource.value = "保守默认（影印通道未就绪）"
+  }
+}
+
+watch([() => activeNav.value === "renderer", apiClient, currentInputPath], ([active]) => {
+  if (active) void loadRendererMeta()
+})
 
 async function loadLlmSettings() {
   const saved = await window.ratomizerDesktop?.getLlmSettings?.()
