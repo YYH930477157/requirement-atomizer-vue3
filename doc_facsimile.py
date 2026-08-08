@@ -29,7 +29,7 @@ from typing import Any
 DOC_FACSIMILE_VERSION = "doc-facsimile-v1"
 FACSIMILE_PDF = "document_facsimile.pdf"
 FACSIMILE_PDF_META = "document_facsimile.pdf.meta.json"
-COM_TIMEOUT_S = 120.0
+COM_TIMEOUT_S = 100.0
 SOFFICE_TIMEOUT_S = 120.0
 CONVERTIBLE_SUFFIXES = {".docx", ".xlsx"}
 _SOFFICE_FALLBACK = "C:/Program Files/LibreOffice/program/soffice.exe"
