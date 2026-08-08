@@ -14,9 +14,10 @@ OBIS 数值分歧 / 覆盖缺口三类检测器）先筛出疑似集；LLM **只
 * **LLM 不可用**（stub/无 key/调用失败/预算耗尽）→ 仅规则筛疑部分产出，
   ``provenance_mode`` 如实标 ``rules_only``，不伪造裁定。
 
-输出 ``reconcile_report.json``（封闭 schema ``reconcile-report/v1``，governed pipeline
-路径 + 原子写），并把摘要并入根目录 ``quality_report.json``（既有字段零改动，原子替换）。
-入口开关 ``RATOMIZER_RECONCILE``（默认 ``0``）。测试中禁止真实 LLM 调用。
+输出 ``reconcile_report.json``（封闭 schema ``reconcile-report/v1``，写盘前 jsonschema
+校验落地，governed pipeline 路径 + 原子写），并把摘要并入根目录 ``quality_report.json``
+（既有字段零改动，原子替换）。入口开关 ``RATOMIZER_RECONCILE``（默认 ``0``）。测试中
+禁止真实 LLM 调用。
 """
 from __future__ import annotations
 
@@ -44,6 +45,40 @@ ExtractChat = Callable[[str, str], dict[str, Any]]
 # LLM 裁定投票枚举（仅语义投票；硬依据在确定性层）
 _LLM_VERDICTS = ("confirmed_issue", "not_an_issue", "uncertain")
 _LLM_BATCH = 24  # 单次裁定投票的疑似条数上限（与 claim verifier 批次同量级）
+
+# A-4（2026-08-07）：产物封闭 schema 运行时校验落地。docstring 原声称封闭 schema 但
+# 运行时零执行（仅 test_reconcile 在测试侧校验）；现将写盘前 jsonschema 校验接上，
+# 构造方与 schema 漂移即 fail-loud，绝不落盘畸形报告。
+_SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
+_SCHEMA_VALIDATOR_CACHE: dict[str, Any] = {}
+
+
+def _payload_validator(schema_filename: str):
+    validator = _SCHEMA_VALIDATOR_CACHE.get(schema_filename)
+    if validator is not None:
+        return validator
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((_SCHEMA_DIR / schema_filename).read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    _SCHEMA_VALIDATOR_CACHE[schema_filename] = validator
+    return validator
+
+
+def _validate_payload_schema(payload: Any, schema_filename: str, *, label: str) -> None:
+    """写盘前对产物做封闭 schema 校验；违例 fail-loud。"""
+    errors = sorted(
+        _payload_validator(schema_filename).iter_errors(payload),
+        key=lambda error: tuple(str(part) for part in error.absolute_path),
+    )
+    if not errors:
+        return
+    error = errors[0]
+    location = ".".join(str(part) for part in error.absolute_path) or "<root>"
+    raise ValueError(
+        f"reconcile {label} 违反封闭 schema {schema_filename} @ {location}: {error.message}"
+    )
 
 _SYSTEM_PROMPT = (
     "你是技术标准合并需求的对账裁定员。输入是确定性规则筛出的疑似不一致集合"
@@ -344,6 +379,8 @@ def _replace_with_retry(source: Path, target: Path) -> None:
 def _write_report(out_dir: Path, payload: dict[str, Any]) -> Path:
     from result_package import governed_artifact_path
 
+    # A-4：写盘前按封闭 schema 校验报告（reconcile-report/v1，additionalProperties 全闭）。
+    _validate_payload_schema(payload, "reconcile_report.schema.json", label=RECONCILE_FILENAME)
     target = governed_artifact_path(out_dir, RECONCILE_FILENAME, category="pipeline")
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(

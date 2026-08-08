@@ -19,7 +19,10 @@
 
 设计原则：
 - 默认关闭，行为面零变化。
-- 只读/只追加写，不修改既有产物。
+- 台账写入幂等：每条带 (document_id, asset_kind, asset_id) 幂等键，重跑/并发按键去重
+  （latest wins），不产生重复条目；写阶段全程持有 ``harvest.lock`` 跨进程锁 +
+  原子替换（与 review_state / ai_review_actions 同纪律）。
+- 只读/只追加写，不修改既有产物（幂等 upsert 仅按需更新同键条目）。
 - 所有写路径走 governed_artifact_path(state)。
 - 失败降级：任何收割失败记录到 report 但不阻断主流程。
 """
@@ -43,6 +46,8 @@ PENDING_SOLUTIONS_FILE = "pending_solutions.jsonl"
 KB_CANDIDATES_FILE = "kb_candidates.jsonl"
 DICTIONARY_CANDIDATES_FILE = "dictionary_candidates.jsonl"
 CALIBRATION_REVIEW_FILE = "calibration_review_list.jsonl"
+# A-3：台账写入跨进程锁（与 review_state / ai_review_actions 同纪律）。
+HARVEST_LOCK_FILE = "harvest.lock"
 
 LOGGER = logging.getLogger("requirement_atomizer")
 
@@ -108,16 +113,63 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    """原子替换写 JSONL（读旧内容 + 合并 + 写临时文件 + replace）。"""
+def _document_id(root: Path) -> str:
+    """稳定文档标识：functional_requirements.json 的 doc_ref 优先，缺失/'unknown' 回退目录名。
+
+    幂等键需要 per-document 稳定标识；招标类 non-KB 文档 doc_ref 常缺席，回退目录名保证
+    同一项目目录多次 harvest 键稳定。
+    """
+    from requirements_analysis_rules import _read_functional_requirements_payload
+
+    try:
+        payload = _read_functional_requirements_payload(root) or {}
+    except Exception:  # noqa: BLE001
+        payload = {}
+    doc_ref = str(payload.get("doc_ref") or "").strip()
+    if doc_ref and doc_ref != "unknown":
+        return doc_ref
+    return Path(root).name
+
+
+def _dedup_key(row: dict[str, Any]) -> tuple[str, ...]:
+    """台账幂等键：(document_id, asset_kind, asset_id)。
+
+    无幂等组件的遗留行按内容保序去重（绝不与有键行混并，亦不因全空键塌缩成一条）。
+    """
+    doc = str(row.get("document_id") or "")
+    kind = str(row.get("asset_kind") or "")
+    aid = str(row.get("asset_id") or "")
+    if doc and kind and aid:
+        return (doc, kind, aid)
+    return ("__legacy__", json.dumps(row, ensure_ascii=False, sort_keys=True))
+
+
+def _atomic_upsert_jsonl(path: Path, new_rows: list[dict[str, Any]]) -> None:
+    """锁内读-合并-原子写：按幂等键去重（latest wins，保序）。
+
+    调用方必须已持有 ``HARVEST_LOCK_FILE`` 跨进程锁——本函数只做单文件的读改写原子性，
+    锁由 ``harvest_assets`` 的写阶段统一持有，避免五份台账互相抢锁与并发 lost update。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = _read_jsonl(path)
-    existing.extend(rows)
+    order: list[tuple[str, ...]] = []
+    merged: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in existing:
+        key = _dedup_key(row)
+        if key not in merged:
+            order.append(key)
+        merged[key] = row
+    for row in new_rows:
+        key = _dedup_key(row)
+        if key not in merged:
+            order.append(key)
+        merged[key] = row  # upsert：同键取最新内容
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as handle:
-        for row in existing:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-            handle.flush()
+        for key in order:
+            handle.write(json.dumps(merged[key], ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     try:
         os.replace(tmp, path)
     except OSError:
@@ -291,6 +343,7 @@ def harvest_assets(out_dir: Path | str, *, actor: str = "harvester") -> dict[str
     """
     root = Path(out_dir).expanduser().resolve()
     tag = _project_tag(root)
+    document_id = _document_id(root)
     errors: list[str] = []
 
     items = _load_functional_requirements(root)
@@ -321,6 +374,9 @@ def harvest_assets(out_dir: Path | str, *, actor: str = "harvester") -> dict[str
             "schema": "pending-requirement/v1",
             "harvested_at": _now_iso(),
             "project_tag": tag,
+            "document_id": document_id,
+            "asset_kind": "pending_requirement",
+            "asset_id": rid,
             "functional_requirement_id": rid,
             "objective": str(item.get("objective") or ""),
             "behaviors": [str(b) for b in (item.get("behaviors") or []) if str(b)],
@@ -345,6 +401,9 @@ def harvest_assets(out_dir: Path | str, *, actor: str = "harvester") -> dict[str
                 "schema": "pending-solution/v1",
                 "harvested_at": _now_iso(),
                 "project_tag": tag,
+                "document_id": document_id,
+                "asset_kind": "pending_solution",
+                "asset_id": rid,
                 "functional_requirement_id": rid,
                 "lifecycle_state": lifecycle,
                 "confirmed": confirmed,
@@ -362,6 +421,9 @@ def harvest_assets(out_dir: Path | str, *, actor: str = "harvester") -> dict[str
                 "schema": "kb-candidate/v1",
                 "harvested_at": _now_iso(),
                 "project_tag": tag,
+                "document_id": document_id,
+                "asset_kind": "kb_candidate",
+                "asset_id": f"{rid}:{term}",
                 "functional_requirement_id": rid,
                 "term": term,
                 "context": str(item.get("objective") or "")[:200],
@@ -376,6 +438,9 @@ def harvest_assets(out_dir: Path | str, *, actor: str = "harvester") -> dict[str
                 "schema": "dictionary-candidate/v1",
                 "harvested_at": _now_iso(),
                 "project_tag": tag,
+                "document_id": document_id,
+                "asset_kind": "dictionary_candidate",
+                "asset_id": f"{rid}:{word}",
                 "functional_requirement_id": rid,
                 "word": word,
                 "category": "weak_word",
@@ -394,11 +459,18 @@ def harvest_assets(out_dir: Path | str, *, actor: str = "harvester") -> dict[str
     for row in audit_rows:
         kind = str(row.get("kind") or "")
         if kind in ("potential_misjudgment", "sample"):
+            cal_rid = str(row.get("functional_requirement_id") or "")
+            # asset_id 含 recorded_at/run_id：同一 audit 文件两次 harvest 键稳定（幂等），
+            # adjudication 重跑产生新 audit 行则如实新增（真正的新校准数据）。
+            cal_stamp = str(row.get("recorded_at") or row.get("run_id") or "")
             calibration_reviews.append({
                 "schema": "calibration-review/v1",
                 "harvested_at": _now_iso(),
                 "project_tag": tag,
-                "functional_requirement_id": str(row.get("functional_requirement_id") or ""),
+                "document_id": document_id,
+                "asset_kind": "calibration_review",
+                "asset_id": f"{cal_rid}:{kind}:{cal_stamp}",
+                "functional_requirement_id": cal_rid,
                 "kind": kind,
                 "decision": str(row.get("decision") or ""),
                 "reason": str(row.get("reason") or ""),
@@ -418,39 +490,30 @@ def harvest_assets(out_dir: Path | str, *, actor: str = "harvester") -> dict[str
         errors.append(f"adjudication_bank harvest failed: {exc}")
 
     written: list[str] = []
+    # A-3：台账写入全程持有 harvest.lock 跨进程锁，五份台账各自走幂等 upsert（按
+    # document_id+asset_kind+asset_id 去重），重跑/并发不污染台账（与 review_state 同纪律）。
+    ledger_jobs: list[tuple[str, list[dict[str, Any]]]] = [
+        (PENDING_REQUIREMENTS_FILE, pending_requirements),
+        (PENDING_SOLUTIONS_FILE, pending_solutions),
+        (KB_CANDIDATES_FILE, kb_candidates),
+        (DICTIONARY_CANDIDATES_FILE, dictionary_candidates),
+        (CALIBRATION_REVIEW_FILE, calibration_reviews),
+    ]
+    lock_path = _governed_state_path(root, HARVEST_LOCK_FILE)
     try:
-        _atomic_write_jsonl(_governed_state_path(root, PENDING_REQUIREMENTS_FILE), pending_requirements)
-        written.append(PENDING_REQUIREMENTS_FILE)
-    except Exception as exc:
-        errors.append(f"write {PENDING_REQUIREMENTS_FILE} failed: {exc}")
+        from process_file_lock import process_file_lock
 
-    if pending_solutions:
-        try:
-            _atomic_write_jsonl(_governed_state_path(root, PENDING_SOLUTIONS_FILE), pending_solutions)
-            written.append(PENDING_SOLUTIONS_FILE)
-        except Exception as exc:
-            errors.append(f"write {PENDING_SOLUTIONS_FILE} failed: {exc}")
-
-    if kb_candidates:
-        try:
-            _atomic_write_jsonl(_governed_state_path(root, KB_CANDIDATES_FILE), kb_candidates)
-            written.append(KB_CANDIDATES_FILE)
-        except Exception as exc:
-            errors.append(f"write {KB_CANDIDATES_FILE} failed: {exc}")
-
-    if dictionary_candidates:
-        try:
-            _atomic_write_jsonl(_governed_state_path(root, DICTIONARY_CANDIDATES_FILE), dictionary_candidates)
-            written.append(DICTIONARY_CANDIDATES_FILE)
-        except Exception as exc:
-            errors.append(f"write {DICTIONARY_CANDIDATES_FILE} failed: {exc}")
-
-    if calibration_reviews:
-        try:
-            _atomic_write_jsonl(_governed_state_path(root, CALIBRATION_REVIEW_FILE), calibration_reviews)
-            written.append(CALIBRATION_REVIEW_FILE)
-        except Exception as exc:
-            errors.append(f"write {CALIBRATION_REVIEW_FILE} failed: {exc}")
+        with process_file_lock(lock_path, timeout_s=30.0, label="harvest"):
+            for filename, rows in ledger_jobs:
+                if filename != PENDING_REQUIREMENTS_FILE and not rows:
+                    continue
+                try:
+                    _atomic_upsert_jsonl(_governed_state_path(root, filename), rows)
+                    written.append(filename)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"write {filename} failed: {exc}")
+    except Exception as exc:  # noqa: BLE001 — 锁不可得不应阻断主流程已采集的报告
+        errors.append(f"harvest lock unavailable: {exc}")
 
     # 飞轮仪表盘五指标
     library_path_env = os.environ.get(ENV_REQUIREMENT_LIBRARY, "").strip()

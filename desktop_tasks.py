@@ -1964,6 +1964,42 @@ def evaluate_full_closure(out_dir: Path) -> dict[str, Any]:
             "error": str(exc)[:200],
         })
 
+    # 4. functional_extract 守恒门（A-5，2026-08-07）：注释承诺"守恒未闭合 → 不 READY"落地。
+    # 原实现只检查 claim 模式 / claim ready / 分析 readiness / 全部已裁决，从未直接消费
+    # functional_extract 守恒状态——守恒未闭合时仍可能判 ready=True（缺口清单也不含
+    # conservation_open）。此处显式接入：守恒计算过且 ok=False → ready=False 且缺口含
+    # conservation_open。守恒未计算（functional_requirements.json 缺席）不阻塞，与
+    # orchestration_gaps._conservation_gaps / adjudicate.hard_basis_check 同口径（不伪造
+    # 未计算的信号）。
+    try:
+        from requirements_analysis_rules import _read_functional_requirements_payload
+
+        fr_payload = _read_functional_requirements_payload(root) or {}
+        conservation = fr_payload.get("conservation")
+        if isinstance(conservation, dict) and not conservation.get("ok", True):
+            missing = [str(b) for b in (conservation.get("missing_block_ids") or []) if str(b)]
+            extra = [str(b) for b in (conservation.get("extra_block_ids") or []) if str(b)]
+            duplicate = [str(b) for b in (conservation.get("duplicate_assignments") or []) if str(b)]
+            mismatches = conservation.get("evidence_mismatches") or []
+            mismatch_count = len(mismatches) if isinstance(mismatches, list) else 0
+            gaps.append({
+                "kind": "conservation_open",
+                "missing_block_ids": missing,
+                "extra_block_ids": extra,
+                "duplicate_assignments": duplicate,
+                "evidence_mismatches_count": mismatch_count,
+                "message": (
+                    f"functional_extract 守恒未闭合：missing={len(missing)} "
+                    f"extra={len(extra)} duplicate={len(duplicate)} "
+                    f"evidence_mismatches={mismatch_count}"
+                ),
+            })
+    except Exception as exc:  # pragma: no cover - defensive
+        gaps.append({
+            "kind": "conservation_check_unavailable",
+            "error": str(exc)[:200],
+        })
+
     return {
         "schema": FULL_CLOSURE_SCHEMA,
         "ready": len(gaps) == 0,

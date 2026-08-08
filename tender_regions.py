@@ -15,14 +15,29 @@ import os
 import re
 from typing import Any
 
-TENDER_REGION_FILTER_VERSION = "tender-region-filter-v1"
+TENDER_REGION_FILTER_VERSION = "tender-region-filter-v2"
 
 # --- 程序性章节词表（non_product_reference）-------------------------------------
+# A-1 收窄（2026-08-07）：qualification/evaluation/assessment/scoring 这类泛词在
+# 技术标准里同时存在程序义（投标人资格/评标）与技术义（设备 Qualification tests /
+# 性能 Evaluation）。单词级匹配会把 "Qualification Tests" 这类技术章节整章踢出
+# 功能需求候选（A9-2 召回事故）。故泛词收窄为短语/标题级匹配——裸泛词不得单独命中，
+# 只保留明确的程序性短语（完整标题形态）。
 _INSTRUCTIONS_RE = re.compile(
     r"\b(?:instructions?\s+to\s+bidders?|bidding\s+instructions?|instructions?\s+for\s+tender|"
     r"tender\s+instructions?|bid\s+submission|submission\s+of\s+tender|"
-    r"qualification|qualifying|eligibility|eligible\s+bidder|pre-qualification|"
-    r"evaluation|evaluating|assessment|scoring|award\s+criteria|selection\s+criteria|"
+    r"qualification\s+(?:requirements?|conditions?|criteria|of\s+(?:the\s+)?(?:bidder|tenderer|contractor|supplier|manufacturer))|"
+    r"qualifying\s+(?:conditions?|requirements?|criteria|bidder)|"
+    r"pre\s*qualification|prequalification|"
+    r"eligibility\s+(?:criteria|requirements?|of\s+(?:bidder|tenderer))|eligible\s+bidder|"
+    r"evaluation\s+(?:criteria|methodology|method|process|procedure|committee|report|matrix|sheet)|"
+    r"evaluation\s+of\s+(?:bid|bids|tender|tenders|proposal|proposals|offer|offers)|"
+    r"(?:bid|tender)\s+evaluation|evaluation\s+and\s+award|"
+    r"assessment\s+(?:criteria|methodology|matrix|sheet)|"
+    r"assessment\s+of\s+(?:bid|bids|tender|proposal|proposals|offer|bidder|tenderer)|"
+    r"(?:bid|tender)\s+assessment|"
+    r"scoring\s+(?:criteria|sheet|matrix|methodology|method)|"
+    r"award\s+criteria|selection\s+criteria|"
     r"general\s+conditions|conditions\s+of\s+tender|tender\s+conditions|"
     r"contract\s+conditions|terms\s+and\s+conditions|commercial\s+terms|"
     r"price\s+schedule|bill\s+of\s+quantities|boq|form\s+of\s+tender|tender\s+form|"
@@ -36,14 +51,21 @@ _INSTRUCTIONS_RE = re.compile(
 )
 
 # --- 技术规范章节词表（body，正常抽取）-----------------------------------------
+# A-1：显式收录测试/验收类技术章节（qualification tests / type tests / acceptance
+# test 等），确保设备验收章节优先判为 technical → body，即便 instructions 词表也匹配。
 _TECHNICAL_RE = re.compile(
     r"\b(?:technical\s+specification|statement\s+of\s+requirements?|scope\s+of\s+work|"
     r"technical\s+requirements?|functional\s+requirements?|specification\s+of\s+supply|"
     r"supply\s+and\s+delivery|scope\s+of\s+supply|equipment\s+specification|"
     r"system\s+requirements?|performance\s+requirements?|technical\s+data|"
-    r"service\s+specification|work\s+specification)"
+    r"service\s+specification|work\s+specification|"
+    r"qualification\s+tests?|type\s+tests?|routine\s+tests?|acceptance\s+tests?|"
+    r"witness\s+tests?|factory\s+acceptance|site\s+acceptance|"
+    r"tests?\s+(?:procedures?|methods?|requirements?|conditions?|plans?|specifications?)|"
+    r"testing\s+(?:requirements?|procedures?|methods?|specifications?))"
     r"|^(?:技术规范|技术规格|技术参数|技术要求|功能要求|供货范围|供货清单|"
-    r"设备规格|系统要求|性能要求|技术数据|服务要求|工作范围)",
+    r"设备规格|系统要求|性能要求|技术数据|服务要求|工作范围|"
+    r"型式试验|出厂试验|例行试验|验收试验|测试方法|试验方法)",
     re.IGNORECASE,
 )
 

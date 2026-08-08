@@ -197,5 +197,149 @@ class TestHarvestAssets(EnvFixtureMixin, unittest.TestCase):
             self.assertEqual(report["metrics"]["next_project_library_hit_rate"], 0.5)
 
 
+class TestHarvestIdempotency(EnvFixtureMixin, unittest.TestCase):
+    """A-3：台账写入加锁 + 幂等去重（重跑/并发不污染台账）。"""
+
+    def _write_functional_requirements(self, out_dir: Path, items: list[dict]) -> None:
+        (out_dir / "functional_requirements.json").write_text(
+            json.dumps({"schema_version": 1, "items": items, "conservation": {"ok": True}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _write_verification_states(self, out_dir: Path, states: list[dict]) -> None:
+        from result_package import governed_artifact_path
+
+        path = governed_artifact_path(out_dir, "verification_states.jsonl", category="state", for_write=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            for row in states:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    def _ledger_count(self, out_dir: Path, filename: str) -> int:
+        from result_package import governed_artifact_path
+
+        path = governed_artifact_path(out_dir, filename, category="state", for_write=False)
+        if not path.is_file():
+            return 0
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+    def test_rerun_harvest_produces_no_duplicate_entries(self) -> None:
+        """简报判据：连续两次 harvest，台账条目数不变（幂等去重）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            items = [
+                {
+                    "functional_requirement_id": "FRE-0001",
+                    "objective": "The meter shall support DLMS.",
+                    "behaviors": ["associate"],
+                    "source_quote": "The meter shall support DLMS.",
+                    "source_block_ids": ["BLK-1"],
+                    "design_options": ["TCP wrapper"],
+                    "ownership_reason": "通信协议",
+                    "acceptance_criteria": ["ok"],
+                },
+                {
+                    "functional_requirement_id": "FRE-0002",
+                    "objective": "The meter shall respond within 适当 time.",
+                    "source_quote": "respond within 适当 time",
+                    "source_block_ids": ["BLK-2"],
+                },
+            ]
+            self._write_functional_requirements(out_dir, items)
+            self._write_verification_states(out_dir, [
+                {"requirement_id": "FRE-0001", "lifecycle_state": "confirmed", "schema": "verification-state/v1"},
+                {"requirement_id": "FRE-0002", "lifecycle_state": "draft", "schema": "verification-state/v1"},
+            ])
+            harvest_assets(out_dir, actor="tester")
+            targets = [PENDING_REQUIREMENTS_FILE, PENDING_SOLUTIONS_FILE,
+                       KB_CANDIDATES_FILE, DICTIONARY_CANDIDATES_FILE]
+            first = {f: self._ledger_count(out_dir, f) for f in targets}
+            self.assertGreater(first[PENDING_REQUIREMENTS_FILE], 0, "前置：首跑应写入台账")
+
+            # 第二次 harvest（内容未变）——不得产生重复条目
+            harvest_assets(out_dir, actor="tester")
+            second = {f: self._ledger_count(out_dir, f) for f in targets}
+            self.assertEqual(first, second, f"重跑产生重复台账条目：{first} vs {second}")
+
+            # 逐文件无重复 document_id+asset_kind+asset_id 键
+            from result_package import governed_artifact_path
+            for filename in targets:
+                path = governed_artifact_path(out_dir, filename, category="state", for_write=False)
+                if not path.is_file():
+                    continue
+                keys = []
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    keys.append((row.get("document_id"), row.get("asset_kind"), row.get("asset_id")))
+                self.assertEqual(len(keys), len(set(keys)), f"{filename} 存在重复幂等键")
+
+    def test_ledger_entries_carry_idempotency_components(self) -> None:
+        """台账条目携带 document_id + asset_kind + asset_id 幂等键。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            items = [{
+                "functional_requirement_id": "FRE-0001",
+                "objective": "The meter shall support DLMS.",
+                "source_quote": "The meter shall support DLMS.",
+                "source_block_ids": ["BLK-1"],
+                "design_options": ["TCP wrapper"],
+            }]
+            self._write_functional_requirements(out_dir, items)
+            harvest_assets(out_dir, actor="tester")
+            from result_package import governed_artifact_path
+
+            path = governed_artifact_path(out_dir, PENDING_REQUIREMENTS_FILE, category="state", for_write=False)
+            row = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertTrue(row.get("document_id"), "document_id 缺失")
+            self.assertEqual(row.get("asset_kind"), "pending_requirement")
+            self.assertEqual(row.get("asset_id"), "FRE-0001")
+
+    def test_harvest_uses_process_lock(self) -> None:
+        """写路径套 process_file_lock——harvest.lock 落盘（锁文件留在磁盘是既有模式）。"""
+        from result_package import governed_artifact_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            self._write_functional_requirements(out_dir, [{
+                "functional_requirement_id": "FRE-0001",
+                "objective": "x", "source_quote": "q", "source_block_ids": ["BLK-1"],
+            }])
+            harvest_assets(out_dir, actor="tester")
+            lock_path = governed_artifact_path(out_dir, "harvest.lock", category="state", for_write=False)
+            self.assertTrue(lock_path.is_file(), "harvest 未使用 process_file_lock（无 harvest.lock）")
+
+    def test_concurrent_harvests_do_not_lose_or_corrupt(self) -> None:
+        """并发两个 harvest：锁 + 幂等去重保证最终台账无丢失、无损坏、计数=单跑。"""
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            self._write_functional_requirements(out_dir, [{
+                "functional_requirement_id": "FRE-0001",
+                "objective": "The meter shall support DLMS.",
+                "source_quote": "The meter shall support DLMS.",
+                "source_block_ids": ["BLK-1"],
+                "design_options": ["TCP wrapper"],
+            }])
+            errors: list[BaseException] = []
+
+            def _run() -> None:
+                try:
+                    harvest_assets(out_dir, actor="tester")
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=_run) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(errors, [], f"并发 harvest 异常：{errors}")
+            count = self._ledger_count(out_dir, PENDING_REQUIREMENTS_FILE)
+            self.assertEqual(count, 1, f"并发后台账应恰为 1 条（幂等），实为 {count}")
+
+
 if __name__ == "__main__":
     unittest.main()

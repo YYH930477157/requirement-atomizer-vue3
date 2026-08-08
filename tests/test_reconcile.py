@@ -247,5 +247,63 @@ class QualityReportAttachTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / reconcile.RECONCILE_FILENAME).is_file())
 
 
+def _valid_reconcile_payload() -> dict:
+    return {
+        "schema_version": reconcile.RECONCILE_SCHEMA,
+        "producer": reconcile.RECONCILE_VERSION,
+        "prompt_version": reconcile.RECONCILE_PROMPT_VERSION,
+        "provenance": {},
+        "provenance_mode": "rules_only",
+        "llm_unavailable_reason": None,
+        "route_requested": "stub",
+        "route": "stub",
+        "requirements_count": 0,
+        "summary": {
+            "suspects": 0, "hard_veto": 0, "llm_confirmed": 0,
+            "llm_cleared": 0, "uncertain": 0, "rules_only": True,
+        },
+        "adjudications": [],
+    }
+
+
+class RuntimeSchemaValidationTests(unittest.TestCase):
+    """A-4：写盘前封闭 schema 运行时校验落地（docstring 不再是空承诺）。"""
+
+    def test_validator_accepts_well_formed_payload(self) -> None:
+        reconcile._validate_payload_schema(
+            _valid_reconcile_payload(), "reconcile_report.schema.json", label="reconcile_report.json"
+        )
+
+    def test_validator_rejects_closed_schema_violation(self) -> None:
+        payload = _valid_reconcile_payload()
+        payload["unexpected_disallowed_field"] = True  # additionalProperties: false
+        with self.assertRaises(ValueError):
+            reconcile._validate_payload_schema(
+                payload, "reconcile_report.schema.json", label="reconcile_report.json"
+            )
+
+    def test_write_report_does_not_persist_invalid_payload(self) -> None:
+        """写边界校验：畸形报告在落盘前被拦下（fail-loud，不写半成品）。"""
+        bad_payload = _valid_reconcile_payload()
+        bad_payload["provenance_mode"] = "bogus_mode"  # enum 违例
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                reconcile._write_report(Path(tmp), bad_payload)
+            from result_package import governed_artifact_path
+            path = governed_artifact_path(
+                Path(tmp), reconcile.RECONCILE_FILENAME, category="pipeline", for_write=False
+            )
+            self.assertFalse(path.is_file())
+
+    def test_write_report_persists_valid_payload(self) -> None:
+        with TemporaryDirectory() as tmp:
+            reconcile._write_report(Path(tmp), _valid_reconcile_payload())
+            from result_package import governed_artifact_path
+            path = governed_artifact_path(
+                Path(tmp), reconcile.RECONCILE_FILENAME, category="pipeline", for_write=False
+            )
+            self.assertTrue(path.is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
