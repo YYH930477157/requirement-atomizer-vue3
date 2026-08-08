@@ -105,7 +105,11 @@ class PlatformScaffoldTests(unittest.TestCase):
                     patch.object(resources.sys, "_MEIPASS", str(meipass), create=True):
                 self.assertEqual(resources.package_root(), meipass.resolve())
 
-    def test_package_root_prefers_electron_resource_parent_for_backend_exe(self) -> None:
+    def test_package_root_onefile_prefers_meipass_over_electron_resource_parent(self) -> None:
+        """onefile（desktop_backend.spec 无 COLLECT）：datas（含 schemas/）解压到 _MEIPASS，
+        即使 exe 位于 electron 的 resources/backend/ 且 resources/llm_agents 存在
+        （旧启发式误指 resources/ 导致打包缺 schema——2026-08-07 用户实测报错），
+        package_root 必须返回 _MEIPASS。"""
         import resources
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -120,6 +124,23 @@ class PlatformScaffoldTests(unittest.TestCase):
             with patch.object(resources.sys, "frozen", True, create=True), \
                     patch.object(resources.sys, "executable", str(backend_dir / "ratomizer-desktop.exe")), \
                     patch.object(resources.sys, "_MEIPASS", str(meipass), create=True):
+                self.assertEqual(resources.package_root(), meipass.resolve())
+
+    def test_package_root_onedir_backend_uses_electron_resource_parent(self) -> None:
+        """onedir（ratomizer.spec COLLECT）：_MEIPASS 指向 exe 自身目录（=backend/），
+        datas 与 exe 同级布局，此时才走 backend 启发式返回 resources 父目录。"""
+        import resources
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            resources_root = root / "resources"
+            backend_dir = resources_root / "backend"
+            backend_dir.mkdir(parents=True)
+            (resources_root / "llm_agents").mkdir()
+
+            with patch.object(resources.sys, "frozen", True, create=True), \
+                    patch.object(resources.sys, "executable", str(backend_dir / "ratomizer-desktop.exe")), \
+                    patch.object(resources.sys, "_MEIPASS", str(backend_dir), create=True):
                 self.assertEqual(resources.package_root(), resources_root.resolve())
 
     def start_api_server(self, out_dir: Path, *, token: str = "") -> TestAPIServer:

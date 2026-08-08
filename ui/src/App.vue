@@ -9,10 +9,10 @@
             <div class="brand-sub">Requirement Atomizer</div>
           </div>
         </div>
-        <nav class="nav-group">
-          <p class="nav-title">工作台</p>
+        <nav v-for="grp in navGroups" :key="grp.title" class="nav-group">
+          <p class="nav-title">{{ grp.title }}</p>
           <button
-            v-for="item in phaseNavItems.filter((i) => i.id !== 'settings')"
+            v-for="item in grp.items"
             :key="item.id"
             class="nav-button"
             :class="{ active: activeNav === item.id }"
@@ -436,7 +436,7 @@
                     class="mini-button"
                     type="button"
                     data-testid="action-translate"
-                    :disabled="isTranslating || selectedRequirement.id === emptyRequirement.id"
+                    :disabled="isTranslating || !hasSelectedRequirement"
                     @click="handleTranslate"
                   >
                     {{ isTranslating ? "翻译中" : "翻译" }}
@@ -750,17 +750,35 @@ type LlmSettings = {
   selfCheck: boolean
 }
 
-const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: Component }> = [
-  { id: "run", label: "运行", icon: Play },
-  { id: "review", label: "审查工作台", icon: ClipboardCheck },
-  { id: "functional", label: "功能需求", icon: Layers },
-  { id: "document", label: "文档批注", icon: FileText },
-  { id: "claim", label: "Claim 账本", icon: ListChecks },
-  { id: "renderer", label: "文档渲染", icon: Image },
-  { id: "settings", label: "设置", icon: Settings },
+const phaseNavItems: Array<{ id: PhaseNavId; label: string; icon: Component; group: string }> = [
+  { id: "run", label: "运行", icon: Play, group: "运行" },
+  { id: "review", label: "审查工作台", icon: ClipboardCheck, group: "评审" },
+  { id: "functional", label: "功能需求", icon: Layers, group: "评审" },
+  { id: "document", label: "文档批注", icon: FileText, group: "文档与账本" },
+  { id: "claim", label: "Claim 账本", icon: ListChecks, group: "文档与账本" },
+  { id: "renderer", label: "文档渲染", icon: Image, group: "文档与账本" },
+  { id: "settings", label: "设置", icon: Settings, group: "设置" },
 ]
 
-const activeNav = ref<PhaseNavId>("run")
+// nav 视觉分组收敛（G9-7 最小低风险部分）：7 个扁平 nav 项按域归为
+// 「运行 / 评审 / 文档与账本」分组渲染——不删项、不改 activeNav 路由与 testid，
+// 仅在视觉上收敛。完整合并（评审项收敛为单一 nav + 内页签）见完工汇报，高风险未实施。
+const navGroups: Array<{ title: string; items: typeof phaseNavItems }> = (() => {
+  const order = ["运行", "评审", "文档与账本"]
+  const map = new Map<string, typeof phaseNavItems>()
+  for (const item of phaseNavItems) {
+    if (item.id === "settings") continue
+    const list = map.get(item.group) ?? []
+    list.push(item)
+    map.set(item.group, list)
+  }
+  return order.filter((g) => map.has(g)).map((g) => ({ title: g, items: map.get(g)! }))
+})()
+
+// 落地页默认「功能需求」评审视图（G9-4）：运行入口保留在 nav，用户点「运行」即进入。
+// 此前落地为「运行」，但功能需求评审是高频评审面；FunctionalReview 自带 functional 模式，
+// 默认落它不破运行入口（nav 仍可达，且 demoProgress URL 演示显式切回 run）。
+const activeNav = ref<PhaseNavId>("functional")
 // 运行页总览（样机 2026-07-09）：跑完链后填充,未知显示 —
 const runOverview = ref<{ atoms: number | null; aiReqs: number | null; selfCheck: number | null;
   coverage: number | null; chapters: string; questions: number | null; verdict: string }>({
@@ -1087,6 +1105,9 @@ function stopProgressDemo() {
 
 function startProgressDemo() {
   stopProgressDemo()
+  // demoProgress URL 的意图是预览「运行」面板的进度动效；落地页已默认 functional，
+  // 故演示显式切回 run，否则演示数据在 run 面板而用户停在 functional 看不到。
+  activeNav.value = "run"
   lastChainStep = ""
   runStageStates.value = defaultStageStates()
   stageStartedAt.value = {}
@@ -1168,6 +1189,8 @@ const abntPreset = {
 const TEST_LLM_REVIEW_LIMIT = 50
 const TEST_AI_EXTRACT_SAMPLE_RATIO = 0.2  // 测试运行：均匀抽样全文 1/5 章节（随文档规模自适应，不写死条数）
 
+// 空状态 UI 占位（G9-10：曾是 magic-string 哨兵，现仅用于无需求时展示文案；
+// 判定改用 hasSelectedRequirement，不再读其 id 作标志）
 const emptyRequirement: Requirement = {
   id: "未选择需求",
   backendId: "",
@@ -1241,6 +1264,10 @@ const filteredRequirements = computed(() => requirementRows.value.filter((item) 
 }))
 
 const selectedRequirement = computed(() => requirementRows.value.find((item) => item.id === selectedRequirementId.value) ?? requirementRows.value[0] ?? emptyRequirement)
+// 是否有真实可选需求（G9-10 哨兵清理）：替代此前 `selectedRequirement.id === emptyRequirement.id`
+// 的 magic-string 哨兵比较——emptyRequirement 现仅作空状态 UI 占位（「暂无需求」文案），
+// 不再作为判定标志；模板对 selectedRequirement 的非 null 访问由该占位保证不变。
+const hasSelectedRequirement = computed(() => requirementRows.value.length > 0)
 const documentDisplayName = computed(() => {
   if (currentInputPath.value) return `当前文档：${fileName(currentInputPath.value)}`
   if (currentOutputDir.value) return `当前输出：${currentOutputDir.value}`

@@ -285,6 +285,22 @@ describe("FunctionalReview (WS-F)", () => {
     expect(wrapper.find('[data-testid="manual-badge"]').exists()).toBe(true)
   })
 
+  it("navigates functional items with j/k shortcuts shared via useReviewShortcuts (G9-2)", async () => {
+    const { wrapper } = mountReview()
+    await flushPromises()
+    // 默认选中第一个（FRE-1）
+    expect(wrapper.find('[data-testid="functional-card-FRE-1"]').classes()).toContain("selected")
+    // j → 下一条
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="functional-card-FREQ-MANUAL-xyz"]').classes()).toContain("selected")
+    expect(wrapper.find('[data-testid="functional-card-FRE-1"]').classes()).not.toContain("selected")
+    // k → 上一条
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k" }))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="functional-card-FRE-1"]').classes()).toContain("selected")
+  })
+
   it("shows objective / behaviors / preconditions / data_constraints + traceability chain (Cap1)", async () => {
     const { wrapper } = mountReview()
     await flushPromises()

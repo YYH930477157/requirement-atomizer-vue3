@@ -16,6 +16,7 @@ import type {
   RequirementApiClient,
 } from "./api-client"
 import { isNeedsReconfirmationError } from "./api-client"
+import { useReviewShortcuts } from "./useReviewShortcuts"
 
 // 镜像后端 ai_extract.MODULE_VOCAB（受控模块词表）。改模块下拉用；taxonomy 变动时两边同步。
 const MODULE_VOCAB = [
@@ -503,7 +504,7 @@ watch(() => props.refreshToken, (token, previous) => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener("keydown", handleReviewShortcut)
+  uninstallReviewShortcuts()
   if (incrementalRefreshTimer !== undefined) clearTimeout(incrementalRefreshTimer)
   if (focusRingTimer !== undefined) clearTimeout(focusRingTimer)
   pdfPageLoadsDisposed = true
@@ -1537,26 +1538,18 @@ function scheduleIncrementalRefresh() {
   }, 180)
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
-}
-
-function handleReviewShortcut(event: KeyboardEvent) {
-  if (!props.active || event.defaultPrevented || event.repeat || event.isComposing
-      || event.ctrlKey || event.metaKey || event.altKey || isEditableTarget(event.target)) return
-  const key = event.key.toLowerCase()
-  if ((key === "j" || key === "k") && orderedReqs.value.length) {
-    event.preventDefault()
-    void stepReq(key === "j" ? 1 : -1)
-    return
-  }
-  if (!selectedReq.value || !props.client || isSaving.value) return
-  const status = ({ a: "accepted", r: "rejected", d: "needs_discussion" } as const)[key as "a" | "r" | "d"]
-  if (!status) return
-  event.preventDefault()
-  void decide(status, true)
-}
+// 评审键盘流（j/k 导航、a/r/d 裁决）：与 FunctionalReview 共用 useReviewShortcuts，
+// 守卫与键位映射单点维护（此前为本组件内联 handleReviewShortcut）。
+const { install: installReviewShortcuts, uninstall: uninstallReviewShortcuts } = useReviewShortcuts({
+  isActive: () => props.active,
+  hasItems: () => orderedReqs.value.length > 0,
+  step: (delta) => { void stepReq(delta) },
+  decisions: {
+    hasSelection: () => Boolean(selectedReq.value) && Boolean(props.client),
+    isBusy: () => isSaving.value,
+    decide: (status) => { void decide(status, true) },
+  },
+})
 
 async function loadTextModeSwitch() {
   // D7 预备：后端 /health 携带 text_mode 开关，缺省保留文本模式
@@ -1572,7 +1565,7 @@ async function loadTextModeSwitch() {
 }
 
 onMounted(() => {
-  window.addEventListener("keydown", handleReviewShortcut)
+  installReviewShortcuts()
   void loadTextModeSwitch()
 })
 </script>
