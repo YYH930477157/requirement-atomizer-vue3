@@ -1,8 +1,9 @@
 """自包含文档批注 HTML 导出回归。"""
 from __future__ import annotations
-
 import html
+import hashlib
 import json
+import os
 import re
 import tempfile
 import unittest
@@ -2581,3 +2582,574 @@ class PdfAnnotationPayloadTests(unittest.TestCase):
                 self.assertFalse(payload["available"])
                 self.assertIn("影印页缓存", payload["reason"])
                 self.assertNotIn("原版影印模式", payload["reason"])
+
+
+def _extract_numbered(user: str) -> list[dict]:
+    """从批次 prompt 抽出模型可见的原文条目 JSON（id/text），供 mock 按本批内容回填。"""
+    match = re.search(r"原文条目 JSON:\s*(\[.*\])", user, re.S)
+    return json.loads(match.group(1)) if match else []
+
+
+class TranslationBatchOptimizationTests(unittest.TestCase):
+    """翻译优化批处理（RATOMIZER_TRANSLATE_BATCH>0）：双上限贪心装包 + 拆半降级 + 逐条护栏。
+
+    默认 OFF 时既有 batch=8 行为与 v2 缓存指纹逐字节不变（见 MarkerTranslationTests）；
+    本类只测 opt-in 新行为与 fail-closed 边界。任何异常条目（缺/重/越界 id）不得覆盖或
+    污染合法条目；漂移译文绝不放行；缓存仍是单条粒度，重跑只补未命中/未解决条。
+    """
+
+    def _on_env(self, count: str = "10", max_chars: str = "8000"):
+        return patch.dict(os.environ, {
+            "RATOMIZER_TRANSLATE_BATCH": count,
+            "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS": max_chars,
+        })
+
+    def _off_env(self):
+        return patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "0"})
+
+    # --- Req 6：提示词版本真实进策略/producer/缓存指纹（不只是登记摆设）---
+    def test_prompt_version_constant_registered_and_derived_into_strategy(self) -> None:
+        from prompt_registry import is_registered
+        self.assertEqual(dae.TRANSLATION_BATCH_PROMPT_VERSION, "translation-prompt-v3")
+        self.assertTrue(is_registered(dae.TRANSLATION_BATCH_PROMPT_VERSION))
+        # 策略版本由提示词版本派生 → 改提示词版本即改缓存/阶段指纹
+        self.assertTrue(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED.startswith(
+            dae.TRANSLATION_BATCH_PROMPT_VERSION))
+
+    def test_strategy_version_switches_with_mode(self) -> None:
+        with self._off_env():
+            self.assertEqual(dae._active_translation_strategy_version(),
+                             dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION)
+        with self._on_env():
+            active = dae._active_translation_strategy_version()
+            # 策略版本含提示词版本前缀 + 有效配置指纹（条数/字符），配置变化→指纹变
+            self.assertTrue(active.startswith(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED))
+            self.assertIn(dae.TRANSLATION_BATCH_PROMPT_VERSION, active)
+            self.assertIn("-b10-c8000", active)
+
+    def test_prompt_version_enters_producer_stamp_only_when_on(self) -> None:
+        import desktop_tasks
+        with self._on_env():
+            stamp_on = desktop_tasks.stage_producer("export-annotation-html")
+            self.assertIn(dae.TRANSLATION_BATCH_PROMPT_VERSION, stamp_on)
+            self.assertIn(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED, stamp_on)
+        with self._off_env():
+            stamp_off = desktop_tasks.stage_producer("export-annotation-html")
+            self.assertIn(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION, stamp_off)
+            self.assertNotIn(dae.TRANSLATION_BATCH_PROMPT_VERSION, stamp_off)
+
+    # --- Req 7：默认 OFF 路径行为与 v2 缓存复用不变 ---
+    def test_off_default_uses_v2_strategy_and_legacy_batch8_slice(self) -> None:
+        items = [(f"k{i}", "context", f"text number {i}") for i in range(20)]
+        with self._off_env():
+            self.assertEqual(dae._translate_batch_count(), 0)
+            batches = dae._pack_translation_batches(items, count_limit=dae._translate_batch_count(),
+                                                    max_chars=dae._translate_batch_max_chars())
+            self.assertEqual([len(b) for b in batches], [8, 8, 4])   # 旧 _TRANSLATION_BATCH=8 切片
+            self.assertEqual(dae._active_translation_strategy_version(),
+                             dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION)
+
+    def test_off_reuses_v2_accepted_cache_without_retranslate(self) -> None:
+        calls = 0
+
+        def chat(_s: str, _u: str) -> dict:
+            nonlocal calls
+            calls += 1
+            return {"items": [{"id": 1, "translation": "电表应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, "The manufacturer shall place its trademark on the device.")
+            key = dae._translation_key("The manufacturer shall place its trademark on the device.")
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 2,
+                "items": {key: {"owner": "hardware",
+                                "translation": "制造商应在设备上标注其商标。",
+                                "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                                "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
+            }, ensure_ascii=False), encoding="utf-8")
+            with self._off_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+        self.assertEqual(calls, 0)   # v2 已接受译文零调用复用
+        self.assertEqual(summary["cached"], 1)
+        self.assertEqual(summary["translated"], 0)
+
+    # --- Req 2：装包边界（直接单测 _pack_translation_batches）---
+    def test_pack_11th_item_closes_batch_on_count_limit(self) -> None:
+        items = [(f"k{i}", "context", f"text item {i}") for i in range(11)]
+        batches = dae._pack_translation_batches(items, count_limit=10, max_chars=8000)
+        self.assertEqual([len(b) for b in batches], [10, 1])
+
+    def test_pack_char_limit_closes_batch(self) -> None:
+        items = [(f"k{i}", "context", "x" * 30) for i in range(4)]   # 每条 30 字符
+        batches = dae._pack_translation_batches(items, count_limit=100, max_chars=100)
+        self.assertEqual([len(b) for b in batches], [3, 1])          # 90≤100，第 4 条 120>100 封包
+
+    def test_pack_single_over_limit_goes_solo_untruncated(self) -> None:
+        big = "y" * 200
+        items = [("short1", "context", "small"), ("big", "context", big), ("short2", "context", "tiny")]
+        batches = dae._pack_translation_batches(items, count_limit=10, max_chars=100)
+        self.assertEqual([len(b) for b in batches], [1, 1, 1])       # 超限条独立成包，宁超勿截
+        self.assertEqual(batches[1][0][0], "big")
+        self.assertEqual(len(dae._cleaned_marker_text(batches[1][0][2])), 200)   # 未截断
+
+    # --- Req 1：fail-closed 异常 id（缺/重/越界/乱序）---
+    def test_out_of_bounds_id_ignored_without_polluting_legit_items(self) -> None:
+        # 越界 id 99 与负数/0：忽略，不落表、不崩溃，合法条目照常回填
+        result, parseable = dae._translate_marker_batch(
+            lambda _s, _u: {"items": [
+                {"id": 1, "translation": "甲"},
+                {"id": 99, "translation": "污染"},
+                {"id": 0, "translation": "零"},
+                {"id": -1, "translation": "负"},
+                {"id": 2, "translation": "乙"},
+            ]},
+            [("k1", "context", "alpha"), ("k2", "context", "beta")], optimized=True)
+        self.assertTrue(parseable)
+        self.assertEqual(result, {1: "甲", 2: "乙"})   # 越界全部丢弃，合法位不染
+
+    def test_duplicate_id_dropped_retries_singly_without_overwriting(self) -> None:
+        # id 1 出现两次（第二次含漂移 9999）：歧义 → 该 id 全部丢弃 → 单条重试取回干净译文
+        def chat(_s: str, user: str) -> dict:
+            if "原文条目 JSON" in user:
+                return {"items": [{"id": 1, "translation": "合法译文"},
+                                  {"id": 1, "translation": "污染 9999"},   # 重复 id
+                                  {"id": 2, "translation": "乙"}]}
+            # 单条整段重试（id 1 被丢弃后触发）
+            self.assertIn("单条整段重试", user)
+            return {"items": [{"id": 1, "translation": "重试干净译文"}]}
+
+        texts = {dae._translation_key("alpha"): ("context", "alpha"),
+                 dae._translation_key("beta"): ("context", "beta")}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._on_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        # id 1 的两条 batch 回填都被丢（含漂移的那条没覆盖合法位）；id 2 不受影响
+        self.assertEqual(sidecar["items"][dae._translation_key("alpha")]["translation"], "重试干净译文")
+        self.assertEqual(sidecar["items"][dae._translation_key("alpha")]["strategy"], "single")
+        self.assertEqual(sidecar["items"][dae._translation_key("beta")]["translation"], "乙")
+        self.assertEqual(sidecar["items"][dae._translation_key("beta")]["strategy"], "batch")
+        self.assertEqual(summary["translated"], 2)
+        self.assertEqual(summary["single_retries"], 1)
+
+    def test_missing_id_retries_only_that_item(self) -> None:
+        # 批次漏回 id 2：只重试 id 2，id 1 批次接受
+        def chat(_s: str, user: str) -> dict:
+            if "原文条目 JSON" in user:
+                return {"items": [{"id": 1, "translation": "甲"}]}   # 缺 id 2
+            self.assertIn("单条整段重试", user)
+            return {"items": [{"id": 1, "translation": "乙"}]}
+
+        texts = {dae._translation_key("alpha"): ("context", "alpha"),
+                 dae._translation_key("beta"): ("context", "beta")}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._on_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        self.assertEqual(sidecar["items"][dae._translation_key("alpha")]["strategy"], "batch")
+        self.assertEqual(sidecar["items"][dae._translation_key("beta")]["strategy"], "single")
+        self.assertEqual(summary["translated"], 2)
+        self.assertEqual(summary["single_retries"], 1)
+
+    def test_out_of_order_id_maps_by_value(self) -> None:
+        # 乱序回填：按 id 值映射到位，不按数组顺序
+        result, _ = dae._translate_marker_batch(
+            lambda _s, _u: {"items": [
+                {"id": 3, "translation": "丙"},
+                {"id": 1, "translation": "甲"},
+                {"id": 2, "translation": "乙"},
+            ]},
+            [("k1", "context", "alpha"), ("k2", "context", "beta"), ("k3", "context", "gamma")],
+            optimized=True)
+        self.assertEqual(result, {1: "甲", 2: "乙", 3: "丙"})
+
+    # --- Req 4：每条漂移独立拦截，成功同批条目仍落盘 ---
+    def test_drift_in_one_item_does_not_block_others(self) -> None:
+        a = "The meter shall log events."
+        b = "The valve shall open fully."
+
+        def chat(_s: str, user: str) -> dict:
+            if "原文条目 JSON" in user:
+                items = []
+                for e in _extract_numbered(user):
+                    if e["text"].startswith("The meter shall log"):
+                        items.append({"id": e["id"], "translation": "电表应记录 42 事件。"})  # 42 无据→漂移
+                    else:
+                        items.append({"id": e["id"], "translation": "阀门应完全开启。"})
+                return {"items": items}
+            self.assertIn("单条整段重试", user)
+            return {"items": [{"id": 1, "translation": "电表应记录事件。"}]}   # 干净重试
+
+        texts = {dae._translation_key(a): ("context", a), dae._translation_key(b): ("context", b)}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._on_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        # A 漂移被拦→单条重试接受；B 批次直接接受并落盘（不被 A 拖累）
+        self.assertEqual(sidecar["items"][dae._translation_key(a)]["strategy"], "single")
+        self.assertEqual(sidecar["items"][dae._translation_key(a)]["translation"], "电表应记录事件。")
+        self.assertEqual(sidecar["items"][dae._translation_key(b)]["strategy"], "batch")
+        self.assertEqual(sidecar["items"][dae._translation_key(b)]["translation"], "阀门应完全开启。")
+        self.assertEqual(summary["translated"], 2)
+        self.assertEqual(summary["rejected"], 0)
+
+    def test_drift_translation_never_released(self) -> None:
+        # 单条重试仍漂移、句段也救不回 → 该条不放行漂移译文（rejected/unresolved，translation 空）
+        a = "The meter shall log events."
+
+        def chat(_s: str, user: str) -> dict:
+            # 所有回合一律塞入无据 9999
+            return {"items": [{"id": 1, "translation": "电表应记录 9999 事件。"}]}
+
+        texts = {dae._translation_key(a): ("context", a)}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._on_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        entry = sidecar["items"][dae._translation_key(a)]
+        self.assertNotEqual(entry["translation"], "电表应记录 9999 事件。")   # 漂移译文绝不出现在产物
+        self.assertEqual(entry["translation"], "")
+        self.assertIn(entry["status"], {"rejected", "unresolved"})
+        self.assertEqual(summary["translated"], 0)
+
+    # --- Req 3：整批非法→拆半（≤2 层）→逐条；部分缺条只补该条 ---
+    def test_whole_batch_malformed_splits_halves_then_succeeds(self) -> None:
+        texts = {dae._translation_key(t): ("context", t) for t in
+                 ["Alpha alpha.", "Bravo bravo.", "Charlie charlie.", "Delta delta."]}
+
+        def chat(_s: str, user: str) -> dict:
+            numbered = _extract_numbered(user)
+            if len(numbered) >= 4:
+                return {"items": "truncated"}   # 整批结构非法（items 非列表）→ 拆半
+            return {"items": [{"id": e["id"], "translation": f"<{e['text'][:5]}>"} for e in numbered]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._on_env(count="10"):
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        # 整批(1) + 左右半批(2) = 3 次调用，failed=1（整批），全部经拆半救回、逐条不触发
+        self.assertEqual(summary["batch_calls"], 3)
+        self.assertEqual(summary["failed_calls"], 1)
+        self.assertEqual(summary["single_retries"], 0)
+        self.assertEqual(summary["translated"], 4)
+        # id 偏移正确：右半 local id → 全局位（Charlie/Delta 落对）
+        self.assertEqual(sidecar["items"][dae._translation_key("Charlie charlie.")]["translation"], "<Charl>")
+        self.assertEqual(sidecar["items"][dae._translation_key("Delta delta.")]["translation"], "<Delta>")
+
+    def test_split_exhausts_then_per_item_retry(self) -> None:
+        # 整批与所有拆半都非法 → 拆到单条后回退逐条级联
+        texts = {dae._translation_key(t): ("context", t) for t in ["Alpha alpha.", "Bravo bravo."]}
+
+        def chat(_s: str, user: str) -> dict:
+            if "原文条目 JSON" in user:        # 任何批次（整批/半批/单条批）一律非法
+                return {"items": "broken"}
+            self.assertIn("单条整段重试", user)  # 逐条级联
+            return {"items": [{"id": 1, "translation": "干净译文"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._on_env(count="10"):
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+        # 整批(1) + 两个单条半(2) = 3 次批次调用全 failed；2 条各走一次单条重试
+        self.assertEqual(summary["batch_calls"], 3)
+        self.assertEqual(summary["failed_calls"], 3)
+        self.assertEqual(summary["single_retries"], 2)
+        self.assertEqual(summary["translated"], 2)
+
+    def test_partial_missing_only_refills_that_item(self) -> None:
+        # items 列表存在（结构合法）但缺 id 2：只补 id 2，不算整批非法、不拆半
+        texts = {dae._translation_key(t): ("context", t) for t in ["Alpha.", "Bravo.", "Charlie."]}
+
+        def chat(_s: str, user: str) -> dict:
+            if "原文条目 JSON" in user:
+                return {"items": [{"id": 1, "translation": "甲"}, {"id": 3, "translation": "丙"}]}  # 缺 2
+            self.assertIn("单条整段重试", user)
+            return {"items": [{"id": 1, "translation": "乙"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._on_env(count="10"):
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        self.assertEqual(summary["batch_calls"], 1)          # 不拆半
+        self.assertEqual(summary["failed_calls"], 0)
+        self.assertEqual(summary["single_retries"], 1)       # 只补 id 2
+        self.assertEqual(sidecar["items"][dae._translation_key("Bravo.")]["strategy"], "single")
+        self.assertEqual(sidecar["items"][dae._translation_key("Alpha.")]["strategy"], "batch")
+
+    # --- Req 5：单条粒度缓存，重跑只补未命中/未解决条 ---
+    def test_rerun_only_translates_uncached_items(self) -> None:
+        calls = 0
+        a, b, c = "The meter shall log events.", "The valve shall open.", "The alarm shall ring."
+
+        def chat(_s: str, _u: str) -> dict:
+            nonlocal calls
+            calls += 1
+            return {"items": [{"id": 1, "translation": "新译文"}]}
+
+        texts = {dae._translation_key(a): ("context", a),
+                 dae._translation_key(b): ("context", b),
+                 dae._translation_key(c): ("context", c)}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            seed = {dae._translation_key(a): {"owner": "context", "translation": "甲缓存",
+                                              "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                                              "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION},
+                    dae._translation_key(b): {"owner": "context", "translation": "乙缓存",
+                                              "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                                              "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}}
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps(
+                {"version": 2, "items": seed}, ensure_ascii=False), encoding="utf-8")
+            with self._on_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        self.assertEqual(calls, 1)                          # 只补未缓存的 c（1 批 1 条）
+        self.assertEqual(summary["cached"], 2)
+        self.assertEqual(summary["translated"], 1)
+        self.assertEqual(sidecar["items"][dae._translation_key(a)]["translation"], "甲缓存")  # 复用
+        self.assertEqual(sidecar["items"][dae._translation_key(c)]["translation"], "新译文")  # 新抽
+
+    def test_rerun_retries_unresolved_entry(self) -> None:
+        calls = 0
+        a, b = "The meter shall log events.", "The valve shall open."
+
+        def chat(_s: str, _u: str) -> dict:
+            nonlocal calls
+            calls += 1
+            return {"items": [{"id": 1, "translation": "救回译文"}]}
+
+        texts = {dae._translation_key(a): ("context", a), dae._translation_key(b): ("context", b)}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            seed = {dae._translation_key(a): {"owner": "context", "translation": "甲缓存",
+                                              "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                                              "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION},
+                    # b 为 unresolved（空译文、未拒绝）→ 不复用、需重抽
+                    dae._translation_key(b): {"owner": "context", "translation": "", "rejected": False,
+                                              "status": "unresolved",
+                                              "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED,
+                                              "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}}
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps(
+                {"version": 2, "items": seed}, ensure_ascii=False), encoding="utf-8")
+            with self._on_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+        self.assertEqual(calls, 1)                          # 只重抽未解决的 b
+        self.assertEqual(summary["cached"], 1)
+        self.assertEqual(summary["translated"], 1)
+
+    # --- Req 6 落地：ON 运行写出的缓存条目策略版本含提示词版本 ---
+    def test_on_run_entry_strategy_version_carries_prompt_version(self) -> None:
+        quote = "The manufacturer shall place its trademark on the device."
+
+        def chat(_s: str, _u: str) -> dict:
+            return {"items": [{"id": 1, "translation": "制造商应在设备上标注其商标。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, quote)
+            with self._on_env():
+                dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+            entry = sidecar["items"][dae._translation_key(quote)]
+        self.assertIn(dae.TRANSLATION_BATCH_PROMPT_VERSION, entry["strategy_version"])
+        self.assertTrue(entry["strategy_version"].startswith(
+            dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED))
+        self.assertIn("-b10-c8000", entry["strategy_version"])   # 有效配置进逐条缓存指纹
+
+    # --- Issue 1：count 硬上限 ≤10 + 非整数 fail-safe ---
+    def test_count_clamped_to_10(self) -> None:
+        for raw, expected in [("100", 10), ("15", 10), ("11", 10), ("10", 10), ("5", 5), ("1", 1)]:
+            with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": raw}):
+                self.assertEqual(dae._translate_batch_count(), expected, f"raw={raw!r}")
+
+    def test_non_integer_count_fails_safe_off(self) -> None:
+        for raw in ["3.5", "0.5", "abc", "", "0", "-3"]:   # 非整数/非数字/≤0 → fail-safe OFF
+            with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": raw}):
+                self.assertEqual(dae._translate_batch_count(), 0, f"raw={raw!r}")
+        # clamp 后 100 仍启用优化模式（=10），不会因超限关掉
+        with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "100"}):
+            self.assertGreater(dae._translate_batch_count(), 0)
+
+    def test_clamped_count_drives_packing(self) -> None:
+        # RATOMIZER_TRANSLATE_BATCH=100 → clamp 10 → 实际每包 ≤10
+        items = [(f"k{i}", "context", f"item {i}") for i in range(25)]
+        with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "100"}):
+            count = dae._translate_batch_count()
+            batches = dae._pack_translation_batches(items, count_limit=count, max_chars=8000)
+        self.assertEqual(count, 10)
+        self.assertTrue(all(len(b) <= 10 for b in batches))
+        self.assertEqual([len(b) for b in batches], [10, 10, 5])
+
+    # --- Issue 2：有效配置进阶段指纹 + 拒绝缓存随配置失效 ---
+    def test_config_values_enter_strategy_and_producer_stamp(self) -> None:
+        import desktop_tasks
+        with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "10",
+                                     "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS": "8000"}):
+            strat_a = dae._active_translation_strategy_version()
+            stamp_a = desktop_tasks.stage_producer("export-annotation-html")
+        with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "5",
+                                     "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS": "4000"}):
+            strat_b = dae._active_translation_strategy_version()
+            stamp_b = desktop_tasks.stage_producer("export-annotation-html")
+        # 10/8000 与 5/4000 不是同一行为配置：策略版本与阶段戳都不同
+        self.assertNotEqual(strat_a, strat_b)
+        self.assertIn("-b10-c8000", strat_a)
+        self.assertIn("-b5-c4000", strat_b)
+        self.assertNotEqual(stamp_a, stamp_b)
+
+    def test_rejected_cache_invalidates_on_config_change(self) -> None:
+        # b10-c8000 下被拒的条目，切到 b5-c4000 后 strategy_version 不匹配 → 不复用拒绝 → 重试
+        quote = "The valve shall open fully."
+
+        def chat(_s: str, _u: str) -> dict:
+            return {"items": [{"id": 1, "translation": "阀门应完全开启。"}]}
+
+        key = dae._translation_key(quote)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, quote)
+            with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "10",
+                                         "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS": "8000"}):
+                strat_old = dae._active_translation_strategy_version()
+            # 写一条绑定旧配置的拒绝项
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 2,
+                "items": {key: {"owner": "context", "translation": "", "rejected": True,
+                                "reason": "翻译含无据编码/数字",
+                                "strategy_version": strat_old,
+                                "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
+            }, ensure_ascii=False), encoding="utf-8")
+            # 切配置后重跑：旧拒绝不共键 → 重抽成功
+            with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "5",
+                                         "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS": "4000"}):
+                summary = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        self.assertEqual(summary["cached"], 0)          # 旧拒绝在新配置下不复用
+        self.assertEqual(summary["translated"], 1)
+        self.assertFalse(sidecar["items"][key]["rejected"])
+
+    # --- Issue 3：严格双向护栏——原文 token 缺失逐条拦截 ---
+    def test_strict_guard_catches_missing_that_v2_misses(self) -> None:
+        src = "The meter shall support OBIS 0-0:96.1.0.255 at 230 V."
+        lossy = "电表应支持该对象。"   # 丢失 OBIS/230/V，但没有新增 → v2 漏判
+        self.assertEqual(dae._fabricated_translation_tokens(src, lossy), [])   # v2 不拦
+        drift, _fab = dae._translation_drift(src, lossy, strict=True)
+        self.assertTrue(drift)                            # v3 严格拦下
+        self.assertTrue(any("0-0:96.1.0.255" in t for t in drift))
+        self.assertTrue(any("230" in t for t in drift))
+        self.assertTrue(any(t.endswith("V") for t in drift))
+
+    def test_missing_obis_int_unit_intercepted_same_batch_other_succeeds(self) -> None:
+        a = "The meter shall support OBIS 0-0:96.1.0.255 at 230 V."
+        b = "The valve shall open fully."
+
+        def chat(_s: str, user: str) -> dict:
+            if "原文条目 JSON" in user:
+                items = []
+                for e in _extract_numbered(user):
+                    if e["text"].startswith("The meter shall support"):
+                        # 丢失 OBIS/230/V → v3 严格漂移
+                        items.append({"id": e["id"], "translation": "电表应支持该对象。"})
+                    else:
+                        items.append({"id": e["id"], "translation": "阀门应完全开启。"})
+                return {"items": items}
+            # A 的单条重试：干净保留全部受保护 token
+            self.assertIn("单条整段重试", user)
+            return {"items": [{"id": 1, "translation": "电表应支持 OBIS 0-0:96.1.0.255，230 V。"}]}
+
+        texts = {dae._translation_key(a): ("context", a), dae._translation_key(b): ("context", b)}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._on_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        # A 漂移被逐条拦→单条重试取回干净译文；B 同批不受影响、批次直接接受
+        entry_a = sidecar["items"][dae._translation_key(a)]
+        entry_b = sidecar["items"][dae._translation_key(b)]
+        self.assertEqual(entry_a["strategy"], "single")
+        self.assertIn("0-0:96.1.0.255", entry_a["translation"])
+        self.assertIn("230 V", entry_a["translation"])
+        self.assertEqual(entry_b["strategy"], "batch")
+        self.assertEqual(entry_b["translation"], "阀门应完全开启。")
+        self.assertEqual(summary["translated"], 2)
+        self.assertEqual(summary["single_retries"], 1)
+
+    def test_missing_token_translation_never_released(self) -> None:
+        # 单条重试仍丢失 token → 不放行缺失译文（rejected，translation 空）
+        a = "The meter shall support OBIS 0-0:96.1.0.255 at 230 V."
+
+        def chat(_s: str, _u: str) -> dict:
+            return {"items": [{"id": 1, "translation": "电表应支持该对象。"}]}   # 始终丢失
+
+        texts = {dae._translation_key(a): ("context", a)}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._on_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        entry = sidecar["items"][dae._translation_key(a)]
+        self.assertEqual(entry["translation"], "")        # 缺失译文绝不放行
+        drift_tokens = [token for rejection in entry["rejections"]
+                        for token in rejection.get("drift_tokens", [])]
+        self.assertIn("缺失:0-0:96.1.0.255", drift_tokens)  # 审计保留被拦截证据
+        self.assertIn("受保护编码/数值/单位漂移", entry["reason"])
+        self.assertEqual(summary["translated"], 0)
+
+    def test_v2_accepted_missing_token_not_reused_under_v3(self) -> None:
+        # v2 接受的旧译文丢失 token（v2 新增护栏漏判）→ v3 严格复验不过 → 不直接复用、重新翻译
+        a = "The meter shall support OBIS 0-0:96.1.0.255 at 230 V."
+        lossy = "电表应支持该对象。"
+        self.assertEqual(dae._fabricated_translation_tokens(a, lossy), [])   # 确属 v2 漏判
+        key = dae._translation_key(a)
+
+        def chat(_s: str, _u: str) -> dict:
+            return {"items": [{"id": 1, "translation": "电表应支持 OBIS 0-0:96.1.0.255，230 V。"}]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            _seed_marker_block(out, a)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 2,
+                "items": {key: {"owner": "context", "translation": lossy,
+                                "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                                "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}},
+            }, ensure_ascii=False), encoding="utf-8")
+            with self._on_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible", chat=chat)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        entry = sidecar["items"][key]
+        self.assertEqual(summary["translated"], 1)        # 重新翻译（未被零调用复用）
+        self.assertIn("0-0:96.1.0.255", entry["translation"])   # 旧缺失译文被替换
+        self.assertNotEqual(entry["translation"], lossy)
+
+    def test_invalidation_cas_does_not_overwrite_concurrent_safe_translation(self) -> None:
+        old = "旧的不完整译文"
+        incoming = {
+            "translation": "",
+            "rejected": False,
+            "status": "unresolved",
+            "invalidated_translation_sha256": hashlib.sha256(old.encode("utf-8")).hexdigest(),
+        }
+        concurrent = {"translation": "并发写入的安全译文", "rejected": False,
+                      "status": "accepted"}
+        self.assertEqual(
+            dae._merge_translation_update(concurrent, incoming)["translation"],
+            "并发写入的安全译文",
+        )

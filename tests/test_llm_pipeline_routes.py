@@ -13,15 +13,21 @@ from unittest.mock import patch
 
 from llm_client import LLMClientConfig, LLMConnectionError
 from llm_pipeline import (
+    DEFAULT_PIPELINE_PATH,
+    active_review_prompt_version,
+    batch_review_enabled,
     effective_review_scope,
     llm_cache_key,
+    llm_cache_key_batch,
     llm_config_from_route,
     load_review_pipeline,
     read_jsonl,
     read_llm_review_cache,
+    review_batch_count,
     run_review_pipeline,
     write_jsonl,
 )
+from llm_pipeline import REVIEW_BATCH_PROMPT_VERSION as REVIEW_BATCH_PROMPT_VERSION_CONSTANT
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,6 +211,60 @@ def requirement(
         "kb_matches": [{"name": "DLMS", "definition": "meter protocol"}],
         "generated_by": "rule_based_atomizer_v1",
     }
+
+
+def _request_user_content(body: dict[str, Any]) -> str:
+    return str(body["messages"][1]["content"])
+
+
+def _is_batch_request(body: dict[str, Any]) -> bool:
+    try:
+        parsed = json.loads(_request_user_content(body))
+    except Exception:
+        return False
+    return isinstance(parsed, dict) and isinstance(parsed.get("requirements"), list)
+
+
+def _batch_requirement_ids(body: dict[str, Any]) -> list[str]:
+    parsed = json.loads(_request_user_content(body))
+    return [str(item.get("requirement_id") or "") for item in parsed.get("requirements", [])]
+
+
+def batch_reviews_body(reviews: list[dict[str, Any]]) -> dict[str, Any]:
+    """批量审查合法响应：{choices:[{message:{content: json({reviews:[...]})}}]}。"""
+    return {"body": {"choices": [{"message": {"content": json.dumps({"reviews": reviews})}}]}}
+
+
+def batch_illegal_body() -> dict[str, Any]:
+    """批量审查结构非法响应（无 reviews 列表）→ 触发拆半。"""
+    return {"body": {"choices": [{"message": {"content": json.dumps({"unexpected": "shape"})}}]}}
+
+
+def batch_review_item(
+    requirement_id: str,
+    *,
+    decision: str = "accept",
+    revised_requirement: str | None = None,
+    related_requirement_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "requirement_id": requirement_id,
+        "decision": decision,
+        "risk": "low_risk",
+        "confidence": 0.9,
+        "review_notes": ["batch mock"],
+        "expert_questions": [],
+    }
+    if revised_requirement is not None:
+        item["revised_requirement"] = revised_requirement
+    if related_requirement_ids is not None:
+        item["related_requirement_ids"] = related_requirement_ids
+    return item
+
+
+def _reviews_by_id(out_dir: Path) -> dict[str, dict[str, Any]]:
+    reviews = read_jsonl(out_dir / "llm_review_results.jsonl")
+    return {str(row.get("requirement_id") or row.get("stable_req_id") or ""): row for row in reviews}
 
 
 class LLMPipelineRouteTests(unittest.TestCase):
@@ -663,3 +723,241 @@ class ReviewPipelineConcurrencyWiringTests(unittest.TestCase):
         self.assertIn("apply_llm_environment_overrides", src)
         self.assertLess(src.index("apply_llm_environment_overrides"),
                         src.index('route_payload.get("concurrency"'))
+
+
+class ReviewBatchOptimizationTests(unittest.TestCase):
+    def _write_rows(self, out_dir: Path, count: int) -> list[dict[str, Any]]:
+        rows = [requirement(f"SREQ-BATCH-{index:04d}", confidence=0.70)
+                for index in range(1, count + 1)]
+        write_jsonl(out_dir / "atomic_requirements.jsonl", rows)
+        return rows
+
+    def test_batch_count_contract_and_default_tool_loop_guard(self) -> None:
+        for raw, expected in [("0", 0), ("1", 1), ("15", 15), ("21", 20), ("3.5", 0), ("x", 0)]:
+            with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": raw}):
+                self.assertEqual(review_batch_count(), expected)
+        with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+            default_pipeline = load_review_pipeline(DEFAULT_PIPELINE_PATH)
+            self.assertFalse(batch_review_enabled(default_pipeline))
+            self.assertEqual(active_review_prompt_version(), "m2-review-v3")
+
+    def test_fifteen_plus_one_requirements_use_two_batch_calls(self) -> None:
+        batch_sizes: list[int] = []
+
+        def handler(body: dict[str, Any], _count: int) -> dict[str, Any]:
+            ids = _batch_requirement_ids(body)
+            batch_sizes.append(len(ids))
+            return batch_reviews_body([batch_review_item(rid) for rid in reversed(ids)])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            self._write_rows(out, 16)
+            with ScriptedOpenAIService(handler) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+                    summary = run_review_pipeline(
+                        out, pipeline_path=pipeline_path, domain_pack_path=None,
+                        route="openai_compatible", scope="all",
+                    )
+        self.assertEqual(batch_sizes, [15, 1])
+        self.assertEqual(summary["llm_reviewed"], 16)
+        self.assertEqual(summary["rule_stub"], 0)
+
+    def test_missing_duplicate_and_out_of_batch_ids_fail_closed_per_item(self) -> None:
+        def handler(body: dict[str, Any], _count: int) -> dict[str, Any]:
+            ids = _batch_requirement_ids(body)
+            return batch_reviews_body([
+                batch_review_item(ids[2]),
+                batch_review_item(ids[0]),
+                batch_review_item(ids[0], decision="revise"),
+                batch_review_item("SREQ-GHOST"),
+            ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            rows = self._write_rows(out, 3)
+            with ScriptedOpenAIService(handler) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+                    summary = run_review_pipeline(
+                        out, pipeline_path=pipeline_path, domain_pack_path=None,
+                        route="openai_compatible", scope="all",
+                    )
+            reviews = _reviews_by_id(out)
+        self.assertEqual(summary["llm_reviewed"], 1)
+        self.assertEqual(summary["rule_stub"], 2)
+        self.assertEqual(summary["llm_failed"], 2)
+        self.assertEqual(reviews[rows[2]["stable_req_id"]]["generated_by"], "llm:mock-review-model")
+        for row in rows[:2]:
+            review = reviews[row["stable_req_id"]]
+            self.assertEqual(review["decision"], "needs_expert")
+            self.assertEqual(review["generated_by"], "rule_stub")
+            self.assertEqual(review["model_route"]["provider"], "stub")
+
+    def test_drift_and_ghost_merge_do_not_contaminate_valid_item(self) -> None:
+        def handler(body: dict[str, Any], _count: int) -> dict[str, Any]:
+            ids = _batch_requirement_ids(body)
+            return batch_reviews_body([
+                batch_review_item(ids[0], decision="revise",
+                                  revised_requirement=f"{ids[0]} shall be reviewed with 999."),
+                batch_review_item(ids[1], decision="merge",
+                                  related_requirement_ids=["SREQ-OUTSIDE"]),
+                batch_review_item(ids[2]),
+            ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            rows = self._write_rows(out, 3)
+            with ScriptedOpenAIService(handler) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+                    summary = run_review_pipeline(
+                        out, pipeline_path=pipeline_path, domain_pack_path=None,
+                        route="openai_compatible", scope="all",
+                    )
+            reviews = _reviews_by_id(out)
+        self.assertEqual(summary["llm_reviewed"], 1)
+        self.assertEqual(summary["llm_failed"], 2)
+        self.assertEqual(reviews[rows[2]["stable_req_id"]]["decision"], "accept")
+        self.assertEqual(reviews[rows[0]["stable_req_id"]]["decision"], "needs_expert")
+        self.assertEqual(reviews[rows[1]["stable_req_id"]]["decision"], "needs_expert")
+
+    def test_malformed_batch_splits_and_preserves_actual_subbatch_boundary(self) -> None:
+        all_ids: list[str] = []
+
+        def handler(body: dict[str, Any], _count: int) -> dict[str, Any]:
+            ids = _batch_requirement_ids(body)
+            if not all_ids:
+                all_ids.extend(ids)
+            if len(ids) == 4:
+                return batch_illegal_body()
+            reviews = [batch_review_item(rid) for rid in ids]
+            if ids == all_ids[:2]:
+                reviews[0] = batch_review_item(
+                    ids[0], decision="merge", related_requirement_ids=[all_ids[2]])
+            return batch_reviews_body(reviews)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            rows = self._write_rows(out, 4)
+            with ScriptedOpenAIService(handler) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+                    summary = run_review_pipeline(
+                        out, pipeline_path=pipeline_path, domain_pack_path=None,
+                        route="openai_compatible", scope="all",
+                    )
+            reviews = _reviews_by_id(out)
+        self.assertEqual(len(service.requests), 3)
+        self.assertEqual(summary["llm_reviewed"], 3)
+        self.assertEqual(summary["llm_failed"], 1)
+        self.assertEqual(reviews[rows[0]["stable_req_id"]]["decision"], "needs_expert")
+
+    def test_split_exhaustion_falls_back_to_existing_single_review(self) -> None:
+        def handler(body: dict[str, Any], _count: int) -> dict[str, Any]:
+            if _is_batch_request(body):
+                return batch_illegal_body()
+            return {"body": openai_review()}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            self._write_rows(out, 2)
+            with ScriptedOpenAIService(handler) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+                    summary = run_review_pipeline(
+                        out, pipeline_path=pipeline_path, domain_pack_path=None,
+                        route="openai_compatible", scope="all",
+                    )
+        self.assertEqual(len(service.requests), 5)
+        self.assertEqual(summary["llm_reviewed"], 2)
+        self.assertEqual(summary["llm_failed"], 0)
+
+    def test_exact_batch_cache_skips_second_run_and_group_change_misses(self) -> None:
+        def handler(body: dict[str, Any], _count: int) -> dict[str, Any]:
+            ids = _batch_requirement_ids(body)
+            return batch_reviews_body([batch_review_item(rid) for rid in ids])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            rows = self._write_rows(out, 3)
+            with ScriptedOpenAIService(handler) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+                    run_review_pipeline(out, pipeline_path=pipeline_path, domain_pack_path=None,
+                                        route="openai_compatible", scope="all")
+                    run_review_pipeline(out, pipeline_path=pipeline_path, domain_pack_path=None,
+                                        route="openai_compatible", scope="all")
+                    rows.append(requirement("SREQ-BATCH-0004", confidence=0.70))
+                    write_jsonl(out / "atomic_requirements.jsonl", rows)
+                    run_review_pipeline(out, pipeline_path=pipeline_path, domain_pack_path=None,
+                                        route="openai_compatible", scope="all")
+            cache_rows = read_jsonl(out / "llm_review_cache.jsonl")
+        self.assertEqual(len(service.requests), 2)
+        self.assertEqual(len(cache_rows), 7)
+
+    def test_policy_floor_and_llm_limit_remain_per_requirement(self) -> None:
+        def handler(body: dict[str, Any], _count: int) -> dict[str, Any]:
+            ids = _batch_requirement_ids(body)
+            return batch_reviews_body([batch_review_item(rid) for rid in ids])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            rows = self._write_rows(out, 5)
+            with ScriptedOpenAIService(handler) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                text = pipeline_path.read_text(encoding="utf-8").replace(
+                    "risk_policy:\n", "risk_policy:\n  mandatory_review_types:\n    - event_definition\n", 1)
+                pipeline_path.write_text(text, encoding="utf-8")
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+                    summary = run_review_pipeline(
+                        out, pipeline_path=pipeline_path, domain_pack_path=None,
+                        route="openai_compatible", scope="all", llm_review_limit=3,
+                    )
+            reviews = _reviews_by_id(out)
+        self.assertEqual(len(service.requests), 1)
+        self.assertEqual(summary["llm_reviewed"], 3)
+        self.assertEqual(summary["rule_stub"], 2)
+        for row in rows[:3]:
+            review = reviews[row["stable_req_id"]]
+            self.assertEqual(review["decision"], "needs_expert")
+            self.assertEqual(review["generated_by"], "llm:mock-review-model")
+
+    def test_initial_batch_connection_failure_aborts_before_fanout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            self._write_rows(out, 30)
+            with ScriptedOpenAIService(
+                    lambda _body, _count: {"status": 500, "body": {"error": "down"}}) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+                    with self.assertRaisesRegex(LLMConnectionError, "initial review batch failed"):
+                        run_review_pipeline(
+                            out, pipeline_path=pipeline_path, domain_pack_path=None,
+                            route="openai_compatible", scope="all",
+                        )
+        self.assertEqual(len(service.requests), 1)

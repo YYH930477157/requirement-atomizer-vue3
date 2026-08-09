@@ -3,6 +3,14 @@
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
 > 状态快照截至 2026-08-09，里程碑推进后请同步更新本文件。
 
+## 重大更新（2026-08-09）——翻译/复核批处理优化（分支 `codex/batch-processing-optimization`，未提交）
+
+- **翻译批处理**：新增 opt-in `RATOMIZER_TRANSLATE_BATCH`（硬上限 10）与 `RATOMIZER_TRANSLATE_BATCH_MAX_CHARS`（默认 8000）；默认 OFF 保留旧 batch=8 行为与旧缓存指纹。开启后按条数/字符双上限顺序贪心装包，单条超限整条单发；整批 JSON 非法最多拆半两层，再回退既有逐条链。`translation-prompt-v3` 明确逐条独立，严格护栏按每条双向检查受保护编码、数字和单位；缓存仍按内容逐条存储，旧成功译文复用前按新护栏复验，并以译文 SHA 做并发失效 CAS。
+- **复核批处理**：新增 opt-in `RATOMIZER_REVIEW_BATCH`（2..20，推荐 15），仅用于 legacy single-shot；默认 YAML 的 tool-loop 始终逐条执行，避免绕过只读工具证据、`kb_search` 每条上限与 token 预算。批量契约为 `m2-review-v4-batch`；每条仍独立通过 schema、确定性 policy floor、修订文本受保护 token 漂移和 split/merge 批内引用校验。整批非法最多拆半两层后回退既有逐条复核，单条非法则如实生成 `needs_expert`/`rule_stub`。缓存绑定精确批成员集合，拆分成功结果记录实际子批 lineage。
+- **指纹与注册**：批处理 prompt、有效批大小、字符上限、护栏与执行器进入缓存/阶段指纹；`prompt_registry` 注册 `translation-prompt-v3` 与 `m2-review-v4-batch`；默认 OFF 时既有 producer/cache 行为保持不变。
+- **真实 LLM 试跑**（GLM `glm-5.2`，Coding Plan OpenAI 兼容接口，合成技术需求，不含客户文本）：翻译逐条基线 10 calls / 9083 tokens / 91.41s，对比合批 1 call / 1814 tokens / 17.23s，双方均 10/10 通过严格逐条护栏；复核 16 条按 15+1 发 2 calls / 7883 tokens / 59.93s，16/16 完成，无缺失、拆半回退或非法条目，安全类 policy floor 仍生效。此结果只证明真实端点契约与自动护栏可用；SBD 50 条人工质量抽评尚未执行，开关继续默认 OFF。
+- **验证**：翻译/结果包聚焦 191 tests、复核/tool-loop/schema/config 聚焦 157 tests、修改文件 `py_compile`、`git diff --check` 均通过；设置历史样本后后端全量 **3406 tests OK（skipped=7）**。前端未改动。API key 仅作进程级注入，未写入文件、日志或仓库。
+
 ## 重大更新（2026-08-09）——PDF 版式修复三件套（main 工作树，未提交）
 
 - **D1 下标归位**（`RATOMIZER_PDF_SUBSCRIPT_FIX`，默认 1）：按页字号中位数判定主词/下标候选，仅向 x1 紧邻（gap ≤6pt）且位于下标方向的最近主词拼接，更新 x1 并移除候选；G1 纯数字候选+标点结尾主词视为脚注跳过，G2 竖排/全 CJK 页整页跳过（中英混排不跳）；宁漏勿错，每次拼接落 `subscript_reattach` 审计事件（rule_version/before/after/page/position_basis）。

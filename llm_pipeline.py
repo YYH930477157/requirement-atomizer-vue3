@@ -66,6 +66,66 @@ FAST_FAIL_SAMPLE_SIZE = 5
 PROGRESS_INTERVAL = 20
 SOURCE_TYPE_CONFIDENCE_THRESHOLD = 0.85
 
+# ---------------------------------------------------------------------------
+# 复核批处理（m2-review-v4-batch）：仅 single-shot 旧路径 opt-in，默认 OFF。
+# tool-loop 路径（默认 YAML）恒不批处理——不得绕过工具取证 / kb_search 每条上限 / token 预算。
+# ---------------------------------------------------------------------------
+REVIEW_BATCH_PROMPT_VERSION = "m2-review-v4-batch"
+_REVIEW_BATCH_MIN = 2
+_REVIEW_BATCH_MAX = 20
+_REVIEW_BATCH_SPLIT_ROUNDS = 2   # 整批 JSON 非法时拆半重试层数上限（≤2 层后回退逐条）
+REVIEW_BATCH_SYSTEM_PROMPT = """You are a DLMS/COSEM requirements review expert.
+Review each atomic requirement candidate independently. Do not borrow facts, codes, or wording across items.
+The response order may differ from the input; requirement_id is the only mapping key.
+For each item return a review object with:
+- requirement_id: echo verbatim from the input (do not rename/reorder)
+- decision: one of accept, revise, split, merge, reject, needs_expert
+- risk: low_risk, high_risk, or mandatory_review
+- confidence: number from 0 to 1
+- revised_requirement: optional corrected text; preserve every protected code/number from the item and introduce none
+- review_notes: list of short notes
+- expert_questions: list of questions for a human expert
+- related_requirement_ids: required for merge, optional for split; list OTHER requirement_ids in THIS batch only
+Return only JSON: {"reviews":[{...}, ...]} with exactly one object per input item, keyed by the verbatim requirement_id.
+Do not add Markdown fences or explanatory prose."""
+
+
+def review_batch_count() -> int:
+    """RATOMIZER_REVIEW_BATCH：0=OFF（默认逐条）；1=逐条；2..20=批大小（硬 clamp 20）；非整数 fail-safe 0。"""
+    raw = os.environ.get("RATOMIZER_REVIEW_BATCH")
+    if raw is None or str(raw).strip() == "":
+        return 0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0
+    if not value.is_integer():
+        return 0
+    count = int(value)
+    if count < 1:
+        return 0
+    if count == 1:
+        return 1
+    return min(count, _REVIEW_BATCH_MAX)
+
+
+def batch_review_enabled(pipeline: ReviewPipeline) -> bool:
+    """批处理复核仅在 single-shot 旧路径（tool_loop 关闭）且 RATOMIZER_REVIEW_BATCH∈2..20 时启用。
+
+    tool-loop 路径（默认 YAML executor=tool_loop）恒不批处理：批处理会合并多条进一次调用，
+    绕过 chat_with_tools 的有界工具取证、kb_search 每条上限与 token 预算——明令禁止。
+    """
+    if tool_loop_enabled(pipeline):
+        return False
+    count = review_batch_count()
+    return _REVIEW_BATCH_MIN <= count <= _REVIEW_BATCH_MAX
+
+
+def active_review_prompt_version() -> str:
+    """当前实际生效的复核 prompt 版本；tool-loop 即使请求合批也仍为逐条 v3。"""
+    pipeline = load_review_pipeline(DEFAULT_PIPELINE_PATH)
+    return REVIEW_BATCH_PROMPT_VERSION if batch_review_enabled(pipeline) else PROMPT_VERSION
+
 
 SYSTEM_PROMPT = """You are a DLMS/COSEM requirements review expert.
 Review one atomic requirement candidate at a time.
@@ -304,6 +364,10 @@ def review_requirements_with_openai(
         # 索引）变了，旧审查缓存不得命中
         evidence = evidence_fingerprint(out_dir, resolved_kb)
 
+    # 批量复核（m2-review-v4-batch）：仅 single-shot 旧路径 opt-in；tool_loop 路径恒不批处理。
+    # 批模式下逐条缓存查推迟到批阶段（批缓存键需批成员集合），Phase 1 只做分类与限额。
+    batch_mode = batch_review_enabled(pipeline)
+
     reviews: list[dict[str, Any] | None] = [None] * len(requirements)
     pending: list[int] = []
     llm_reviewed = 0
@@ -319,6 +383,9 @@ def review_requirements_with_openai(
         if llm_review_limit > 0 and llm_reviewed + len(pending) >= llm_review_limit:
             reviews[index] = build_stub_review(requirement, pipeline)
             rule_stub += 1
+            continue
+        if batch_mode:
+            pending.append(index)   # 批缓存键需批成员集合，查缓存推迟到批阶段
             continue
         cache_key = llm_cache_key(requirement, client_config.model, pipeline, scope_config, evidence=evidence)
         cached_review = cache.get(cache_key)
@@ -344,6 +411,69 @@ def review_requirements_with_openai(
             )
         if completed_llm and completed_llm % PROGRESS_INTERVAL == 0:
             LOGGER.info("llm review %s/%s", completed_llm, selected_total)
+
+    if batch_mode and pending:
+        # 批量复核：以批为并发单位，逐条缓存查 + 整批调用（拆半降级）+ 逐条护栏。
+        # 首批同步探测，服务不可用时不先把整份文档的批次全部发出去；其后才并发。
+        # 进度按已完成的 requirement 递增；连接失败按受影响条数累计 abort。
+        batch_size = review_batch_count()
+        batches = [pending[start:start + batch_size]
+                   for start in range(0, len(pending), batch_size)]
+
+        def apply_batch_result(result: _BatchTaskResult) -> None:
+            nonlocal completed_llm, llm_reviewed, rule_stub, llm_failed
+            for idx, review, cache_row in result.resolved:
+                reviews[idx] = review
+                if cache_row is not None:
+                    new_cache_rows.append(cache_row)
+                completed_llm += 1
+                record_progress()
+            llm_reviewed += result.llm_reviewed
+            rule_stub += result.rule_stub
+            llm_failed += result.llm_failed
+
+        initial_indices = batches[0]
+        initial_result = _process_review_batch(
+            initial_indices, requirements, pipeline, client_config, scope_config, cache, evidence,
+        )
+        apply_batch_result(initial_result)
+        if initial_result.connection_failed:
+            raise LLMConnectionError(
+                "LLM service unavailable: initial review batch failed: "
+                f"{initial_result.connection_error}"
+            )
+
+        remaining_batches = batches[1:]
+        consecutive_failed_requirements = 0
+        if remaining_batches:
+            executor = ThreadPoolExecutor(max_workers=concurrency)
+            try:
+                futures = {
+                    executor.submit(
+                        _process_review_batch, batch_indices, requirements, pipeline,
+                        client_config, scope_config, cache, evidence,
+                    ): batch_indices
+                    for batch_indices in remaining_batches
+                }
+                for future in as_completed(futures):
+                    batch_indices = futures[future]
+                    result = future.result()  # 程序错误不得伪装成 LLM 不可用
+                    apply_batch_result(result)
+                    if result.connection_failed:
+                        consecutive_failed_requirements += len(batch_indices)
+                    else:
+                        consecutive_failed_requirements = 0
+                    if (result.connection_failed
+                            and consecutive_failed_requirements >= connection_failure_abort):
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise LLMConnectionError(
+                            "LLM service unavailable: "
+                            f"{consecutive_failed_requirements} consecutive requirements failed "
+                            f"in review batches: {result.connection_error}"
+                        )
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+        pending = []   # 批阶段已处理；既有 fast-fail/并发对空 pending 为 no-op
 
     sample = pending[:FAST_FAIL_SAMPLE_SIZE]
     sample_connection_failures = 0
@@ -956,6 +1086,7 @@ def complete_llm_review_payload(
     payload: dict[str, Any],
     *,
     model: str,
+    include_related: bool = False,
 ) -> dict[str, Any]:
     requirement_id = requirement_identity(requirement)
     review = {
@@ -973,6 +1104,8 @@ def complete_llm_review_payload(
         "model_route": {"provider": "openai_compatible", "model": model},
         "generated_by": f"llm:{model}",
     }
+    if include_related and "related_requirement_ids" in payload:
+        review["related_requirement_ids"] = list(payload.get("related_requirement_ids") or [])
     return review
 
 
@@ -1064,16 +1197,18 @@ def llm_cache_row(
     review: dict[str, Any],
     *,
     evidence: str = "",
+    cache_key: tuple[str, ...] | None = None,
+    prompt_version: str = PROMPT_VERSION,
 ) -> dict[str, Any]:
     requirement_id = requirement_identity(requirement)
-    cache_key = llm_cache_key(requirement, model, pipeline, scope_config, evidence=evidence)
+    key = cache_key or llm_cache_key(requirement, model, pipeline, scope_config, evidence=evidence)
     return {
         "stable_req_id": requirement_id,
         "requirement_id": requirement_id,
         "model": model,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": prompt_version,
         "cache_version": LLM_REVIEW_CACHE_VERSION,
-        "input_fingerprint": cache_key[-1],
+        "input_fingerprint": key[-1],
         "review": review,
     }
 
@@ -1101,6 +1236,347 @@ def append_llm_review_cache(path: Path, rows: list[dict[str, Any]]) -> int:
                     raise
                 time.sleep(_CACHE_APPEND_RETRY_DELAY_S)
     return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# 复核批处理（m2-review-v4-batch）实现：单次调用审查多条，逐条仍走 complete/schema/policy
+# + revised_requirement 漂移硬拦 + merge/split 批内引用校验。整批非法拆半≤2 层后回退逐条
+# dispatch_openai_review。tool-loop 路径不进入此分支（batch_review_enabled 已守门）。
+# ---------------------------------------------------------------------------
+def _revised_requirement_drift_tokens(requirement: dict[str, Any], revised_text: str) -> list[str]:
+    """revised_requirement 增删受保护编码/数字 → 漂移 token（按条硬拦口径）。
+
+    与 cosem_behavior_spec.derive_item 同源：extract_codes/extract_ints 直接相减。编码漂移
+    下游 assemble 也会判 needs_expert，这里在审查期更早拦下（批处理护栏，单条路径不变）。
+    """
+    from cosem_behavior_spec import extract_codes, extract_ints
+
+    original = str(requirement.get("requirement") or "")
+    revised = str(revised_text or "")
+    original_tokens = set(extract_codes(original)) | set(extract_ints(original))
+    revised_tokens = set(extract_codes(revised)) | set(extract_ints(revised))
+    return sorted(
+        [*(f"added:{token}" for token in revised_tokens - original_tokens),
+         *(f"missing:{token}" for token in original_tokens - revised_tokens)]
+    )
+
+
+def build_batch_review_prompt(requirements: list[dict[str, Any]]) -> str:
+    """批量审查请求载荷：{prompt_version, requirements:[...]}，每条携带 build_user_prompt 同源字段。"""
+    items = [json.loads(build_user_prompt(requirement)) for requirement in requirements]
+    return json.dumps(
+        {"prompt_version": REVIEW_BATCH_PROMPT_VERSION, "requirements": items},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def llm_cache_key_batch(
+    requirement: dict[str, Any],
+    model: str,
+    pipeline: ReviewPipeline,
+    scope_config: dict[str, Any],
+    *,
+    batch_member_ids: set[str],
+    batch_config: int,
+    evidence: str = "",
+) -> tuple[str, str, str, str]:
+    """批量复核逐条缓存键：独立 prompt 版本 + 有效批配置 + sorted 批成员 ID 集合 +
+    route/executor/guards——批成员集合变化不共键、同一集合换序稳定，与逐条 m2-review-v3
+    缓存永不冲突（默认 OFF 不失效逐条缓存）。"""
+    fingerprint_payload = {
+        "cache_version": LLM_REVIEW_CACHE_VERSION,
+        "prompt_version": REVIEW_BATCH_PROMPT_VERSION,
+        "review_tools_version": REVIEW_TOOLS_VERSION,
+        "review_executor": "batch_single_shot",
+        "evidence_fingerprint": evidence,
+        "model": model,
+        "batch_config": batch_config,
+        "batch_member_ids": sorted(batch_member_ids),
+        "user_content": build_user_prompt(requirement),
+        "risk_policy": pipeline.risk_policy,
+        "review_scope": scope_config,
+    }
+    canonical = json.dumps(
+        fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    input_fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return (requirement_identity(requirement), model, REVIEW_BATCH_PROMPT_VERSION, input_fingerprint)
+
+
+def _call_batch_and_map(
+    requirements: list[dict[str, Any]],
+    pipeline: ReviewPipeline,
+    config: LLMClientConfig,
+) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    """一次批量调用 → ({requirement_id: payload}, ambiguous_ids)。
+
+    整批结构非法（非 dict / 无 reviews 列表）→ 抛 LLMResponseError（交拆半层）。
+    连接错误 → 抛 LLMConnectionError（不拆半，交 fast-fail/abort）。越界 id（不在本批）
+    忽略；批内重复 id → 歧义，全部丢弃进 ambiguous（fail-closed needs_expert）。
+    """
+    user_prompt = build_batch_review_prompt(requirements)
+    payload = chat_json(config, REVIEW_BATCH_SYSTEM_PROMPT, user_prompt)
+    reviews_raw = payload.get("reviews") if isinstance(payload, dict) else None
+    if not isinstance(reviews_raw, list):
+        raise LLMResponseError("batch review response missing 'reviews' list")
+    member_ids = {requirement_identity(req) for req in requirements}
+    mapped: dict[str, dict[str, Any]] = {}
+    ambiguous: set[str] = set()
+    for item in reviews_raw:
+        if not isinstance(item, dict):
+            continue
+        rid = str(item.get("requirement_id") or "")
+        if not rid or rid not in member_ids:   # 越界/批外 id：忽略，不污染合法条
+            continue
+        if rid in mapped or rid in ambiguous:  # 批内重复：歧义 → 全部丢弃
+            ambiguous.add(rid)
+            mapped.pop(rid, None)
+            continue
+        mapped[rid] = item
+    return mapped, ambiguous
+
+
+def _dispatch_batch_with_splits(
+    requirements: list[dict[str, Any]],
+    pipeline: ReviewPipeline,
+    config: LLMClientConfig,
+    split_rounds: int,
+) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, set[str]]]:
+    """整批非法拆半 ≤split_rounds 层；返回 ``(mapped, missing_or_ambiguous_ids, fallback_ids)``。
+
+    - mapped: parseable 响应里命中且非歧义的 {requirement_id: payload}。
+    - missing_or_ambiguous_ids: parseable 响应里缺条/重复 id（→ needs_expert stub）。
+    - fallback_ids: 子批非法且拆半穷尽（→ 逐条 dispatch_openai_review）。
+    - allowed_related: 每条结果实际所在成功调用子批的成员集合；拆半后不得引用另一半。
+    LLMConnectionError 永不拆半，直接抛（交 fast-fail/abort，provenance 真实）。
+    """
+    try:
+        mapped, ambiguous = _call_batch_and_map(requirements, pipeline, config)
+    except LLMConnectionError:
+        raise
+    except LLMError:
+        mapped, ambiguous = None, set()
+    if mapped is not None:
+        missing: set[str] = set(ambiguous)
+        result_map: dict[str, dict[str, Any]] = {}
+        for requirement in requirements:
+            rid = requirement_identity(requirement)
+            if rid in mapped:
+                result_map[rid] = mapped[rid]
+            else:
+                missing.add(rid)   # parseable 但缺条 → fail-closed stub
+        member_ids = {requirement_identity(requirement) for requirement in requirements}
+        allowed_related = {rid: set(member_ids) for rid in result_map}
+        return result_map, missing, set(), allowed_related
+    # 结构非法 → 拆半
+    if split_rounds > 0 and len(requirements) > 1:
+        mid = len(requirements) // 2
+        left_map, left_missing, left_fb, left_allowed = _dispatch_batch_with_splits(
+            requirements[:mid], pipeline, config, split_rounds - 1
+        )
+        right_map, right_missing, right_fb, right_allowed = _dispatch_batch_with_splits(
+            requirements[mid:], pipeline, config, split_rounds - 1
+        )
+        merged = {**left_map, **right_map}
+        return (merged, left_missing | right_missing, left_fb | right_fb,
+                {**left_allowed, **right_allowed})
+    # 穷尽 → 全部回退逐条
+    return {}, set(), {requirement_identity(req) for req in requirements}, {}
+
+
+def _complete_batch_review_item(
+    requirement: dict[str, Any],
+    pipeline: ReviewPipeline,
+    payload: dict[str, Any],
+    model: str,
+    batch_member_ids: set[str],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """单条：complete → schema → revised 漂移硬拦 → 批内引用校验 → policy。
+
+    非法返回 ``(None, reason)`` 交 fail-closed stub（needs_expert rule_stub，不得标 LLM reviewed）。
+    """
+    review = complete_llm_review_payload(
+        requirement, pipeline, payload, model=model, include_related=True,
+    )
+    issues = validate_llm_review_result_payload(review)
+    errors = [issue for issue in issues if issue.severity == "error"]
+    if errors:
+        return None, "schema: " + "; ".join(f"{i.path}: {i.message}" for i in errors[:3])
+    drift = _revised_requirement_drift_tokens(requirement, review.get("revised_requirement"))
+    if drift:
+        return None, "revised_requirement drift: " + ", ".join(drift[:6])
+    related = review.get("related_requirement_ids") or []
+    if related:
+        if review.get("decision") not in {"merge", "split"}:
+            return None, "related_requirement_ids only allowed for merge/split"
+        if len(set(related)) != len(related):
+            return None, "duplicate related_requirement_ids"
+        self_id = requirement_identity(requirement)
+        if self_id in related:
+            return None, "self reference in related_requirement_ids"
+        out_of_batch = [rid for rid in related if rid not in batch_member_ids]
+        if out_of_batch:
+            return None, "cross-batch/ghost reference: " + ", ".join(out_of_batch[:6])
+    elif review.get("decision") == "merge":
+        return None, "merge decision missing related_requirement_ids"
+    return apply_deterministic_review_policy(requirement, pipeline, review), None
+
+
+def _batch_fail_closed_stub(
+    requirement: dict[str, Any],
+    pipeline: ReviewPipeline,
+    reason: str,
+) -> dict[str, Any]:
+    """批内 fail-closed：单条 payload 非法/缺条/漂移/越界引用 → needs_expert rule_stub。
+
+    generated_by 恒为 rule_stub（绝不冒充 LLM reviewed）；宁进人工不猜。
+    """
+    requirement_id = requirement_identity(requirement)
+    risk = classify_review_risk(requirement, pipeline)
+    return {
+        "task_id": f"REVIEW-{requirement_id}",
+        "requirement_id": requirement_id,
+        "req_id": requirement.get("req_id"),
+        "stable_req_id": requirement.get("stable_req_id"),
+        "source_refs": requirement.get("source_refs", []),
+        "risk": "mandatory_review" if risk == "mandatory_review" else "high_risk",
+        "decision": "needs_expert",
+        "revised_requirement": requirement.get("requirement", ""),
+        "review_notes": [f"batch_review_fail_closed: {reason}"],
+        "expert_questions": requirement.get("review_questions", []),
+        "related_requirement_ids": [],
+        "confidence": 0.5,
+        "model_route": {"provider": "stub", "model": "batch-fail-closed"},
+        "generated_by": "rule_stub",
+    }
+
+
+@dataclass(frozen=True)
+class _BatchTaskResult:
+    resolved: tuple  # tuple of (index, review, cache_row_or_None)
+    llm_reviewed: int
+    rule_stub: int
+    llm_failed: int
+    connection_failed: bool
+    connection_error: str
+
+
+def _process_review_batch(
+    batch_indices: list[int],
+    requirements: list[dict[str, Any]],
+    pipeline: ReviewPipeline,
+    config: LLMClientConfig,
+    scope_config: dict[str, Any],
+    cache: dict[tuple[str, str, str, str], dict[str, Any]],
+    evidence: str,
+) -> _BatchTaskResult:
+    """处理一个批次（工作线程内执行）：整批缓存命中或整批调用（拆半）→ 逐条护栏。
+
+    返回每条 (index, review, cache_row)；连接失败置 connection_failed（交主线程 fast-fail/abort）。
+    批缓存是精确批成员契约：只有本批所有条目都命中才零调用复用；部分缓存视为不完整批，
+    整批重审，避免把实际缩小后的调用伪装成原批成员血缘。
+    """
+    batch_config = review_batch_count()
+    member_ids = {requirement_identity(requirements[i]) for i in batch_indices}
+    resolved: list[tuple[int, dict[str, Any], dict[str, Any] | None]] = []
+    llm_reviewed = rule_stub = llm_failed = 0
+    connection_failed = False
+    connection_error = ""
+
+    cached_rows: dict[int, dict[str, Any]] = {}
+    for idx in batch_indices:
+        requirement = requirements[idx]
+        bkey = llm_cache_key_batch(
+            requirement, config.model, pipeline, scope_config,
+            batch_member_ids=member_ids, batch_config=batch_config, evidence=evidence,
+        )
+        cached = cache.get(bkey)
+        if cached is not None:
+            cached_rows[idx] = cached
+
+    if len(cached_rows) == len(batch_indices):
+        for idx in batch_indices:
+            resolved.append((idx, apply_deterministic_review_policy(
+                requirements[idx], pipeline, cached_rows[idx]), None))
+            llm_reviewed += 1
+    else:
+        batch_requirements = [requirements[i] for i in batch_indices]
+        try:
+            mapped, missing_ids, fallback_ids, allowed_related = _dispatch_batch_with_splits(
+                batch_requirements, pipeline, config, _REVIEW_BATCH_SPLIT_ROUNDS
+            )
+        except LLMConnectionError as exc:
+            connection_failed = True
+            connection_error = str(exc)
+            mapped, missing_ids, fallback_ids, allowed_related = {}, set(), set(), {}
+
+        if connection_failed:
+            for idx in batch_indices:
+                requirement = requirements[idx]
+                resolved.append((idx, build_stub_review(requirement, pipeline, unavailable_reason=connection_error), None))
+                rule_stub += 1
+                llm_failed += 1
+        else:
+            for idx in batch_indices:
+                requirement = requirements[idx]
+                rid = requirement_identity(requirement)
+                if rid in fallback_ids:
+                    # 拆半穷尽 → 回退逐条 single-shot dispatch（自带 schema 修复）
+                    try:
+                        review = dispatch_openai_review(requirement, pipeline, config, None)
+                        skey = llm_cache_key(requirement, config.model, pipeline, scope_config, evidence=evidence)
+                        row = llm_cache_row(
+                            requirement, config.model, pipeline, scope_config, review,
+                            evidence=evidence, cache_key=skey, prompt_version=PROMPT_VERSION,
+                        )
+                        resolved.append((idx, review, row))
+                        llm_reviewed += 1
+                    except LLMConnectionError as exc:
+                        connection_failed = True
+                        connection_error = str(exc)
+                        resolved.append((idx, build_stub_review(requirement, pipeline, unavailable_reason=str(exc)), None))
+                        rule_stub += 1
+                        llm_failed += 1
+                    except LLMResponseError as exc:
+                        resolved.append((idx, _batch_fail_closed_stub(
+                            requirement, pipeline, f"single fallback invalid: {exc}"), None))
+                        rule_stub += 1
+                        llm_failed += 1
+                    except LLMError as exc:
+                        resolved.append((idx, build_stub_review(requirement, pipeline, unavailable_reason=str(exc)), None))
+                        rule_stub += 1
+                        llm_failed += 1
+                elif rid in mapped:
+                    actual_member_ids = allowed_related.get(rid) or {rid}
+                    review, reason = _complete_batch_review_item(
+                        requirement, pipeline, mapped[rid], config.model, actual_member_ids
+                    )
+                    if review is None:
+                        resolved.append((idx, _batch_fail_closed_stub(requirement, pipeline, reason or "invalid payload"), None))
+                        rule_stub += 1
+                        llm_failed += 1
+                    else:
+                        bkey = llm_cache_key_batch(
+                            requirement, config.model, pipeline, scope_config,
+                            batch_member_ids=actual_member_ids, batch_config=batch_config,
+                            evidence=evidence,
+                        )
+                        row = llm_cache_row(
+                            requirement, config.model, pipeline, scope_config, review,
+                            evidence=evidence, cache_key=bkey, prompt_version=REVIEW_BATCH_PROMPT_VERSION,
+                        )
+                        resolved.append((idx, review, row))
+                        llm_reviewed += 1
+                else:  # missing / ambiguous → fail-closed stub
+                    resolved.append((idx, _batch_fail_closed_stub(requirement, pipeline, "missing/duplicate requirement_id in batch response"), None))
+                    rule_stub += 1
+                    llm_failed += 1
+
+    return _BatchTaskResult(
+        resolved=tuple(resolved), llm_reviewed=llm_reviewed, rule_stub=rule_stub,
+        llm_failed=llm_failed, connection_failed=connection_failed, connection_error=connection_error,
+    )
 
 
 def assert_valid_review_results(rows: list[dict[str, Any]]) -> None:
