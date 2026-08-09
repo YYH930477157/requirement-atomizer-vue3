@@ -32,14 +32,14 @@ class ListItemMergeTests(unittest.TestCase):
         first.update({
             "raw_text": "- H ighest threshold",
             "text_repair_checked": True,
-            "text_repair_version": "pdf-text-repair-v4",
+            "text_repair_version": "pdf-text-repair-v5",
             "text_repairs": [{"rule": "wordlist_fragment_repair"}],
         })
         second = _block("B2", "- Lowest threshold")
         second.update({
             "raw_text": "- L owest threshold",
             "text_repair_checked": True,
-            "text_repair_version": "pdf-text-repair-v4",
+            "text_repair_version": "pdf-text-repair-v5",
             "text_repairs": [{"rule": "wordlist_fragment_repair"}],
         })
 

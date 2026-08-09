@@ -1130,7 +1130,11 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertTrue(components[key])
 
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
-        from parsers.pdf_parser import PDF_TEXT_REPAIR_VERSION, text_repair_vocabulary_fingerprint
+        from parsers.pdf_parser import (
+            PDF_TEXT_REPAIR_VERSION,
+            pdf_layout_switch_fingerprint,
+            text_repair_vocabulary_fingerprint,
+        )
         from source_spans import (
             SOURCE_ALIGNMENT_VERSION,
             SOURCE_TRANSFORMATION_POLICY_VERSION,
@@ -1145,6 +1149,8 @@ class ChainAndManifestTests(unittest.TestCase):
             "atomize": (
                 f"atomize+{PDF_TEXT_REPAIR_VERSION}"
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
+                # W8：D1/D2/D3 开关状态进戳（ON/OFF 不共用缓存）
+                f"+{pdf_layout_switch_fingerprint()}"
                 f"+{SOURCE_ALIGNMENT_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"

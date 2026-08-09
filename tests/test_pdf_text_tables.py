@@ -242,8 +242,11 @@ class HeadingRefineTests(unittest.TestCase):
             "4.2.7 Service: Software Update The service must allow remote updates "
             "and record every attempt"
         )
+        # raw 与 repaired 的差异必须是 defrag 可重放的变换（侧级重放门）：原夹具的
+        # "ser vice"→"service" 超出保守修复器能力（整段重放也复现不了），改用
+        # clean_text 同构的空白折叠差异——同样钉住 raw 在两块间的划分
         raw = (
-            "4.2.7 Service: Software Update   The ser vice must allow remote updates "
+            "4.2.7 Service: Software Update   The  service must allow remote updates "
             "and record every attempt"
         )
         blocks: list[dict] = []

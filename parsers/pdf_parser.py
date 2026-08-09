@@ -58,8 +58,67 @@ _FRAG_DECIMAL_RE = re.compile(r"\b(\d) ([.,]\d)")                   # "1 .5" →
 _FRAG_DIGIT_PAIR_RE = re.compile(r"\b(\d) (\d)\b")                  # "1 0" → 10
 _FRAG_PROBE_RE = re.compile(r"\b[A-Za-z] [a-z]{2,}\b")
 DEFRAG_RATIO_THRESHOLD = 0.02   # 每词碎片数 ≥2% 判定为破碎文档
-PDF_TEXT_REPAIR_VERSION = "pdf-text-repair-v4"
+PDF_TEXT_REPAIR_VERSION = "pdf-text-repair-v5"
 PDF_TEXT_REPAIR_VOCAB_VERSION = "wordninja-top50000-v1+metering-v1"
+
+# --- PDF 版式修复开关（W8：SBD 分段错误）-----------------------------------------
+# D1 下标归位（默认 1）/ D2 断行连字符（默认 1）/ D3 两栏定义表（默认 0 试点）。
+# 三个开关全部 OFF 时走旧版调用与拼接语义（字节一致，有钉测）；任一 ON 都属行为面，
+# 版本随 PDF_TEXT_REPAIR_VERSION 进 atomize producer 与 claim schema。
+PDF_SUBSCRIPT_FIX_SWITCH = "RATOMIZER_PDF_SUBSCRIPT_FIX"
+PDF_HYPHEN_FIX_SWITCH = "RATOMIZER_PDF_HYPHEN_FIX"
+PDF_TWOCOL_DEF_SWITCH = "RATOMIZER_PDF_TWOCOL_DEF"
+PDF_SUBSCRIPT_REATTACH_VERSION = "pdf-subscript-reattach-v1"
+PDF_HYPHEN_JOIN_VERSION = "pdf-hyphen-line-join-v1"
+PDF_TWOCOL_DEF_VERSION = "pdf-twocol-definition-v1"
+_SWITCH_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _layout_switch_on(name: str, default: str) -> bool:
+    return os.environ.get(name, default).strip().lower() in _SWITCH_TRUTHY
+
+
+def pdf_subscript_fix_enabled() -> bool:
+    return _layout_switch_on(PDF_SUBSCRIPT_FIX_SWITCH, "1")
+
+
+def pdf_hyphen_fix_enabled() -> bool:
+    return _layout_switch_on(PDF_HYPHEN_FIX_SWITCH, "1")
+
+
+def pdf_twocol_def_enabled() -> bool:
+    return _layout_switch_on(PDF_TWOCOL_DEF_SWITCH, "0")
+
+
+def pdf_layout_switch_fingerprint() -> str:
+    """三个版式修复开关的确定性状态指纹。atomize producer 必须携带它——
+    ON/OFF 改变词边界与拼接语义，共用缓存会把旧版式产物冒充新结果。"""
+    return (
+        "pdf-layout-switches"
+        f"-sub{int(pdf_subscript_fix_enabled())}"
+        f"-hyp{int(pdf_hyphen_fix_enabled())}"
+        f"-2col{int(pdf_twocol_def_enabled())}"
+    )
+
+
+def _extract_page_words(
+    page: Any,
+    *,
+    subscript: bool = False,
+    twocol: bool = False,
+) -> list[dict[str, Any]]:
+    """页内词抽取。只有 D1/D3 开启才传 extra_attrs（pdfplumber 的 extra_attrs
+    会在属性变化处切开词边界——无条件传参会改变全部 PDF 的分词）；全部 OFF
+    时调用与旧版逐字节一致的 page.extract_words()。词字典复制后返回，不原地
+    污染 pdfplumber 的内部缓存对象。"""
+    extra_attrs: list[str] = []
+    if subscript or twocol:
+        extra_attrs.append("size")
+    if twocol:
+        extra_attrs.append("fontname")
+    if extra_attrs:
+        return [dict(word) for word in page.extract_words(extra_attrs=extra_attrs)]
+    return [dict(word) for word in page.extract_words()]
 _REPAIR_VOCAB_RESOURCE = "data/english_words_top50000.txt.gz"
 _ALPHA_TOKEN_RE = re.compile(r"[A-Za-z]+")
 _COMMON_SHORT_WORDS = frozenset({
@@ -130,6 +189,55 @@ def _source_repair_provenance() -> dict[str, str]:
         PDF_TEXT_REPAIR_VERSION,
         text_repair_vocabulary_fingerprint(),
     )
+
+
+# layout 修复规则集合（D1 下标归位 / D2 断行连字符 / D3 两栏定义表重建）——这些事件
+# 在 raw_text 捕获前或同通道完成，raw==text，对齐为 identity，不得挂 defrag provenance
+_LAYOUT_REPAIR_RULES = frozenset({
+    "subscript_reattach",
+    "hyphen_line_join",
+    "twocol_definition_rebuild",
+})
+
+
+def _block_defrag_ran(block: dict[str, Any]) -> bool:
+    """该块是否真正运行过 defrag（区别于只因 layout 事件标 checked）。
+
+    layout 修复保持 raw==text（identity 对齐）；raw!=text 或存在非 layout 规则事件
+    才说明 defrag/reseg 实跑。defrag 实跑但零事件零净变化时 raw==text 判 False——
+    此时对齐恒为 identity，无需 defrag replay provenance。
+    """
+    if not block.get("text_repair_checked"):
+        return False
+    if str(block.get("raw_text") or "") != str(block.get("text") or ""):
+        return True
+    return any(
+        str(event.get("rule") or "") not in _LAYOUT_REPAIR_RULES
+        for event in (block.get("text_repairs") or [])
+        if isinstance(event, dict)
+    )
+
+
+def _block_has_defrag_provenance(block: dict[str, Any]) -> bool:
+    """输入块既有对齐已挂 defrag provenance → defrag 实跑过的直接证据。
+
+    identity defrag 块（raw==text、零事件）是 _block_defrag_ran 证据推断判不出来的
+    那一类——其唯一残留证据就是既有 source_alignment 上挂着的 provenance。
+    """
+    alignment = block.get("source_alignment")
+    return isinstance(alignment, dict) and bool(alignment.get("repair_provenance"))
+
+
+def _block_tail_page(block: dict[str, Any]) -> int | None:
+    """块的实际末页：取最后一个真实 pdf_regions 的页号（兼容测试夹具的 page 键）。"""
+    for region in reversed(block.get("pdf_regions") or []):
+        page = region.get("page_number")
+        if page is None:
+            page = region.get("page")
+        if page is not None:
+            return int(page)
+    page = block.get("page_number")
+    return int(page) if page is not None else None
 
 
 @lru_cache(maxsize=1)
@@ -552,9 +660,13 @@ def _split_line_cells(words: list[dict[str, Any]], *, defrag: bool = False) -> l
         # 水印串同样会落进无画线表格的格文本（E3a 残留实证:浪涌表格一格）——同一清洗
         raw_text = clean_text(_strip_watermark_runs(" ".join(str(w["text"]) for w in group)))
         text = raw_text
-        repairs: list[dict[str, Any]] = []
+        # D1 等版式事件随词进格，先于 defrag 事件；每个词只属于一个格，事件只出现一次
+        repairs: list[dict[str, Any]] = [
+            event for word in group for event in (word.get("_layout_events") or [])
+        ]
         if defrag:
-            text, repairs = defragment_text_with_audit(text)
+            text, defrag_repairs = defragment_text_with_audit(text)
+            repairs.extend(defrag_repairs)
         cells.append({
             "text": text,
             "raw_text": raw_text,
@@ -695,6 +807,224 @@ def _attach_header_lines(region: list[dict[str, Any]], preceding: list[dict[str,
     return attach + region
 
 
+# --- D3 两栏定义表检测（默认 OFF；SBD p23 DEFINITIONS 页实测：左栏短粗体术语 + 右栏长
+# 定义被当散文拼接成一行）。独立保守 detector，先于通用 _detect_text_tables 消费命中
+# 区域；宁漏勿错：三栏变体、普通双栏散文、缺 fontname 粗体证据一律零触发。---------------
+_TWOCOL_DEF_MIN_ROWS = 3          # 连续 anchor 行下限
+_TWOCOL_DEF_MIN_COL_GAP_PT = 8.0  # 栏间最小正间隙（栏内词距通常 < 8pt）
+_TWOCOL_DEF_LEFT_MAX_WORDS = 4    # 左栏短术语
+_TWOCOL_DEF_RIGHT_MIN_WORDS = 7   # 右栏长定义（>6 词）
+_TWOCOL_DEF_LEFT_X0_TOLERANCE_PT = 2.0  # 左栏每行 x0 距共同锚点 ≤2pt（窗口总跨度允许 4pt）
+
+
+def _twocol_definition_row(
+    line: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+    """行 → (左栏词, 右栏词)；不满足两栏定义行形态返回 None。"""
+    words = sorted(line.get("words") or [], key=lambda word: float(word["x0"]))
+    if len(words) < 2:
+        return None
+    split_indexes = [
+        index
+        for index in range(len(words) - 1)
+        if float(words[index + 1]["x0"]) - float(words[index]["x1"]) >= _TWOCOL_DEF_MIN_COL_GAP_PT
+    ]
+    if len(split_indexes) != 1:
+        return None   # 恰好两栏：0 个栏间隙=单栏散文，>=2=三栏变体，均拒绝
+    split = split_indexes[0]
+    left = words[: split + 1]
+    right = words[split + 1:]
+    if not (1 <= len(left) <= _TWOCOL_DEF_LEFT_MAX_WORDS):
+        return None
+    if len(right) < _TWOCOL_DEF_RIGHT_MIN_WORDS:
+        return None
+    # 左栏粗体证据：缺 fontname 宁可不触发，不以字号冒充粗体
+    for word in left:
+        fontname = str(word.get("fontname") or "")
+        if not fontname or "bold" not in fontname.lower():
+            return None
+    return left, right
+
+
+def _detect_twocol_definition_tables(
+    lines: list[dict[str, Any]],
+    *,
+    page_height: float,
+    document_profile: DocumentProfile,
+    defrag: bool = False,
+    page_number: int | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """两栏定义表检测（D3，默认 OFF）。返回 (tables, remaining_lines)。
+
+    触发条件（全部满足）：>=3 连续 anchor 行；每行恰好两栏（单一 >=8pt 栏间隙）；
+    左栏 <=4 词且跨行存在共同 x0 锚点（每行距锚点 <=2pt，窗口总跨度允许 4pt）；
+    右栏 >6 词；左栏全部词有 fontname 粗体证据。连续 candidate 段内的异常行只使
+    自身落空，不阻断后续合法子区域；消费窗口连续、互不重叠。
+    标题/页边带/TOC 点引导线/列表行沿用通用表格检测同款先验排除。
+    输出复用无画线表 build_table_artifacts 通道（matrix=[[term, definition], ...]），
+    raw_matrix 与 matrix 按 defrag 通道同款安排，对齐不出现不可重放字符变换。
+    """
+    if len(lines) < _TWOCOL_DEF_MIN_ROWS:
+        return [], lines
+    enriched = []
+    for line in lines:
+        candidate = (
+            not _is_margin_line(line, page_height)
+            and not _DOT_LEADER_RE.search(line["text"])
+            and not _LIST_ITEM_RE.match(line["text"])
+            and not detect_heading(line["text"], "", document_profile=document_profile)
+        )
+        row = _twocol_definition_row(line) if candidate else None
+        enriched.append({"line": line, "row": row})
+
+    tables: list[dict[str, Any]] = []
+    consumed: set[int] = set()
+    i = 0
+    while i < len(enriched):
+        if enriched[i]["row"] is None:
+            i += 1
+            continue
+        region_idx = [i]
+        j = i + 1
+        while j < len(enriched) and enriched[j]["row"] is not None:
+            region_idx.append(j)
+            j += 1
+        # 对齐滑窗：存在共同锚点使窗口内每行 |x0-锚点| ≤ 容差（即窗口跨度 ≤ 2×容差，
+        # 48/50/52 合法）；异常行只使自身落空，不毒死后续合法连续子区域
+        # （[56,50,50,50] 只消费后三行）。窗口连续消费、互不重叠。
+        region_left_x0 = {
+            k: float(enriched[k]["row"][0][0]["x0"]) for k in region_idx
+        }
+        aligned_runs: list[list[int]] = []
+        k_pos = 0
+        while k_pos < len(region_idx):
+            best_end = -1
+            window_x0s: list[float] = []
+            for m_pos in range(k_pos, len(region_idx)):
+                window_x0s.append(region_left_x0[region_idx[m_pos]])
+                if (max(window_x0s) - min(window_x0s)
+                        > 2 * _TWOCOL_DEF_LEFT_X0_TOLERANCE_PT):
+                    break
+                if m_pos - k_pos + 1 >= _TWOCOL_DEF_MIN_ROWS:
+                    best_end = m_pos
+            if best_end >= 0:
+                aligned_runs.append(region_idx[k_pos: best_end + 1])
+                k_pos = best_end + 1
+            else:
+                k_pos += 1
+        for run_idx in aligned_runs:
+            rows = [enriched[k]["row"] for k in run_idx]
+            region = [enriched[k]["line"] for k in run_idx]
+            matrix: list[list[str]] = []
+            raw_matrix: list[list[str]] = []
+            table_repairs: list[dict[str, Any]] = []
+            for row_index, row in enumerate(rows):
+                cells: list[str] = []
+                raw_cells: list[str] = []
+                for column_index, cell_words in enumerate(row):
+                    raw_cell = clean_text(" ".join(str(w["text"]) for w in cell_words))
+                    cell = raw_cell
+                    if defrag:
+                        cell, cell_events = defragment_text_with_audit(raw_cell)
+                        cell = clean_text(cell)
+                        for event in cell_events:
+                            event_copy = dict(event)
+                            event_copy.update({
+                                "row_index": row_index,
+                                "column_index": column_index,
+                            })
+                            table_repairs.append(event_copy)
+                    cells.append(cell)
+                    raw_cells.append(raw_cell)
+                matrix.append(cells)
+                raw_matrix.append(raw_cells)
+            # D1 等版式事件随行进入表审计，不得丢失；行内位点等私有定位键
+            # （"_" 前缀，如 _line_raw_offset）仅供段落拆分归属，不得落盘
+            for row_index, line in enumerate(region):
+                for event in line.get("layout_events") or []:
+                    event_copy = {
+                        key: value for key, value in event.items()
+                        if not str(key).startswith("_")
+                    }
+                    event_copy["row_index"] = row_index
+                    table_repairs.append(event_copy)
+            before = "\n".join(str(line["text"]) for line in region)
+            after = "\n".join(" | ".join(row) for row in matrix)
+            structural_event: dict[str, Any] = {
+                "rule": "twocol_definition_rebuild",
+                "rule_version": PDF_TWOCOL_DEF_VERSION,
+                "before": before,
+                "after": after,
+                "position_basis": "line_layout",
+            }
+            if page_number is not None:
+                structural_event["page_number"] = page_number
+            table_repairs.append(structural_event)
+            raw_table_text = "\n".join(" | ".join(row) for row in raw_matrix)
+            tables.append({
+                "top": min(line["top"] for line in region),
+                "bottom": max(line["bottom"] for line in region),
+                "x0": min(line["x0"] for line in region),
+                "x1": max(line["x1"] for line in region),
+                "matrix": matrix,
+                "layout_table_kind": "twocol_definition",
+                # 显式无表头哨兵：[term, definition] 全是数据行，首行也是定义。
+                # 物化时必须原样传 []（table_structure 的 explicit headerless 语义），
+                # 不得退回表头推断把首行定义误判为表头；也不得注入合成 Term/Definition
+                # 表头行（那会伪造源文没有的内容）。
+                "explicit_header_rows": [],
+                "text_repair_meta": {
+                    "raw_matrix": raw_matrix,
+                    "raw_text": raw_table_text,
+                    "text_repair_checked": True,
+                    "text_repairs": table_repairs,
+                    "text_repair_words_before": len(raw_table_text.split()),
+                    "text_repair_words_after": len(after.split()),
+                    "text_repair_candidates_before": (
+                        _fragmentation_signal_count(raw_table_text) if defrag else 0
+                    ),
+                    "text_repair_candidates_after": (
+                        _fragmentation_signal_count(after) if defrag else 0
+                    ),
+                },
+            })
+            consumed.update(run_idx)
+        i = j
+    remaining = [entry["line"] for index, entry in enumerate(enriched) if index not in consumed]
+    return tables, remaining
+
+
+def _payload_explicit_header_rows(payload: Any) -> list[int] | None:
+    """文本表 payload 的显式表头证据。语义三分：
+
+    - 键存在且为 []（D3 两栏定义表）→ 原样返回 []，显式 headerless；
+    - 普通文本表无此键 → 返回 None，保留 build_table_artifacts 既有表头推断；
+    - 画线表 payload（元组）→ None。
+
+    不得写成 payload.get("explicit_header_rows") or None——[] 会被 or 吞成 None，
+    显式 headerless 哨兵就此丢失，首行定义会被表头推断误判。
+    """
+    if isinstance(payload, dict) and "explicit_header_rows" in payload:
+        return payload["explicit_header_rows"]
+    return None
+
+
+def _build_pdf_table_artifacts(
+    payload: Any,
+    matrix: list[list[str]],
+    **kwargs: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """PDF 表格物化共享 seam——生产调用点的唯一入口。显式表头三态集中在此分流：
+    D3 payload 的 [] 原样传递（显式 headerless）；普通文本表无键 / 画线表元组
+    → None 保留既有表头推断。调用方不得自行再传 explicit_header_rows。"""
+    kwargs.pop("explicit_header_rows", None)
+    return build_table_artifacts(
+        matrix,
+        explicit_header_rows=_payload_explicit_header_rows(payload),
+        **kwargs,
+    )
+
+
 def _detect_text_tables(
     lines: list[dict[str, Any]],
     *,
@@ -805,7 +1135,8 @@ def _detect_text_tables(
                     "text_repair_meta": {
                         "raw_matrix": raw_matrix,
                         "raw_text": raw_table_text,
-                        "text_repair_checked": bool(defrag),
+                        # defrag 实跑或存在 layout 事件（D1 词级下标随格进入）均为已检查
+                        "text_repair_checked": bool(defrag) or bool(table_repairs),
                         "text_repairs": table_repairs,
                         "text_repair_words_before": len(raw_table_text.split()),
                         "text_repair_words_after": len(repaired_table_text.split()),
@@ -1011,6 +1342,10 @@ def _extract_pdf_handwritten(
         defrag = _fragmentation_ratio(pdf) >= DEFRAG_RATIO_THRESHOLD
         if defrag:
             LOGGER.info("检测到词内空格破碎文档（机翻 PDF），启用去碎修复")
+        # D1/D2/D3 版式修复开关（W8）：全 OFF 时 extra_attrs 不启用、旧行为字节一致
+        subscript_fix = pdf_subscript_fix_enabled()
+        hyphen_fix = pdf_hyphen_fix_enabled()
+        twocol_def = pdf_twocol_def_enabled()
         repeated_noise = _detect_repeated_margin_lines(pdf, defrag=defrag)
 
         sections = SectionState()
@@ -1036,12 +1371,35 @@ def _extract_pdf_handwritten(
                     continue
                 kept_ruled.append((table, matrix, repair_meta))
             table_bboxes = [table.bbox for table, _matrix, _repair_meta in kept_ruled]
-            lines = _page_lines(page, table_bboxes, defrag=defrag)
+            lines = _page_lines(
+                page,
+                table_bboxes,
+                defrag=defrag,
+                subscript=subscript_fix,
+                twocol=twocol_def,
+                page_number=page_number,
+            )
             if not lines and not kept_ruled:
                 empty_pages += 1
-            text_tables, prose_lines = _detect_text_tables(
-                lines, page_height=page.height, document_profile=profile, defrag=defrag)
-            page_paragraphs = _group_paragraphs(prose_lines, page_height=page.height, document_profile=profile)
+            text_tables: list[dict[str, Any]] = []
+            prose_lines = lines
+            if twocol_def:
+                # D3 先于通用无画线表检测消费命中的连续区域，防止先被普通 text table 吞掉
+                twocol_tables, prose_lines = _detect_twocol_definition_tables(
+                    prose_lines,
+                    page_height=page.height,
+                    document_profile=profile,
+                    defrag=defrag,
+                    page_number=page_number,
+                )
+                text_tables.extend(twocol_tables)
+            generic_tables, prose_lines = _detect_text_tables(
+                prose_lines, page_height=page.height, document_profile=profile, defrag=defrag)
+            text_tables.extend(generic_tables)
+            text_tables.sort(key=lambda table: table["top"])   # D3 与通用表合并后按 top 排序
+            page_paragraphs = _group_paragraphs(
+                prose_lines, page_height=page.height, document_profile=profile,
+                hyphen_fix=hyphen_fix, page_number=page_number)
 
             # 画线表 + 文本重建表 + 段落按 top 统一排序，保阅读顺序
             events: list[tuple[float, str, Any]] = (
@@ -1080,6 +1438,9 @@ def _extract_pdf_handwritten(
                         text_repair_candidates_after=int(
                             payload.get("text_repair_candidates_after") or 0
                         ),
+                        # _merge_lines 的真实 defrag_checked；pop 掉内部标志，
+                        # 保证它不会以任何形式残留进最终 block
+                        defrag_ran=payload.pop("_defrag_ran", None),
                     )
                     continue
                 if kind == "ruled":
@@ -1118,7 +1479,8 @@ def _extract_pdf_handwritten(
                     # 不得与"文本重建表本就无几何"同等静默
                     geometry_conflict = geometry_status == "conflict"
                     geometry_kind = "pdfplumber_cell" if cell_bboxes else None
-                table_block, new_table_items, new_cell_items = build_table_artifacts(
+                table_block, new_table_items, new_cell_items = _build_pdf_table_artifacts(
+                    payload,
                     matrix,
                     raw_matrix=repair_meta.get("raw_matrix") or matrix,
                     table_id=table_id,
@@ -1139,9 +1501,14 @@ def _extract_pdf_handwritten(
                     _pdf_region(page_number, table_bbox, page.width, page.height)]
                 if kind == "text_table":
                     table_block["table_source"] = "text_layout"   # 溯源：无画线重建
-                if defrag:
-                    table_repairs = list(repair_meta.get("text_repairs") or [])
-                    repair_provenance = _source_repair_provenance()
+                    if payload.get("layout_table_kind"):
+                        # D3 稳定审计标记（如 twocol_definition）
+                        table_block["layout_table_kind"] = payload["layout_table_kind"]
+                table_repairs = list(repair_meta.get("text_repairs") or [])
+                # 持久化审计条件不只写 defrag：D3 结构事件（默认 OFF 试点）也要落盘。
+                # raw_matrix/matrix 按同款通道安排，对齐无不可重放字符变换。
+                if defrag or table_repairs:
+                    repair_provenance = _source_repair_provenance() if defrag else None
                     table_block.update(source_alignment_fields(
                         str(table_block.get("raw_text") or ""),
                         str(table_block.get("text") or ""),
@@ -1187,7 +1554,7 @@ def _extract_pdf_handwritten(
             LOGGER.warning("共 %d/%d 页无文字层（疑似扫描页混排），这些页内容未进入解析",
                            empty_pages, len(pdf.pages))
 
-    blocks = _merge_continuation_blocks(blocks, knowledge_bases)
+    blocks = _merge_continuation_blocks(blocks, knowledge_bases, hyphen_fix=hyphen_fix)
     blocks = _merge_list_item_blocks(blocks, knowledge_bases)
     return blocks, table_items, table_cell_items
 
@@ -1269,14 +1636,24 @@ def _merge_list_item_blocks(
             index = follower
             continue
         raw_joined = "\n".join(member["raw_text"] for member in member_snapshots)
+        # 在 target 原地突变前捕获每个成员的 defrag 证据：证据推断 + 既有对齐
+        # provenance（identity defrag 块 raw==text 零事件，只有后者能识别）
+        member_defrag_ran = [
+            _block_defrag_ran(member) or _block_has_defrag_provenance(member)
+            for member in members
+        ]
         target = members[0]
         target["text"] = joined
         target["raw_text"] = raw_joined
         repair_checked = any(member.get("text_repair_checked") for member in members)
+        # provenance 解耦：layout-only（raw==text 且仅 layout 事件）挂 None；
+        # 任一成员 defrag 实跑（含 identity defrag）才挂 defrag provenance
+        #（replay/stale-version 契约不变）
+        defrag_ran = any(member_defrag_ran)
         target.update(source_alignment_fields(
             raw_joined,
             joined,
-            repair_provenance=_source_repair_provenance() if repair_checked else None,
+            repair_provenance=_source_repair_provenance() if defrag_ran else None,
         ))
         target["is_list_container"] = True
         repaired_cursor = 0
@@ -1307,7 +1684,7 @@ def _merge_list_item_blocks(
                     member["text"],
                     repair_provenance=(
                         _source_repair_provenance()
-                        if member.get("text_repair_checked") else None
+                        if member_defrag_ran[member_index] else None
                     ),
                 ),
             })
@@ -1342,9 +1719,19 @@ def _merge_list_item_blocks(
 def _merge_continuation_blocks(
     blocks: list[dict[str, Any]],
     knowledge_bases: KnowledgeRepository,
+    *,
+    hyphen_fix: bool | None = None,
 ) -> list[dict[str, Any]]:
     """块级续行合并：跨页断句（页内 gap 豁免够不着）——前段无句终标点 + 后段小写开头 →
-    并成一段。中间隔着的页眉/页脚噪声块不挡合并（保留原位，视图本来就隐藏）。"""
+    并成一段。中间隔着的页眉/页脚噪声块不挡合并（保留原位，视图本来就隐藏）。
+
+    D2（hyphen_fix 开启时扩展）：前段以字母数字+'-' 结尾且后段数字开头也判续行
+    （"BS 5685-" + 跨页 "1"），但只允许相邻页且 section_path 一致（页 6→8、
+    section A→B 均不因数字续行合并；旧版普通小写续行语义不扩大）。text/raw_text
+    走同一 _join_lines_text，事件只记一次；事件 page_number 取 target 实际末页
+    （链式合并时第二次事件记录真实断点，而不是 target 最初页）。"""
+    if hyphen_fix is None:
+        hyphen_fix = pdf_hyphen_fix_enabled()
     merged: list[dict[str, Any]] = []
     for block in blocks:
         target = None
@@ -1363,41 +1750,75 @@ def _merge_continuation_blocks(
         if target is not None:
             prev_text = str(target["text"]).rstrip()
             cur_text = str(block["text"])
+            # 修改 target 前捕获输入的 defrag 证据：证据推断 + 既有对齐 provenance
+            #（identity defrag 块 raw==text 零事件，只有后者能识别）
+            target_defrag_ran = (
+                _block_defrag_ran(target) or _block_has_defrag_provenance(target)
+            )
+            block_defrag_ran = (
+                _block_defrag_ran(block) or _block_has_defrag_provenance(block)
+            )
+            tail_page = _block_tail_page(target)
+            block_page = block.get("page_number")
+            # D2 数字续行：合法断行连字符 + 后段数字开头（G4 护栏同 _join_lines_text）；
+            # 新增边界——仅相邻页（按 target 实际末页）且同小节
+            hyphen_digit_continuation = bool(
+                hyphen_fix
+                and len(prev_text) >= 2
+                and prev_text.endswith("-")
+                and prev_text[-2].isalnum()
+                and cur_text[:1].isdigit()
+                and tail_page is not None
+                and block_page is not None
+                and int(block_page) - tail_page == 1
+                and list(target.get("section_path") or [])
+                == list(block.get("section_path") or [])
+            )
             if (prev_text and prev_text[-1] not in _SENTENCE_TERMINALS
-                    and cur_text[:1].islower()
+                    and (cur_text[:1].islower() or hyphen_digit_continuation)
                     and not _LIST_ITEM_RE.match(cur_text)
                     and not _DOT_LEADER_RE.search(prev_text)
                     and not _DOT_LEADER_RE.search(cur_text)
                     and len(prev_text) + len(cur_text) < 4000):
-                if prev_text.endswith("-"):
-                    joined = prev_text[:-1] + cur_text   # 跨页连字断词
-                else:
-                    joined = f"{prev_text} {cur_text}"
+                joined, join_event = _join_lines_text(
+                    prev_text,
+                    cur_text,
+                    hyphen_fix=hyphen_fix,
+                    page_number=tail_page,
+                    next_page_number=block.get("page_number"),
+                )
                 target["text"] = joined
                 target_raw = str(target.get("raw_text") or prev_text)
                 block_raw = str(block.get("raw_text") or cur_text)
-                if target_raw.endswith("-") and block_raw[:1].islower():
-                    joined_raw = target_raw[:-1] + block_raw
-                else:
-                    joined_raw = f"{target_raw} {block_raw}"
+                # raw_text 走同一 layout join（事件只从 text 通道记一次）
+                joined_raw, _ = _join_lines_text(target_raw, block_raw, hyphen_fix=hyphen_fix)
                 target["raw_text"] = joined_raw
                 repair_checked = bool(
                     target.get("text_repair_checked") or block.get("text_repair_checked")
+                    or join_event is not None
                 )
+                # provenance 解耦：任一输入 defrag 实跑（含 identity defrag，证据在
+                # 修改 target 前已捕获）才挂 defrag provenance；D1/D2 layout-only 是
+                # identity 对齐，provenance=None
+                defrag_ran = target_defrag_ran or block_defrag_ran
                 target.update(source_alignment_fields(
                     joined_raw,
                     joined,
                     repair_provenance=(
-                        _source_repair_provenance() if repair_checked else None
+                        _source_repair_provenance() if defrag_ran else None
                     ),
                 ))
                 if repair_checked:
                     target["text_repair_checked"] = True
                     target["text_repair_version"] = PDF_TEXT_REPAIR_VERSION
-                    target["text_repairs"] = list(target.get("text_repairs") or []) + list(
+                    repairs = list(target.get("text_repairs") or []) + list(
                         block.get("text_repairs") or []
                     )
-                    target["text_repaired"] = bool(target.get("text_repairs"))
+                    if join_event is not None:
+                        # 同页与跨页统一 rule；跨页事件携带 next_page_number
+                        repairs.append(join_event)
+                    target["text_repairs"] = repairs
+                    target["text_repaired"] = bool(repairs)
                     target["text_repair_words_before"] = len(joined_raw.split())
                     target["text_repair_words_after"] = len(joined.split())
                     target["text_repair_candidates_before"] = _fragmentation_signal_count(joined_raw)
@@ -1441,13 +1862,23 @@ def _page_lines(
     table_bboxes: list[tuple[float, float, float, float]],
     *,
     defrag: bool = False,
+    subscript: bool = False,
+    twocol: bool = False,
+    page_number: int | None = None,
 ) -> list[dict[str, Any]]:
-    """页面词 →（排除画线表 bbox 内的）→ 词行。"""
+    """页面词 →（排除画线表 bbox 内的）→ 词行。
+
+    D1/D3 证据按需抽取：仅 subscript/twocol 开启时 _extract_page_words 才传
+    extra_attrs（pdfplumber extra_attrs 会改变分词边界，全部 OFF 必须走原始调用）。
+    D1 下标归位在词行生成前完成——raw_text 在归位后捕获，对齐不含不可重放变换。
+    """
     words = [
         word
-        for word in page.extract_words()
+        for word in _extract_page_words(page, subscript=subscript, twocol=twocol)
         if not any(_word_intersects_bbox(word, bbox) for bbox in table_bboxes)
     ]
+    if subscript:
+        words, _events = _reattach_subscripts(words, page_number=page_number)
     return _word_lines(words, defrag=defrag)
 
 
@@ -1456,9 +1887,13 @@ def _group_paragraphs(
     *,
     page_height: float,
     document_profile: DocumentProfile,
+    hyphen_fix: bool | None = None,
+    page_number: int | None = None,
 ) -> list[dict[str, Any]]:
     if not lines:
         return []
+    if hyphen_fix is None:
+        hyphen_fix = pdf_hyphen_fix_enabled()
     paragraphs: list[dict[str, Any]] = []
     current: list[dict[str, Any]] = []
     previous: dict[str, Any] | None = None
@@ -1471,15 +1906,137 @@ def _group_paragraphs(
             line,
             page_height=page_height,
             document_profile=document_profile,
+            hyphen_fix=hyphen_fix,
         )):
-            paragraphs.append(_merge_lines(current))
+            paragraphs.append(_merge_lines(
+                current, hyphen_fix=hyphen_fix, page_number=page_number))
             current = []
         current.append(line)
         previous = line
         previous_is_heading = bool(detect_heading(line["text"], "", document_profile=document_profile))
     if current:
-        paragraphs.append(_merge_lines(current))
+        paragraphs.append(_merge_lines(
+            current, hyphen_fix=hyphen_fix, page_number=page_number))
     return [paragraph for paragraph in paragraphs if paragraph["text"]]
+
+
+# --- D1 下标归位（SBD p23 实测："Nominal current (I" size12 与下标 "n" size9 基线错位被
+# 分行，漂移拼出 "CTn"；"Basic current (Ib)" 下标 b 丢失）--------------------------------
+# 只在词级、raw_text 捕获（_merge_words）之前完成：主词文本就地拼上下标并更新 x1，候选词
+# 从分行输入移除——raw→repaired 对齐因此不含任何不可重放的非布局字符变换。宁漏勿错：
+# 脚注上标（G1）、竖排/全 CJK 页（G2）、上标方向、长小字号正文一律不动。
+_SUBSCRIPT_MAX_CHARS = 4          # n / b / max 量级；长小字号正文禁止当候选
+_SUBSCRIPT_MAX_GAP_PT = 6.0       # 候选与主词的正间隙上限
+_SUBSCRIPT_VERTICAL_RATIO = 0.3   # 竖排词占比达到此值整页跳过（G2）
+_SUBSCRIPT_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+_CJK_WORD_RE = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿]")
+_LATIN_WORD_RE = re.compile(r"[A-Za-z]")
+
+
+def _reattach_subscripts(
+    words: list[dict[str, Any]],
+    *,
+    page_number: int | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """保守下标归位。返回 (处理后词列表, 修复事件)。
+
+    主字号 = 页内有效 size 中位数；主词 size ≥ 中位×0.8，小字号候选 < 中位×0.8。
+    候选仅限短的非空字母数字 token，且须落在主词下标方向（明显低于主词顶部）；
+    只拼到同一视觉行带（|top差| ≤ 中位×0.8）内、x0 位于主词 x1 之后、正间隙 ≤6pt
+    的最近主词词尾（无空格）。每次拼接把事件挂到主词 ``_layout_events``，随词进入
+    _merge_words 的审计流。输入词字典不被原地修改——主词先复制再拼接，
+    调用方持有的词对象保持原样（pdfplumber 返回值在 _extract_page_words 已复制）。
+    """
+    if not words:
+        return words, []
+    # 浅拷贝外层词字典；词上已有 _layout_events 列表时同步复制，避免 append 反向污染调用方
+    words = [dict(word) for word in words]
+    for word in words:
+        if isinstance(word.get("_layout_events"), list):
+            word["_layout_events"] = list(word["_layout_events"])
+    sized = [
+        word for word in words
+        if isinstance(word.get("size"), (int, float)) and float(word["size"]) > 0
+    ]
+    if not sized:
+        return words, []   # 缺 size 证据：整页不动（宁漏勿错）
+    # G2：竖排占比超阈值整页跳过
+    vertical = sum(1 for word in words if word.get("upright") is False)
+    if vertical / len(words) >= _SUBSCRIPT_VERTICAL_RATIO:
+        return words, []
+    # G2：全 CJK 页跳过——存在 CJK 且无拉丁正文（混合中英页不跳过）
+    cjk = sum(1 for word in words if _CJK_WORD_RE.search(str(word.get("text") or "")))
+    latin = sum(1 for word in words if _LATIN_WORD_RE.search(str(word.get("text") or "")))
+    if cjk and not latin:
+        return words, []
+
+    sizes = sorted(float(word["size"]) for word in sized)
+    median = sizes[len(sizes) // 2] if len(sizes) % 2 else (sizes[len(sizes) // 2 - 1] + sizes[len(sizes) // 2]) / 2
+    mains: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    for word in words:
+        size = word.get("size")
+        text = str(word.get("text") or "").strip()
+        valid_size = isinstance(size, (int, float)) and float(size) > 0
+        if valid_size and float(size) >= median * 0.8:
+            # 主词必须严格满足字号门槛——长小字号正文/缺 size 词不得接收下标
+            mains.append(word)
+        elif (
+            valid_size
+            and text
+            and len(text) <= _SUBSCRIPT_MAX_CHARS
+            and _SUBSCRIPT_TOKEN_RE.fullmatch(text)
+        ):
+            candidates.append(word)
+        # 其余词（缺/无效 size、不满足短候选规则的小字号词）原样保留，但不作粘附目标
+    if not candidates:
+        return words, []
+
+    band = median * 0.8
+    consumed: set[int] = set()
+    events: list[dict[str, Any]] = []
+    for cand in sorted(candidates, key=lambda w: (float(w["top"]), float(w["x0"]))):
+        cand_top = float(cand["top"])
+        cand_x0 = float(cand["x0"])
+        cand_text = str(cand.get("text") or "").strip()
+        best: dict[str, Any] | None = None
+        best_gap: float | None = None
+        for main in mains:
+            if abs(float(main["top"]) - cand_top) > band:
+                continue
+            gap = cand_x0 - float(main["x1"])
+            if gap < 0 or gap > _SUBSCRIPT_MAX_GAP_PT:
+                continue
+            # 下标方向：候选须明显低于主词顶部；位于主词上方的是上标/引文，不粘
+            if cand_top <= float(main["top"]) + median * 0.1:
+                continue
+            if best_gap is None or gap < best_gap:
+                best, best_gap = main, gap
+        if best is None:
+            continue
+        main_text = str(best.get("text") or "")
+        # G1：纯数字候选 + 主词以标点结尾 = 脚注引用（"… operation." + "2"），不粘
+        if cand_text.isdigit() and main_text and not main_text[-1].isalnum():
+            continue
+        before = f"{main_text} {cand_text}"
+        best["text"] = main_text + cand_text
+        best["x1"] = max(float(best["x1"]), float(cand["x1"]))
+        best["bottom"] = max(float(best["bottom"]), float(cand["bottom"]))
+        consumed.add(id(cand))
+        event: dict[str, Any] = {
+            "rule": "subscript_reattach",
+            "rule_version": PDF_SUBSCRIPT_REATTACH_VERSION,
+            "before": before,
+            "after": str(best["text"]),
+            "position_basis": "word_geometry",
+        }
+        if page_number is not None:
+            event["page_number"] = page_number
+        events.append(event)
+        best.setdefault("_layout_events", []).append(event)
+    if not consumed:
+        return words, []
+    return [word for word in words if id(word) not in consumed], events
 
 
 def _word_lines(words: list[dict[str, Any]], *, defrag: bool = False) -> list[dict[str, Any]]:
@@ -1524,6 +2081,27 @@ def _merge_words(words: list[dict[str, Any]], *, defrag: bool = False) -> dict[s
         "x1": max(float(word["x1"]) for word in ordered),
         "words": ordered,   # 词级坐标保留给无画线表格检测（切格用）
     }
+    layout_events: list[dict[str, Any]] = []
+    if any(word.get("_layout_events") for word in ordered):
+        # 逐词在最终行 raw_text 中按词序定位词起点（词间单空格拼接，游标随每个词
+        # 推进——行内第二次出现的重复 token 不会被首次出现的普通词截胡），把行内
+        # 精确位点记为私有 _line_raw_offset 挂在事件副本上（原词字典不被修改），
+        # 供 _merge_lines 翻译为段落 raw 位点；词定位失败（清洗改了文本）不写位点，
+        # _merge_lines 退守 after-token 字串搜索。
+        cursor = 0
+        for word in ordered:
+            token = str(word["text"])
+            pos = raw_text.find(token, cursor) if token else -1
+            word_events = [dict(event) for event in (word.get("_layout_events") or [])]
+            if pos >= 0:
+                for event in word_events:
+                    event["_line_raw_offset"] = pos
+                cursor = pos + len(token)
+            layout_events.extend(word_events)
+    if layout_events:
+        # 版式修复事件（D1 下标归位）——与 defrag 事件分通道携带，_merge_lines
+        # 合并为最终 text_repairs；raw_text 已在归位后捕获，对齐可重放性不受影响。
+        result["layout_events"] = layout_events
     if defrag:
         result.update({
             "raw_text": raw_text,
@@ -1557,35 +2135,136 @@ _SENTENCE_TERMINALS = ".:;!?…"
 _REQ_KEYWORD_RE = re.compile(r"\b(?:shall|must|should|required)\b|要求|应当|应支持|应能", re.IGNORECASE)
 
 
-def _merge_lines(lines: list[dict[str, Any]]) -> dict[str, Any]:
-    # 去连字断词：行尾 "-" 且下行小写开头 → 去连字符无空格拼接（"require-" + "ments"）
+def _join_lines_text(
+    prev: str,
+    nxt: str,
+    *,
+    hyphen_fix: bool,
+    page_number: int | None = None,
+    next_page_number: int | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    """D2 断行连字符拼接（_merge_lines 与 _merge_continuation_blocks 共用的唯一实现）。
+
+    返回 (拼接文本, 事件|None)。规则（仅 hyphen_fix 开启时扩展；关闭=旧版语义逐字节不变）：
+    - 前文本以 '-' 结尾且 '-' 前一字符是字母或数字（G4——"said -" 空格前缀破折号不触发）；
+    - 下一文本首字符是小写字母：删除软断行连字符无空格拼接（require- + ments → requirements）；
+    - 下一文本首字符是数字：保留连字符去掉换行空格（5685- + 1 → 5685-1；IEC- + 62056 → IEC-62056）；
+    - 大写/标点开头不触发（普通空格拼接）；
+    - 只看行尾，行内连字符（direct-connected）从不动（G5）。
+    """
+    if not prev:
+        return nxt, None
+    if hyphen_fix and prev.endswith("-"):
+        if len(prev) >= 2 and prev[-2].isalnum() and nxt:
+            first = nxt[0]
+            if first.islower():
+                joined = prev[:-1] + nxt
+            elif first.isdigit():
+                joined = prev + nxt
+            else:
+                return f"{prev} {nxt}", None
+            event: dict[str, Any] = {
+                "rule": "hyphen_line_join",
+                "rule_version": PDF_HYPHEN_JOIN_VERSION,
+                "before": f"{prev} {nxt}",
+                "after": joined,
+                "position_basis": "line_layout",
+            }
+            if page_number is not None:
+                event["page_number"] = page_number
+            if next_page_number is not None and next_page_number != page_number:
+                event["next_page_number"] = next_page_number
+            return joined, event
+        # G4：破折号（'-' 前非字母数字）只是标点，不做断词拼接
+        return f"{prev} {nxt}", None
+    # 旧版语义：行尾 '-' + 下行小写开头 → 去连字符无空格拼接
+    if prev.endswith("-") and nxt[:1].islower():
+        return prev[:-1] + nxt, None
+    return f"{prev} {nxt}", None
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    """两串最长公共前缀长度（D2 修复位点推导用）。"""
+    limit = min(len(a), len(b))
+    index = 0
+    while index < limit and a[index] == b[index]:
+        index += 1
+    return index
+
+
+def _merge_lines(
+    lines: list[dict[str, Any]],
+    *,
+    hyphen_fix: bool | None = None,
+    page_number: int | None = None,
+) -> dict[str, Any]:
+    if hyphen_fix is None:
+        hyphen_fix = pdf_hyphen_fix_enabled()
     text = ""
     raw_text = ""
-    repairs: list[dict[str, Any]] = []
+    hyphen_events: list[dict[str, Any]] = []
+    layout_events: list[dict[str, Any]] = []
     for line_index, line in enumerate(lines):
         part = line["text"]
         raw_part = line.get("raw_text", part)
-        if text.endswith("-") and part and part[0].islower():
-            text = text[:-1] + part
+        # text 与 raw_text 采用同一 layout join，事件只记一次（取自 text 通道）；
+        # 同页事件携带当前页 page_number（与跨页事件的断点页同一字段语义）
+        text, event = _join_lines_text(
+            text, part, hyphen_fix=hyphen_fix, page_number=page_number)
+        old_raw = raw_text
+        raw_text, raw_event = _join_lines_text(raw_text, raw_part, hyphen_fix=hyphen_fix)
+        if event is not None:
+            event = dict(event)
+            event["line_index"] = line_index
+            # 内部修复位点（_raw_offset，仅供 _append_text_block 标题/正文拆分归属，
+            # 写盘前剥除）：raw 通道 join 事件 before/after 累计快照的最长公共前缀即
+            # 实际变更起点（后续行只在尾部追加，该偏移在段落 raw 坐标中稳定）；
+            # raw 通道无事件（两通道断词形态不同）时退守 text 通道快照估算
+            snapshot = raw_event or event
+            event["_raw_offset"] = _common_prefix_len(
+                str(snapshot.get("before") or ""), str(snapshot.get("after") or ""))
+            hyphen_events.append(event)
+        # 行内 layout 事件（D1 下标归位等）翻译为段落 raw 偏移：优先用
+        # _merge_words 逐词定位留下的行内精确位点 _line_raw_offset（重复 token
+        # 由词序保证归到真正持有事件的词）；无位点（直接构造 layout_events 的
+        # 调用方）退守在该行 raw_part 内按稳定事件顺序定位 repaired after token
+        if not old_raw:
+            raw_start = 0
+        elif raw_event is None:
+            raw_start = len(old_raw) + 1   # 普通空格拼接
+        elif raw_text == old_raw + raw_part:
+            raw_start = len(old_raw)       # 数字续行：保留连字符
         else:
-            text = f"{text} {part}" if text else part
-        if raw_text.endswith("-") and raw_part and raw_part[0].islower():
-            raw_text = raw_text[:-1] + raw_part
-        else:
-            raw_text = f"{raw_text} {raw_part}" if raw_text else raw_part
-        for event in line.get("text_repairs") or []:
-            event_copy = dict(event)
-            event_copy["line_index"] = line_index
-            repairs.append(event_copy)
+            raw_start = len(old_raw) - 1   # 小写续行：去连字符
+        cursor = 0
+        for layout_event in line.get("layout_events") or []:
+            event_copy = dict(layout_event)
+            line_offset = event_copy.get("_line_raw_offset")
+            if isinstance(line_offset, int) and not isinstance(line_offset, bool):
+                event_copy["_raw_offset"] = raw_start + line_offset
+            else:
+                after_token = str(event_copy.get("after") or "").strip()
+                pos = raw_part.find(after_token, cursor) if after_token else -1
+                if pos >= 0:
+                    event_copy["_raw_offset"] = raw_start + pos
+                    cursor = pos + max(len(after_token), 1)
+            layout_events.append(event_copy)
     merged_raw_text = clean_text(raw_text)
     merged_text = clean_text(text)
-    repair_checked = any(line.get("text_repair_checked") for line in lines)
-    if repair_checked:
+    # 审计解耦（2026-08-09 修复）：此前任一 text_repair_checked 就用 defrag 重放覆盖全部
+    # 行事件，版式修复（D1/D2）事件会整体丢失。现在显式区分 defrag 事件与 layout 事件：
+    # defrag 开启时段落仍从 merged_raw_text 重放 defragment_text_with_audit（source_spans
+    # 可重放性不变），最终 text_repairs = layout 事件 + 段落级 defrag 事件。
+    defrag_checked = any(line.get("text_repair_checked") for line in lines)
+    defrag_events: list[dict[str, Any]] = []
+    if defrag_checked:
         # Line-level repairs are useful while grouping layout, but the persisted
         # paragraph must be reproducible from its own raw_text.  Replay once at
         # the final paragraph scope and persist that exact audit transcript.
-        merged_text, repairs = defragment_text_with_audit(merged_raw_text)
+        merged_text, defrag_events = defragment_text_with_audit(merged_raw_text)
         merged_text = clean_text(merged_text)
+    repairs = layout_events + hyphen_events + defrag_events
+    repair_checked = defrag_checked or bool(layout_events) or bool(hyphen_events)
     result = {
         "text": merged_text,
         "top": min(line["top"] for line in lines),
@@ -1602,6 +2281,10 @@ def _merge_lines(lines: list[dict[str, Any]]) -> dict[str, Any]:
             "text_repair_words_after": len(merged_text.split()),
             "text_repair_candidates_before": _fragmentation_signal_count(merged_raw_text),
             "text_repair_candidates_after": _fragmentation_signal_count(merged_text),
+            # 内部真相标志：defrag 是否实跑（defrag 实跑但零事件/零净变化时
+            # raw==text，下游靠 raw!=text/事件猜不出来）。仅供 _append_text_block
+            # 消费并在调用点 pop——不得泄漏为最终 block 字段。
+            "_defrag_ran": defrag_checked,
         })
     return result
 
@@ -1621,29 +2304,40 @@ def _starts_new_paragraph(
     *,
     page_height: float,
     document_profile: DocumentProfile,
+    hyphen_fix: bool | None = None,
 ) -> bool:
+    if hyphen_fix is None:
+        hyphen_fix = pdf_hyphen_fix_enabled()
     if _is_margin_line(previous, page_height) or _is_margin_line(line, page_height):
-        return True
-    if detect_heading(line["text"], "", document_profile=document_profile):
-        return True
-    if looks_like_caption(line["text"], document_profile=document_profile):
         return True
     if _LIST_ITEM_RE.match(line["text"]):
         return True   # 列表项必自成段（不论行距）
     if _DOT_LEADER_RE.search(line["text"]) or _DOT_LEADER_RE.search(previous["text"]):
         return True   # 目录条目（点引导线）永不与相邻行黏段——黏了会把整屏点串塞进正文
     gap = float(line["top"]) - float(previous["bottom"])
+    prev_text = previous["text"].rstrip()
+    previous_x0 = float(previous.get("x0", 0.0))
+    current_x0 = float(line.get("x0", previous_x0))
+    current_is_outdented = previous_x0 - current_x0 >= 8
+    # D2：合法断行连字符的数字续行必须先于标题/大间距切段被识别（"BS 5685-" + "1"
+    # 会被裸数字标题规则先截胡）；margin/list/点引导线等必要边界护栏已在上方先行拦截。
+    # 明显左凸（>=8pt）是强新段边界（"Scope-" + 左凸 "1 Introduction"），不适用本豁免。
+    if (hyphen_fix and gap < 26 and len(prev_text) >= 2
+            and prev_text.endswith("-") and prev_text[-2].isalnum()
+            and line["text"][:1].isdigit()
+            and not current_is_outdented):
+        return False
+    if detect_heading(line["text"], "", document_profile=document_profile):
+        return True
+    if looks_like_caption(line["text"], document_profile=document_profile):
+        return True
     if gap >= 12:
         # 续行豁免：机翻 PDF 行距不齐会把一句话切成两块（真实取证 22% 段落块小写开头）。
         # 前行无句终标点 + 当前行小写开头 + 间距未大到换节 → 仍是同一段。
         # 0711 评审护栏：但若两行都像独立需求（都含 shall/must/should 等标志词），
         # 则判为新段——两条需求不应被误并成一条（会丢一条需求）。
-        prev_text = previous["text"].rstrip()
-        previous_x0 = float(previous.get("x0", 0.0))
-        current_x0 = float(line.get("x0", previous_x0))
-        current_is_outdented = previous_x0 - current_x0 >= 8
-        previous_is_list_item = bool(_LIST_ITEM_RE.match(prev_text))
         current_is_list_continuation = current_x0 - previous_x0 >= 8
+        previous_is_list_item = bool(_LIST_ITEM_RE.match(prev_text))
         if current_is_outdented or (previous_is_list_item and not current_is_list_continuation):
             return True
         if (gap < 26 and prev_text and prev_text[-1] not in _SENTENCE_TERMINALS
@@ -1699,6 +2393,83 @@ def _refine_pdf_heading(
     return heading, text, None
 
 
+def _repair_event_split_side(
+    event: dict[str, Any],
+    *,
+    heading_text: str,
+    heading_raw: str,
+    body_text: str,
+    body_raw: str,
+) -> str:
+    """粘连标题拆分时单个修复事件的归属判定：返回 "heading" 或 "body"。
+
+    证据按 repaired after → raw before 逐条定位：某侧唯一命中即归该侧；
+    双侧同命中/同落空（before/after 是拼接视图、跨缝后不逐字出现于任一侧）继续看
+    下一条证据；全部歧义保守归 "body"——跨缝或无法定位的事件选唯一保守属主，
+    绝不复制给两块（质量报告 rule 计数会翻倍）。
+    """
+    for key, heading_channel, body_channel in (
+        ("after", heading_text, body_text),
+        ("before", heading_raw, body_raw),
+    ):
+        evidence = str(event.get(key) or "").strip()
+        if not evidence:
+            continue
+        in_heading = evidence in heading_channel
+        in_body = evidence in body_channel
+        if in_heading and not in_body:
+            return "heading"
+        if in_body and not in_heading:
+            return "body"
+    return "body"
+
+
+def _is_layout_repair_event(event: dict[str, Any]) -> bool:
+    return str(event.get("rule") or "") in _LAYOUT_REPAIR_RULES
+
+
+def _partition_split_repairs(
+    events: list[dict[str, Any]],
+    *,
+    raw_boundary: int,
+    heading_text: str,
+    heading_raw: str,
+    body_text: str,
+    body_raw: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """粘连标题拆分的事件归属划分，每个事件恰好落一侧。
+
+    主通道（生产）：事件带 _merge_lines 标注的内部修复位点 _raw_offset——按真实
+    修复位点与 raw_boundary 比较（重复 token/跨缝累计快照都归正确一侧）。
+    回退通道（无位点的直接调用方）：after/before 子串证据，歧义保守归 body。
+    """
+    heading: list[dict[str, Any]] = []
+    body: list[dict[str, Any]] = []
+    for event in events:
+        offset = event.get("_raw_offset")
+        if isinstance(offset, int) and not isinstance(offset, bool):
+            (heading if offset < raw_boundary else body).append(event)
+            continue
+        side = _repair_event_split_side(
+            event,
+            heading_text=heading_text,
+            heading_raw=heading_raw,
+            body_text=body_text,
+            body_raw=body_raw,
+        )
+        (heading if side == "heading" else body).append(event)
+    return heading, body
+
+
+def _persistable_repairs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """写盘前剥离内部位点元数据（"_" 前缀键，如 _raw_offset）——仅供拆分归属的
+    私有定位器不得出现在最终 block 的 text_repairs 产物中。"""
+    return [
+        {key: value for key, value in event.items() if not str(key).startswith("_")}
+        for event in events
+    ]
+
+
 def _append_text_block(
     blocks: list[dict[str, Any]],
     text: str,
@@ -1718,6 +2489,7 @@ def _append_text_block(
     text_repair_words_after: int = 0,
     text_repair_candidates_before: int = 0,
     text_repair_candidates_after: int = 0,
+    defrag_ran: bool | None = None,
 ) -> tuple[int, str | None]:
     text = clean_text(text)
     if not text:
@@ -1725,6 +2497,18 @@ def _append_text_block(
 
     repaired_source_text = text
     raw_source_text = str(raw_text if raw_text is not None else text)
+    # provenance 解耦（2026-08-09 二轮修复）：defrag_ran 由 _merge_lines 的真实
+    # defrag_checked 经内部 _defrag_ran 标志显式传入——defrag 实跑但零事件/零净变化
+    # （raw==text 的 identity 对齐）也必须挂当前 provenance，stale producer/vocabulary
+    # 检查依赖它；layout-only（D1/D2 事件）恒为 False，provenance 必须是 None。
+    # 未显式传入（非 _merge_lines 通道）退守证据推断。
+    if defrag_ran is None:
+        defrag_ran = _block_defrag_ran({
+            "text_repair_checked": text_repair_checked,
+            "raw_text": raw_source_text,
+            "text": repaired_source_text,
+            "text_repairs": text_repairs or [],
+        })
 
     heading = detect_heading(text, "", document_profile=profile)
     trailing_body: str | None = None
@@ -1732,12 +2516,14 @@ def _append_text_block(
         heading, text, trailing_body = _refine_pdf_heading(heading, text, profile)
     trailing_raw_text: str | None = None
     block_raw_text = raw_source_text
+    block_repairs: list[dict[str, Any]] = list(text_repairs or [])
+    body_repairs: list[dict[str, Any]] = []
     if trailing_body:
         alignment = build_source_alignment(
             raw_source_text,
             repaired_source_text,
             repair_provenance=(
-                _source_repair_provenance() if text_repair_checked else None
+                _source_repair_provenance() if defrag_ran else None
             ),
         )
         repaired_boundary = len(repaired_source_text) - len(trailing_body)
@@ -1748,8 +2534,60 @@ def _append_text_block(
             repaired_boundary,
             bias="right",
         )
-        block_raw_text = raw_source_text[:raw_boundary]
-        trailing_raw_text = raw_source_text[raw_boundary:]
+        split_raw_text = raw_source_text[:raw_boundary]
+        split_trailing_raw = raw_source_text[raw_boundary:]
+        # P2 三轮（2026-08-09）：layout 事件按真实修复位点划分（_raw_offset 主通道，
+        # 子串证据仅作无位点直接调用方的保守回退）；原始段落级 defrag transcript
+        # 不整体归属任一侧——defrag 实跑时两侧各自从 raw 独立重放取侧级事件，
+        # 任一侧重放不能精确复现该侧 repaired 文本（同清洗语义）即 fail-closed
+        # 放弃拆分，保留未拆段落，绝不伪造归属。
+        if defrag_ran:
+            partition_input = [
+                event for event in (text_repairs or []) if _is_layout_repair_event(event)
+            ]
+        else:
+            partition_input = list(text_repairs or [])
+        split_heading_repairs, split_body_repairs = _partition_split_repairs(
+            partition_input,
+            raw_boundary=raw_boundary,
+            heading_text=text,
+            heading_raw=split_raw_text,
+            body_text=trailing_body,
+            body_raw=split_trailing_raw,
+        )
+        split_ok = True
+        if defrag_ran:
+            heading_replay, heading_side_defrag = defragment_text_with_audit(split_raw_text)
+            body_replay, body_side_defrag = defragment_text_with_audit(split_trailing_raw)
+            if (clean_text(heading_replay) != clean_text(text)
+                    or clean_text(body_replay) != clean_text(trailing_body)):
+                split_ok = False
+            else:
+                split_heading_repairs = split_heading_repairs + heading_side_defrag
+                split_body_repairs = split_body_repairs + body_side_defrag
+        if split_ok:
+            block_raw_text = split_raw_text
+            trailing_raw_text = split_trailing_raw
+            block_repairs = split_heading_repairs
+            body_repairs = split_body_repairs
+        else:
+            # fail-closed：侧级 defrag 重放不能精确复现该侧 repaired 文本——放弃拆分，
+            # 完整保留修复后全文与整段 raw（零丢失：text 必须还原为全段 repaired，
+            # 否则标题块 text 只剩标题、raw 仍是全段，正文从修复通道静默丢失）；
+            # 粘连标题语义无法可靠分离，降级为普通段落（与 _refine_pdf_heading
+            # 自身拆不开时的降级一致），事件/指标维持整段聚合口径。
+            trailing_body = None
+            text = repaired_source_text
+            heading = None
+    # 侧级 checked 语义（2026-08-09 三轮）：拆分时 defrag 实跑两侧恒 checked
+    # （真跑过，即使侧级零事件零变化）；layout-only 仅拥有事件的一侧 checked。
+    # 未拆分维持段落级语义。
+    if trailing_body:
+        side_checked = bool(defrag_ran) or bool(block_repairs)
+        body_checked = bool(defrag_ran) or bool(body_repairs)
+    else:
+        side_checked = bool(text_repair_checked)
+        body_checked = False
     block_type = "paragraph"
     if heading:
         section_path = sections.update(heading[0], heading[1])
@@ -1785,23 +2623,35 @@ def _append_text_block(
         block["raw_text"],
         text,
         repair_provenance=(
-            _source_repair_provenance() if text_repair_checked else None
+            _source_repair_provenance() if defrag_ran else None
         ),
     ))
     if pdf_region:
         block["pdf_regions"] = [pdf_region]
     if heading:
         block["heading_level"] = heading[0]
-    if text_repair_checked:
+    if side_checked:
+        if trailing_body:
+            # P2：拆分后整段聚合指标不得双计——标题块按自身 raw/repaired 重算
+            block_words_before = len(block_raw_text.split())
+            block_words_after = len(text.split())
+            block_candidates_before = _fragmentation_signal_count(block_raw_text)
+            block_candidates_after = _fragmentation_signal_count(text)
+        else:
+            block_words_before = int(
+                text_repair_words_before or len(str(raw_text or text).split()))
+            block_words_after = int(text_repair_words_after or len(text.split()))
+            block_candidates_before = int(text_repair_candidates_before)
+            block_candidates_after = int(text_repair_candidates_after)
         block.update({
-            "text_repaired": bool(text_repairs),
+            "text_repaired": bool(block_repairs),
             "text_repair_checked": True,
             "text_repair_version": PDF_TEXT_REPAIR_VERSION,
-            "text_repairs": list(text_repairs or []),
-            "text_repair_words_before": int(text_repair_words_before or len(str(raw_text or text).split())),
-            "text_repair_words_after": int(text_repair_words_after or len(text.split())),
-            "text_repair_candidates_before": int(text_repair_candidates_before),
-            "text_repair_candidates_after": int(text_repair_candidates_after),
+            "text_repairs": _persistable_repairs(block_repairs),
+            "text_repair_words_before": block_words_before,
+            "text_repair_words_after": block_words_after,
+            "text_repair_candidates_before": block_candidates_before,
+            "text_repair_candidates_after": block_candidates_after,
         })
     blocks.append(block)
 
@@ -1811,18 +2661,31 @@ def _append_text_block(
         if last_caption and len(text) > 120:
             last_caption = None
     if trailing_body:
-        # 粘连标题拆出的正文，紧随标题追加为独立段落块
+        # 粘连标题拆出的正文，紧随标题追加为独立段落块；
+        # 审计事件只带正文侧份额（位点划分/侧级 defrag 重放），指标按正文自身
+        # raw/repaired 显式重算，不再继承整段聚合值；checked 也按侧级语义传递
+        shifted_body_repairs: list[dict[str, Any]] = []
+        for event in body_repairs:
+            # 位点坐标平移：_raw_offset 是整段 raw 坐标，递归若再拆分（正文本
+            # 身又是粘连标题）需相对 body raw（= 整段 raw[raw_boundary:]）的坐标
+            offset = event.get("_raw_offset")
+            if isinstance(offset, int) and not isinstance(offset, bool):
+                event = dict(event)
+                event["_raw_offset"] = offset - raw_boundary
+            shifted_body_repairs.append(event)
         return _append_text_block(
             blocks, trailing_body, order=order, page_number=page_number,
             pdf_region=pdf_region,
             sections=sections, knowledge_bases=knowledge_bases,
             repeated_noise=repeated_noise, last_caption=last_caption, profile=profile,
-            raw_text=trailing_raw_text, text_repairs=text_repairs,
-            text_repair_checked=text_repair_checked,
-            text_repair_words_before=text_repair_words_before,
-            text_repair_words_after=text_repair_words_after,
-            text_repair_candidates_before=text_repair_candidates_before,
-            text_repair_candidates_after=text_repair_candidates_after)
+            raw_text=trailing_raw_text, text_repairs=shifted_body_repairs,
+            text_repair_checked=body_checked,
+            text_repair_words_before=len(str(trailing_raw_text).split()),
+            text_repair_words_after=len(trailing_body.split()),
+            text_repair_candidates_before=_fragmentation_signal_count(
+                str(trailing_raw_text)),
+            text_repair_candidates_after=_fragmentation_signal_count(trailing_body),
+            defrag_ran=defrag_ran)   # 拆出的正文与标题共享同一段落的 defrag 真相
     return order, last_caption
 
 

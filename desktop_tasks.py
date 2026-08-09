@@ -1272,7 +1272,11 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
             # the algorithm version and the bundled vocabulary content in the producer so a
             # repaired parser cannot silently reuse an old atomize run. Source alignment is a
             # separate parser-output contract used by the claim catalog conservation audit.
-            from parsers.pdf_parser import PDF_TEXT_REPAIR_VERSION, text_repair_vocabulary_fingerprint
+            from parsers.pdf_parser import (
+                PDF_TEXT_REPAIR_VERSION,
+                pdf_layout_switch_fingerprint,
+                text_repair_vocabulary_fingerprint,
+            )
             from source_spans import (
                 SOURCE_ALIGNMENT_VERSION,
                 SOURCE_TRANSFORMATION_POLICY_VERSION,
@@ -1282,6 +1286,9 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
             producer = (
                 f"{producer}+{PDF_TEXT_REPAIR_VERSION}"
                 f"+repair-vocab-{text_repair_vocabulary_fingerprint()}"
+                # W8：D1/D2/D3 版式修复开关状态必须进戳——ON/OFF 不得共用缓存；
+                # fingerprint 由 pdf_parser 单点生成，两处默认值不漂移
+                f"+{pdf_layout_switch_fingerprint()}"
                 f"+{SOURCE_ALIGNMENT_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"

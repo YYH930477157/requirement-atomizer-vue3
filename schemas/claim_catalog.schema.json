@@ -803,7 +803,7 @@
                   "const": "source.pdf_text_repair_replay"
                 },
                 "rule_version": {
-                  "const": "source-pdf-text-repair-pdf-text-repair-v4-ea9c8bd7a75ac46e"
+                  "const": "source-pdf-text-repair-pdf-text-repair-v5-ea9c8bd7a75ac46e"
                 },
                 "reason": {
                   "const": "repair.pdf_text_repair_replay"
@@ -849,7 +849,7 @@
           "const": "pdf_text_repair"
         },
         "producer_version": {
-          "const": "pdf-text-repair-v4"
+          "const": "pdf-text-repair-v5"
         },
         "vocabulary_fingerprint": {
           "const": "ea9c8bd7a75ac46e"

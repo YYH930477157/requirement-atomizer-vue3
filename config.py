@@ -53,6 +53,10 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_AI_UNIT_MODE", "clause", "抽取单元模式：clause（条款族，默认）/ chapter（整章，实验，A/B 已裁决劣于 clause）", False),
     # --- 表格双轨制（WS1）---
     EnvVar("RATOMIZER_TABLE_DUAL_TRACK", "0", "表格结构双轨入口开关（=1 启用「LLM 提议→几何校验签发」；默认 0=旧确定性几何单轨，签名失败/无预算/无假设时一律退回单轨）", False),
+    # --- PDF 版式修复（W8：D1 下标归位 / D2 断行连字符 / D3 两栏定义表；全部 OFF 时解析输出与旧版字节一致）---
+    EnvVar("RATOMIZER_PDF_SUBSCRIPT_FIX", "1", "PDF 下标归位开关（D1；=0 关闭 size 证据抽取与下标拼接；默认 1）", False),
+    EnvVar("RATOMIZER_PDF_HYPHEN_FIX", "1", "PDF 断行连字符合并开关（D2；=0 回到旧版仅小写续行拼接；默认 1 含 G4 护栏与数字续行）", False),
+    EnvVar("RATOMIZER_PDF_TWOCOL_DEF", "0", "PDF 两栏定义表检测开关（D3；=1 启用粗体术语栏+长定义栏结构重建；默认 0 试点）", False),
     EnvVar("RATOMIZER_PDF_MODERN_PARSER", "0", "PDF 现代解析器适配层开关（=1 优先走 pdf_modern_adapter；适配层 unavailable 时诚实回退手写 pdfplumber 路径并在产出标 parser_provenance；默认 0=旧手写路径，缓存指纹与 golden 基线字节不变）", False),
     # --- WS2 粒度重构（功能需求直抽 + claim 账本抽检 + 原子级下钻）---
     # 全部默认关闭/采样：直抽是旁路新入口（默认关=旧原子化路径），claim 账本 sampling 为默认档。
