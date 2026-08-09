@@ -44,6 +44,8 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # LLM review / tool-loop
     {"id": "m2-review", "version": "m2-review-v3", "owner_module": "llm_pipeline",
      "purpose": "M2-style detailed LLM review prompt"},
+    {"id": "m2-review-batch", "version": "m2-review-v4-batch", "owner_module": "llm_pipeline",
+     "purpose": "Opt-in single-shot batch review prompt"},
     {"id": "llm-review-cache", "version": "llm-review-cache-v6", "owner_module": "llm_pipeline",
      "purpose": "Review cache fingerprint (pins prompt/tools/schema versions)"},
     {"id": "review-tools", "version": "review-tools-v4", "owner_module": "review_tools",
@@ -85,6 +87,9 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # Translation
     {"id": "translation", "version": "translation-prompt-v2", "owner_module": "api_server",
      "purpose": "Requirement text translation prompt"},
+    {"id": "annotation-translation-batch", "version": "translation-prompt-v3",
+     "owner_module": "doc_annotation_export",
+     "purpose": "Annotation marker batch translation prompt (dual-limit batch array contract)"},
     {"id": "annotation-translation-guards", "version": "annotation-translation-guards-v1",
      "owner_module": "api_server",
      "purpose": "Annotation translation anti-drift guard version"},

@@ -1307,9 +1307,12 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
         elif stage == "llm-review":
             # 代码版本必须进戳（审计 R2-H2）：prompt/cache/tools 任一 bump 后旧阶段
             # 产物不得复用——此前 llm-review 是唯一不拼代码版本的阶段。
-            from llm_pipeline import LLM_REVIEW_CACHE_VERSION, PROMPT_VERSION
+            from llm_pipeline import LLM_REVIEW_CACHE_VERSION, active_review_prompt_version, PROMPT_VERSION
             from review_tools import REVIEW_TOOLS_VERSION
-            producer = (f"{producer}+{PROMPT_VERSION}+{LLM_REVIEW_CACHE_VERSION}"
+            # 复核批处理开启时 prompt 升 m2-review-v4-batch（与逐条 m2-review-v3 区分），
+            # 阶段戳随之变化 → 旧逐条产物重跑；默认 OFF 戳值与既有逐字一致。
+            review_prompt = active_review_prompt_version() or PROMPT_VERSION
+            producer = (f"{producer}+{review_prompt}+{LLM_REVIEW_CACHE_VERSION}"
                         f"+{REVIEW_TOOLS_VERSION}")
             if out_dir is not None:
                 from review_tools import evidence_fingerprint
@@ -1332,13 +1335,15 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
         elif stage == "export-annotation-html":
             from claim_focus import CLAIM_FOCUS_ADAPTER_VERSION
             from doc_annotation_export import (ANNOTATION_TRANSLATION_GUARDS_VERSION,
-                                                ANNOTATION_TRANSLATION_STRATEGY_VERSION,
-                                                CLAIM_ANNOTATION_VERSION)
+                                                CLAIM_ANNOTATION_VERSION,
+                                                _active_translation_strategy_version)
             from doc_facsimile import DOC_FACSIMILE_VERSION
             # docx/xlsx 影印支路（WP-A）进戳：转换层版本变化 → 旧影印产物不得复用
+            # 翻译策略版本按当前模式（优化批处理开/关）解析：开关翻转 → 阶段戳变 → 旧产物重跑
+            translation_strategy_version = _active_translation_strategy_version()
             producer = (f"{producer}+{CLAIM_ANNOTATION_VERSION}"
                         f"+{CLAIM_FOCUS_ADAPTER_VERSION}"
-                        f"+{ANNOTATION_TRANSLATION_STRATEGY_VERSION}"
+                        f"+{translation_strategy_version}"
                         f"+{ANNOTATION_TRANSLATION_GUARDS_VERSION}+{DOC_FACSIMILE_VERSION}")
         if stage in {
             "ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
@@ -1550,6 +1555,9 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
             "RATOMIZER_AI_VERIFY", "RATOMIZER_AI_VERIFY_ROUNDS",
             # 合批条数改变 prompt 形状 → 产物可能不同 → 指纹必须失效（0714 批次二）
             "RATOMIZER_ANALYZE_BATCH", "RATOMIZER_ENRICH_BATCH",
+            "RATOMIZER_TRANSLATE_BATCH", "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS",
+            # 复核批处理：启用/批大小改变审查产物与缓存指纹（m2-review-v4-batch）→ 阶段必须重跑
+            "RATOMIZER_REVIEW_BATCH",
         )},
         "requirements_analysis_enrich": (
             requirements_analysis_enrichment_enabled()

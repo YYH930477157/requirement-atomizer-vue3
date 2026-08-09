@@ -59,6 +59,20 @@ class ClaimAnnotationUnavailable(ValueError):
 # 翻译缓存键/加载器的唯一实现在 api_server（两个渲染面共用防分叉）；生成侧在本模块。
 _TRANSLATION_BATCH = 8
 ANNOTATION_TRANSLATION_STRATEGY_VERSION = "annotation-translation-v2-segment-fallback"
+# 优化批处理提示词版本（批量数组契约 + 「逐条独立，不得跨条借鉴」）；登记于 prompt_registry。
+# 该常量是优化策略指纹的**真实输入**——直接拼进 ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED，
+# 因而随逐条 strategy_version 进入 sidecar 缓存指纹与 export-annotation-html 阶段 producer 戳：
+# 改提示词版本 → 策略版本变 → 旧缓存/旧产物失效重算（不只是登记摆设）。
+TRANSLATION_BATCH_PROMPT_VERSION = "translation-prompt-v3"
+# 优化批处理（RATOMIZER_TRANSLATE_BATCH>0）启用：贪心双上限装包 + 批次 JSON 非法拆半降级 +
+# 「逐条独立，不得跨条借鉴」提示词。与 v2 同一套逐条护栏（_fabricated_translation_tokens），
+# 行为面与缓存指纹均随策略版本升级——旧 v2 拒绝项在新策略下重新尝试（拆半可能救回），
+# 已接受译文跨版本零调用复验复用（护栏照跑）。
+ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED = (
+    f"{TRANSLATION_BATCH_PROMPT_VERSION}-greedy-splithalf"
+)
+_TRANSLATION_BATCH_MAX_CHARS_DEFAULT = 8000
+_TRANSLATION_SPLIT_ROUNDS = 2   # 批次 JSON 非法时拆半重试轮数上限（≤2 轮后回退逐条）
 _TRANSLATION_SIDECAR_VERSION = 2
 _TRANSLATION_REPLACE_ATTEMPTS = 5
 _TRANSLATION_REPLACE_RETRY_S = 0.02
@@ -66,6 +80,54 @@ _TRANSLATION_LOCK_TIMEOUT_S = 10.0
 _TRANSLATION_LOCK_STALE_AFTER_S = 300.0
 _TRANSLATION_PROCESS_LOCKS: dict[Path, RLock] = {}
 _TRANSLATION_PROCESS_LOCKS_GUARD = RLock()
+
+
+def _translate_batch_count() -> int:
+    """RATOMIZER_TRANSLATE_BATCH：<=0 关闭优化批处理（旧 batch=8 简单切片）；正整数启用贪心双上限装包。
+
+    硬上限 ≤10（方案规定，防注意力稀释）：>10 一律 clamp 到 10。非整数（如 3.5、abc）fail-safe
+    关闭（回默认 0=OFF），不静默截断成歧义值。
+    """
+    raw = os.environ.get("RATOMIZER_TRANSLATE_BATCH")
+    if raw is None or str(raw).strip() == "":
+        return 0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0                       # 非数字 → fail-safe 关闭
+    if not value.is_integer():
+        return 0                       # 非整数（3.5 等）→ fail-safe 关闭
+    count = int(value)
+    if count < 1:
+        return 0                       # 0/负数 → OFF
+    return min(count, 10)              # 硬上限 ≤10
+
+
+def _translate_batch_max_chars() -> int:
+    """优化批处理单批输入总字符上限（仅 _translate_batch_count()>0 时生效）。"""
+    raw = os.environ.get("RATOMIZER_TRANSLATE_BATCH_MAX_CHARS")
+    if raw is None or str(raw).strip() == "":
+        return _TRANSLATION_BATCH_MAX_CHARS_DEFAULT
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return _TRANSLATION_BATCH_MAX_CHARS_DEFAULT
+    return value if value >= 1 else _TRANSLATION_BATCH_MAX_CHARS_DEFAULT
+
+
+def _active_translation_strategy_version() -> str:
+    """当前启用的翻译策略版本：优化批处理开→v3-greedy-splithalf（含有效配置指纹），否则旧 v2。
+
+    有效配置（clamp 后的条数 + 字符上限）拼进策略版本，因而同时进入 export-annotation-html
+    阶段 producer 戳与逐条 sidecar strategy_version：
+    - 阶段戳：10/8000 与 5/4000 不同 → 切配置即重跑阶段（不被当同一行为配置）。
+    - 失败缓存：拒绝项绑定 strategy_version → 配置变化时旧拒绝不共键、可重试。
+    已接受译文跨配置仍零调用复用（_translation_entry_is_reusable 的 accepted 分支只过护栏，不看策略版本）。
+    """
+    count = _translate_batch_count()
+    if count <= 0:
+        return ANNOTATION_TRANSLATION_STRATEGY_VERSION
+    return f"{ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED}-b{count}-c{_translate_batch_max_chars()}"
 # 数字并组：千位空格/逗号分隔（"4 000"→"4000"），护栏基线用
 _DIGIT_GROUP_RE = re.compile(r"(?<=\d)[\s,  ](?=\d)")
 
@@ -1954,23 +2016,52 @@ def render_annotation_html(out_dir: Path, *, layout_mode: str = LAYOUT_OPTIMIZED
     )
 
 
-def _translate_marker_batch(chat: Any, batch: list[tuple[str, str, str]]) -> dict[int, str]:
-    # 发送前做渲染同款清洁（目录点引导线/页码/框线乱码），模型不必翻译排版噪声
-    numbered = [{"id": i, "text": " ".join(_clean_block_text(text).split()) or " ".join(text.split())}
-                for i, (_key, _owner, text) in enumerate(batch, start=1)]
+def _cleaned_marker_text(text: str) -> str:
+    # 发送前做渲染同款清洁（目录点引导线/页码/框线乱码），模型不必翻译排版噪声。
+    # 装包字符计量与批次载荷同源，避免装包估算与实发文本不一致。
+    return " ".join(_clean_block_text(text).split()) or " ".join(text.split())
+
+
+def _batch_translation_prompt(numbered: list[dict[str, Any]], *, optimized: bool) -> tuple[str, str]:
     system = "你是电表/燃气表等技术标准文档的翻译助手。"
-    user = "\n".join([
+    rules = [
         "把下列标准原文逐条忠实翻译成中文。规则：",
         "- 逐条对应，不合并、不拆分、不遗漏；",
-        "- 忠实原文：不得新增原文没有的数字、编号、协议代码、单位或任何建议/解释；",
-        "- 专有名词与缩写（如 M-Bus、DLMS、OBIS 及设备/机构缩写）保留原文；",
-        "- 只输出 JSON 对象 {\"items\":[{\"id\":1,\"translation\":\"...\"}]}。",
-        "原文条目 JSON:",
-        json.dumps(numbered, ensure_ascii=False),
-    ])
+    ]
+    if optimized:
+        # 优化批处理：明令逐条独立、不得跨条借鉴——与逐条护栏（_fabricated_translation_tokens）
+        # 配套，防长批里相邻条目数字/编号互相串味后被护栏整批拒掉。
+        rules += [
+            "- 逐条独立翻译：不得跨条借鉴、挪用或合并数字、编号、协议代码、单位或任何内容；",
+            "- 忠实原文：不得新增原文没有的数字、编号、协议代码、单位或任何建议/解释；",
+            "- 专有名词与缩写（如 M-Bus、DLMS、OBIS 及设备/机构缩写）保留原文；",
+            "- 只输出 JSON 对象 {\"items\":[{\"id\":1,\"translation\":\"...\"}]}，"
+            "items 数量与输入条数一致。",
+        ]
+    else:
+        rules += [
+            "- 忠实原文：不得新增原文没有的数字、编号、协议代码、单位或任何建议/解释；",
+            "- 专有名词与缩写（如 M-Bus、DLMS、OBIS 及设备/机构缩写）保留原文；",
+            "- 只输出 JSON 对象 {\"items\":[{\"id\":1,\"translation\":\"...\"}]}。",
+        ]
+    rules += ["原文条目 JSON:", json.dumps(numbered, ensure_ascii=False)]
+    return system, "\n".join(rules)
+
+
+def _translate_marker_batch(chat: Any, batch: list[tuple[str, str, str]], *,
+                            optimized: bool = False) -> tuple[dict[int, str], bool]:
+    numbered = [{"id": i, "text": _cleaned_marker_text(text)}
+                for i, (_key, _owner, text) in enumerate(batch, start=1)]
+    system, user = _batch_translation_prompt(numbered, optimized=optimized)
     payload = chat(system, user)
     items = payload.get("items") if isinstance(payload, dict) else None
     result: dict[int, str] = {}
+    # parseable = 模型回了一个 items 列表（哪怕缺条/多条/乱序都算结构合法）。
+    # 只有结构非法（非 dict、无 items 键、items 非列表）才由上层 _translate_batch_with_splits 拆半。
+    parseable = isinstance(items, list)
+    size = len(batch)
+    seen: set[int] = set()
+    ambiguous: set[int] = set()
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
             continue
@@ -1978,8 +2069,93 @@ def _translate_marker_batch(chat: Any, batch: list[tuple[str, str, str]]) -> dic
             item_id = int(item.get("id"))
         except (TypeError, ValueError):
             continue
+        # 越界 id（含 0/负数/超过本批长度）：忽略，不落表、不污染任何合法位。
+        if item_id < 1 or item_id > size:
+            continue
+        # 重复 id：歧义信号（模型可能串条），fail-closed 丢弃该 id 的全部回填——
+        # 既然后续单条重试取回干净译文，也不让重复项覆盖合法条目。合法条目互不染。
+        if item_id in ambiguous:
+            continue
+        if item_id in seen:
+            result.pop(item_id, None)
+            seen.discard(item_id)
+            ambiguous.add(item_id)
+            continue
+        seen.add(item_id)
         result[item_id] = str(item.get("translation") or "").strip()
-    return result
+    return result, parseable
+
+
+def _translate_batch_with_splits(chat: Any, batch: list[tuple[str, str, str]], *,
+                                 split_rounds: int) -> tuple[dict[int, str], int, int]:
+    """优化批处理：整批非法（调用异常或 items 结构缺失）时拆半重试 ≤split_rounds 轮。
+
+    返回 ``(result, calls, failed)``，永不抛异常：
+    - result: 本（子）批内 1..N 位置 → 译文；成功条目照常回填，缺条留空交逐条级联。
+    - calls: 实际发起的 LLM 调用数（含拆半递归）。
+    - failed: 结构非法/抛异常的调用数（成本审计用）。
+
+    拆半只对「整批非法」生效；部分缺条（items 列表存在但少几条）不算非法，照常逐条降级。
+    单条自身（len==1）无法再拆，回退逐条级联。id 偏移：左半 1..mid 原位，右半 local+mid。
+    """
+    calls = 0
+    failed = 0
+    result: dict[int, str] = {}
+    try:
+        result, parseable = _translate_marker_batch(chat, batch, optimized=True)
+        calls += 1
+        if parseable:
+            return result, calls, failed
+        failed += 1   # items 结构缺失 = 整批非法
+    except Exception:
+        calls += 1
+        failed += 1
+    if split_rounds > 0 and len(batch) > 1:
+        mid = len(batch) // 2
+        left, lc, lf = _translate_batch_with_splits(chat, batch[:mid], split_rounds=split_rounds - 1)
+        right, rc, rf = _translate_batch_with_splits(chat, batch[mid:], split_rounds=split_rounds - 1)
+        merged = dict(left)
+        for local_id, translation in right.items():
+            merged[mid + local_id] = translation
+        return merged, calls + lc + rc, failed + lf + rf
+    return result, calls, failed
+
+
+def _pack_translation_batches(pending_list: list[tuple[str, str, str]], *,
+                              count_limit: int, max_chars: int
+                              ) -> list[list[tuple[str, str, str]]]:
+    """顺序贪心装包：条数与字符双上限，任一触发即封包；单条自身超字符上限整条单独发（宁超勿截）。
+
+    count_limit<=0 时回到旧 batch=8 简单切片（OFF 路径，行为逐字节不变）。
+    """
+    if count_limit <= 0:
+        return [pending_list[start:start + _TRANSLATION_BATCH]
+                for start in range(0, len(pending_list), _TRANSLATION_BATCH)]
+    batches: list[list[tuple[str, str, str]]] = []
+    current: list[tuple[str, str, str]] = []
+    current_chars = 0
+    for item in pending_list:
+        item_chars = len(_cleaned_marker_text(item[2]))
+        # 单条自身超字符上限：先封掉当前包，再整条单独成一包（不截断、宁超勿截）。
+        if item_chars > max_chars:
+            if current:
+                batches.append(current)
+                current = []
+                current_chars = 0
+            batches.append([item])
+            continue
+        would_count = len(current) + 1
+        would_chars = current_chars + item_chars
+        if current and (would_count > count_limit or would_chars > max_chars):
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(item)
+        current_chars += item_chars
+    if current:
+        batches.append(current)
+    return batches
+
 
 
 def _translate_marker_single(chat: Any, text: str, *, forbidden_tokens: list[str],
@@ -2026,6 +2202,42 @@ def _fabricated_translation_tokens(source: str, translation: str) -> list[str]:
     return sorted(str(token) for token in fabricated)
 
 
+def _translation_drift(source: str, translation: str, *, strict: bool
+                       ) -> tuple[list[str], list[str]]:
+    """逐条防漂移护栏，返回 ``(drift_tokens, fabricated_tokens)``。
+
+    - ``drift_tokens``：判定漂移的全部违规 token。
+      * 非严格（v2 默认 OFF）= 仅译文新增（编码/整数），与既有
+        ``_fabricated_translation_tokens`` 完全同口径、行为逐字节不变。
+      * 严格（v3 opt-in）= **双向**：在译文新增之上，补「原文受保护 token 缺失」（编码/数值/单位）
+        与「单位新增」。受保护编码/数值/单位口径与交互式单条通路同源（编码+整数复用
+        cosem_behavior_spec，物理单位符号复用 api_server._protected_units —— 不分叉）。
+    - ``fabricated_tokens``：始终只含译文新增，供单条重试 forbidden_tokens 反馈
+      （「严禁再次出现」只对新增语义成立；缺失方向由重试给模型再一次机会，不由 forbidden 抑制）。
+
+    严格模式超集非严格：任何 v2 会拒的译文，v3 同样拒；v3 额外拦截原文 token 丢失。
+    """
+    fabricated = _fabricated_translation_tokens(source, translation)
+    if not strict:
+        return fabricated, fabricated
+    from api_server import _protected_units
+    from cosem_behavior_spec import extract_codes, extract_ints
+    from text_normalize import strip_enum_markers
+
+    source_codes, trans_codes = extract_codes(source), extract_codes(translation)
+    source_ints = extract_ints(_DIGIT_GROUP_RE.sub("", source))
+    trans_ints = extract_ints(strip_enum_markers(translation))
+    source_units, trans_units = _protected_units(source), _protected_units(translation)
+    missing = ((source_codes - trans_codes)
+               | (source_ints - trans_ints)
+               | (source_units - trans_units))
+    fabricated_units = trans_units - source_units
+    drift = (set(fabricated)
+             | {f"缺失:{token}" for token in missing}
+             | {f"新增单位:{unit}" for unit in fabricated_units})
+    return sorted(drift), fabricated
+
+
 _TRANSLATION_ABBREVIATIONS = ("e.g.", "i.e.", "etc.", "fig.", "no.", "vs.")
 
 
@@ -2058,12 +2270,17 @@ def _split_translation_segments(text: str) -> list[str]:
     return parts
 
 
-def _translation_entry_is_reusable(entry: dict[str, Any], source_text: str) -> bool:
-    # 已接受译文可零调用迁移，但必须用当前护栏重新验证；拒绝只在同策略+护栏内复用。
+def _translation_entry_is_reusable(entry: dict[str, Any], source_text: str, *,
+                                   strategy_version: str = ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                                   strict: bool = False) -> bool:
+    # 已接受译文可零调用迁移，但必须用当前护栏重新验证（v3 严格双向护栏也会在此拦下
+    # v2 接受但缺失 token 的旧译文——零调用复用前提是通过当前护栏）；拒绝只在同策略+护栏内复用。
     if str(entry.get("translation") or "").strip() and not entry.get("rejected"):
-        return not _fabricated_translation_tokens(source_text, str(entry.get("translation") or ""))
+        drift, _fabricated = _translation_drift(source_text, str(entry.get("translation") or ""),
+                                                strict=strict)
+        return not drift
     return bool(entry.get("rejected")
-                and entry.get("strategy_version") == ANNOTATION_TRANSLATION_STRATEGY_VERSION
+                and entry.get("strategy_version") == strategy_version
                 and entry.get("guards_version") == ANNOTATION_TRANSLATION_GUARDS_VERSION)
 
 
@@ -2119,6 +2336,16 @@ def _merge_translation_update(existing: dict[str, Any] | None,
     incoming_accepted = bool(str(incoming.get("translation") or "").strip()
                              and not incoming.get("rejected"))
     if existing_accepted:
+        invalidated_sha256 = str(incoming.get("invalidated_translation_sha256") or "")
+        existing_translation = str(existing.get("translation") or "").strip()
+        if (not incoming_accepted
+                and incoming.get("status") == "unresolved"
+                and invalidated_sha256
+                and hashlib.sha256(existing_translation.encode("utf-8")).hexdigest()
+                == invalidated_sha256):
+            # CAS：只替换本轮严格护栏实际复验过的那份旧译文。若另一进程已写入
+            # 不同的成功译文，哈希不匹配，继续保留磁盘上的新结果。
+            return dict(incoming)
         # 当前护栏重新验证的结果可以取代旧护栏下的成功项。否则旧译文即使被
         # 新护栏判定不安全，也会被“已接受优先”的并发规则永久保留下来。
         if (existing.get("guards_version") != ANNOTATION_TRANSLATION_GUARDS_VERSION
@@ -2136,7 +2363,8 @@ def _merge_translation_update(existing: dict[str, Any] | None,
 
 
 def _write_translation_sidecar(out_dir: Path, sidecar: dict[str, dict[str, Any]], model: str,
-                               updated_keys: set[str]) -> None:
+                               updated_keys: set[str], *,
+                               strategy_version: str = ANNOTATION_TRANSLATION_STRATEGY_VERSION) -> None:
     out_dir = Path(out_dir).expanduser().resolve()
     target = governed_artifact_path(
         out_dir, ANNOTATION_TRANSLATIONS, category="cache"
@@ -2149,7 +2377,7 @@ def _write_translation_sidecar(out_dir: Path, sidecar: dict[str, dict[str, Any]]
         sidecar.update(latest)
         payload = {
             "version": _TRANSLATION_SIDECAR_VERSION,
-            "strategy_version": ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+            "strategy_version": strategy_version,
             "guards_version": ANNOTATION_TRANSLATION_GUARDS_VERSION,
             "model": model,
             "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -2175,7 +2403,10 @@ def _write_translation_sidecar(out_dir: Path, sidecar: dict[str, dict[str, Any]]
 
 def _resolve_guarded_translation(chat: Any, *, owner: str, text: str,
                                  batch_translation: str, model: str,
-                                 batch_failure: str = "") -> tuple[dict[str, Any], dict[str, int]]:
+                                 batch_failure: str = "",
+                                 strategy_version: str = ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                                 strict: bool = False
+                                 ) -> tuple[dict[str, Any], dict[str, int]]:
     attempts = {"batch": 1, "single": 0, "sentence": 0}
     metrics = {"single_retries": 0, "segment_retries": 0,
                "segment_calls": 0, "retry_calls": 0, "failed_calls": 0}
@@ -2184,25 +2415,29 @@ def _resolve_guarded_translation(chat: Any, *, owner: str, text: str,
         "owner": owner,
         "model": model,
         "source_head": " ".join(text.split())[:120],
-        "strategy_version": ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+        "strategy_version": strategy_version,
         "guards_version": ANNOTATION_TRANSLATION_GUARDS_VERSION,
     }
+    # strict（v3）= 双向护栏（缺失+新增）；非 strict（v2）= 仅新增，行为不变。
+    guard_reason = "drift_tokens" if strict else "fabricated_tokens"
 
-    batch_tokens = _fabricated_translation_tokens(text, batch_translation) if batch_translation else []
-    if batch_translation and not batch_tokens and not batch_failure:
+    batch_drift, batch_fabricated = (
+        _translation_drift(text, batch_translation, strict=strict) if batch_translation else ([], []))
+    if batch_translation and not batch_drift and not batch_failure:
         return ({**base, "translation": batch_translation, "rejected": False,
                  "status": "accepted", "strategy": "batch", "attempts": attempts,
                  "retry_count": 0, "rejections": rejections}, metrics)
-    if batch_tokens:
-        rejections.append({"strategy": "batch", "reason": "fabricated_tokens",
-                           "fabricated_tokens": batch_tokens})
+    if batch_drift:
+        rejections.append({"strategy": "batch", "reason": guard_reason,
+                           "drift_tokens": batch_drift, "fabricated_tokens": batch_fabricated})
     else:
         rejections.append({"strategy": "batch", "reason": batch_failure or "missing_translation"})
 
     attempts["single"] = 1
     metrics["single_retries"] = 1
     metrics["retry_calls"] = 1
-    forbidden_tokens = list(batch_tokens)
+    # forbidden_tokens 只取译文新增（「严禁再次出现」仅对新增语义成立；缺失方向由重试再给一次机会）。
+    forbidden_tokens = list(batch_fabricated)
     try:
         single = _translate_marker_single(
             chat, text, forbidden_tokens=forbidden_tokens,
@@ -2213,22 +2448,26 @@ def _resolve_guarded_translation(chat: Any, *, owner: str, text: str,
         rejections.append({"strategy": "single", "reason": "call_failed",
                            "detail": str(exc)[:160]})
     if single:
-        single_tokens = _fabricated_translation_tokens(text, single)
-        if not single_tokens:
+        single_drift, single_fabricated = _translation_drift(text, single, strict=strict)
+        if not single_drift:
             return ({**base, "translation": single, "rejected": False,
                      "status": "accepted", "strategy": "single", "attempts": attempts,
                      "retry_count": 1, "rejections": rejections}, metrics)
-        forbidden_tokens = sorted(set(forbidden_tokens) | set(single_tokens))
-        rejections.append({"strategy": "single", "reason": "fabricated_tokens",
-                           "fabricated_tokens": single_tokens})
+        forbidden_tokens = sorted(set(forbidden_tokens) | set(single_fabricated))
+        rejections.append({"strategy": "single", "reason": guard_reason,
+                           "drift_tokens": single_drift, "fabricated_tokens": single_fabricated})
     elif not any(item.get("strategy") == "single" for item in rejections):
         rejections.append({"strategy": "single", "reason": "missing_translation"})
 
     segments = _split_translation_segments(text)
     if len(segments) < 2:
         had_guard_rejection = any(
-            item.get("reason") == "fabricated_tokens" for item in rejections)
-        reason_prefix = "翻译含无据编码/数字" if had_guard_rejection else "翻译调用未得到可校验结果"
+            item.get("reason") in ("fabricated_tokens", "drift_tokens") for item in rejections)
+        reason_prefix = (
+            "翻译存在受保护编码/数值/单位漂移" if strict and had_guard_rejection
+            else "翻译含无据编码/数字" if had_guard_rejection
+            else "翻译调用未得到可校验结果"
+        )
         reason = f"{reason_prefix}；单条重试仍未通过，且原文无法可靠切成多个句段"
         unresolved = not had_guard_rejection
         return ({**base, "translation": "", "rejected": not unresolved,
@@ -2259,29 +2498,33 @@ def _resolve_guarded_translation(chat: Any, *, owner: str, text: str,
             rejections.append({"strategy": "sentence", "segment": index,
                                "reason": "missing_translation"})
             break
-        segment_tokens = _fabricated_translation_tokens(segment, translated)
-        if segment_tokens:
-            segment_failure = f"{label}仍含无据 token: {', '.join(segment_tokens[:6])}"
+        segment_drift, _seg_fabricated = _translation_drift(segment, translated, strict=strict)
+        if segment_drift:
+            segment_failure = f"{label}仍含漂移 token: {', '.join(segment_drift[:6])}"
             rejections.append({"strategy": "sentence", "segment": index,
-                               "reason": "fabricated_tokens",
-                               "fabricated_tokens": segment_tokens})
+                               "reason": guard_reason, "drift_tokens": segment_drift})
             break
         translated_segments.append(translated)
 
     if not segment_failure and len(translated_segments) == len(segments):
         assembled = "".join(translated_segments)
-        assembled_tokens = _fabricated_translation_tokens(text, assembled)
-        if not assembled_tokens:
+        assembled_drift, _asm_fabricated = _translation_drift(text, assembled, strict=strict)
+        if not assembled_drift:
             return ({**base, "translation": assembled, "rejected": False,
                      "status": "accepted", "strategy": "sentence", "attempts": attempts,
                      "retry_count": attempts["single"] + attempts["sentence"],
                      "rejections": rejections}, metrics)
-        segment_failure = f"组装译文仍含无据 token: {', '.join(assembled_tokens[:6])}"
-        rejections.append({"strategy": "sentence_assembled", "reason": "fabricated_tokens",
-                           "fabricated_tokens": assembled_tokens})
+        segment_failure = f"组装译文仍含漂移 token: {', '.join(assembled_drift[:6])}"
+        rejections.append({"strategy": "sentence_assembled", "reason": guard_reason,
+                           "drift_tokens": assembled_drift})
 
-    had_guard_rejection = any(item.get("reason") == "fabricated_tokens" for item in rejections)
-    reason_prefix = "翻译含无据编码/数字" if had_guard_rejection else "翻译调用未得到可校验结果"
+    had_guard_rejection = any(
+        item.get("reason") in ("fabricated_tokens", "drift_tokens") for item in rejections)
+    reason_prefix = (
+        "翻译存在受保护编码/数值/单位漂移" if strict and had_guard_rejection
+        else "翻译含无据编码/数字" if had_guard_rejection
+        else "翻译调用未得到可校验结果"
+    )
     reason = f"{reason_prefix}；句段降级未全部通过（{segment_failure}）"
     return ({**base, "translation": "", "rejected": had_guard_rejection,
              "status": "rejected" if had_guard_rejection else "unresolved",
@@ -2304,10 +2547,16 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
     if texts is None:
         render_annotation_html(out_dir)   # 收集本文档全部说明标记文本
         texts = dict(_collected_marker_texts)
+    # 优化批处理默认 OFF：行为与缓存指纹逐字节保持 v2；正整数启用贪心双上限装包+拆半降级（v3）。
+    optimized_count = _translate_batch_count()
+    optimized = optimized_count > 0
+    strategy_version = _active_translation_strategy_version()
     sidecar = _read_translation_sidecar(out_dir)
     reusable = {
         key for key, (_owner, text) in texts.items()
-        if key in sidecar and _translation_entry_is_reusable(sidecar[key], text)
+        if key in sidecar
+        and _translation_entry_is_reusable(sidecar[key], text,
+                                           strategy_version=strategy_version, strict=optimized)
     }
     invalidated_keys = {
         key for key, (_owner, text) in texts.items()
@@ -2315,7 +2564,7 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
         and key not in reusable
         and str(sidecar[key].get("translation") or "").strip()
         and not sidecar[key].get("rejected")
-        and _fabricated_translation_tokens(text, str(sidecar[key].get("translation") or ""))
+        and _translation_drift(text, str(sidecar[key].get("translation") or ""), strict=optimized)[0]
     }
     migrated_keys = {
         key for key in reusable
@@ -2335,14 +2584,17 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
             "status": "unresolved",
             "reason": "旧缓存译文未通过当前数字/编码护栏，等待重新翻译",
             "fabricated_tokens": _fabricated_translation_tokens(text, unsafe_translation),
-            "strategy_version": ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+            "invalidated_translation_sha256": hashlib.sha256(
+                unsafe_translation.encode("utf-8")
+            ).hexdigest(),
+            "strategy_version": strategy_version,
             "guards_version": ANNOTATION_TRANSLATION_GUARDS_VERSION,
         }
     pending = {key: value for key, value in texts.items() if key not in reusable}
     cached_rejected = sum(1 for key in reusable if sidecar[key].get("rejected"))
     summary: dict[str, Any] = {
         "route": "stub", "model": "", "total_markers": len(texts),
-        "strategy_version": ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+        "strategy_version": strategy_version,
         "guards_version": ANNOTATION_TRANSLATION_GUARDS_VERSION,
         "cached": len(reusable), "cached_accepted": len(reusable) - cached_rejected,
         "cached_rejected": cached_rejected, "translated": 0, "rejected": 0,
@@ -2356,12 +2608,14 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
         summary["route"] = "openai_compatible" if summary["cached"] else "stub"
         if migrated_keys:
             model = next((str(sidecar[key].get("model") or "") for key in migrated_keys), "")
-            _write_translation_sidecar(out_dir, sidecar, model, migrated_keys)
+            _write_translation_sidecar(out_dir, sidecar, model, migrated_keys,
+                                       strategy_version=strategy_version)
         return summary
     metadata_keys = migrated_keys | invalidated_keys
     if metadata_keys:
         model = next((str(sidecar[key].get("model") or "") for key in metadata_keys), "")
-        _write_translation_sidecar(out_dir, sidecar, model, metadata_keys)
+        _write_translation_sidecar(out_dir, sidecar, model, metadata_keys,
+                                   strategy_version=strategy_version)
     from functional_synthesis import _resolve_catalog_chat
     invoke, executed = _resolve_catalog_chat(route, chat)
     if invoke is None:
@@ -2372,9 +2626,15 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     pending_list = [(key, owner, text) for key, (owner, text) in pending.items()]
-    batches = [pending_list[start:start + _TRANSLATION_BATCH]
-               for start in range(0, len(pending_list), _TRANSLATION_BATCH)]
-    summary["batch_calls"] = len(batches)
+    if optimized:
+        batches = _pack_translation_batches(
+            pending_list, count_limit=optimized_count,
+            max_chars=_translate_batch_max_chars())
+        summary["batch_calls"] = 0   # 拆半可能追加调用，按实际累计
+    else:
+        batches = [pending_list[start:start + _TRANSLATION_BATCH]
+                   for start in range(0, len(pending_list), _TRANSLATION_BATCH)]
+        summary["batch_calls"] = len(batches)
     try:
         from ai_extract import resolve_concurrency
         workers = resolve_concurrency(None)
@@ -2382,22 +2642,37 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
         workers = 1
     # 并发批次 + 每批完成即落盘（分析富化 288 条串行数小时+零落盘的教训，同对策）
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = {executor.submit(_translate_marker_batch, invoke, batch): batch for batch in batches}
+        if optimized:
+            futures = {executor.submit(_translate_batch_with_splits, invoke, batch,
+                                        split_rounds=_TRANSLATION_SPLIT_ROUNDS): batch
+                       for batch in batches}
+        else:
+            futures = {executor.submit(_translate_marker_batch, invoke, batch): batch
+                       for batch in batches}
         for future in as_completed(futures):
             batch = futures[future]
             batch_failure = ""
-            try:
-                translations = future.result()
-            except Exception as exc:
-                translations = {}
-                batch_failure = f"batch_call_failed: {str(exc)[:160]}"
-                summary["failed_calls"] += 1
+            if optimized:
+                # _translate_batch_with_splits 永不抛异常；返回 (result, calls, failed)。
+                translations, calls, failed = future.result()
+                summary["batch_calls"] += calls
+                summary["failed_calls"] += failed
+                if not translations and failed:
+                    batch_failure = "batch_unparseable"
+            else:
+                try:
+                    translations, _parseable = future.result()
+                except Exception as exc:
+                    translations = {}
+                    batch_failure = f"batch_call_failed: {str(exc)[:160]}"
+                    summary["failed_calls"] += 1
             changed_keys: set[str] = set()
             for index, (key, owner, text) in enumerate(batch, start=1):
                 translation = translations.get(index, "")
                 entry, metrics = _resolve_guarded_translation(
                     invoke, owner=owner, text=text, batch_translation=translation,
-                    model=summary["model"],
+                    model=summary["model"], strategy_version=strategy_version,
+                    strict=optimized,
                     batch_failure=batch_failure or ("batch_missing_item" if not translation else ""))
                 for metric, value in metrics.items():
                     summary[metric] += value
@@ -2411,7 +2686,8 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
                 sidecar[key] = entry
                 changed_keys.add(key)
             if changed_keys:
-                _write_translation_sidecar(out_dir, sidecar, summary["model"], changed_keys)
+                _write_translation_sidecar(out_dir, sidecar, summary["model"], changed_keys,
+                                           strategy_version=strategy_version)
                 # 每批完成即落盘，中途被杀不丢已完成的真实调用。
     return summary
 

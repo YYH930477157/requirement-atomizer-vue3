@@ -63,6 +63,13 @@ def validate_llm_review_result_payload(
         if value is not None:
             validate_string_list(value, f"{path}.{field}", field, issues)
 
+    # 批量复核 merge/split 跨条引用字段（m2-review-v4-batch）：可选字符串列表，语义为
+    # 「本条 merge/split 决策所引用的同批其他 requirement_id」。批处理层校验它们必须落在
+    # 当前批成员集合内（批外/幽灵 ID → needs_expert）；单条路径不产生此字段。
+    related = row.get("related_requirement_ids")
+    if related is not None:
+        validate_string_list(related, f"{path}.related_requirement_ids", "related_requirement_ids", issues)
+
     confidence = row.get("confidence")
     if confidence is not None:
         if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
