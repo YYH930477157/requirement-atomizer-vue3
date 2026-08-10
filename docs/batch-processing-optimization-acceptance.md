@@ -39,7 +39,9 @@
 |---|---:|
 | 首轮翻译/配置/结果包聚焦测试 | 312 tests OK |
 | v3 返修后相关测试 | 335 tests OK |
-| 最终后端全量 | 3427 tests OK, skipped=7 |
+| 隔离 worktree 后端全量 | 3427 tests OK, skipped=7 |
+| 合并后 main 后端全量 | 3427 tests OK, 0 skip |
+| 合并后冻结 golden | 6/6 OK，零漂移 |
 | 修改 Python 文件编译 | 通过 |
 | `git diff --check` | 通过，仅 Windows LF/CRLF 提示 |
 | 前端 | 未改动，无需新增前端验证 |
