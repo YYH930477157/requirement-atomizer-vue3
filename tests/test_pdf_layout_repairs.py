@@ -21,6 +21,7 @@ from parsers.pdf_parser import (
     PDF_TWOCOL_DEF_VERSION,
     _append_text_block,
     _build_pdf_table_artifacts,
+    _detect_repeated_margin_lines,
     _detect_text_tables,
     _detect_twocol_definition_tables,
     _extract_page_words,
@@ -1163,6 +1164,65 @@ class HeadingSplitAuditPartitionTests(unittest.TestCase):
         self.assertEqual(hygiene["repairs"], 1)
         self.assertEqual(hygiene["repair_rules"], {"subscript_reattach": 1})
 
+    def test_split_d1_event_with_legacy_hyphen_join_goes_to_heading(self) -> None:
+        # C-1：D1 开 + D2 关的混合开关下，旧版连字符拼接（去连字符、无空格、无事件）会让
+        # _merge_lines 误把 follow 行在段落 raw 中的起点算成 len(old_raw)+1，导致 D1 事件
+        # _raw_offset 漂移 +2；真实修复位点在标题侧却被错归正文侧。
+        d1_event = {
+            "rule": "subscript_reattach",
+            "rule_version": PDF_SUBSCRIPT_REATTACH_VERSION,
+            "before": "n b",
+            "after": "nb",
+            "position_basis": "word_geometry",
+        }
+        body_text = (
+            "nb The service must allow remote updates and record every attempt event "
+            "for audit trail purposes so that operations can be reviewed"
+        )
+        line2 = _merge_words(self._words_for_line(body_text, 0, d1_event), defrag=False)
+        lines = [
+            _line("4.2.7 require-", 100),
+            line2,
+        ]
+        merged = _merge_lines(lines, hyphen_fix=False, page_number=6)
+        self.assertEqual(
+            merged["raw_text"],
+            "4.2.7 requirenb The service must allow remote updates and record every "
+            "attempt event for audit trail purposes so that operations can be reviewed",
+        )
+        event = [e for e in merged["text_repairs"]
+                 if e["rule"] == "subscript_reattach"][0]
+        # "4.2.7 require-" 长度 14，旧连字符拼接下行真实起点 = 14 - 1 = 13；
+        # 旧实现按空格拼接记成 15，位点会越过分割边界。
+        self.assertEqual(event["_raw_offset"], 13)
+
+        blocks: list[dict] = []
+        _append_text_block(
+            blocks,
+            merged["text"],
+            order=0,
+            page_number=6,
+            sections=SectionState(),
+            knowledge_bases=KB,
+            repeated_noise=set(),
+            last_caption=None,
+            profile=DEFAULT_DOCUMENT_PROFILE,
+            raw_text=merged["raw_text"],
+            text_repairs=merged["text_repairs"],
+            text_repair_checked=True,
+            text_repair_words_before=merged["text_repair_words_before"],
+            text_repair_words_after=merged["text_repair_words_after"],
+            text_repair_candidates_before=merged["text_repair_candidates_before"],
+            text_repair_candidates_after=merged["text_repair_candidates_after"],
+            defrag_ran=merged.pop("_defrag_ran"),
+        )
+        self.assertEqual(len(blocks), 2)
+        heading_block, body_block = blocks
+        self.assertEqual(heading_block["text"], "4.2.7 requirenb")
+        self.assertEqual(
+            [e["rule"] for e in heading_block["text_repairs"]], ["subscript_reattach"])
+        self.assertNotIn("text_repairs", body_block)
+
     def test_split_dedouble_event_owned_by_heading_side_local_replay(self) -> None:
         # 已确认的 dedouble 复现案例：段落级 defrag transcript 不整体归属任一侧——
         # 两侧各自从 raw 独立重放：标题侧重放出侧级 dedouble 事件且 text_repaired=True；
@@ -1651,6 +1711,39 @@ class GenericTextTableLayoutAuditTests(unittest.TestCase):
                 explicit_header_rows=[1])
             self.assertEqual(
                 mocked.call_args.kwargs["explicit_header_rows"], [])
+
+
+class RepeatedMarginNoiseTests(unittest.TestCase):
+    def test_mixed_size_margin_line_uses_same_tokenization_as_main_path(self) -> None:
+        # C-2：页眉噪声检测用裸 page.extract_words()，D1 开后主路径用 extra_attrs=["size"]，
+        # 两种分词下同一页眉文本不同，repeated_noise 漏判。应使用同一 _extract_page_words。
+        def make_page(plain_words: list[dict], extra_words: list[dict]) -> mock.MagicMock:
+            page = mock.MagicMock()
+            page.height = 1000
+            def fake_extract_words(**kwargs: object) -> list[dict]:
+                if kwargs.get("extra_attrs"):
+                    return extra_words
+                return plain_words
+            page.extract_words.side_effect = fake_extract_words
+            return page
+
+        plain = [{"text": "Nominal-Current", "x0": 50, "x1": 200,
+                  "top": 50, "bottom": 60}]
+        extra = [
+            {"text": "Nominal", "x0": 50, "x1": 110,
+             "top": 50, "bottom": 60, "size": 12},
+            {"text": "-", "x0": 112, "x1": 116,
+             "top": 50, "bottom": 60, "size": 12},
+            {"text": "Current", "x0": 118, "x1": 190,
+             "top": 50, "bottom": 60, "size": 9},
+        ]
+        pdf = mock.MagicMock()
+        pdf.pages = [make_page(plain, extra) for _ in range(3)]
+        result = _detect_repeated_margin_lines(
+            pdf, defrag=False, subscript=True, twocol=False)
+        # 检测必须与主路径口径一致：extra_attrs 分词得到 "Nominal - Current"
+        self.assertIn("nominal - current", result)
+        self.assertNotIn("nominal-current", result)
 
 
 class SwitchAndVersionTests(unittest.TestCase):

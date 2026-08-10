@@ -1346,7 +1346,8 @@ def _extract_pdf_handwritten(
         subscript_fix = pdf_subscript_fix_enabled()
         hyphen_fix = pdf_hyphen_fix_enabled()
         twocol_def = pdf_twocol_def_enabled()
-        repeated_noise = _detect_repeated_margin_lines(pdf, defrag=defrag)
+        repeated_noise = _detect_repeated_margin_lines(
+            pdf, defrag=defrag, subscript=subscript_fix, twocol=twocol_def)
 
         sections = SectionState()
         blocks: list[dict[str, Any]] = []
@@ -1843,13 +1844,26 @@ def _assert_text_layer(pdf: Any) -> None:
         raise AtomizerInputError("该 PDF 无文字层（疑似扫描件），当前版本不支持；可用 Word 打开该 PDF 另存为 .docx 后重试。")
 
 
-def _detect_repeated_margin_lines(pdf: Any, *, defrag: bool = False) -> set[str]:
+def _detect_repeated_margin_lines(
+    pdf: Any,
+    *,
+    defrag: bool = False,
+    subscript: bool | None = None,
+    twocol: bool | None = None,
+) -> set[str]:
+    if subscript is None:
+        subscript = pdf_subscript_fix_enabled()
+    if twocol is None:
+        twocol = pdf_twocol_def_enabled()
     threshold = max(2, int(len(pdf.pages) * 0.6 + 0.999))
     counts: Counter[str] = Counter()
     for page in pdf.pages:
         top_limit = page.height * HEADER_FOOTER_BAND_RATIO
         bottom_limit = page.height * (1 - HEADER_FOOTER_BAND_RATIO)
-        for line in _word_lines(page.extract_words(), defrag=defrag):
+        for line in _word_lines(
+            _extract_page_words(page, subscript=subscript, twocol=twocol),
+            defrag=defrag,
+        ):
             if line["top"] <= top_limit or line["bottom"] >= bottom_limit:
                 normalized = _normalize_repeated_line(line["text"])
                 if normalized:
@@ -2230,12 +2244,14 @@ def _merge_lines(
         # 调用方）退守在该行 raw_part 内按稳定事件顺序定位 repaired after token
         if not old_raw:
             raw_start = 0
-        elif raw_event is None:
+        elif raw_text == old_raw + " " + raw_part:
             raw_start = len(old_raw) + 1   # 普通空格拼接
         elif raw_text == old_raw + raw_part:
             raw_start = len(old_raw)       # 数字续行：保留连字符
+        elif old_raw.endswith("-") and raw_text == old_raw[:-1] + raw_part:
+            raw_start = len(old_raw) - 1   # 旧版连字符拼接（hyphen_fix 关）
         else:
-            raw_start = len(old_raw) - 1   # 小写续行：去连字符
+            raw_start = _common_prefix_len(old_raw, raw_text)
         cursor = 0
         for layout_event in line.get("layout_events") or []:
             event_copy = dict(layout_event)
