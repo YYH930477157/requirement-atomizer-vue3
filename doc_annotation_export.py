@@ -19,6 +19,7 @@ import difflib
 import hashlib
 import html
 import json
+import logging
 import os
 import re
 import shutil
@@ -104,15 +105,33 @@ def _translate_batch_count() -> int:
 
 
 def _translate_batch_max_chars() -> int:
-    """优化批处理单批输入总字符上限（仅 _translate_batch_count()>0 时生效）。"""
+    """优化批处理单批输入总字符上限（仅 _translate_batch_count()>0 时生效）。
+
+    非整数（如 3.5、abc）fail-safe 回默认值，不静默截断；0/负数同样回默认值。
+    """
+    default = _TRANSLATION_BATCH_MAX_CHARS_DEFAULT
     raw = os.environ.get("RATOMIZER_TRANSLATE_BATCH_MAX_CHARS")
     if raw is None or str(raw).strip() == "":
-        return _TRANSLATION_BATCH_MAX_CHARS_DEFAULT
+        return default
     try:
-        value = int(float(raw))
+        value = float(raw)
     except (TypeError, ValueError):
-        return _TRANSLATION_BATCH_MAX_CHARS_DEFAULT
-    return value if value >= 1 else _TRANSLATION_BATCH_MAX_CHARS_DEFAULT
+        logging.getLogger("requirement_atomizer").warning(
+            "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS=%r 不是数字，fail-safe 使用默认值 %s",
+            raw, default)
+        return default
+    if not value.is_integer():
+        logging.getLogger("requirement_atomizer").warning(
+            "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS=%r 不是整数，fail-safe 使用默认值 %s",
+            raw, default)
+        return default
+    count = int(value)
+    if count < 1:
+        logging.getLogger("requirement_atomizer").warning(
+            "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS=%r ≤0，fail-safe 使用默认值 %s",
+            raw, default)
+        return default
+    return count
 
 
 def _active_translation_strategy_version() -> str:
@@ -2126,7 +2145,8 @@ def _pack_translation_batches(pending_list: list[tuple[str, str, str]], *,
                               ) -> list[list[tuple[str, str, str]]]:
     """顺序贪心装包：条数与字符双上限，任一触发即封包；单条自身超字符上限整条单独发（宁超勿截）。
 
-    count_limit<=0 时回到旧 batch=8 简单切片（OFF 路径，行为逐字节不变）。
+    count_limit<=0 时回到旧 batch=8 简单切片（OFF 路径；批次响应解析仍保留 fail-closed
+    的越界/重复 id 卫生处理，对正常响应无影响）。
     """
     if count_limit <= 0:
         return [pending_list[start:start + _TRANSLATION_BATCH]
@@ -2210,8 +2230,9 @@ def _translation_drift(source: str, translation: str, *, strict: bool
       * 非严格（v2 默认 OFF）= 仅译文新增（编码/整数），与既有
         ``_fabricated_translation_tokens`` 完全同口径、行为逐字节不变。
       * 严格（v3 opt-in）= **双向**：在译文新增之上，补「原文受保护 token 缺失」（编码/数值/单位）
-        与「单位新增」。受保护编码/数值/单位口径与交互式单条通路同源（编码+整数复用
-        cosem_behavior_spec，物理单位符号复用 api_server._protected_units —— 不分叉）。
+        与「单位新增」。受保护编码复用 cosem_behavior_spec，整数复用 extract_guards.produced_ints
+        （千分位并组，与交互式单条通路 _protected_codes 同源），物理单位符号复用
+        api_server._protected_units —— 不分叉。
     - ``fabricated_tokens``：始终只含译文新增，供单条重试 forbidden_tokens 反馈
       （「严禁再次出现」只对新增语义成立；缺失方向由重试给模型再一次机会，不由 forbidden 抑制）。
 
@@ -2221,12 +2242,11 @@ def _translation_drift(source: str, translation: str, *, strict: bool
     if not strict:
         return fabricated, fabricated
     from api_server import _protected_units
-    from cosem_behavior_spec import extract_codes, extract_ints
-    from text_normalize import strip_enum_markers
+    from cosem_behavior_spec import extract_codes
+    from extract_guards import produced_ints
 
     source_codes, trans_codes = extract_codes(source), extract_codes(translation)
-    source_ints = extract_ints(_DIGIT_GROUP_RE.sub("", source))
-    trans_ints = extract_ints(strip_enum_markers(translation))
+    source_ints, trans_ints = produced_ints(source), produced_ints(translation)
     source_units, trans_units = _protected_units(source), _protected_units(translation)
     missing = ((source_codes - trans_codes)
                | (source_ints - trans_ints)
@@ -2547,7 +2567,8 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
     if texts is None:
         render_annotation_html(out_dir)   # 收集本文档全部说明标记文本
         texts = dict(_collected_marker_texts)
-    # 优化批处理默认 OFF：行为与缓存指纹逐字节保持 v2；正整数启用贪心双上限装包+拆半降级（v3）。
+    # 优化批处理默认 OFF：策略/缓存指纹保持 v2，批次响应解析增加越界/重复 id 卫生处理
+    #（对正常响应无影响，对异常响应 fail-closed 丢弃）；正整数启用贪心双上限装包+拆半降级（v3）。
     optimized_count = _translate_batch_count()
     optimized = optimized_count > 0
     strategy_version = _active_translation_strategy_version()

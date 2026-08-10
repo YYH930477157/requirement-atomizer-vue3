@@ -2593,9 +2593,10 @@ def _extract_numbered(user: str) -> list[dict]:
 class TranslationBatchOptimizationTests(unittest.TestCase):
     """翻译优化批处理（RATOMIZER_TRANSLATE_BATCH>0）：双上限贪心装包 + 拆半降级 + 逐条护栏。
 
-    默认 OFF 时既有 batch=8 行为与 v2 缓存指纹逐字节不变（见 MarkerTranslationTests）；
-    本类只测 opt-in 新行为与 fail-closed 边界。任何异常条目（缺/重/越界 id）不得覆盖或
-    污染合法条目；漂移译文绝不放行；缓存仍是单条粒度，重跑只补未命中/未解决条。
+    默认 OFF 时策略/缓存指纹保持 v2 不变；批次响应解析的越界/重复 id 卫生处理对 OFF 路径
+    同样生效（对正常响应无影响）。本类只测 opt-in 新行为与 fail-closed 边界。任何异常条目
+    （缺/重/越界 id）不得覆盖或污染合法条目；漂移译文绝不放行；缓存仍是单条粒度，重跑只补
+    未命中/未解决条。
     """
 
     def _on_env(self, count: str = "10", max_chars: str = "8000"):
@@ -2673,6 +2674,32 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
         self.assertEqual(calls, 0)   # v2 已接受译文零调用复用
         self.assertEqual(summary["cached"], 1)
         self.assertEqual(summary["translated"], 0)
+
+    def test_off_duplicate_id_is_dropped_and_retried_singly(self) -> None:
+        # Fix-B2：OFF 路径同样做 fail-closed 重复 id 卫生处理（注释已如实化），
+        # 重复 id 全部丢弃 → 单条重试取回干净译文。
+        def chat(_s: str, user: str) -> dict:
+            if "原文条目 JSON" in user:
+                return {"items": [{"id": 1, "translation": "合法译文"},
+                                  {"id": 1, "translation": "污染 9999"},   # 重复 id
+                                  {"id": 2, "translation": "乙"}]}
+            self.assertIn("单条整段重试", user)
+            return {"items": [{"id": 1, "translation": "重试干净译文"}]}
+
+        texts = {dae._translation_key("alpha"): ("context", "alpha"),
+                 dae._translation_key("beta"): ("context", "beta")}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with self._off_env():
+                summary = dae.generate_annotation_translations(out, route="openai_compatible",
+                                                               chat=chat, texts=texts)
+                sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+        self.assertEqual(sidecar["items"][dae._translation_key("alpha")]["translation"], "重试干净译文")
+        self.assertEqual(sidecar["items"][dae._translation_key("alpha")]["strategy"], "single")
+        self.assertEqual(sidecar["items"][dae._translation_key("beta")]["translation"], "乙")
+        self.assertEqual(sidecar["items"][dae._translation_key("beta")]["strategy"], "batch")
+        self.assertEqual(summary["translated"], 2)
+        self.assertEqual(summary["single_retries"], 1)
 
     # --- Req 2：装包边界（直接单测 _pack_translation_batches）---
     def test_pack_11th_item_closes_batch_on_count_limit(self) -> None:
@@ -2985,6 +3012,27 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
         with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "100"}):
             self.assertGreater(dae._translate_batch_count(), 0)
 
+    def test_max_chars_non_integer_fails_safe_to_default(self) -> None:
+        # Fix-B3：max_chars 与 count 解析一致——非整数不得静默截断，应 fail-safe 回默认值。
+        for raw in ["3.5", "0.5", "abc"]:
+            with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH_MAX_CHARS": raw}):
+                self.assertEqual(dae._translate_batch_max_chars(),
+                                 dae._TRANSLATION_BATCH_MAX_CHARS_DEFAULT,
+                                 f"raw={raw!r}")
+
+    def test_max_chars_zero_or_negative_fails_safe_to_default(self) -> None:
+        # Fix-B3：0/负数同样回默认值（无意义配置不静默生效）。
+        for raw in ["0", "-100", "-1"]:
+            with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH_MAX_CHARS": raw}):
+                self.assertEqual(dae._translate_batch_max_chars(),
+                                 dae._TRANSLATION_BATCH_MAX_CHARS_DEFAULT,
+                                 f"raw={raw!r}")
+
+    def test_max_chars_valid_integer_used(self) -> None:
+        for raw, expected in [("8000", 8000), ("4000", 4000), ("1", 1)]:
+            with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH_MAX_CHARS": raw}):
+                self.assertEqual(dae._translate_batch_max_chars(), expected, f"raw={raw!r}")
+
     def test_clamped_count_drives_packing(self) -> None:
         # RATOMIZER_TRANSLATE_BATCH=100 → clamp 10 → 实际每包 ≤10
         items = [(f"k{i}", "context", f"item {i}") for i in range(25)]
@@ -3053,6 +3101,22 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
         self.assertTrue(any("0-0:96.1.0.255" in t for t in drift))
         self.assertTrue(any("230" in t for t in drift))
         self.assertTrue(any(t.endswith("V") for t in drift))
+
+    def test_strict_guard_allows_thousand_separator_in_translation(self) -> None:
+        # Fix-B1 钉死：千分位原文与忠实译文均含 "3,200"，缺失方向不得误报 3200。
+        src = "The test shall run 3,200 cycles."
+        faithful = "测试应运行 3,200 次循环。"
+        self.assertEqual(dae._fabricated_translation_tokens(src, faithful), [])
+        drift, _fab = dae._translation_drift(src, faithful, strict=True)
+        self.assertFalse(drift, f"expected no drift, got {drift}")
+
+    def test_strict_guard_allows_preserved_enum_numbers_in_translation(self) -> None:
+        # Fix-B1 钉死：数字枚举在译文中保留编号，缺失方向不得误报 1/2。
+        src = "1. First action. 2. Second action."
+        faithful = "1. 第一个动作。2. 第二个动作。"
+        self.assertEqual(dae._fabricated_translation_tokens(src, faithful), [])
+        drift, _fab = dae._translation_drift(src, faithful, strict=True)
+        self.assertFalse(drift, f"expected no drift, got {drift}")
 
     def test_missing_obis_int_unit_intercepted_same_batch_other_succeeds(self) -> None:
         a = "The meter shall support OBIS 0-0:96.1.0.255 at 230 V."
