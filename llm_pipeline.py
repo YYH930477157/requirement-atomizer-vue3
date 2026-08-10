@@ -122,9 +122,16 @@ def batch_review_enabled(pipeline: ReviewPipeline) -> bool:
 
 
 def active_review_prompt_version() -> str:
-    """当前实际生效的复核 prompt 版本；tool-loop 即使请求合批也仍为逐条 v3。"""
+    """当前实际生效的复核 prompt 版本；tool-loop 即使请求合批也仍为逐条 v3。
+
+    批处理启用时把有效批大小拼入版本戳（如 ``m2-review-v4-batch+b15``），避免
+    RATOMIZER_REVIEW_BATCH 15→10 时 llm-review 阶段戳不变导致 stage_is_reusable
+    复用不同批配置的旧产物。
+    """
     pipeline = load_review_pipeline(DEFAULT_PIPELINE_PATH)
-    return REVIEW_BATCH_PROMPT_VERSION if batch_review_enabled(pipeline) else PROMPT_VERSION
+    if batch_review_enabled(pipeline):
+        return f"{REVIEW_BATCH_PROMPT_VERSION}+b{review_batch_count()}"
+    return PROMPT_VERSION
 
 
 SYSTEM_PROMPT = """You are a DLMS/COSEM requirements review expert.
@@ -437,7 +444,8 @@ def review_requirements_with_openai(
             initial_indices, requirements, pipeline, client_config, scope_config, cache, evidence,
         )
         apply_batch_result(initial_result)
-        if initial_result.connection_failed:
+        if (initial_result.connection_failed
+                and initial_result.connection_failed_count == len(initial_indices)):
             raise LLMConnectionError(
                 "LLM service unavailable: initial review batch failed: "
                 f"{initial_result.connection_error}"
@@ -459,7 +467,8 @@ def review_requirements_with_openai(
                     batch_indices = futures[future]
                     result = future.result()  # 程序错误不得伪装成 LLM 不可用
                     apply_batch_result(result)
-                    if result.connection_failed:
+                    if (result.connection_failed
+                            and result.connection_failed_count == len(batch_indices)):
                         consecutive_failed_requirements += len(batch_indices)
                     else:
                         consecutive_failed_requirements = 0
@@ -1287,6 +1296,9 @@ def llm_cache_key_batch(
     fingerprint_payload = {
         "cache_version": LLM_REVIEW_CACHE_VERSION,
         "prompt_version": REVIEW_BATCH_PROMPT_VERSION,
+        # 系统 prompt 文本是产物成因——同版本常量下改文本必须让旧缓存失效，
+        # 与逐条路径 ``llm_cache_key`` 哈希完整 messages 同强度。
+        "system_prompt": REVIEW_BATCH_SYSTEM_PROMPT,
         "review_tools_version": REVIEW_TOOLS_VERSION,
         "review_executor": "batch_single_shot",
         "evidence_fingerprint": evidence,
@@ -1343,7 +1355,7 @@ def _dispatch_batch_with_splits(
     config: LLMClientConfig,
     split_rounds: int,
 ) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, set[str]]]:
-    """整批非法拆半 ≤split_rounds 层；返回 ``(mapped, missing_or_ambiguous_ids, fallback_ids)``。
+    """整批非法拆半 ≤split_rounds 层；返回 ``(mapped, missing_or_ambiguous_ids, fallback_ids, allowed_related)``。
 
     - mapped: parseable 响应里命中且非歧义的 {requirement_id: payload}。
     - missing_or_ambiguous_ids: parseable 响应里缺条/重复 id（→ needs_expert stub）。
@@ -1460,6 +1472,38 @@ class _BatchTaskResult:
     llm_failed: int
     connection_failed: bool
     connection_error: str
+    connection_failed_count: int = 0
+
+
+def _batch_cache_member_set_candidates(
+    batch_indices: list[int],
+    requirements: list[dict[str, Any]],
+    target_index: int,
+) -> list[set[str]]:
+    """生成 target_index 所在 requirement 经递归拆半后可能落入的子批成员集合。
+
+    拆半调度器对整批结构非法的批次最多递归拆 ``_REVIEW_BATCH_SPLIT_ROUNDS`` 层；
+    成功子批按实际成员集合写缓存。后续重跑时，只有按相同规则构造候选键才能命中
+    这些缓存，否则每次拆半后都全额重付。
+    """
+    n = len(batch_indices)
+    try:
+        pos = batch_indices.index(target_index)
+    except ValueError:
+        return []
+    candidates: list[set[str]] = []
+    start, end = 0, n
+    for _ in range(_REVIEW_BATCH_SPLIT_ROUNDS + 1):
+        member_ids = {requirement_identity(requirements[batch_indices[i]]) for i in range(start, end)}
+        candidates.append(member_ids)
+        if end - start <= 1:
+            break
+        mid = (start + end) // 2
+        if pos < mid:
+            end = mid
+        else:
+            start = mid
+    return candidates
 
 
 def _process_review_batch(
@@ -1483,17 +1527,20 @@ def _process_review_batch(
     llm_reviewed = rule_stub = llm_failed = 0
     connection_failed = False
     connection_error = ""
+    connection_failed_count = 0
 
     cached_rows: dict[int, dict[str, Any]] = {}
     for idx in batch_indices:
         requirement = requirements[idx]
-        bkey = llm_cache_key_batch(
-            requirement, config.model, pipeline, scope_config,
-            batch_member_ids=member_ids, batch_config=batch_config, evidence=evidence,
-        )
-        cached = cache.get(bkey)
-        if cached is not None:
-            cached_rows[idx] = cached
+        for candidate_member_ids in _batch_cache_member_set_candidates(batch_indices, requirements, idx):
+            bkey = llm_cache_key_batch(
+                requirement, config.model, pipeline, scope_config,
+                batch_member_ids=candidate_member_ids, batch_config=batch_config, evidence=evidence,
+            )
+            cached = cache.get(bkey)
+            if cached is not None:
+                cached_rows[idx] = cached
+                break
 
     if len(cached_rows) == len(batch_indices):
         for idx in batch_indices:
@@ -1517,6 +1564,7 @@ def _process_review_batch(
                 resolved.append((idx, build_stub_review(requirement, pipeline, unavailable_reason=connection_error), None))
                 rule_stub += 1
                 llm_failed += 1
+            connection_failed_count = len(batch_indices)
         else:
             for idx in batch_indices:
                 requirement = requirements[idx]
@@ -1535,6 +1583,7 @@ def _process_review_batch(
                     except LLMConnectionError as exc:
                         connection_failed = True
                         connection_error = str(exc)
+                        connection_failed_count += 1
                         resolved.append((idx, build_stub_review(requirement, pipeline, unavailable_reason=str(exc)), None))
                         rule_stub += 1
                         llm_failed += 1
@@ -1576,6 +1625,7 @@ def _process_review_batch(
     return _BatchTaskResult(
         resolved=tuple(resolved), llm_reviewed=llm_reviewed, rule_stub=rule_stub,
         llm_failed=llm_failed, connection_failed=connection_failed, connection_error=connection_error,
+        connection_failed_count=connection_failed_count,
     )
 
 

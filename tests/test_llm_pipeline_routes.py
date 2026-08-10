@@ -11,9 +11,13 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from llm_client import LLMClientConfig, LLMConnectionError
+from llm_client import LLMClientConfig, LLMConnectionError, LLMResponseError
 from llm_pipeline import (
     DEFAULT_PIPELINE_PATH,
+    PROMPT_VERSION,
+    ReviewPipeline,
+    _batch_cache_member_set_candidates,
+    _process_review_batch,
     active_review_prompt_version,
     batch_review_enabled,
     effective_review_scope,
@@ -28,6 +32,7 @@ from llm_pipeline import (
     write_jsonl,
 )
 from llm_pipeline import REVIEW_BATCH_PROMPT_VERSION as REVIEW_BATCH_PROMPT_VERSION_CONSTANT
+from llm_pipeline import REVIEW_BATCH_SYSTEM_PROMPT as REVIEW_BATCH_SYSTEM_PROMPT_CONSTANT
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -961,3 +966,193 @@ class ReviewBatchOptimizationTests(unittest.TestCase):
                             route="openai_compatible", scope="all",
                         )
         self.assertEqual(len(service.requests), 1)
+
+    def test_active_review_prompt_version_includes_batch_size_when_enabled(self) -> None:
+        """A-1：批启用时阶段戳必须包含有效批大小，否则批大小变化不会触发阶段重跑。"""
+        no_tool_pipeline = ReviewPipeline(
+            pipeline_id="test_no_tool",
+            operations=[{"operation": "classify_risk", "executor": "single_shot"}],
+            model_routing={},
+            risk_policy={},
+            model_routes={"default": "stub"},
+            review_scope={},
+        )
+        with patch("llm_pipeline.load_review_pipeline", return_value=no_tool_pipeline):
+            with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+                self.assertEqual(active_review_prompt_version(), "m2-review-v4-batch+b15")
+            with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "10"}):
+                self.assertEqual(active_review_prompt_version(), "m2-review-v4-batch+b10")
+        # tool-loop 默认路径恒为 v3，不受批大小影响
+        with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "15"}):
+            self.assertEqual(active_review_prompt_version(), PROMPT_VERSION)
+
+    def test_batch_cache_key_includes_system_prompt_text(self) -> None:
+        """A-2：批缓存键必须哈希系统 prompt 文本，同版本常量下改文本不得静默命中旧缓存。"""
+        pipeline = ReviewPipeline(
+            pipeline_id="test_no_tool",
+            operations=[{"operation": "classify_risk", "executor": "single_shot"}],
+            model_routing={},
+            risk_policy={},
+            model_routes={"default": "stub"},
+            review_scope={},
+        )
+        scope_config: dict[str, Any] = {}
+        req = requirement("SREQ-KEY-0001")
+        member_ids = {req["stable_req_id"]}
+        key1 = llm_cache_key_batch(
+            req, "mock-model", pipeline, scope_config,
+            batch_member_ids=member_ids, batch_config=15, evidence="",
+        )
+        with patch("llm_pipeline.REVIEW_BATCH_SYSTEM_PROMPT", REVIEW_BATCH_SYSTEM_PROMPT_CONSTANT + "\nExtra guard line."):
+            key2 = llm_cache_key_batch(
+                req, "mock-model", pipeline, scope_config,
+                batch_member_ids=member_ids, batch_config=15, evidence="",
+            )
+        self.assertNotEqual(key1, key2)
+        self.assertNotEqual(key1[3], key2[3])  # input_fingerprint
+
+    def test_initial_batch_partial_connection_failure_does_not_abort(self) -> None:
+        """A-3：首批内单点连接失败应走逐条降级 stub，不应拖垮整段 abort。"""
+        def _make_review(req: dict[str, Any], model: str) -> dict[str, Any]:
+            return {
+                "task_id": f"REVIEW-{req['stable_req_id']}",
+                "requirement_id": req["stable_req_id"],
+                "req_id": req.get("req_id"),
+                "stable_req_id": req["stable_req_id"],
+                "source_refs": req.get("source_refs", []),
+                "risk": "low_risk",
+                "decision": "accept",
+                "revised_requirement": req.get("requirement", ""),
+                "review_notes": ["mock llm review"],
+                "expert_questions": [],
+                "confidence": 0.88,
+                "model_route": {"provider": "openai_compatible", "model": model},
+                "generated_by": f"llm:{model}",
+            }
+
+        def handler(_body: dict[str, Any], _count: int) -> dict[str, Any]:
+            # 整批结构非法 → 触发拆半 → 最终全部回退逐条 single-shot
+            return batch_illegal_body()
+
+        def fake_dispatch(req: dict[str, Any], pipeline: ReviewPipeline, config: LLMClientConfig, tool_loop: Any) -> dict[str, Any]:
+            if req["stable_req_id"] == "SREQ-BATCH-0001":
+                raise LLMConnectionError("simulated connection error")
+            return _make_review(req, config.model)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            rows = self._write_rows(out, 5)
+            with ScriptedOpenAIService(handler) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "5"}):
+                    with patch("llm_pipeline.dispatch_openai_review", side_effect=fake_dispatch):
+                        summary = run_review_pipeline(
+                            out, pipeline_path=pipeline_path, domain_pack_path=None,
+                            route="openai_compatible", scope="all",
+                        )
+            reviews = _reviews_by_id(out)
+
+        # 只有 1 条连接失败 → 不 abort；其余 4 条成功 review
+        self.assertEqual(summary["llm_reviewed"], 4)
+        self.assertEqual(summary["llm_failed"], 1)
+        self.assertEqual(summary["rule_stub"], 1)
+        self.assertEqual(reviews["SREQ-BATCH-0001"]["generated_by"], "rule_stub")
+        self.assertEqual(reviews["SREQ-BATCH-0001"]["model_route"]["provider"], "stub")
+        for row in rows[1:]:
+            self.assertEqual(reviews[row["stable_req_id"]]["generated_by"], "llm:mock-review-model")
+
+    def test_initial_batch_all_connection_failures_abort(self) -> None:
+        """A-3：首批全部连接失败才应 abort。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            self._write_rows(out, 5)
+            with ScriptedOpenAIService(
+                    lambda _body, _count: {"status": 500, "body": {"error": "down"}}) as service:
+                pipeline_path = root / "pipeline.yaml"
+                write_pipeline_config(pipeline_path, service.base_url)
+                with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "5"}):
+                    with self.assertRaisesRegex(LLMConnectionError, "initial review batch failed"):
+                        run_review_pipeline(
+                            out, pipeline_path=pipeline_path, domain_pack_path=None,
+                            route="openai_compatible", scope="all",
+                        )
+        # 整批连接失败 → 只发起一次 batch HTTP 探测（不拆半，拆半只针对结构非法）
+        self.assertEqual(len(service.requests), 1)
+
+    def test_batch_cache_member_set_candidates_cover_recursive_splits(self) -> None:
+        """A-4：候选键必须覆盖递归拆半后可能落入的子批集合。"""
+        requirements = [requirement(f"SREQ-CACHE-{i:04d}") for i in range(1, 5)]
+        batch_indices = list(range(4))
+        from llm_pipeline import requirement_identity
+        ids = [requirement_identity(req) for req in requirements]
+        candidates = _batch_cache_member_set_candidates(batch_indices, requirements, 2)
+        self.assertEqual(candidates, [
+            set(ids[0:4]),  # 整批
+            set(ids[2:4]),  # 半批
+            set(ids[2:3]),  # 四分之一（拆半两层后）
+        ])
+
+    def test_full_batch_hits_cache_when_all_items_cached_via_sub_batches(self) -> None:
+        """A-4：前次拆半成功子批写入的缓存，下次整批查询应全部命中、零 LLM 调用。"""
+        pipeline = ReviewPipeline(
+            pipeline_id="test_no_tool",
+            operations=[{"operation": "classify_risk", "executor": "single_shot"}],
+            model_routing={},
+            risk_policy={},
+            model_routes={"default": "stub"},
+            review_scope={},
+        )
+        scope_config: dict[str, Any] = {}
+        evidence = ""
+        config = LLMClientConfig(
+            base_url="http://127.0.0.1:9/v1", model="mock-model", api_key_env="",
+            temperature=0.0, max_tokens=100, timeout_s=1.0, max_retries=0,
+        )
+        requirements = [requirement(f"SREQ-CACHE-{i:04d}") for i in range(1, 5)]
+
+        def _make_cached_review(req: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "task_id": f"REVIEW-{req['stable_req_id']}",
+                "requirement_id": req["stable_req_id"],
+                "req_id": req.get("req_id"),
+                "stable_req_id": req["stable_req_id"],
+                "source_refs": req.get("source_refs", []),
+                "risk": "low_risk",
+                "decision": "accept",
+                "revised_requirement": req.get("requirement", ""),
+                "review_notes": ["cached sub-batch review"],
+                "expert_questions": [],
+                "confidence": 0.9,
+                "model_route": {"provider": "openai_compatible", "model": config.model},
+                "generated_by": f"llm:{config.model}",
+            }
+
+        # 模拟前次运行：两个子批 [0,2) 和 [2,4) 分别成功并写入批缓存
+        # 必须与 _process_review_batch 内部的 batch_config 一致（即 review_batch_count()）
+        with patch.dict("os.environ", {"RATOMIZER_REVIEW_BATCH": "4"}):
+            batch_config = review_batch_count()
+            cache: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+            for start, end in ((0, 2), (2, 4)):
+                sub_ids = {requirements[i]["stable_req_id"] for i in range(start, end)}
+                for i in range(start, end):
+                    key = llm_cache_key_batch(
+                        requirements[i], config.model, pipeline, scope_config,
+                        batch_member_ids=sub_ids, batch_config=batch_config, evidence=evidence,
+                    )
+                    cache[key] = _make_cached_review(requirements[i])
+
+            # 若 _dispatch_batch_with_splits 被调用，说明缓存未全部命中
+            with patch("llm_pipeline._dispatch_batch_with_splits",
+                       side_effect=Exception("should not be called")) as mock_dispatch:
+                result = _process_review_batch(
+                    list(range(4)), requirements, pipeline, config, scope_config, cache, evidence,
+                )
+        mock_dispatch.assert_not_called()
+        self.assertEqual(result.llm_reviewed, 4)
+        self.assertEqual(result.rule_stub, 0)
+        self.assertEqual(result.llm_failed, 0)
