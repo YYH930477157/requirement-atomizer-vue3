@@ -38,7 +38,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # --- 复核批处理（默认 OFF=逐条；仅 single-shot 旧路径 opt-in，tool-loop 路径恒不批处理）---
     EnvVar("RATOMIZER_REVIEW_BATCH", "0", "原子复核批处理开关（=0 逐条，默认 m2-review-v3 行为/缓存不动；1 仍逐条；2..20 启用 single-shot 批量复核 m2-review-v4-batch，推荐 15，硬 clamp 20；非整数 fail-safe 关闭。仅当 yaml operations 未声明 executor=tool_loop 时生效——不得绕过工具取证/kb_search 每条上限/token 预算）", False),
     # --- 说明标记翻译优化批处理（默认 OFF=旧 batch=8 简单切片；正整数启用贪心双上限装包+拆半降级）---
-    EnvVar("RATOMIZER_TRANSLATE_BATCH", "0", "说明标记翻译优化批处理开关（=0 旧 batch=8 简单切片+批次失败直降单条，行为与缓存指纹不变；正整数 N 启用：条数≤N 且单批输入字符≤RATOMIZER_TRANSLATE_BATCH_MAX_CHARS 的顺序贪心装包，单条超限整条单独发，批次 JSON 非法拆半≤2 轮后逐条；护栏按条照跑零放松；推荐 ≤10）", False),
+    EnvVar("RATOMIZER_TRANSLATE_BATCH", "0", "说明标记翻译优化批处理开关（=0 旧 batch=8 简单切片+批次失败直降单条，策略/缓存指纹保持 v2；正整数 N 启用：条数硬 clamp 到 10，且单批输入字符≤RATOMIZER_TRANSLATE_BATCH_MAX_CHARS 的顺序贪心装包，单条超限整条单独发，批次 JSON 非法拆半≤2 轮后逐条；护栏按条照跑零放松）", False),
     EnvVar("RATOMIZER_TRANSLATE_BATCH_MAX_CHARS", "8000", "优化批处理单批输入总字符上限（仅 RATOMIZER_TRANSLATE_BATCH>0 时生效；任一条累加后超出即封包，防 10 条长文译文顶 max_tokens 把 JSON 切半）", False),
     EnvVar("RATOMIZER_REBUILD_DEBOUNCE_S", "1.5", "裁决后交付物重建防抖秒数（连续裁决合并为一次重建；0=同步重建）", False),
     EnvVar("RATOMIZER_LLM_JSON_SCHEMA", "1", "response_format=json_object（默认开；仅端点明确报不支持时记住并降级；=0 关闭）", False),
