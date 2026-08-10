@@ -1,8 +1,8 @@
 # 批处理优化实施与验收报告
 
-日期：2026-08-09  
-分支：`codex/batch-processing-optimization`  
-基线：`origin/main` @ `a207ade`  
+- 日期：2026-08-09
+- 分支：`codex/batch-processing-optimization`
+- 基线：`origin/main` @ `a207ade`
 输入方案：`C:\Users\YYHwudi\Downloads\批处理优化实施方案.md`
 
 ## 1. 验收结论
