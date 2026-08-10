@@ -30,6 +30,7 @@ from threading import RLock
 from typing import Any, Iterator
 
 from api_server import (ANNOTATION_TRANSLATIONS, ANNOTATION_TRANSLATION_GUARDS_VERSION,
+                        TRANSLATION_LANGUAGE_REQUIREMENTS,
                         build_ai_requirements, build_document_blocks,
                         load_annotation_translations, translation_key)
 from io_utils import read_jsonl
@@ -59,12 +60,12 @@ class ClaimAnnotationUnavailable(ValueError):
 
 # 翻译缓存键/加载器的唯一实现在 api_server（两个渲染面共用防分叉）；生成侧在本模块。
 _TRANSLATION_BATCH = 8
-ANNOTATION_TRANSLATION_STRATEGY_VERSION = "annotation-translation-v2-segment-fallback"
+ANNOTATION_TRANSLATION_STRATEGY_VERSION = "annotation-translation-v3-segment-fallback"
 # 优化批处理提示词版本（批量数组契约 + 「逐条独立，不得跨条借鉴」）；登记于 prompt_registry。
 # 该常量是优化策略指纹的**真实输入**——直接拼进 ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED，
 # 因而随逐条 strategy_version 进入 sidecar 缓存指纹与 export-annotation-html 阶段 producer 戳：
 # 改提示词版本 → 策略版本变 → 旧缓存/旧产物失效重算（不只是登记摆设）。
-TRANSLATION_BATCH_PROMPT_VERSION = "translation-prompt-v3"
+TRANSLATION_BATCH_PROMPT_VERSION = "translation-prompt-v4"
 # 优化批处理（RATOMIZER_TRANSLATE_BATCH>0）启用：贪心双上限装包 + 批次 JSON 非法拆半降级 +
 # 「逐条独立，不得跨条借鉴」提示词。与 v2 同一套逐条护栏（_fabricated_translation_tokens），
 # 行为面与缓存指纹均随策略版本升级——旧 v2 拒绝项在新策略下重新尝试（拆半可能救回），
@@ -84,14 +85,14 @@ _TRANSLATION_PROCESS_LOCKS_GUARD = RLock()
 
 
 def _translate_batch_count() -> int:
-    """RATOMIZER_TRANSLATE_BATCH：<=0 关闭优化批处理（旧 batch=8 简单切片）；正整数启用贪心双上限装包。
+    """RATOMIZER_TRANSLATE_BATCH：默认 10；<=0 回退旧 batch=8；正整数启用优化批处理。
 
     硬上限 ≤10（方案规定，防注意力稀释）：>10 一律 clamp 到 10。非整数（如 3.5、abc）fail-safe
     关闭（回默认 0=OFF），不静默截断成歧义值。
     """
     raw = os.environ.get("RATOMIZER_TRANSLATE_BATCH")
     if raw is None or str(raw).strip() == "":
-        return 0
+        return 10
     try:
         value = float(raw)
     except (TypeError, ValueError):
@@ -135,7 +136,7 @@ def _translate_batch_max_chars() -> int:
 
 
 def _active_translation_strategy_version() -> str:
-    """当前启用的翻译策略版本：优化批处理开→v3-greedy-splithalf（含有效配置指纹），否则旧 v2。
+    """当前启用的翻译策略版本：优化批处理开→「提示词版本-greedy-splithalf」（含有效配置指纹），否则单条策略版本。
 
     有效配置（clamp 后的条数 + 字符上限）拼进策略版本，因而同时进入 export-annotation-html
     阶段 producer 戳与逐条 sidecar strategy_version：
@@ -149,6 +150,29 @@ def _active_translation_strategy_version() -> str:
     return f"{ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED}-b{count}-c{_translate_batch_max_chars()}"
 # 数字并组：千位空格/逗号分隔（"4 000"→"4000"），护栏基线用
 _DIGIT_GROUP_RE = re.compile(r"(?<=\d)[\s,  ](?=\d)")
+# Parenthesized numbers are enumeration markers only at a list boundary.  A
+# blanket ``(5)`` removal also erases semantic duplicated numerals common in
+# tender prose (for example ``five (5) Lots``), weakening the missing-number
+# guard.  Preserve the boundary punctuation while removing the marker itself.
+_PAREN_ENUM_MARKER_RE = re.compile(
+    r"(^[ \t]*|[\n\r.;；:：。！？!?][ \t]*)[(（]\d{1,2}[)）](?!\d)",
+    re.MULTILINE,
+)
+_TRANSLATION_ENUM_MARKER_RE = re.compile(
+    r"(?:(?<=^)|(?<=[\s.;；:：,，、。！？!?）)]))\d{1,2}\s*[.、)）](?!\d)",
+    re.MULTILINE,
+)
+
+
+def _norm_int_text(text: str) -> str:
+    """翻译护栏整数口径：两侧同样并组千分位并剥除列表枚举标号。"""
+    from text_normalize import strip_enum_markers
+
+    without_paren_enums = _PAREN_ENUM_MARKER_RE.sub(
+        lambda match: f"{match.group(1)} ", str(text or "")
+    )
+    without_enums = _TRANSLATION_ENUM_MARKER_RE.sub(" ", without_paren_enums)
+    return strip_enum_markers(_DIGIT_GROUP_RE.sub("", without_enums))
 
 # 非正文区：折叠显示（不删除，研发可展开核查）
 _COLLAPSIBLE_REGIONS = {"front_matter", "table_of_contents", "preface", "introduction"}
@@ -2063,7 +2087,7 @@ def _batch_translation_prompt(numbered: list[dict[str, Any]], *, optimized: bool
             "- 专有名词与缩写（如 M-Bus、DLMS、OBIS 及设备/机构缩写）保留原文；",
             "- 只输出 JSON 对象 {\"items\":[{\"id\":1,\"translation\":\"...\"}]}。",
         ]
-    rules += ["原文条目 JSON:", json.dumps(numbered, ensure_ascii=False)]
+    rules += [TRANSLATION_LANGUAGE_REQUIREMENTS, "原文条目 JSON:", json.dumps(numbered, ensure_ascii=False)]
     return system, "\n".join(rules)
 
 
@@ -2195,6 +2219,7 @@ def _translate_marker_single(chat: Any, text: str, *, forbidden_tokens: list[str
         "以下 token 已由护栏判定为原文不存在，译文中严禁再次出现：",
         json.dumps(forbidden_tokens, ensure_ascii=False),
         "只输出 JSON 对象 {\"items\":[{\"id\":1,\"translation\":\"...\"}]}。",
+        TRANSLATION_LANGUAGE_REQUIREMENTS,
         "唯一原文 JSON:",
         json.dumps({"id": 1, "text": cleaned}, ensure_ascii=False),
     ])
@@ -2214,11 +2239,10 @@ def _translate_marker_single(chat: Any, text: str, *, forbidden_tokens: list[str
 
 def _fabricated_translation_tokens(source: str, translation: str) -> list[str]:
     from cosem_behavior_spec import extract_codes, extract_ints
-    from text_normalize import strip_enum_markers
 
-    basis = f"{source} {_DIGIT_GROUP_RE.sub('', source)}"
+    basis = _norm_int_text(source)
     fabricated = ((extract_codes(translation) - extract_codes(source))
-                  | (extract_ints(strip_enum_markers(translation)) - extract_ints(basis)))
+                  | (extract_ints(_norm_int_text(translation)) - extract_ints(basis)))
     return sorted(str(token) for token in fabricated)
 
 
@@ -2227,12 +2251,11 @@ def _translation_drift(source: str, translation: str, *, strict: bool
     """逐条防漂移护栏，返回 ``(drift_tokens, fabricated_tokens)``。
 
     - ``drift_tokens``：判定漂移的全部违规 token。
-      * 非严格（v2 默认 OFF）= 仅译文新增（编码/整数），与既有
+      * 非严格（显式 OFF 回退）= 仅译文新增（编码/整数），与既有
         ``_fabricated_translation_tokens`` 完全同口径、行为逐字节不变。
-      * 严格（v3 opt-in）= **双向**：在译文新增之上，补「原文受保护 token 缺失」（编码/数值/单位）
-        与「单位新增」。受保护编码复用 cosem_behavior_spec，整数复用 extract_guards.produced_ints
-        （千分位并组，与交互式单条通路 _protected_codes 同源），物理单位符号复用
-        api_server._protected_units —— 不分叉。
+      * 严格（默认优化批处理）= **双向**：在译文新增之上，补「原文受保护 token 缺失」
+        （编码/数值/单位）与「单位新增」。整数两侧均先并组千分位并剥除枚举标号，
+        物理单位符号复用 api_server._protected_units。
     - ``fabricated_tokens``：始终只含译文新增，供单条重试 forbidden_tokens 反馈
       （「严禁再次出现」只对新增语义成立；缺失方向由重试给模型再一次机会，不由 forbidden 抑制）。
 
@@ -2242,11 +2265,11 @@ def _translation_drift(source: str, translation: str, *, strict: bool
     if not strict:
         return fabricated, fabricated
     from api_server import _protected_units
-    from cosem_behavior_spec import extract_codes
-    from extract_guards import produced_ints
+    from cosem_behavior_spec import extract_codes, extract_ints
 
     source_codes, trans_codes = extract_codes(source), extract_codes(translation)
-    source_ints, trans_ints = produced_ints(source), produced_ints(translation)
+    source_ints = extract_ints(_norm_int_text(source))
+    trans_ints = extract_ints(_norm_int_text(translation))
     source_units, trans_units = _protected_units(source), _protected_units(translation)
     missing = ((source_codes - trans_codes)
                | (source_ints - trans_ints)
@@ -2567,8 +2590,8 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
     if texts is None:
         render_annotation_html(out_dir)   # 收集本文档全部说明标记文本
         texts = dict(_collected_marker_texts)
-    # 优化批处理默认 OFF：策略/缓存指纹保持 v2，批次响应解析增加越界/重复 id 卫生处理
-    #（对正常响应无影响，对异常响应 fail-closed 丢弃）；正整数启用贪心双上限装包+拆半降级（v3）。
+    # 优化批处理默认 10；显式 0 回退旧 batch=8。两条路径都保留越界/重复 id
+    # fail-closed 卫生处理，优化路径增加双上限装包、拆半降级与严格逐条护栏。
     optimized_count = _translate_batch_count()
     optimized = optimized_count > 0
     strategy_version = _active_translation_strategy_version()

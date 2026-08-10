@@ -1310,7 +1310,7 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
             from llm_pipeline import LLM_REVIEW_CACHE_VERSION, active_review_prompt_version, PROMPT_VERSION
             from review_tools import REVIEW_TOOLS_VERSION
             # 复核批处理开启时 prompt 升 m2-review-v4-batch（与逐条 m2-review-v3 区分），
-            # 阶段戳随之变化 → 旧逐条产物重跑；默认 OFF 戳值与既有逐字一致。
+            # 阶段戳随之变化 → 批配置或默认策略变化时旧产物重跑；显式 0 保留旧逐条戳。
             review_prompt = active_review_prompt_version() or PROMPT_VERSION
             producer = (f"{producer}+{review_prompt}+{LLM_REVIEW_CACHE_VERSION}"
                         f"+{REVIEW_TOOLS_VERSION}")

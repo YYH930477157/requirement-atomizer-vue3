@@ -1175,8 +1175,8 @@ class ChainAndManifestTests(unittest.TestCase):
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "export-annotation-html": (
                 "doc_annotation_export/v16-cell-claim-projection+claim-annotation-v16"
-                "+claim-focus-adapter-v3+annotation-translation-v2-segment-fallback"
-                "+annotation-translation-guards-v1+doc-facsimile-v1"
+                "+claim-focus-adapter-v3+translation-prompt-v4-greedy-splithalf-b10-c8000"
+                "+annotation-translation-guards-v3+doc-facsimile-v1"
                 "+ai-supplement-v3-identity-preconditions"
             ),
         }

@@ -1,14 +1,21 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
-> 状态快照截至 2026-08-09，里程碑推进后请同步更新本文件。
+> 状态快照截至 2026-08-10，里程碑推进后请同步更新本文件。
+
+## 重大更新（2026-08-10）——翻译批处理转正（`codex/batch-processing-optimization`，未提交）
+
+- **默认转正与回退**：`RATOMIZER_TRANSLATE_BATCH` 默认从 0 翻为 10，硬 clamp 10；显式 `=0` 保留旧 batch=8 路径。`RATOMIZER_TRANSLATE_BATCH_MAX_CHARS` 仍默认 8000，批大小和字符上限继续进入策略/阶段指纹。
+- **护栏与提示词**：翻译护栏最终升 `annotation-translation-guards-v3`：千分位和枚举编号两侧对称归一化，同时把括号枚举限定在行首/句界，避免把招标正文中的语义重复数字（如英文数词后的括号数字）剥成枚举而漏检；批量 prompt 升 `translation-prompt-v4`，单条/句段策略升 `annotation-translation-v3-segment-fallback`，API prompt 升 `translation-prompt-v3`。三条通路共享规范中文技术标准语体要求，防幻觉规则不放松。
+- **缓存与低危项**：SBD 主结果旧翻译缓存（621 条）已删除，结果副本保留作旧译文对照；review batch cache key 已含 system prompt，`llm_review` 阶段戳含有效 `RATOMIZER_REVIEW_BATCH`，页眉噪声与 D1 分词口径已有钉测，配置文案明确硬 clamp。
+- **验证**：首轮翻译/配置/结果包聚焦 312 tests OK、后端全量 3426 tests OK（skipped=7，历史样本环境变量已设置）；v3 返修后相关 335 tests OK，最终后端全量 3427 tests OK（skipped=7），修改 Python 文件 py_compile 与 `git diff --check` 通过。仓库无 `run_smoke.py`，方案中的该命令无法执行；本机未找到 `盲评结论-SBD.md`，因此指定最差 5 条编号和盲评 45 条逐条复验仍缺原始证据，不能标记该两项门禁通过。SBD 主结果先用真实 `deepseek-v4-flash` 清缓存重翻，再按 v3 补跑：最终缓存 539 条、accepted 526 / rejected 13 / unresolved 0，全部 guards v3；补跑调用摘要 cached 517 / translated 7 / rejected 15，5 batch calls + 33 fallback calls，failed_calls=2，耗时约 11 分 32 秒。拒绝项原文回退，绝不冒充翻译成功。20 条新旧配对人工检查为 17 改善 / 2 混合 / 1 轻微回归。`document_annotation.html` 已刷新；请求 `pdf_original` 但 `source_pdf=null`，真实降级为 `optimized`。API key 仅注入单次进程环境，未落盘。
 
 ## 重大更新（2026-08-09）——翻译/复核批处理优化（分支 `codex/batch-processing-optimization`，未提交）
 
 - **翻译批处理**：新增 opt-in `RATOMIZER_TRANSLATE_BATCH`（硬上限 10）与 `RATOMIZER_TRANSLATE_BATCH_MAX_CHARS`（默认 8000）；默认 OFF 保留旧 batch=8 行为与旧缓存指纹。开启后按条数/字符双上限顺序贪心装包，单条超限整条单发；整批 JSON 非法最多拆半两层，再回退既有逐条链。`translation-prompt-v3` 明确逐条独立，严格护栏按每条双向检查受保护编码、数字和单位；缓存仍按内容逐条存储，旧成功译文复用前按新护栏复验，并以译文 SHA 做并发失效 CAS。
 - **复核批处理**：新增 opt-in `RATOMIZER_REVIEW_BATCH`（2..20，推荐 15），仅用于 legacy single-shot；默认 YAML 的 tool-loop 始终逐条执行，避免绕过只读工具证据、`kb_search` 每条上限与 token 预算。批量契约为 `m2-review-v4-batch`；每条仍独立通过 schema、确定性 policy floor、修订文本受保护 token 漂移和 split/merge 批内引用校验。整批非法最多拆半两层后回退既有逐条复核，单条非法则如实生成 `needs_expert`/`rule_stub`。缓存绑定精确批成员集合，拆分成功结果记录实际子批 lineage。
 - **指纹与注册**：批处理 prompt、有效批大小、字符上限、护栏与执行器进入缓存/阶段指纹；`prompt_registry` 注册 `translation-prompt-v3` 与 `m2-review-v4-batch`；默认 OFF 时既有 producer/cache 行为保持不变。
-- **真实 LLM 试跑**（GLM `glm-5.2`，Coding Plan OpenAI 兼容接口，合成技术需求，不含客户文本）：翻译逐条基线 10 calls / 9083 tokens / 91.41s，对比合批 1 call / 1814 tokens / 17.23s，双方均 10/10 通过严格逐条护栏；复核 16 条按 15+1 发 2 calls / 7883 tokens / 59.93s，16/16 完成，无缺失、拆半回退或非法条目，安全类 policy floor 仍生效。此结果只证明真实端点契约与自动护栏可用；SBD 50 条人工质量抽评尚未执行，开关继续默认 OFF。
+- **真实 LLM 试跑（转正前历史）**：GLM `glm-5.2` 合成技术需求试跑中，翻译逐条基线 10 calls / 9083 tokens / 91.41s，对比合批 1 call / 1814 tokens / 17.23s，双方均 10/10 通过严格逐条护栏；复核 16 条按 15+1 发 2 calls / 7883 tokens / 59.93s。该阶段曾保持默认 OFF，随后依据 SBD 45 条盲评定案于 2026-08-10 转为默认 10；复核批处理仍默认 OFF。
 - **验证**：翻译/结果包聚焦 191 tests、复核/tool-loop/schema/config 聚焦 157 tests、修改文件 `py_compile`、`git diff --check` 均通过；设置历史样本后后端全量 **3406 tests OK（skipped=7）**。前端未改动。API key 仅作进程级注入，未写入文件、日志或仓库。
 
 ## 重大更新（2026-08-09）——PDF 版式修复三件套（main 工作树，未提交）

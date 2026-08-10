@@ -6,7 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from api_server import (
+    TRANSLATION_LANGUAGE_REQUIREMENTS,
     TRANSLATION_PROMPT_VERSION,
+    TRANSLATION_SYSTEM_PROMPT,
     translate_requirement_text,
 )
 from llm_client import LLMResponseError
@@ -15,7 +17,13 @@ from llm_client import LLMResponseError
 class TranslationGuardTests(unittest.TestCase):
     def test_prompt_version_constant_registered(self):
         from prompt_registry import is_registered
+        self.assertEqual(TRANSLATION_PROMPT_VERSION, "translation-prompt-v3")
         self.assertTrue(is_registered(TRANSLATION_PROMPT_VERSION))
+
+    def test_system_prompt_includes_shared_language_requirements(self):
+        self.assertIn(TRANSLATION_LANGUAGE_REQUIREMENTS, TRANSLATION_SYSTEM_PROMPT)
+        self.assertIn("使用规范中文书面语", TRANSLATION_SYSTEM_PROMPT)
+        self.assertIn("meter 译「电表」", TRANSLATION_SYSTEM_PROMPT)
 
     @patch("api_server.chat_json")
     @patch("api_server.load_review_pipeline")

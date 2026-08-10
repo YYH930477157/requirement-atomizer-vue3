@@ -49,6 +49,7 @@ def _seed(out: Path) -> None:
     (out / "merged_spec_requirements.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
 
+@patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "0"})
 class DocAnnotationExportTests(unittest.TestCase):
     @staticmethod
     def _claims_from_html(rendered: str) -> list[dict]:
@@ -1571,6 +1572,7 @@ def _seed_marker_block(out: Path, quote: str) -> None:
     (out / "ai_requirements.jsonl").write_text("", encoding="utf-8")
 
 
+@patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "0"})
 class MarkerTranslationTests(unittest.TestCase):
     """块级"说明"标记三段式（归类原因/原文翻译/原文引用）与翻译通路护栏。"""
 
@@ -2593,8 +2595,8 @@ def _extract_numbered(user: str) -> list[dict]:
 class TranslationBatchOptimizationTests(unittest.TestCase):
     """翻译优化批处理（RATOMIZER_TRANSLATE_BATCH>0）：双上限贪心装包 + 拆半降级 + 逐条护栏。
 
-    默认 OFF 时策略/缓存指纹保持 v2 不变；批次响应解析的越界/重复 id 卫生处理对 OFF 路径
-    同样生效（对正常响应无影响）。本类只测 opt-in 新行为与 fail-closed 边界。任何异常条目
+    显式 OFF 时走旧 batch=8 回退；批次响应解析的越界/重复 id 卫生处理对 OFF 路径
+    同样生效（对正常响应无影响）。本类覆盖默认开启、显式回退与 fail-closed 边界。任何异常条目
     （缺/重/越界 id）不得覆盖或污染合法条目；漂移译文绝不放行；缓存仍是单条粒度，重跑只补
     未命中/未解决条。
     """
@@ -2611,7 +2613,7 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
     # --- Req 6：提示词版本真实进策略/producer/缓存指纹（不只是登记摆设）---
     def test_prompt_version_constant_registered_and_derived_into_strategy(self) -> None:
         from prompt_registry import is_registered
-        self.assertEqual(dae.TRANSLATION_BATCH_PROMPT_VERSION, "translation-prompt-v3")
+        self.assertEqual(dae.TRANSLATION_BATCH_PROMPT_VERSION, "translation-prompt-v4")
         self.assertTrue(is_registered(dae.TRANSLATION_BATCH_PROMPT_VERSION))
         # 策略版本由提示词版本派生 → 改提示词版本即改缓存/阶段指纹
         self.assertTrue(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED.startswith(
@@ -2639,8 +2641,13 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
             self.assertIn(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION, stamp_off)
             self.assertNotIn(dae.TRANSLATION_BATCH_PROMPT_VERSION, stamp_off)
 
-    # --- Req 7：默认 OFF 路径行为与 v2 缓存复用不变 ---
-    def test_off_default_uses_v2_strategy_and_legacy_batch8_slice(self) -> None:
+    def test_default_enables_optimized_batch_size_10(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(dae._translate_batch_count(), 10)
+            self.assertIn("-b10-c8000", dae._active_translation_strategy_version())
+
+    # --- Req 7：显式 OFF 回退旧 batch=8 ---
+    def test_explicit_off_uses_single_strategy_and_legacy_batch8_slice(self) -> None:
         items = [(f"k{i}", "context", f"text number {i}") for i in range(20)]
         with self._off_env():
             self.assertEqual(dae._translate_batch_count(), 0)
@@ -3005,9 +3012,11 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
                 self.assertEqual(dae._translate_batch_count(), expected, f"raw={raw!r}")
 
     def test_non_integer_count_fails_safe_off(self) -> None:
-        for raw in ["3.5", "0.5", "abc", "", "0", "-3"]:   # 非整数/非数字/≤0 → fail-safe OFF
+        for raw in ["3.5", "0.5", "abc", "0", "-3"]:   # 非整数/非数字/≤0 → fail-safe OFF
             with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": raw}):
                 self.assertEqual(dae._translate_batch_count(), 0, f"raw={raw!r}")
+        with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": ""}):
+            self.assertEqual(dae._translate_batch_count(), 10)
         # clamp 后 100 仍启用优化模式（=10），不会因超限关掉
         with patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "100"}):
             self.assertGreater(dae._translate_batch_count(), 0)
@@ -3117,6 +3126,43 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
         self.assertEqual(dae._fabricated_translation_tokens(src, faithful), [])
         drift, _fab = dae._translation_drift(src, faithful, strict=True)
         self.assertFalse(drift, f"expected no drift, got {drift}")
+
+    def test_strict_guard_allows_parenthesized_enum_reformatting(self) -> None:
+        src = "1. First action. 2. Second action."
+        faithful = "（1）第一个动作。（2）第二个动作。"
+        self.assertEqual(dae._fabricated_translation_tokens(src, faithful), [])
+        drift, _fab = dae._translation_drift(src, faithful, strict=True)
+        self.assertFalse(drift, f"expected no drift, got {drift}")
+
+    def test_strict_guard_preserves_semantic_parenthesized_number(self) -> None:
+        src = "For this tender, each of the five (5) Lots shall be treated independently."
+        faithful = "本次招标中，五个（5）标段应相互独立处理。"
+        drift, _fab = dae._translation_drift(src, faithful, strict=True)
+        self.assertFalse(drift, f"expected no drift, got {drift}")
+
+        lossy = "本次招标中，各标段应相互独立处理。"
+        drift, _fab = dae._translation_drift(src, lossy, strict=True)
+        self.assertIn("缺失:5", drift)
+
+    def test_strict_guard_still_rejects_true_thousand_value_drift(self) -> None:
+        src = "The test shall run 3,200 cycles."
+        drift, _fab = dae._translation_drift(src, "测试应运行 3,300 次循环。", strict=True)
+        self.assertTrue(drift)
+
+    def test_translation_prompts_include_language_requirements(self) -> None:
+        _system, batch_user = dae._batch_translation_prompt(
+            [{"id": 1, "text": "The meter shall respond."}], optimized=True)
+        self.assertIn("使用规范中文书面语", batch_user)
+        self.assertIn("不使用「被要求/被进行/被允许/被提供」", batch_user)
+
+        calls: list[str] = []
+
+        def chat(_system: str, user: str) -> dict:
+            calls.append(user)
+            return {"items": [{"id": 1, "translation": "电表应响应。"}]}
+
+        dae._translate_marker_single(chat, "The meter shall respond.", forbidden_tokens=[])
+        self.assertIn("使用规范中文书面语", calls[0])
 
     def test_missing_obis_int_unit_intercepted_same_batch_other_succeeds(self) -> None:
         a = "The meter shall support OBIS 0-0:96.1.0.255 at 230 V."

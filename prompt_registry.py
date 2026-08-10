@@ -85,12 +85,12 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "purpose": "Agent loop policy version pinned into trace/cache lineage"},
 
     # Translation
-    {"id": "translation", "version": "translation-prompt-v2", "owner_module": "api_server",
+    {"id": "translation", "version": "translation-prompt-v3", "owner_module": "api_server",
      "purpose": "Requirement text translation prompt"},
-    {"id": "annotation-translation-batch", "version": "translation-prompt-v3",
+    {"id": "annotation-translation-batch", "version": "translation-prompt-v4",
      "owner_module": "doc_annotation_export",
      "purpose": "Annotation marker batch translation prompt (dual-limit batch array contract)"},
-    {"id": "annotation-translation-guards", "version": "annotation-translation-guards-v1",
+    {"id": "annotation-translation-guards", "version": "annotation-translation-guards-v3",
      "owner_module": "api_server",
      "purpose": "Annotation translation anti-drift guard version"},
 
