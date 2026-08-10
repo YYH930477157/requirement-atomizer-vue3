@@ -33,7 +33,7 @@ class PromptRegistryTests(unittest.TestCase):
             "m2-review-v3",
             "llm-review-cache-v6",
             "enrich-v3",
-            "translation-prompt-v2",
+            "translation-prompt-v3",
             "doc-map-prompt-v1",
             "reconcile-prompt-v1",
             "adjudicate-prompt-v1",

@@ -2046,7 +2046,7 @@ _BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
 # 块级中文翻译缓存（内容哈希键,仅由真 LLM 写入;详见 doc_annotation_export 的生成侧）。
 # 键函数与加载器放这里作为唯一实现——批注导出与本 API 两个渲染面共用,防分叉。
 ANNOTATION_TRANSLATIONS = "annotation_translations.json"
-ANNOTATION_TRANSLATION_GUARDS_VERSION = "annotation-translation-guards-v1"
+ANNOTATION_TRANSLATION_GUARDS_VERSION = "annotation-translation-guards-v3"
 
 
 def translation_key(text: object) -> str:
@@ -2822,12 +2822,21 @@ def build_review_summary(output_dir: Path) -> dict:
     }
 
 
-TRANSLATION_PROMPT_VERSION = "translation-prompt-v2"
+TRANSLATION_PROMPT_VERSION = "translation-prompt-v3"
+
+TRANSLATION_LANGUAGE_REQUIREMENTS = """语言要求：
+- 使用规范中文书面语（技术标准语体），按中文表达习惯重组语序，不逐词对译。
+- 避免直译腔：英文被动语态优先译为「应/须/应能/由…提供/按照…」等主动或中性句式；
+  不使用「被要求/被进行/被允许/被提供」类生硬被动。
+- 条件、范围、时间等状语按中文习惯前置；长句拆为短句，一句一个意思。
+- 术语保持一致：meter 译「电表」，bidder 译「投标人」，credit 译「信用额度」。"""
 
 TRANSLATION_SYSTEM_PROMPT = """You are a technical translator for DLMS/COSEM requirements.
 Translate English requirement text into concise Simplified Chinese.
 Preserve identifiers, quoted service names, OBIS codes, class names, attribute names, protocol acronyms, numeric values, and physical units (unit symbols such as V, A, Hz, s, %, °C, bar, etc. should be kept verbatim).
-Return only JSON with two string fields: translation and protected_codes (the exact, space-separated list of protected codes/acronyms/identifiers/units found in the source)."""
+Return only JSON with two string fields: translation and protected_codes (the exact, space-separated list of protected codes/acronyms/identifiers/units found in the source).
+
+""" + TRANSLATION_LANGUAGE_REQUIREMENTS
 
 
 # P0-7：物理单位符号集合——与 extract_guards._VALUE_UNIT_RE 同源口径，

@@ -49,3 +49,10 @@ class ConfigRegistryTests(unittest.TestCase):
         from config import describe
         table = describe()
         self.assertIn("RATOMIZER_LLM_CONCURRENCY", table)
+
+    def test_translation_batch_default_is_10_with_explicit_zero_rollback(self) -> None:
+        from config import ENV_REGISTRY
+        entry = next(item for item in ENV_REGISTRY if item.name == "RATOMIZER_TRANSLATE_BATCH")
+        self.assertEqual(entry.default, "10")
+        self.assertIn("=0 回退", entry.description)
+        self.assertIn("硬 clamp 到 10", entry.description)
