@@ -77,6 +77,7 @@ STAGE_CLARIFICATION = "clarification"                 # 澄清草稿（小模型
 STAGE_REVIEW = "llm_review"                           # 发布门禁双模型制衡（大模型）
 STAGE_ANALYZE_ENRICH = "analyze_enrich"               # 叙述字段富化（大模型）
 STAGE_SPEC_ENRICH = "spec_enrich"                     # 装配描述富化（大模型）
+STAGE_FULL_TRANSLATION = "full_translation"           # 全文翻译（独立子预算）
 STAGE_DEFAULT = "default"                             # 兜底（未显式 enter_stage 的调用）
 
 # 各环节默认子预算封顶（calls / total_tokens）。第 18 周金标实测回填收紧；以下为方案
@@ -89,6 +90,10 @@ DEFAULT_SUB_BUDGETS: dict[str, dict[str, int]] = {
     STAGE_REVIEW: {"max_calls": 600, "max_tokens": 9_000_000},
     STAGE_ANALYZE_ENRICH: {"max_calls": 360, "max_tokens": 3_600_000},
     STAGE_SPEC_ENRICH: {"max_calls": 360, "max_tokens": 3_600_000},
+    # Base batches are only part of the cost: strict token guards may retry a
+    # rejected item once and then fall back to sentence segments.  SBD's 899
+    # blocks exhausted the old 120-call cap with most of the token budget left.
+    STAGE_FULL_TRANSLATION: {"max_calls": 360, "max_tokens": 2_000_000},
     STAGE_DEFAULT: {"max_calls": 120, "max_tokens": 1_200_000},
 }
 
@@ -105,6 +110,7 @@ DEFAULT_STAGE_ROUTES: dict[str, str] = {
     STAGE_REVIEW: ROUTE_LARGE,
     STAGE_ANALYZE_ENRICH: ROUTE_LARGE,
     STAGE_SPEC_ENRICH: ROUTE_LARGE,
+    STAGE_FULL_TRANSLATION: ROUTE_SMALL,
     STAGE_DEFAULT: ROUTE_SMALL,
 }
 
@@ -117,6 +123,7 @@ _AVG_TOKENS_PER_CALL: dict[str, int] = {
     STAGE_REVIEW: 14_000,
     STAGE_ANALYZE_ENRICH: 9_000,
     STAGE_SPEC_ENRICH: 9_000,
+    STAGE_FULL_TRANSLATION: 16_000,
     STAGE_DEFAULT: 10_000,
 }
 _CEILING_UPSCALE = 1.2  # 上浮 20%（方案口径）
@@ -146,6 +153,7 @@ def _route_for_stage(stage: str, overrides: dict[str, str] | None) -> str:
 # 明令这些环节不出现大模型调用——本集合是可执行门禁 ``validate_stage_routes`` 的依据。
 LIGHT_STAGES: frozenset[str] = frozenset({
     STAGE_STRUCTURE_HYPOTHESIS, STAGE_FUNCTIONAL_EXTRACT, STAGE_CLARIFICATION,
+    STAGE_FULL_TRANSLATION,
 })
 
 

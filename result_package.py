@@ -137,6 +137,7 @@ _ARTIFACTS = {
         # 互斥生产者，由 RATOMIZER_FUNCTIONAL_EXTRACT 入口开关决定哪一个运行）。登记后
         # governed_artifact_path 可定位 package_v1 下的内部副本，与既有原子化产物同纪律。
         _artifact("functional_requirements", "pipeline/functional_requirements.json", legacy_path="functional_requirements.json"),
+        _artifact("document_translations", "pipeline/document_translations.jsonl", legacy_path="document_translations.jsonl"),
         _artifact("run_manifest", "stages/run_manifest.json", legacy_path="run_manifest.json"),
         _artifact("run_manifest_lock", "stages/run_manifest.lock", legacy_path="run_manifest.lock"),
         _artifact("stage_state", "stages/_stages", legacy_path="_stages"),
@@ -158,6 +159,20 @@ _ARTIFACTS = {
             "pipeline/document_annotation.html",
             legacy_path="document_annotation.html",
             deliverable_path="document_annotation.html",
+            media_type="text/html",
+        ),
+        _artifact(
+            "document_translation",
+            "pipeline/document_translation.html",
+            legacy_path="document_translation.html",
+            deliverable_path="document_translation.html",
+            media_type="text/html",
+        ),
+        _artifact(
+            "clarification_bilingual",
+            "pipeline/clarification_questions_bilingual.html",
+            legacy_path="clarification_questions_bilingual.html",
+            deliverable_path="clarification_questions_bilingual.html",
             media_type="text/html",
         ),
         _artifact(
@@ -238,6 +253,7 @@ _STATE_FILENAMES = {
     "claim_artifacts.lock",
     # WS3 文档级统一预算单（governed state；默认关闭，仅 RATOMIZER_LLM_BUDGET=1 时生成）。
     "llm_budget.json", "llm_budget.lock",
+    "full_translation.lock",
     # T2 编排环产物（governed state；orchestration_loop 写、专家面板/CLI 只读）。
     "orchestration_trace.jsonl", "orchestration_summary.json",
     "orchestration_revision_candidates.jsonl",

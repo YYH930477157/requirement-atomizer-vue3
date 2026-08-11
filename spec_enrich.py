@@ -426,7 +426,9 @@ def enrich_descriptions(
 
         consecutive_conn_fail = 0
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
-            futures = {executor.submit(run_unit, unit): unit for unit in units}
+            from context_submit import submit_with_context
+
+            futures = {submit_with_context(executor, run_unit, unit): unit for unit in units}
             for future in as_completed(futures):
                 unit = futures[future]
                 try:

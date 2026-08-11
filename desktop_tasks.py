@@ -218,6 +218,7 @@ _CHAIN_BUDGET_STAGES = {
     "ai-extract": "functional_extract",
     "assemble": "spec_enrich",
     "requirements-analysis": "analyze_enrich",
+    "full-translation": "full_translation",
 }
 
 
@@ -1084,7 +1085,7 @@ _REPLACE_RETRY_DELAY_S = 0.02
 
 # 阶段名 == 子命令名（manifest 键与 CLI 一致，GUI 单步按钮与 chain 写同一本账）
 CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
-               "clarification-report", "compose", "export-annotation-html"]
+               "clarification-report", "full-translation", "compose", "export-annotation-html"]
 
 # 结果包发布纪律（2026-08-03 审查 I1/I3，spec §8.2/§15）：
 # - 只有这些会改动已注册根交付物的写命令才允许触发发布；
@@ -1093,7 +1094,7 @@ CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-a
 #   由 result-package-complete 在全部阶段验证后一次性发布（失败重跑不污染旧完成结果）。
 PUBLISHING_COMMANDS = frozenset({
     "run", "chain", "ai-extract", "clarification-report", "requirements-analysis",
-    "template-write", "assemble", "compose", "export",
+    "template-write", "assemble", "compose", "export", "full-translation",
     "export-annotation-html", "import-ai-decisions", "import-clarification-answers",
 })
 _RESULT_PACKAGE_COMMANDS = frozenset({
@@ -1123,6 +1124,7 @@ STAGE_INPUTS: dict[str, list[str]] = {
                              "omission_states.jsonl", "ai_requirements.meta.json", "ai_supplements.jsonl",
                              "claim_effective_ledger.jsonl", "claim_effective.meta.json",
                              "claim_queue_proposals.jsonl", "claim_effective_health.json"],
+    "full-translation": ["blocks.jsonl", "clarification_report.json", "annotation_translations.json"],
     "compose": ["atomic_requirements.jsonl", "table_items.jsonl", "table_cell_items.jsonl", "table_cell_dispositions.jsonl",
                 "ai_requirements.meta.json",
                 "ai_supplements.jsonl"],
@@ -1174,6 +1176,8 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
     "requirements-analysis": REQUIREMENTS_ANALYSIS_OUTPUTS,
     "template-write": ["软件需求列表-成文.xlsx", "template_writer_report.json"],
     "clarification-report": ["clarification_questions.md", "clarification_questions.xlsx", "clarification_report.json"],
+    "full-translation": ["document_translations.jsonl", "document_translation.html",
+                         "clarification_questions_bilingual.html"],
     "compose": ["engineering_requirements/engineering_requirements.json"],
     "export-annotation-html": ["document_annotation.html"],
 }
@@ -1214,6 +1218,7 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     # v5：完整性元数据进入阶段输入，旧缓存不得缺 incomplete_inputs。
     "template-write": "v5",
     "clarification-report": "v6",
+    "full-translation": "v1",
     # v1.5：compose 首次绑定完整性元数据，显式升级阶段实现戳。
     "compose": "v2",
 }
@@ -1223,6 +1228,7 @@ _STAGE_BASE_PRODUCERS = {
     "assemble": "assemble_spec/v1",
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v8-param-row-aggregate",
+    "full-translation": "full-translation/v1",
     "compose": "engineering_composer/v1",
     # v16-cell-claim-projection：P0-2 cell claim 落公共 records（claims_json/claim_zones
     # 不再丢失生产 table_cell claim）+ P1-3 静态 HTML 按物理 R×C/merge anchor 在
@@ -1332,6 +1338,16 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
             )
         elif stage == "functional-synthesis":
             producer = FUNCTIONAL_SYNTHESIS_VERSION
+        elif stage == "full-translation":
+            from doc_annotation_export import (
+                ANNOTATION_TRANSLATION_GUARDS_VERSION,
+                _active_translation_strategy_version,
+            )
+            from full_translation import FULL_TRANSLATION_VERSION
+            producer = (
+                f"{FULL_TRANSLATION_VERSION}+{_active_translation_strategy_version()}"
+                f"+{ANNOTATION_TRANSLATION_GUARDS_VERSION}"
+            )
         elif stage == "export-annotation-html":
             from claim_focus import CLAIM_FOCUS_ADAPTER_VERSION
             from doc_annotation_export import (ANNOTATION_TRANSLATION_GUARDS_VERSION,
@@ -1348,6 +1364,7 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
         if stage in {
             "ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
             "clarification-report", "compose", "export-annotation-html",
+            "full-translation",
         }:
             from omission_actions import AI_SUPPLEMENT_VERSION
             producer = f"{producer}+{AI_SUPPLEMENT_VERSION}"
@@ -1422,6 +1439,7 @@ def _hash_file(path: Path) -> str:
 
 _STAGE_MUTABLE_INPUTS = {
     "export-annotation-html": {"annotation_translations.json"},
+    "full-translation": {"annotation_translations.json"},
 }
 
 _CLAIM_STAGE_OUTPUTS = {
@@ -2367,6 +2385,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             out_dir, route=route, template_path=template_path),
         "template-write": lambda: template_write_task(out_dir, template_path),
         "clarification-report": lambda: clarification_report_task(out_dir),
+        "full-translation": lambda: full_translation_task(out_dir, route=route),
         "compose": lambda: compose_task(out_dir),
         "export-annotation-html": lambda: export_annotation_html_task(
             out_dir, route=route, layout_mode=annotation_layout_mode),
@@ -2380,7 +2399,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     chain_budget = _attach_budget_ledger_for_run(out_dir)  # S1-1：开启预算单时挂账本
     try:
         llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis",
-                      "export-annotation-html"}
+                      "full-translation", "export-annotation-html"}
         for index, stage in enumerate(ordered, start=1):
             emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
                            "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
@@ -2390,6 +2409,9 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 stage_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
             elif stage == "export-annotation-html":
                 stage_config = {"layout_mode": annotation_layout_mode}
+            elif stage == "full-translation":
+                from full_translation import full_translation_enabled
+                stage_config = {"enabled": full_translation_enabled()}
             else:
                 stage_config = None
             reusable = stage_is_reusable(
@@ -2504,6 +2526,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             elif stage == "clarification-report":
                 payload["readiness"] = stage_payload.get("readiness")
                 payload["questions"] = stage_payload.get("questions")
+            elif stage == "full-translation":
+                payload["full_translation"] = stage_payload.get("quality")
             # 阶段降级/告警上提（2026-07-08 审计 2-C）：此前 note 埋在 results 里，
             # stub 降级/部分章节失败时 GUI 一律显示「运行完成」全绿
             note = stage_payload.get("note")
@@ -2585,6 +2609,14 @@ def export_annotation_html_task(out_dir: Path, route: str | None = None,
     if notes:
         payload["note"] = "；".join(notes)
     return payload
+
+
+@_leased_pipeline_stage("full-translation")
+def full_translation_task(out_dir: Path, route: str | None = None) -> dict[str, Any]:
+    """Translate every document block and publish bilingual audit deliverables."""
+    from full_translation import run_full_translation
+
+    return run_full_translation(out_dir.expanduser().resolve(), route=route)
 
 
 def import_ai_decisions_task(out_dir: Path, decisions_file: Path) -> dict[str, Any]:
@@ -2873,6 +2905,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     anno_parser.add_argument("--layout-mode", choices=["optimized", "pdf_original"],
                              default="pdf_original")
 
+    full_translation_parser = subparsers.add_parser("full-translation")
+    full_translation_parser.add_argument("--out", type=Path, required=True)
+    full_translation_parser.add_argument(
+        "--route", choices=["stub", "openai_compatible"], default="openai_compatible"
+    )
+
     import_parser = subparsers.add_parser("import-ai-decisions")
     import_parser.add_argument("--out", type=Path, required=True)
     import_parser.add_argument("--file", type=Path, required=True, help="HTML 导出的裁决 JSON")
@@ -3039,9 +3077,13 @@ def _manifest_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
         context["route"] = getattr(args, "llm_route", None)
     elif command == "assemble":
         context["route"] = getattr(args, "enrich_route", None) or None
-    elif command == "export-annotation-html":
+    elif command in {"export-annotation-html", "full-translation"}:
         context["route"] = getattr(args, "route", None) or None
-        context["config"] = {"layout_mode": getattr(args, "layout_mode", "pdf_original")}
+        if command == "export-annotation-html":
+            context["config"] = {"layout_mode": getattr(args, "layout_mode", "pdf_original")}
+        else:
+            from full_translation import full_translation_enabled
+            context["config"] = {"enabled": full_translation_enabled()}
     if command in {"requirements-analysis", "template-write"}:
         context["template_path"] = getattr(args, "template", None)
     if command == "ai-extract":
@@ -3342,6 +3384,8 @@ def main(argv: list[str] | None = None) -> int:
                 route=getattr(args, "route", None),
                 layout_mode=args.layout_mode,
             )
+        elif args.command == "full-translation":
+            payload = full_translation_task(args.out, route=args.route)
         elif args.command == "import-ai-decisions":
             payload = import_ai_decisions_task(args.out, args.file)
         elif args.command == "import-verification":
@@ -3414,7 +3458,7 @@ def main(argv: list[str] | None = None) -> int:
         actual_route = str(payload.get("route") or "").strip() if isinstance(payload, dict) else ""
         if actual_route:
             manifest_context["route"] = actual_route
-        if args.command == "export-annotation-html" and isinstance(payload, dict):
+        if args.command in {"export-annotation-html", "full-translation"} and isinstance(payload, dict):
             manifest_context["outputs"] = payload.get("written") or None
         leased_input_files = (str(payload.pop("_input_files_fingerprint", "") or "")
                               if isinstance(payload, dict) else "") or None

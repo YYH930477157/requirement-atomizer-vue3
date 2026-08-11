@@ -120,6 +120,8 @@ py-modules = [
   "orchestration_loop",
   "ai_review_actions",
   "doc_annotation_export",
+  "full_translation",
+  "context_submit",
   "docx_table_parser",
   "doc_facsimile",
   "requirement_schema",

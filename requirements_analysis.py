@@ -1130,7 +1130,9 @@ def _run_enrichment(
 
     emit(0)
     with ThreadPoolExecutor(max_workers=resolve_concurrency(concurrency)) as executor:
-        futures = [executor.submit(task) for task in tasks]
+        from context_submit import submit_with_context
+
+        futures = [submit_with_context(executor, task) for task in tasks]
         for future in as_completed(futures):
             outcomes = future.result()
             dones: list[int] = []

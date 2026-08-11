@@ -302,6 +302,16 @@
             <span>仅歧义</span>
           </label>
           <input v-model="searchText" class="search-input" type="search" placeholder="搜索需求、对象或编号" />
+          <button
+            class="button batch-accept-button"
+            type="button"
+            :disabled="isBatchAccepting || batchAcceptCandidates.length === 0 || !apiClient"
+            data-testid="batch-accept-high-confidence"
+            @click="batchAcceptHighConfidence"
+          >
+            <CheckCheck :size="15" aria-hidden="true" />
+            {{ isBatchAccepting ? '接受中' : `批量接受 ${batchAcceptCandidates.length}` }}
+          </button>
         </section>
 
         <section
@@ -371,7 +381,12 @@
               <div class="panel-subtitle">{{ tableFooterText }}</div>
             </div>
 
-            <div class="table-wrap independent-table-scroll" data-testid="requirement-table">
+            <div
+              ref="requirementTableScroll"
+              class="table-wrap independent-table-scroll"
+              data-testid="requirement-table"
+              @scroll="handleRequirementTableScroll"
+            >
               <table>
                 <thead>
                   <tr>
@@ -390,8 +405,11 @@
                   <tr v-if="filteredRequirements.length === 0" data-testid="empty-requirements">
                     <td class="empty-cell" colspan="9">当前输出目录暂无需求</td>
                   </tr>
+                  <tr v-if="virtualTopHeight > 0" class="virtual-spacer" aria-hidden="true">
+                    <td colspan="9" :style="{ height: `${virtualTopHeight}px` }"></td>
+                  </tr>
                   <tr
-                    v-for="row in filteredRequirements"
+                    v-for="row in visibleRequirementRows"
                     :key="row.id"
                     :class="{ selected: row.id === selectedRequirementId }"
                     :data-testid="`row-${row.id}`"
@@ -408,6 +426,9 @@
                       <span class="status-tag" :class="statusToneClass(row.status)" :data-testid="`row-status-${row.id}`">{{ statusDisplay(row.status) }}</span>
                     </td>
                     <td><span class="ambiguity-tag" :class="riskToneClass(row.ambiguity.level)">{{ row.ambiguity.level }}</span></td>
+                  </tr>
+                  <tr v-if="virtualBottomHeight > 0" class="virtual-spacer" aria-hidden="true">
+                    <td colspan="9" :style="{ height: `${virtualBottomHeight}px` }"></td>
                   </tr>
                 </tbody>
               </table>
@@ -690,6 +711,7 @@ import {
   AlertTriangle,
   Braces,
   Check,
+  CheckCheck,
   ChevronRight,
   CircleHelp,
   ClipboardCheck,
@@ -959,6 +981,7 @@ const RUN_STAGE_DEFS = [
   { key: "requirements-analysis", label: "需求分析" },
   { key: "template-write", label: "格式成文" },
   { key: "clarification-report", label: "澄清清单" },
+  { key: "full-translation", label: "全文翻译" },
   { key: "compose", label: "工程组装" },
   { key: "export-annotation-html", label: "HTML导出" },
 ] as const
@@ -1087,6 +1110,7 @@ function resetRunStageBoard() {
     next["template-write"] = { status: "disabled", percent: 0, detail: "未启用" }
     next["clarification-report"] = { status: "disabled", percent: 0, detail: "未启用" }
   }
+  if (!llmMode.value) next["full-translation"] = { status: "disabled", percent: 0, detail: "LLM 关闭，未运行" }
   if (!templatePath.value) next["template-write"] = { status: "disabled", percent: 0, detail: "未配置模板" }
   if (!runStages.value.compose) next.compose = { status: "disabled", percent: 0, detail: "未启用" }
   if (!runStages.value.annotationHtml) next["export-annotation-html"] = { status: "disabled", percent: 0, detail: "未启用" }
@@ -1231,6 +1255,12 @@ const statusFilter = ref("全部")
 const confidenceFilter = ref(0)
 const ambiguousOnly = ref(false)
 const searchText = ref("")
+const requirementTableScroll = ref<HTMLElement | null>(null)
+const requirementScrollTop = ref(0)
+const requirementViewportHeight = ref(620)
+const REQUIREMENT_ROW_HEIGHT = 79
+const REQUIREMENT_OVERSCAN = 8
+const isBatchAccepting = ref(false)
 
 const typeOptions = computed(() => ["全部", ...Array.from(new Set(requirementRows.value.map((item) => item.type)))])
 const moduleOptions = computed(() => ["全部", ...Array.from(new Set(requirementRows.value.map((item) => item.module || "未分模块"))).sort()])
@@ -1263,6 +1293,43 @@ const filteredRequirements = computed(() => requirementRows.value.filter((item) 
   return true
 }))
 
+const requirementWindowStart = computed(() => Math.max(
+  0,
+  Math.floor(requirementScrollTop.value / REQUIREMENT_ROW_HEIGHT) - REQUIREMENT_OVERSCAN,
+))
+const requirementWindowSize = computed(() => (
+  Math.ceil(requirementViewportHeight.value / REQUIREMENT_ROW_HEIGHT) + REQUIREMENT_OVERSCAN * 2
+))
+const visibleRequirementRows = computed(() => filteredRequirements.value.slice(
+  requirementWindowStart.value,
+  requirementWindowStart.value + requirementWindowSize.value,
+))
+const virtualTopHeight = computed(() => requirementWindowStart.value * REQUIREMENT_ROW_HEIGHT)
+const virtualBottomHeight = computed(() => Math.max(
+  0,
+  (filteredRequirements.value.length - requirementWindowStart.value - visibleRequirementRows.value.length)
+    * REQUIREMENT_ROW_HEIGHT,
+))
+const batchAcceptCandidates = computed(() => filteredRequirements.value.filter((item) => (
+  item.confidence >= 0.9
+  && item.ambiguity.level === "低"
+  && (item.status === "candidate" || item.status === "llm_reviewed")
+)))
+
+function handleRequirementTableScroll(event: Event) {
+  const target = event.currentTarget as HTMLElement
+  requirementScrollTop.value = target.scrollTop
+  requirementViewportHeight.value = target.clientHeight || requirementViewportHeight.value
+}
+
+watch(
+  [moduleFilter, categoryFilter, typeFilter, statusFilter, confidenceFilter, ambiguousOnly, searchText],
+  () => {
+    requirementScrollTop.value = 0
+    if (requirementTableScroll.value) requirementTableScroll.value.scrollTop = 0
+  },
+)
+
 const selectedRequirement = computed(() => requirementRows.value.find((item) => item.id === selectedRequirementId.value) ?? requirementRows.value[0] ?? emptyRequirement)
 // 是否有真实可选需求（G9-10 哨兵清理）：替代此前 `selectedRequirement.id === emptyRequirement.id`
 // 的 magic-string 哨兵比较——emptyRequirement 现仅作空状态 UI 占位（「暂无需求」文案），
@@ -1279,7 +1346,9 @@ const documentDisplayName = computed(() => {
 const tableFooterText = computed(() => {
   const total = filteredRequirements.value.length
   if (total === 0) return "显示第 0 条，共 0 条"
-  return `显示第 1-${total} 条，共 ${total} 条`
+  const first = requirementWindowStart.value + 1
+  const last = Math.min(total, requirementWindowStart.value + visibleRequirementRows.value.length)
+  return `显示第 ${first}-${last} 条，共 ${total} 条`
 })
 const reviewNote = computed(() => {
   if (selectedRequirement.value.status === "rejected") return "当前条目被拒绝，建议补充重写。"
@@ -1691,6 +1760,44 @@ async function updateStatus(status: ReviewStatus) {
   }
 }
 
+async function batchAcceptHighConfidence() {
+  const client = apiClient.value
+  if (!client || isBatchAccepting.value || batchAcceptCandidates.value.length === 0) return
+  const candidates = [...batchAcceptCandidates.value]
+  isBatchAccepting.value = true
+  apiMessage.value = `正在批量接受 0/${candidates.length} 条高置信无歧义需求`
+  let completed = 0
+  try {
+    for (const row of candidates) {
+      const state = await client.applyReviewAction({
+        requirementId: row.backendId,
+        status: "accepted",
+        actor: "vue3-ui-batch",
+        reason: "batch accept high-confidence unambiguous requirement",
+        expectedTargetFingerprint: row.targetFingerprint,
+        expectedTargetPublicationRevision: row.targetPublicationRevision,
+        expectedTargetAuthorityWriteRevision: row.targetAuthorityWriteRevision,
+      })
+      const index = requirementRows.value.findIndex((item) => item.id === row.id)
+      if (index >= 0) requirementRows.value[index] = applyReviewState(requirementRows.value[index], state)
+      completed += 1
+      apiMessage.value = `正在批量接受 ${completed}/${candidates.length} 条高置信无歧义需求`
+    }
+    apiMessage.value = `已批量接受 ${completed} 条高置信无歧义需求`
+  } catch (error) {
+    if (isNeedsReconfirmationError(error) && client === apiClient.value) {
+      const latestRows = (await client.loadRequirements()).map(mapBackendRequirement)
+      if (client === apiClient.value) requirementRows.value = latestRows
+      apiMessage.value = `已接受 ${completed} 条；其余条目证据已变化，已刷新并停止批量操作`
+    } else {
+      const reason = error instanceof Error ? error.message : "批量接受失败"
+      apiMessage.value = `已接受 ${completed} 条；${reason}`
+    }
+  } finally {
+    isBatchAccepting.value = false
+  }
+}
+
 async function handleTranslate() {
   const row = selectedRequirement.value
   if (!apiClient.value) {
@@ -1853,6 +1960,7 @@ function plannedAutomaticStages(options: { llmReviewLimit?: number }): string[] 
     if (templatePath.value) stages.push("template-write")
     stages.push("clarification-report")
   }
+  if (useLlm) stages.push("full-translation")
   if (runStages.value.compose) stages.push("compose")
   if (runStages.value.annotationHtml) stages.push("export-annotation-html")
   return [...new Set(stages)]
@@ -1985,6 +2093,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
           }
         }
       }
+      if (useLlm) stages.push("full-translation")
       if (runStages.value.compose) stages.push("compose")
       if (runStages.value.annotationHtml) stages.push("export-annotation-html")
       if (stages.length && bridge.runChain) {
@@ -2142,6 +2251,7 @@ const CHAIN_STEP_LABELS: Record<string, string> = {
   "functional-synthesis": "功能重组",
   "ai-extract": "AI 抽取（双引擎）", assemble: "装配实现规格", "requirements-analysis": "软件需求分析",
   "template-write": "成文需求列表", "clarification-report": "澄清问题清单", compose: "组装工程需求",
+  "full-translation": "生成全文双语交付物",
   "export-annotation-html": "导出批注视图",
 }
 
@@ -4519,6 +4629,23 @@ tbody tr {
 tbody tr.selected td,
 tbody tr:hover td {
   background: #f1f3f8;
+}
+
+tbody tr.virtual-spacer,
+tbody tr.virtual-spacer:hover {
+  cursor: default;
+}
+
+tbody tr.virtual-spacer td,
+tbody tr.virtual-spacer:hover td {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.batch-accept-button {
+  min-height: 36px;
+  white-space: nowrap;
 }
 
 .col-id {

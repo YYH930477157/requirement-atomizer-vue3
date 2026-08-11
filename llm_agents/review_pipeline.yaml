@@ -7,9 +7,9 @@ model_routes:
   default: "stub"
   openai_compatible:
     base_url: "https://api.deepseek.com"
-    # The stable chat alias uses the same serving model without consuming the
-    # completion allowance as hidden reasoning before structured JSON output.
-    model: "deepseek-chat"
+    # DeepSeek retired the legacy deepseek-chat alias on 2026-07-24. V4 Flash
+    # remains the fast non-reasoning route used by translation and review.
+    model: "deepseek-v4-flash"
     api_key_env: "RATOMIZER_LLM_API_KEY"
     temperature: 0.0
     max_tokens: 4096
