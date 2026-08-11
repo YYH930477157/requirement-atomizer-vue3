@@ -57,6 +57,7 @@ from table_structure import (
     plan_table_leaves,
     row_bears_normative_sentence,
     row_is_weak_signal,
+    strip_lettered_header_prefix,
     validate_merge_text,
 )
 from table_structure import (
@@ -981,7 +982,9 @@ def effective_table_headers(header_rows: list[list[str]], width: int) -> list[st
         parts: list[str] = []
         seen: set[str] = set()
         for row in header_rows:
-            value = clean_text(row[column_index] if column_index < len(row) else "")
+            value = clean_text(strip_lettered_header_prefix(
+                row[column_index] if column_index < len(row) else ""
+            ))
             key = normalize_header_part(value)
             if not value or key in seen:
                 continue
