@@ -87,10 +87,10 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # Translation
     {"id": "translation", "version": "translation-prompt-v3", "owner_module": "api_server",
      "purpose": "Requirement text translation prompt"},
-    {"id": "annotation-translation-batch", "version": "translation-prompt-v4",
+    {"id": "annotation-translation-batch", "version": "translation-prompt-v5",
      "owner_module": "doc_annotation_export",
      "purpose": "Annotation marker batch translation prompt (dual-limit batch array contract)"},
-    {"id": "annotation-translation-guards", "version": "annotation-translation-guards-v3",
+    {"id": "annotation-translation-guards", "version": "annotation-translation-guards-v5",
      "owner_module": "api_server",
      "purpose": "Annotation translation anti-drift guard version"},
 

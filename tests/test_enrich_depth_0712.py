@@ -497,6 +497,7 @@ class EnumMarkerGuardTests(unittest.TestCase):
         self.assertIn("67", strip_enum_markers("code IP67. done"))       # 前邻字母不剥
         self.assertIn("4.9.3.2", strip_enum_markers("按 4.9.3.2 执行"))   # 条款号不剥
         self.assertIn("15", strip_enum_markers("保持 15 年"))             # 普通数字不剥
+        self.assertIn("1", strip_enum_markers("CLASS 1) meter"))          # 等级数字不是枚举
         self.assertNotIn("1.", strip_enum_markers("1. 关闭阀门"))          # 行首标号剥除
 
 

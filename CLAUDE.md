@@ -1,5 +1,15 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-11）——Agent v5 近期改动落地（分支 `codex/agent-v5-full-translation`，未提交）
+
+- **翻译护栏 v5 / prompt v5**：v4 先收紧数字枚举边界，`CLASS 1)` 等标准标题保留语义数字；SBD 全文验收再修正两处真实缺陷。`translation-prompt-v5` 把护栏检出的缺失数字/编码/单位逐个反馈给单条与句段重试，要求原样保留；`annotation-translation-guards-v5` 让新译文校验、旧成功缓存复验和失效判定统一使用模型实际收到的清洁文本，避免目录点引导线/尾页码已清理却被误判缺失。数字/编码/单位双向保护不放松。
+- **全文翻译正式阶段**：新增 `full_translation.py`（`full-translation-v1`）与 `full-translation` chain/CLI 阶段，默认开关 `RATOMIZER_FULL_TRANSLATION=1`。逐 block 输出 `document_translations.jsonl`（translated/failed/skipped 三态、内容哈希与 provenance），复用 `annotation_translations.json` 内容哈希缓存，生成全文双语 HTML 与澄清双语 HTML，并把覆盖率/调用账目写回 `quality_report.json`；结果包、producer、独立 `full_translation` 预算段均已接通。
+- **预算传播与冒烟**：新增 `context_submit.submit_with_context`，统一生产线程池 LLM 调用的 `ContextVar` 传播并以 AST 测试禁止裸提交。`run_smoke.py` + `tests/smoke.txt` 入仓，当前 90 模块 / 1,649 tests，本机实跑 112.029s 全绿。
+- **Vue 遗留**：需求表改为固定行高虚拟窗口；新增高置信无歧义批量接受（`confidence>=0.90`、低歧义、候选/LLM 已审，逐条 CAS）；运行链在 LLM 开启时默认加入全文翻译阶段。Vitest 264/264、`npm run build` 通过。
+- **SBD 全文验收通过**：在 git-ignored 隔离目录运行真实 `deepseek-v4-flash`，原始客户结果包未修改。最终 899 blocks 中 translated 891 / failed 8 / skipped 0，覆盖率 **99.11%**；失败为 rejected 7 / unresolved 1，未伪装成功。899 行 schema 全过，双语 HTML UTF-8 完整；确定性 20 条逐条抽评 20/20 可接受。最终增量轮 40 calls / 204,133 tokens；研发验收三轮累计 498 calls / 1,583,211 tokens。全文翻译子预算调用上限由 120 调为 360，token 上限仍为 2,000,000。API key 仅注入验收进程环境，未落盘。详见 `docs/agent-v5-implementation-acceptance.md`。
+- **最终回归**：历史样本环境下后端全量 3,437 tests OK；冒烟 90 modules / 1,649 tests OK；前端 Vitest 264/264、`npm run build` 通过；修改 Python 文件 py_compile、`git diff --check` 与 SBD 899 行 schema 校验均通过。
+- **T-5 保守结论**：D3 两栏定义表继续默认 OFF；本机 Docling/Marker 均不可用，现代解析器继续默认 OFF，手写 PDF 路径不退役。跨文档误触率与现代解析器 A/B 仍需外部语料/依赖。
+
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
 > 状态快照截至 2026-08-10，里程碑推进后请同步更新本文件。
 

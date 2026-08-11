@@ -126,6 +126,10 @@ class LLMBudgetConstructionTests(_BudgetTestCase):
             ledger.sub_budgets[STAGE_STRUCTURE_HYPOTHESIS]["max_calls"],
             llm_budget.DEFAULT_SUB_BUDGETS[STAGE_STRUCTURE_HYPOTHESIS]["max_calls"],
         )
+        self.assertEqual(ledger.sub_budgets[llm_budget.STAGE_FULL_TRANSLATION], {
+            "max_calls": 360,
+            "max_tokens": 2_000_000,
+        })
 
     def test_sub_budget_and_route_overrides(self) -> None:
         ledger = LLMBudgetLedger.for_document(

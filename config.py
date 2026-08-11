@@ -40,6 +40,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # --- 说明标记翻译优化批处理（默认 10；=0 回退旧 batch=8 简单切片）---
     EnvVar("RATOMIZER_TRANSLATE_BATCH", "10", "说明标记翻译优化批处理开关（默认 10；=0 回退旧 batch=8 简单切片+批次失败直降单条；正整数 N 启用，条数硬 clamp 到 10，且单批输入字符≤RATOMIZER_TRANSLATE_BATCH_MAX_CHARS 的顺序贪心装包，单条超限整条单独发，批次 JSON 非法拆半≤2 轮后逐条；护栏按条照跑零放松）", False),
     EnvVar("RATOMIZER_TRANSLATE_BATCH_MAX_CHARS", "8000", "优化批处理单批输入总字符上限（仅 RATOMIZER_TRANSLATE_BATCH>0 时生效；任一条累加后超出即封包，防 10 条长文译文顶 max_tokens 把 JSON 切半）", False),
+    EnvVar("RATOMIZER_FULL_TRANSLATION", "1", "全文翻译正式阶段开关（默认开启；=0 时逐块记 skipped:feature_disabled，不发起翻译调用）", False),
     EnvVar("RATOMIZER_REBUILD_DEBOUNCE_S", "1.5", "裁决后交付物重建防抖秒数（连续裁决合并为一次重建；0=同步重建）", False),
     EnvVar("RATOMIZER_LLM_JSON_SCHEMA", "1", "response_format=json_object（默认开；仅端点明确报不支持时记住并降级；=0 关闭）", False),
     EnvVar("RATOMIZER_LLM_TRACE", "1", "=0/false 关闭 llm_trace.jsonl 消息级追踪（含客户文档全文，外发目录前注意）", False),

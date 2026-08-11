@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "document_translation.schema.json",
+  "title": "Document translation row",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "block_id", "block_index", "status", "reason", "source_text", "translation", "provenance"],
+  "properties": {
+    "schema_version": {"const": "document-translation/v1"},
+    "block_id": {"type": "string", "minLength": 1},
+    "block_index": {"type": "integer", "minimum": 0},
+    "status": {"enum": ["translated", "failed", "skipped"]},
+    "reason": {"type": "string"},
+    "source_text": {"type": "string"},
+    "translation": {"type": "string"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "source_sha256", "translation_key", "route", "model", "guards_version", "strategy_version", "generated_at"],
+      "properties": {
+        "producer": {"const": "full-translation-v1"},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "translation_key": {"type": "string"},
+        "route": {"type": "string"},
+        "model": {"type": "string"},
+        "guards_version": {"type": "string", "minLength": 1},
+        "strategy_version": {"type": "string", "minLength": 1},
+        "generated_at": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "translated"}}}, "then": {"properties": {"translation": {"minLength": 1}}}},
+    {"if": {"properties": {"status": {"enum": ["failed", "skipped"]}}}, "then": {"properties": {"reason": {"minLength": 1}}}}
+  ]
+}

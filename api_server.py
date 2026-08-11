@@ -2046,7 +2046,7 @@ _BLOCK_FIELDS = ("block_id", "order", "type", "text", "section_path",
 # 块级中文翻译缓存（内容哈希键,仅由真 LLM 写入;详见 doc_annotation_export 的生成侧）。
 # 键函数与加载器放这里作为唯一实现——批注导出与本 API 两个渲染面共用,防分叉。
 ANNOTATION_TRANSLATIONS = "annotation_translations.json"
-ANNOTATION_TRANSLATION_GUARDS_VERSION = "annotation-translation-guards-v3"
+ANNOTATION_TRANSLATION_GUARDS_VERSION = "annotation-translation-guards-v5"
 
 
 def translation_key(text: object) -> str:

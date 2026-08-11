@@ -1380,10 +1380,22 @@ class DocAnnotationExportTests(unittest.TestCase):
 
     def test_leader_dots_cleaned_in_toc(self) -> None:
         """目录点连线 + 页码在渲染层清洁：Foreword .... 3 → Foreword。"""
-        cleaned = dae._clean_block_text("Foreword .................................. 3")
+        source = "Foreword .................................. 3"
+        cleaned = dae._clean_block_text(source)
         self.assertEqual(cleaned, "Foreword")
         # 非目录正文不受影响
         self.assertIn("measure", dae._clean_block_text("The meter shall measure volume."))
+
+        def chat(_system: str, _user: str) -> dict:
+            self.fail("cleaned table-of-contents text should pass without retry")
+
+        entry, metrics = dae._resolve_guarded_translation(
+            chat, owner="context", text=source, batch_translation="前言",
+            model="mock", strict=True,
+        )
+        self.assertEqual(entry["status"], "accepted")
+        self.assertEqual(entry["strategy"], "batch")
+        self.assertEqual(metrics["retry_calls"], 0)
 
     def test_symbol_only_lines_filtered(self) -> None:
         """纯框线乱码行（PDF 表格边框误读）在渲染时跳过。"""
@@ -2613,7 +2625,7 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
     # --- Req 6：提示词版本真实进策略/producer/缓存指纹（不只是登记摆设）---
     def test_prompt_version_constant_registered_and_derived_into_strategy(self) -> None:
         from prompt_registry import is_registered
-        self.assertEqual(dae.TRANSLATION_BATCH_PROMPT_VERSION, "translation-prompt-v4")
+        self.assertEqual(dae.TRANSLATION_BATCH_PROMPT_VERSION, "translation-prompt-v5")
         self.assertTrue(is_registered(dae.TRANSLATION_BATCH_PROMPT_VERSION))
         # 策略版本由提示词版本派生 → 改提示词版本即改缓存/阶段指纹
         self.assertTrue(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED.startswith(
@@ -3127,6 +3139,22 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
         drift, _fab = dae._translation_drift(src, faithful, strict=True)
         self.assertFalse(drift, f"expected no drift, got {drift}")
 
+    def test_strict_guard_preserves_class_number_before_closing_parenthesis(self) -> None:
+        src = "Accuracy requirements for CLASS 1) meters shall apply."
+        faithful = "1级电表应满足准确度要求。"
+        self.assertIn("1", dae._norm_int_text(src))
+        drift, fabricated = dae._translation_drift(src, faithful, strict=True)
+        self.assertEqual(drift, [])
+        self.assertEqual(fabricated, [])
+
+    def test_integer_normalization_still_removes_line_start_enum_marker(self) -> None:
+        normalized = dae._norm_int_text("  1) The meter shall support profile A.")
+        self.assertNotIn("1", normalized)
+
+    def test_integer_normalization_still_removes_sentence_boundary_enum_marker(self) -> None:
+        normalized = dae._norm_int_text("Intro. 2) The meter shall support profile B.")
+        self.assertNotIn("2", normalized)
+
     def test_strict_guard_allows_parenthesized_enum_reformatting(self) -> None:
         src = "1. First action. 2. Second action."
         faithful = "（1）第一个动作。（2）第二个动作。"
@@ -3180,6 +3208,10 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
                 return {"items": items}
             # A 的单条重试：干净保留全部受保护 token
             self.assertIn("单条整段重试", user)
+            self.assertIn("译文中必须逐个原样保留", user)
+            self.assertIn('"0-0:96.1.0.255"', user)
+            self.assertIn('"230"', user)
+            self.assertIn('"V"', user)
             return {"items": [{"id": 1, "translation": "电表应支持 OBIS 0-0:96.1.0.255，230 V。"}]}
 
         texts = {dae._translation_key(a): ("context", a), dae._translation_key(b): ("context", b)}

@@ -66,16 +66,19 @@ def formula_safe(value: object) -> object:
         return value
     return "'" + value
 
-# 枚举标号：行首/分隔符后的 "1." "2)" "3、"（1-2 位,后不接数字）。翻译把 a) b) c)
+# 枚举标号：行首/明确句界后的 "1." "2)" "3、"（1-2 位,后不接数字）。翻译把 a) b) c)
 # 列表转写成数字编号是格式归一不是编造数字(test18 实测 3 条硬件翻译被误拒)——
-# 漂移护栏的 int 提取侧先剥标号再算。前邻必须是行首/空白/分隔符:"IP67." 的 67
-# 前邻是字母,不受影响;"4.9.3.2" 后接数字,不匹配。
-_ENUM_MARKER = re.compile(r"(?:(?<=^)|(?<=[\s;；:：,，、]))(\d{1,2})\s*[.、)）](?!\d)", re.MULTILINE)
+# 漂移护栏的 int 提取侧先剥标号再算。普通词后的空格和右括号都不是边界，避免
+# "CLASS 1)" 一类标准标题丢失语义数字；"4.9.3.2" 后接数字也不匹配。
+_ENUM_MARKER = re.compile(
+    r"(^[ \t]*|[\n\r.;；:：,，、。！？!?][ \t]*)(\d{1,2})\s*[.、)）](?!\d)",
+    re.MULTILINE,
+)
 
 
 def strip_enum_markers(text: object) -> str:
     """剥除列表枚举标号本体,供漂移护栏数字提取用;编码扫描不得经此剥除(仍严格)。"""
-    return _ENUM_MARKER.sub(" ", str(text or ""))
+    return _ENUM_MARKER.sub(lambda match: f"{match.group(1)} ", str(text or ""))
 
 # 引用性编号——条款号/附录号/图表类型引用,是"地址"不是"数值"。遗漏检测(source number
 # missing)的分母侧剥除:extract_ints 会把 "7.4.1" 拆成 7/4/1、"Clause 7" 贡献 7,

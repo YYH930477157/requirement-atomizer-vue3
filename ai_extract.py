@@ -35,6 +35,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
+from context_submit import submit_with_context
 from result_package import governed_artifact_path
 from threading import Lock
 from typing import Any, Callable
@@ -3816,7 +3817,7 @@ def extract_all(
 
     if pending:
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
-            futures = [executor.submit(work, item) for item in pending]
+            futures = [submit_with_context(executor, work, item) for item in pending]
             for future in as_completed(futures):
                 idx, fp, reqs, ok = future.result()
                 prepared = _prepare_requirement_rows(reqs, fp)

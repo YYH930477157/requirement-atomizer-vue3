@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import yaml
 
+from context_submit import submit_with_context
 from domain_pack import load_domain_pack
 from io_utils import read_jsonl, read_jsonl_recover_torn_tail
 from llm_client import (
@@ -457,7 +458,8 @@ def review_requirements_with_openai(
             executor = ThreadPoolExecutor(max_workers=concurrency)
             try:
                 futures = {
-                    executor.submit(
+                    submit_with_context(
+                        executor,
                         _process_review_batch, batch_indices, requirements, pipeline,
                         client_config, scope_config, cache, evidence,
                     ): batch_indices
@@ -520,7 +522,10 @@ def review_requirements_with_openai(
         executor = ThreadPoolExecutor(max_workers=concurrency)
         try:
             futures = {
-                executor.submit(dispatch_openai_review, requirements[index], pipeline, client_config, tool_loop): index
+                submit_with_context(
+                    executor, dispatch_openai_review, requirements[index], pipeline,
+                    client_config, tool_loop,
+                ): index
                 for index in remaining
             }
             for future in as_completed(futures):
