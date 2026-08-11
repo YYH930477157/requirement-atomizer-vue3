@@ -1,4 +1,4 @@
-"""表格结构与单元格级需求闭环底座（table-structure-v7）。
+"""表格结构与单元格级需求闭环底座（table-structure-v8）。
 
 集中管理此前散落在 atomize.py / ai_extract.py / spot_extract.py / extract_units.py 的
 表格角色识别（标题/表头/行头/数据/分组标题）与粒度规划（row/cell/mixed leaf plan）。
@@ -27,13 +27,10 @@ import os
 import re
 from typing import Any, Iterable, Mapping
 
-TABLE_STRUCTURE_VERSION = "table-structure-v7"
+TABLE_STRUCTURE_VERSION = "table-structure-v8"
 # Dual-track entry (WS1 wk3-5, plan §3.2.2): a separate identity stamp for the new
-# hypothesis-first entry. TABLE_STRUCTURE_VERSION is DELIBERATELY NOT bumped — the new
-# entry is gated behind a default-OFF switch (TABLE_DUAL_TRACK_SWITCH below), so the
-# deterministic path that the atomize cache fingerprint pins is byte-identical. A
-# default-off entry must never invalidate existing parsed bases or golden; the moment a
-# future slice flips the default, that slice owns the version bump and golden regen.
+# hypothesis-first entry. The dual-track path remains gated behind a default-OFF switch
+# (TABLE_DUAL_TRACK_SWITCH below); this v8 bump belongs to deterministic header handling.
 TABLE_DUAL_TRACK_VERSION = "table-dual-track-v1"
 TABLE_CELL_ITEM_SCHEMA = "table-cell-item/v1"
 
@@ -73,6 +70,7 @@ _PROSE_CELL_MIN_MEDIAN_LEN = 40
 # 合成列名（unique_headers 对无表头/歧义表头的回退）——column_N 不是列维度证据：
 # 无真实表头标签时矩阵分类与事实列判定一律不成立（内容保留，不合成句式）
 _SYNTHETIC_HEADER_RE = re.compile(r"^column_\d+$")
+_LETTERED_HEADER_CELL_RE = re.compile(r"^\s*\(([a-jA-J])\)\s*(?P<label>.*)$")
 # 前置标识格长度上限：标识格是对象名/短标签（"Logger"、"Voltage"），
 # 超过此长度的前置格是兄弟义务句而非身份标识，不进上下文
 _IDENTITY_CONTEXT_MAX_LEN = 120
@@ -200,6 +198,48 @@ def normalize_header_part(value: Any) -> str:
 
 def clean_cell(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def strip_lettered_header_prefix(value: Any) -> str:
+    text = clean_cell(value)
+    match = _LETTERED_HEADER_CELL_RE.fullmatch(text)
+    return clean_cell(match.group("label")) if match else text
+
+
+def lettered_composite_header_rows(
+    first_row: list[str],
+    second_row: list[str] | None,
+) -> tuple[int, list[str]] | None:
+    """Recognize sequential ``(a)..(j)`` column labels without treating prose as headers.
+
+    Returns ``(header_row_count, evidence)``.  Inline labels use one row; a
+    marker-only letter row requires the next non-normative row as the label row.
+    """
+    matches: list[tuple[int, str, str]] = []
+    for index, cell in enumerate(first_row):
+        match = _LETTERED_HEADER_CELL_RE.fullmatch(clean_cell(cell))
+        if match:
+            matches.append((index, match.group(1).lower(), clean_cell(match.group("label"))))
+    if len(matches) < 3:
+        return None
+    indexes = [item[0] for item in matches]
+    letters = [item[1] for item in matches]
+    if indexes != list(range(indexes[0], indexes[0] + len(indexes))):
+        return None
+    expected = [chr(ord(letters[0]) + offset) for offset in range(len(letters))]
+    if letters != expected or letters[0] != "a":
+        return None
+    labels = [item[2] for item in matches]
+    if all(labels):
+        if second_row is None or row_is_normative(first_row):
+            return None
+        return 1, [f"lettered_composite_header:inline:{','.join(letters)}"]
+    if any(labels) or second_row is None or row_is_normative(second_row):
+        return None
+    next_cells = [clean_cell(second_row[index]) if index < len(second_row) else "" for index in indexes]
+    if sum(bool(value) for value in next_cells) < 3:
+        return None
+    return 2, [f"lettered_composite_header:stacked:{','.join(letters)}"]
 
 
 def _median_len(values: Iterable[str]) -> float:
@@ -577,6 +617,14 @@ def detect_header_rows(
 
     first_index, first_row = body[0]
     second_row = body[1][1] if len(body) > 1 else None
+    lettered = lettered_composite_header_rows(first_row, second_row)
+    if lettered is not None:
+        row_count, evidence = lettered
+        header_indexes = [body[offset][0] for offset in range(row_count)]
+        return header_indexes, "explicit", [
+            *evidence,
+            "letter_prefixes_a_to_j:hidden_from_display",
+        ]
     first_normative = row_is_normative(first_row)
     second_normative = row_is_normative(second_row) if second_row is not None else False
 
@@ -683,7 +731,9 @@ def effective_headers(header_rows: list[list[str]], width: int) -> list[str]:
         parts: list[str] = []
         seen: set[str] = set()
         for row in header_rows:
-            value = clean_cell(row[column_index] if column_index < len(row) else "")
+            value = strip_lettered_header_prefix(
+                row[column_index] if column_index < len(row) else ""
+            )
             key = normalize_header_part(value)
             if not key or key in seen:
                 continue

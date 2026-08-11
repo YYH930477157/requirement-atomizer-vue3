@@ -16,7 +16,7 @@
     "table_structure_version": {
       "type": "string",
       "minLength": 1,
-      "description": "Physical table-structure version that produced the input matrix (e.g. table-structure-v7). Metadata reference only; not free text."
+      "description": "Physical table-structure version that produced the input matrix (e.g. table-structure-v8). Metadata reference only; not free text."
     },
     "header_level_count": {
       "type": "integer",

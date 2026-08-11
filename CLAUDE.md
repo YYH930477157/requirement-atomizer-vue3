@@ -1,5 +1,13 @@
 # CLAUDE.md — Requirement Atomizer 项目上下文
 
+## 重大更新（2026-08-11）——全文翻译表格结构化（分支 `codex/table-translation-structure`）
+
+- **真表格与行级翻译**：`full_translation.py` 升 `full-translation-v2`，`document_translations.jsonl` 升 `document-translation/v2`。规整表格不再翻译或展示拍平 `block.text`，改为题注、真实表头行和数据行分别进入 translated/failed/skipped 三态；行文本逐字复用 `ai_extract._row_render_line`，继续使用 `annotation_translations.json` 的内容哈希键，因此重复行天然去重、二次运行零新增调用。HTML 使用 `figure/figcaption/table/thead/tbody` 呈现中英行对照；失败行显示真实失败原因，不以原文或 stub 冒充译文。
+- **表头隔离与复合表头**：合成 `column_N` 在翻译输入和 HTML 中一律清空，fallback 表显示“无表头（结构未识别）”；`TABLE_STRUCTURE_VERSION` 升 `table-structure-v8`，识别连续三列以上 `(a)…(j)` inline/stacked 复合表头，字母前缀只进结构 evidence，不进有效列名。少于三列和单个规范性 `(a)` 句不触发该规则。
+- **复杂度边界**：嵌套表和纵向合并表继续诚实降级为“复杂表按原文展示”；仅横向单行合并仍按真表格呈现并保留 `colspan`，使 SBD `BLK-000221` 的 GRAND TOTAL 行无需拍平。A9 商务表排除语义、需求抽取路径与既有翻译缓存键均未改变。
+- **SBD 隔离验收**：在 `out/table-translation-structure-acceptance-20260811/` 仅复制 `BLK-000215/221` 做无付费 fake-chat 验收。221 为结构表格，5A、5B、6A-6D 与 GRAND TOTAL 全部可见，末行 `colspan=5`，HTML 无 `column_N`；其 8 个题注/表头/数据单元全部 translated，表格行覆盖率 100%。215 含纵向复合合并，按约定标记 complex_table 并降级。两条账本均通过 v2 schema。
+- **最终回归**：聚焦全文翻译 12 tests OK；冒烟 90 modules / 1,649 tests OK；历史样本环境下后端全量 3,446 tests OK；前端 Vitest 264/264 与 `npm run build` 通过。修改 Python 文件 py_compile、JSON schema 解析、密钥全文扫描与 `git diff --check` 均通过。
+
 ## 重大更新（2026-08-11）——Agent v5 近期改动落地（分支 `codex/agent-v5-full-translation`，未提交）
 
 - **翻译护栏 v5 / prompt v5**：v4 先收紧数字枚举边界，`CLASS 1)` 等标准标题保留语义数字；SBD 全文验收再修正两处真实缺陷。`translation-prompt-v5` 把护栏检出的缺失数字/编码/单位逐个反馈给单条与句段重试，要求原样保留；`annotation-translation-guards-v5` 让新译文校验、旧成功缓存复验和失效判定统一使用模型实际收到的清洁文本，避免目录点引导线/尾页码已清理却被误判缺失。数字/编码/单位双向保护不放松。
@@ -11,7 +19,7 @@
 - **T-5 保守结论**：D3 两栏定义表继续默认 OFF；本机 Docling/Marker 均不可用，现代解析器继续默认 OFF，手写 PDF 路径不退役。跨文档误触率与现代解析器 A/B 仍需外部语料/依赖。
 
 > 本文件供 Claude Code 在任何机器上自动加载。包含协作工作流、当前状态与关键决策。
-> 状态快照截至 2026-08-10，里程碑推进后请同步更新本文件。
+> 状态快照截至 2026-08-11，里程碑推进后请同步更新本文件。
 
 ## 重大更新（2026-08-10）——翻译批处理转正（`codex/batch-processing-optimization`，未提交）
 

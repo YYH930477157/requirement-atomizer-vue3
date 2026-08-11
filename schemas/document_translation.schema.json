@@ -1,24 +1,80 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "document_translation.schema.json",
-  "title": "Document translation row",
+  "title": "Document translation block disposition",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "block_id", "block_index", "status", "reason", "source_text", "translation", "provenance"],
+  "required": ["schema_version", "record_kind", "block_id", "block_index", "status", "reason", "source_text", "translation", "provenance"],
   "properties": {
-    "schema_version": {"const": "document-translation/v1"},
+    "schema_version": {"const": "document-translation/v2"},
+    "record_kind": {"enum": ["block", "table", "complex_table"]},
     "block_id": {"type": "string", "minLength": 1},
     "block_index": {"type": "integer", "minimum": 0},
     "status": {"enum": ["translated", "failed", "skipped"]},
     "reason": {"type": "string"},
     "source_text": {"type": "string"},
     "translation": {"type": "string"},
+    "table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table_id", "title", "column_count", "headers", "header_detection_status", "header_fallback", "rebuilt", "merge_ranges", "rows"],
+      "properties": {
+        "table_id": {"type": "string"},
+        "title": {"type": "string"},
+        "column_count": {"type": "integer", "minimum": 1},
+        "headers": {"type": "array", "items": {"type": "string"}},
+        "header_detection_status": {"type": "string"},
+        "header_fallback": {"type": "boolean"},
+        "rebuilt": {"type": "boolean"},
+        "merge_ranges": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {"type": "integer", "minimum": 1},
+              {"type": "integer", "minimum": 1},
+              {"type": "integer", "minimum": 1},
+              {"type": "integer", "minimum": 1}
+            ],
+            "items": false,
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["unit_id", "role", "row_index", "source_cells", "source_text", "status", "reason", "translation", "translation_key", "source_sha256", "model", "strategy_version"],
+            "properties": {
+              "unit_id": {"type": "string", "minLength": 1},
+              "role": {"enum": ["title", "header", "data"]},
+              "row_index": {"type": ["integer", "null"]},
+              "source_cells": {"type": "array", "items": {"type": "string"}},
+              "source_text": {"type": "string"},
+              "status": {"enum": ["translated", "failed", "skipped"]},
+              "reason": {"type": "string"},
+              "translation": {"type": "string"},
+              "translation_key": {"type": "string"},
+              "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "model": {"type": "string"},
+              "strategy_version": {"type": "string"}
+            },
+            "allOf": [
+              {"if": {"properties": {"status": {"const": "translated"}}}, "then": {"properties": {"translation": {"minLength": 1}}}},
+              {"if": {"properties": {"status": {"enum": ["failed", "skipped"]}}}, "then": {"properties": {"reason": {"minLength": 1}}}}
+            ]
+          }
+        }
+      }
+    },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
       "required": ["producer", "source_sha256", "translation_key", "route", "model", "guards_version", "strategy_version", "generated_at"],
       "properties": {
-        "producer": {"const": "full-translation-v1"},
+        "producer": {"const": "full-translation-v2"},
         "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "translation_key": {"type": "string"},
         "route": {"type": "string"},
@@ -30,7 +86,8 @@
     }
   },
   "allOf": [
-    {"if": {"properties": {"status": {"const": "translated"}}}, "then": {"properties": {"translation": {"minLength": 1}}}},
+    {"if": {"properties": {"record_kind": {"const": "table"}}}, "then": {"required": ["table"]}},
+    {"if": {"properties": {"record_kind": {"enum": ["block", "complex_table"]}, "status": {"const": "translated"}}}, "then": {"properties": {"translation": {"minLength": 1}}}},
     {"if": {"properties": {"status": {"enum": ["failed", "skipped"]}}}, "then": {"properties": {"reason": {"minLength": 1}}}}
   ]
 }

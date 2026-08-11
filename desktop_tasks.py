@@ -1218,7 +1218,7 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     # v5：完整性元数据进入阶段输入，旧缓存不得缺 incomplete_inputs。
     "template-write": "v5",
     "clarification-report": "v6",
-    "full-translation": "v1",
+    "full-translation": "v2",
     # v1.5：compose 首次绑定完整性元数据，显式升级阶段实现戳。
     "compose": "v2",
 }
@@ -1228,7 +1228,7 @@ _STAGE_BASE_PRODUCERS = {
     "assemble": "assemble_spec/v1",
     "template-write": "template_writer/v1",
     "clarification-report": "clarification/v8-param-row-aggregate",
-    "full-translation": "full-translation/v1",
+    "full-translation": "full-translation/v2-row-structured",
     "compose": "engineering_composer/v1",
     # v16-cell-claim-projection：P0-2 cell claim 落公共 records（claims_json/claim_zones
     # 不再丢失生产 table_cell claim）+ P1-3 静态 HTML 按物理 R×C/merge anchor 在
