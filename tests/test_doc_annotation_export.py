@@ -3295,3 +3295,387 @@ class TranslationBatchOptimizationTests(unittest.TestCase):
             dae._merge_translation_update(concurrent, incoming)["translation"],
             "并发写入的安全译文",
         )
+
+
+@patch.dict(os.environ, {"RATOMIZER_TRANSLATE_BATCH": "0"})
+class TranslationSidecarJournalTests(unittest.TestCase):
+    """FIX 1：批次完成只追加日志（一行一条已完成翻译，fsync），运行结束原子压实。
+
+    旧实现每批完成都整档读-合-写（全档翻译累积 O(N²) 且锁内序列化所有并发完成）；
+    新实现崩溃不丢已完成翻译（日志重放）、终态仍是一次原子替换的 JSON。
+    """
+
+    @staticmethod
+    def _texts(count: int) -> dict[str, tuple[str, str]]:
+        texts: dict[str, tuple[str, str]] = {}
+        for index in range(count):
+            text = (f"The meter shall log event type {index} within ten seconds."
+                    if index else "The manufacturer shall place its trademark on the device.")
+            texts[dae._translation_key(text)] = ("hardware", text)
+        return texts
+
+    @staticmethod
+    def _chat(calls: list[str]):
+        def chat(_system: str, user: str) -> dict:
+            calls.append(user)
+            match = re.search(r"原文条目 JSON:\s*(\[.*\])\s*$", user, re.DOTALL)
+            numbered = json.loads(match.group(1)) if match else []
+            # 纯中文零数字译文：不新增源文没有的数字（非严格护栏只查新增方向）
+            return {"items": [{"id": item["id"], "translation": "电表应满足对应要求。"}
+                              for item in numbered]}
+
+        return chat
+
+    def _journal_path(self, out: Path) -> Path:
+        return out / dae._TRANSLATION_JOURNAL_NAME
+
+    def test_batch_completions_append_journal_with_single_final_compaction(self) -> None:
+        calls: list[str] = []
+        replace_calls: list[str] = []
+        real_replace = dae.os.replace
+
+        def counting_replace(source, target) -> None:
+            replace_calls.append(str(target))
+            real_replace(source, target)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            # 17 条 → 旧 batch=8 切 3 批：旧实现 3 次整档替换；新实现 3 次追加 + 1 次收尾压实。
+            with patch.object(dae.os, "replace", side_effect=counting_replace):
+                summary = dae.generate_annotation_translations(
+                    out, route="openai_compatible", chat=self._chat(calls),
+                    texts=self._texts(17))
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["translated"], 17)
+        self.assertEqual(len(calls), 3)                     # 3 个批次调用
+        # 整档原子替换只发生一次（收尾压实）；按文件名计数（resolve 前后串形可能不同）
+        self.assertEqual(
+            [Path(name).name for name in replace_calls],
+            [dae.ANNOTATION_TRANSLATIONS],
+        )
+        self.assertEqual(len(sidecar["items"]), 17)         # 终态完整
+        self.assertFalse(self._journal_path(out).exists())  # 压实后日志清掉
+
+    def test_journal_survives_crash_and_next_run_compacts_without_recall(self) -> None:
+        calls: list[str] = []
+        texts = self._texts(2)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            # 模拟崩溃：两个批次完成只落了日志，JSON 尚未压实。
+            for key, (owner, text) in texts.items():
+                entry = {"owner": owner, "translation": "电表应满足对应要求。",
+                         "rejected": False, "status": "accepted",
+                         "model": "test", "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+                         "guards_version": dae.ANNOTATION_TRANSLATION_GUARDS_VERSION}
+                dae._append_translation_sidecar(out, {key: entry}, "test", {key})
+
+            self.assertFalse((out / dae.ANNOTATION_TRANSLATIONS).exists())
+            self.assertTrue(self._journal_path(out).exists())
+            replayed = dae._read_translation_sidecar(out)
+            self.assertEqual(set(replayed), set(texts))     # 崩溃恢复：已完成翻译不丢
+
+            # 下一轮全命中缓存：零 LLM 调用，收尾把日志压回 JSON。
+            summary = dae.generate_annotation_translations(
+                out, route="openai_compatible", chat=self._chat(calls), texts=texts)
+            sidecar = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(calls, [])
+        self.assertEqual(summary["cached"], 2)
+        self.assertEqual(summary["translated"], 0)
+        self.assertEqual(set(sidecar["items"]), set(texts))
+        self.assertFalse(self._journal_path(out).exists())
+
+    def test_journal_torn_tail_is_recovered_without_error(self) -> None:
+        key = dae._translation_key("The meter shall log events.")
+        entry = {"owner": "hardware", "translation": "电表应记录事件。",
+                 "rejected": False, "status": "accepted"}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            dae._append_translation_sidecar(out, {key: entry}, "test", {key})
+            with self._journal_path(out).open("a", encoding="utf-8") as handle:
+                handle.write('{"version": 1, "key": "torn", "entry": {"tran')   # 崩溃撕裂尾行
+
+            merged = dae._read_translation_sidecar(out)
+
+        self.assertEqual(set(merged), {key})            # 好行恢复，撕裂行跳过
+        self.assertEqual(merged[key]["translation"], "电表应记录事件。")
+
+    def test_full_rewrite_compacts_concurrent_journal_entries(self) -> None:
+        first_key = dae._translation_key("The manufacturer shall place its trademark on the device.")
+        second_key = dae._translation_key("The meter shall log events.")
+        accepted = {"owner": "hardware", "translation": "制造商应标注商标。",
+                    "rejected": False, "status": "accepted"}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / dae.ANNOTATION_TRANSLATIONS).write_text(json.dumps({
+                "version": 2, "items": {first_key: dict(accepted)},
+            }, ensure_ascii=False), encoding="utf-8")
+            # 另一进程/崩溃残留的日志增量
+            dae._append_translation_sidecar(
+                out, {second_key: {**accepted, "owner": "software"}}, "test", {second_key})
+
+            view = {first_key: dict(accepted)}
+            dae._write_translation_sidecar(out, view, "test", set())
+
+            saved = json.loads((out / dae.ANNOTATION_TRANSLATIONS).read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["items"][first_key]["translation"], "制造商应标注商标。")
+        self.assertEqual(saved["items"][second_key]["translation"], "制造商应标注商标。")
+        self.assertFalse(self._journal_path(out).exists())
+        self.assertEqual(set(view), {first_key, second_key})   # 调用方视图同步到合并态
+
+    def test_translation_with_u2028_u2029_round_trips_through_journal(self) -> None:
+        """U+2028/U+2029 是译文合法字符：写日志 → 读回 → 重放全程不得丢（DEFECT 1a）。
+
+        旧写入端 ensure_ascii=False 把分隔符原样落盘，读端 splitlines() 恰好在
+        U+2028/U+2029 上切行 → JSON 行撕裂被静默跳过 → 已付费翻译丢失，随后
+        压实还会删掉日志（唯一来源）。
+        """
+        key = dae._translation_key("The meter shall log events within ten seconds.")
+        translation = "电表应在十秒内\u2028完整记录\u2029全部事件。"
+        entry = {"owner": "hardware", "translation": translation,
+                 "rejected": False, "status": "accepted"}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            dae._append_translation_sidecar(out, {key: entry}, "test", {key})
+
+            raw = self._journal_path(out).read_bytes()
+            self.assertTrue(raw.endswith(b"\n"))            # 追加后文件行形完好
+            self.assertTrue(raw.isascii())                  # 日志纯 ASCII：分隔符只可能以 \u 转义存在
+            self.assertEqual(len(raw.decode("ascii").split("\n")), 2)   # 恰好一行记录
+
+            replayed = dae._read_translation_sidecar(out)   # JSON 缺席 → 纯日志重放
+
+        self.assertEqual(set(replayed), {key})
+        self.assertEqual(replayed[key]["translation"], translation)   # 字节级找回
+        self.assertEqual(replayed[key], {**entry, "translation": translation})
+
+    def test_append_after_torn_tail_keeps_both_completed_lines(self) -> None:
+        """崩溃撕裂尾行后追加：先截断残行再写，旧行/新行都必须可解析（DEFECT 1b）。
+
+        旧实现直接 "a" 模式续写 → 新记录拼在残行尾部 → 两行都非法被跳过。
+        """
+        first_key = dae._translation_key("The manufacturer shall place its trademark on the device.")
+        second_key = dae._translation_key("The meter shall log events.")
+        first = {"owner": "hardware", "translation": "制造商应标注商标。",
+                 "rejected": False, "status": "accepted"}
+        second = {"owner": "hardware", "translation": "电表应记录事件。",
+                  "rejected": False, "status": "accepted"}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            dae._append_translation_sidecar(out, {first_key: first}, "test", {first_key})
+            with self._journal_path(out).open("a", encoding="utf-8") as handle:
+                handle.write('{"version": 1, "key": "torn", "entry": {"tran')   # 崩溃残行（无换行）
+            self.assertFalse(self._journal_path(out).read_bytes().endswith(b"\n"))
+
+            dae._append_translation_sidecar(out, {second_key: second}, "test", {second_key})
+
+            raw = self._journal_path(out).read_bytes()
+            self.assertTrue(raw.endswith(b"\n"))            # 追加后恢复完好行形
+            parsed = [json.loads(line) for line in raw.decode("utf-8").split("\n") if line.strip()]
+            self.assertEqual({row["key"] for row in parsed}, {first_key, second_key})
+            self.assertNotIn("torn", raw.decode("utf-8"))   # 残行被截掉，而非拼接
+
+            merged = dae._read_translation_sidecar(out)
+
+        self.assertEqual(set(merged), {first_key, second_key})   # 新旧两条都不丢
+        self.assertEqual(merged[first_key]["translation"], "制造商应标注商标。")
+        self.assertEqual(merged[second_key]["translation"], "电表应记录事件。")
+
+    def test_reader_splits_only_on_lf_for_legacy_u2028_rows(self) -> None:
+        """读端只按 LF 切行：遗留/手写日志行内含原始 U+2028/U+2029 仍是一行（DEFECT 1a 读侧）。"""
+        translation = "第一段\u2028第二段\u2029结束。"
+        legacy_row = json.dumps({
+            "version": dae._TRANSLATION_JOURNAL_VERSION, "model": "legacy",
+            "strategy_version": dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION,
+            "key": "legacy-key", "entry": {"owner": "hardware", "translation": translation,
+                                           "rejected": False, "status": "accepted"},
+        }, ensure_ascii=False)   # 遗留写入端曾允许原始非 ASCII 落盘
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._journal_path(out).write_text(legacy_row + "\n", encoding="utf-8")
+
+            rows = dae._read_translation_journal(out)
+            merged = dae._read_translation_sidecar(out)
+
+        self.assertEqual([key for key, _ in rows], ["legacy-key"])   # 恰好一行，未在 U+2028 上撕裂
+        self.assertEqual(rows[0][1]["translation"], translation)
+        self.assertEqual(merged["legacy-key"]["translation"], translation)
+
+    def test_compaction_keeps_journal_when_atomic_replace_fails(self) -> None:
+        """压实删除日志必须晚于原子替换成功：替换失败时日志（唯一恢复来源）必须还在。"""
+        key = dae._translation_key("The meter shall log events.")
+        entry = {"owner": "hardware", "translation": "电表应记录事件。",
+                 "rejected": False, "status": "accepted"}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            dae._append_translation_sidecar(out, {key: entry}, "test", {key})
+
+            with patch.object(dae.os, "replace", side_effect=PermissionError("locked")):
+                with self.assertRaises(PermissionError):
+                    dae._write_translation_sidecar(out, {}, "test", set())
+
+            self.assertTrue(self._journal_path(out).exists())   # 删日志只可能在替换成功之后
+            merged = dae._read_translation_sidecar(out)
+            self.assertEqual(merged[key]["translation"], "电表应记录事件。")   # 条目仍可恢复
+
+    @staticmethod
+    def _flaky_append_open(fails_left: list[int], *, partial_first: str = ""):
+        """Path.open 包装器：前 fails_left 次 "a" 追加打开抛 PermissionError。
+
+        partial_first 非空时，第一次失败先真实写入半行（无结尾 LF）再抛——模拟
+        写中途崩溃/占用，检验重试路径靠撕裂尾截断清残字节而非拼出 glued 行。
+        只拦截追加打开；读/截断（r+b）与锁（os.open）不受影响。
+        """
+        real_open = Path.open
+        state = {"raised": 0}
+
+        def flaky_open(self, *args, **kwargs):
+            mode = str(args[0]) if args else str(kwargs.get("mode", "r"))
+            if mode.startswith("a") and fails_left and fails_left[0] > 0:
+                fails_left[0] -= 1
+                state["raised"] += 1
+                if partial_first and state["raised"] == 1:
+                    with real_open(self, "a", encoding="utf-8", newline="\n") as handle:
+                        handle.write(partial_first)
+                raise PermissionError(13, "transient AV/indexer lock")
+            return real_open(self, *args, **kwargs)
+
+        return flaky_open, state
+
+    def test_journal_append_retries_transient_permission_error(self) -> None:
+        """P2：Windows AV/索引器瞬时占用日志 → 追加在重试预算内成功，行完好可重放。"""
+        key = dae._translation_key("The meter shall log events.")
+        entry = {"owner": "hardware", "translation": "电表应记录事件。",
+                 "rejected": False, "status": "accepted"}
+        flaky_open, state = self._flaky_append_open([2])
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with patch.object(Path, "open", flaky_open):
+                dae._append_translation_sidecar(out, {key: entry}, "test", {key})
+
+            raw = self._journal_path(out).read_bytes()
+            merged = dae._read_translation_sidecar(out)
+
+        self.assertEqual(state["raised"], 2)                    # 第 3 次尝试成功
+        self.assertTrue(raw.endswith(b"\n"))                    # 行形完好（无 glued/残行）
+        self.assertEqual(merged[key]["translation"], "电表应记录事件。")   # 已完成翻译不丢
+        self.assertFalse((out / dae.ANNOTATION_TRANSLATIONS).exists())    # 只追加未整档重写
+
+    def test_journal_append_permission_error_stays_loud_after_budget(self) -> None:
+        """预算耗尽（8 次）后原样重抛：绝不静默吞掉批次的持久化，既有好行零损伤。"""
+        first_key = dae._translation_key("The meter shall log events.")
+        entry = {"owner": "hardware", "translation": "电表应记录事件。",
+                 "rejected": False, "status": "accepted"}
+        second_key = dae._translation_key("The manufacturer shall place its trademark.")
+        flaky_open, state = self._flaky_append_open([99])
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            dae._append_translation_sidecar(out, {first_key: entry}, "test", {first_key})
+            good_bytes = self._journal_path(out).read_bytes()
+
+            with patch.object(Path, "open", flaky_open):
+                with self.assertRaises(PermissionError):
+                    dae._append_translation_sidecar(
+                        out, {second_key: dict(entry)}, "test", {second_key})
+
+            raw = self._journal_path(out).read_bytes()
+            merged = dae._read_translation_sidecar(out)
+
+        self.assertEqual(state["raised"], dae._TRANSLATION_JOURNAL_APPEND_ATTEMPTS)  # 恰 8 次后重抛
+        self.assertEqual(raw, good_bytes)                       # 失败批次零字节落盘
+        self.assertTrue(raw.endswith(b"\n"))                    # 下一轮运行前文件行形完好
+        self.assertEqual(set(merged), {first_key})              # 既有已完成翻译不丢
+
+    def test_journal_append_midwrite_failure_retry_leaves_no_glued_line(self) -> None:
+        """写中途失败留半行 → 重试先截残字节再续写：终态恰一条完好记录，无 glued 行。"""
+        key = dae._translation_key("The meter shall log events.")
+        entry = {"owner": "hardware", "translation": "电表应记录事件。",
+                 "rejected": False, "status": "accepted"}
+        fragment = '{"version": 1, "key": "torn", "entry": {"tran'
+        flaky_open, state = self._flaky_append_open([1], partial_first=fragment)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with patch.object(Path, "open", flaky_open):
+                dae._append_translation_sidecar(out, {key: entry}, "test", {key})
+
+            raw = self._journal_path(out).read_bytes()
+            merged = dae._read_translation_sidecar(out)
+
+        self.assertEqual(state["raised"], 1)
+        self.assertTrue(raw.endswith(b"\n"))
+        self.assertNotIn("torn", raw.decode("utf-8"))           # 半行被截掉，而非拼接
+        lines = [line for line in raw.decode("utf-8").split("\n") if line.strip()]
+        self.assertEqual(len(lines), 1)                         # 恰好一条完整记录
+        self.assertEqual(json.loads(lines[0])["key"], key)
+        self.assertEqual(merged[key]["translation"], "电表应记录事件。")
+
+
+class FileSha256MemoTests(unittest.TestCase):
+    """FIX 2：同请求内重复哈希同一大文件 → (路径, size, mtime_ns) 记忆化，值恒等。"""
+
+    def setUp(self) -> None:
+        dae._FILE_SHA256_MEMO.clear()
+
+    def tearDown(self) -> None:
+        dae._FILE_SHA256_MEMO.clear()
+
+    def test_repeated_calls_memoize_identical_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "facsimile.pdf"
+            payload = os.urandom(512 * 1024)
+            path.write_bytes(payload)
+            real_sha256 = dae.hashlib.sha256
+            constructions: list = []
+
+            def counting_sha256(*args, **kwargs):
+                constructions.append(args)
+                return real_sha256(*args, **kwargs)
+
+            with patch.object(dae.hashlib, "sha256", side_effect=counting_sha256):
+                first = dae._file_sha256(path)
+                second = dae._file_sha256(path)
+
+        self.assertEqual(first, real_sha256(payload).hexdigest())
+        self.assertEqual(first, second)
+        self.assertEqual(len(constructions), 1)          # 第二次命中记忆，不再全量读
+        self.assertEqual(list(dae._FILE_SHA256_MEMO.values()), [first])
+
+    def test_file_change_misses_memo_and_recomputes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "source.pdf"
+            path.write_bytes(b"a" * 100)
+            first = dae._file_sha256(path)
+            path.write_bytes(b"b" * 300)                 # size 变 → 键变 → miss
+            second = dae._file_sha256(path)
+
+        self.assertEqual(first, hashlib.sha256(b"a" * 100).hexdigest())
+        self.assertEqual(second, hashlib.sha256(b"b" * 300).hexdigest())
+        self.assertNotEqual(first, second)
+
+    def test_same_size_atomic_replace_with_restored_mtime_invalidates_memo(self) -> None:
+        """DEFECT 2：同尺寸原子替换 + 还原 mtime（路径/size/mtime_ns 全不变）→ 旧键命中缓存、
+        绕过完整性校验。新键含 (st_dev, st_ino)：os.replace 换文件身份 → 必 miss 重算。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            path = out / "facsimile.pdf"
+            payload_a = os.urandom(64 * 1024)
+            payload_b = os.urandom(64 * 1024)           # 同尺寸、不同内容
+            path.write_bytes(payload_a)
+            before = path.stat()
+            first = dae._file_sha256(path)
+
+            staging = out / "facsimile.pdf.new"
+            staging.write_bytes(payload_b)
+            os.replace(staging, path)                    # 工具链自身的原子替换路径
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))   # 还原时间戳（最坏情况）
+            after = path.stat()
+            # 旧键三要素确实全相同（否则测的不是本缺陷）
+            self.assertEqual((after.st_size, after.st_mtime_ns),
+                             (before.st_size, before.st_mtime_ns))
+            second = dae._file_sha256(path)
+
+        self.assertEqual(first, hashlib.sha256(payload_a).hexdigest())
+        self.assertEqual(second, hashlib.sha256(payload_b).hexdigest())   # 新指纹，非陈旧缓存
+        self.assertNotEqual(first, second)

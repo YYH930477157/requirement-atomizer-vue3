@@ -76,8 +76,20 @@ ANNOTATION_TRANSLATION_STRATEGY_VERSION_OPTIMIZED = (
 _TRANSLATION_BATCH_MAX_CHARS_DEFAULT = 8000
 _TRANSLATION_SPLIT_ROUNDS = 2   # 批次 JSON 非法时拆半重试轮数上限（≤2 轮后回退逐条）
 _TRANSLATION_SIDECAR_VERSION = 2
+# 追加式翻译日志（每条已完成翻译一行，fsync 落盘）：批次完成只 append，不再整档
+# 读-合-写（全档翻译的累积写放大是 O(N²)；锁内序列化所有并发批次完成）。
+# annotation_translations.json 本体格式不变（api_server.load_annotation_translations
+# 只读该 JSON），日志仅由生成侧读回；超阈值或运行结束时经既有原子路径压实清日志。
+_TRANSLATION_JOURNAL_NAME = "annotation_translations.journal.jsonl"
+_TRANSLATION_JOURNAL_VERSION = 1
+_TRANSLATION_JOURNAL_COMPACT_BYTES = 256 * 1024   # 日志超过 256KiB 触发一次中途压实
 _TRANSLATION_REPLACE_ATTEMPTS = 5
 _TRANSLATION_REPLACE_RETRY_S = 0.02
+# P2（2026-08-15）：Windows AV/索引器瞬时占用日志句柄时 open("a") 抛 PermissionError，
+# 裸抛会从批次完成路径直接中止整个付费翻译运行。与 review_state._replace_with_retry
+# 同口径：8 次尝试 × 0.02s×(1..7) 线性退避，预算耗尽原样重抛（响亮失败）。
+_TRANSLATION_JOURNAL_APPEND_ATTEMPTS = 8
+_TRANSLATION_JOURNAL_APPEND_RETRY_S = 0.02
 _TRANSLATION_LOCK_TIMEOUT_S = 10.0
 _TRANSLATION_LOCK_STALE_AFTER_S = 300.0
 _TRANSLATION_PROCESS_LOCKS: dict[Path, RLock] = {}
@@ -243,17 +255,98 @@ _translation_key = translation_key
 _load_annotation_translations = load_annotation_translations
 
 
-def _read_translation_sidecar(out_dir: Path) -> dict[str, dict[str, Any]]:
-    """生成侧读完整条目（含被拒留账的）；是否复用由当前策略版本决定。"""
+def _read_translation_journal(out_dir: Path) -> list[tuple[str, dict[str, Any]]]:
+    """读回追加式翻译日志（崩溃恢复）：每行一个已完成条目的增量更新。
+
+    撕裂的尾行（崩溃窗口内未写完）不是已完成项，跳过即恢复；版本不匹配的行
+    同样跳过（日志是新增文件，旧代码不读它，不存在误解析面）。
+
+    只按 LF 切行（不用 splitlines()）：U+2028/U+2029 是译文的合法字符，遗留
+    行内一旦原样落盘，splitlines() 会在其上切行把一条记录撕成多段废行静默
+    丢掉（已完成翻译的唯一来源）。行尾 \r 由下方 strip() 兜底兼容。
+    """
     try:
         path = governed_artifact_path(
-            out_dir, ANNOTATION_TRANSLATIONS, category="cache"
+            out_dir, _TRANSLATION_JOURNAL_NAME, category="cache", for_write=False
+        )
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    updates: list[tuple[str, dict[str, Any]]] = []
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (not isinstance(row, dict)
+                or row.get("version") != _TRANSLATION_JOURNAL_VERSION
+                or not isinstance(row.get("key"), str)
+                or not isinstance(row.get("entry"), dict)):
+            continue
+        updates.append((row["key"], dict(row["entry"])))
+    return updates
+
+
+def _translation_journal_nonempty(out_dir: Path) -> bool:
+    try:
+        path = governed_artifact_path(
+            out_dir, _TRANSLATION_JOURNAL_NAME, category="cache", for_write=False
+        )
+        return path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _truncate_torn_journal_tail(journal_path: Path) -> None:
+    """追加前截掉崩溃撕裂的尾行（无结尾 LF 的残段，读端本就跳过它）。
+
+    不截断的话，"a" 模式续写会把新记录拼在残行后面，两行都变非法 → 都被
+    静默跳过 → 已完成的付费翻译永久丢失（日志是它崩溃恢复的唯一来源）。
+    截到上一个 LF+1（无 LF 则清空）：残行按定义不是已完成条目，截掉零损失。
+    必须在 _translation_sidecar_lock 内调用（与追加同锁序）。
+    """
+    try:
+        with journal_path.open("r+b") as handle:
+            data = handle.read()
+            if not data or data.endswith(b"\n"):
+                return
+            handle.seek(data.rfind(b"\n") + 1)
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
+    except PermissionError:
+        # 截断被共享冲突挡住时绝不能静默跳过——否则随后的 "a" 续写会把新行拼在
+        # 残行后面（两行俱废）。上抛给调用方（_append_translation_sidecar）的
+        # PermissionError 重试预算统一处理。
+        raise
+    except OSError:
+        # 文件不存在（首次追加）或其它截断失败（退化为旧行为：读端仍会跳过残行，
+        # 只损失本批新行）——都不阻断追加主路径。
+        return
+
+
+def _read_translation_sidecar(out_dir: Path) -> dict[str, dict[str, Any]]:
+    """生成侧读完整条目（含被拒留账的）；是否复用由当前策略版本决定。
+
+    JSON 本体之后按追加顺序重放翻译日志（与逐批整档写等价的折叠序），崩溃后
+    已完成的真实译文不丢；下一次整档重写（压实）会清掉日志。
+    """
+    try:
+        path = governed_artifact_path(
+            out_dir, ANNOTATION_TRANSLATIONS, category="cache", for_write=False
         )
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        data = {}
     items = data.get("items") if isinstance(data, dict) else None
-    return {str(k): dict(v) for k, v in items.items() if isinstance(v, dict)} if isinstance(items, dict) else {}
+    merged = ({str(k): dict(v) for k, v in items.items() if isinstance(v, dict)}
+              if isinstance(items, dict) else {})
+    for key, entry in _read_translation_journal(out_dir):
+        merged[key] = _merge_translation_update(merged.get(key), entry)
+    return merged
 
 
 def _load_annotation_terms(out_dir: Path) -> dict[str, tuple[str, ...]]:
@@ -500,11 +593,14 @@ def _claim_annotation_state(
             CLAIM_GENERATION_META,
             CLAIM_PUBLICATION_JOURNAL,
             ClaimArtifactError,
-            load_committed_effective_snapshot_readonly,
+            load_committed_effective_snapshot_cached,
         )
         from claim_focus import ClaimFocusError, build_claim_focus_adapter
 
-        snapshot = load_committed_effective_snapshot_readonly(out_dir)
+        # 2026-08-14 性能：GET /document/pdf 每次轮询都全文重读 claim 快照；切换到
+        # stat 签名缓存版（写路径改动输入文件 → 缓存自然失效）。本函数对 snapshot
+        # 只读（迭代/取字段构建新 record），符合共享只读契约。
+        snapshot = load_committed_effective_snapshot_cached(out_dir)
     except (
         ClaimArtifactError,
         OSError,
@@ -768,12 +864,49 @@ def _claim_pdf_zones(
     return zones
 
 
+# 同一请求路径会反复哈希同一大文件（/document/pdf 的影印 PDF 至少两次：请求级身份
+# 校验 + _resolve_pdf_geometry 缓存指纹；另有 facsimile 候选校验/页缓存路径）。
+# 身份键 = (规范化路径, 设备, 文件 ID, size, mtime_ns)：本工具链全部写路径都走原子
+# 替换（os.replace → 新 st_ino/st_dev），同尺寸覆盖必然换文件身份 → miss 重算；
+# st_ino 恒为 0 的文件系统（部分网络/重解析路径）自动退化为 (路径, size, mtime_ns)，
+# 不劣于旧键。残余风险仅剩原地改写并逐项还原元数据的故意欺骗——非本工具链写路径。
+_FILE_SHA256_MEMO: dict[tuple[str, int, int, int, int], str] = {}
+_FILE_SHA256_MEMO_MAX = 128   # 超限整体清空（源文件个数极少，防长期进程无界增长）
+
+
 def _file_sha256(path: Path) -> str:
+    path = Path(path)
+    memo_key: tuple[str, int, int, int, int] | None = None
+    try:
+        stat = path.stat()
+        memo_key = (os.path.normcase(os.path.abspath(str(path))),
+                    stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        pass   # 保持旧语义：文件缺失时由 open() 如实抛 OSError
+    if memo_key is not None:
+        cached = _FILE_SHA256_MEMO.get(memo_key)
+        if cached is not None:
+            return cached
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    result = digest.hexdigest()
+    if memo_key is not None:
+        try:
+            stat_after = path.stat()
+            stable = (stat_after.st_dev == memo_key[1]
+                      and stat_after.st_ino == memo_key[2]
+                      and stat_after.st_size == memo_key[3]
+                      and stat_after.st_mtime_ns == memo_key[4])
+        except OSError:
+            stable = False
+        # 读期间文件被替换 → 不缓存（宁可下次重算，不缓存错误的指纹）
+        if stable:
+            if len(_FILE_SHA256_MEMO) >= _FILE_SHA256_MEMO_MAX:
+                _FILE_SHA256_MEMO.clear()
+            _FILE_SHA256_MEMO[memo_key] = result
+    return result
 
 
 def _valid_pdf_regions(value: Any) -> list[dict[str, Any]]:
@@ -2437,6 +2570,12 @@ def _merge_translation_update(existing: dict[str, Any] | None,
 def _write_translation_sidecar(out_dir: Path, sidecar: dict[str, dict[str, Any]], model: str,
                                updated_keys: set[str], *,
                                strategy_version: str = ANNOTATION_TRANSLATION_STRATEGY_VERSION) -> None:
+    """整档原子重写（压实地）：读回 JSON+日志合并态 → 单次 fsync + os.replace。
+
+    成功替换后删除翻译日志——日志条目已并入 JSON，重放等价（幂等合并），删日志
+    只是为了不再重复重放。崩溃发生在 replace 与删除之间时，下一轮重放同一批
+    条目，结果不变。
+    """
     out_dir = Path(out_dir).expanduser().resolve()
     target = governed_artifact_path(
         out_dir, ANNOTATION_TRANSLATIONS, category="cache"
@@ -2464,13 +2603,80 @@ def _write_translation_sidecar(out_dir: Path, sidecar: dict[str, dict[str, Any]]
             for attempt in range(_TRANSLATION_REPLACE_ATTEMPTS):
                 try:
                     os.replace(tmp, target)
-                    return
                 except PermissionError:
                     if attempt + 1 >= _TRANSLATION_REPLACE_ATTEMPTS:
                         raise
                     time.sleep(_TRANSLATION_REPLACE_RETRY_S)
+                    continue
+                # 替换成功后清日志；Windows 读端短暂占用导致删除失败时留账无害
+                # （重放走幂等合并），绝不当成替换失败重试。
+                journal_path = governed_artifact_path(
+                    out_dir, _TRANSLATION_JOURNAL_NAME, category="cache",
+                    for_write=False,
+                )
+                try:
+                    journal_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return
         finally:
             tmp.unlink(missing_ok=True)
+
+
+def _append_translation_sidecar(out_dir: Path, sidecar: dict[str, dict[str, Any]], model: str,
+                                updated_keys: set[str], *,
+                                strategy_version: str = ANNOTATION_TRANSLATION_STRATEGY_VERSION) -> None:
+    """批次完成热路径：每个已完成条目追加一行日志（fsync），不整档重写。
+
+    崩溃不丢已完成翻译（行级 fsync）；日志超过阈值时在锁外触发一次整档压实
+    （_write_translation_sidecar 重新取锁，文件锁不可重入）。跨进程并发合并
+    语义不变：重放/压实都走 _merge_translation_update（已接受优先 + CAS）。
+    """
+    out_dir = Path(out_dir).expanduser().resolve()
+    journal_path = governed_artifact_path(
+        out_dir, _TRANSLATION_JOURNAL_NAME, category="cache"
+    )
+    # 日志是机器专用崩溃恢复缓存，唯一的读端是 _read_translation_journal
+    # （json.loads 对 \u 转义透明）。强制 ensure_ascii=True：文件字节纯 ASCII，
+    # U+2028/U+2029 等行分隔符类字符物理上不可能原样落盘撕裂行结构。
+    lines = [
+        json.dumps({
+            "version": _TRANSLATION_JOURNAL_VERSION,
+            "model": model,
+            "strategy_version": strategy_version,
+            "key": key,
+            "entry": sidecar[key],
+        }, ensure_ascii=True)
+        for key in sorted(updated_keys)
+    ]
+    with _translation_sidecar_lock(out_dir):
+        # P2：Windows AV/索引器瞬时占用日志时，裸 open 的 PermissionError 会从批次
+        # 完成路径直接中止整个付费翻译运行（异常穿出批次循环）。与
+        # review_state._replace_with_retry 同口径：8 次尝试 × 0.02s×(1..7) 线性退避，
+        # 预算耗尽后原样重抛——响亮失败，由调用方既有错误处理决定运行去留。
+        # 幂等性（重试不产生重复/胶着字节）：_truncate_torn_journal_tail 对已完好
+        # （以 LF 结尾或不存在）的文件是 no-op，重试不会二次截断好行；行只在成功
+        # open 后写一次——若写中途失败留下半行，下一次尝试先经撕裂尾截断清掉那些
+        # 残字节再续写，文件任何时刻都保持行完好（无 glued 行）。
+        for attempt in range(_TRANSLATION_JOURNAL_APPEND_ATTEMPTS):
+            try:
+                _truncate_torn_journal_tail(journal_path)
+                with journal_path.open("a", encoding="utf-8", newline="\n") as handle:
+                    handle.write("\n".join(lines) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                break
+            except PermissionError:
+                if attempt + 1 >= _TRANSLATION_JOURNAL_APPEND_ATTEMPTS:
+                    raise
+                time.sleep(_TRANSLATION_JOURNAL_APPEND_RETRY_S * (attempt + 1))
+        try:
+            compact = journal_path.stat().st_size >= _TRANSLATION_JOURNAL_COMPACT_BYTES
+        except OSError:
+            compact = False
+    if compact:
+        _write_translation_sidecar(out_dir, sidecar, model, updated_keys,
+                                   strategy_version=strategy_version)
 
 
 def _resolve_guarded_translation(chat: Any, *, owner: str, text: str,
@@ -2687,10 +2893,11 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
         "retry_calls": 0,
     }
     if not pending:
-        # 无新文本：不必解析 LLM 配置；缓存条目本就全部来自真 LLM
+        # 无新文本：不必解析 LLM 配置；缓存条目本就全部来自真 LLM。除零调用迁移外，
+        # 上次崩溃残留的日志也在此压回 JSON（读侧 JSON-only，压实后恢复完整可见性）。
         summary["route"] = "openai_compatible" if summary["cached"] else "stub"
-        if migrated_keys:
-            model = next((str(sidecar[key].get("model") or "") for key in migrated_keys), "")
+        if migrated_keys or _translation_journal_nonempty(out_dir):
+            model = next((str(entry.get("model") or "") for entry in sidecar.values()), "")
             _write_translation_sidecar(out_dir, sidecar, model, migrated_keys,
                                        strategy_version=strategy_version)
         return summary
@@ -2724,7 +2931,9 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
         workers = resolve_concurrency(None)
     except Exception:  # pragma: no cover - 兜底串行
         workers = 1
-    # 并发批次 + 每批完成即落盘（分析富化 288 条串行数小时+零落盘的教训，同对策）
+    # 并发批次 + 每批完成即追加日志落盘（分析富化 288 条串行数小时+零落盘的教训，同对策；
+    # 追加而非整档重写：全档翻译的读-合-写累积成本是 O(N²)，且锁内序列化所有并发完成）
+    journal_keys: set[str] = set()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         if optimized:
             futures = {submit_with_context(
@@ -2772,9 +2981,15 @@ def generate_annotation_translations(out_dir: Path, *, route: str | None,
                 sidecar[key] = entry
                 changed_keys.add(key)
             if changed_keys:
-                _write_translation_sidecar(out_dir, sidecar, summary["model"], changed_keys,
-                                           strategy_version=strategy_version)
-                # 每批完成即落盘，中途被杀不丢已完成的真实调用。
+                journal_keys |= changed_keys
+                _append_translation_sidecar(out_dir, sidecar, summary["model"], changed_keys,
+                                            strategy_version=strategy_version)
+                # 每批完成即 fsync 落日志，中途被杀不丢已完成的真实调用。
+    if journal_keys:
+        # 运行收尾整档压实：JSON-only 读侧（api_server/渲染层）看到完整终态，
+        # 崩溃窗口只损失“最后一批尚未压实”的可见性，不损失已完成翻译。
+        _write_translation_sidecar(out_dir, sidecar, summary["model"], journal_keys,
+                                   strategy_version=strategy_version)
     return summary
 
 
