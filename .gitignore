@@ -20,3 +20,9 @@ node_modules/
 .worktrees/
 blue_book_index.json
 
+
+# 本机构建产物与会话日志（2026-08-15 评审：防 git add -A 入库 ~704MB）
+ui/.pkg-backup/
+ui/dist-open-existing/
+ui/ui-dev-server.log
+session-archive/

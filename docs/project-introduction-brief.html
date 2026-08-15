@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Requirement Atomizer 项目简介：把技术标准原子化为可审查、可追溯、可交付的研发需求。">
+<title>Requirement Atomizer · 项目简介</title>
+<style>
+  :root {
+    --ink: #1a2333;
+    --soft: #4d5a70;
+    --muted: #7a8699;
+    --line: #dde3ec;
+    --accent: #2b56f5;
+    --paper: #ffffff;
+    --wash: #f5f7fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+    font-size: 15.5px;
+    line-height: 1.7;
+  }
+  code, pre { font-family: "Cascadia Code", Consolas, monospace; }
+  .page { width: min(100% - 40px, 780px); margin: 0 auto; padding: 64px 0 48px; }
+
+  header { border-bottom: 2px solid var(--ink); padding-bottom: 28px; }
+  .eyebrow { margin: 0 0 10px; font-size: 12.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  h1 { margin: 0 0 10px; font-size: 34px; line-height: 1.2; letter-spacing: -0.01em; }
+  .tagline { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  .approach { margin: 0; color: var(--soft); }
+
+  .facts { list-style: none; display: flex; flex-wrap: wrap; gap: 0; margin: 0; padding: 0; border-bottom: 1px solid var(--line); }
+  .facts li { flex: 1 1 160px; padding: 16px 18px 16px 0; }
+  .facts strong { display: block; font-size: 15px; }
+  .facts span { color: var(--muted); font-size: 13px; }
+
+  section { padding: 30px 0 6px; }
+  h2 { margin: 0 0 14px; font-size: 19px; display: flex; align-items: baseline; gap: 10px; }
+  h2 .no { color: var(--accent); font-size: 13px; font-weight: 700; letter-spacing: 0.08em; }
+  p { margin: 0 0 10px; }
+  .hint { color: var(--muted); font-size: 13.5px; }
+
+  table { width: 100%; border-collapse: collapse; margin: 4px 0 14px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-size: 12.5px; font-weight: 600; letter-spacing: 0.05em; }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+
+  .flow { list-style: none; margin: 4px 0 14px; padding: 0; counter-reset: step; }
+  .flow li { display: flex; gap: 14px; padding: 7px 0; border-bottom: 1px dashed var(--line); }
+  .flow li::before { counter-increment: step; content: counter(step, decimal-leading-zero); color: var(--accent); font-weight: 700; font-size: 13px; padding-top: 3px; min-width: 24px; }
+  .flow b { min-width: 4.5em; }
+  .flow span { color: var(--soft); }
+
+  .rules { list-style: none; margin: 4px 0 14px; padding: 0; }
+  .rules li { padding: 7px 0 7px 22px; position: relative; }
+  .rules li::before { content: ""; position: absolute; left: 2px; top: 15px; width: 8px; height: 8px; background: var(--accent); }
+  .rules b { margin-right: 4px; }
+  .rules span { color: var(--soft); }
+
+  pre { background: var(--wash); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; font-size: 13px; line-height: 1.75; overflow-x: auto; margin: 4px 0 14px; }
+  pre .c { color: var(--muted); }
+
+  .bounds { margin: 4px 0 14px; padding-left: 20px; color: var(--soft); }
+  .bounds li { padding: 2px 0; }
+
+  footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  footer a { color: var(--soft); }
+</style>
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">Local-first · 需求工程流水线</p>
+    <h1>Requirement Atomizer</h1>
+    <p class="tagline">把技术标准（DOCX / XLSX / 文字层 PDF）原子化为可审查、可追溯、可交付的研发需求。</p>
+    <p class="approach">确定性解析建立事实骨架，护栏化 LLM 只做判断与叙述，专家裁决作为最终质量关口。全部本地运行，默认不调用任何外部 API。</p>
+  </header>
+
+  <ul class="facts">
+    <li><strong>3 类输入</strong><span>DOCX / XLSX / 文字层 PDF</span></li>
+    <li><strong>2 条主轨</strong><span>对象表轨 / 行为散文轨</span></li>
+    <li><strong>5 个审查工具</strong><span>知识库 / 蓝皮书 / 原文 / 覆盖</span></li>
+    <li><strong>1664+ 回归</strong><span>后端 unittest + 前端契约测试</span></li>
+  </ul>
+
+  <section>
+    <h2><span class="no">01</span>双轨方法</h2>
+    <table>
+      <thead><tr><th></th><th>适用文档</th><th>主链</th><th>主交付物</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>A 轨 · 对象表</td>
+          <td>OBIS / 接口类 / 访问权限密集的 DLMS profile 文档</td>
+          <td>规则原子化 → 可选 LLM 审查 → 规格装配</td>
+          <td><code>dlms_cosem_spec.*</code> 实现规格</td>
+        </tr>
+        <tr>
+          <td>B 轨 · 散文</td>
+          <td>需求藏在自然语言里的标准 / 招标文件</td>
+          <td>AI 抽取 → 专家批注 → 功能重组 → 需求分析 → 模板成文</td>
+          <td><code>software_requirements.xlsx</code> 及公司模板需求列表</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="no">02</span>六步链路</h2>
+    <ol class="flow">
+      <li><b>解析</b><span>文档块、表格、章节层级与来源坐标（blocks / table_items）。</span></li>
+      <li><b>抽取</b><span>结构数据走确定性规则；行为散文走章节级 LLM + 自检与漂移护栏。</span></li>
+      <li><b>取证</b><span>模型可调用五个只读工具查知识库、蓝皮书、原文与覆盖，轮次与预算有硬上限。</span></li>
+      <li><b>裁决</b><span>专家在原文联动批注页接受 / 拒绝 / 改判模块与软硬件归属。</span></li>
+      <li><b>分析</b><span>保守合并相容需求，生成研发行为、条件、约束与验收关注点。</span></li>
+      <li><b>交付</b><span>实现规格、研发工作簿、批注页面与客户澄清清单。</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2><span class="no">03</span>质量纪律：宁漏勿错</h2>
+    <ul class="rules">
+      <li><b>结构字段确定性</b><span>OBIS、class_id、访问权限、ID 由解析 / 规则 / 专家控制，不交给模型猜。</span></li>
+      <li><b>数字编码漂移防护</b><span>无来源编码硬拒；无据数字拒绝或转「待澄清」，标记随条目走到交付物。</span></li>
+      <li><b>来源不伪造</b><span>route_requested 与实际 route 分开记账，stub 降级绝不冒充 LLM 结果。</span></li>
+      <li><b>缓存血统可失效</b><span>输入、提示词、护栏、工具、模型版本全进指纹，行为升级不被旧缓存绕过。</span></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="no">04</span>主要交付物</h2>
+    <table>
+      <thead><tr><th>阶段</th><th>代表文件</th><th>给谁用</th></tr></thead>
+      <tbody>
+        <tr><td>解析底座</td><td><code>blocks.jsonl</code> · <code>table_items.jsonl</code></td><td>流水线、调试</td></tr>
+        <tr><td>原子需求</td><td><code>atomic_requirements.jsonl</code> · <code>ai_requirements.jsonl</code></td><td>审查系统、需求工程师</td></tr>
+        <tr><td>专家审查</td><td><code>document_annotation.html</code> · <code>ai_review_states.jsonl</code></td><td>领域专家</td></tr>
+        <tr><td>功能与分析</td><td><code>functional_requirements.json</code> · <code>engineering_analysis.json</code></td><td>产品 / 系统 / 软件团队</td></tr>
+        <tr><td>研发工作簿</td><td><code>software_requirements.xlsx</code> · <code>软件需求列表-成文.xlsx</code></td><td>研发、测试、项目管理</td></tr>
+        <tr><td>实现规格</td><td><code>dlms_cosem_spec.*</code> · <code>engineering_requirements/</code></td><td>DLMS/COSEM 开发</td></tr>
+        <tr><td>澄清闭环</td><td><code>clarification_questions.xlsx</code> · <code>run_manifest.json</code></td><td>评审会、项目负责人</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="no">05</span>技术与运行</h2>
+    <p class="hint">Python 3.11+ 核心 · Vue 3 + TypeScript 工作台 · Electron + Vite 桌面端 · PyInstaller 单文件后端。正式界面是 Vue3 + Electron，旧 PySide6 GUI 已冻结。</p>
+    <pre><span class="c"># 完整解析与审查</span>
+ratomizer run ".\standard.docx" --out ".\out\run-001" --export md,csv
+
+<span class="c"># 专家裁决后生成研发需求</span>
+python -m desktop_tasks functional-synthesis --out ".\out\run-001"
+ratomizer analyze --out ".\out\run-001" --llm-route stub
+
+<span class="c"># 启动桌面端</span>
+cd ui &amp;&amp; npm run desktop:dev</pre>
+    <ul class="bounds">
+      <li>旧版 XLS 需先另存为 XLSX；扫描件 PDF 的 OCR 尚未支持，需先转为可解析文档。</li>
+      <li>LLM 为可选能力：无密钥或端点不可用时诚实降级，绝不伪造模型结果。</li>
+      <li>Windows portable 包当前未签名，分发时可能触发 SmartScreen 提示。</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>内容基线：2026-07-26 · <code>main@b8f8e34</code> · 核心版本 <code>0.7.1</code></span>
+    <span>详细版见 <a href="project-introduction.html">project-introduction.html</a></span>
+  </footer>
+
+</main>
+</body>
+</html>
