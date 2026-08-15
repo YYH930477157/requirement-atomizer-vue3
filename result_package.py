@@ -36,7 +36,11 @@ _PACKAGE_LOCK_FILE = ".result-package.lock"
 _PUBLICATION_JOURNAL_FILE = ".result-package-publication.json"
 _PUBLICATION_TRANSACTIONS_DIR = "result-package-publications"
 _PACKAGE_LOCK_DEPTH: ContextVar[int] = ContextVar("result_package_lock_depth", default=0)
-_MARKER_CONTRACT_CACHE: dict[Path, tuple[int, int, int, dict[str, Any]]] = {}
+# marker 契约缓存键 = 内容 SHA-256（2026-08-14 完整性：stat-only 键可被
+# 「同尺寸原地覆写+还原 mtime」伪造——Windows ctime=创建时间，原地覆写不变；
+# marker 仅 KB 级，逐次读字节哈希的代价可忽略，jsonschema+契约校验只在内容
+# 变化时重跑：内容一变摘要必变，stat 无论怎么还原都必然重新校验，fail-closed）。
+_MARKER_CONTRACT_CACHE: dict[Path, tuple[str, dict[str, Any]]] = {}
 _MARKER_CONTRACT_CACHE_LOCK = RLock()
 # marker warnings[] 只追加不膨胀：保留最近 N 条，完整细节始终落在 run.log。
 _PACKAGE_WARNING_LIMIT = 50
@@ -578,29 +582,29 @@ def _marker_path(root: Path | str) -> Path:
 def _load_marker_contract(root: Path | str) -> dict[str, Any]:
     result_root = Path(root).expanduser().resolve()
     marker = result_root / RESULT_PACKAGE_FILE
+    # 2026-08-14 完整性：缓存键 = marker 内容 SHA-256（非 stat 签名）。stat-only
+    # 键（size/mtime；Windows ctime=创建时间，原地覆写不变）可被「同尺寸原地
+    # 覆写+还原 mtime」伪造，把改坏的 marker 当缓存里的有效契约吐回；marker 只有
+    # KB 级，逐次读字节+哈希代价可忽略，而 jsonschema+契约校验只在内容变化时
+    # 重跑——伪造者无论怎么还原 stat，内容摘要变 → 必然重新校验（fail-closed）。
     try:
-        stat = marker.stat()
+        data = marker.read_bytes()
     except FileNotFoundError as exc:
         raise ResultPackageError(f"result package marker does not exist: {marker}") from exc
     except OSError as exc:
         raise ResultPackageCorrupt(f"cannot stat result package marker: {exc}") from exc
+    digest = hashlib.sha256(data).hexdigest()
     with _MARKER_CONTRACT_CACHE_LOCK:
         cached = _MARKER_CONTRACT_CACHE.get(result_root)
-        signature = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
-        if cached is not None and cached[:3] == signature:
-            return dict(cached[3])
+        if cached is not None and cached[0] == digest:
+            return dict(cached[1])
     try:
-        package = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        package = json.loads(data.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ResultPackageCorrupt(f"invalid result package marker: {exc}") from exc
     package = _validate_package(package)
     with _MARKER_CONTRACT_CACHE_LOCK:
-        _MARKER_CONTRACT_CACHE[result_root] = (
-            stat.st_mtime_ns,
-            stat.st_ctime_ns,
-            stat.st_size,
-            dict(package),
-        )
+        _MARKER_CONTRACT_CACHE[result_root] = (digest, dict(package))
     return package
 
 
@@ -608,6 +612,10 @@ def detect_result_layout(root: Path | str) -> str:
     result_root = Path(root).expanduser().resolve()
     marker = result_root / RESULT_PACKAGE_FILE
     if marker.exists():
+        # 2026-08-14 性能：marker 校验（jsonschema + 契约检查）经 _load_marker_contract
+        # 的内容 SHA-256 缓存（marker 任何内容改动 → 摘要变化 → 立即重新校验，stat 伪造
+        # 无法绕过）；交付物/完成证据存在性仍逐次核验，语义不变。
+        # 每请求的 resolve_analysis_root/package_artifact_path 都走这里，不再重复整包校验。
         load_result_package(result_root)
         return "package_v1"
     if any((result_root / name).exists() for name in _LEGACY_SENTINELS):
@@ -635,23 +643,21 @@ def package_root_for_analysis_root(root: Path | str) -> Path | None:
 
 
 def load_result_package(root: Path | str, *, verify: bool = False) -> dict[str, Any]:
+    """Load the marker contract, then check deliverable presence (and digests).
+
+    2026-08-14 性能：marker 读取+校验经 ``_load_marker_contract`` 的内容 SHA-256
+    缓存（marker 任何内容改动 → 摘要变化 → 立即重新校验，无陈旧窗口，stat 伪造
+    无法绕过）；交付物/完成证据的存在性与可选 SHA 校验保持逐次执行——
+    ``verify=True`` 是「打开已有结果」的显式完整性动作，绝不缓存。返回顶层浅拷贝
+    （嵌套结构与缓存共享，只读消费；本模块写路径只做顶层键替换，见
+    ``_record_*_unlocked``/``_publish_package_unlocked``）。
+    """
     result_root = Path(root).expanduser().resolve()
     if _publication_journal_path(result_root).exists():
         raise ResultPackageCorrupt(
             "result package has an interrupted deliverable publication"
         )
-    marker = result_root / RESULT_PACKAGE_FILE
-    try:
-        raw = marker.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise ResultPackageError(f"result package marker does not exist: {marker}") from exc
-    except OSError as exc:
-        raise ResultPackageCorrupt(f"cannot read result package marker: {exc}") from exc
-    try:
-        package = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ResultPackageCorrupt(f"invalid result package marker: {exc}") from exc
-    package = _validate_package(package)
+    package = _load_marker_contract(result_root)
     analysis = package.get("analysis")
     if isinstance(analysis, dict):
         for evidence in analysis["completion_evidence"]:

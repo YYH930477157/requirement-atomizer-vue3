@@ -6,8 +6,10 @@ token 不匹配时拒绝。可独立运行，无网络/LLM 依赖。
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,6 +23,7 @@ import claim_artifacts
 import claim_catalog
 import claim_ledger
 import claim_review_actions
+import desktop_tasks
 from result_package import initialize_result_package, resolve_analysis_root
 from tests.test_claim_artifacts import _catalog, _publish, _requirement
 from tests.test_claim_review_actions import _publish_a_track
@@ -418,8 +421,12 @@ class ClaimLedgerHttpTests(unittest.TestCase):
             claim_review_actions.fold_effective_ledger(
                 root, actor_trigger="annotation-http-error-test"
             )
-            journal = root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL
-            journal.write_text('{"unfinished":true}', encoding="utf-8")
+            # 撕裂 effective ledger（非 pending 的不可读快照）：维持裸文案 retryable 503；
+            # pending journal 的机器码 effective_recovery_pending 映射由
+            # RecoveryPendingHeavyViewTests 单独锁定。
+            (root / claim_artifacts.CLAIM_EFFECTIVE_LEDGER).write_text(
+                '{"broken": ', encoding="utf-8",
+            )
             before = _file_bytes(root)
 
             with _claim_api(root) as base_url:
@@ -1007,14 +1014,18 @@ class ClaimMutationHttpTests(unittest.TestCase):
         self.assertTrue(payload["retryable"])
         self.assertIn("omission state changed", payload["error"])
 
-    def test_claim_queue_execute_torn_attempt_log_is_structured_503(self) -> None:
+    def test_claim_queue_execute_torn_attempt_log_is_healed_under_write_lock(self) -> None:
+        """Append-mode writers can crash mid-line; queue execute owns the
+        extraction lock and must heal the uncommitted torn tail back to the
+        last complete generation instead of wedging on a recovery 503. The
+        request then proceeds to its normal deterministic validation failure
+        (missing paid-confirmation revision), and the log is loadable."""
         import claim_reextract_attempts
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             attempt_path = root / claim_reextract_attempts.CLAIM_REEXTRACT_ATTEMPTS
-            torn = b'{"schema":"claim-reextract-attempt/v1"'
-            attempt_path.write_bytes(torn)
+            attempt_path.write_bytes(b'{"schema":"claim-reextract-attempt/v1"')
             with _claim_api(root, local_token=self.TOKEN) as base_url:
                 status, payload = _http_post_json(base_url, "/claim-queue/execute", {
                     "proposal_id": "CQP-12345678-9abcdef0",
@@ -1026,7 +1037,44 @@ class ClaimMutationHttpTests(unittest.TestCase):
                     "maximum_calls": 4,
                     "total_token_budget": 20000,
                     "request_idempotency_key": "http-torn-attempt-1",
-                    "expected_route_config_revision": "sha256:" + "2" * 64,
+                }, token=self.TOKEN)
+            after = attempt_path.read_bytes()
+            snapshot = claim_reextract_attempts.read_attempt_log(root)
+
+        self.assertEqual(status, 409)
+        self.assertIn(
+            "route configuration revision is required",
+            payload["error"],
+        )
+        self.assertNotEqual(after, b'{"schema":"claim-reextract-attempt/v1"')
+        self.assertEqual(snapshot.last_event_seq, 0)
+
+    def test_claim_queue_execute_forged_attempt_log_is_structured_503(self) -> None:
+        import claim_reextract_attempts
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            attempt_path = root / claim_reextract_attempts.CLAIM_REEXTRACT_ATTEMPTS
+            # A complete but forged line is corruption, not a crash artifact:
+            # recovery must fail closed with the structured recovery-required
+            # error and never rewrite the file. (Non-canonical key order makes
+            # the scanner reject the row as untrusted, not torn.)
+            forged = (
+                b'{"schema":"claim-reextract-attempt/v2",'
+                b'"idempotency_key":"forged"}\n'
+            )
+            attempt_path.write_bytes(forged)
+            with _claim_api(root, local_token=self.TOKEN) as base_url:
+                status, payload = _http_post_json(base_url, "/claim-queue/execute", {
+                    "proposal_id": "CQP-12345678-9abcdef0",
+                    "expected_claim_effective_revision": "sha256:" + "1" * 64,
+                    "expected_ledger_state": "uncertain",
+                    "actor": "expert:yyh",
+                    "allow_llm": True,
+                    "route": "openai_compatible",
+                    "maximum_calls": 4,
+                    "total_token_budget": 20000,
+                    "request_idempotency_key": "http-forged-attempt-1",
                 }, token=self.TOKEN)
             after = attempt_path.read_bytes()
 
@@ -1035,9 +1083,8 @@ class ClaimMutationHttpTests(unittest.TestCase):
             payload["error"],
             "claim_reextract_attempt_recovery_required",
         )
-        self.assertIn("torn tail", payload["detail"])
         self.assertTrue(payload["retryable"])
-        self.assertEqual(after, torn)
+        self.assertEqual(after, forged)
 
     @staticmethod
     def _structural_override_payload() -> dict:
@@ -1935,6 +1982,511 @@ class ClaimStartupMaintenanceTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertNotEqual(result.get("reason"), "claim_generation_unavailable")
+
+
+class RequirementsEndpointTests(unittest.TestCase):
+    """2026-08-14 性能/健壮性：/requirements 先切片再富化 + 撕裂尾结构化 503。"""
+
+    @staticmethod
+    def _write_requirements(root: Path, count: int) -> list[dict]:
+        rows = [
+            {
+                "requirement_id": f"R{i}",
+                "requirement_type": "functional",
+                "text": f"row {i}",
+            }
+            for i in range(count)
+        ]
+        (root / "atomic_requirements.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8",
+        )
+        return rows
+
+    def test_enriches_only_the_sliced_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = self._write_requirements(root, 5)
+            seen: list[int] = []
+
+            def fake_enrich(reqs, out_dir):
+                seen.append(len(reqs))
+                return list(reqs)
+
+            with _claim_api(root) as base_url:
+                with patch.object(api_server, "enrich_requirements", fake_enrich):
+                    status, payload = _http_json(base_url, "/requirements?limit=2")
+                    status_typed, payload_typed = _http_json(
+                        base_url, "/requirements?limit=2&type=functional",
+                    )
+
+        self.assertEqual((status, status_typed), (200, 200))
+        self.assertEqual(payload, rows[:2])
+        self.assertEqual(payload_typed, rows[:2])
+        # 全量语料（5 行）不再逐行富化——富化只看到切片页
+        self.assertEqual(seen, [2, 2])
+
+    def test_torn_tail_maps_to_structured_retryable_503(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "atomic_requirements.jsonl").write_text(
+                json.dumps({"requirement_id": "R0"}) + "\n" + '{"broken": ',
+                encoding="utf-8",
+            )
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/requirements")
+
+        self.assertEqual(status, 503)
+        self.assertTrue(payload["retryable"])
+        self.assertIn("Expecting", payload["error"])
+
+
+class ReviewStatesBoundaryTests(unittest.TestCase):
+    def test_torn_tail_maps_to_structured_retryable_503(self) -> None:
+        # 此前 read_jsonl 的撕裂尾 ValueError 直接掉出 do_GET：连接断、无 JSON 错误包。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "review_states.jsonl").write_text(
+                json.dumps({"requirement_id": "R0", "status": "accepted"}) + "\n"
+                + '{"broken": ',
+                encoding="utf-8",
+            )
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/review-states")
+
+        self.assertEqual(status, 503)
+        self.assertTrue(payload["retryable"])
+
+    def test_filter_and_limit_still_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [
+                {"requirement_id": f"R{i}", "status": "accepted" if i % 2 else "draft"}
+                for i in range(4)
+            ]
+            (root / "review_states.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8",
+            )
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/review-states?status=accepted")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, [rows[1], rows[3]])
+
+
+class ReviewsBoundaryTests(unittest.TestCase):
+    """/reviews 撕裂尾与 /review-states 同口径：结构化 retryable 503，不掐断连接。"""
+
+    def test_torn_tail_maps_to_structured_retryable_503(self) -> None:
+        # 此前 read_jsonl 的撕裂尾 ValueError 直接掉出 do_GET：连接断、无 JSON 错误包
+        # （/review-states 已补齐边界，/reviews 是漏网的兄弟端点）。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "llm_review_results.jsonl").write_text(
+                json.dumps({"ai_req_id": "AIR-1"}) + "\n" + '{"broken": ',
+                encoding="utf-8",
+            )
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/reviews")
+
+        self.assertEqual(status, 503)
+        self.assertTrue(payload["retryable"])
+        self.assertIn("Expecting", payload["error"])
+
+    def test_intact_rows_and_limit_still_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [{"ai_req_id": f"AIR-{i}"} for i in range(3)]
+            (root / "llm_review_results.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8",
+            )
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/reviews?limit=2")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, rows[:2])
+
+
+class RecoveryPendingHeavyViewTests(unittest.TestCase):
+    """两个重型视图的 recovery-pending 503 必须带机器码 effective_recovery_pending。
+
+    /table-reviews 此前落进 ClaimArtifactError 兜底、/document/pdf 落进 ValueError
+    兜底，都只回裸文案字符串（error=<消息>）——前端 api-client 按 error 码自动
+    POST /claim-maintenance，恰好这两个最重的视图永远不触发自恢复。必须与
+    claim 视图（ClaimLedgerHttpTests 的 pending journal 用例）同形。"""
+
+    def _seed_pending(self, root: Path) -> None:
+        catalog = _catalog()
+        (root / "blocks.jsonl").write_text(json.dumps({
+            "block_id": "B1", "order": 1, "type": "paragraph",
+            "text": catalog["catalog"][0]["text"],
+            "section_path": ["4 Functions"], "noise": False,
+        }) + "\n", encoding="utf-8")
+        _publish(root, catalog)
+        claim_review_actions.fold_effective_ledger(
+            root, actor_trigger="recovery-pending-heavy-view-test",
+        )
+        # 未完成的 effective 发布 WAL = 只读消费方必须 fail-closed 的恢复挂起态
+        (root / claim_artifacts.CLAIM_EFFECTIVE_PUBLICATION_JOURNAL).write_bytes(
+            b'{"unfinished":true}',
+        )
+
+    def test_table_reviews_maps_recovery_pending_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_pending(root)
+            before = _file_bytes(root)
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/table-reviews")
+
+            after = _file_bytes(root)
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "effective_recovery_pending")
+        self.assertTrue(payload["retryable"])
+        self.assertIn("claim effective recovery pending", payload["detail"])
+        # GET 只读：恢复挂起不得被请求路径顺手执行（fail-closed 契约）
+        self.assertEqual(after, before)
+
+    def test_document_pdf_maps_recovery_pending_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_pending(root)
+            before = _file_bytes(root)
+
+            with _claim_api(root) as base_url:
+                status, payload = _http_json(base_url, "/document/pdf")
+
+            after = _file_bytes(root)
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"], "effective_recovery_pending")
+        self.assertTrue(payload["retryable"])
+        self.assertIn("claim effective recovery pending", payload["detail"])
+        self.assertEqual(after, before)
+
+
+class AiExtractionStatusMemoTests(unittest.TestCase):
+    def setUp(self) -> None:
+        api_server._reset_payload_memo()
+
+    def tearDown(self) -> None:
+        api_server._reset_payload_memo()
+
+    def test_status_is_memoized_on_source_signature(self) -> None:
+        # 抽取轮询（DocumentReview ~180ms）不再每次重算指纹/富化。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "ai_requirements.partial.json").write_text("{}", encoding="utf-8")
+            calls: list[int] = []
+
+            def builder(out_dir):
+                calls.append(1)
+                return {
+                    "schema": "ai-requirements-partial/v1",
+                    "run_id": "run-1",
+                    "rows": [{"ai_req_id": "AIR-1"}],
+                }
+
+            with patch.object(
+                api_server, "_build_ai_extraction_status_impl", builder,
+            ):
+                first = api_server.build_ai_extraction_status(root)
+                # 命中返回独立副本：调用方原地改行不污染缓存
+                first["rows"].append({"ai_req_id": "AIR-2"})
+                second = api_server.build_ai_extraction_status(root)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(second["rows"], [{"ai_req_id": "AIR-1"}])
+
+            # partial 落盘（行完成）→ 签名变化 → 重建
+            (root / "ai_requirements.partial.json").write_text(
+                '{"completed": 1}', encoding="utf-8",
+            )
+            with patch.object(
+                api_server, "_build_ai_extraction_status_impl", builder,
+            ):
+                third = api_server.build_ai_extraction_status(root)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(third["run_id"], "run-1")
+
+    def test_builder_errors_are_not_cached(self) -> None:
+        from ai_extract import AI_REQUIREMENTS_PARTIAL
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            # 无 partial 文件 + 坏质量文件 → 构建期 ValueError 如实穿透（不缓存失败）
+            (root / "blocks.jsonl").write_text(
+                json.dumps({"block_id": "B1"}) + "\n", encoding="utf-8",
+            )
+            (root / "ai_extract_quality.json").write_text(
+                '{"coverage_pct": "not-a-number"}', encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                api_server.build_ai_extraction_status(root)
+            self.assertFalse(
+                (root / AI_REQUIREMENTS_PARTIAL).exists(),
+                "failed builds must not write side files",
+            )
+
+
+class StartupMaintenanceOrderTests(unittest.TestCase):
+    """2026-08-14：就绪信号先于启动维护；维护在守护线程跑且每进程恰一次。"""
+
+    def setUp(self) -> None:
+        api_server._reset_startup_maintenance_for_tests()
+
+    def tearDown(self) -> None:
+        api_server._reset_startup_maintenance_for_tests()
+
+    @staticmethod
+    def _run_main(tmp: str, events: list[str]) -> int:
+        class FakeServer:
+            def __init__(self, address, handler):
+                events.append("server-bound")
+
+            def serve_forever(self):
+                events.append("serving")
+                return None
+
+        def slow_maintenance(out_dir):
+            events.append("maintenance-start")
+            time.sleep(0.05)
+            events.append("maintenance-end")
+
+        def fake_print(*args, **kwargs):
+            events.append("ready-printed")
+            return json.loads(str(args[0]))
+
+        with patch.object(api_server, "ThreadingHTTPServer", FakeServer), \
+                patch.object(api_server, "_claim_generation_present", lambda d: True), \
+                patch.object(api_server, "run_claim_startup_maintenance", slow_maintenance), \
+                patch.object(
+                    api_server, "run_table_review_recompute_recovery",
+                    lambda d: events.append("recompute"),
+                ), \
+                patch.object(desktop_tasks, "setup_run_logging", lambda out: None), \
+                patch("builtins.print", fake_print):
+            code = api_server.main(["--out", tmp])
+            # 在补丁上下文内 join 维护线程（补丁还原后线程会调用真实维护函数）
+            thread = api_server._STARTUP_MAINTENANCE_THREAD
+            if thread is not None:
+                thread.join(timeout=5)
+            return code
+
+    def test_readiness_printed_before_maintenance_and_runs_once(self) -> None:
+        events: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            ready = self._run_main(tmp, events)
+            # 不复位闸门直接跑第二次 main（Electron 30s 杀进程重试场景）：
+            # 维护每进程恰一次，重试不得重做。
+            again = self._run_main(tmp, events)
+            api_server._reset_startup_maintenance_for_tests()
+
+        self.assertEqual((ready, again), (0, 0))
+        self.assertLess(events.index("server-bound"), events.index("ready-printed"))
+        self.assertLess(events.index("ready-printed"), events.index("maintenance-start"))
+        self.assertEqual(events.count("maintenance-start"), 1)
+        self.assertEqual(events.count("recompute"), 1)
+
+    def test_maintenance_failure_is_logged_and_process_still_serves(self) -> None:
+        events: list[str] = []
+
+        class FakeServer:
+            def __init__(self, address, handler):
+                events.append("server-bound")
+
+            def serve_forever(self):
+                events.append("serving")
+                return None
+
+        def broken_maintenance(out_dir):
+            raise RuntimeError("maintenance exploded")
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                self.assertLogs("requirement_atomizer", level="WARNING") as logs:
+            with patch.object(api_server, "ThreadingHTTPServer", FakeServer), \
+                    patch.object(api_server, "_claim_generation_present", lambda d: True), \
+                    patch.object(api_server, "run_claim_startup_maintenance", broken_maintenance), \
+                    patch.object(
+                        api_server, "run_table_review_recompute_recovery",
+                        lambda d: events.append("recompute"),
+                    ), \
+                    patch.object(desktop_tasks, "setup_run_logging", lambda out: None), \
+                    patch("builtins.print", lambda *a, **k: None):
+                code = api_server.main(["--out", tmp])
+                thread = api_server._STARTUP_MAINTENANCE_THREAD
+                if thread is not None:
+                    thread.join(timeout=5)
+            api_server._reset_startup_maintenance_for_tests()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(events.count("recompute"), 1)
+        self.assertTrue(any("claim effective startup maintenance lagged" in line for line in logs.output))
+
+
+class ClaimSnapshotCacheWiringTests(unittest.TestCase):
+    """2026-08-14：/table-reviews 与 /document/pdf 复用 stat 签名快照缓存。"""
+
+    def _seed(self, root: Path) -> None:
+        catalog = _catalog()
+        (root / "blocks.jsonl").write_text(json.dumps({
+            "block_id": "B1", "order": 1, "type": "paragraph",
+            "text": catalog["catalog"][0]["text"],
+            "section_path": ["4 Functions"], "noise": False,
+        }) + "\n", encoding="utf-8")
+        _publish(root, catalog)
+        claim_review_actions.fold_effective_ledger(
+            root, actor_trigger="snapshot-cache-wiring-test",
+        )
+
+    def test_repeated_gets_load_snapshot_once_per_variant(self) -> None:
+        original = claim_artifacts.load_committed_effective_snapshot_readonly
+        calls: list[bool] = []
+
+        def counting(root, **kwargs):
+            calls.append(bool(kwargs.get("require_v2", True)))
+            return original(root, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            with _claim_api(root) as base_url:
+                with patch.object(
+                    claim_artifacts,
+                    "load_committed_effective_snapshot_readonly",
+                    counting,
+                ):
+                    t1 = _http_json(base_url, "/table-reviews")
+                    t2 = _http_json(base_url, "/table-reviews")
+                    p1 = _http_json(base_url, "/document/pdf")
+                    p2 = _http_json(base_url, "/document/pdf")
+
+        self.assertEqual([status for status, _ in (t1, t2)], [200, 200])
+        self.assertEqual([status for status, _ in (p1, p2)], [200, 200])
+        # require_v2=False（表评审投影）与 require_v2=True（批注）各只读一次盘
+        self.assertEqual(sorted(calls), [False, True])
+
+    def test_snapshot_stat_change_invalidates_the_cache(self) -> None:
+        import os
+
+        from result_package import governed_artifact_path
+        from table_claim_authority import load_table_claim_authority_projection
+
+        original = claim_artifacts.load_committed_effective_snapshot_readonly
+        calls: list[int] = []
+
+        def counting(root, **kwargs):
+            calls.append(1)
+            return original(root, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed(root)
+            with patch.object(
+                claim_artifacts,
+                "load_committed_effective_snapshot_readonly",
+                counting,
+            ):
+                first = load_table_claim_authority_projection(root)
+                second = load_table_claim_authority_projection(root)
+                # 任一输入文件 stat 变化（mtime）→ 签名失效 → 重读（内容未变则结果一致）
+                ledger = governed_artifact_path(
+                    root, "claim_effective_ledger.jsonl", category="state", for_write=False,
+                )
+                os.utime(ledger, None)
+                third = load_table_claim_authority_projection(root)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(first, second)
+        self.assertEqual(third, first)
+
+
+class MemoPayloadCopyTests(unittest.TestCase):
+    """2026-08-14：memo 命中副本 = pickle 往返（同保别名），不可 pickle 回退 deepcopy。"""
+
+    def test_copy_preserves_internal_aliasing(self) -> None:
+        shared = {"id": 1}
+        payload = [shared, shared]
+        copied = api_server._memo_payload_copy(payload)
+        self.assertEqual(copied, payload)
+        self.assertIsNot(copied[0], shared)
+        self.assertIs(copied[0], copied[1])
+
+    def test_copy_falls_back_to_deepcopy_for_non_picklable_values(self) -> None:
+        class Custom:
+            """可 deepcopy（走 __deepcopy__）但不可 pickle 的值。"""
+
+            def __deepcopy__(self, memo):
+                return Custom()
+
+            def __reduce_ex__(self, protocol):
+                raise TypeError("not picklable")
+
+            def __eq__(self, other):
+                return isinstance(other, Custom)
+
+        original = Custom()
+        payload = {"rows": [{"id": 1}], "obj": original}
+        copied = api_server._memo_payload_copy(payload)
+        self.assertEqual(copied["rows"], payload["rows"])
+        self.assertIsNot(copied["rows"][0], payload["rows"][0])
+        self.assertIsNot(copied["obj"], original)
+
+
+class SourceSignatureIdentityHardeningTests(unittest.TestCase):
+    """完整性封堵（2026-08-14）：memo 源签名 (mtime_ns, size) 可被「同尺寸原子替换
+    （tmp + os.replace）+ os.utime 还原 mtime」伪造——复查者实测复现：源文件换内容
+    后轮询仍吐缓存里的旧载荷。签名加入 (st_dev, st_ino) 文件标识：工具链写路径全部
+    经 tmp+os.replace 原子替换（新文件标识）→ 必然重建；残余风险仅为蓄意的同尺寸
+    原地覆写+还原 mtime（非工具链写路径）。"""
+
+    def setUp(self) -> None:
+        api_server._reset_payload_memo()
+
+    def tearDown(self) -> None:
+        api_server._reset_payload_memo()
+
+    def test_atomic_replace_samesize_rebuilds_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            partial = root / "ai_requirements.partial.json"
+            partial.write_bytes(b'{"completed": 1}')
+            calls: list[int] = []
+
+            def builder(out_dir):
+                calls.append(1)
+                return {
+                    "schema": "ai-requirements-partial/v1",
+                    "run_id": f"run-{len(calls)}",
+                    "rows": [],
+                }
+
+            with patch.object(
+                api_server, "_build_ai_extraction_status_impl", builder,
+            ):
+                first = api_server.build_ai_extraction_status(root)
+                # 同尺寸原子替换 + 还原 mtime：旧 (mtime_ns, size) 签名被完全伪造
+                before = partial.stat()
+                tmp_file = root / "ai_requirements.partial.json.spoof.tmp"
+                tmp_file.write_bytes(b'{"completed": 2}')
+                os.replace(tmp_file, partial)
+                os.utime(partial, ns=(before.st_atime_ns, before.st_mtime_ns))
+                after = partial.stat()
+                self.assertEqual(
+                    (before.st_mtime_ns, before.st_size),
+                    (after.st_mtime_ns, after.st_size),
+                )
+                second = api_server.build_ai_extraction_status(root)
+
+            self.assertEqual(len(calls), 2, "same-size spoof must invalidate memo")
+            self.assertEqual(first["run_id"], "run-1")
+            self.assertEqual(second["run_id"], "run-2")
+
 
 if __name__ == "__main__":
     unittest.main()
