@@ -312,7 +312,10 @@ class W4OwnershipReasonTests(unittest.TestCase):
             self.assertEqual(item["ownership_reason"], "纯数据处理与协议上报逻辑,无硬件依赖")
             self.assertEqual(item["ownership_reason_source"], "llm")
 
-    def test_reason_with_fabricated_code_rejects_whole_enrichment(self) -> None:
+    def test_reason_with_fabricated_code_downgrades_only_tainted_field(self) -> None:
+        """逐字段造码降级（analyze-unfounded-v4）：含造码的字段回退规则值，干净字段保留。
+
+        红线不变：捏造的 OBIS 码不得出现在任何交付字段（宁漏勿错）。"""
         from requirements_analysis import run_requirements_analysis
 
         def chat(system: str, user: str) -> dict:
@@ -323,9 +326,13 @@ class W4OwnershipReasonTests(unittest.TestCase):
             out = Path(td)
             self._seed(out)
             result = run_requirements_analysis(out, route="openai_compatible", chat=chat)
-            self.assertEqual(result["enriched"], 0)
+            # 干净字段（software_requirement_text）存活 → 富化计入
+            self.assertEqual(result["enriched"], 1)
             item = json.loads((out / "engineering_analysis.json").read_text(encoding="utf-8"))["items"][0]
-            self.assertTrue(item["ownership_reason"].startswith("Matched"))   # 保留规则原因
+            self.assertTrue(item["ownership_reason"].startswith("Matched"))   # 污染字段保留规则原因
+            self.assertIn("记录事件", json.dumps(item, ensure_ascii=False))
+            # 造码不得存活于任何交付字段
+            self.assertNotIn("0-0:96.7.0.255", json.dumps(item, ensure_ascii=False))
 
     def test_inconsistent_llm_ownership_keeps_rule_reason(self) -> None:
         from requirements_analysis import run_requirements_analysis

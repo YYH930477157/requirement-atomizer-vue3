@@ -287,6 +287,216 @@ class FailedEnrichmentMarkingTests(unittest.TestCase):
         self.assertTrue(any("硬件依赖" in q for q in item["open_questions"]))
 
 
+class FabricatedFieldLevelRejectionTests(unittest.TestCase):
+    """v4 字段级拒收（2026-08-14）：编造结构编码只拒"自己的文本里就有该码"的字段，
+    干净字段照常采纳——不再一条编造毁掉整条富化。安全前提（红线，宁漏勿错）：
+    逐字段用与 validate_llm_item **同基线同提取器**重检,被整体检出的编造码只要落在
+    可采纳字段,必被归属到该字段并拒收——任何字段都不可能带着编造码存活。"""
+
+    FABRICATED = "0-0:96.1.7"
+
+    def test_fabricated_body_clean_fields_survive(self) -> None:
+        item = base_item()
+        ok, issues = _apply_llm_item(
+            item, SOURCE,
+            {"software_requirement_text": f"写入 {self.FABRICATED} 日志。",   # 只有正文编造
+             "developer_guidance": ["Log tamper events deterministically."],
+             "acceptance_criteria": ["Trigger a tamper event; it appears in the log."]},
+            CTX)
+
+        self.assertTrue(ok)                                  # 部分采纳（整体不再一刀切拒绝）
+        self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)   # 编造字段照标
+        self.assertEqual(item["developer_guidance"], ["Log tamper events deterministically."])
+        self.assertEqual(item["acceptance_criteria"], ["Trigger a tamper event; it appears in the log."])
+        self.assertEqual(item["analysis_source"], "llm")
+        self.assertEqual(item["clarify_fallback"]["software_requirement_text"],
+                         "The meter shall log tamper events.")   # base 兜底保留
+        self.assertTrue(any("拒收该字段" in msg for msg in issues))
+
+    def test_fabricated_guidance_clean_body_survives(self) -> None:
+        """编造码在交付列表字段（guidance）——只拒该字段,正文照常采纳。"""
+        item = base_item()
+        ok, _issues = _apply_llm_item(
+            item, SOURCE,
+            {"software_requirement_text": "Log tamper events deterministically.",
+             "design_options": [f"方案引用 {self.FABRICATED}"]},
+            CTX)
+
+        self.assertTrue(ok)
+        self.assertEqual(item["software_requirement_text"], "Log tamper events deterministically.")
+        self.assertEqual(item["design_options"], [CLARIFY_MARK])   # base 空 → 标待澄清
+        self.assertTrue(any("设计候选" in q for q in item["open_questions"]))
+
+    def test_fabricated_guidance_with_grounded_base_keeps_base(self) -> None:
+        """base 非空=源文有据——字段级拒收同样逐字节保留,不因 LLM 编造毁掉有据内容。"""
+        item = base_item()
+        item["design_options"] = ["按源文：串口上报篡改事件"]
+        ok, _issues = _apply_llm_item(
+            item, SOURCE,
+            {"software_requirement_text": "Log tamper events deterministically.",
+             "design_options": [f"方案引用 {self.FABRICATED}"]},
+            CTX)
+
+        self.assertTrue(ok)
+        self.assertEqual(item["design_options"], ["按源文：串口上报篡改事件"])
+        self.assertEqual(item["software_requirement_text"], "Log tamper events deterministically.")
+
+    def test_fabricated_ownership_reason_not_adopted(self) -> None:
+        """判断依据含编造码 → 该字段不采纳（保留规则原因）,其余字段不受牵连。"""
+        item = base_item()
+        ok, _issues = _apply_llm_item(
+            item, SOURCE,
+            {"software_requirement_text": "Log tamper events deterministically.",
+             "ownership_reason": f"因为 {self.FABRICATED} 是事件对象。"},
+            CTX)
+
+        self.assertTrue(ok)
+        self.assertEqual(item["ownership_reason"], "Matched software rule term: log")  # 规则原因不动
+        self.assertEqual(item["software_requirement_text"], "Log tamper events deterministically.")
+
+    def test_only_fabricated_content_still_whole_rejected(self) -> None:
+        """没有干净字段可救 → 与旧版一致整条拒绝（含空列表字段标待澄清）。"""
+        item = base_item()
+        ok, issues = _apply_llm_item(
+            item, SOURCE, {"software_requirement_text": f"写入 {self.FABRICATED}。"}, CTX)
+
+        self.assertFalse(ok)
+        self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
+        self.assertEqual(item["developer_guidance"], [CLARIFY_MARK])
+        self.assertEqual(item["design_options"], [CLARIFY_MARK])
+        self.assertEqual(item["acceptance_criteria"], [CLARIFY_MARK])
+        self.assertTrue(any("编造结构编码" in msg for msg in issues))
+
+    def test_no_fabricated_code_survives_in_any_field(self) -> None:
+        """红线安全网：编造码逐一植入**每个**可采纳字段（正文/硬件依赖/判断依据/三个
+        交付列表/假设/待确认问题）——无论哪个字段、无论归属 software 还是 co_design,
+        最终交付的任何字段值都不得包含该编造码。"""
+        fabricated_payload = {
+            "software_requirement_text": f"写入 {self.FABRICATED} 日志。",
+            "hardware_dependency": f"依赖 {self.FABRICATED} 硬件。",
+            "ownership_reason": f"因为 {self.FABRICATED} 是事件对象。",
+            "developer_guidance": [f"操作 {self.FABRICATED}"],
+            "design_options": [f"方案引用 {self.FABRICATED}"],
+            "acceptance_criteria": [f"验证 {self.FABRICATED}"],
+            "assumptions": [f"假设 {self.FABRICATED} 已定义"],
+            "open_questions": [f"{self.FABRICATED} 的口径是？"],
+        }
+        check_fields = list(fabricated_payload)
+        for field in fabricated_payload:
+            for ownership in ("software", "co_design"):
+                with self.subTest(field=field, ownership=ownership):
+                    item = base_item(ownership=ownership)
+                    llm = {"software_requirement_text": "Log tamper events deterministically."}
+                    llm[field] = fabricated_payload[field]
+                    _ok, _issues = _apply_llm_item(item, SOURCE, llm, CTX)
+                    for check_field in check_fields:
+                        value = item.get(check_field)
+                        texts = value if isinstance(value, list) else [value]
+                        for text in texts or [""]:
+                            self.assertNotIn(self.FABRICATED, str(text),
+                                             f"{check_field} leaked fabricated code")
+
+    def test_fabricated_code_in_two_fields_rejects_both(self) -> None:
+        """编造码同时出现在正文与指引 → 两个字段都被拒收,其余干净字段放行。"""
+        item = base_item()
+        ok, _issues = _apply_llm_item(
+            item, SOURCE,
+            {"software_requirement_text": f"写入 {self.FABRICATED}。",
+             "developer_guidance": [f"操作 {self.FABRICATED}"],
+             "acceptance_criteria": ["Trigger a tamper event; it appears in the log."]},
+            CTX)
+
+        self.assertTrue(ok)
+        self.assertEqual(item["software_requirement_text"], CLARIFY_MARK)
+        self.assertEqual(item["developer_guidance"], [CLARIFY_MARK])
+        self.assertEqual(item["acceptance_criteria"], ["Trigger a tamper event; it appears in the log."])
+
+    def test_unattributable_fabrication_adopts_clean_fields_with_trace(self) -> None:
+        """编造码只在不可采纳字段（如 requirement,本就不进交付物）——干净字段照常采纳,
+        但护栏命中必须留痕（不静默吞）。"""
+        item = base_item()
+        ok, issues = _apply_llm_item(
+            item, SOURCE,
+            {"requirement": f"引用 {self.FABRICATED}。",          # 不被采纳的字段
+             "software_requirement_text": "Log tamper events deterministically."},
+            CTX)
+
+        self.assertTrue(ok)
+        self.assertEqual(item["software_requirement_text"], "Log tamper events deterministically.")
+        self.assertNotIn(self.FABRICATED, item.get("requirement") or "")  # requirement 不被覆盖
+        self.assertTrue(any("不可采纳字段" in msg and self.FABRICATED in msg for msg in issues))
+
+
+class StrListFieldPayloadParityTests(unittest.TestCase):
+    """P1 红线修复（2026-08-15 专家 PoC）：LLM 把列表字段写成纯 str（_first_item 不做
+    schema 校验,str 载荷直达 _apply_llm_item）——检测侧直接迭代 (item.get(field) or [])
+    会把 str 逐字符拆散,受保护编码被空格打碎后 extract_codes 永不命中：
+
+    - str design_options="方案引用 G-SGX-EY 事件对象" → 零 issue,整串原样采纳进交付;
+    - str design_options="方案引用 0-0:96.1.7.255 事件对象" → 只走数字软标,原始值
+      （含编造码）落 clarify_fallback——编造码进入澄清通道。
+
+    列表形状的载荷一直拦截正确,只有 str 形状失明。修复=检测/采纳两侧行前一律
+    _as_list 归一（str→单元素列表）,str 载荷与等价 list 载荷结局逐字节一致。"""
+
+    EVENT_POC = "方案引用 G-SGX-EY 事件对象"          # 事件号（无数字,数字软标也够不着）
+    OBIS_POC = "方案引用 0-0:96.1.7.255 事件对象"      # OBIS（旧行为只剩数字软标兜底）
+
+    def _apply(self, design_options: object) -> tuple[dict, bool, list[str]]:
+        item = base_item()
+        ok, issues = _apply_llm_item(
+            item, SOURCE,
+            {"software_requirement_text": "Log tamper events deterministically.",
+             "design_options": design_options},
+            CTX)
+        return item, ok, issues
+
+    def test_str_event_number_intercepted(self) -> None:
+        """PoC1：str 载荷里的事件号必须被检出拦截（旧实现零 issue 原样采纳）。"""
+        from requirements_analysis_agent import validate_llm_item
+        drift = validate_llm_item(
+            {"software_requirement_text": "Log tamper events deterministically.",
+             "design_options": self.EVENT_POC}, SOURCE)
+        self.assertTrue(any("fabricated code" in d and "G-SGX-EY" in d for d in drift))
+
+        item, ok, issues = self._apply(self.EVENT_POC)
+        self.assertTrue(ok)                                    # 正文干净照常采纳
+        self.assertTrue(any("拒收该字段" in msg and "G-SGX-EY" in msg for msg in issues))
+        self.assertNotIn("G-SGX-EY", json.dumps(item, ensure_ascii=False))   # 全 item JSON 无编造码
+        self.assertEqual(item["design_options"], [CLARIFY_MARK])             # base 空 → 标待澄清
+
+    def test_str_obis_downgraded_and_absent_from_entire_item(self) -> None:
+        """PoC2：str 载荷里的 OBIS 必须走编码硬拒（字段级拒收）,而不是只触发数字软标后
+        把含编造码的原始值落进 clarify_fallback——澄清通道同样不得携带编造码。"""
+        item, ok, issues = self._apply(self.OBIS_POC)
+        self.assertTrue(ok)
+        self.assertTrue(any("拒收该字段" in msg and "0-0:96.1.7.255" in msg for msg in issues))
+        # 编造码绝不出现在交付 item 的任何角落（字段/open_questions/clarify_fallback/
+        # enrichment_warnings 全覆盖——直接扫整个序列化 JSON）
+        self.assertNotIn("0-0:96.1.7.255", json.dumps(item, ensure_ascii=False))
+        self.assertTrue(any("待澄清" in q for q in item["open_questions"]))
+
+    def test_str_payload_matches_equivalent_list_payload_outcome(self) -> None:
+        """等价性：str 载荷与 list 载荷（["同一字符串"]）结局必须逐字节一致——
+        归一化后两条路径进同一检测文本、同一采纳循环,产物 item 与 issues 全等。"""
+        for poc in (self.EVENT_POC, self.OBIS_POC):
+            with self.subTest(poc=poc):
+                item_str, ok_str, issues_str = self._apply(poc)
+                item_list, ok_list, issues_list = self._apply([poc])
+                self.assertEqual(ok_str, ok_list)
+                self.assertEqual(item_str, item_list)
+                self.assertEqual(issues_str, issues_list)
+
+    def test_as_list_helpers_agree_between_modules(self) -> None:
+        """单一口径防漂移：agent 侧与 analysis 侧的 _as_list 对同一输入矩阵逐一相同
+        （None→[]、list 原样、tuple→list、str/标量→单元素列表）。"""
+        from requirements_analysis import _as_list as analysis_as_list
+        from requirements_analysis_agent import _as_list as agent_as_list
+        for value in (None, [], ["a", "b"], "编造 0-0:96.1.7.255", ("a", "b"), 7):
+            with self.subTest(value=repr(value)):
+                self.assertEqual(agent_as_list(value), analysis_as_list(value))
+
+
 class VersionAndCacheFingerprintTests(unittest.TestCase):
     def test_prompt_version_bumped(self) -> None:
         self.assertEqual(ANALYZE_PROMPT_VERSION, "analyze-llm-v8")
@@ -298,7 +508,7 @@ class VersionAndCacheFingerprintTests(unittest.TestCase):
         with patch("requirements_analysis.UNFOUNDED_RULE_VERSION", "analyze-unfounded-v0-hypothetical"):
             key_changed = _enrich_key(req, "model-x")
         self.assertNotEqual(key_now, key_changed)
-        self.assertEqual(UNFOUNDED_RULE_VERSION, "analyze-unfounded-v3")
+        self.assertEqual(UNFOUNDED_RULE_VERSION, "analyze-unfounded-v4")
 
 
 class IntegrationRenderAndClarificationLoopTests(unittest.TestCase):

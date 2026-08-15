@@ -292,7 +292,7 @@ class ToolContractTests(unittest.TestCase):
     # review-tools-v1 的 TOOLS 规范指纹（canonical JSON sha256）；变更工具面时连同
     # REVIEW_TOOLS_VERSION 一起更新本指纹（缓存失效靠它,见 llm_pipeline.llm_cache_key）
     _PINNED_TOOLS_FINGERPRINT = "cac9c497ab24b8e81b593aa8f9488937bac38ff13305f32d83b52f3471f70357"
-    _PINNED_VERSION = "review-tools-v4"
+    _PINNED_VERSION = "review-tools-v5"
 
     def test_version_constant(self) -> None:
         self.assertEqual(REVIEW_TOOLS_VERSION, self._PINNED_VERSION)
@@ -328,6 +328,245 @@ class ToolContractTests(unittest.TestCase):
             executor = make_tool_executor(Path(td), kb_paths=[Path(td) / "missing_kb.json"])
             result = executor("kb_search", {"query": "x"})
         self.assertIn("error", result)
+
+
+def _reference_coverage_check(
+    requirements: list[dict],
+    blocks: list[dict],
+    requirement_id: str,
+) -> dict:
+    """旧路径参考实现（每次调用全量重算,逐字对应 v4 逐调用算法）。
+
+    执行器记忆化路径（v5：一次性块索引/需求索引/一致性分组/引句匹配语料）必须与
+    本参考在任意输入上逐字节恒等——双路比对锁定"只提速、不改结果"。"""
+    from merged_consistency import (
+        find_cross_section_duplicates,
+        find_obis_coreference,
+        match_source_quote_blocks,
+    )
+    requirement = review_tools._find_requirement(requirements, requirement_id)
+    if requirement is None:
+        return {"error": f"unknown requirement_id: {requirement_id}"}
+    candidate_ids = review_tools._requirement_candidate_ids(requirement)
+    consistency_rows = [review_tools._atomic_to_consistency_row(row) for row in requirements]
+    target_row = review_tools._atomic_to_consistency_row(requirement)
+    quote = str(target_row.get("source_quote") or "")
+    hit_block_ids: list[str] = []
+    methods: list[str] = []
+    if quote.strip():
+        matched, method = match_source_quote_blocks(quote, blocks)
+        for block_id in matched:
+            if block_id not in hit_block_ids:
+                hit_block_ids.append(block_id)
+        if method:
+            methods.append(method)
+    coreference = [
+        {"obis": str(group.get("obis") or ""), "members": [str(m) for m in (group.get("members") or [])],
+         "values_differ": bool(group.get("values_differ")), "count": group.get("count")}
+        for group in find_obis_coreference(consistency_rows)
+        if candidate_ids.intersection(str(m) for m in (group.get("members") or []))
+    ][:review_tools._COVERAGE_GROUP_MAX]
+    duplicates = [
+        {"members": [str(m) for m in (group.get("members") or [])],
+         "sections": [str(s) for s in (group.get("sections") or [])], "count": group.get("count")}
+        for group in find_cross_section_duplicates(consistency_rows)
+        if candidate_ids.intersection(str(m) for m in (group.get("members") or []))
+    ][:review_tools._COVERAGE_GROUP_MAX]
+    return {
+        "requirement_id": requirement_id,
+        "quote_hit_block_ids": hit_block_ids,
+        "match_methods": methods,
+        "obis_coreference": coreference,
+        "duplicate_candidates": duplicates,
+    }
+
+
+def _reference_source_read(blocks: list[dict], block_id: str) -> dict:
+    """旧路径参考实现（空 id 守卫 + 线性扫描首个命中）——与执行器块索引路径恒等比对。"""
+    if not str(block_id or "").strip():
+        return {"error": "source_read requires a non-empty block_id"}
+    for block in blocks:
+        if str(block.get("block_id") or "") == block_id:
+            return {
+                "block_id": block_id,
+                "text": review_tools._trim(block.get("text"), review_tools.SOURCE_BLOCK_MAX_CHARS),
+                "section_path": [str(value) for value in (block.get("section_path") or [])],
+            }
+    return {"error": f"unknown block_id: {block_id}"}
+
+
+def _synthetic_corpus(root: Path) -> Path:
+    """多样性合成语料：乱序 order/重复 block_id/噪声块/空文本/多段引句/结构化 OBIS/
+    候选 id 交集/超短引句——把两路实现可能分叉的缝全部钉住。"""
+    out = root / "out-corpus"
+    out.mkdir()
+    shared_paragraph = "The meter shall store 12 months of load profile data in 1-0:1.8.0.255."
+    _write_jsonl(out / "blocks.jsonl", [
+        # order 乱序 + 同 block_id 重复（首个命中为准确认 first-wins）
+        {"block_id": "B5", "order": 5, "type": "paragraph", "noise": False,
+         "text": "Tamper events shall be logged with timestamps.", "section_path": ["7"]},
+        {"block_id": "B1", "order": 1, "type": "paragraph", "noise": False,
+         "text": shared_paragraph, "section_path": ["4", "4.1"]},
+        {"block_id": "B2", "order": 2, "type": "paragraph", "noise": True,
+         "text": "Machine Translated by Google", "section_path": []},
+        {"block_id": "B3", "order": 3, "type": "paragraph", "noise": False,
+         "text": "Page 12", "section_path": []},
+        {"block_id": "B4", "order": 4, "type": "table_row", "noise": False,
+         "text": "最大需量 1-0:1.6.0.255 存储 12 个月", "section_path": ["5", "5.2"]},
+        # 无 order / 空 text / 非 dict 兼容字段缺失
+        {"block_id": "B6", "type": "paragraph", "noise": False, "text": "", "section_path": ["8"]},
+        {"block_id": "B7", "order": 7, "type": "paragraph", "noise": False,
+         "text": "Part one of a split quote about demand.", "section_path": ["6"]},
+        {"block_id": "B8", "order": 8, "type": "paragraph", "noise": False,
+         "text": "Part two of the split quote continues here.", "section_path": ["6"]},
+        # 重复 block_id：文件序在前者胜（与旧线性扫描一致）
+        {"block_id": "B5", "order": 9, "type": "paragraph", "noise": False,
+         "text": "LATER DUPLICATE never wins", "section_path": ["9"]},
+    ])
+    _write_jsonl(out / "atomic_requirements.jsonl", [
+        {"stable_req_id": "SYN-1", "req_id": "SYNR-1", "source_id": "SYNS-1",
+         "object": "Load profile register", "requirement_type": "data_definition",
+         "requirement": "Store 12 months of load profile data in 1-0:1.8.0.255.",
+         "section_path": ["4", "4.1"], "source_context": {"paragraph_text": shared_paragraph},
+         "parameters": {"cosem_object": {"obis": "1-0:1.8.0.255", "class_id": 3}}},
+        {"stable_req_id": "SYN-2", "req_id": "SYNR-2", "source_id": "SYNS-2",
+         "object": "Load profile register", "requirement_type": "data_definition",
+         "requirement": "Archive 12 months of load profile data in 1-0:1.8.0.255 with 32 entries.",
+         "section_path": ["4", "4.2"], "source_context": {"paragraph_text": shared_paragraph},
+         "parameters": {"cosem_object": {"obis": "1-0:1.8.0.255", "class_id": 3}}},
+        # 多段摘录引句（省略号分隔）——match_source_quote_blocks 分片路径
+        {"stable_req_id": "SYN-3", "req_id": "SYNR-3", "source_id": "SYNS-3",
+         "object": "Split quote", "requirement_type": "event_definition",
+         "requirement": "Demand records span two blocks.",
+         "section_path": ["6"],
+         "source_context": {"paragraph_text":
+                            "Part one of a split quote about demand. … Part two of the split quote continues here."},
+         "parameters": {}},
+        # 结构化 OBIS（叙述不复述）+ 无段落 → 引句退 requirement 文本
+        {"stable_req_id": "SYN-4", "req_id": "SYNR-4", "source_id": "SYNS-4",
+         "object": "Demand register", "requirement_type": "cosem_object_instance",
+         "requirement": "最大需量 1-0:1.6.0.255 存储 12 个月",
+         "section_path": ["5", "5.2"], "parameters": {"cosem_object": {"obis": "1-0:1.6.0.255"}}},
+        # 超短引句（<12 归一字符）——不参与来源匹配
+        {"stable_req_id": "SYN-5", "req_id": "SYNR-5", "source_id": "SYNS-5",
+         "object": "Short", "requirement_type": "event_definition",
+         "requirement": "Log events.", "section_path": ["7"],
+         "source_context": {"paragraph_text": "see 4.2"}},
+        # 候选 id 与他行碰撞（req_id 与 SYN-1 的 source_id 不同名,但 SOURCE 行缺失验证 unknown）
+        {"stable_req_id": "SYN-6", "req_id": "SYNR-6", "source_id": "SYNS-6",
+         "object": "No quote", "requirement_type": "event_definition",
+         "requirement": "Nothing quotable.", "section_path": ["8"],
+         "source_context": {"paragraph_text": ""}, "parameters": {}},
+    ])
+    return out
+
+
+class ExecutorMemoizationIdentityTests(unittest.TestCase):
+    """v5 记忆化执行器 vs v4 逐调用全量重算参考实现：任意输入上逐字节恒等。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.corpus = _synthetic_corpus(root)
+        self.requirements = [
+            json.loads(line) for line in
+            (self.corpus / "atomic_requirements.jsonl").read_text(encoding="utf-8").splitlines() if line
+        ]
+        self.blocks = [
+            json.loads(line) for line in
+            (self.corpus / "blocks.jsonl").read_text(encoding="utf-8").splitlines() if line
+        ]
+        self.executor = make_tool_executor(
+            self.corpus, kb_paths=[], blue_book_index_path=root / "missing.json")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _all_lookup_ids(self) -> list[str]:
+        ids: list[str] = []
+        for row in self.requirements:
+            ids.extend(sorted(review_tools._requirement_candidate_ids(row)))
+        return ids
+
+    def test_coverage_check_identical_to_per_call_recompute(self) -> None:
+        for requirement_id in (*self._all_lookup_ids(), "SYN-1", "SYNR-3", "NO-SUCH-ID"):
+            with self.subTest(requirement_id=requirement_id):
+                memoized = self.executor("coverage_check", {"requirement_id": requirement_id})
+                reference = _reference_coverage_check(
+                    self.requirements, self.blocks, requirement_id)
+                self.assertEqual(memoized, reference)
+
+    def test_coverage_check_identity_holds_across_repeat_calls(self) -> None:
+        # 同一执行器反复调用（记忆化命中路径）也不得漂移
+        for _ in range(3):
+            for requirement_id in ("SYN-1", "SYN-3", "SYN-4", "SYN-5"):
+                memoized = self.executor("coverage_check", {"requirement_id": requirement_id})
+                reference = _reference_coverage_check(
+                    self.requirements, self.blocks, requirement_id)
+                self.assertEqual(memoized, reference)
+
+    def test_source_read_identical_to_linear_scan(self) -> None:
+        block_ids = ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "", "BZZ"]
+        for _ in range(2):
+            for block_id in block_ids:
+                with self.subTest(block_id=block_id):
+                    self.assertEqual(
+                        self.executor("source_read", {"block_id": block_id}),
+                        _reference_source_read(self.blocks, block_id),
+                    )
+
+    def test_consistency_analysis_runs_once_per_executor(self) -> None:
+        """全文档一致性分组（共引/重复）在执行器生命周期内只计算一次——
+        每次工具调用重算是 v4 的性能缺陷,不是契约。"""
+        import merged_consistency
+        calls = {"coref": 0, "dups": 0}
+        original_coref = merged_consistency.find_obis_coreference
+        original_dups = merged_consistency.find_cross_section_duplicates
+
+        def counting_coref(rows):
+            calls["coref"] += 1
+            return original_coref(rows)
+
+        def counting_dups(rows):
+            calls["dups"] += 1
+            return original_dups(rows)
+
+        with mock.patch.object(merged_consistency, "find_obis_coreference", counting_coref), \
+                mock.patch.object(merged_consistency, "find_cross_section_duplicates", counting_dups):
+            for requirement_id in ("SYN-1", "SYN-2", "SYN-3", "SYN-4", "SYN-1", "SYN-6"):
+                self.assertNotIn("error", self.executor(
+                    "coverage_check", {"requirement_id": requirement_id}))
+        self.assertEqual(calls["coref"], 1)
+        self.assertEqual(calls["dups"], 1)
+
+    def test_quote_corpus_built_once_per_executor(self) -> None:
+        """块语料（排序 + 逐块归一化）只在首次使用时构建——每次引句匹配重新
+        排序/归一化全部块是 v4 的性能缺陷,不是契约。"""
+        import merged_consistency
+        ordered_calls = {"count": 0}
+        compact_calls = {"count": 0}
+        original_ordered = merged_consistency._ordered_source_blocks
+        original_compact = merged_consistency.compact_source_text
+
+        def counting_ordered(blocks):
+            ordered_calls["count"] += 1
+            return original_ordered(blocks)
+
+        def counting_compact(text):
+            compact_calls["count"] += 1
+            return original_compact(text)
+
+        with mock.patch.object(merged_consistency, "_ordered_source_blocks", counting_ordered), \
+                mock.patch.object(merged_consistency, "compact_source_text", counting_compact):
+            for requirement_id in ("SYN-1", "SYN-2", "SYN-3", "SYN-4", "SYN-6"):
+                self.assertNotIn("error", self.executor(
+                    "coverage_check", {"requirement_id": requirement_id}))
+            self.assertEqual(ordered_calls["count"], 1)   # 块语料只构建一次
+            before = compact_calls["count"]
+            # 同一需求重复调用：语料与引句命中全记忆化,零新增归一化
+            self.executor("coverage_check", {"requirement_id": "SYN-1"})
+            self.executor("coverage_check", {"requirement_id": "SYN-3"})
+            self.assertEqual(compact_calls["count"], before)
 
 
 if __name__ == "__main__":

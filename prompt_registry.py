@@ -22,7 +22,7 @@ PROMPT_REGISTRY_VERSION = "prompt-registry-v1"
 # when the owning module bumps its constant, and never leave stale entries.
 PROMPT_REGISTRY: list[dict[str, str]] = [
     # Core extraction / verification prompts and guards
-    {"id": "ai-extract", "version": "ai-extract-v24", "owner_module": "ai_extract",
+    {"id": "ai-extract", "version": "ai-extract-v25", "owner_module": "ai_extract",
      "purpose": "Main AI extraction prompt for clause-level requirements"},
     {"id": "ai-verify", "version": "ai-verify-v4", "owner_module": "ai_extract",
      "purpose": "Second-pass semantic verification prompt"},
@@ -36,7 +36,7 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
     # Requirements analysis enrichment
     {"id": "analyze-llm", "version": "analyze-llm-v8", "owner_module": "requirements_analysis",
      "purpose": "Requirements analysis LLM enrichment prompt"},
-    {"id": "analyze-unfounded", "version": "analyze-unfounded-v3", "owner_module": "requirements_analysis",
+    {"id": "analyze-unfounded", "version": "analyze-unfounded-v4", "owner_module": "requirements_analysis",
      "purpose": "Unfounded-field downgrade rule version pinned into analyze cache"},
     {"id": "analyze-rules", "version": "analyze-rules-v1", "owner_module": "requirements_analysis_rules",
      "purpose": "Ownership/compliance deterministic rule version"},
@@ -46,13 +46,13 @@ PROMPT_REGISTRY: list[dict[str, str]] = [
      "purpose": "M2-style detailed LLM review prompt"},
     {"id": "m2-review-batch", "version": "m2-review-v4-batch", "owner_module": "llm_pipeline",
      "purpose": "Opt-in single-shot batch review prompt"},
-    {"id": "llm-review-cache", "version": "llm-review-cache-v6", "owner_module": "llm_pipeline",
+    {"id": "llm-review-cache", "version": "llm-review-cache-v7", "owner_module": "llm_pipeline",
      "purpose": "Review cache fingerprint (pins prompt/tools/schema versions)"},
-    {"id": "review-tools", "version": "review-tools-v4", "owner_module": "review_tools",
+    {"id": "review-tools", "version": "review-tools-v5", "owner_module": "review_tools",
      "purpose": "Tool-using reviewer tools schema version"},
 
     # Assembly / spec enrichment
-    {"id": "enrich", "version": "enrich-v3", "owner_module": "spec_enrich",
+    {"id": "enrich", "version": "enrich-v4", "owner_module": "spec_enrich",
      "purpose": "Assembly description enrichment prompt"},
     {"id": "enrich-guards", "version": "enrich-guards-v1", "owner_module": "spec_enrich",
      "purpose": "Enrichment anti-drift guard version"},

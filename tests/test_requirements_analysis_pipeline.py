@@ -710,7 +710,7 @@ class LlmEnrichmentTests(unittest.TestCase):
             assert any("软提示" in msg for row in payload["issues"] for msg in row["issues"])
 
     def test_enrichment_cache_is_idempotent_across_runs(self) -> None:
-        """内容不变时二次运行不再调 LLM（命中 analyze_enrich_cache.json）。"""
+        """内容不变时二次运行不再调 LLM（命中 analyze_enrich_cache.jsonl,v2 增量 JSONL）。"""
         with tempfile.TemporaryDirectory() as td:
             tmp_path = Path(td)
             self._seed(tmp_path)
@@ -725,7 +725,7 @@ class LlmEnrichmentTests(unittest.TestCase):
             run_requirements_analysis(tmp_path, route="openai_compatible", chat=fake_chat)
 
             assert count["n"] == 1                              # 第二次命中缓存，零新增调用
-            assert (tmp_path / "analyze_enrich_cache.json").exists()
+            assert (tmp_path / "analyze_enrich_cache.jsonl").exists()
 
     def test_hardware_items_use_llm_only_for_translation_and_reason(self) -> None:
         """硬件项可以轻量调用 LLM 做翻译/依据，但不得生成软件研发或测试指引。"""

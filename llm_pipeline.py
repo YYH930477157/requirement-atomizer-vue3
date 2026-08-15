@@ -40,7 +40,12 @@ from review_state import (
     review_state_lock,
     target_publication_revision,
 )
-from review_tools import REVIEW_TOOLS_VERSION, TOOLS as REVIEW_TOOLS, evidence_fingerprint, make_tool_executor
+from review_tools import (
+    REVIEW_TOOLS_VERSION,
+    TOOLS as REVIEW_TOOLS,
+    evidence_fingerprint_parts,
+    make_tool_executor,
+)
 
 
 LOGGER = logging.getLogger("requirement_atomizer")
@@ -53,16 +58,27 @@ DEFAULT_DOMAIN_PACK_PATH = _PACKAGE_ROOT / "domain_packs" / "dlms_cosem" / "pack
 PROMPT_VERSION = "m2-review-v3"
 # Cache rows contain policy-normalized output. Bump this whenever deterministic
 # review post-processing changes so an older normalized decision cannot leak through.
-# v5：schema 修复改为续接原 transcript 的 chat_with_tools（含 role=tool 取证上下文、
-# 仍带 tools，修复轮工具调用并入 tool_calls 摘要）——修复路径行为变化影响缓存行
-# v4：缓存 key 纳入工具证据内容指纹（review_tools.evidence_fingerprint——KB/blocks/
-# 原子需求/蓝皮书索引），改证据后旧审查不再静默复用；schema 修复纳入共享预算计量
-# v3：缓存 key 纳入 REVIEW_TOOLS_VERSION 与执行器模式（tool_loop/single_shot）
-LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v6"
+# v7（2026-08-14）：证据指纹按需求行切分——缓存 key 改为稳定证据指纹（KB/blocks/蓝皮书,
+#   evidence_fingerprint_parts.stable_fingerprint）+ 需求自身整行 sha256（覆盖 prompt
+#   未携带的行字段）;coverage_check 审查行在 evidence_deps 记录 atomic_requirements
+#   整文件 hash,命中时校验失配即失效（编辑一条需求不再全文档失效）;审查 prompt 改
+#   紧凑 JSON 序列化（build_user_prompt/build_batch_review_prompt,separators=(",", ":")）
+#   → prompt 变化 + key 构成变化,旧缓存行一次性失效（已声明可接受）
+# v6：schema 修复改为续接原 transcript 的 chat_with_tools（含 role=tool 取证上下文、
+#   仍带 tools，修复轮工具调用并入 tool_calls 摘要）——修复路径行为变化影响缓存行
+# v5：缓存 key 纳入工具证据内容指纹（review_tools.evidence_fingerprint——KB/blocks/
+#   原子需求/蓝皮书索引），改证据后旧审查不再静默复用；schema 修复纳入共享预算计量
+# v4：缓存 key 纳入 REVIEW_TOOLS_VERSION 与执行器模式（tool_loop/single_shot）
+LLM_REVIEW_CACHE_VERSION = "llm-review-cache-v7"
 # Agent Phase 2 冻结口径：每需求 tool-loop tokens 上限（yaml route.tool_loop_token_budget 可调）；
 # 超限的需求进 stub 并在 llm_failed 记数（全跑不设总顶——审查本质是批处理）
 TOOL_LOOP_DEFAULT_TOKEN_BUDGET = 20000
 REVIEW_TOOL_LOOP_MAX_ROUNDS = 5
+# 审查轨可用性快探样本数（FIX 5, 2026-08-14：5→2——探测价值几乎不变,串行等待减半以上;
+# 失败路径不变：样本全部连接失败仍按 LLMConnectionError 快败）。spec_enrich 已自带
+# SPEC_ENRICH_FAST_FAIL_SAMPLE_SIZE（不再 import 本模块常量）;FAST_FAIL_SAMPLE_SIZE
+# 保留旧值仅为外部 import 兼容,仓内已无消费方。
+REVIEW_FAST_FAIL_SAMPLE_SIZE = 2
 FAST_FAIL_SAMPLE_SIZE = 5
 PROGRESS_INTERVAL = 20
 SOURCE_TYPE_CONFIDENCE_THRESHOLD = 0.85
@@ -348,6 +364,10 @@ def review_requirements_with_openai(
     # 有界 tool-loop 调用，模型可调用 review_tools 的确定性只读工具取证）；未声明保持单发。
     tool_loop: dict[str, Any] | None = None
     evidence = ""
+    # FIX 4（2026-08-14）：coverage_check 审查行依赖全文档需求状态 → 命中时按行内
+    # evidence_deps 记录的 atomic 整文件 hash 校验（失配即失效）;非 coverage_check 行
+    # 只依赖自身行 + 稳定证据（key 已覆盖）,不需要 atomic 校验
+    atomic_requirements_sha256 = ""
     used_kb_paths: tuple[str, ...] = ()
     if tool_loop_enabled(pipeline):
         token_budget = int(route_payload.get("tool_loop_token_budget") or TOOL_LOOP_DEFAULT_TOKEN_BUDGET)
@@ -368,9 +388,12 @@ def review_requirements_with_openai(
             "token_budget": token_budget,
             "max_rounds": max_rounds,
         }
-        # 证据指纹必须先于缓存查询——工具实际读取的证据（KB/blocks/原子需求/蓝皮书
-        # 索引）变了，旧审查缓存不得命中
-        evidence = evidence_fingerprint(out_dir, resolved_kb)
+        # 证据指纹必须先于缓存查询——工具实际读取的证据变了，旧审查缓存不得命中。
+        # 按审查缓存口径切分（v7）：稳定部分（KB/blocks/蓝皮书,审查编辑期间不动）进
+        # 逐条 key;atomic 整文件 hash 只作 coverage_check 行的命中校验（宁失效不陈旧）
+        evidence_parts = evidence_fingerprint_parts(out_dir, resolved_kb)
+        evidence = evidence_parts["stable_fingerprint"]
+        atomic_requirements_sha256 = evidence_parts["atomic_requirements_sha256"]
 
     # 批量复核（m2-review-v4-batch）：仅 single-shot 旧路径 opt-in；tool_loop 路径恒不批处理。
     # 批模式下逐条缓存查推迟到批阶段（批缓存键需批成员集合），Phase 1 只做分类与限额。
@@ -396,7 +419,8 @@ def review_requirements_with_openai(
             pending.append(index)   # 批缓存键需批成员集合，查缓存推迟到批阶段
             continue
         cache_key = llm_cache_key(requirement, client_config.model, pipeline, scope_config, evidence=evidence)
-        cached_review = cache.get(cache_key)
+        cached_review = cached_review_or_none(
+            cache, cache_key, atomic_requirements_sha256=atomic_requirements_sha256)
         if cached_review is not None:
             reviews[index] = apply_deterministic_review_policy(requirement, pipeline, cached_review)
             llm_reviewed += 1
@@ -486,7 +510,7 @@ def review_requirements_with_openai(
                 executor.shutdown(wait=False, cancel_futures=True)
         pending = []   # 批阶段已处理；既有 fast-fail/并发对空 pending 为 no-op
 
-    sample = pending[:FAST_FAIL_SAMPLE_SIZE]
+    sample = pending[:REVIEW_FAST_FAIL_SAMPLE_SIZE]
     sample_connection_failures = 0
     sample_connection_errors: list[str] = []
     for index in sample:
@@ -509,6 +533,7 @@ def review_requirements_with_openai(
             record_progress()
             new_cache_rows.append(llm_cache_row(
                 requirement, client_config.model, pipeline, scope_config, review, evidence=evidence,
+                atomic_requirements_sha256=atomic_requirements_sha256,
             ))
         reviews[index] = review
 
@@ -517,7 +542,7 @@ def review_requirements_with_openai(
         raise LLMConnectionError(f"LLM service unavailable: all initial review attempts failed: {detail}")
 
     consecutive_connection_failures = 0
-    remaining = pending[FAST_FAIL_SAMPLE_SIZE:]
+    remaining = pending[REVIEW_FAST_FAIL_SAMPLE_SIZE:]
     if remaining:
         executor = ThreadPoolExecutor(max_workers=concurrency)
         try:
@@ -556,6 +581,7 @@ def review_requirements_with_openai(
                     record_progress()
                     new_cache_rows.append(llm_cache_row(
                         requirement, client_config.model, pipeline, scope_config, review, evidence=evidence,
+                        atomic_requirements_sha256=atomic_requirements_sha256,
                     ))
                 reviews[index] = review
         finally:
@@ -1006,7 +1032,8 @@ def build_openai_review_tool_loop(
                 f"{spent} > {token_budget} tokens")
         # schema 修复续接原 transcript（含 assistant tool_calls 与 role=tool 回灌，
         # 与环内 JSON 修复同型）——不再丢弃取证上下文另起四消息列表；修复轮仍带 tools
-        # 可调工具，轮次预算为首轮剩余
+        # 可调工具，轮次预算为首轮剩余；主环禁用工具集一并续接（initial_banned_tools），
+        # 修复轮不得为重新发现同一工具错误再付付费轮
         repair_messages = list(meta.get("history") or [])
         repair_messages.append({"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)})
         repair_messages.append({"role": "user", "content": repair_prompt})
@@ -1020,6 +1047,7 @@ def build_openai_review_tool_loop(
             max_rounds=remaining_rounds,
             on_tool_call=limited_tool_executor,
             token_budget=token_budget,
+            initial_banned_tools=meta.get("banned_tools") or [],
             _usage_sink=usage_sink,
         )
         spent = _aggregate_usage(usage_sink)["usage"]["total_tokens"]
@@ -1091,7 +1119,9 @@ def build_user_prompt(requirement: dict[str, Any]) -> str:
         "section_path": requirement.get("section_path", []),
         "kb_matches": kb_matches,
     }
-    return json.dumps(prompt_payload, ensure_ascii=False, indent=2)
+    # 紧凑序列化（FIX 3, 2026-08-14）：indent=2 的换行/缩进在每次调用、每轮工具回灌与
+    # 缓存指纹载荷里重复付费——与 requirements_analysis_agent.build_analysis_prompt 同口径
+    return json.dumps(prompt_payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def complete_llm_review_payload(
@@ -1150,6 +1180,27 @@ def apply_deterministic_review_policy(
     return normalized
 
 
+def _requirement_row_sha256(requirement: dict[str, Any]) -> str:
+    """需求自身整行内容 hash——审查输出对该行 prompt 未携带的字段（如 review_questions,
+    complete_llm_review_payload 会注入 expert_questions）也有依赖,整行 hash 进 key
+    保证任一字段变化即换 key（FIX 4）。"""
+    canonical = json.dumps(
+        requirement, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _review_used_coverage_check(review: dict[str, Any]) -> bool:
+    """审查结果行是否记录过 coverage_check 调用（tool_calls 摘要,name 维度）。"""
+    tool_calls = review.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return False
+    return any(
+        isinstance(call, dict) and str(call.get("name") or "") == "coverage_check"
+        for call in tool_calls
+    )
+
+
 def llm_cache_key(
     requirement: dict[str, Any],
     model: str,
@@ -1165,9 +1216,13 @@ def llm_cache_key(
         # 否则旧执行器/旧工具面的缓存审查会静默冒充新产物（AGENTS.md 缓存纪律）
         "review_tools_version": REVIEW_TOOLS_VERSION,
         "review_executor": "tool_loop" if tool_loop_enabled(pipeline) else "single_shot",
-        # 工具实际读取的证据内容指纹（审计 P1-d）：改 KB/blocks/原子需求/蓝皮书索引
-        # 后旧审查不得命中；single_shot 不读证据，恒为空串
+        # 工具实际读取的稳定证据指纹（审计 P1-d + FIX 4 切分）：KB/blocks/蓝皮书索引——
+        # 这些证据只在管线轮次间变化;atomic_requirements 的依赖按行切分（自身行 hash
+        # 进 key,coverage_check 的全文档聚合依赖走行内 evidence_deps 命中校验）,
+        # 编辑一条需求不再全文档失效;single_shot 不读证据，恒为空串
         "evidence_fingerprint": evidence,
+        # 需求自身整行内容（覆盖 prompt 未携带的行字段——review_questions 等）
+        "requirement_row_sha256": _requirement_row_sha256(requirement),
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -1187,8 +1242,14 @@ def llm_cache_key(
 
 
 def read_llm_review_cache(path: Path) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    """读审查缓存 → {key: 缓存行（完整行 dict,含 review 与 evidence_deps）}。
+
+    行形状自 v7 起携带 evidence_deps；消费经 cached_review_or_none 做依赖校验后取
+    review（不要直接用行当 review）。"""
     cache: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for row in read_jsonl_recover_torn_tail(path):
+        if not isinstance(row, dict):
+            continue
         review = row.get("review")
         if not isinstance(review, dict):
             continue
@@ -1199,8 +1260,38 @@ def read_llm_review_cache(path: Path) -> dict[tuple[str, str, str, str], dict[st
             str(row.get("input_fingerprint") or ""),
         )
         if all(key):
-            cache[key] = review
+            cache[key] = row
     return cache
+
+
+def cached_review_or_none(
+    cache: dict[tuple[str, str, str, str], dict[str, Any]],
+    cache_key: tuple[str, str, str, str],
+    *,
+    atomic_requirements_sha256: str,
+) -> dict[str, Any] | None:
+    """按 key 取缓存审查并校验证据依赖（FIX 4,宁失效不陈旧）。
+
+    - 非 coverage_check 行：key 已覆盖自身行 + 稳定证据（KB/blocks/蓝皮书）——直接可
+      用（编辑其它需求行不影响其证据,这是切分的目标收益）。
+    - coverage_check 行：输出含全文档聚合（共引/重复分组）→ 额外依赖当时的
+      atomic_requirements 整文件内容,行内 evidence_deps 记录的 hash 与当前失配即
+      失效;行缺 deps 记录（畸形/手写行）按失配处理（fail-closed）。
+    - atomic_requirements_sha256 为空串（single_shot/批路径不读需求文件）时不做该校验。
+    """
+    row = cache.get(cache_key)
+    if row is None:
+        return None
+    review = row.get("review")
+    if not isinstance(review, dict):
+        return None
+    deps = row.get("evidence_deps")
+    deps = deps if isinstance(deps, dict) else {}
+    used_coverage = _review_used_coverage_check(review) or bool(deps.get("coverage_check_used"))
+    if used_coverage and atomic_requirements_sha256:
+        if str(deps.get("atomic_requirements_sha256") or "") != atomic_requirements_sha256:
+            return None
+    return review
 
 
 def llm_cache_row(
@@ -1213,6 +1304,7 @@ def llm_cache_row(
     evidence: str = "",
     cache_key: tuple[str, ...] | None = None,
     prompt_version: str = PROMPT_VERSION,
+    atomic_requirements_sha256: str = "",
 ) -> dict[str, Any]:
     requirement_id = requirement_identity(requirement)
     key = cache_key or llm_cache_key(requirement, model, pipeline, scope_config, evidence=evidence)
@@ -1224,6 +1316,12 @@ def llm_cache_row(
         "cache_version": LLM_REVIEW_CACHE_VERSION,
         "input_fingerprint": key[-1],
         "review": review,
+        # 证据依赖声明（FIX 4）：coverage_check 行命中时按 atomic 整文件 hash 校验;
+        # 非 coverage_check 行不依赖其它需求行（key 内自身行 hash + 稳定证据已覆盖）
+        "evidence_deps": {
+            "coverage_check_used": _review_used_coverage_check(review),
+            "atomic_requirements_sha256": atomic_requirements_sha256 or None,
+        },
     }
 
 
@@ -1278,10 +1376,11 @@ def _revised_requirement_drift_tokens(requirement: dict[str, Any], revised_text:
 def build_batch_review_prompt(requirements: list[dict[str, Any]]) -> str:
     """批量审查请求载荷：{prompt_version, requirements:[...]}，每条携带 build_user_prompt 同源字段。"""
     items = [json.loads(build_user_prompt(requirement)) for requirement in requirements]
+    # 紧凑序列化（FIX 3）：同 build_user_prompt——批载荷更大,省得更显著
     return json.dumps(
         {"prompt_version": REVIEW_BATCH_PROMPT_VERSION, "requirements": items},
         ensure_ascii=False,
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1307,6 +1406,9 @@ def llm_cache_key_batch(
         "review_tools_version": REVIEW_TOOLS_VERSION,
         "review_executor": "batch_single_shot",
         "evidence_fingerprint": evidence,
+        # 需求自身整行 hash（同逐条 v7 口径）：行内 prompt 未携带的字段（review_questions
+        # 会注入 expert_questions）变化即换 key,不陈旧
+        "requirement_row_sha256": _requirement_row_sha256(requirement),
         "model": model,
         "batch_config": batch_config,
         "batch_member_ids": sorted(batch_member_ids),
@@ -1542,7 +1644,8 @@ def _process_review_batch(
                 requirement, config.model, pipeline, scope_config,
                 batch_member_ids=candidate_member_ids, batch_config=batch_config, evidence=evidence,
             )
-            cached = cache.get(bkey)
+            # 批路径不读需求文件（evidence 恒空串）——atomic 校验自然跳过,行仍取 review
+            cached = cached_review_or_none(cache, bkey, atomic_requirements_sha256="")
             if cached is not None:
                 cached_rows[idx] = cached
                 break

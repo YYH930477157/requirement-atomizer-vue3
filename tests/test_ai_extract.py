@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -2543,7 +2544,7 @@ class PromptV5Tests(unittest.TestCase):
         self.assertIn("产品义务主体", ai_extract.SYSTEM_PROMPT)
         self.assertIn("产品应支持/允许 Y 配置 X", ai_extract.SYSTEM_PROMPT)
         self.assertIn("每个 description 句子和 sub_items 叶子", ai_extract.SYSTEM_PROMPT)
-        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v24")
+        self.assertEqual(ai_extract.AI_EXTRACT_PROMPT_VERSION, "ai-extract-v25")
         self.assertEqual(ai_extract.AI_VERIFY_PROMPT_VERSION, "ai-verify-v4")
 
     def test_normative_framing_guard_wraps_weak_capability_leaves(self) -> None:
@@ -2988,6 +2989,174 @@ class FunctionalKeyNormalizationTests(unittest.TestCase):
         )
 
         self.assertEqual(row["functional_key"], "计量事件管理")
+
+
+class NormativeFramingEquivalenceTests(unittest.TestCase):
+    """FIX 3(a)：成文护栏入列即施加（逐节一次）与收集后一次全量施加字节等价。"""
+
+    @staticmethod
+    def _raw_sections() -> list[list[dict]]:
+        return [
+            [   # 弱能力叶 + 强制来源 → 包装
+                {"title": "报警响应", "description": "报警响应可由用户配置。",
+                 "sub_items": [], "source_quote":
+                     "The product shall support the stated configurable capability.",
+                 "notes": ""},
+            ],
+            [   # 弱来源情态 → 阻断升格（文本不动，补 suspicion/note），含子项
+                {"title": "可选输出", "description": "用户可以配置输出。",
+                 "sub_items": [{"label": "a", "text": "界面主题可由本地配置档选择。"}],
+                 "source_quote": "The user may configure the output.", "notes": ""},
+            ],
+            [   # 已规范句 → 原样；再混一条弱能力叶
+                {"title": "接线图", "description": "产品应提供接线图。",
+                 "sub_items": [], "source_quote":
+                     "The product shall provide a wiring diagram.", "notes": ""},
+                {"title": "通道配置", "description": "操作人员应能够配置通道。",
+                 "sub_items": [], "source_quote":
+                     "Operators shall be able to configure channels.", "notes": ""},
+            ],
+        ]
+
+    @staticmethod
+    def _dump(rows: list[dict]) -> str:
+        return json.dumps(rows, ensure_ascii=False, sort_keys=True)
+
+    def test_framing_at_insertion_is_byte_identical_to_framing_all_at_publish(self) -> None:
+        raw = self._raw_sections()
+        # 旧路径：全部行收齐后一次成文
+        at_publish = [copy.deepcopy(row) for rows in raw for row in rows]
+        ai_extract.enforce_normative_framing(at_publish)
+        # 新路径：每个章节入列时各自成文，再按序展平
+        at_insertion: list[dict] = []
+        for rows in raw:
+            section_rows = copy.deepcopy(rows)
+            ai_extract.enforce_normative_framing(section_rows)
+            at_insertion.extend(section_rows)
+
+        self.assertEqual(self._dump(at_publish), self._dump(at_insertion))
+        self.assertTrue(any(row["description"].startswith("产品应支持以下能力：")
+                            for row in at_insertion))       # 确认护栏真的动了笔
+
+    def test_framing_is_idempotent_under_final_re_run(self) -> None:
+        raw = self._raw_sections()
+        rows = [copy.deepcopy(row) for section_rows in raw for row in section_rows]
+        ai_extract.enforce_normative_framing(rows)          # 入列即成文
+        once = self._dump(rows)
+        ai_extract.enforce_normative_framing(rows)          # 运行入口的最终再过一遍
+        self.assertEqual(once, self._dump(rows))            # 不动点，字节不变
+
+
+class ExtractAllSnapshotThrottleTests(unittest.TestCase):
+    """FIX 3(b)：partial 快照按双阈值节流写盘；收尾快照完整且已正确成文。"""
+
+    @staticmethod
+    def _section(index: int) -> dict:
+        return {"section_id": f"S{index:02d}", "heading": f"S{index}",
+                "text": f"The product shall support capability {index}.",
+                "block_ids": [f"B{index}"]}
+
+    @staticmethod
+    def _row(index: int) -> dict:
+        return {"title": f"能力{index}", "description": f"能力{index}可由用户配置。",
+                "type": "functional", "priority": "P1", "labels": ["附加功能"],
+                "source_quote": f"The product shall support capability {index}."}
+
+    def _run(self, count: int) -> tuple[list[dict], list[dict]]:
+        sections = [self._section(index) for index in range(count)]
+        snapshots: list[dict] = []
+
+        def capture(_path, **payload):
+            import copy as _copy
+            snapshots.append(_copy.deepcopy(payload))
+            return payload
+
+        def fake_extract_section(section, *_args, **_kwargs):
+            return [self._row(int(section["section_id"][1:]))]
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(ai_extract, "write_partial_snapshot", side_effect=capture), \
+                patch.object(ai_extract, "extract_section", side_effect=fake_extract_section), \
+                patch.object(ai_extract, "resolve_verify_enabled", return_value=False):
+            rows = ai_extract.extract_all(
+                sections, lambda _s, _u: {}, model="m",
+                cache_path=Path(tmp) / "cache.jsonl",
+                partial_path=Path(tmp) / "partial.json",
+                run_id="run-1", concurrency=1)
+        return rows, snapshots
+
+    def test_publish_is_throttled_and_final_snapshot_is_complete_and_framed(self) -> None:
+        threshold = ai_extract.AI_PARTIAL_PUBLISH_MIN_COMPLETED
+        count = threshold + 2
+        rows, snapshots = self._run(count)
+
+        # 初始（缓存命中 0）+ 第 threshold 个完成 + 收尾，共 3 次；不再每章一写（旧为 count+1 次）
+        self.assertEqual([snapshot["completed"] for snapshot in snapshots],
+                         [0, threshold, count])
+        final = snapshots[-1]
+        self.assertFalse(final["complete"])   # complete=True 仍只由运行入口在正式产物落盘后写
+        self.assertTrue(all(row["description"].startswith("产品应支持以下能力：")
+                            for row in final["rows"]))
+        self.assertEqual(len(rows), count)
+        self.assertTrue(all(row["description"].startswith("产品应支持以下能力：")
+                            for row in rows))
+
+    def test_small_run_publishes_initial_and_final_only(self) -> None:
+        threshold = ai_extract.AI_PARTIAL_PUBLISH_MIN_COMPLETED
+        count = max(1, threshold - 1)
+        _rows, snapshots = self._run(count)
+
+        # 不足阈值也不靠时间窗触发：只有初始 + 收尾两次
+        self.assertEqual([snapshot["completed"] for snapshot in snapshots], [0, count])
+        self.assertTrue(all(row["description"].startswith("产品应支持以下能力：")
+                            for row in snapshots[-1]["rows"]))
+
+
+class BuildSectionPromptCompactTests(unittest.TestCase):
+    """FIX 4：章节 payload 紧凑序列化——措辞零变化，只去掉缩进/换行的 token 开销。"""
+
+    def test_plain_section_payload_is_single_line_compact_json(self) -> None:
+        section = {"section_id": "S", "heading": "4.1 General",
+                   "text": "The meter shall log events.",
+                   "table_input_mode": "plain_text"}
+        prompt = ai_extract.build_section_prompt(section)
+        expected_payload = {"heading": "4.1 General",
+                            "text": "The meter shall log events.",
+                            "table_input_mode": "plain_text"}
+
+        self.assertNotIn("\n", prompt)                       # 单行紧凑 JSON
+        self.assertEqual(json.loads(prompt), expected_payload)
+        self.assertEqual(
+            prompt,
+            json.dumps(expected_payload, ensure_ascii=False, separators=(",", ":")),
+        )
+        self.assertLess(
+            len(prompt),
+            len(json.dumps(expected_payload, ensure_ascii=False, indent=2)),
+        )
+
+    def test_structured_table_constraint_wording_unchanged(self) -> None:
+        section = {"section_id": "S", "heading": "T", "text": "leaf text",
+                   "table_input_mode": "structured_leaves"}
+        prompt = ai_extract.build_section_prompt(section)
+
+        self.assertIn("【结构化表格硬约束】", prompt)
+        self.assertIn("仅 [TABLE_LEAF] 是表格抽取目标；[TABLE_CONTEXT] 只提供标题/表头上下文。", prompt)
+        self.assertIn("Not Applicable 仅表示适用范围排除，不得生成反向禁止需求。", prompt)
+
+    def test_term_and_ref_blocks_follow_compact_payload(self) -> None:
+        section = {"section_id": "S", "heading": "H", "text": "See 4.2 for the limit.",
+                   "term_defs": [{"term": "X", "text": "X means a defined thing."}],
+                   "ref_texts": [{"clause": "4.2", "text": "The limit is 5 mbar."}]}
+        prompt = ai_extract.build_section_prompt(section)
+
+        first_line = prompt.split("\n", 1)[0]
+        self.assertEqual(json.loads(first_line)["heading"], "H")   # 首段仍是完整紧凑 JSON
+        self.assertIn("【本章节用到的术语定义（引用其内容视为有据）】", prompt)
+        self.assertIn("- X: X means a defined thing.", prompt)
+        self.assertIn("【被引用条款 4.2", prompt)
+        self.assertIn("The limit is 5 mbar.", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

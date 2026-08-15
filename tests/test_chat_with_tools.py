@@ -163,21 +163,201 @@ class ChatWithToolsTests(unittest.TestCase):
         self.assertIn("unknown tool", json.loads(tool_msg["content"])["error"])
         self.assertEqual(meta["tool_calls"], [{"round": 1, "name": "kb_delete"}])
 
-    def test_same_tool_failing_twice_in_one_round_raises(self) -> None:
-        """同一工具同一轮连续错 2 次 → 视为轮顶耗尽同等处理（抛 LLMResponseError）。"""
+    def test_same_tool_failing_twice_bans_tool_instead_of_aborting(self) -> None:
+        """同一工具连续错 2 次 → 不再中止整条 tool-loop（旧路径把已付费轮次整体丢弃）：
+        该工具从后续请求的 tools 面移除、该次调用回灌最终错误消息指示直接产出最终 JSON；
+        模型下轮收敛则完整保留此前取证上下文。"""
         responses = [
-            {"body": tool_call_response([("c1", "ghost", {}), ("c2", "ghost", {})])},
+            {"body": tool_call_response([("c1", "kb_search", {"query": "x"}),
+                                         ("c2", "kb_search", {"query": "y"})])},
+            {"body": final_json_response({"ok": True})},
+        ]
+        fail_count = {"n": 0}
+
+        def executor(name: str, args: dict[str, Any]) -> dict[str, Any]:
+            fail_count["n"] += 1
+            return {"error": f"unknown block_id: {args}"}
+
+        with MockOpenAIService(responses) as service:
+            final, meta = chat_with_tools(
+                config_for(service), MESSAGES, FAKE_TOOLS, on_tool_call=executor)
+
+        self.assertEqual(final, {"ok": True})               # 收敛：付费轮次未丢弃
+        self.assertEqual(fail_count["n"], 2)                # 恰执行两次（第二次后禁用）
+        self.assertEqual(len(service.requests), 2)
+        # 禁用后 tools 面为空 → 请求不再携带 tools 键（端点不会再看到已禁用工具）
+        self.assertNotIn("tools", service.requests[1])
+        # 首次错误回灌仍是原始错误（provenance 如实）；第二次是最终处置消息
+        first_tool_msg = service.requests[1]["messages"][3]
+        self.assertIn("unknown block_id", json.loads(first_tool_msg["content"])["error"])
+        second_tool_msg = service.requests[1]["messages"][4]
+        error_text = json.loads(second_tool_msg["content"])["error"]
+        self.assertIn("unavailable", error_text)
+        self.assertIn("final JSON", error_text)
+        # 审计摘要如实记录两次调用
+        self.assertEqual(meta["tool_calls"], [{"round": 1, "name": "kb_search"}] * 2)
+
+    def test_banned_tool_keeps_remaining_tools_and_is_not_executed_again(self) -> None:
+        """多工具面下禁用只移除肇事工具；此后模型再点名它 → 不执行,直接回灌不可用消息。"""
+        two_tools = [FAKE_TOOLS[0], {
+            "type": "function",
+            "function": {
+                "name": "source_read",
+                "parameters": {"type": "object", "properties": {"block_id": {"type": "string"}}},
+            },
+        }]
+        responses = [
+            # 第 1 轮：source_read 连续两次 error → 禁用；kb_search 成功不受影响
+            {"body": tool_call_response([("c1", "source_read", {"block_id": "BAD"}),
+                                         ("c2", "source_read", {"block_id": "WORSE"}),
+                                         ("c3", "kb_search", {"query": "Register"})])},
+            # 第 2 轮：模型仍点名已禁用的 source_read → 不执行；最终收敛
+            {"body": tool_call_response([("c4", "source_read", {"block_id": "BAD"})])},
+            {"body": final_json_response({"ok": True})},
+        ]
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        def executor(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            calls.append((name, arguments))
+            if name == "source_read":
+                return {"error": f"unknown block_id: {arguments.get('block_id')}"}
+            return {"results": []}
+
+        with MockOpenAIService(responses) as service:
+            final, _meta = chat_with_tools(
+                config_for(service), MESSAGES, two_tools, on_tool_call=executor)
+
+        self.assertEqual(final, {"ok": True})
+        self.assertEqual([name for name, _ in calls], ["source_read", "source_read", "kb_search"])
+        # 禁用后第 2 轮请求的 tools 面只剩 kb_search
+        self.assertEqual(
+            [tool["function"]["name"] for tool in service.requests[1]["tools"]], ["kb_search"])
+        # 已禁用工具的再次点名：不执行,回灌不可用消息
+        banned_msg = service.requests[2]["messages"][-1]
+        self.assertIn("unavailable", json.loads(banned_msg["content"])["error"])
+
+    def test_meta_exposes_final_banned_tools_for_carry(self) -> None:
+        """meta.banned_tools 外传终态禁用集——续接轮（schema 修复）据此携带主环禁用状态。"""
+        responses = [
+            {"body": tool_call_response([("c1", "kb_search", {"query": "x"}),
+                                         ("c2", "kb_search", {"query": "y"})])},
+            {"body": final_json_response({"ok": True})},
         ]
 
         def executor(name: str, args: dict[str, Any]) -> dict[str, Any]:
-            return {"error": f"unknown tool: {name}"}
+            return {"error": "boom"}
 
         with MockOpenAIService(responses) as service:
-            with self.assertRaisesRegex(LLMResponseError, "twice in a row"):
-                chat_with_tools(
-                    config_for(service), MESSAGES, FAKE_TOOLS, on_tool_call=executor)
+            _final, meta = chat_with_tools(
+                config_for(service), MESSAGES, FAKE_TOOLS, on_tool_call=executor)
 
-        self.assertEqual(len(service.requests), 1)   # 立即失败,不再发请求
+        self.assertEqual(meta["banned_tools"], ["kb_search"])
+
+    def test_initial_banned_tools_seed_carried_from_outer_loop(self) -> None:
+        """initial_banned_tools 预置禁用集（外环续接）：首轮请求 tools 面即不含该工具；
+        模型再点名不执行,直接回灌不可用处置消息——不浪费付费轮重新试错。"""
+        two_tools = [FAKE_TOOLS[0], {
+            "type": "function",
+            "function": {
+                "name": "source_read",
+                "parameters": {"type": "object", "properties": {"block_id": {"type": "string"}}},
+            },
+        }]
+        responses = [
+            {"body": tool_call_response([("c1", "source_read", {"block_id": "BAD"})])},
+            {"body": final_json_response({"ok": True})},
+        ]
+        calls: list[str] = []
+
+        def executor(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            calls.append(name)
+            return {"results": []}
+
+        with MockOpenAIService(responses) as service:
+            final, meta = chat_with_tools(
+                config_for(service), MESSAGES, two_tools,
+                on_tool_call=executor, initial_banned_tools={"source_read"})
+
+        self.assertEqual(final, {"ok": True})
+        self.assertEqual(calls, [])   # 续接禁用：再点名也不执行
+        # 首轮请求 tools 面已不含续接禁用的工具（端点从第一轮就看不到它）
+        self.assertEqual(
+            [tool["function"]["name"] for tool in service.requests[0]["tools"]], ["kb_search"])
+        banned_msg = service.requests[1]["messages"][-1]
+        self.assertEqual(banned_msg["role"], "tool")
+        error_text = json.loads(banned_msg["content"])["error"]
+        self.assertIn("unavailable", error_text)
+        self.assertIn("final JSON", error_text)
+        # 终态禁用集仍随 meta 外传（供后续续接轮继续携带）
+        self.assertEqual(meta["banned_tools"], ["source_read"])
+
+    def test_consecutive_errors_across_rounds_also_ban(self) -> None:
+        """跨轮连续同工具错误同样禁用（第 1 轮错、第 2 轮再错 → 禁用并继续）。"""
+        responses = [
+            {"body": tool_call_response([("c1", "kb_search", {"query": "x"})])},
+            {"body": tool_call_response([("c2", "kb_search", {"query": "y"})])},
+            {"body": final_json_response({"ok": True})},
+        ]
+
+        def executor(name: str, args: dict[str, Any]) -> dict[str, Any]:
+            return {"error": "boom"}
+
+        with MockOpenAIService(responses) as service:
+            final, _meta = chat_with_tools(
+                config_for(service), MESSAGES, FAKE_TOOLS, on_tool_call=executor)
+
+        self.assertEqual(final, {"ok": True})
+        self.assertNotIn("tools", service.requests[2])   # 第 3 轮请求已无 tools 面
+
+    def test_error_then_success_resets_streak(self) -> None:
+        """错→成→错 不构成连续两次：不禁用,循环照常收敛。"""
+        responses = [
+            {"body": tool_call_response([("c1", "kb_search", {"query": "x"})])},
+            {"body": tool_call_response([("c2", "kb_search", {"query": "y"})])},
+            {"body": tool_call_response([("c3", "kb_search", {"query": "z"})])},
+            {"body": final_json_response({"ok": True})},
+        ]
+        outcomes = ["error", "ok", "error"]
+        calls = {"n": 0}
+
+        def executor(name: str, args: dict[str, Any]) -> dict[str, Any]:
+            outcome = outcomes[calls["n"]]
+            calls["n"] += 1
+            return {"error": "transient"} if outcome == "error" else {"results": []}
+
+        with MockOpenAIService(responses) as service:
+            final, _meta = chat_with_tools(
+                config_for(service), MESSAGES, FAKE_TOOLS, on_tool_call=executor)
+
+        self.assertEqual(final, {"ok": True})
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(service.requests[3]["tools"], FAKE_TOOLS)   # 未禁用
+
+    def test_never_converging_after_ban_still_raises_at_round_cap(self) -> None:
+        """禁用后模型仍不产出最终 JSON → 轮顶耗尽照旧抛 LLMResponseError
+        （调用方进 stub 记数,绝不把失败伪装成已审）。"""
+        responses = [{"body": tool_call_response([(f"c{i}", "kb_search", {"query": "x"})])}
+                     for i in range(3)]
+        with MockOpenAIService(responses) as service:
+            with self.assertRaisesRegex(LLMResponseError, "max_rounds"):
+                chat_with_tools(
+                    config_for(service), MESSAGES, FAKE_TOOLS, max_rounds=3,
+                    on_tool_call=RecordingExecutor(fail_with=RuntimeError("down")))
+        self.assertEqual(len(service.requests), 3)
+
+    def test_hard_provider_error_mid_loop_still_raises_loudly(self) -> None:
+        """传输/服务层硬错误（连接失败）不做工具禁用兜底——原样上抛（provenance 红线：
+        失败不得被吞成"模型已收敛"）。"""
+        responses = [
+            {"body": tool_call_response([("c1", "kb_search", {"query": "x"})])},
+            {"status": 500, "body": {"error": "provider down"}},
+        ]
+        from llm_client import LLMConnectionError
+        with MockOpenAIService(responses) as service:
+            with self.assertRaises(LLMConnectionError):
+                chat_with_tools(
+                    config_for(service), MESSAGES, FAKE_TOOLS,
+                    on_tool_call=RecordingExecutor())
 
     def test_tool_execution_exception_becomes_error_result(self) -> None:
         """工具执行异常 → {"error": ...} 回灌（不炸穿循环）；下轮模型收敛。"""

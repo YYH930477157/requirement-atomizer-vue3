@@ -27,12 +27,12 @@ class PromptRegistryTests(unittest.TestCase):
     def test_registry_covers_known_prompts(self):
         # Sanity check that core prompt versions from the codebase are registered.
         for version in (
-            "ai-extract-v24",
+            "ai-extract-v25",
             "ai-verify-v4",
             "analyze-llm-v8",
             "m2-review-v3",
-            "llm-review-cache-v6",
-            "enrich-v3",
+            "llm-review-cache-v7",
+            "enrich-v4",
             "translation-prompt-v3",
             "doc-map-prompt-v1",
             "reconcile-prompt-v1",
@@ -43,7 +43,7 @@ class PromptRegistryTests(unittest.TestCase):
     def test_registry_by_id(self):
         entry = registry_by_id("ai-extract")
         self.assertIsNotNone(entry)
-        self.assertEqual(entry["version"], "ai-extract-v24")
+        self.assertEqual(entry["version"], "ai-extract-v25")
         self.assertIsNone(registry_by_id("does-not-exist"))
 
     def test_scan_prompt_version_constants(self):

@@ -391,5 +391,105 @@ class SpecEnrichTests(unittest.TestCase):
         lookup.assert_not_called()
 
 
+class BatchSlotRetryTests(unittest.TestCase):
+    """FIX 2（2026-08-14）：合批缺槽不再在批任务内串行单条回退——_enrich_batch_unit 把
+    缺槽交还编排器,由其以独立单条任务重发到同一线程池（护栏/_finalize_description 不变）。"""
+
+    def _plain_reqs(self, count: int) -> list[dict]:
+        return [dict(obj_req(), id=f"REQ-{i}", title=f"条目{i}",
+                     description=f"第 {i} 条描述：记录事件并按属性表实现。",
+                     source_quote=f"record events {i}") for i in range(count)]
+
+    def test_batch_unit_returns_missing_slots_without_in_task_fallback(self) -> None:
+        unit = [(req, f"fp-{i}", None) for i, req in enumerate(self._plain_reqs(3))]
+        calls: list[str] = []
+
+        def fake_chat(config, system, user):
+            calls.append(system)
+            return {"items": [{"enrich_slot": 0, "description": "改写后的第一条描述。"}]}
+
+        with patch("spec_enrich.chat_json", side_effect=fake_chat):
+            outcomes, missing = spec_enrich._enrich_batch_unit(unit, make_config(1))
+
+        self.assertEqual(len(calls), 1)                     # 批任务内不再补单条调用
+        self.assertEqual(missing, [1, 2])                   # 缺槽交还编排器
+        self.assertIsNotNone(outcomes[0])
+        self.assertEqual(outcomes[1:], [None, None])        # 占位——等编排器重试回填
+        self.assertIn("富化", outcomes[0][1])                # 槽 0 照常过护栏
+
+    def test_missing_slots_retried_as_independent_singles_end_to_end(self) -> None:
+        reqs = self._plain_reqs(4)
+        batch_calls: list[str] = []
+        single_calls: list[str] = []
+
+        def fake_chat(config, system, user):
+            if system == spec_enrich.SYSTEM_PROMPT_BATCH:
+                batch_calls.append(user)
+                return {"items": [{"enrich_slot": 0, "description": "改写后的第一条描述。"}]}
+            single_calls.append(user)
+            slot_title = json.loads(user)["title"]          # 单条 prompt 是紧凑 payload JSON
+            return {"description": f"{slot_title} 的单条补齐描述。"}
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.chat_json", side_effect=fake_chat):
+            cache = Path(tmp) / "c.jsonl"
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                reqs, config=make_config(1), cache_path=cache)
+            rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual((enriched, rejected, failed), (4, 0, 0))
+        self.assertEqual(len(batch_calls), 1)
+        self.assertEqual(len(single_calls), 3)              # 只有缺的 3 条走单条重试
+        self.assertIn("单条补齐描述", reqs[3]["description"])
+        self.assertEqual(len(rows), 4)                      # 全部成功进缓存
+
+
+class FastFailProbeTests(unittest.TestCase):
+    """FIX 4：快速失败探测从 5 降到 2——全连不上时只烧 2 个样本即整体降级（失败路径不变）。"""
+
+    def test_all_unreachable_aborts_after_two_probes(self) -> None:
+        from llm_client import LLMConnectionError
+        reqs = [dict(obj_req(), id=f"REQ-{i}") for i in range(6)]
+        calls: list[str] = []
+
+        def fake_chat(config, system, user):
+            calls.append(user)
+            raise LLMConnectionError("connection refused")
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.chat_json", side_effect=fake_chat):
+            with self.assertLogs("requirement_atomizer", level="WARNING") as logs:
+                enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                    reqs, config=make_config(1), cache_path=Path(tmp) / "c.jsonl")
+
+        self.assertEqual((enriched, rejected), (0, 0))
+        self.assertEqual(failed, 6)                         # 2 探测失败 + 其余 4 计失败
+        self.assertEqual(len(calls), 2)                     # 只烧 2 个样本
+        self.assertTrue(any("服务不可达" in line for line in logs.output))
+
+    def test_first_probe_reachable_still_enriches_rest(self) -> None:
+        """失败路径不变：探测有任一成功即进入并发阶段,其余条目正常富化。"""
+        reqs = [dict(obj_req(), id=f"REQ-{i}") for i in range(4)]
+
+        def fake_chat(config, system, user):
+            return {"description": "改写后的描述。"}
+
+        with tempfile.TemporaryDirectory() as tmp, patch("spec_enrich.chat_json", side_effect=fake_chat):
+            enriched, rejected, failed = spec_enrich.enrich_descriptions(
+                reqs, config=make_config(1), cache_path=Path(tmp) / "c.jsonl")
+
+        self.assertEqual((enriched, rejected, failed), (4, 0, 0))
+
+
+class BatchPromptCompactTests(unittest.TestCase):
+    """FIX 5：合批 user prompt 紧凑 JSON（无缩进换行）——token 成本下降,版本 v4 轮换缓存键。"""
+
+    def test_batch_user_prompt_is_compact(self) -> None:
+        prompt = spec_enrich._build_batch_user_prompt([obj_req()])
+        self.assertNotIn("\n", prompt)                      # 无排版换行/缩进
+        self.assertIn('"enrich_slot":0', prompt)            # 紧凑分隔符（键后无空格）
+
+    def test_enrich_prompt_version_bumped_with_prompt_shape(self) -> None:
+        self.assertEqual(spec_enrich.ENRICH_PROMPT_VERSION, "enrich-v4")
+
+
 if __name__ == "__main__":
     unittest.main()
