@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -20,6 +21,10 @@ from llm_pipeline import write_jsonl
 def _update_manifest_process(out_dir: str, stage: str, start_event) -> None:
     start_event.wait(10)
     desktop_tasks.update_run_manifest(Path(out_dir), stage, "running")
+
+
+def _exit_immediately() -> None:
+    """spawn 上下文的可序列化空目标：结束后其 PID 即为死进程（锁偷取测试用）。"""
 
 
 def _hold_manifest_lock(out_dir: str, ready_event, release_event) -> None:
@@ -1130,6 +1135,7 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertTrue(components[key])
 
     def test_affected_stage_producers_include_implementation_revision(self) -> None:
+        from docx_table_parser import DOCX_TABLE_PHYSICAL_VERSION
         from parsers.pdf_parser import (
             PDF_TEXT_REPAIR_VERSION,
             pdf_layout_switch_fingerprint,
@@ -1143,6 +1149,7 @@ class ChainAndManifestTests(unittest.TestCase):
 
         # Future agent stages have a separate policy suffix. Keep this current-stage snapshot
         # unchanged so adding the Phase 0 anchor cannot invalidate existing cached outputs.
+        from table_dispositions import TABLE_DISPOSITION_RULE_VERSION
         from table_structure import TABLE_STRUCTURE_VERSION
 
         expected = {
@@ -1154,7 +1161,11 @@ class ChainAndManifestTests(unittest.TestCase):
                 f"+{SOURCE_ALIGNMENT_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_POLICY_VERSION}"
                 f"+{SOURCE_TRANSFORMATION_RULESET_VERSION}"
-                f"+{TABLE_STRUCTURE_VERSION}+impl-v13"
+                f"+{TABLE_STRUCTURE_VERSION}"
+                # 2026-08-14 FIX 2：DOCX 物理网格/表格裁决规则版本进戳——
+                # 二者均改变 atomize 必产输出（blocks/rows/cells 与 dispositions 台账）
+                f"+{DOCX_TABLE_PHYSICAL_VERSION}"
+                f"+{TABLE_DISPOSITION_RULE_VERSION}+impl-v13"
             ),
             # 专家审核 0715:版本戳必须覆盖全部影响产物的代码层——guards/verify 版本
             # 缺席使护栏与复核升级后 chain 续跑直接跳过 ai-extract
@@ -1162,14 +1173,14 @@ class ChainAndManifestTests(unittest.TestCase):
             # 结构角色/信号规则变化时旧抽取产物不得假装仍然新鲜
             "ai-extract": (
                 "ai-requirements-producer-lineage-v3"
-                "+ai-extract-v24+guards-v23+ai-verify-v4+ai-normative-framing-v2"
+                "+ai-extract-v25+guards-v23+ai-verify-v4+ai-normative-framing-v2"
                 "+merged-consistency/v3-noise-tolerant-window"
                 f"+compliance-requirements/v2+{TABLE_STRUCTURE_VERSION}"
                 "+ai-supplement-v3-identity-preconditions+impl-v7"
             ),
-            "assemble": "assemble_spec/v1+enrich-v3+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
+            "assemble": "assemble_spec/v1+enrich-v4+enrich-guards-v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "functional-synthesis": "functional-synthesis-v8+ai-supplement-v3-identity-preconditions+impl-v4",
-            "requirements-analysis": "analyze-llm-v8+analyze-unfounded-v3+analyze-rules-v1+ai-supplement-v3-identity-preconditions+impl-v6",
+            "requirements-analysis": "analyze-llm-v8+analyze-unfounded-v4+analyze-rules-v1+ai-supplement-v3-identity-preconditions+impl-v6",
             "template-write": "template_writer/v1+ai-supplement-v3-identity-preconditions+impl-v5",
             "clarification-report": "clarification/v8-param-row-aggregate+ai-supplement-v3-identity-preconditions+impl-v6",
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
@@ -2377,6 +2388,393 @@ class ChainAndManifestTests(unittest.TestCase):
             self.assertNotIn("ai-extract", payload["skipped_stages"])
             manifest = json.loads((out / desktop_tasks.RUN_MANIFEST).read_text(encoding="utf-8"))
             self.assertEqual(manifest["stages"]["ai-extract"]["last_action"], "ran")
+
+
+class FingerprintReuseAndLockHardeningTests(unittest.TestCase):
+    """性能/正确性加固（2026-08-14）：
+
+    - FIX 1 阶段指纹多趟哈希 → 单次 (size, mtime_ns) 记忆化映射；跳过记账复用刚算出的指纹；
+    - FIX 2 atomize 生产者戳必须钉 DOCX_TABLE_PHYSICAL_VERSION / TABLE_DISPOSITION_RULE_VERSION；
+    - FIX 3 os.replace 重试预算 8 次 + 线性退避（≈0.56s，对齐 claim_artifacts 模式）；
+    - FIX 4 过期 run_manifest 锁只有记录 PID 已死才可偷。
+    """
+
+    def setUp(self) -> None:
+        desktop_tasks._STAGE_INPUT_SHA_CACHE.clear()
+
+    def _write_stage_inputs(self, root: Path, stage: str, content: str = "input\n") -> None:
+        for name in desktop_tasks.STAGE_INPUTS[stage]:
+            (root / name).write_text(content, encoding="utf-8")
+
+    def _backdate(self, path: Path, age_s: float = 400.0) -> None:
+        stale = time.time() - age_s
+        os.utime(path, (stale, stale))
+
+    # ------------------------------------------------------------------ FIX 1
+
+    def test_stage_fingerprints_share_one_hash_pass_per_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_stage_inputs(root, "compose")
+
+            first = desktop_tasks.stage_input_fingerprint(root, "compose")
+            files_first = desktop_tasks.stage_input_files_fingerprint(root, "compose")
+            with patch.object(
+                desktop_tasks, "_hash_file", wraps=desktop_tasks._hash_file,
+            ) as hashed:
+                second = desktop_tasks.stage_input_fingerprint(root, "compose")
+                files_second = desktop_tasks.stage_input_files_fingerprint(root, "compose")
+
+        self.assertEqual(first, second)
+        self.assertEqual(files_first, files_second)
+        self.assertNotEqual(second, files_second)
+        # 未变化的输入必须命中 (size, mtime_ns) 记忆化，不再全量重哈希
+        self.assertEqual(hashed.call_count, 0)
+
+    def test_stage_fingerprint_cache_rehashes_changed_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_stage_inputs(root, "compose")
+            before = desktop_tasks.stage_input_fingerprint(root, "compose")
+            # 内容变化（大小同步变化，避开 mtime 粒度歧义）→ 必须全量重哈希
+            (root / "atomic_requirements.jsonl").write_text(
+                '{"requirement": "changed and longer"}\n', encoding="utf-8")
+            with patch.object(
+                desktop_tasks, "_hash_file", wraps=desktop_tasks._hash_file,
+            ) as hashed:
+                after = desktop_tasks.stage_input_fingerprint(root, "compose")
+
+        self.assertNotEqual(before, after)
+        self.assertEqual(hashed.call_count, 1)
+
+    def test_stage_reuse_check_computes_producer_stamp_once(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_stage_inputs(root, "compose")
+            (root / "engineering_requirements").mkdir()
+            (root / "engineering_requirements" / "engineering_requirements.json").write_text(
+                '{"requirements": []}', encoding="utf-8")
+            desktop_tasks.update_run_manifest(
+                root, "compose", "ok",
+                outputs=desktop_tasks.STAGE_REQUIRED_OUTPUTS["compose"])
+
+            with patch.object(
+                desktop_tasks, "stage_producer", wraps=desktop_tasks.stage_producer,
+            ) as producer:
+                reusable = desktop_tasks.stage_is_reusable(root, "compose")
+
+        self.assertTrue(reusable)
+        # 复用检查内部显式比对一次 + stage_input_fingerprint 内部一次 → 必须共享同一个戳
+        self.assertEqual(producer.call_count, 1)
+
+    def test_run_pipeline_task_skip_path_reuses_reuse_check_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_path = root / "input.docx"
+            input_path.write_text("doc", encoding="utf-8")
+            out = root / "out"
+            out.mkdir()
+            (out / "manifest.json").write_text(json.dumps({
+                "input": str(input_path.resolve()),
+                "counts": {"atomic_requirements": 1},
+            }), encoding="utf-8")
+            for name in [
+                "blocks.jsonl",
+                "chunks.jsonl",
+                "table_items.jsonl",
+                "table_cell_items.jsonl",
+                "table_cell_dispositions.jsonl",
+                "atomic_requirements.jsonl",
+                "llm_tasks.jsonl",
+                "quality_report.json",
+                "summary.md",
+                "llm_review_results.jsonl",
+                "review_states.jsonl",
+            ]:
+                (out / name).write_text("{}\n", encoding="utf-8")
+            atomize_config = {
+                "chunk_chars": 3500,
+                "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
+                "domain_pack_dir": "",
+            }
+            desktop_tasks.update_run_manifest(
+                out, "atomize", "ok", input_path=input_path, config=atomize_config)
+            desktop_tasks.update_run_manifest(
+                out, "llm-review", "ok", route="stub",
+                config={"review_scope": None, "llm_review_limit": 0})
+            recorded = {
+                stage: entry["input_fingerprint"]
+                for stage, entry in desktop_tasks.read_run_manifest(out)["stages"].items()
+            }
+
+            with (mock.patch("desktop_tasks.run_atomizer_pipeline"),
+                  mock.patch("desktop_tasks.run_review_pipeline"),
+                  patch.object(
+                      desktop_tasks, "stage_input_fingerprint",
+                      wraps=desktop_tasks.stage_input_fingerprint,
+                  ) as fingerprinted):
+                payload = desktop_tasks.run_pipeline_task(input_path, out, llm_route="stub")
+
+            self.assertEqual(payload["manifest"]["resume_action"], "skipped")
+            self.assertEqual(payload["review"]["resume_action"], "skipped")
+            # 复用检查每阶段各算一次（atomize + llm-review）；跳过记账必须复用该值而非重算
+            self.assertEqual(fingerprinted.call_count, 2)
+            stages = desktop_tasks.read_run_manifest(out)["stages"]
+            for stage, fingerprint in recorded.items():
+                self.assertEqual(stages[stage]["input_fingerprint"], fingerprint)
+
+    def test_run_pipeline_task_stub_skip_over_openai_entry_stays_reusable(self) -> None:
+        """stub 请求复用 openai_compatible 台账：记账指纹必须按 stub route 重算回填，
+        且回填后下一次 stub 续跑仍然命中（不因指纹 route 错位退化成重跑）。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_path = root / "input.docx"
+            input_path.write_text("doc", encoding="utf-8")
+            out = root / "out"
+            out.mkdir()
+            (out / "manifest.json").write_text(json.dumps({
+                "input": str(input_path.resolve()),
+                "counts": {"atomic_requirements": 1},
+            }), encoding="utf-8")
+            for name in [
+                "blocks.jsonl",
+                "chunks.jsonl",
+                "table_items.jsonl",
+                "table_cell_items.jsonl",
+                "table_cell_dispositions.jsonl",
+                "atomic_requirements.jsonl",
+                "llm_tasks.jsonl",
+                "quality_report.json",
+                "summary.md",
+                "llm_review_results.jsonl",
+                "review_states.jsonl",
+            ]:
+                (out / name).write_text("{}\n", encoding="utf-8")
+            atomize_config = {
+                "chunk_chars": 3500,
+                "kb_paths": [str(path) for path in desktop_tasks.resolve_kb_paths(None)],
+                "domain_pack_dir": "",
+            }
+            desktop_tasks.update_run_manifest(
+                out, "atomize", "ok", input_path=input_path, config=atomize_config)
+            desktop_tasks.update_run_manifest(
+                out, "llm-review", "ok", route="openai_compatible",
+                config={"review_scope": None, "llm_review_limit": 0})
+
+            with (mock.patch("desktop_tasks.run_atomizer_pipeline"),
+                  mock.patch("desktop_tasks.run_review_pipeline") as review):
+                payload = desktop_tasks.run_pipeline_task(input_path, out, llm_route="stub")
+
+            self.assertEqual(payload["review"]["resume_action"], "skipped")
+            review.assert_not_called()
+            with mock.patch("desktop_tasks.run_review_pipeline") as review_again:
+                second = desktop_tasks.run_pipeline_task(input_path, out, llm_route="stub")
+            self.assertEqual(second["review"]["resume_action"], "skipped")
+            review_again.assert_not_called()
+
+    # ------------------------------------------------------------------ FIX 2
+
+    def test_atomize_producer_pins_docx_table_physical_and_disposition_versions(self) -> None:
+        import docx_table_parser
+        import table_dispositions
+
+        current = desktop_tasks.stage_producer("atomize")
+        with patch.object(
+            docx_table_parser, "DOCX_TABLE_PHYSICAL_VERSION", "docx-table-physical-vNEXT",
+        ):
+            changed_physical = desktop_tasks.stage_producer("atomize")
+        with patch.object(
+            table_dispositions, "TABLE_DISPOSITION_RULE_VERSION", "table-disposition-rules-vNEXT",
+        ):
+            changed_dispositions = desktop_tasks.stage_producer("atomize")
+
+        self.assertIn(docx_table_parser.DOCX_TABLE_PHYSICAL_VERSION, current)
+        self.assertIn(table_dispositions.TABLE_DISPOSITION_RULE_VERSION, current)
+        self.assertNotEqual(current, changed_physical)
+        self.assertNotEqual(current, changed_dispositions)
+
+    # ------------------------------------------------------------------ FIX 3
+
+    def test_replace_with_retry_uses_extended_linear_backoff_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.tmp"
+            source.write_text("new", encoding="utf-8")
+            target = Path(td) / "state.json"
+            target.write_text("old", encoding="utf-8")
+            attempts = 0
+
+            def always_locked(src, dst) -> None:
+                nonlocal attempts
+                attempts += 1
+                raise PermissionError("still locked")
+
+            with (patch.object(desktop_tasks.os, "replace", side_effect=always_locked),
+                  patch.object(desktop_tasks.time, "sleep") as sleeper):
+                with self.assertRaises(PermissionError):
+                    desktop_tasks._replace_with_retry(source, target)
+
+        self.assertEqual(desktop_tasks._REPLACE_ATTEMPTS, 8)
+        self.assertEqual(attempts, 8)
+        # 线性退避 0.02*(1..7)，总窗口 ≈0.56s（对齐 claim_artifacts._replace_with_retry）
+        expected = [desktop_tasks._REPLACE_RETRY_DELAY_S * (index + 1)
+                    for index in range(desktop_tasks._REPLACE_ATTEMPTS - 1)]
+        self.assertEqual([call.args[0] for call in sleeper.call_args_list], expected)
+
+    # ------------------------------------------------------------------ FIX 4
+
+    def test_stale_manifest_lock_with_live_owner_pid_is_not_stolen(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            lock = Path(td) / "run_manifest.lock"
+            lock.write_text(str(os.getpid()), encoding="ascii")
+            self._backdate(lock)
+
+            self.assertFalse(desktop_tasks._remove_stale_manifest_lock(lock, 300.0))
+            self.assertTrue(lock.exists())
+
+    def test_stale_manifest_lock_with_dead_owner_pid_is_stolen(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        finished = context.Process(target=_exit_immediately)
+        finished.start()
+        finished.join(20)
+        self.assertEqual(finished.exitcode, 0)
+        with tempfile.TemporaryDirectory() as td:
+            lock = Path(td) / "run_manifest.lock"
+            lock.write_text(str(finished.pid), encoding="ascii")
+            self._backdate(lock)
+
+            self.assertTrue(desktop_tasks._remove_stale_manifest_lock(lock, 300.0))
+            self.assertFalse(lock.exists())
+
+    def test_run_manifest_lock_waits_for_stale_lock_owned_by_live_process(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            lock = Path(td) / "run_manifest.lock"
+            lock.write_text(str(os.getpid()), encoding="ascii")
+            self._backdate(lock)
+
+            with self.assertRaises(TimeoutError):
+                with desktop_tasks._run_manifest_lock(
+                    Path(td), timeout_s=0.5, stale_after_s=300.0,
+                ):
+                    pass
+            self.assertTrue(lock.exists())
+
+    def test_run_manifest_lock_steals_stale_lock_owned_by_dead_process(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        finished = context.Process(target=_exit_immediately)
+        finished.start()
+        finished.join(20)
+        self.assertEqual(finished.exitcode, 0)
+        with tempfile.TemporaryDirectory() as td:
+            lock = Path(td) / "run_manifest.lock"
+            lock.write_text(str(finished.pid), encoding="ascii")
+            self._backdate(lock)
+
+            with desktop_tasks._run_manifest_lock(
+                Path(td), timeout_s=5.0, stale_after_s=300.0,
+            ):
+                self.assertEqual(lock.read_text(encoding="ascii"), str(os.getpid()))
+            self.assertFalse(lock.exists())
+
+
+class StageInputShaIdentityHardeningTests(unittest.TestCase):
+    """完整性封堵（2026-08-14）：(size, mtime_ns) 统计签名可被「同尺寸原子替换
+    （tmp + os.replace）+ os.utime 还原 mtime」伪造——复查者实测复现：换内容后
+    缓存仍吐旧 sha256，阶段指纹对同尺寸篡改失明。签名加入 (st_dev, st_ino)
+    文件标识：工具链写路径全部经 tmp+os.replace 原子替换（新文件标识）→ 每次写
+    必然失配重哈希；残余风险仅为蓄意的同尺寸原地覆写+还原 mtime（保留文件标识，
+    非工具链写路径；st_ino=0 的网络/reparse 路径退化为旧行为，不劣化）。"""
+
+    def setUp(self) -> None:
+        desktop_tasks._STAGE_INPUT_SHA_CACHE.clear()
+
+    def _atomic_samesize_rewrite(self, path: Path, data: bytes) -> None:
+        """原子替换式同尺寸覆写 + 还原 mtime：旧 (size, mtime_ns) 键被完全伪造。"""
+        before = path.stat()
+        tmp = path.with_name(path.name + ".spoof.tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = path.stat()
+        # 前置断言：旧 (size, mtime_ns) 键确实被伪造（击中目标缺陷路径）
+        self.assertEqual(
+            (before.st_size, before.st_mtime_ns),
+            (after.st_size, after.st_mtime_ns),
+        )
+        # 文件标识已变（os.replace 给路径换上 tmp 的身份）——这是修复的失效条件
+        self.assertNotEqual(
+            (before.st_dev, before.st_ino), (after.st_dev, after.st_ino),
+            "atomic replace must change file identity on this filesystem",
+        )
+
+    def test_atomic_replace_samesize_invalidates_cached_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "atomic_requirements.jsonl"
+            path.write_bytes(b"LINE-1\n")
+            first = desktop_tasks._file_sha256_cached(path)
+
+            self._atomic_samesize_rewrite(path, b"LINE-2\n")
+            second = desktop_tasks._file_sha256_cached(path)
+
+            self.assertNotEqual(first, second, "same-size spoof must invalidate cache")
+            self.assertEqual(second, desktop_tasks._hash_file(path))
+
+    def test_unchanged_file_still_hits_sha_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "atomic_requirements.jsonl"
+            path.write_bytes(b"LINE-1\n")
+            first = desktop_tasks._file_sha256_cached(path)
+            with patch.object(
+                desktop_tasks, "_hash_file", wraps=desktop_tasks._hash_file,
+            ) as hashed:
+                second = desktop_tasks._file_sha256_cached(path)
+            self.assertEqual(hashed.call_count, 0)
+            self.assertEqual(first, second)
+
+
+class StageInputShaCacheBoundTests(unittest.TestCase):
+    """有界化（2026-08-15）：_STAGE_INPUT_SHA_CACHE 原先只在文件消失时逐条
+    淘汰——长驻进程跨多个 out_dir 评估阶段输入会无界增长。与
+    doc_annotation_export._FILE_SHA256_MEMO_MAX 同口径：超限整体清空后重插
+    当前键；sha256 指纹值逐字节不变，命中行为不受影响。"""
+
+    def setUp(self) -> None:
+        desktop_tasks._STAGE_INPUT_SHA_CACHE.clear()
+
+    def test_cache_size_stays_bounded_across_distinct_paths(self) -> None:
+        cap = desktop_tasks._STAGE_INPUT_SHA_CACHE_MAX
+        with tempfile.TemporaryDirectory() as td:
+            for index in range(cap + 40):
+                path = Path(td) / f"input_{index}.bin"
+                path.write_bytes(b"x")
+                desktop_tasks._file_sha256_cached(path)
+
+            self.assertLessEqual(
+                len(desktop_tasks._STAGE_INPUT_SHA_CACHE),
+                cap,
+                "cache must stay bounded across distinct stage-input paths",
+            )
+
+    def test_entry_reinserted_after_overflow_clear_still_hits(self) -> None:
+        cap = desktop_tasks._STAGE_INPUT_SHA_CACHE_MAX
+        with tempfile.TemporaryDirectory() as td:
+            latest = None
+            for index in range(cap + 5):
+                latest = Path(td) / f"input_{index}.bin"
+                latest.write_bytes(b"x")
+                desktop_tasks._file_sha256_cached(latest)
+
+            with patch.object(
+                desktop_tasks,
+                "_hash_file",
+                wraps=desktop_tasks._hash_file,
+            ) as hashed:
+                again = desktop_tasks._file_sha256_cached(latest)
+            self.assertEqual(hashed.call_count, 0)
+            self.assertEqual(again, desktop_tasks._hash_file(latest))
+            self.assertIn(
+                str(latest),
+                desktop_tasks._STAGE_INPUT_SHA_CACHE,
+            )
 
 
 if __name__ == "__main__":

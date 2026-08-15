@@ -534,16 +534,14 @@ def apply_ai_review_action(
     if governed_artifact_path(
         out_dir, "claim_generation.meta.json", category="state"
     ).is_file():
-        try:
-            from claim_review_actions import fold_effective_ledger
+        # 与 review_state 共享同一 per-root 合并器：A/B 混合突发也只折叠成最少的
+        # fold pass（fold 幂等，caught-up 时 publication_skipped 近似 no-op）。
+        from review_state import cover_effective_fold_after_decision
 
-            fold_effective_ledger(
-                out_dir,
-                actor_trigger="ai-review-action",
-                authority_hook_track="B",
-            )
-        except Exception as exc:
-            # The review row is already fsync'd authority. A derived fold failure
-            # is observable through health and must not reject the expert action.
-            LOGGER.warning("AI review saved; claim effective fold lagged: %s", exc)
+        cover_effective_fold_after_decision(
+            out_dir,
+            actor_trigger="ai-review-action",
+            authority_hook_track="B",
+            fold_lag_log_template="AI review saved; claim effective fold lagged: %s",
+        )
     return state
