@@ -114,13 +114,15 @@ class TableRowGeometryTests(unittest.TestCase):
 
         self.assertNotIn("BT", rows)
 
-    def test_paged_table_block_not_row_matched(self) -> None:
-        # 有页号的表格块（原生 PDF 路径）已是细粒度,不重复计算行几何
+    def test_paged_table_block_without_cell_boxes_uses_text_fallback(self) -> None:
+        # 原生 PDF 表格可能只有整表 bbox；缺少 cell bbox 时仍应保守走文本匹配，
+        # 不能因有 page_number 就把整张大表当成需求原文区域。
         block = _table_block(page_number=6)
         parsed = [_parsed_block("P1", 6, "1. | Overvoltage | The maximum voltage value recorded in any channel.")]
         _geometry, rows = self._resolve([block], parsed)
 
-        self.assertNotIn("BT", rows)
+        self.assertEqual(sorted(rows["BT"]), [3])
+        self.assertEqual(rows["BT"][3][0]["page_number"], 6)
 
     def test_hyphen_wrap_in_pdf_text_layer_folded(self) -> None:
         # 转换 PDF 文本层换行拆连字符词（"self- diagnostics"）,docx 单元格是
@@ -149,7 +151,7 @@ class TableRowGeometryTests(unittest.TestCase):
             _geometry, rows = self._resolve([_table_block()], parsed, cache_path=cache)
             self.assertIn("BT", rows)
             payload = json.loads(cache.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 5)   # v5：table-structure-v2 cell 级（v4 旧缓存不得复用）
+            self.assertEqual(payload["version"], 7)   # v7：绑定原始 pdf_regions，清洗 blocks 不得污染精确行区
             self.assertEqual(sorted(payload["row_geometry"]["BT"]), ["3", "4"])  # JSON 键为字符串
 
             # 第二跑：解析器不得再被调用（缓存直供）,行号键恢复为 int

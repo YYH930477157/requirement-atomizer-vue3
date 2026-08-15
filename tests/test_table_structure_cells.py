@@ -141,6 +141,46 @@ class PlainTableTests(unittest.TestCase):
 
 
 class HeaderlessTests(unittest.TestCase):
+    def test_sequential_clause_rows_do_not_turn_first_data_row_into_header(self) -> None:
+        matrix = [
+            [
+                "6.12",
+                "Operating temperature / Storage temperature",
+                "-20 C to +60 C / -20 C to +75 C",
+                "-20 C to +60 C / -20 C to +75 C",
+            ],
+            [
+                "6.13",
+                "Protection against penetration of dust and water",
+                "Degree of protection: at least IP54.",
+                "Degree of protection: at least IP54.",
+            ],
+            [
+                "6.14",
+                "Electromagnetic compatibility",
+                "Contact 8 kV, air 15 kV",
+                "Contact 8 kV, air 15 kV",
+            ],
+        ]
+
+        block, items, cells = _artifacts(matrix)
+
+        self.assertEqual(block["header_row_indexes"], [])
+        self.assertEqual(block["data_rows"], matrix)
+        self.assertIn("sequential_clause_rows:headerless", block["header_detection_evidence"])
+        self.assertEqual([item["row_index"] for item in items], [1, 2, 3])
+        result = _catalog(block, items, cells)
+        row_613 = next(
+            claim for claim in result["catalog"]
+            if claim["source_kind"] == "table_row"
+            and claim["locator"].get("row_index") == 2
+        )
+        self.assertNotIn("6.12", row_613["text"])
+        self.assertEqual(
+            [field["value"] for field in row_613["table_context"]["fields"]],
+            matrix[1],
+        )
+
     def test_headerless_single_column_preserves_first_row(self) -> None:
         matrix = [
             ["The meter shall store daily data."],

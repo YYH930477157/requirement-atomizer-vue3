@@ -12,7 +12,7 @@ class RunSmokeTests(unittest.TestCase):
         modules = run_smoke.load_modules(run_smoke.DEFAULT_MANIFEST)
         suite = run_smoke.build_suite(modules)
         self.assertEqual(len(modules), 90)
-        self.assertEqual(suite.countTestCases(), 1649)
+        self.assertEqual(suite.countTestCases(), 1652)
 
     def test_manifest_rejects_duplicates_and_non_test_modules(self) -> None:
         for content in ("tests.test_atomize\ntests.test_atomize\n", "atomize\n"):

@@ -4607,6 +4607,16 @@ def load_committed_claim_base(out_dir: Path | str) -> dict[str, Any]:
         return _load_committed_claim_base_unlocked(root)
 
 
+def load_committed_claim_base_readonly(out_dir: Path | str) -> dict[str, Any]:
+    """Read a committed base without locks, recovery, or filesystem writes.
+
+    GET-side projections use this form when an effective snapshot is unavailable;
+    they must never mutate lock files or recover journals while answering a read.
+    """
+    root = Path(out_dir).expanduser().resolve()
+    return _load_committed_claim_base_unlocked(root)
+
+
 def load_committed_effective_snapshot(out_dir: Path | str) -> dict[str, Any]:
     """Load only a Phase 1 effective snapshot committed against a valid base."""
     root = Path(out_dir).expanduser().resolve()

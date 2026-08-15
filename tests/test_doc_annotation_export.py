@@ -297,6 +297,90 @@ class DocAnnotationExportTests(unittest.TestCase):
         self.assertIn(f'data-claim-id="{claim_id}"', original)
         self.assertIn('data-row-index="1"', original)
 
+    def test_native_pdf_table_rows_use_exact_cell_geometry(self) -> None:
+        table = {
+            "block_id": "BLK-000271",
+            "type": "table",
+            "page_number": 26,
+            "headers": ["column_1", "Specification", "DIN", "BS", "Three phase"],
+            "data_rows": [
+                ["6.1", "Type of meter", "DIN meter", "BS meter", "Three phase meter"],
+                ["6.2", "Operating Voltage", "230V (+/-15%)", "230V (+/-15%)", "3X230/400V (+/-15%)"],
+            ],
+            "text": "6.1 | Type of meter\n6.2 | Operating Voltage | 230V (+/-15%)",
+            "pdf_regions": [{
+                "page_number": 26,
+                "bbox": [18.323, 103.172, 550.097, 716.188],
+                "page_width": 595.32,
+                "page_height": 841.92,
+            }],
+        }
+        cells = [{
+            "table_block_id": "BLK-000271",
+            "cell_id": "R1C1",
+            "data_row_index": 1,
+            "page_number": 26,
+            "bbox": [18.3, 128.1, 550.1, 221.2],
+            "geometry_kind": "pdfplumber_cell",
+        }, *[
+            {
+                "table_block_id": "BLK-000271",
+                "cell_id": f"C{column_index}",
+                "data_row_index": 2,
+                "page_number": 26,
+                "bbox": bbox,
+                "geometry_kind": "pdfplumber_cell",
+            }
+            for column_index, bbox in enumerate([
+                [18.3, 221.2, 49.7, 259.2],
+                [49.7, 221.2, 124.0, 259.2],
+                [124.0, 221.2, 287.1, 259.2],
+                [287.1, 221.2, 419.5, 259.2],
+                [419.5, 221.2, 550.1, 259.2],
+            ], start=1)
+        ]]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source_pdf = Path(tmp) / "source.pdf"
+            source_pdf.write_bytes(b"pdf geometry identity")
+            row_geometry: dict[str, dict[int, list[dict]]] = {}
+            with patch("parsers.pdf_parser.extract_pdf") as extract:
+                geometry = dae._resolve_pdf_geometry(
+                    source_pdf,
+                    [table],
+                    row_geometry=row_geometry,
+                    table_cell_items=cells,
+                )
+
+        extract.assert_not_called()
+        self.assertEqual(geometry["BLK-000271"], table["pdf_regions"])
+        self.assertEqual(
+            row_geometry["BLK-000271"][2],
+            [{
+                "page_number": 26,
+                "bbox": [18.3, 221.2, 550.1, 259.2],
+                "page_width": 595.32,
+                "page_height": 841.92,
+            }],
+        )
+
+        requirements = [{
+            "ai_req_id": "AIR-6.2",
+            "anchor_block_id": "BLK-000271",
+            "source_block_ids": ["BLK-000271"],
+            "source_quote": "6.2 | Operating Voltage | 230V (+/-15%) | 230V (+/-15%) | 3X230/400V (+/-15%)",
+            "description": "工作电压应符合表格要求",
+        }]
+        zones = dae._pdf_block_zones(
+            [table], requirements, geometry, {"BLK-000271"}, row_geometry=row_geometry
+        )
+        self.assertEqual({zone["row_index"] for zone in zones}, {1, 2})
+        self.assertTrue(all(zone["block_id"] == "BLK-000271" for zone in zones))
+        self.assertTrue(all("row_index" in zone for zone in zones))
+        selected_zone = next(zone for zone in zones if zone["row_index"] == 2)
+        self.assertEqual(selected_zone["kind"], "req")
+        self.assertEqual(selected_zone["req_id"], "AIR-6.2")
+
     def test_table_row_claims_map_rows_in_both_layouts(self) -> None:
         # 当前结构表的逐行 claim 行映射（optimized + pdf_original 双布局）。
         # 旧 table_fallback claim 只存在于 legacy 结构表——F6 迁移门拒折旧结构 base,
@@ -336,6 +420,11 @@ class DocAnnotationExportTests(unittest.TestCase):
         self.assertEqual(
             sorted(tuple(record["data_row_indexes"]) for record in records),
             [(1,), (2,)],
+        )
+        self.assertEqual(
+            [[field["value"] for field in record["table_context"]["fields"]]
+             for record in records],
+            [["A", "10 V"], ["B", "20 V"]],
         )
         for claim_id in claim_ids:
             self.assertIn(f'data-claim-id="{claim_id}"', optimized)
@@ -2371,9 +2460,8 @@ class MarkerTranslationTests(unittest.TestCase):
         import desktop_tasks
 
         producer = desktop_tasks.stage_producer("export-annotation-html")
-        # v16 阶段戳（P0-2/P1-3：cell claim 进入 records/zones + 静态 HTML 按
-        # 物理 R×C 渲染 claim 入口）——随 P0-2 修复从 v15 升位，两处钉串同源
-        self.assertIn("doc_annotation_export/v16-cell-claim-projection", producer)
+        # v17 阶段戳：原生 PDF 表格按精确 cell bbox 合并行级原文区，旧整表框缓存失效。
+        self.assertIn("doc_annotation_export/v19-structured-claim-source", producer)
         self.assertIn(dae.ANNOTATION_TRANSLATION_STRATEGY_VERSION, producer)
         self.assertIn(dae.ANNOTATION_TRANSLATION_GUARDS_VERSION, producer)
 
@@ -2579,6 +2667,51 @@ class PdfAnnotationPayloadTests(unittest.TestCase):
             {row["claim_id"] for row in catalog["catalog"]},
         )
         self.assertEqual(payload["claim_zones"], [])
+
+    def test_current_catalog_without_effective_snapshot_is_uncertain_and_auditable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed(out, with_pages=False)
+            blocks = [json.loads(line) for line in
+                      (out / "blocks.jsonl").read_text(encoding="utf-8").splitlines()]
+            catalog = claim_catalog.build_claim_catalog(blocks, [])
+            _publish(out, catalog)
+            claim_review_actions.fold_effective_ledger(
+                out, actor_trigger="annotation-v17-catalog-only"
+            )
+            stale_base = claim_artifacts.load_committed_claim_base(out)
+            stale_base["generation_meta"] = {
+                **stale_base["generation_meta"],
+                "delivery_track": "B",
+                "requirements_producer_lineage": {
+                    "schema": "ai-requirements-producer-lineage-v3",
+                    "producer": "ai_extract",
+                    "table_structure_version": "table-structure-v8",
+                },
+            }
+            with (
+                patch(
+                    "claim_artifacts.load_committed_effective_snapshot_readonly",
+                    side_effect=claim_artifacts.ClaimArtifactError(
+                        "current effective snapshot is not materialized"
+                    ),
+                ),
+                patch(
+                    "claim_artifacts.load_committed_claim_base_readonly",
+                    return_value=stale_base,
+                ),
+            ):
+                payload = dae.build_pdf_annotation_payload(out)
+
+        self.assertEqual(
+            {row["claim_id"] for row in payload["claim_records"]},
+            {row["claim_id"] for row in catalog["catalog"]},
+        )
+        self.assertTrue(all(
+            row["resolution"] == "uncertain"
+            and row["authority_status"] == "catalog_only"
+            for row in payload["claim_records"]
+        ))
 
     def test_payload_rejects_stale_or_incompatible_page_manifest(self) -> None:
         mutations = ({"version": 0}, {"source_sha256": "stale"}, {"dpi": 72})

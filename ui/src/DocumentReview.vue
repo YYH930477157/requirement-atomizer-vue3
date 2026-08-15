@@ -311,6 +311,56 @@ const viewMode = ref<"text" | "pdf">("pdf")
 const pdfData = ref<PdfAnnotationPayload | null>(null)
 const selectedClaim = computed(() =>
   (pdfData.value?.claim_records || []).find((row) => row.claim_id === selectedClaimId.value) || null)
+type ClaimSourceField = { name: string; value: string }
+type ClaimSourceValueGroup = { label: string; value: string }
+const SYNTHETIC_CLAIM_FIELD_RE = /^column_\d+$/i
+const CLAUSE_INDEX_RE = /^\d+(?:\.\d+)+(?:[.)])?$/
+const selectedClaimSourceFields = computed<ClaimSourceField[]>(() => {
+  const fields = selectedClaim.value?.table_context?.fields
+  if (!Array.isArray(fields)) return []
+  return fields
+    .map((field) => ({ name: String(field?.name || ""), value: String(field?.value || "") }))
+    .filter((field) => field.value.trim())
+})
+const selectedClaimHasRowIdentity = computed(() => {
+  const fields = selectedClaimSourceFields.value
+  return fields.length >= 2 && CLAUSE_INDEX_RE.test(fields[0].value.trim())
+})
+const selectedClaimDisplayTitle = computed(() => {
+  const fields = selectedClaimSourceFields.value
+  if (selectedClaimHasRowIdentity.value) return `${fields[0].value} · ${fields[1].value}`
+  return selectedClaim.value?.text || selectedClaim.value?.claim_id || ""
+})
+const selectedClaimSourceValues = computed<ClaimSourceValueGroup[]>(() => {
+  const fields = selectedClaimSourceFields.value
+  const source = selectedClaimHasRowIdentity.value ? fields.slice(2) : fields
+  const groups: Array<ClaimSourceValueGroup & { first: number; last: number; synthetic: boolean }> = []
+  source.forEach((field, index) => {
+    const ordinal = index + 1
+    const synthetic = SYNTHETIC_CLAIM_FIELD_RE.test(field.name)
+    const previous = groups.at(-1)
+    if (previous && previous.value === field.value && previous.synthetic === synthetic) {
+      previous.last = ordinal
+      if (!synthetic && field.name && !previous.label.split("、").includes(field.name)) {
+        previous.label += `、${field.name}`
+      }
+      return
+    }
+    groups.push({
+      label: synthetic ? "" : field.name,
+      value: field.value,
+      first: ordinal,
+      last: ordinal,
+      synthetic,
+    })
+  })
+  return groups.map((group) => ({
+    label: group.synthetic
+      ? `值 ${group.first}${group.last > group.first ? `–${group.last}` : ""}`
+      : (group.label || `值 ${group.first}`),
+    value: group.value,
+  }))
+})
 const pdfLoading = ref(false)
 const pdfPageUrls = ref<Record<string, string>>({})
 let pdfPageLoadGeneration = 0
@@ -1854,14 +1904,37 @@ onMounted(() => {
             <span class="dd-module">Claim Ledger</span>
             <span class="dd-status" :class="'claim-' + selectedClaim.resolution">{{ CLAIM_RESOLUTION_LABELS[selectedClaim.resolution] || selectedClaim.resolution }}</span>
           </div>
-          <h3 class="dd-title">{{ selectedClaim.text || selectedClaim.claim_id }}</h3>
+          <h3 class="dd-title">{{ selectedClaimDisplayTitle }}</h3>
           <div class="dd-meta">{{ selectedClaim.claim_id }} · {{ claimFocusKind(selectedClaim) }}</div>
           <div class="dd-section">
             <div class="dd-label">账本状态</div>
             <div class="dd-body">{{ CLAIM_RESOLUTION_LABELS[selectedClaim.resolution] || selectedClaim.resolution }}<template v-if="selectedClaim.classification"> · {{ selectedClaim.classification }}</template></div>
           </div>
           <div v-if="selectedClaim.mapping_error" class="dd-suspicion">定位失败：{{ selectedClaim.mapping_error }}</div>
-          <div class="dd-section"><div class="dd-label">Claim 原文</div><div class="dd-quote">{{ selectedClaim.text }}</div></div>
+          <div v-if="selectedClaim.authority_status === 'catalog_only'" class="dd-suspicion" data-testid="claim-catalog-only">
+            原文结构已更新；AI 抽取仍属于上一版解析，本条暂按待确认展示。
+          </div>
+          <div class="dd-section">
+            <div class="dd-label">Claim 原文</div>
+            <div v-if="selectedClaimSourceFields.length" class="claim-source-table" data-testid="claim-source-table">
+              <div v-if="selectedClaimHasRowIdentity" class="claim-source-title" data-testid="claim-source-title">
+                <span>{{ selectedClaimSourceFields[0].value }}</span>
+                <strong>{{ selectedClaimSourceFields[1].value }}</strong>
+              </div>
+              <div class="claim-source-values">
+                <div v-for="field in selectedClaimSourceValues" :key="`${field.label}:${field.value}`"
+                     class="claim-source-value" data-testid="claim-source-value">
+                  <div class="claim-source-value-label">{{ field.label }}</div>
+                  <div class="claim-source-value-text">{{ field.value }}</div>
+                </div>
+              </div>
+              <details class="claim-source-raw" data-testid="claim-source-raw">
+                <summary>查看权威扁平原文</summary>
+                <div class="dd-quote">{{ selectedClaim.text }}</div>
+              </details>
+            </div>
+            <div v-else class="dd-quote">{{ selectedClaim.text }}</div>
+          </div>
         </div>
         <div v-else-if="selectedRow" class="doc-detail-card" data-testid="table-row-card">
           <div class="dd-head">
@@ -2638,6 +2711,59 @@ td.cell-sel, th.cell-sel { outline: 2px solid #5978f7; outline-offset: -2px; }
   border-radius: 0 6px 6px 0;
   padding: 7px 9px;
 }
+
+.claim-source-table {
+  margin-top: 7px;
+  overflow: hidden;
+  border: 1px solid var(--doc-border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.claim-source-title {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--doc-border);
+  background: rgba(10, 132, 255, 0.055);
+}
+
+.claim-source-title span {
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: var(--doc-blue-strong);
+  background: rgba(10, 132, 255, 0.1);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.claim-source-title strong {
+  min-width: 0;
+  color: var(--doc-ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.claim-source-values {
+  display: grid;
+}
+
+.claim-source-value {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 8px;
+  padding: 9px 11px;
+  border-bottom: 1px solid rgba(60, 60, 67, 0.09);
+}
+
+.claim-source-value:last-child { border-bottom: 0; }
+.claim-source-value-label { color: var(--doc-tertiary); font-size: 10px; font-weight: 700; }
+.claim-source-value-text { min-width: 0; color: #3f4149; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.claim-source-raw { padding: 7px 11px 9px; border-top: 1px solid var(--doc-border); }
+.claim-source-raw summary { color: var(--doc-tertiary); cursor: pointer; font-size: 10px; }
+.claim-source-raw .dd-quote { margin-top: 7px; overflow-wrap: anywhere; }
 
 .dd-select,
 .dd-comment {

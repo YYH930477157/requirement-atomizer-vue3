@@ -523,6 +523,12 @@ CLI 契约见 `docs/cli-contract.md`（对接公司任务管理系统的接口�
 - **双轨行为需求分工（建议已记录，终局待用户拍板）**：`assemble`（A 轨：atoms+llm_review，P1-P5）= **DLMS profile 类文档**的结构规格主交付物（蓝皮书行为富化挂此轨）；`merged_spec`+`analyze`（B 轨：AI 抽取+批注裁决）= **非 DLMS 剖面类文档**（散文型标准，无 COSEM 对象表，如 AFD/SM-CG 附加功能标准）的行为/软件需求主交付物。两轨并存各司其职，交付时按文档类型选主件。
 - **有据缓建（实测量化为零收益，勿投机重启）**：① analyze 接蓝皮书——B 轨需求无接口类名可匹配（test5 多词类名 0/288）；② OBIS→class 连接提升蓝皮书覆盖——ABNT 行为 atom 正文 0 个 OBIS 形码（码全在表格→P1）；③ 类名归一化/别名——ABNT 未命中全是抽取噪声或 Green Book 领域引用，归一化救回 0 条；④ Part1 OBIS 节（70 节已摄入）——留给将来 OBIS 语义富化，暂无消费者。重启任一项前先在新语料上重跑探针。
 
+## 重大更新（2026-08-13）——原生 PDF 表格需求行精确原文区
+
+- 原版校对不再假设“有 `page_number` 的表格块已有细粒度几何”。原生 PDF 只有整表 `pdf_regions` 时，`doc_annotation_export` 优先按 `table_block_id + data_row_index + page_number` 合并 `table_cell_items.jsonl` 中真实 `pdfplumber_cell` bbox，生成行级热区；缺少 cell bbox 才保守走原有文本匹配。
+- `document_pdf_geometry.json` 升至 version 7，并绑定 cell 几何与原始 `pdf_regions` 指纹；静态导出必须读取原始 blocks（API 清洗 blocks 不带页尺寸，曾把文本估算写入 v6 缓存）。`export-annotation-html` producer 升为 `doc_annotation_export/v18-row-source-zones`，旧整表框及错误 v6 缓存都会失效重算。真实 `BLK-000271` 的 `6.2 Operating Voltage` 应落 `[18.3, 221.2, 550.1, 259.2]`，而非整表 `[18.323, 103.172, 550.097, 716.188]`。
+- **跨页参数表 Claim 原文修复（2026-08-15）**：`TABLE_STRUCTURE_VERSION=table-structure-v9` 以同父级连续点号条款（如 6.12→6.13）作为“续页无表头”的确定性证据，禁止把首条数据行误作表头后生成 `6.12=6.13` 串行 Claim。`CLAIM_ANNOTATION_VERSION=claim-annotation-v17` 下发表格 `table_context`，Vue 右栏将条款号、规格名、各值分组展示，重复值合并，权威扁平文本保留在折叠审计区；导出 producer 升至 `doc_annotation_export/v19-structured-claim-source`。
+
 ## 重大更新（2026-07-15）——抽取质量重构七刀（已合 main）
 
 - **背景与纪律**：用户裁定双线对比全遍历验收（工具 ≥ Claude 自身解析基线,整文档不抽样）+ 通用规则不打单文档补丁（fixtures 合成中性化,禁止测试文件作弊）。评测资产在 scratchpad `dual_track_eval/`（含客户内容**不进仓**）:units.jsonl 冻结坐标系 110 单元、reference_*.jsonl 参考基线 121 条、compare.py 对齐、4-agent 全遍历内容审计（A误读/B不自包含/C遗漏/D空话验收/E指引空转/F语言/G引用失真,好/中/差）。

@@ -1,4 +1,4 @@
-"""表格结构与单元格级需求闭环底座（table-structure-v8）。
+"""表格结构与单元格级需求闭环底座（table-structure-v9）。
 
 集中管理此前散落在 atomize.py / ai_extract.py / spot_extract.py / extract_units.py 的
 表格角色识别（标题/表头/行头/数据/分组标题）与粒度规划（row/cell/mixed leaf plan）。
@@ -27,10 +27,10 @@ import os
 import re
 from typing import Any, Iterable, Mapping
 
-TABLE_STRUCTURE_VERSION = "table-structure-v8"
+TABLE_STRUCTURE_VERSION = "table-structure-v9"
 # Dual-track entry (WS1 wk3-5, plan §3.2.2): a separate identity stamp for the new
 # hypothesis-first entry. The dual-track path remains gated behind a default-OFF switch
-# (TABLE_DUAL_TRACK_SWITCH below); this v8 bump belongs to deterministic header handling.
+# (TABLE_DUAL_TRACK_SWITCH below); v9 adds deterministic page-continuation header handling.
 TABLE_DUAL_TRACK_VERSION = "table-dual-track-v1"
 TABLE_CELL_ITEM_SCHEMA = "table-cell-item/v1"
 
@@ -71,6 +71,7 @@ _PROSE_CELL_MIN_MEDIAN_LEN = 40
 # 无真实表头标签时矩阵分类与事实列判定一律不成立（内容保留，不合成句式）
 _SYNTHETIC_HEADER_RE = re.compile(r"^column_\d+$")
 _LETTERED_HEADER_CELL_RE = re.compile(r"^\s*\(([a-jA-J])\)\s*(?P<label>.*)$")
+_DOTTED_CLAUSE_INDEX_RE = re.compile(r"^\s*(?P<parts>\d+(?:\.\d+)+)[.)]?\s*$")
 # 前置标识格长度上限：标识格是对象名/短标签（"Logger"、"Voltage"），
 # 超过此长度的前置格是兄弟义务句而非身份标识，不进上下文
 _IDENTITY_CONTEXT_MAX_LEN = 120
@@ -198,6 +199,41 @@ def normalize_header_part(value: Any) -> str:
 
 def clean_cell(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def rows_begin_with_sequential_clause_indexes(
+    first_row: list[str],
+    second_row: list[str] | None,
+) -> bool:
+    """Return true when the first column proves that both rows are clause data.
+
+    Page-split PDF tables frequently resume at rows such as ``6.12`` and
+    ``6.13`` without repeating their header.  Treating the first resumed row as
+    a header corrupts every following row into ``6.12=6.13`` field pairs.  A
+    dotted, same-parent, incrementing clause index is narrow deterministic
+    evidence that both rows are data; plain decimals and unrelated numbers do
+    not enter this branch.
+    """
+    if second_row is None or len(first_row) < 2 or len(second_row) < 2:
+        return False
+    if not clean_cell(first_row[1]) or not clean_cell(second_row[1]):
+        return False
+    matches = [
+        _DOTTED_CLAUSE_INDEX_RE.fullmatch(clean_cell(row[0]))
+        for row in (first_row, second_row)
+    ]
+    if any(match is None for match in matches):
+        return False
+    parts = [
+        [int(value) for value in match.group("parts").split(".")]
+        for match in matches
+        if match is not None
+    ]
+    return (
+        len(parts[0]) == len(parts[1])
+        and parts[0][:-1] == parts[1][:-1]
+        and parts[1][-1] == parts[0][-1] + 1
+    )
 
 
 def strip_lettered_header_prefix(value: Any) -> str:
@@ -627,6 +663,9 @@ def detect_header_rows(
         ]
     first_normative = row_is_normative(first_row)
     second_normative = row_is_normative(second_row) if second_row is not None else False
+
+    if rows_begin_with_sequential_clause_indexes(first_row, second_row):
+        return [], "inferred", ["sequential_clause_rows:headerless"]
 
     if first_normative and (second_row is None or second_normative):
         # headerless：首两行都呈需求句（或全表只有一行规范性内容）→ 无表头，

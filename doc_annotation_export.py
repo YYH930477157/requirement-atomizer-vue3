@@ -52,7 +52,7 @@ PDF_PAGE_RENDER_DPI = 144
 LAYOUT_OPTIMIZED = "optimized"
 LAYOUT_PDF_ORIGINAL = "pdf_original"
 ANNOTATION_LAYOUT_MODES = {LAYOUT_OPTIMIZED, LAYOUT_PDF_ORIGINAL}
-CLAIM_ANNOTATION_VERSION = "claim-annotation-v16"
+CLAIM_ANNOTATION_VERSION = "claim-annotation-v17"
 
 
 class ClaimAnnotationUnavailable(ValueError):
@@ -500,6 +500,8 @@ def _claim_annotation_state(
             CLAIM_GENERATION_META,
             CLAIM_PUBLICATION_JOURNAL,
             ClaimArtifactError,
+            claim_artifact_path,
+            load_committed_claim_base_readonly,
             load_committed_effective_snapshot_readonly,
         )
         from claim_focus import ClaimFocusError, build_claim_focus_adapter
@@ -520,20 +522,53 @@ def _claim_annotation_state(
             CLAIM_PUBLICATION_JOURNAL,
             CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
         )
-        if not any((out_dir / name).exists() for name in artifact_names):
+        if not any(claim_artifact_path(out_dir, name).exists() for name in artifact_names):
             return state
-        raise ClaimAnnotationUnavailable(
-            f"claim annotation snapshot unavailable: {exc}"
-        ) from exc
+        # A freshly reparsed table catalog can be current while the paid B-track
+        # target still belongs to the preceding parsed generation.  In that
+        # state there is intentionally no current effective snapshot.  The
+        # source view may still expose the validated catalog for inspection, but
+        # it must not inherit stale coverage/exclusion decisions: every record is
+        # projected as uncertain and marked catalog_only until ai-extract is
+        # rerun.  Corrupt or old-structure bases continue to fail closed.
+        try:
+            from table_structure import TABLE_STRUCTURE_VERSION
+
+            base = load_committed_claim_base_readonly(out_dir)
+            catalog_meta = dict(base.get("catalog_meta") or {})
+            generation_meta = dict(base.get("generation_meta") or {})
+            from ai_extract import current_ai_requirements_producer_lineage
+
+            stale_b_track_target = (
+                generation_meta.get("delivery_track") == "B"
+                and isinstance(generation_meta.get("requirements_producer_lineage"), dict)
+                and generation_meta.get("requirements_producer_lineage")
+                != current_ai_requirements_producer_lineage()
+            )
+            if (
+                not stale_b_track_target
+                or catalog_meta.get("table_structure_version") != TABLE_STRUCTURE_VERSION
+                or catalog_meta.get("table_structure_status") == "base_migration_required"
+                or catalog_meta.get("accounting_status") != "complete"
+            ):
+                raise ClaimArtifactError("catalog-only annotation base is not current")
+            snapshot = {
+                "catalog": list(base.get("catalog") or []),
+                "effective_ledger": [],
+            }
+            catalog_only = True
+        except (ClaimArtifactError, OSError, UnicodeDecodeError, ValueError) as base_exc:
+            raise ClaimAnnotationUnavailable(
+                f"claim annotation snapshot unavailable: {exc}"
+            ) from base_exc
+    else:
+        catalog_only = False
 
     try:
         table_items = read_jsonl(out_dir / "table_items.jsonl")
     except (OSError, ValueError, json.JSONDecodeError):
         table_items = []
-    try:
-        table_cell_items = read_jsonl(out_dir / "table_cell_items.jsonl")
-    except (OSError, ValueError, json.JSONDecodeError):
-        table_cell_items = []
+    table_cell_items = _read_table_cell_items(out_dir)
     effective_by_claim = {
         str(row.get("claim_id") or ""): row
         for row in (snapshot.get("effective_ledger") or [])
@@ -570,6 +605,22 @@ def _claim_annotation_state(
             "claim_effective_revision": str(effective.get("claim_effective_revision") or ""),
             "mapped": False,
         }
+        if catalog_only:
+            record["authority_status"] = "catalog_only"
+        table_context = claim.get("table_context")
+        if isinstance(table_context, dict):
+            record["table_context"] = {
+                "table_title": str(table_context.get("table_title") or ""),
+                "headers": [str(value or "") for value in (table_context.get("headers") or [])],
+                "fields": [
+                    {
+                        "name": str(field.get("name") or ""),
+                        "value": str(field.get("value") or ""),
+                    }
+                    for field in (table_context.get("fields") or [])
+                    if isinstance(field, dict)
+                ],
+            }
         if block_id:
             counts = state["distribution"].setdefault(
                 block_id, {"covered": 0, "excluded": 0, "uncertain": 0}
@@ -799,6 +850,17 @@ def _valid_pdf_regions(value: Any) -> list[dict[str, Any]]:
     return regions
 
 
+def _read_table_cell_items(out_dir: Path) -> list[dict[str, Any]]:
+    """Read cell evidence through the governed result-package address."""
+    try:
+        path = governed_artifact_path(
+            out_dir, "table_cell_items.jsonl", category="pipeline", for_write=False
+        )
+        return [row for row in read_jsonl(path) if isinstance(row, dict)]
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+
+
 def _dedupe_merged_cells(text: str) -> str:
     """折叠表格渲染行里合并单元格展开成的连续重复单元格（STO 实证：docx 扁平行
     "3.1.1 | 3.1.1 | Requirement… | Requirement…" 与转换 PDF 文本层单次出现对不上,
@@ -823,29 +885,37 @@ def _geometry_match_text(value: Any) -> str:
 
 def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
                           cache_path: Path | None = None, *,
-                          row_geometry: dict[str, dict[int, list[dict[str, Any]]]] | None = None
+                          row_geometry: dict[str, dict[int, list[dict[str, Any]]]] | None = None,
+                          table_cell_items: list[dict[str, Any]] | None = None,
                           ) -> dict[str, list[dict[str, Any]]]:
     """读取块坐标；旧输出无坐标时确定性重跑 PDF 文本解析，只回填几何数据。
 
     row_geometry（可选出参）：传入 dict 时为表格块（type="table" 且有 data_rows）
     额外回填行级几何 {block_id: {row_index(1-based): [regions]}}——docx/xlsx 影印
     支路的整表单块在影印页上需要行级热区（对齐原生 PDF 表格的行粒度体验）。
-    行几何只随解析回填路径产生（块自带坐标的原生 PDF 已是细粒度，不重解析）。
-    缓存 payload 增加 "row_geometry" 字段（version 3 不变：旧缓存缺此字段时
-    重算一次并回写，纯增量字段，缺席向后兼容）。"""
+    原生 PDF 表格优先合并 table_cell_items 的精确 cell bbox；缺少 cell bbox 的表格
+    才走文本匹配兜底。缓存 version 7 绑定 cell 几何及原始 PDF 区域指纹，旧整表框与
+    缺页尺寸的错误 v6 缓存不得复用。"""
     block_signature = hashlib.sha256(json.dumps([
-        [block.get("block_id"), block.get("page_number"), block.get("text")]
+        [block.get("block_id"), block.get("page_number"), block.get("text"),
+         block.get("pdf_regions")]
         for block in blocks
     ], ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
     source_hash = _file_sha256(source_pdf)
+    cell_signature = hashlib.sha256(json.dumps([
+        [row.get("table_block_id"), row.get("cell_id"), row.get("data_row_index"),
+         row.get("page_number"), row.get("bbox"), row.get("geometry_kind")]
+        for row in (table_cell_items or []) if isinstance(row, dict)
+    ], ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
     if cache_path:
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             cached = {}
         cached_rows = cached.get("row_geometry")
-        if (cached.get("version") == 5 and cached.get("source_sha256") == source_hash
+        if (cached.get("version") == 7 and cached.get("source_sha256") == source_hash
                 and cached.get("block_signature") == block_signature
+                and cached.get("cell_geometry_signature") == cell_signature
                 and isinstance(cached.get("geometry"), dict)
                 and (row_geometry is None or isinstance(cached_rows, dict))):
             if row_geometry is not None and isinstance(cached_rows, dict):
@@ -868,8 +938,24 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
         for block in blocks
         if (regions := _valid_pdf_regions(block.get("pdf_regions")))
     }
+    exact_row_geometry = _table_cell_row_geometry(blocks, table_cell_items or [])
+    if row_geometry is not None:
+        row_geometry.update(exact_row_geometry)
     missing = [block for block in blocks if str(block.get("block_id") or "") not in geometry]
-    if not missing:
+    needs_row_fallback = bool(row_geometry is not None and any(
+        str(block.get("type") or "") == "table"
+        and any(
+            row_index not in exact_row_geometry.get(str(block.get("block_id") or ""), {})
+            for row_index in range(1, len(block.get("data_rows") or []) + 1)
+        )
+        for block in blocks
+    ))
+    if not missing and not needs_row_fallback:
+        if cache_path:
+            _write_pdf_geometry_cache(
+                cache_path, source_hash, block_signature, cell_signature,
+                geometry, row_geometry,
+            )
         return geometry
 
     try:
@@ -977,43 +1063,116 @@ def _resolve_pdf_geometry(source_pdf: Path, blocks: list[dict[str, Any]],
                 geometry[block_id] = regions
         if regions:
             geometry[block_id] = regions
-    if row_geometry is not None:
-        row_geometry.update(_table_row_geometry(blocks, parsed_blocks, parsed_by_text_global))
+    if row_geometry is not None and needs_row_fallback:
+        fallback_rows = _table_row_geometry(
+            blocks, parsed_blocks, parsed_by_text_global,
+            skip_row_indexes={
+                block_id: set(rows) for block_id, rows in exact_row_geometry.items()
+            },
+        )
+        for block_id, rows in fallback_rows.items():
+            row_geometry.setdefault(block_id, {}).update(rows)
     if cache_path:
-        payload = {
-            "version": 5,
-            "source_sha256": source_hash,
-            "block_signature": block_signature,
-            "geometry": geometry,
-        }
-        if row_geometry is not None:
-            payload["row_geometry"] = {
-                block_id: {str(row_index): regions for row_index, regions in rows.items()}
-                for block_id, rows in row_geometry.items()
-            }
-        tmp = cache_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, cache_path)
+        _write_pdf_geometry_cache(
+            cache_path, source_hash, block_signature, cell_signature,
+            geometry, row_geometry,
+        )
     return geometry
+
+
+def _write_pdf_geometry_cache(
+    cache_path: Path,
+    source_hash: str,
+    block_signature: str,
+    cell_signature: str,
+    geometry: dict[str, list[dict[str, Any]]],
+    row_geometry: dict[str, dict[int, list[dict[str, Any]]]] | None,
+) -> None:
+    payload: dict[str, Any] = {
+        "version": 7,
+        "source_sha256": source_hash,
+        "block_signature": block_signature,
+        "cell_geometry_signature": cell_signature,
+        "geometry": geometry,
+    }
+    if row_geometry is not None:
+        payload["row_geometry"] = {
+            block_id: {str(row_index): regions for row_index, regions in rows.items()}
+            for block_id, rows in row_geometry.items()
+        }
+    tmp = cache_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, cache_path)
+
+
+def _table_cell_row_geometry(
+    blocks: list[dict[str, Any]],
+    table_cell_items: list[dict[str, Any]],
+) -> dict[str, dict[int, list[dict[str, Any]]]]:
+    """Merge exact PDF cell boxes into data-row regions without inventing dimensions."""
+    dimensions: dict[tuple[str, int], tuple[float, float]] = {}
+    for block in blocks:
+        block_id = str(block.get("block_id") or "")
+        if str(block.get("type") or "") != "table" or not block_id:
+            continue
+        for region in _valid_pdf_regions(block.get("pdf_regions")):
+            dimensions[(block_id, int(region["page_number"]))] = (
+                float(region["page_width"]), float(region["page_height"])
+            )
+
+    grouped: dict[tuple[str, int, int], list[list[float]]] = {}
+    for cell in table_cell_items:
+        if not isinstance(cell, dict) or cell.get("data_row_index") is None:
+            continue
+        block_id = str(cell.get("table_block_id") or "")
+        page = _page_number(cell.get("page_number"))
+        bbox = cell.get("bbox")
+        try:
+            row_index = int(cell.get("data_row_index"))
+            coords = [float(value) for value in bbox]
+        except (TypeError, ValueError):
+            continue
+        if (not block_id or not page or row_index < 1 or len(coords) != 4
+                or (block_id, page) not in dimensions
+                or coords[2] <= coords[0] or coords[3] <= coords[1]):
+            continue
+        grouped.setdefault((block_id, row_index, page), []).append(coords)
+
+    result: dict[str, dict[int, list[dict[str, Any]]]] = {}
+    for (block_id, row_index, page), boxes in grouped.items():
+        page_width, page_height = dimensions[(block_id, page)]
+        region = {
+            "page_number": page,
+            "bbox": [
+                min(box[0] for box in boxes),
+                min(box[1] for box in boxes),
+                max(box[2] for box in boxes),
+                max(box[3] for box in boxes),
+            ],
+            "page_width": page_width,
+            "page_height": page_height,
+        }
+        result.setdefault(block_id, {}).setdefault(row_index, []).append(region)
+    return result
 
 
 def _table_row_geometry(
     blocks: list[dict[str, Any]],
     parsed_blocks: list[dict[str, Any]],
     parsed_by_text_global: dict[str, list[dict[str, Any]]],
+    *,
+    skip_row_indexes: dict[str, set[int]] | None = None,
 ) -> dict[str, dict[int, list[dict[str, Any]]]]:
     """表格块数据行的行级几何（docx/xlsx 影印支路：整表单块、无页号）。
 
     每行用 _row_render_line 渲染后走与块级相同的全局匹配（精确/包含/前缀锚预筛模糊）。
     跳过分组标题行（非空单元格全同值）与稀疏行（非空单元格 < _PARAM_ROW_MIN_CELLS）——
-    与 spot_extract 行展开同口径；有页号的表格块（原生 PDF）已是细粒度，不重复计算。"""
+    与 spot_extract 行展开同口径。原生 PDF 若没有 cell bbox 也走此保守兜底。"""
     from ai_extract import _PARAM_ROW_MIN_CELLS, _row_render_line
 
     row_geometry: dict[str, dict[int, list[dict[str, Any]]]] = {}
     for block in blocks:
         if str(block.get("type") or "") != "table":
-            continue
-        if _page_number(block.get("page_number")) is not None:
             continue
         data_rows = block.get("data_rows") or []
         if not data_rows:
@@ -1022,6 +1181,8 @@ def _table_row_geometry(
         headers = [str(h or "") for h in (block.get("headers") or [])]
         block_rows: dict[int, list[dict[str, Any]]] = {}
         for row_index, row in enumerate(data_rows, start=1):
+            if row_index in (skip_row_indexes or {}).get(block_id, set()):
+                continue
             non_empty = [str(cell or "").strip() for cell in row if str(cell or "").strip()]
             if len(non_empty) < _PARAM_ROW_MIN_CELLS:
                 continue   # 稀疏行不是独立需求行
@@ -2959,11 +3120,16 @@ def _table_row_zone_kinds(block: dict[str, Any],
         non_empty = [str(cell or "").strip() for cell in row if str(cell or "").strip()]
         if len(non_empty) < _PARAM_ROW_MIN_CELLS or len(set(non_empty)) == 1:
             continue   # 与行几何同口径：稀疏行/分组标题行不发区
-        compact_row = compact_source_text(_row_render_line(headers, row))
-        if not compact_row:
+        compact_rows = {
+            compact_source_text(_row_render_line(headers, row)),
+            compact_source_text(" | ".join(str(cell or "") for cell in row)),
+        }
+        compact_rows.discard("")
+        if not compact_rows:
             continue
         quoted = [req_id for req_id in block_req_ids
-                  if req_quotes[req_id] and compact_row in req_quotes[req_id]]
+                  if req_quotes[req_id]
+                  and any(compact_row in req_quotes[req_id] for compact_row in compact_rows)]
         if quoted:
             kinds[row_index] = {"kind": "req", "req_id": quoted[0], "req_ids": quoted}
             continue
@@ -2998,8 +3164,13 @@ def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, 
     zones: list[dict[str, Any]] = []
     semantic_items = (semantics if semantics is not None
                       else _pdf_block_semantics(blocks, requirements, covered))
+    blocks_by_id = {str(block.get("block_id") or ""): block for block in blocks}
     for item in semantic_items:
         block_id = str(item.get("block_id") or "")
+        # 行级几何存在时，数据行就是表格需求的原文权威区；不能再叠加整表块热区。
+        if (str((blocks_by_id.get(block_id) or {}).get("type") or "") == "table"
+                and dict(row_geometry or {}).get(block_id)):
+            continue
         kind = str(item.get("kind") or "context")
         for page, union in _page_region_unions(geometry.get(block_id) or []).items():
             zone: dict[str, Any] = {"block_id": block_id, "page": page,
@@ -3012,7 +3183,6 @@ def _pdf_block_zones(blocks: list[dict[str, Any]], requirements: list[dict[str, 
                 zone["req_ids"] = list(item.get("req_ids") or [])
             zones.append(zone)
     if row_geometry:
-        blocks_by_id = {str(block.get("block_id") or ""): block for block in blocks}
         for block_id, rows in row_geometry.items():
             block = blocks_by_id.get(str(block_id))
             if not block:
@@ -3318,10 +3488,7 @@ def _cell_context_payload(
     该数据与页图/几何无关——影印不可用时也必须可用（M2：docx/xlsx 无转换器环境
     不应连 DOM 表格的 cell 卡片都拿不到）。"""
     cell_context: dict[str, dict[str, Any]] = {}
-    try:
-        payload_cells = read_jsonl(out_dir / "table_cell_items.jsonl")
-    except (OSError, ValueError, json.JSONDecodeError):
-        payload_cells = []
+    payload_cells = _read_table_cell_items(out_dir)
     for cell in payload_cells:
         if not isinstance(cell, dict):
             continue
@@ -3453,9 +3620,11 @@ def build_pdf_annotation_payload(
     else:
         requirements = [dict(row) for row in requirements if isinstance(row, dict)]
     row_geometry: dict[str, dict[int, list[dict[str, Any]]]] = {}
+    table_cell_items = _read_table_cell_items(out_dir)
     geometry = _resolve_pdf_geometry(source_pdf, blocks,
                                      cache_path=out_dir / ANNOTATION_PDF_GEOMETRY,
-                                     row_geometry=row_geometry)
+                                     row_geometry=row_geometry,
+                                     table_cell_items=table_cell_items)
     requirement_markers: list[dict[str, Any]] = []
     for req in requirements:
         req_id = str(req.get("ai_req_id") or "")
@@ -3536,10 +3705,14 @@ def export_annotation_bundle(out_dir: Path, *, route: str | None = None,
         if source_pdf.resolve() != copied_pdf.resolve():
             shutil.copyfile(source_pdf, copied_pdf)
         try:
-            blocks = build_document_blocks(out_dir).get("blocks") or []
+            blocks = read_jsonl(governed_artifact_path(
+                out_dir, "blocks.jsonl", category="pipeline", for_write=False
+            ))
+            table_cell_items = _read_table_cell_items(out_dir)
             pdf_geometry = _resolve_pdf_geometry(
                 source_pdf, blocks, cache_path=out_dir / ANNOTATION_PDF_GEOMETRY,
-                row_geometry=pdf_row_geometry)
+                row_geometry=pdf_row_geometry,
+                table_cell_items=table_cell_items)
             pdf_pages, page_files = _ensure_pdf_page_images(source_pdf, out_dir)
             if package_root_for_analysis_root(out_dir) is not None:
                 for page in pdf_pages:
