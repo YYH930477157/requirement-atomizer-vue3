@@ -1591,9 +1591,15 @@ def unresolved_hard_questions(out_dir: Path) -> tuple[list[dict[str, Any]], dict
 def run_report(out_dir: Path) -> dict[str, Any]:
     out_dir = Path(out_dir).expanduser().resolve()
     if not (out_dir / "ai_requirements.jsonl").exists():
-        # 缺输入响亮失败（仓库纪律：不产"0 问题"的假清单掩盖打错目录）
-        raise FileNotFoundError(
-            f"ai_requirements.jsonl not found in {out_dir} — 先跑「AI 抽取」再生成澄清清单")
+        # WS2 直抽链形态（无原子）：functional-extract 产物守恒闭合时允许作为依据
+        # （判定单源 functional_extract.functional_direct_basis，守恒未闭合在其内响亮失败）。
+        # 其余情况维持响亮失败（仓库纪律：不产"0 问题"的假清单掩盖打错目录）。
+        from functional_extract import functional_direct_basis
+
+        if functional_direct_basis(out_dir) is None:
+            raise FileNotFoundError(
+                f"ai_requirements.jsonl not found in {out_dir} — 先跑「AI 抽取」，"
+                "或走功能直抽链（RATOMIZER_FUNCTIONAL_EXTRACT=1 的 chain）再生成澄清清单")
     entries = collect_questions(out_dir)
     _attach_internal_check_states(entries, out_dir)
     answers = load_answers(out_dir)

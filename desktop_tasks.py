@@ -216,6 +216,7 @@ def _detach_dual_track_proposer() -> None:
 # 链内阶段名 → 预算单环节（仅 LLM 承载环节映射，确定性环节不进账本分摊）
 _CHAIN_BUDGET_STAGES = {
     "ai-extract": "functional_extract",
+    "functional-extract": "functional_extract",
     "assemble": "spec_enrich",
     "requirements-analysis": "analyze_enrich",
     "full-translation": "full_translation",
@@ -417,6 +418,32 @@ def assemble_task(
 def functional_synthesis_task(out_dir: Path, *, route: str = "stub") -> dict[str, Any]:
     out_dir = out_dir.expanduser().resolve()
     return run_functional_synthesis(out_dir, route=route)
+
+
+@_leased_pipeline_stage("functional-extract")
+def functional_extract_task(out_dir: Path, *, route: str | None = "openai_compatible") -> dict[str, Any]:
+    """WS2 条款直抽阶段入口：不产原子，单次 LLM 直出功能需求级条目。
+
+    预检纪律（2026-07-08 审计 A4 同款）：显式请求非 stub 路由但 key/端点不可用时
+    响亮失败，优于静默 stub 产占位功能需求且 manifest 全 ok。显式 route="stub" 是
+    合法 opt-in（测试/烟测），照常运行。
+    """
+    from functional_extract import (
+        FUNCTIONAL_REQUIREMENTS_FILENAME,
+        _route_config,
+        run_functional_extract,
+    )
+    if route and route != "stub" and _route_config(route) is None:
+        raise RuntimeError(
+            f"functional-extract 请求 LLM 路由 {route} 但无可用 key/端点配置——"
+            "拒绝静默 stub 占位产物；请配置 RATOMIZER_LLM_* 或显式使用 --llm-route stub")
+    out_dir = out_dir.expanduser().resolve()
+    result = dict(run_functional_extract(out_dir, route=route))
+    if result.get("written"):
+        result["written"] = [str(out_dir / FUNCTIONAL_REQUIREMENTS_FILENAME)]
+    if str(result.get("route") or "") == "stub" and route != "stub":
+        result["note"] = "功能直抽全部包降级 stub 路由（占位条目，非真 LLM 产物）——请检查 key/网络"
+    return result
 
 
 @_leased_pipeline_stage("compose")
@@ -1094,7 +1121,9 @@ _REPLACE_ATTEMPTS = 8
 _REPLACE_RETRY_DELAY_S = 0.02
 
 # 阶段名 == 子命令名（manifest 键与 CLI 一致，GUI 单步按钮与 chain 写同一本账）
-CHAIN_ORDER = ["ai-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
+# functional-extract 是 WS2 条款直抽阶段（RATOMIZER_FUNCTIONAL_EXTRACT=1 时由 chain_task
+# 整体替换 ai-extract + functional-synthesis 两阶段——不产原子、不再重并）。
+CHAIN_ORDER = ["ai-extract", "functional-extract", "functional-synthesis", "assemble", "requirements-analysis", "template-write",
                "clarification-report", "full-translation", "compose", "export-annotation-html"]
 
 # 结果包发布纪律（2026-08-03 审查 I1/I3，spec §8.2/§15）：
@@ -1123,6 +1152,7 @@ STAGE_INPUTS: dict[str, list[str]] = {
                  "ai_supplements.jsonl"],
     "functional-synthesis": ["ai_requirements.jsonl", "ai_requirements.meta.json", "blocks.jsonl",
                              "ai_review_states.jsonl", "ai_supplements.jsonl"],
+    "functional-extract": ["blocks.jsonl", "chunks.jsonl", "doc_map.json"],
     "requirements-analysis": [FUNCTIONAL_REQUIREMENTS, "ai_requirements.jsonl", "ai_review_states.jsonl",
                               "clarification_answers.jsonl", "blocks.jsonl", "term_map.json",
                               "ai_requirements.meta.json", "ai_supplements.jsonl"],
@@ -1182,6 +1212,7 @@ STAGE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
         "claim_generation.meta.json",
     ],
     "functional-synthesis": [FUNCTIONAL_REQUIREMENTS],
+    "functional-extract": [FUNCTIONAL_REQUIREMENTS],
     "assemble": [ASSEMBLED_JSON],
     "requirements-analysis": REQUIREMENTS_ANALYSIS_OUTPUTS,
     "template-write": ["软件需求列表-成文.xlsx", "template_writer_report.json"],
@@ -1222,6 +1253,9 @@ STAGE_IMPLEMENTATION_REVISIONS = {
     "assemble": "v2",
     # v4: consumes is_compliance_requirement; compliance-rules v2 invalidates old caches.
     "functional-synthesis": "v4",
+    # v1：chain 正式接入 WS2 条款直抽（RATOMIZER_FUNCTIONAL_EXTRACT=1 时整体替换
+    # ai-extract + functional-synthesis，不产原子）——新阶段初始版本戳。
+    "functional-extract": "v1",
     # v6：hardware_dependency 落交付物渲染（xlsx 说明列/co_design_items.md）——
     # 纯渲染变更不动 analyze 缓存版本，靠 impl 戳让阶段重跑重渲染（审计 P1-b）
     "requirements-analysis": "v6",
@@ -1240,6 +1274,9 @@ _STAGE_BASE_PRODUCERS = {
     "clarification-report": "clarification/v8-param-row-aggregate",
     "full-translation": "full-translation/v2-row-structured",
     "compose": "engineering_composer/v1",
+    # 基础戳只钉家族名；功能/prompt/护栏三版本在 stage_producer 动态拼入
+    # （任一 bump 旧 functional-extract 缓存自然失效，与 ai-extract lineage 同纪律）。
+    "functional-extract": "functional_extract/v1",
     # v18-row-source-zones：静态导出改读保留 pdf_regions 的原始 blocks，几何 cache v7
     # 绑定原始区域；避免清洗 blocks 缺页尺寸时把文本估算行区写成可复用的“精确”缓存。
     # + v19-structured-claim-source：Claim 记录下发表格字段上下文，右栏按行结构展示；
@@ -1288,6 +1325,20 @@ def stage_producer(stage: str, *, out_dir: Path | None = None,
             producer = "+".join((
                 AI_REQUIREMENTS_PRODUCER_LINEAGE_VERSION,
                 *producer_lineage_versions().values(),
+            ))
+        elif stage == "functional-extract":
+            # 版本戳覆盖影响产物的全部代码层：功能/prompt/护栏三版本任一 bump，
+            # 旧 functional-extract 阶段缓存即失效（同 ai-extract lineage 纪律）。
+            from functional_extract import (
+                FUNCTIONAL_EXTRACT_GUARDS_VERSION,
+                FUNCTIONAL_EXTRACT_PROMPT_VERSION,
+                FUNCTIONAL_EXTRACT_VERSION,
+            )
+            producer = "+".join((
+                producer,
+                FUNCTIONAL_EXTRACT_VERSION,
+                FUNCTIONAL_EXTRACT_PROMPT_VERSION,
+                FUNCTIONAL_EXTRACT_GUARDS_VERSION,
             ))
         elif stage == "atomize":
             # PDF text repair changes blocks consumed by every downstream stage. Include both
@@ -1654,6 +1705,9 @@ def stage_input_fingerprint(out_dir: Path, stage: str, *, route: str | None = No
             "RATOMIZER_TRANSLATE_BATCH", "RATOMIZER_TRANSLATE_BATCH_MAX_CHARS",
             # 复核批处理：启用/批大小改变审查产物与缓存指纹（m2-review-v4-batch）→ 阶段必须重跑
             "RATOMIZER_REVIEW_BATCH",
+            # WS2 直抽开关切换改变链形态（ai-extract/functional-synthesis ↔ functional-extract）
+            # 与 requirements-analysis/clarification-report 的输入依据 → 开关状态必须进指纹
+            "RATOMIZER_FUNCTIONAL_EXTRACT",
         )},
         "requirements_analysis_enrich": (
             requirements_analysis_enrichment_enabled()
@@ -2473,6 +2527,24 @@ def _stage_completion_status(stage: str, payload: Any) -> str:
     return "ok"
 
 
+def _functional_extract_stage_config() -> dict[str, Any]:
+    """functional-extract 阶段指纹配置：策略/负例条数改变产物 → 阶段必须重跑。
+
+    与 full-translation 的 {"enabled": ...} 同款纪律——环境开关必须进 config 进指纹，
+    否则切换 RATOMIZER_CONTEXT_PACK_STRATEGY 后 chain 续跑会静默跳过直抽阶段。
+    """
+    from functional_extract import (
+        CONTEXT_PACK_STRATEGY_ENV,
+        FUNCTIONAL_EXTRACT_NEGATIVE_K,
+        context_pack_strategy,
+    )
+    return {
+        "strategy": context_pack_strategy(),
+        "strategy_env_raw": os.environ.get(CONTEXT_PACK_STRATEGY_ENV, ""),
+        "negative_k": FUNCTIONAL_EXTRACT_NEGATIVE_K,
+    }
+
+
 def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                template_path: Path | None = None,
                sample_ratio: float | None = None,
@@ -2490,6 +2562,17 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     ordered = [s for s in CHAIN_ORDER if s in set(stages)]
     if not ordered:
         raise ValueError("阶段清单为空")
+    # WS2 条款直抽（默认关）：RATOMIZER_FUNCTIONAL_EXTRACT=1 时 ai-extract（拆原子）+
+    # functional-synthesis（重并）整体替换为 functional-extract——UI/CLI 仍传旧阶段名，
+    # 替换在此单点完成并落账，不静默改行为。
+    functional_extract_replaced: list[str] = []
+    from functional_extract import functional_extract_enabled
+    if functional_extract_enabled():
+        legacy_pair = [s for s in ("ai-extract", "functional-synthesis") if s in ordered]
+        if legacy_pair:
+            functional_extract_replaced = legacy_pair
+            ordered = [s for s in CHAIN_ORDER
+                       if s in (set(ordered) - set(legacy_pair)) | {"functional-extract"}]
     if "template-write" in ordered and template_path is None:
         raise ValueError("template-write 阶段需要 --template（公司需求列表模板路径）")
 
@@ -2499,7 +2582,16 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     ai_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
     ai_dependent = {"functional-synthesis", "requirements-analysis", "template-write",
                     "clarification-report"}
-    if route == "stub" and ai_dependent.intersection(ordered) and not stage_is_reusable(
+    if functional_extract_replaced:
+        # 直抽模式下 ai-extract 永不运行：AI 依赖阶段的前置检查换成直抽阶段自身
+        if route == "stub" and ai_dependent.intersection(ordered) and not stage_is_reusable(
+                out_dir, "functional-extract", route="stub",
+                config=_functional_extract_stage_config()):
+            raise ValueError(
+                "当前链包含需求分析等 AI 依赖阶段，但没有可复用的功能直抽产物；"
+                "请使用 openai_compatible 完成功能直抽后再继续。"
+            )
+    elif route == "stub" and ai_dependent.intersection(ordered) and not stage_is_reusable(
             out_dir, "ai-extract", route="stub", config=ai_config):
         raise ValueError(
             "当前链包含功能重组/需求分析等 AI 依赖阶段，但没有可复用的 AI 抽取产物；"
@@ -2510,6 +2602,7 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
         "ai-extract": lambda: ai_extract_task(out_dir, route=route,
                                               limit_sections=limit_sections,
                                               sample_ratio=sample_ratio),
+        "functional-extract": lambda: functional_extract_task(out_dir, route=route),
         "functional-synthesis": lambda: functional_synthesis_task(out_dir, route=route),
         "assemble": lambda: assemble_task(out_dir, enrich_route=route if route != "stub" else None),
         "requirements-analysis": lambda: requirements_analysis_task(
@@ -2525,12 +2618,17 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
     results: dict[str, Any] = {}
     skipped_stages: list[str] = []
     payload: dict[str, Any] = {"kind": "chain", "out_dir": str(out_dir), "stages": ordered}
+    if functional_extract_replaced:
+        payload["functional_extract_mode"] = {
+            "replaced_stages": functional_extract_replaced,
+            "entry_switch": "RATOMIZER_FUNCTIONAL_EXTRACT",
+        }
     global _CHAIN_ACTIVE
     _CHAIN_ACTIVE = True   # 链内各阶段跳过 summary;finally 复位,失败路径不污染后续任务
     chain_budget = _attach_budget_ledger_for_run(out_dir)  # S1-1：开启预算单时挂账本
     try:
-        llm_stages = {"ai-extract", "functional-synthesis", "assemble", "requirements-analysis",
-                      "full-translation", "export-annotation-html"}
+        llm_stages = {"ai-extract", "functional-extract", "functional-synthesis", "assemble",
+                      "requirements-analysis", "full-translation", "export-annotation-html"}
         for index, stage in enumerate(ordered, start=1):
             emit_progress({"stage": "chain", "step": stage, "completed": index - 1,
                            "total": len(ordered), "percent": int((index - 1) * 100 / len(ordered))})
@@ -2538,6 +2636,8 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
             stage_template = template_path if stage in {"requirements-analysis", "template-write"} else None
             if stage == "ai-extract":
                 stage_config = {"sample_ratio": sample_ratio, "limit_sections": limit_sections}
+            elif stage == "functional-extract":
+                stage_config = _functional_extract_stage_config()
             elif stage == "export-annotation-html":
                 stage_config = {"layout_mode": annotation_layout_mode}
             elif stage == "full-translation":
@@ -2650,6 +2750,21 @@ def chain_task(out_dir: Path, *, stages: list[str], route: str = "stub",
                 for key in ("consistency", "sampled", "quality", "count", "claim_shadow"):
                     if stage_payload.get(key) is not None:
                         payload[key] = stage_payload[key]
+            elif stage == "functional-extract":
+                # 统计取自产物文件（单一真相源）：skipped 路径的 stage payload 不带计数键
+                summary: dict[str, Any] = {"count": None, "route": None, "conservation": None}
+                try:
+                    from requirements_analysis_rules import _read_functional_requirements_payload
+                    fr = _read_functional_requirements_payload(out_dir)
+                    if isinstance(fr, dict):
+                        summary = {
+                            "count": fr.get("functional_requirements"),
+                            "route": fr.get("route"),
+                            "conservation": fr.get("conservation"),
+                        }
+                except Exception:  # noqa: BLE001 — 聚合失败不影响链结果
+                    pass
+                payload["functional_extract"] = summary
             elif stage == "requirements-analysis":
                 payload["analysis"] = stage_payload.get("analysis")
             elif stage == "template-write":
@@ -3026,6 +3141,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ai_extract_parser.add_argument("--limit-sections", type=int, default=0)
     ai_extract_parser.add_argument("--sample-ratio", type=float, default=0.0)
 
+    functional_extract_parser = subparsers.add_parser("functional-extract")
+    functional_extract_parser.add_argument("--out", type=Path, required=True)
+    # 默认 openai_compatible（与 ai-extract 同款审计 A4 纪律）：没配 key 响亮失败
+    functional_extract_parser.add_argument("--llm-route", choices=["stub", "openai_compatible"],
+                                           default="openai_compatible")
+
     summary_parser = subparsers.add_parser("summary")
     summary_parser.add_argument("--out", type=Path, required=True)
 
@@ -3204,8 +3325,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _manifest_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
     command = str(getattr(args, "command", "") or "")
     context: dict[str, Any] = {}
-    if command in {"llm-review", "ai-extract", "requirements-analysis"}:
+    if command in {"llm-review", "ai-extract", "requirements-analysis", "functional-extract"}:
         context["route"] = getattr(args, "llm_route", None)
+        if command == "functional-extract":
+            context["config"] = _functional_extract_stage_config()
     elif command == "assemble":
         context["route"] = getattr(args, "enrich_route", None) or None
     elif command in {"export-annotation-html", "full-translation"}:
@@ -3509,6 +3632,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = ai_extract_task(args.out, route=args.llm_route,
                                       limit_sections=args.limit_sections or None,
                                       sample_ratio=args.sample_ratio or None)
+        elif args.command == "functional-extract":
+            payload = functional_extract_task(args.out, route=args.llm_route)
         elif args.command == "export-annotation-html":
             payload = export_annotation_html_task(
                 args.out,

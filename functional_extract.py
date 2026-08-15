@@ -22,7 +22,9 @@ source_quote / source_section / source_block_ids），下游成文与评审界�
   占位功能需求，``provenance`` 如实标 ``stub``，绝不伪装真 LLM 输出。
 * **测试中禁止真实 LLM 调用**：单测注入 ``chat`` 回调或走 stub 路由。
 
-入口开关 ``RATOMIZER_FUNCTIONAL_EXTRACT``（默认 ``0``=旧原子化路径）。产物路径走
+入口开关 ``RATOMIZER_FUNCTIONAL_EXTRACT``（默认 ``0``=旧原子化路径）。=1 时 chain_task 把
+``ai-extract``+``functional-synthesis`` 两阶段整体替换为本模块（``functional-extract`` 阶段）；
+也可经 ``ratomizer functional-extract`` 单步子命令直跑。产物路径走
 ``result_package.governed_artifact_path``，缓存指纹按仓库既有模式接入
 （``FUNCTIONAL_EXTRACT_VERSION`` + prompt 版本 + 护栏版本）。
 
@@ -1057,6 +1059,30 @@ def _extract_by_context_packages(
     return items, final_route
 
 
+def functional_direct_basis(root: Path | str) -> list[dict[str, Any]] | None:
+    """直抽产物可否作为唯一需求依据（无原子链形态，RATOMIZER_FUNCTIONAL_EXTRACT=1）。
+
+    供 requirements_analysis / clarification_report 的缺原子门共用：三查 producer 家族
+    （functional-extract）、items 为列表、守恒闭合。守恒未闭合不在此二值判断内——直接
+    ``raise_if_unconserved`` 响亮失败（成文闸门纪律），绝不静默回退空表产"0 条"假交付物。
+    不满足前置返回 None，调用方维持各自的响亮失败。
+    """
+    from requirements_analysis_rules import _read_functional_requirements_payload
+
+    payload = _read_functional_requirements_payload(Path(root))
+    if not isinstance(payload, dict):
+        return None
+    if not str(payload.get("producer") or "").startswith("functional-extract"):
+        return None
+    conservation = payload.get("conservation")
+    if isinstance(conservation, dict):
+        # 缺守恒块按现状放行（与 requirements_analysis 消费端闸门同口径）；
+        # 有块未闭合 = 响亮失败，绝不静默进成文。
+        raise_if_unconserved(conservation)
+    items = payload.get("items")
+    return items if isinstance(items, list) else None
+
+
 def run_functional_extract(
     out_dir: Path | str,
     *,
@@ -1102,6 +1128,14 @@ def run_functional_extract(
     cached = cache.get(fingerprint)
     if cached is not None and isinstance(cached.get("payload"), dict):
         payload = dict(cached["payload"])
+        from result_package import governed_artifact_path
+        target = governed_artifact_path(
+            out_dir, FUNCTIONAL_REQUIREMENTS_FILENAME, category="pipeline", for_write=False
+        )
+        if not target.is_file():
+            # 缓存命中但产物文件缺席（被清理/损坏）——用缓存负载原样补写：不花 LLM 调用，
+            # 也不让阶段陷入"报成功但产物永远缺席"（chain 复用按产物存在性判定）。
+            return _finalize_payload(payload, out_dir, route, write=True)
         # 缓存里的 route 如实保留；route 变化已并入指纹，旧产物自然失效（S1-7：stub/openai_compatible 不共键）
         return _finalize_payload(payload, out_dir, route)
 

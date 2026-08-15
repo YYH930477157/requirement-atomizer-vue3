@@ -2249,6 +2249,7 @@ async function handleRunPipeline(options: { llmReviewLimit?: number } = {}) {
 
 const CHAIN_STEP_LABELS: Record<string, string> = {
   "functional-synthesis": "功能重组",
+  "functional-extract": "功能需求直抽（条款级，无原子化）",
   "ai-extract": "AI 抽取（双引擎）", assemble: "装配实现规格", "requirements-analysis": "软件需求分析",
   "template-write": "成文需求列表", "clarification-report": "澄清问题清单", compose: "组装工程需求",
   "full-translation": "生成全文双语交付物",
@@ -2271,6 +2272,12 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
   if (event.stage === "chain") {
     const step = String(event.step || "")
     const label = CHAIN_STEP_LABELS[step] || step || "交付物链"
+    // WS2 功能直抽（RATOMIZER_FUNCTIONAL_EXTRACT=1）：后端把 ai-extract+functional-synthesis
+    // 整体替换为 functional-extract——进度驱动「AI抽取」卡片，「功能重组」卡片如实标记被替换
+    const cardKey = step === "functional-extract" ? "ai-extract" : step
+    if (step === "functional-extract") {
+      setRunStageState("functional-synthesis", { status: "skipped", percent: 100, detail: "由功能需求直抽替代" })
+    }
     // 真实反馈 2026-07-14：链步进入新阶段 → 上一阶段卡片翻绿。后端的完成事件与开始事件
     // 同 step 名(只有 skipped 带 status),此前完成的阶段没人翻绿、卡在最后一次内部进度。
     if (lastChainStep && lastChainStep !== step) {
@@ -2281,9 +2288,9 @@ function handleTaskProgress(event: { stage: string; step?: string; status?: stri
     if (status === "running") {
       // 链级百分比是"第 N/共 M 步"(2/7≈14%),不是阶段内部进度——不写进卡片,
       // 卡片百分比由链内细粒度事件(ai_extract/analyze)驱动(setRunStageState 是合并语义)
-      setRunStageState(step, { status, detail: label })
+      setRunStageState(cardKey, { status, detail: label })
     } else {
-      setRunStageState(step, { status, percent: 100, detail: status === "skipped" ? "复用已有产物" : "已完成" })
+      setRunStageState(cardKey, { status, percent: 100, detail: status === "skipped" ? "复用已有产物" : "已完成" })
     }
     runStage.value = total ? `交付物链 ${Math.min(completed + 1, total)}/${total}：${label}` : label
     runProgress.value = percent   // 顶栏切到链视角(此前保留基础管线的 100%,出现"100% 但还在跑")

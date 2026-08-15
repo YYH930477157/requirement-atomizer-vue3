@@ -72,7 +72,7 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     # --- WS2 粒度重构（功能需求直抽 + claim 账本抽检 + 原子级下钻）---
     # 全部默认关闭/采样：直抽是旁路新入口（默认关=旧原子化路径），claim 账本 sampling 为默认档。
     # WS0 功能需求级真值集尚是 pending-human，本切片只交付工程机制（默认关闭、旧路径始终合法）。
-    EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT", "0", "功能需求直抽入口开关（=1 启用 functional_extract 单次 LLM 直出功能需求级条目并写 functional_requirements.json；默认 0=旧 extract_units→atomize→functional_synthesis 原子化路径，行为面与缓存指纹不动）", False),
+    EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT", "0", "功能需求直抽入口开关（=1 chain 内 ai-extract+functional-synthesis 两阶段整体替换为 functional-extract：条款单元单次 LLM 直出功能需求级条目写 functional_requirements.json，不产原子、不再重并；UI/CLI 仍传旧阶段名，替换由 chain_task 单点完成并落账。默认 0=旧原子化路径）", False),
     EnvVar("RATOMIZER_FUNCTIONAL_EXTRACT_NEGATIVE_K", "2", "functional_extract 直抽负例 few-shot 注入数量上限（0=不注入）", False),
     EnvVar("RATOMIZER_CLAIM_LEDGER_MODE", "sampling", "claim 账本闭合模式（配置解析层默认 sampling；B 轨发布路径 env 未设时仍走 full=生产行为不变，显式设置才 opt-in 生效）。full=全量 verifier 闭合 / sampling=分层抽样 10%+全部高风险 claim，未抽中 claim 延迟到发布门禁并在 claim_sampling_summary.json 留痕 / baseline_gate=发布门禁全量闭合+重型机制联动（用户显式开启时触发全量闭合）。build_shadow_ledger 自身默认 full（直接调用者/既有测试不受影响）；把 sampling 翻转为生产默认属语义变更，留待 S2", False),
     EnvVar("RATOMIZER_CLAIM_LEDGER_SAMPLING_RATE", "0.1", "sampling 模式分层抽样率（0..1，默认 0.1；抽检闭合率低于阈值时自动扩大，判定依据留账本）", False),
