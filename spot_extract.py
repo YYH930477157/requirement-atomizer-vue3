@@ -19,6 +19,7 @@ from typing import Any
 
 from io_utils import read_jsonl
 from omission_actions import OmissionConflictError, extraction_operation_lock
+from result_package import governed_artifact_path
 
 SPOT_EXTRACT_VERSION = "spot-extract-v2"
 SPOT_SOURCE_MAPPING = "spot_extract"
@@ -33,8 +34,13 @@ class SpotExtractUnavailableError(RuntimeError):
     """LLM 路由未配置/不可用——响亮失败，绝不退化成 stub 抽取。"""
 
 
-def _block_by_id(out_dir: Path, block_id: str) -> dict[str, Any]:
-    for block in read_jsonl(Path(out_dir) / "blocks.jsonl"):
+def _block_by_id(
+    out_dir: Path, block_id: str, *, blocks: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """blocks：调用方已加载的完整块列表（点解析每次调用只读一遍 blocks.jsonl）。"""
+    if blocks is None:
+        blocks = read_jsonl(Path(out_dir) / "blocks.jsonl")
+    for block in blocks:
         if str(block.get("block_id") or "") == block_id:
             return block
     raise ValueError(f"unknown block_id: {block_id}")
@@ -157,9 +163,11 @@ def _covered_text_for_block(requirements: list[dict[str, Any]], block_id: str) -
 
 
 def _llm_spot_rows(out_dir: Path, *, block: dict[str, Any], text: str,
-                   existing: list[dict[str, Any]], route: str) -> list[dict[str, Any]]:
+                   existing: list[dict[str, Any]], route: str,
+                   blocks: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """单段文本 LLM 抽取：复用 targeted_reextract 的调用方式（chat_json + critique_section
-    护栏），范围限定该段文本——合成只含本段的单块 section，prompt 看不见其他内容。"""
+    护栏），范围限定该段文本——合成只含本段的单块 section，prompt 看不见其他内容。
+    blocks：调用方已加载的完整块列表（免二次整读 blocks.jsonl）。"""
     import ai_extract
     from llm_client import apply_min_tokens, chat_json
 
@@ -183,7 +191,8 @@ def _llm_spot_rows(out_dir: Path, *, block: dict[str, Any], text: str,
         "block_ids": [block_id],
         "source_blocks": [block],
     }
-    blocks = read_jsonl(root / "blocks.jsonl")
+    if blocks is None:
+        blocks = read_jsonl(root / "blocks.jsonl")
     doc_context = ai_extract.build_doc_context(root, blocks)
     context_ints = frozenset(ai_extract.extract_ints(doc_context)) if doc_context else frozenset()
     # existing 深拷贝进自检：supplements 落账是 targeted_reextract 的语义，点解析只产新 draft
@@ -251,7 +260,9 @@ def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
             raise OmissionConflictError(
                 "AI extraction belongs to an older parsed document; rerun full extraction first"
             )
-        block = _block_by_id(root, block_id)
+        # blocks.jsonl 每次点解析只读一遍：块定位与 LLM 路径的 build_doc_context 共用
+        blocks = read_jsonl(governed_artifact_path(root, "blocks.jsonl", for_write=False))
+        block = _block_by_id(root, block_id, blocks=blocks)
         is_table = str(block.get("type") or "") == "table"
         if row_index is not None and not is_table:
             raise ValueError("row_index 仅适用于表格块")
@@ -314,7 +325,7 @@ def spot_extract(out_dir: Path, *, block_id: str, row_index: int | None = None,
                 strategy = "deterministic_param_row"
         if not already_covered and not rows:
             rows = _llm_spot_rows(root, block=block, text=text,
-                                  existing=block_existing, route=route)
+                                  existing=block_existing, route=route, blocks=blocks)
             if cell is not None:
                 for row in rows:
                     row["source_cell_id"] = str(cell.get("cell_id") or "")

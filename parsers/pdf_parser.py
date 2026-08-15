@@ -44,6 +44,11 @@ LOGGER = logging.getLogger("requirement_atomizer")
 TEXT_LAYER_SAMPLE_PAGES = 5
 MIN_AVERAGE_EXTRACTED_CHARS = 100
 HEADER_FOOTER_BAND_RATIO = 0.12
+# 页词 memo 的页数上限：重复页眉/页脚检测遍留档每页词表供主循环复用（免二次
+# extract_words），但长标准文档会把几十万词字典同时驻留内存。超过此页数整个 memo
+# 放弃——主循环回退为每页现抽（检测遍 2x CPU 的旧版行为），内存有界、CPU 优雅降级。
+# 页数开卷即知（len(pdf.pages)），判断零成本。
+PDF_PAGE_WORD_MEMO_MAX_PAGES = 400
 _COPYRIGHT_FOOTER_RE = re.compile(chr(0xA9) + ".{0,40}" + chr(92) + "bpage" + chr(92) + "b", re.IGNORECASE)
 
 # --- 词内空格破碎修复（机翻 PDF 排版病，2026-07-07 真实案例 UNI 12007）--------
@@ -119,6 +124,48 @@ def _extract_page_words(
     if extra_attrs:
         return [dict(word) for word in page.extract_words(extra_attrs=extra_attrs)]
     return [dict(word) for word in page.extract_words()]
+
+
+# 页词 memo 的紧凑形（2026-08-14 内存回归修复）：memo 不再驻留 pdfplumber 词字典
+# （实测每词 11 键 dict：text/x0/x1/top/bottom/doctop/upright/direction/width/height
+#  + 开关开启时的 size/fontname），只保留下游 _page_lines/_word_lines 路径真正消费的
+# 属性元组：(text, x0, x1, top, bottom, upright, size, fontname)。后三槽仅在
+# 对应开关开启（extra_attrs 生效）时非 None——_extract_page_words 的键集语义
+# 原样保留（doctop/direction 无人消费，不入 memo）。消费侧 _expand_words 还原为
+# 字典，键集与还原语义对全部既有消费者（.get/isinstance 口径）逐字节等价。
+_WORD_TUPLE_ARITY = 8
+
+
+def _compact_words(words: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+    return [
+        (
+            word["text"],
+            word["x0"],
+            word["x1"],
+            word["top"],
+            word["bottom"],
+            word.get("upright"),
+            word.get("size"),
+            word.get("fontname"),
+        )
+        for word in words
+    ]
+
+
+def _expand_words(compact: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
+    words: list[dict[str, Any]] = []
+    for text, x0, x1, top, bottom, upright, size, fontname in compact:
+        word = {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": bottom}
+        # 可选键仅在抽取时存在（extra_attrs 开关）才还原——与 pdfplumber 键集一致；
+        # 值为 None 时 .get() 消费者与"键缺失"行为完全相同。
+        if upright is not None:
+            word["upright"] = upright
+        if size is not None:
+            word["size"] = size
+        if fontname is not None:
+            word["fontname"] = fontname
+        words.append(word)
+    return words
 _REPAIR_VOCAB_RESOURCE = "data/english_words_top50000.txt.gz"
 _ALPHA_TOKEN_RE = re.compile(r"[A-Za-z]+")
 _COMMON_SHORT_WORDS = frozenset({
@@ -176,7 +223,10 @@ def _repair_vocab_payload() -> bytes:
         return b""
 
 
+@lru_cache(maxsize=1)
 def text_repair_vocabulary_fingerprint() -> str:
+    # 词典归档（~350KB gz）+ SHA 只算一次：本函数被 stage_producer("atomize")
+    # 高频调用，输入（版本常量 + 打包资源 + 固定词表）进程内不变，缓存恒同值。
     digest = hashlib.sha256()
     digest.update(PDF_TEXT_REPAIR_VOCAB_VERSION.encode("ascii"))
     digest.update(_repair_vocab_payload())
@@ -1346,8 +1396,23 @@ def _extract_pdf_handwritten(
         subscript_fix = pdf_subscript_fix_enabled()
         hyphen_fix = pdf_hyphen_fix_enabled()
         twocol_def = pdf_twocol_def_enabled()
+        # 重复页眉/页脚检测遍顺带留档每页词表（同 subscript/twocol 口径），主循环
+        # _page_lines 直接复用——同一页的 extract_words 只跑一遍；随用随 pop 释放。
+        # 留档为紧凑元组形（_compact_words）；页数超上限则整个 memo 放弃，主循环
+        # 回退为每页现抽（2x CPU、内存有界）——页数开卷即知，判断零成本。
+        page_word_memo: dict[int, list[tuple[Any, ...]]] | None = (
+            {}
+            if len(pdf.pages) <= PDF_PAGE_WORD_MEMO_MAX_PAGES
+            else None
+        )
+        if page_word_memo is None:
+            LOGGER.info(
+                "PDF 页数 %d 超过 memo 上限 %d，页词表不驻留（主循环回退每页现抽）",
+                len(pdf.pages), PDF_PAGE_WORD_MEMO_MAX_PAGES,
+            )
         repeated_noise = _detect_repeated_margin_lines(
-            pdf, defrag=defrag, subscript=subscript_fix, twocol=twocol_def)
+            pdf, defrag=defrag, subscript=subscript_fix, twocol=twocol_def,
+            page_words=page_word_memo)
 
         sections = SectionState()
         blocks: list[dict[str, Any]] = []
@@ -1359,6 +1424,11 @@ def _extract_pdf_handwritten(
 
         empty_pages = 0
         for page_number, page in enumerate(pdf.pages, start=1):
+            memo_words: list[dict[str, Any]] | None = None
+            if page_word_memo is not None:
+                compact_words = page_word_memo.pop(page_number - 1, None)
+                if compact_words is not None:
+                    memo_words = _expand_words(compact_words)
             # 画线表先验收再决定排除范围（2026-07-08 审计 C2）：此前 bbox 内的词无条件从
             # 段落流剔除，若该表随后被 _skip_table_matrix 丢弃（如 extract 拆格失败的框），
             # 词既不进表也不回段落——内容静默蒸发。现在只有验收通过的表才占用 bbox。
@@ -1379,6 +1449,7 @@ def _extract_pdf_handwritten(
                 subscript=subscript_fix,
                 twocol=twocol_def,
                 page_number=page_number,
+                words=memo_words,
             )
             if not lines and not kept_ruled:
                 empty_pages += 1
@@ -1850,18 +1921,28 @@ def _detect_repeated_margin_lines(
     defrag: bool = False,
     subscript: bool | None = None,
     twocol: bool | None = None,
+    page_words: dict[int, list[tuple[Any, ...]]] | None = None,
 ) -> set[str]:
+    """页眉/页脚重复行检测。page_words 传入 dict 时，本遍抽取的每页词表按页索引
+    （0-based）以紧凑元组形（_compact_words）写入其中——调用方
+    （_extract_pdf_handwritten）随后经 _expand_words 还原喂回 _page_lines，避免
+    同一页 extract_words 跑两遍（pdfplumber 不缓存分词结果）。元组只保留下游
+    消费的属性，长文档不驻留整份 pdfplumber 词字典；本遍与还原后的词字典均只读，
+    主遍的 _reattach_subscripts 也先复制再改，复用安全。"""
     if subscript is None:
         subscript = pdf_subscript_fix_enabled()
     if twocol is None:
         twocol = pdf_twocol_def_enabled()
     threshold = max(2, int(len(pdf.pages) * 0.6 + 0.999))
     counts: Counter[str] = Counter()
-    for page in pdf.pages:
+    for page_index, page in enumerate(pdf.pages):
         top_limit = page.height * HEADER_FOOTER_BAND_RATIO
         bottom_limit = page.height * (1 - HEADER_FOOTER_BAND_RATIO)
+        words = _extract_page_words(page, subscript=subscript, twocol=twocol)
+        if page_words is not None:
+            page_words[page_index] = _compact_words(words)
         for line in _word_lines(
-            _extract_page_words(page, subscript=subscript, twocol=twocol),
+            words,
             defrag=defrag,
         ):
             if line["top"] <= top_limit or line["bottom"] >= bottom_limit:
@@ -1879,16 +1960,21 @@ def _page_lines(
     subscript: bool = False,
     twocol: bool = False,
     page_number: int | None = None,
+    words: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """页面词 →（排除画线表 bbox 内的）→ 词行。
 
     D1/D3 证据按需抽取：仅 subscript/twocol 开启时 _extract_page_words 才传
     extra_attrs（pdfplumber extra_attrs 会改变分词边界，全部 OFF 必须走原始调用）。
     D1 下标归位在词行生成前完成——raw_text 在归位后捕获，对齐不含不可重放变换。
+    words：调用方已用相同 subscript/twocol 口径抽好的页词表（重复行检测遍的
+    复用）——传入则不再重抽；None 时按旧口径现抽。
     """
+    if words is None:
+        words = _extract_page_words(page, subscript=subscript, twocol=twocol)
     words = [
         word
-        for word in _extract_page_words(page, subscript=subscript, twocol=twocol)
+        for word in words
         if not any(_word_intersects_bbox(word, bbox) for bbox in table_bboxes)
     ]
     if subscript:
