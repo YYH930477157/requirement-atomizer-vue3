@@ -56,6 +56,11 @@ ENV_REGISTRY: tuple[EnvVar, ...] = (
     EnvVar("RATOMIZER_CLAIM_SHADOW_VERIFY_MAX_TOTAL_TOKENS", "0", "Phase 0B verifier 总 token 硬上限（0=未授权）", False),
     EnvVar("RATOMIZER_ATTEMPT_LOG_TORN_RETRIES", "3", "verifier attempt log torn-tail 重试窗口长度（0=立即判永久损坏；锁内 read 路径）", False),
     EnvVar("RATOMIZER_ATTEMPT_LOG_TORN_DELAY", "0.005", "verifier attempt log torn-tail 重试间隔秒", False),
+    # --- claim 账本追加式压缩阈值（追加 O(1)；超阈值经原子路径重物化，只修复撕裂/非规范行，不丢历史）---
+    EnvVar("RATOMIZER_ATTEMPT_LOG_COMPACT_MAX_BYTES", "8388608", "claim_reextract_attempts.jsonl 压缩触发字节数（默认 8 MiB；≤0 回退默认）", False),
+    EnvVar("RATOMIZER_ATTEMPT_LOG_COMPACT_MAX_ROWS", "2000", "claim_reextract_attempts.jsonl 压缩触发行数（默认 2000；≤0 回退默认）", False),
+    EnvVar("RATOMIZER_VERIFIER_LEDGER_COMPACT_MAX_BYTES", "8388608", "claim_verifier_attempts.jsonl 压缩触发字节数（默认 8 MiB；≤0 回退默认）", False),
+    EnvVar("RATOMIZER_VERIFIER_LEDGER_COMPACT_MAX_ROWS", "2000", "claim_verifier_attempts.jsonl 压缩触发行数（默认 2000；≤0 回退默认）", False),
     EnvVar("RATOMIZER_AI_UNIT_MODE", "clause", "抽取单元模式：clause（条款族，默认）/ chapter（整章，实验，A/B 已裁决劣于 clause）", False),
     # --- 表格双轨制（WS1）---
     EnvVar("RATOMIZER_TABLE_DUAL_TRACK", "0", "表格结构双轨入口开关（=1 启用「LLM 提议→几何校验签发」；默认 0=旧确定性几何单轨，签名失败/无预算/无假设时一律退回单轨）", False),

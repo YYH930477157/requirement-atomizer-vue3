@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from claim_artifacts import (
     LEGACY_CLAIM_EFFECTIVE_SNAPSHOT_VERSION,
     ClaimArtifactError,
     ClaimBaseMigrationRequired,
+    _REPLACE_ATTEMPTS,
+    _REPLACE_RETRY_DELAY_S,
     _atomic_write_bytes,
     _validate_schema,
     canonical_target_fingerprint,
@@ -451,7 +454,17 @@ def append_claim_review_events(
                     label="claim review event",
                 )
                 if handle is None:
-                    handle = (claim_artifact_path(root, CLAIM_REVIEW_EVENTS)).open("ab")
+                    path = claim_artifact_path(root, CLAIM_REVIEW_EVENTS)
+                    # Windows AV/索引器瞬态占用：open 重试预算耗尽后如实抛出（响亮失败），
+                    # 与 claim_artifacts 的共享文件纪律同款。
+                    for attempt in range(_REPLACE_ATTEMPTS):
+                        try:
+                            handle = path.open("ab")
+                            break
+                        except PermissionError:
+                            if attempt + 1 >= _REPLACE_ATTEMPTS:
+                                raise
+                            time.sleep(_REPLACE_RETRY_DELAY_S * (attempt + 1))
                 handle.write(canonical_json_value_bytes(event) + b"\n")
                 rows.append(event)
                 appended.append(event)

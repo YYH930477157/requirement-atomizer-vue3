@@ -116,19 +116,22 @@ def crash_at_second_sink(*args, **kwargs):
 
 claim_artifacts._update_verifier_attempt_checkpoint_unlocked = crash_at_second_sink
 
-original_replace = claim_artifacts._replace_with_retry
+# First sink of the durable fanout is the attempt-log append. Appends are
+# append-mode writes now (no whole-file replace), so the kill point is the
+# line-append primitive itself: exit before any byte of the event lands.
+original_append_lines = claim_reextract_attempts._append_lines_unlocked
 
-def crash_before_first_sink_replace(source, target):
+def crash_before_first_sink_append(path, lines):
     if (
         mode == "first"
-        and Path(target).name
+        and Path(path).name
         == claim_reextract_attempts.CLAIM_REEXTRACT_ATTEMPTS
     ):
         os._exit(93)
-    return original_replace(source, target)
+    return original_append_lines(path, lines)
 
 if mode == "first":
-    claim_artifacts._replace_with_retry = crash_before_first_sink_replace
+    claim_reextract_attempts._append_lines_unlocked = crash_before_first_sink_append
 
 class FakeResponse:
     def __enter__(self):

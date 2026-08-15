@@ -132,7 +132,7 @@ def load_table_claim_authority_projection(
         CLAIM_EFFECTIVE_META,
         CLAIM_GENERATION_META,
         claim_artifact_path,
-        load_committed_effective_snapshot_readonly,
+        load_committed_effective_snapshot_cached,
     )
     from claim_structural_operations import pending_structural_operations
     from claim_structural_overrides import (
@@ -153,7 +153,10 @@ def load_table_claim_authority_projection(
         raise FileNotFoundError(
             "claim authority snapshot requires both generation and effective metadata"
         )
-    snapshot = load_committed_effective_snapshot_readonly(root, require_v2=False)
+    # 2026-08-14 性能：GET /table-reviews 每次轮询都全文重读 claim 快照；切换到
+    # stat 签名缓存版（写路径改动输入文件 → 缓存自然失效）。本函数及其消费方对
+    # snapshot 只读（.get/迭代），符合共享只读契约。
+    snapshot = load_committed_effective_snapshot_cached(root, require_v2=False)
     return build_table_claim_authority_projection(
         catalog=list(snapshot.get("catalog") or []),
         generation_meta=dict(snapshot.get("generation_meta") or {}),

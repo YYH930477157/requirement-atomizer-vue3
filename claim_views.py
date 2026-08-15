@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 from collections import OrderedDict
@@ -21,8 +20,9 @@ from claim_artifacts import (
     CLAIM_SHADOW_METRICS,
     ClaimArtifactError,
     claim_base_generation_id,
+    effective_snapshot_revision_key,
     hash_json,
-    load_committed_effective_snapshot_readonly,
+    load_committed_effective_snapshot_cached,
 )
 from claim_review_actions import (
     assess_effective_freshness,
@@ -130,103 +130,14 @@ _CONTEXT_CACHE_MAX_ENTRIES = 16
 _CONTEXT_CACHE: OrderedDict[Path, tuple[tuple, dict[str, Any]]] = OrderedDict()
 _CONTEXT_CACHE_GUARD = threading.RLock()
 _CONTEXT_CACHE_INFLIGHT: dict[Path, threading.Event] = {}
-_CONTEXT_STAT_FILES = (
-    CLAIM_CATALOG,
-    CLAIM_CATALOG_META,
-    CLAIM_COVERAGE_GROUPS,
-    CLAIM_LEDGER,
-    CLAIM_SHADOW_METRICS,
-    CLAIM_GENERATION_META,
-    CLAIM_EFFECTIVE_LEDGER,
-    CLAIM_EFFECTIVE_META,
-    CLAIM_QUEUE_PROPOSALS,
-    "claim_review_events.jsonl",
-    "claim_verifier_attempts.jsonl",
-    "claim_reextract_attempts.jsonl",
-    "claim_structural_overrides.jsonl",
-    "claim_structural_candidate_decisions.jsonl",
-    "claim_structural_operations.jsonl",
-    "omission_states.jsonl",
-    "blocks.jsonl",
-    "table_items.jsonl",
-    "atomic_requirements.jsonl",
-    "ai_requirements.jsonl",
-    "ai_requirements.meta.json",
-    "ai_review_states.jsonl",
-    "review_states.jsonl",
-    "claim_effective_health.json",
-)
-_CONTEXT_CONTENT_DIRECTORIES = (
-    "claim_structural_decisions",
-)
 
 
 def _context_revision_key(root: Path) -> tuple:
-    from claim_artifacts import (
-        CLAIM_BUDGET_CHECKPOINT_OUTBOX,
-        CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
-        CLAIM_PUBLICATION_JOURNAL,
-        CLAIM_VERIFIER_ATTEMPT_CHECKPOINT,
-    )
-
-    parts: list[tuple] = []
-    for name in _CONTEXT_STAT_FILES:
-        path = governed_artifact_path(root, name, for_write=False)
-        try:
-            stat = path.stat() if path.is_file() else None
-        except OSError:
-            stat = None
-        parts.append(
-            (name, None)
-            if stat is None
-            else (
-                name,
-                stat.st_size,
-                stat.st_mtime_ns,
-                stat.st_ctime_ns,
-            )
-        )
-    # Structural verifier decisions are compact content-addressed sidecars.
-    # Hash their bytes so deletion or same-size replacement cannot leave a
-    # previously validated view resident in the snapshot cache.
-    for name in _CONTEXT_CONTENT_DIRECTORIES:
-        directory = governed_artifact_path(root, name, for_write=False)
-        entries: list[tuple] | None = []
-        try:
-            if directory.is_dir():
-                for path in sorted(
-                    (item for item in directory.rglob("*") if item.is_file()),
-                    key=lambda item: item.relative_to(directory).as_posix(),
-                ):
-                    entries.append((
-                        path.relative_to(directory).as_posix(),
-                        hashlib.sha256(path.read_bytes()).hexdigest(),
-                    ))
-        except OSError:
-            entries = None
-        parts.append((name, None if entries is None else tuple(entries)))
-    # Meta files are small and anchor the committed generations. Hashing them
-    # closes same-size/timestamp replacement holes without hashing every large
-    # JSONL payload on every GET.
-    for name in (CLAIM_GENERATION_META, CLAIM_EFFECTIVE_META):
-        path = governed_artifact_path(root, name, for_write=False)
-        try:
-            digest = (
-                hashlib.sha256(path.read_bytes()).hexdigest()
-                if path.is_file()
-                else None
-            )
-        except OSError:
-            digest = None
-        parts.append((f"{name}:sha256", digest))
-    for name in (
-        CLAIM_PUBLICATION_JOURNAL,
-        CLAIM_EFFECTIVE_PUBLICATION_JOURNAL,
-        CLAIM_VERIFIER_ATTEMPT_CHECKPOINT,
-        CLAIM_BUDGET_CHECKPOINT_OUTBOX,
-    ):
-        parts.append((name, governed_artifact_path(root, name, for_write=False).is_file()))
-    return tuple(parts)
+    # Shared with claim_artifacts.load_committed_effective_snapshot_cached:
+    # one canonical input-signature builder for the view context cache and the
+    # readonly snapshot cache (stat signatures of every input file, content
+    # digests of the two commit anchors, structural sidecars, journal flags).
+    return effective_snapshot_revision_key(root)
 
 
 def _check_migration(snapshot: dict[str, Any]) -> None:
@@ -263,8 +174,11 @@ def _context(root: Path) -> dict[str, Any] | None:
     try:
         # The loader checks both publication journals before and after its
         # snapshot read. A pending journal always takes precedence over a
-        # legacy snapshot: readers request recovery and never write.
-        snapshot = load_committed_effective_snapshot_readonly(
+        # legacy snapshot: readers request recovery and never write. The
+        # cached loader memoizes the readonly snapshot per input signature, so
+        # repeated GETs (and the /table-reviews, /document/pdf style callers)
+        # skip re-hashing every claim artifact.
+        snapshot = load_committed_effective_snapshot_cached(
             root,
             require_v2=False,
         )
