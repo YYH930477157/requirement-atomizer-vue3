@@ -173,7 +173,7 @@ BASELINE_BARE_JOINS: dict[str, dict[str, int]] = {
         "llm_trace.jsonl": 1, "run_manifest.lock": 1,
     },
     "doc_annotation_export.py": {
-        "blocks.jsonl": 2, "table_cell_items.jsonl": 2, "table_items.jsonl": 1,
+        "blocks.jsonl": 2, "table_items.jsonl": 1,
     },
     "engineering_composer.py": {"atomic_requirements.jsonl": 1, "table_items.jsonl": 1},
     "export_requirements.py": {"atomic_requirements.jsonl": 1},

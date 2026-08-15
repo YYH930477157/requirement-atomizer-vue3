@@ -740,13 +740,28 @@ def build_table_artifacts(
         ],
         width,
     )
+    classification_headers = headers
+    if "sequential_clause_rows:headerless" in structure.get("header_detection_evidence", []):
+        # A page-continuation fragment has no source header to display or send to
+        # prompts, so its public headers remain honest ``column_N`` fallbacks.
+        # The consecutive clause-number evidence nevertheless proves the common
+        # ``clause | specification | values...`` row shape; use semantic labels
+        # only inside deterministic kind classification so the rows stay atomic
+        # instead of degrading into unrelated cell candidates.
+        classification_headers = [
+            "clause_index",
+            "Specification",
+            *[f"value_{index}" for index in range(1, max(1, width - 1))],
+        ][:width]
     # 标题行（全宽合并）提升为表标题；无标题行时保留 caption/sheet/回退标题
     if title_row_indexes:
         first_title_row = matrix[title_row_indexes[0] - 1]
         title_text = next((clean_text(value) for value in first_title_row if clean_text(value)), "")
         if title_text:
             table_title = title_text
-    table_kind = classify_table_kind_structure(headers, effective_data_rows, section_path)
+    table_kind = classify_table_kind_structure(
+        classification_headers, effective_data_rows, section_path
+    )
     # A9-1：商务/表单表识别（默认关，OFF 时逐字节不变）
     tender_table_kind = classify_tender_table_kind(
         headers=headers,

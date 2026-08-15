@@ -87,9 +87,21 @@ function makeClaimAnnotationClient() {
         },
         {
           claim_id: "CLM-TABLE", claim_hash: "sha256:table", block_id: "T1",
-          source_kind: "table_item", text: "Indicator channel | Configurable",
+          source_kind: "table_item",
+          text: "column_1=6.13 | column_2=Protection against penetration of dust and water | column_3=At least IP54 | column_4=At least IP54",
           eligibility: "eligible", resolution: "excluded", mapped: true,
+          authority_status: "catalog_only",
           data_row_indexes: [1], focus: { kind: "table_item" },
+          table_context: {
+            table_title: "Table 23",
+            headers: ["column_1", "column_2", "column_3", "column_4"],
+            fields: [
+              { name: "column_1", value: "6.13" },
+              { name: "column_2", value: "Protection against penetration of dust and water" },
+              { name: "column_3", value: "At least IP54" },
+              { name: "column_4", value: "At least IP54" },
+            ],
+          },
         },
         {
           claim_id: "CLM-UNMAPPED", claim_hash: "sha256:unmapped", block_id: "C1",
@@ -167,6 +179,13 @@ describe("DocumentReview", () => {
     expect(card.exists()).toBe(true)
     expect(card.text()).toContain("CLM-TABLE")
     expect(card.text()).toContain("已排除")
+    expect(card.find('[data-testid="claim-source-table"]').exists()).toBe(true)
+    expect(card.find('[data-testid="claim-source-title"]').text()).toContain("6.13")
+    expect(card.find('[data-testid="claim-source-title"]').text()).toContain("Protection against penetration of dust and water")
+    expect(card.findAll('[data-testid="claim-source-value"]')).toHaveLength(1)
+    expect(card.find('[data-testid="claim-source-value"]').text()).toContain("值 1–2")
+    expect(card.find('[data-testid="claim-source-raw"]').text()).toContain("column_1=6.13")
+    expect(card.find('[data-testid="claim-catalog-only"]').text()).toContain("暂按待确认展示")
   })
 
   it("keeps an unmapped claim auditable without rendering a clickable span or zone", async () => {

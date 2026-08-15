@@ -1185,7 +1185,7 @@ class ChainAndManifestTests(unittest.TestCase):
             "clarification-report": "clarification/v8-param-row-aggregate+ai-supplement-v3-identity-preconditions+impl-v6",
             "compose": "engineering_composer/v1+ai-supplement-v3-identity-preconditions+impl-v2",
             "export-annotation-html": (
-                "doc_annotation_export/v16-cell-claim-projection+claim-annotation-v16"
+                "doc_annotation_export/v19-structured-claim-source+claim-annotation-v17"
                 "+claim-focus-adapter-v3+translation-prompt-v5-greedy-splithalf-b10-c8000"
                 "+annotation-translation-guards-v5+doc-facsimile-v1"
                 "+ai-supplement-v3-identity-preconditions"

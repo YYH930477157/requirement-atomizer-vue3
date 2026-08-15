@@ -1240,7 +1240,13 @@ _STAGE_BASE_PRODUCERS = {
     "clarification-report": "clarification/v8-param-row-aggregate",
     "full-translation": "full-translation/v2-row-structured",
     "compose": "engineering_composer/v1",
-    # v16-cell-claim-projection：P0-2 cell claim 落公共 records（claims_json/claim_zones
+    # v18-row-source-zones：静态导出改读保留 pdf_regions 的原始 blocks，几何 cache v7
+    # 绑定原始区域；避免清洗 blocks 缺页尺寸时把文本估算行区写成可复用的“精确”缓存。
+    # + v19-structured-claim-source：Claim 记录下发表格字段上下文，右栏按行结构展示；
+    #   claim-annotation-v17 使旧导出负载失效。
+    # + v17-row-source-zones：原生 PDF 表格用 table_cell_items 的精确 bbox 合并数据行热区，
+    # 需求选中不再回退成整张表框。
+    # + v16-cell-claim-projection：P0-2 cell claim 落公共 records（claims_json/claim_zones
     # 不再丢失生产 table_cell claim）+ P1-3 静态 HTML 按物理 R×C/merge anchor 在
     # <th>/<td> 内渲染 cell claim 入口
     # + v15-cell-merge-span-context：cell_context 增 row_span/column_span/
@@ -1251,7 +1257,7 @@ _STAGE_BASE_PRODUCERS = {
     # + v13 三线联合戳——v13=行区占比切片互斥（远端 rowcell）
     # + claim-distribution（Phase 1 块级角标）+ claim-focus（Phase 1.5 claim span/row 级定位，
     # 经 claim_focus 确定性映射）——三侧缓存产物一并失效；v12=表格行级热区、v11=几何回填
-    "export-annotation-html": "doc_annotation_export/v16-cell-claim-projection",
+    "export-annotation-html": "doc_annotation_export/v19-structured-claim-source",
     "run": "pipeline/v1",
     "llm-review": "review/v1",
 }

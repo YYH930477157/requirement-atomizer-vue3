@@ -561,6 +561,7 @@ export type ClaimAnnotationRecord = {
   eligibility: string
   resolution: "covered" | "excluded" | "uncertain"
   classification?: string
+  authority_status?: "catalog_only" | string
   claim_effective_revision?: string
   mapped: boolean
   mapping_error?: string
@@ -575,6 +576,11 @@ export type ClaimAnnotationRecord = {
   data_row_index?: number | null
   header_path?: string[]
   row_header_context?: string[]
+  table_context?: {
+    table_title?: string
+    headers?: string[]
+    fields?: Array<{ name: string; value: string }>
+  }
   focus?: Record<string, unknown>
 }
 export type ClaimAnnotationZone = {
